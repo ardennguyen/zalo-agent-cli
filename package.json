@@ -1,0 +1,60 @@
+{
+  "name": "zalo-agent-cli",
+  "version": "1.6.2",
+  "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
+  "type": "module",
+  "bin": {
+    "zalo-agent": "src/index.js"
+  },
+  "main": "./src/index.js",
+  "files": [
+    "src/",
+    "LICENSE",
+    "DISCLAIMER.md"
+  ],
+  "scripts": {
+    "test": "node --test src/*.test.js src/**/*.test.js",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "release": "npm version patch -m 'release: v%s' && git push origin main --tags",
+    "prepublishOnly": "npm run lint && npm test"
+  },
+  "keywords": [
+    "zalo",
+    "cli",
+    "automation",
+    "messaging",
+    "vietnam",
+    "proxy",
+    "vietqr",
+    "zca-js",
+    "official-account",
+    "zalo-oa",
+    "webhook"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ardennguyen/zalo-agent-cli"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "chalk": "^5.3.0",
+    "commander": "^14.0.3",
+    "express": "^5.2.1",
+    "https-proxy-agent": "^8.0.0",
+    "node-fetch": "^3.3.0",
+    "undici": "^7.24.6",
+    "zca-js": "^2.1.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "eslint": "^10.0.3",
+    "prettier": "^3.8.1"
+  }
+}

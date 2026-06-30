@@ -150,7 +150,7 @@ ocb, vcb, vietcombank, bidv, mb, mbbank, techcombank, tpbank, acb, vpbank, msb, 
 Commands with `--no-cache` support read from `~/.zalo-agent-cli/accounts/<id>/zalo.db` first.
 The cache is seeded by `listen` or `mcp start` running in the background.
 
-| Command | Cache behaviour |
+| Command | Cache behavior |
 |---------|-----------------|
 | `listen` | **Writes** all events to cache (passive sync) |
 | `mcp start` | **Writes** all events to cache (passive sync) |

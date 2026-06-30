@@ -19,6 +19,7 @@ export function checkForUpdates(currentVersion, jsonMode) {
             encoding: "utf8",
             timeout: 5000,
             stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true
         }).trim();
 
         if (latest && latest !== currentVersion) {

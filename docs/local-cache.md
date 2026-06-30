@@ -57,6 +57,20 @@ Khi chạy `listen`, mọi tin nhắn và sự kiện sẽ được ghi vào `za
 Chỉ **một** tiến trình `listen` được phép chạy trên mỗi tài khoản — nếu cố khởi động thêm,
 tool sẽ báo lỗi và thoát ngay.
 
+### `friend list` — Cache-first friend list 🆕
+
+```bash
+zalo-agent friend list              # Cache-first (instant if seeded)
+zalo-agent friend list --no-cache   # Force live fetch from Zalo + re-seeds cache
+```
+
+### `friend search` — Cache-first friend search 🆕
+
+```bash
+zalo-agent friend search "Phúc"              # Searches local contacts cache
+zalo-agent friend search "Phúc" --no-cache   # Force live fetch then filter
+```
+
 ### `conv recent` — Đọc từ cache
 
 ```bash
@@ -98,6 +112,35 @@ zalo-agent msg search "xin chào" --json
 
 ---
 
+## Tích hợp MCP (`zalo-agent mcp start`)
+
+Khi chạy `zalo-agent mcp start`, mọi tin nhắn nhận qua WebSocket cũng được **tự động ghi vào `zalo.db`** (ngoài việc đưa vào in-memory buffer). Điều này có nghĩa là:
+
+- `msg search` sẽ tìm được cả tin nhắn đến lúc MCP đang chạy
+- `msg history` sẽ đọc cache thay vì gọi Zalo API
+- Cache tích lũy bất kể bạn dùng `listen` hay `mcp start`
+
+```
+zalo-agent mcp start
+    → [mcp] Local SQLite cache active — events will be persisted to zalo.db
+```
+
+### MCP Tool: `zalo_get_history` với `no_cache`
+
+Trong MCP, tool `zalo_get_history` cũng hỗ trợ cache-first:
+
+```json
+// Cache-first (mặc định)
+{ "threadId": "uid123", "limit": 50 }
+
+// Bắt buộc fetch live từ Zalo + backfill cache
+{ "threadId": "uid123", "limit": 50, "no_cache": true }
+```
+
+Kết quả trả về có thêm trường `"source": "cache"` hoặc `"source": "live"`.
+
+---
+
 ## Ví dụ workflow
 
 ```bash
@@ -105,6 +148,8 @@ zalo-agent msg search "xin chào" --json
 zalo-agent listen
 
 # 2. Trong terminal thứ hai — thao tác thông thường nhưng giờ rất nhanh
+zalo-agent friend list             # Danh sách bạn bè từ cache
+zalo-agent friend search "Phúc"    # Tìm bạn từ cache
 zalo-agent conv recent             # Đọc từ cache ngay lập tức
 zalo-agent msg history <ID>        # Lịch sử từ cache
 zalo-agent msg search "sinh nhật"  # Tìm kiếm toàn văn bản offline
@@ -161,6 +206,20 @@ zalo-agent listen
 While `listen` runs, every message and event is written to `zalo.db` in the background.
 Only **one** `listen` process is allowed per account — a lock file prevents corruption.
 
+### `friend list` — Cache-first friend list 🆕
+
+```bash
+zalo-agent friend list              # Cache-first (instant if seeded)
+zalo-agent friend list --no-cache   # Force live fetch from Zalo + re-seeds cache
+```
+
+### `friend search` — Cache-first friend search 🆕
+
+```bash
+zalo-agent friend search "Phuc"              # Searches local contacts cache
+zalo-agent friend search "Phuc" --no-cache   # Force live fetch then filter
+```
+
 ### `conv recent` — Cache-first conversations
 
 ```bash
@@ -202,6 +261,35 @@ zalo-agent msg search "hello" --json
 
 ---
 
+## MCP Integration (`zalo-agent mcp start`)
+
+When running `zalo-agent mcp start`, every message received via WebSocket is also **automatically written to `zalo.db`** (in addition to the in-memory buffer). This means:
+
+- `msg search` finds messages received while MCP was running
+- `msg history` reads from cache instead of hitting Zalo's API
+- Cache accumulates regardless of whether you use `listen` or `mcp start`
+
+```
+zalo-agent mcp start
+    → [mcp] Local SQLite cache active — events will be persisted to zalo.db
+```
+
+### MCP Tool: `zalo_get_history` with `no_cache`
+
+The `zalo_get_history` MCP tool also supports cache-first:
+
+```json
+// Cache-first (default)
+{ "threadId": "uid123", "limit": 50 }
+
+// Force live fetch from Zalo + backfill cache
+{ "threadId": "uid123", "limit": 50, "no_cache": true }
+```
+
+The response includes a `"source"` field: `"cache"` or `"live"`.
+
+---
+
 ## Example workflow
 
 ```bash
@@ -209,6 +297,8 @@ zalo-agent msg search "hello" --json
 zalo-agent listen
 
 # 2. In another terminal — same commands, but now instant
+zalo-agent friend list             # Friends from cache
+zalo-agent friend search "Phuc"    # Search friends from cache
 zalo-agent conv recent             # Reads from cache instantly
 zalo-agent msg history <ID>        # History from cache
 zalo-agent msg search "birthday"   # Offline full-text search

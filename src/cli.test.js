@@ -121,4 +121,19 @@ describe("CLI interface", () => {
         const out = run("msg", "history", "--help");
         assert.match(out, /--no-cache/);
     });
+
+    it("friend list --help shows --no-cache flag", () => {
+        const out = run("friend", "list", "--help");
+        assert.match(out, /--no-cache/);
+    });
+
+    it("friend search --help shows --no-cache flag", () => {
+        const out = run("friend", "search", "--help");
+        assert.match(out, /--no-cache/);
+    });
+
+    it("mcp --help lists start subcommand", () => {
+        const out = run("mcp", "--help");
+        assert.match(out, /start/);
+    });
 });

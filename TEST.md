@@ -321,11 +321,20 @@ These tests require a real Zalo account and phone for QR scanning.
 - [ ] `zalo-agent msg search "hello"` with no cache — returns instructive error message
 - [ ] Starting two `listen` processes on same account — second one exits with lock error
 - [ ] After Ctrl+C on `listen` — `zalo.lock` file is removed
+- [ ] `zalo-agent mcp start` — shows `[mcp] Local SQLite cache active` message on startup
+- [ ] After receiving a message via MCP, `zalo.db` is populated (verify with `msg history`)
+- [ ] `zalo_get_history` MCP tool (no `no_cache`) — returns `"source": "cache"` when cache is seeded
+- [ ] `zalo_get_history` MCP tool with `no_cache: true` — returns `"source": "live"` and backfills cache
+- [ ] `friend list --no-cache` — bypasses local contacts cache and fetches from Zalo
+- [ ] `friend search "Name" --no-cache` — fetches live when cache exists
 
 ### Friends
 
-- [ ] `zalo-agent friend list` — lists friends
-- [ ] `zalo-agent friend find <phone>` — finds user
+- [ ] `zalo-agent friend list` — lists friends (from cache on second run)
+- [ ] `zalo-agent friend list --no-cache` — bypasses cache, fetches live, re-seeds
+- [ ] `zalo-agent friend search "Name"` — searches cache if seeded
+- [ ] `zalo-agent friend search "Name" --no-cache` — forces live fetch
+- [ ] `zalo-agent friend find <phone>` — finds user (always live)
 - [ ] `zalo-agent friend info <ID>` — shows profile
 
 ### Groups

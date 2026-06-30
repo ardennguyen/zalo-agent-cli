@@ -80,3 +80,20 @@ zalo-agent msg send <ID> "reply"
 - **Auto re-login:** Re-authenticates on session expiry
 - **1 WebSocket/account:** Cannot coexist with browser Zalo on same account
 - **Event dedup:** Built-in msgId tracking
+
+## Local SQLite Cache (v1.1.0-beta1)
+`listen` passively writes every event to a per-account SQLite database:
+```
+~/.zalo-agent-cli/accounts/<ownId>/zalo.db
+```
+This powers offline/cache-first reads for other commands:
+
+| Command | Behaviour |
+|---------|-----------|
+| `conv recent` | Reads from cache (instant); `--no-cache` forces live |
+| `friend list` | Reads from cache (instant); `--no-cache` forces live |
+| `friend search` | Searches cache; `--no-cache` forces live |
+| `msg history` | Reads from cache; `--no-cache` fetches live + backfills |
+| `msg search` | FTS5 full-text search on cached messages |
+
+The same cache is also written by `mcp start`. See [docs/local-cache.md](../../docs/local-cache.md).

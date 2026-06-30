@@ -5,7 +5,7 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
-import { upsertContact } from "../core/db.js";
+import { upsertContact, getCachedContacts, dbExists } from "../core/db.js";
 
 /** Extract numeric error code from zca-js error message string. */
 function extractErrorCode(msg) {
@@ -19,11 +19,28 @@ export function registerFriendCommands(program) {
     friend
         .command("list")
         .description("List all friends")
-        .action(async () => {
+        .option("--no-cache", "Bypass local cache and fetch live from Zalo")
+        .action(async (opts) => {
             try {
+                const ownId = getActive()?.ownId ?? null;
+
+                // Cache-first: serve from SQLite if seeded and --no-cache not set
+                if (!opts.noCache && ownId && dbExists(ownId)) {
+                    const cached = getCachedContacts(ownId, { limit: 500 });
+                    if (cached.length > 0) {
+                        output(cached, program.opts().json, () => {
+                            info(`${cached.length} friends (from local cache)`);
+                            for (const c of cached) {
+                                const name = c.display_name || c.zalo_name || "?";
+                                console.log(`  ${c.uid}  ${name}`);
+                            }
+                        });
+                        return;
+                    }
+                }
+
                 const result = await getApi().getAllFriends();
                 // Seed local SQLite cache with fresh friend list
-                const ownId = getActive()?.ownId ?? null;
                 if (ownId) {
                     const entries = Array.isArray(result)
                         ? result
@@ -60,11 +77,42 @@ export function registerFriendCommands(program) {
     friend
         .command("search <name>")
         .description("Search friends by name (returns thread_id for messaging)")
-        .action(async (name) => {
+        .option("--no-cache", "Bypass local cache and fetch live from Zalo")
+        .action(async (name, opts) => {
             try {
+                const ownId = getActive()?.ownId ?? null;
+                const query = name.toLowerCase();
+
+                // Cache-first: search contacts table
+                if (!opts.noCache && ownId && dbExists(ownId)) {
+                    const cached = getCachedContacts(ownId, { limit: 500 });
+                    if (cached.length > 0) {
+                        const matches = cached.filter((c) => {
+                            const dn = (c.display_name || "").toLowerCase();
+                            const zn = (c.zalo_name || "").toLowerCase();
+                            return dn.includes(query) || zn.includes(query);
+                        });
+                        output(matches, program.opts().json, () => {
+                            if (matches.length === 0) {
+                                error(`No friends matching "${name}" in local cache. Try --no-cache for a live search.`);
+                                return;
+                            }
+                            info(`${matches.length} friend(s) matching "${name}" (from local cache):`);
+                            console.log();
+                            for (const c of matches) {
+                                const display = c.display_name || c.zalo_name || "?";
+                                console.log(`  ${c.uid}  ${display}`);
+                            }
+                            console.log();
+                            info("Use the ID above as thread_id for messaging commands.");
+                            info('Example: zalo-agent msg send <thread_id> "Hello"');
+                        });
+                        return;
+                    }
+                }
+
                 const result = await getApi().getAllFriends();
                 const friends = Array.isArray(result) ? result : [];
-                const query = name.toLowerCase();
                 const matches = friends.filter((f) => {
                     const dn = (f.displayName || "").toLowerCase();
                     const zn = (f.zaloName || "").toLowerCase();

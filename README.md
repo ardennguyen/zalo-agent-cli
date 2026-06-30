@@ -52,7 +52,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > zalo-agent msg search "xin chào"           # Tìm kiếm FTS5 toàn văn bản 🆕
 > ```
 > Cache per-account · WAL mode · FTS5 · lock file chống xung đột · `--no-cache` bypass
-> Xem [docs/local-cache.md](docs/local-cache.md)
+> Xem [Cache Cục Bộ](https://github.com/ardennguyen/zalo-agent-cli/wiki/Cache-C%E1%BB%A5c-B%E1%BB%99)
 
 ---
 
@@ -118,7 +118,7 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `listen` | Lắng nghe real-time, webhook, lưu JSONL, **đồng bộ SQLite thụ động** | [Lắng nghe](https://github.com/ardennguyen/zalo-agent-cli/wiki/L%E1%BA%AFng-Nghe) |
 | `account` | Đa tài khoản & proxy | [Tài khoản](https://github.com/ardennguyen/zalo-agent-cli/wiki/T%C3%A0i-Kho%E1%BA%A3n) |
 | **`oa`** | **Zalo Official Account API v3.0 — OAuth, tin nhắn, follower, tag, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
-| **`msg search`** | **Tìm kiếm toàn văn bản FTS5 trên cache cục bộ 🆕** | [Local Cache](https://github.com/ardennguyen/zalo-agent-cli/wiki/Local-Cache) |
+| **`msg search`** | **Tìm kiếm toàn văn bản FTS5 trên cache cục bộ 🆕** | [Cache Cục Bộ](https://github.com/ardennguyen/zalo-agent-cli/wiki/Cache-C%E1%BB%A5c-B%E1%BB%99) |
 
 Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/%C4%90a-T%C3%A0i-Kho%E1%BA%A3n-&-Proxy) · [Cài đặt VPS](https://github.com/ardennguyen/zalo-agent-cli/wiki/C%C3%A0i-%C4%90%E1%BA%B7t-VPS) · [Thẻ chuyển khoản & QR](https://github.com/ardennguyen/zalo-agent-cli/wiki/Th%E1%BA%BB-Chuy%E1%BB%83n-Kho%E1%BA%A3n-&-QR) · [Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)
 
@@ -190,7 +190,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > zalo-agent msg search "hello"              # FTS5 full-text search 🆕
 > ```
 > Per-account isolation · WAL mode · FTS5 · lock file guard · `--no-cache` bypass
-> See [docs/local-cache.md](docs/local-cache.md)
+> See [Local Cache](https://github.com/ardennguyen/zalo-agent-cli/wiki/Local-Cache)
 
 ### Quick Start
 

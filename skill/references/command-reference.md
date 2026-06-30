@@ -35,13 +35,16 @@
 | `delete <msgId> <id> [-t]` | Delete (self only) |
 | `undo <msgId> <id> -c <cliMsgId> [-t]` | Recall both sides |
 | `forward <msgId> <id> [-t]` | Forward message |
+| `history <threadId> [-n limit] [--no-cache]` | Message history (cache-first; `--no-cache` forces live + backfill) |
+| `search <query> [-t threadId] [-n limit]` | **Full-text search across cached messages (FTS5)** |
 
 ## Friends — `friend`
 | Command | Description |
 |---------|-------------|
-| `list` | All friends |
+| `list [--no-cache]` | All friends (cache-first; `--no-cache` forces live fetch) |
 | `online` | Online friends |
-| `find <query>` | By phone/ID |
+| `search <query> [--no-cache]` | By display name (cache-first; `--no-cache` forces live) |
+| `find <query>` | By phone/ID (always live) |
 | `info <userId>` | Profile |
 | `add <userId> [-m msg]` | Friend request |
 | `accept <userId>` | Accept request |
@@ -72,13 +75,14 @@
 ## Listen
 | Command | Description |
 |---------|-------------|
-| `listen [-e types] [-f filter] [-w url] [--no-self] [--auto-accept] [--save dir]` | WebSocket listener |
+| `listen [-e types] [-f filter] [-w url] [--no-self] [--auto-accept] [--save dir]` | WebSocket listener — also passively syncs all events to local cache (`zalo.db`) |
 
 Events: message, friend, group, reaction. Filters: user, group, all.
 
 ## Conversations — `conv`
 | Command | Description |
 |---------|-------------|
+| `recent [--no-cache]` | Recent conversations (cache-first; `--no-cache` forces live) |
 | `pinned` | Pinned list |
 | `archived` | Archived list |
 | `mute <id> [-t] [-d secs]` | Mute (-1=forever) |
@@ -141,3 +145,17 @@ Events: message, friend, group, reaction. Filters: user, group, all.
 
 ## Bank Aliases
 ocb, vcb, vietcombank, bidv, mb, mbbank, techcombank, tpbank, acb, vpbank, msb, sacombank, hdbank, seabank, shb, eximbank, vib, agribank, vietinbank, ctg, scb, ncb, abbank, dongabank, kienlongbank, shinhan, hsbc, cimb, woori, and 25+ more.
+
+## Local Cache (v1.1.0)
+Commands with `--no-cache` support read from `~/.zalo-agent-cli/accounts/<id>/zalo.db` first.
+The cache is seeded by `listen` or `mcp start` running in the background.
+
+| Command | Cache behaviour |
+|---------|-----------------|
+| `listen` | **Writes** all events to cache (passive sync) |
+| `mcp start` | **Writes** all events to cache (passive sync) |
+| `friend list` | **Reads** from cache; `--no-cache` forces live + re-seeds |
+| `friend search` | **Reads** from cache; `--no-cache` forces live |
+| `conv recent` | **Reads** from cache; `--no-cache` forces live + re-seeds |
+| `msg history` | **Reads** from cache; `--no-cache` forces live + backfills |
+| `msg search` | **FTS5 full-text search** on cached messages only |

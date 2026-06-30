@@ -6,6 +6,8 @@
 import { z } from "zod";
 import { downloadMedia, openFile } from "./media-downloader.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
+import { getCachedMessages, upsertMessage, dbExists } from "../core/db.js";
+import { getActive } from "../core/accounts.js";
 
 /** Thread type constants matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -201,9 +203,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
             title: "Get Zalo Message History",
             description:
                 "Fetch historical messages from a Zalo DM or group conversation (up to ~2 weeks). " +
-                "Unlike zalo_get_messages (which reads from the live buffer), this fetches older messages " +
-                "from the Zalo server. Use 'lastMsgId' cursor from previous response for pagination. " +
-                "WARNING: Large limits may consume significant memory/bandwidth. Start with a small limit and paginate.",
+                "By default reads from the local SQLite cache (instant, no network). " +
+                "Set no_cache=true to fetch directly from the Zalo server and backfill the cache. " +
+                "Use 'lastMsgId' cursor from previous response for pagination when fetching live. " +
+                "WARNING: Large limits with no_cache=true may consume significant memory/bandwidth.",
             inputSchema: z.object({
                 threadId: z.string().describe("Thread ID to fetch history from"),
                 threadType: z
@@ -218,11 +221,49 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
                     .string()
                     .optional()
                     .nullable()
-                    .describe("Cursor: last message ID from previous fetch for pagination"),
+                    .describe("Cursor: last message ID from previous fetch for pagination (live mode only)"),
+                no_cache: z
+                    .boolean()
+                    .default(false)
+                    .describe("Force live fetch from Zalo server and backfill local cache. Default: false (cache-first)."),
             }),
         },
-        async ({ threadId, threadType, limit, lastMsgId }) => {
+        async ({ threadId, threadType, limit, lastMsgId, no_cache }) => {
             try {
+                const ownId = getActive()?.ownId ?? null;
+
+                // ── Cache-first path ────────────────────────────────────────
+                if (!no_cache && ownId && dbExists(ownId)) {
+                    const cached = getCachedMessages(ownId, threadId, { limit });
+                    if (cached.length > 0) {
+                        const messages = cached
+                            .slice()
+                            .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+                            .map((row) => ({
+                                msgId:      row.msg_id,
+                                threadId:   row.thread_id,
+                                senderId:   row.uid_from,
+                                text:       row.content,
+                                timestamp:  row.timestamp,
+                                type:       row.msg_type || "text",
+                                source:     "cache",
+                            }));
+                        if (nameCache) {
+                            const info = nameCache.get(threadId);
+                            if (info) messages.forEach((m) => (m.threadName = info.name));
+                        }
+                        return ok({
+                            threadId,
+                            threadType: threadType === 0 ? "dm" : "group",
+                            count: messages.length,
+                            messages,
+                            source: "cache",
+                            hint: "Use no_cache=true to fetch live from Zalo",
+                        });
+                    }
+                }
+
+                // ── Live fetch path (also backfills cache) ──────────────────
                 const allMessages = [];
                 let cursor = lastMsgId || null;
                 let done = false;
@@ -253,24 +294,38 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
 
                     for (const msg of pageMessages) {
                         if (allMessages.length >= limit) break;
-                        // API returns messages globally — filter to requested thread
                         const msgThread = String(msg.threadId || "");
                         const msgSender = String(msg.data?.uidFrom || "");
                         const target = String(threadId);
                         if (msgThread !== target && msgSender !== target) continue;
                         const rawContent = msg.data?.content;
                         const isText = typeof rawContent === "string";
+                        const text = isText ? rawContent : extractMessageText(rawContent, msg.data?.msgType);
                         allMessages.push({
-                            msgId: msg.data?.msgId,
-                            threadId: msg.threadId,
-                            senderId: msg.data?.uidFrom || null,
+                            msgId:      msg.data?.msgId,
+                            threadId:   msg.threadId,
+                            senderId:   msg.data?.uidFrom || null,
                             senderName: msg.data?.dName || null,
-                            text: isText
-                                ? rawContent
-                                : extractMessageText(rawContent, msg.data?.msgType),
-                            timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
-                            type: isText ? "text" : msg.data?.msgType || "attachment",
+                            text,
+                            timestamp:  msg.data?.ts ? Number(msg.data.ts) : null,
+                            type:       isText ? "text" : msg.data?.msgType || "attachment",
+                            source:     "live",
                         });
+                        // Backfill local cache
+                        if (ownId) {
+                            try {
+                                upsertMessage(ownId, {
+                                    msgId:      msg.data?.msgId,
+                                    threadId:   msg.threadId,
+                                    threadType,
+                                    uidFrom:    msg.data?.uidFrom,
+                                    isSelf:     false,
+                                    msgType:    msg.data?.msgType,
+                                    content:    text,
+                                    timestamp:  msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                                });
+                            } catch { /* non-fatal */ }
+                        }
                     }
 
                     const lastMsg = pageMessages[pageMessages.length - 1];
@@ -279,15 +334,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
                     cursor = nextId;
                 }
 
-                // Sort oldest first
                 allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
-                // Enrich with thread name
                 if (nameCache) {
                     const info = nameCache.get(threadId);
-                    if (info) {
-                        for (const msg of allMessages) msg.threadName = info.name;
-                    }
+                    if (info) allMessages.forEach((m) => (m.threadName = info.name));
                 }
 
                 return ok({
@@ -295,8 +346,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
                     threadType: threadType === 0 ? "dm" : "group",
                     count: allMessages.length,
                     messages: allMessages,
-                    cursor: cursor,
+                    cursor,
                     hasMore: !done,
+                    source: "live",
                 });
             } catch (e) {
                 console.error("[mcp-tools] zalo_get_history error:", e.message);

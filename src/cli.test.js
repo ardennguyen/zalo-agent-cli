@@ -95,4 +95,45 @@ describe("CLI interface", () => {
         const out = run("account", "list");
         assert.match(out, /No accounts/);
     });
+
+    it("msg --help lists search subcommand", () => {
+        const out = run("msg", "--help");
+        assert.match(out, /search/);
+    });
+
+    it("msg search --help shows expected flags", () => {
+        const out = run("msg", "search", "--help");
+        assert.match(out, /--thread/);
+        assert.match(out, /--limit/);
+        // --json is a global root flag (shown in root --help, not subcommand help)
+        const rootOut = run("--help");
+        assert.match(rootOut, /--json/);
+    });
+
+    it("conv recent --help shows --no-cache flag", () => {
+        const out = run("conv", "--help");
+        // conv is a parent command; subcommand help via 'conv recent --help'
+        const out2 = run("conv", "recent", "--help");
+        assert.match(out2, /--no-cache/);
+    });
+
+    it("msg history --help shows --no-cache flag", () => {
+        const out = run("msg", "history", "--help");
+        assert.match(out, /--no-cache/);
+    });
+
+    it("friend list --help shows --no-cache flag", () => {
+        const out = run("friend", "list", "--help");
+        assert.match(out, /--no-cache/);
+    });
+
+    it("friend search --help shows --no-cache flag", () => {
+        const out = run("friend", "search", "--help");
+        assert.match(out, /--no-cache/);
+    });
+
+    it("mcp --help lists start subcommand", () => {
+        const out = run("mcp", "--help");
+        assert.match(out, /start/);
+    });
 });

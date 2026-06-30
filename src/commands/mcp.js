@@ -16,6 +16,8 @@ import { createHTTPServer } from "../mcp/mcp-http-transport.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
 import { autoDownloadMedia, isDownloadableMedia } from "../mcp/media-downloader.js";
+import { openDb, upsertMessage, upsertChat } from "../core/db.js";
+import { getActive } from "../core/accounts.js";
 
 /** Zalo close code for duplicate web session — fatal, do not retry */
 const CLOSE_DUPLICATE = 3000;
@@ -117,11 +119,44 @@ export function registerMCPCommands(program) {
              * @param {object} api - zca-js API instance
              */
             function attachListenerHandlers(api) {
+                // Resolve account once for SQLite writes
+                const ownId = getActive()?.ownId ?? null;
+                if (ownId) {
+                    try { openDb(ownId); } catch { /* non-fatal */ }
+                    console.error("[mcp] Local SQLite cache active — events will be persisted to zalo.db");
+                }
+
                 api.listener.on("message", (msg) => {
                     // Skip self-sent messages
                     if (msg.isSelf) return;
 
                     const normalized = normalizeMessage(msg);
+
+                    // Passively persist to local SQLite cache (regardless of watch filter)
+                    if (ownId) {
+                        try {
+                            const rawContent = msg.data?.content;
+                            const contentStr = typeof rawContent === "string"
+                                ? rawContent
+                                : extractMessageText(rawContent, msg.data?.msgType) ?? JSON.stringify(rawContent ?? null);
+                            upsertMessage(ownId, {
+                                msgId:      msg.data?.msgId,
+                                threadId:   msg.threadId,
+                                threadType: msg.type ?? 0,
+                                uidFrom:    msg.data?.uidFrom,
+                                isSelf:     msg.isSelf ?? false,
+                                msgType:    msg.data?.msgType,
+                                content:    contentStr,
+                                timestamp:  msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                            });
+                            upsertChat(ownId, {
+                                threadId:   msg.threadId,
+                                threadType: msg.type ?? 0,
+                                name:       nameCache?.get(msg.threadId)?.name ?? null,
+                                lastActive: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                            });
+                        } catch { /* non-fatal — never block the MCP pipeline */ }
+                    }
 
                     // Apply thread watch filter
                     if (!filter.shouldWatch(normalized.threadId, normalized.threadType)) return;

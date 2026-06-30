@@ -7,6 +7,8 @@ import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
+import { getActive } from "../core/accounts.js";
+import { getCachedMessages, upsertMessage, searchMessages, dbExists } from "../core/db.js";
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -489,13 +491,43 @@ export function registerMsgCommands(program) {
         .option("-t, --type <n>", "Thread type: 0=User(DM), 1=Group", "0")
         .option("-n, --limit <n>", "Max messages to fetch (fetches in pages until limit)", "50")
         .option("--timeout <ms>", "Timeout in milliseconds waiting for response", "15000")
+        .option("--no-cache", "Bypass local cache and always fetch live from Zalo")
         .action(async (threadId, opts) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
             const limit = Number(opts.limit);
             const timeout = Number(opts.timeout);
+            const ownId = getActive()?.ownId ?? null;
 
             try {
+                // --- Cache-first: serve from SQLite if available ---
+                if (ownId && dbExists(ownId) && opts.cache !== false) {
+                    const cached = getCachedMessages(ownId, threadId, { limit });
+                    if (cached.length > 0) {
+                        const msgs = cached.reverse().map((m) => ({
+                            msgId:      m.msg_id,
+                            threadId:   m.thread_id,
+                            senderId:   m.uid_from,
+                            senderName: null,
+                            text:       m.content,
+                            timestamp:  m.timestamp,
+                            type:       m.msg_type || "text",
+                        }));
+                        output(
+                            { threadId, threadType: threadType === 0 ? "dm" : "group", count: msgs.length, messages: msgs, source: "cache" },
+                            jsonMode,
+                            () => {
+                                info(`${msgs.length} cached message(s) from ${threadId} (use --no-cache for live fetch):`);
+                                for (const m of msgs) {
+                                    const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                                    console.log(`  [${date}] ${m.senderId || "?"}: ${(m.text || "").slice(0, 200)}`);
+                                }
+                            },
+                        );
+                        return;
+                    }
+                }
+
                 if (!jsonMode && limit > 100) {
                     info(`Warning: fetching up to ${limit} messages. Large history may use significant memory and bandwidth.`);
                 }
@@ -548,17 +580,34 @@ export function registerMsgCommands(program) {
                         const msgSender = String(msg.data?.uidFrom || "");
                         const target = String(threadId);
                         if (msgThread !== target && msgSender !== target) continue;
-                        allMessages.push({
-                            msgId: msg.data?.msgId,
-                            threadId: msg.threadId,
-                            senderId: msg.data?.uidFrom || null,
+                        const parsed = {
+                            msgId:      msg.data?.msgId,
+                            threadId:   msg.threadId,
+                            senderId:   msg.data?.uidFrom || null,
                             senderName: msg.data?.dName || null,
-                            text: typeof msg.data?.content === "string"
+                            text:       typeof msg.data?.content === "string"
                                 ? msg.data.content
                                 : extractMessageText(msg.data?.content, msg.data?.msgType),
-                            timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
-                            type: typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
-                        });
+                            timestamp:  msg.data?.ts ? Number(msg.data.ts) : null,
+                            type:       typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
+                        };
+                        allMessages.push(parsed);
+
+                        // Backfill SQLite cache
+                        if (ownId && parsed.msgId) {
+                            try {
+                                upsertMessage(ownId, {
+                                    msgId:      parsed.msgId,
+                                    threadId:   parsed.threadId,
+                                    threadType,
+                                    uidFrom:    parsed.senderId,
+                                    isSelf:     false,
+                                    msgType:    parsed.type,
+                                    content:    parsed.text,
+                                    timestamp:  parsed.timestamp ?? 0,
+                                });
+                            } catch { /* non-blocking */ }
+                        }
                     }
 
                     // Use last message's actionId for pagination
@@ -593,6 +642,38 @@ export function registerMsgCommands(program) {
                 try { api.listener.stop(); } catch {}
                 error(`History fetch failed: ${e.message}`);
                 process.exit(1);
+            }
+        });
+
+    msg.command("search <query>")
+        .description("Full-text search across locally cached messages (requires zalo-agent listen to have been run first)")
+        .option("-t, --thread <threadId>", "Limit search to a specific thread")
+        .option("-n, --limit <n>", "Max results to return", "20")
+        .action((query, opts) => {
+            const ownId = getActive()?.ownId ?? null;
+            if (!ownId || !dbExists(ownId)) {
+                error("No local message cache found. Run 'zalo-agent listen' first to build the cache.");
+                return;
+            }
+            try {
+                const results = searchMessages(ownId, query, {
+                    limit:    Number(opts.limit),
+                    threadId: opts.thread ?? null,
+                });
+                output(results, program.opts().json, () => {
+                    if (results.length === 0) {
+                        info(`No cached messages matched "${query}".`);
+                        return;
+                    }
+                    info(`${results.length} result(s) for "${query}":`);
+                    console.log();
+                    for (const m of results) {
+                        const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                        console.log(`  [${date}] [${m.thread_id}] ${m.uid_from || "?"}: ${(m.content || "").slice(0, 200)}`);
+                    }
+                });
+            } catch (e) {
+                error(`Search failed: ${e.message}`);
             }
         });
 }

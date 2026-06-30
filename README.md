@@ -43,6 +43,17 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > Auto-reconnect · thread filter · noise reduction · group notifications
 > Xem [MCP Guide](skill/references/mcp-guide.md)
 
+> [!NOTE]
+> **Local SQLite Cache & Full-Text Search** — v1.1.0-beta1 thêm caching cục bộ và tìm kiếm toàn văn bản:
+> ```bash
+> zalo-agent listen                          # Đồng bộ thụ động vào zalo.db
+> zalo-agent conv recent                     # Đọc từ cache (không cần mạng)
+> zalo-agent msg history <THREAD_ID>         # Lịch sử từ cache
+> zalo-agent msg search "xin chào"           # Tìm kiếm FTS5 toàn văn bản 🆕
+> ```
+> Cache per-account · WAL mode · FTS5 · lock file chống xung đột · `--no-cache` bypass
+> Xem [docs/LOCALCACHE.md](docs/LOCALCACHE.md)
+
 ---
 
 ## Cài đặt
@@ -104,9 +115,10 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `quick-msg` | Tin nhắn nhanh đã lưu | [Tin nhắn nhanh](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tin-Nh%E1%BA%AFn-Nhanh) |
 | `label` | Nhãn hội thoại | [Nhãn](https://github.com/ardennguyen/zalo-agent-cli/wiki/Nh%C3%A3n) |
 | `catalog` | zBusiness — danh mục sản phẩm | [zBusiness](https://github.com/ardennguyen/zalo-agent-cli/wiki/zBusiness) |
-| `listen` | Lắng nghe tin nhắn real-time, webhook, lưu JSONL | [Lắng nghe](https://github.com/ardennguyen/zalo-agent-cli/wiki/L%E1%BA%AFng-Nghe) |
+| `listen` | Lắng nghe real-time, webhook, lưu JSONL, **đồng bộ SQLite thụ động** | [Lắng nghe](https://github.com/ardennguyen/zalo-agent-cli/wiki/L%E1%BA%AFng-Nghe) |
 | `account` | Đa tài khoản & proxy | [Tài khoản](https://github.com/ardennguyen/zalo-agent-cli/wiki/T%C3%A0i-Kho%E1%BA%A3n) |
 | **`oa`** | **Zalo Official Account API v3.0 — OAuth, tin nhắn, follower, tag, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
+| **`msg search`** | **Tìm kiếm toàn văn bản FTS5 trên cache cục bộ 🆕** | [Local Cache](docs/LOCALCACHE.md) |
 
 Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/%C4%90a-T%C3%A0i-Kho%E1%BA%A3n-&-Proxy) · [Cài đặt VPS](https://github.com/ardennguyen/zalo-agent-cli/wiki/C%C3%A0i-%C4%90%E1%BA%B7t-VPS) · [Thẻ chuyển khoản & QR](https://github.com/ardennguyen/zalo-agent-cli/wiki/Th%E1%BA%BB-Chuy%E1%BB%83n-Kho%E1%BA%A3n-&-QR) · [Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)
 
@@ -120,6 +132,8 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 - **Zalo Official Account (OA) API v3.0** — OAuth login, gửi tin nhắn, quản lý follower, webhook listener
 - Thẻ chuyển khoản (55+ ngân hàng VN) & QR VietQR
 - Lắng nghe real-time với webhook & lưu JSONL local
+- **Local SQLite cache** — `conv recent` & `msg history` đọc offline, không tốn băng thông
+- **`msg search`** — Tìm kiếm toàn văn bản FTS5 trên mọi tin nhắn đã cache 🆕
 - Output `--json` cho mọi lệnh — scripting & AI agents
 - Credentials mã hóa tại chỗ (quyền 0600)
 - **Dual mode**: interactive (human) + non-interactive (AI agents, CI/CD)
@@ -165,6 +179,17 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > Auto-reconnect · thread filter · noise reduction · group notifications
 > See [MCP Guide](skill/references/mcp-guide.md)
 
+> [!NOTE]
+> **Local SQLite Cache & Full-Text Search** — v1.1.0-beta1 adds local caching and full-text search:
+> ```bash
+> zalo-agent listen                          # Passively syncs events to zalo.db
+> zalo-agent conv recent                     # Reads from cache (no network needed)
+> zalo-agent msg history <THREAD_ID>         # History from cache
+> zalo-agent msg search "hello"              # FTS5 full-text search 🆕
+> ```
+> Per-account isolation · WAL mode · FTS5 · lock file guard · `--no-cache` bypass
+> See [docs/LOCALCACHE.md](docs/LOCALCACHE.md)
+
 ### Quick Start
 
 ```bash
@@ -192,9 +217,10 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)**
 | `quick-msg` | Saved quick messages | [Quick Messages](https://github.com/ardennguyen/zalo-agent-cli/wiki/Quick-Messages) |
 | `label` | Conversation labels | [Labels](https://github.com/ardennguyen/zalo-agent-cli/wiki/Labels) |
 | `catalog` | zBusiness catalogs & products | [Catalog](https://github.com/ardennguyen/zalo-agent-cli/wiki/Catalog) |
-| `listen` | Real-time listener, webhook, JSONL | [Listener](https://github.com/ardennguyen/zalo-agent-cli/wiki/Listener) |
+| `listen` | Real-time listener, webhook, JSONL, **passive SQLite sync** | [Listener](https://github.com/ardennguyen/zalo-agent-cli/wiki/Listener) |
 | `account` | Multi-account & proxy | [Accounts](https://github.com/ardennguyen/zalo-agent-cli/wiki/Accounts) |
 | **`oa`** | **Zalo Official Account API v3.0 — OAuth, messaging, followers, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
+| **`msg search`** | **FTS5 full-text search across locally cached messages 🆕** | [Local Cache](docs/LOCALCACHE.md) |
 
 
 

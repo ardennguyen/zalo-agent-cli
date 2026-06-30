@@ -307,7 +307,7 @@ These tests require a real Zalo account and phone for QR scanning.
 - [ ] `zalo-agent msg send-qr-transfer` with `--template qronly` — bare QR
 - [ ] `zalo-agent msg send-qr-transfer` with content > 50 chars — rejected with error
 
-### Local Cache & Full-Text Search (v1.1.0-beta1)
+### Local Cache & Full-Text Search (v1.1.0)
 
 - [ ] `zalo-agent listen` — shows `[db] Local SQLite cache active` message on startup
 - [ ] After receiving a message in `listen`, `~/.zalo-agent-cli/accounts/<id>/zalo.db` exists

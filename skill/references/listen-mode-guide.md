@@ -81,7 +81,7 @@ zalo-agent msg send <ID> "reply"
 - **1 WebSocket/account:** Cannot coexist with browser Zalo on same account
 - **Event dedup:** Built-in msgId tracking
 
-## Local SQLite Cache (v1.1.0-beta1)
+## Local Cache (v1.1.0)
 `listen` passively writes every event to a per-account SQLite database:
 ```
 ~/.zalo-agent-cli/accounts/<ownId>/zalo.db

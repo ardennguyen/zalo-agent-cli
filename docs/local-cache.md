@@ -1,6 +1,6 @@
-# Local SQLite Cache & Full-Text Search
+# Local Cache & Full-Text Search
 
-> **Available from v1.1.0-beta1**
+> **Available from v1.1.0**
 
 `zalo-agent-cli` lưu trữ tin nhắn, bạn bè và hội thoại vào cơ sở dữ liệu SQLite cục bộ
 (`~/.zalo-agent-cli/accounts/<id>/zalo.db`) để cho phép truy vấn offline và tìm kiếm nhanh.

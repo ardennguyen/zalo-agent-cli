@@ -46,7 +46,7 @@ Thêm vào cấu hình MCP client:
 
 ---
 
-## Local SQLite Cache (v1.1.0-beta1)
+## Local Cache (v1.1.0)
 
 `mcp start` tự động ghi mọi tin nhắn nhận được vào `zalo.db` — ngoài in-memory buffer.
 Điều này cho phép `zalo_get_history` đọc offline và `msg search` tìm được cả tin nhắn MCP.
@@ -145,7 +145,7 @@ Tìm kiếm thread (nhóm/DM) theo tên — fuzzy, accent-insensitive.
 ---
 
 ### `zalo_get_history`
-Lấy lịch sử tin nhắn cũ. **Cache-first từ v1.1.0-beta1.**
+Lấy lịch sử tin nhắn cũ. **Cache-first từ v1.1.0.**
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -154,7 +154,7 @@ Lấy lịch sử tin nhắn cũ. **Cache-first từ v1.1.0-beta1.**
 | `threadType` | number (tuỳ chọn) | 0 = DM (mặc định), 1 = nhóm |
 | `limit` | number (tuỳ chọn) | Số tin tối đa (mặc định: 50, tối đa: 200) |
 | `lastMsgId` | string (tuỳ chọn) | Cursor pagination (chỉ dùng khi fetch live) |
-| `no_cache` | boolean (tuỳ chọn) | `false` (mặc định) = đọc từ SQLite cache; `true` = fetch live từ Zalo + backfill cache |
+| `no_cache` | boolean (tuỳ chọn) | `false` (mặc định) = đọc từ local cache; `true` = fetch live từ Zalo + backfill cache |
 
 **Kết quả mẫu (cache):**
 ```json
@@ -232,7 +232,7 @@ Mở file media (ảnh, audio, video) bằng viewer hệ thống.
 Zalo WebSocket
      ↓
 attachListenerHandlers
-     ├──► SQLite zalo.db (passive write — ALL messages)   ← v1.1.0-beta1
+     ├──► SQLite zalo.db (passive write — ALL messages)   ← v1.1.0
      └──► Thread Filter (watchThreads / triggerKeywords)
                ↓
           Ring Buffer (in-memory, max bufferMaxSize)

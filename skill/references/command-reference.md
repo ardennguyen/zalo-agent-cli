@@ -75,7 +75,7 @@
 ## Listen
 | Command | Description |
 |---------|-------------|
-| `listen [-e types] [-f filter] [-w url] [--no-self] [--auto-accept] [--save dir]` | WebSocket listener — also passively syncs all events to local SQLite cache (`zalo.db`) |
+| `listen [-e types] [-f filter] [-w url] [--no-self] [--auto-accept] [--save dir]` | WebSocket listener — also passively syncs all events to local cache (`zalo.db`) |
 
 Events: message, friend, group, reaction. Filters: user, group, all.
 
@@ -146,7 +146,7 @@ Events: message, friend, group, reaction. Filters: user, group, all.
 ## Bank Aliases
 ocb, vcb, vietcombank, bidv, mb, mbbank, techcombank, tpbank, acb, vpbank, msb, sacombank, hdbank, seabank, shb, eximbank, vib, agribank, vietinbank, ctg, scb, ncb, abbank, dongabank, kienlongbank, shinhan, hsbc, cimb, woori, and 25+ more.
 
-## Local Cache (v1.1.0-beta1)
+## Local Cache (v1.1.0)
 Commands with `--no-cache` support read from `~/.zalo-agent-cli/accounts/<id>/zalo.db` first.
 The cache is seeded by `listen` or `mcp start` running in the background.
 

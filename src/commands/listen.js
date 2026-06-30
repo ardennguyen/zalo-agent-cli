@@ -1,12 +1,16 @@
 /**
  * Unified listener — combines message, friend, and group events in one WebSocket connection.
  * Production-ready with auto-reconnect and re-login.
+ * Passively syncs all events into local SQLite cache (zalo.db) for offline querying.
  */
 
 import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning } from "../utils/output.js";
+import { getActive } from "../core/accounts.js";
+import { openDb, closeDb, upsertMessage, upsertContact, upsertChat } from "../core/db.js";
+import { acquireLock, releaseLock } from "../core/lock.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -50,6 +54,21 @@ export function registerListenCommand(program) {
             let reconnectCount = 0;
             let eventCount = 0;
             const enabledEvents = new Set(opts.events.split(",").map((e) => e.trim()));
+
+            // --- SQLite setup ---
+            const activeAccount = getActive();
+            const ownId = activeAccount?.ownId ?? null;
+
+            if (ownId) {
+                const lock = acquireLock(ownId);
+                if (!lock.acquired) {
+                    error(`Another listen process (PID ${lock.pid}) is already running for this account.`);
+                    error("Run 'zalo-agent account switch' to change account or kill the other process.");
+                    process.exit(1);
+                }
+                openDb(ownId); // ensure schema is created
+                info("[db] Local SQLite cache active — events will be persisted to zalo.db");
+            }
 
             function uptime() {
                 const s = Math.floor((Date.now() - startTime) / 1000);
@@ -146,6 +165,28 @@ export function registerListenCommand(program) {
                             data,
                             `${dir} [${typeLabel}] [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
                         );
+
+                        // Persist to local SQLite cache
+                        if (ownId) {
+                            try {
+                                upsertMessage(ownId, {
+                                    msgId:      msg.data.msgId,
+                                    threadId:   msg.threadId,
+                                    threadType: msg.type,
+                                    uidFrom:    msg.data.uidFrom ?? null,
+                                    isSelf:     msg.isSelf,
+                                    msgType,
+                                    content:    rawContent,
+                                    timestamp:  msg.data.serverTime ?? Date.now(),
+                                });
+                                upsertChat(ownId, {
+                                    threadId:   msg.threadId,
+                                    threadType: msg.type,
+                                    name:       msg.data.dName ?? null,
+                                    lastActive: msg.data.serverTime ?? Date.now(),
+                                });
+                            } catch { /* non-blocking */ }
+                        }
                     });
                 }
 
@@ -164,6 +205,18 @@ export function registerListenCommand(program) {
                                 ? `Friend request from ${event.data.fromUid}: "${event.data.message || ""}"`
                                 : `${label} — ${event.threadId}`;
                         emitEvent(data, humanMsg);
+
+                        // Persist friend_added to contacts cache
+                        if (ownId && event.type === 0 /* friend_added */ && event.data?.userId) {
+                            try {
+                                upsertContact(ownId, {
+                                    uid:         event.data.userId,
+                                    displayName: event.data.displayName ?? null,
+                                    zaloName:    event.data.zaloName ?? null,
+                                    isFriend:    true,
+                                });
+                            } catch { /* non-blocking */ }
+                        }
 
                         // Auto-accept incoming friend requests
                         if (opts.autoAccept && event.type === FRIEND_REQUEST_TYPE && !event.isSelf) {
@@ -283,6 +336,11 @@ export function registerListenCommand(program) {
                         getApi().listener.stop();
                     } catch (e) {
                         console.error(`[listen] Stop failed: ${e.message}`);
+                    }
+                    // Release lock and close database cleanly
+                    if (ownId) {
+                        try { closeDb(ownId); } catch { /* ignore */ }
+                        try { releaseLock(ownId); } catch { /* ignore */ }
                     }
                     info(`Stopped. Uptime: ${uptime()}, events: ${eventCount}, reconnects: ${reconnectCount}`);
                     if (saveDir) info(`Messages saved to: ${saveDir}`);

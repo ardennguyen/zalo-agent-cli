@@ -4,6 +4,8 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { getActive } from "../core/accounts.js";
+import { getCachedChats, upsertChat, upsertContact, upsertGroup, dbExists } from "../core/db.js";
 
 export function registerConvCommands(program) {
     const conv = program.command("conv").description("Manage conversations");
@@ -13,13 +15,38 @@ export function registerConvCommands(program) {
         .option("-n, --limit <n>", "Max results per type", "20")
         .option("--friends-only", "Show only friend conversations")
         .option("--groups-only", "Show only group conversations")
+        .option("--no-cache", "Bypass local cache and always fetch from Zalo")
         .action(async (opts) => {
             try {
                 const api = getApi();
                 const limit = Number(opts.limit);
+                const ownId = getActive()?.ownId ?? null;
                 const conversations = [];
 
-                // Fetch friends (sorted by lastActionTime = most recent interaction)
+                // --- Try local cache first (if db has been seeded) ---
+                if (ownId && dbExists(ownId) && opts.cache !== false) {
+                    const cached = getCachedChats(ownId, {
+                        limit: limit * 2, // fetch more to allow combined sort
+                        friendsOnly: opts.friendsOnly,
+                        groupsOnly:  opts.groupsOnly,
+                    });
+                    if (cached.length > 0) {
+                        for (const c of cached) {
+                            conversations.push({
+                                threadId:    c.thread_id,
+                                name:        c.name || "?",
+                                type:        c.thread_type === 1 ? "Group" : "User",
+                                typeFlag:    c.thread_type,
+                                lastActive:  c.last_active > 0 ? new Date(c.last_active).toLocaleString() : "",
+                                source:      "cache",
+                            });
+                        }
+                        output(conversations, program.opts().json, () => _printConversations(conversations, info, error, console));
+                        return;
+                    }
+                }
+
+                // --- Fallback: fetch live from Zalo API + upsert into cache ---
                 if (!opts.groupsOnly) {
                     const friends = await api.getAllFriends();
                     const list = Array.isArray(friends) ? friends : [];
@@ -29,16 +56,19 @@ export function registerConvCommands(program) {
                         .slice(0, limit);
                     for (const f of sorted) {
                         conversations.push({
-                            threadId: f.userId,
-                            name: f.displayName || f.zaloName || "?",
-                            type: "User",
-                            typeFlag: 0,
+                            threadId:   f.userId,
+                            name:       f.displayName || f.zaloName || "?",
+                            type:       "User",
+                            typeFlag:   0,
                             lastActive: new Date(f.lastActionTime * 1000).toLocaleString(),
                         });
+                        if (ownId) {
+                            upsertContact(ownId, f);
+                            upsertChat(ownId, { threadId: f.userId, threadType: 0, name: f.displayName || f.zaloName, lastActive: f.lastActionTime * 1000 });
+                        }
                     }
                 }
 
-                // Fetch groups
                 if (!opts.friendsOnly) {
                     const groupsResult = await api.getAllGroups();
                     const groupIds = Object.keys(groupsResult?.gridVerMap || {});
@@ -54,12 +84,16 @@ export function registerConvCommands(program) {
                                 const map = groupInfo?.gridInfoMap || {};
                                 for (const [gid, g] of Object.entries(map)) {
                                     conversations.push({
-                                        threadId: gid,
-                                        name: g.name || "?",
-                                        type: "Group",
-                                        typeFlag: 1,
+                                        threadId:    gid,
+                                        name:        g.name || "?",
+                                        type:        "Group",
+                                        typeFlag:    1,
                                         memberCount: g.totalMember || 0,
                                     });
+                                    if (ownId) {
+                                        upsertGroup(ownId, { gid, name: g.name, memberCount: g.totalMember });
+                                        upsertChat(ownId, { threadId: gid, threadType: 1, name: g.name, lastActive: 0 });
+                                    }
                                 }
                             } catch {
                                 // Skip failed batch
@@ -68,25 +102,7 @@ export function registerConvCommands(program) {
                     }
                 }
 
-                output(conversations, program.opts().json, () => {
-                    if (conversations.length === 0) {
-                        error("No conversations found.");
-                        return;
-                    }
-                    info(`${conversations.length} conversation(s):`);
-                    console.log();
-                    console.log("  THREAD_ID               TYPE    NAME");
-                    console.log("  " + "-".repeat(60));
-                    for (const c of conversations) {
-                        const typeLabel = c.type === "Group" ? `Group(${c.memberCount})` : "User";
-                        const id = c.threadId.padEnd(22);
-                        console.log(`  ${id}  ${typeLabel.padEnd(12)}  ${c.name}`);
-                    }
-                    console.log();
-                    info("Use thread_id with messaging commands:");
-                    info('  zalo-agent msg send <thread_id> "Hello"           (User)');
-                    info('  zalo-agent msg send <thread_id> "Hello" -t 1      (Group)');
-                });
+                output(conversations, program.opts().json, () => _printConversations(conversations, info, error, console));
             } catch (e) {
                 error(e.message);
             }
@@ -260,4 +276,30 @@ export function registerConvCommands(program) {
                 error(e.message);
             }
         });
+}
+
+// ---------------------------------------------------------------------------
+// Shared display helper
+// ---------------------------------------------------------------------------
+
+function _printConversations(conversations, info, error, console) {
+    if (conversations.length === 0) {
+        error("No conversations found.");
+        return;
+    }
+    const fromCache = conversations.some((c) => c.source === "cache");
+    info(`${conversations.length} conversation(s):${fromCache ? " (from local cache)" : ""}`);
+    console.log();
+    console.log("  THREAD_ID               TYPE    NAME");
+    console.log("  " + "-".repeat(60));
+    for (const c of conversations) {
+        const typeLabel = c.type === "Group" ? `Group(${c.memberCount ?? ""})` : "User";
+        const id = c.threadId.padEnd(22);
+        console.log(`  ${id}  ${typeLabel.padEnd(12)}  ${c.name}`);
+    }
+    console.log();
+    info("Use thread_id with messaging commands:");
+    info('  zalo-agent msg send <thread_id> "Hello"           (User)');
+    info('  zalo-agent msg send <thread_id> "Hello" -t 1      (Group)');
+    if (fromCache) info("Tip: run with --no-cache to force a live fetch from Zalo.");
 }

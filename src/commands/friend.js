@@ -4,6 +4,8 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { getActive } from "../core/accounts.js";
+import { upsertContact } from "../core/db.js";
 
 /** Extract numeric error code from zca-js error message string. */
 function extractErrorCode(msg) {
@@ -20,6 +22,16 @@ export function registerFriendCommands(program) {
         .action(async () => {
             try {
                 const result = await getApi().getAllFriends();
+                // Seed local SQLite cache with fresh friend list
+                const ownId = getActive()?.ownId ?? null;
+                if (ownId) {
+                    const entries = Array.isArray(result)
+                        ? result
+                        : Object.values(result?.changed_profiles || result || {});
+                    for (const f of entries) {
+                        try { upsertContact(ownId, f); } catch { /* non-blocking */ }
+                    }
+                }
                 output(result, program.opts().json, () => {
                     const profiles = result?.changed_profiles || result || {};
                     const entries = Object.entries(profiles);

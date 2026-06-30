@@ -1,7 +1,8 @@
 <p align="center">
   <img src="assets/mascot.png" width="120" alt="zalo-agent-cli mascot" />
 </p>
-# zalo-agent-cli
+
+# zalo-agent-cli
 
 Công cụ CLI tự động hóa Zalo — đa tài khoản, proxy, chuyển khoản ngân hàng, thanh toán QR.
 Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).

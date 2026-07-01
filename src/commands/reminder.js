@@ -3,6 +3,8 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
+import { getActive } from "../core/accounts.js";
+import { getMessageById, upsertMessage, dbExists } from "../core/db.js";
 import { success, error, info, output } from "../utils/output.js";
 
 /** Repeat mode labels matching zca-js ReminderRepeatMode enum. */
@@ -28,12 +30,15 @@ export function registerReminderCommands(program) {
 
     reminder
         .command("create <threadId> <title>")
-        .description("Create a reminder")
+        .description("Create a reminder. Use --msg-id to auto-fill title from a message.")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("--time <datetime>", 'Reminder time: "YYYY-MM-DD HH:mm" (default: now)')
         .option("--emoji <emoji>", "Emoji icon", "⏰")
         .option("--repeat <mode>", "Repeat: none, daily, weekly, monthly", "none")
+        .option("--msg-id <msgId>", "Look up this message and use its text as the reminder title (checks local cache first, falls back to live WS fetch)")
+        .option("--timeout <ms>", "Timeout in ms for live WS fallback when --msg-id is not cached", "15000")
         .action(async (threadId, title, opts) => {
+            const jsonMode = program.opts().json;
             try {
                 const repeatMode = REPEAT_MODES[opts.repeat];
                 if (repeatMode === undefined) {
@@ -48,12 +53,104 @@ export function registerReminderCommands(program) {
                         return;
                     }
                 }
+
+                // --msg-id: resolve title from message text
+                if (opts.msgId) {
+                    const ownId = getActive()?.ownId ?? null;
+                    let resolved = null;
+
+                    // Step 1: SQLite cache lookup
+                    if (ownId && dbExists(ownId)) {
+                        const row = getMessageById(ownId, opts.msgId);
+                        if (row?.content) {
+                            resolved = row.content;
+                            if (!jsonMode) info(`Using cached message text as title: "${resolved}"`);
+                        }
+                    }
+
+                    // Step 2: WS live fallback if cache miss
+                    if (!resolved) {
+                        if (!jsonMode) info(`Message not in cache — fetching from Zalo (timeout: ${opts.timeout}ms)...`);
+                        const api = getApi();
+                        const threadType = Number(opts.type);
+                        const timeout = Number(opts.timeout);
+
+                        resolved = await new Promise((resolve) => {
+                            let found = false;
+                            const timer = setTimeout(() => {
+                                if (!found) {
+                                    api.listener.stop();
+                                    resolve(null);
+                                }
+                            }, timeout);
+
+                            api.listener.on("old_messages", (messages) => {
+                                if (found) return;
+                                for (const msg of messages) {
+                                    const msgId = msg.data?.msgId || msg.msgId;
+                                    if (String(msgId) !== String(opts.msgId)) continue;
+                                    // Found — extract content
+                                    const content = typeof msg.data?.content === "string"
+                                        ? msg.data.content
+                                        : (msg.data?.content?.title ?? null);
+                                    if (!content) continue;
+                                    found = true;
+                                    clearTimeout(timer);
+                                    // Backfill cache
+                                    if (ownId) {
+                                        try {
+                                            upsertMessage(ownId, {
+                                                msgId:     String(msgId),
+                                                threadId:  msg.threadId || threadId,
+                                                threadType,
+                                                uidFrom:   msg.data?.uidFrom || null,
+                                                isSelf:    false,
+                                                msgType:   msg.data?.msgType || "text",
+                                                content,
+                                                timestamp: msg.data?.ts ? Number(msg.data.ts) : Date.now(),
+                                            });
+                                        } catch { /* non-blocking */ }
+                                    }
+                                    api.listener.stop();
+                                    resolve(content);
+                                    return;
+                                }
+                                // Not in this page — request older page
+                                const lastMsg = messages[messages.length - 1];
+                                const lastId = lastMsg?.data?.actionId || lastMsg?.data?.msgId || null;
+                                if (lastId) api.listener.requestOldMessages(threadType, lastId);
+                            });
+
+                            api.listener.on("connected", () => {
+                                api.listener.requestOldMessages(threadType, null);
+                            });
+                            api.listener.on("error", () => {
+                                clearTimeout(timer);
+                                api.listener.stop();
+                                resolve(null);
+                            });
+                            api.listener.start({ retryOnClose: false });
+                        });
+
+                        if (!resolved) {
+                            error(
+                                `Message "${opts.msgId}" not found in cache or recent history.\n` +
+                                `  Tip: run "zalo-agent listen" to populate the local cache, or omit --msg-id and pass the title directly.`
+                            );
+                            process.exit(1);
+                        }
+                        if (!jsonMode) info(`Found message text: "${resolved}"`);
+                    }
+
+                    title = resolved;
+                }
+
                 const result = await getApi().createReminder(
                     { title, emoji: opts.emoji, startTime, repeat: repeatMode },
                     threadId,
                     Number(opts.type),
                 );
-                output(result, program.opts().json, () => {
+                output(result, jsonMode, () => {
                     success(`Reminder created: "${title}"`);
                     const id = result.reminderId || result.id || "?";
                     info(`Reminder ID: ${id}`);

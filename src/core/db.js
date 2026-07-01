@@ -353,6 +353,17 @@ export function searchMessages(ownId, query, opts = {}) {
 }
 
 /**
+ * Fetch a single cached message by its primary key (msg_id).
+ * @param {string} ownId
+ * @param {string} msgId
+ * @returns {object|null}
+ */
+export function getMessageById(ownId, msgId) {
+    const db = openDb(ownId);
+    return db.prepare(`SELECT * FROM messages WHERE msg_id = ? LIMIT 1`).get(msgId) ?? null;
+}
+
+/**
  * Return true if the database for this account already exists (i.e. has been seeded).
  * @param {string} ownId
  * @returns {boolean}

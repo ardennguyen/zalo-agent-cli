@@ -51,7 +51,8 @@ export function registerFriendCommands(program) {
                 }
                 output(result, program.opts().json, () => {
                     const profiles = result?.changed_profiles || result || {};
-                    const entries = Object.entries(profiles);
+                    const entries = Object.entries(profiles)
+                        .sort(([, a], [, b]) => (b.lastActionTime || 0) - (a.lastActionTime || 0));
                     info(`${entries.length} friends`);
                     for (const [uid, p] of entries) {
                         console.log(`  ${uid}  ${p.displayName || p.zaloName || "?"}`);

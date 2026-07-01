@@ -489,10 +489,10 @@ export function registerMsgCommands(program) {
     msg.command("history <threadId>")
         .description("Fetch message history from a DM or group conversation via WebSocket")
         .option("-t, --type <n>", "Thread type: 0=User(DM), 1=Group", "0")
-        .option("-n, --limit <n>", "Max messages to fetch — returns the N most recent messages (sorted oldest→newest for display)", "50")
+        .option("-n, --limit <n>", "Max messages to fetch — returns the N most recent messages (newest first by default)", "50")
         .option("--timeout <ms>", "Timeout in milliseconds waiting for response", "15000")
         .option("--no-cache", "Bypass local cache and always fetch live from Zalo")
-        .option("--reverse", "Display messages newest-first instead of oldest-first")
+        .option("--reverse", "Display messages oldest-first instead of newest-first")
         .action(async (threadId, opts) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
@@ -620,11 +620,11 @@ export function registerMsgCommands(program) {
                     lastMsgId = nextId;
                 }
 
-                // Sort by timestamp (oldest first by default, newest first if --reverse)
+                // Default: newest-first. --reverse = oldest-first (chronological chat order)
                 allMessages.sort((a, b) =>
                     opts.reverse
-                        ? (b.timestamp || 0) - (a.timestamp || 0)
-                        : (a.timestamp || 0) - (b.timestamp || 0)
+                        ? (a.timestamp || 0) - (b.timestamp || 0)
+                        : (b.timestamp || 0) - (a.timestamp || 0)
                 );
 
                 output(

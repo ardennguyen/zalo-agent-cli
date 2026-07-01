@@ -16,6 +16,7 @@ export function registerConvCommands(program) {
         .option("--friends-only", "Show only friend conversations")
         .option("--groups-only", "Show only group conversations")
         .option("--no-cache", "Bypass local cache and always fetch from Zalo")
+        .option("--reverse", "Show oldest activity first instead of newest first")
         .action(async (opts) => {
             try {
                 const api = getApi();
@@ -41,6 +42,10 @@ export function registerConvCommands(program) {
                                 source:      "cache",
                             });
                         }
+                        // Sort newest-first (default); --reverse = oldest-first
+                        if (!opts.reverse) {
+                            conversations.sort((a, b) => (b._ts || 0) - (a._ts || 0));
+                        }
                         output(conversations, program.opts().json, () => _printConversations(conversations, info, error, console));
                         return;
                     }
@@ -55,16 +60,18 @@ export function registerConvCommands(program) {
                         .sort((a, b) => b.lastActionTime - a.lastActionTime)
                         .slice(0, limit);
                     for (const f of sorted) {
+                        const lastActiveMs = f.lastActionTime * 1000;
                         conversations.push({
                             threadId:   f.userId,
                             name:       f.displayName || f.zaloName || "?",
                             type:       "User",
                             typeFlag:   0,
-                            lastActive: new Date(f.lastActionTime * 1000).toLocaleString(),
+                            lastActive: new Date(lastActiveMs).toLocaleString(),
+                            _ts:        lastActiveMs,
                         });
                         if (ownId) {
                             upsertContact(ownId, f);
-                            upsertChat(ownId, { threadId: f.userId, threadType: 0, name: f.displayName || f.zaloName, lastActive: f.lastActionTime * 1000 });
+                            upsertChat(ownId, { threadId: f.userId, threadType: 0, name: f.displayName || f.zaloName, lastActive: lastActiveMs });
                         }
                     }
                 }
@@ -83,16 +90,20 @@ export function registerConvCommands(program) {
                                 const groupInfo = await api.getGroupInfo(batch);
                                 const map = groupInfo?.gridInfoMap || {};
                                 for (const [gid, g] of Object.entries(map)) {
+                                    // Groups from getAllGroups() have no lastActionTime — use lastMsgId timestamp
+                                    // if available, otherwise use now so they appear above stale cached entries
+                                    const groupTs = g.lastMsgTimestamp || g.updateTime || Date.now();
                                     conversations.push({
                                         threadId:    gid,
                                         name:        g.name || "?",
                                         type:        "Group",
                                         typeFlag:    1,
                                         memberCount: g.totalMember || 0,
+                                        _ts:         groupTs,
                                     });
                                     if (ownId) {
                                         upsertGroup(ownId, { gid, name: g.name, memberCount: g.totalMember });
-                                        upsertChat(ownId, { threadId: gid, threadType: 1, name: g.name, lastActive: 0 });
+                                        upsertChat(ownId, { threadId: gid, threadType: 1, name: g.name, lastActive: groupTs });
                                     }
                                 }
                             } catch {
@@ -101,6 +112,15 @@ export function registerConvCommands(program) {
                         }
                     }
                 }
+
+                // Sort combined list: newest-first (default) or oldest-first (--reverse)
+                conversations.sort((a, b) =>
+                    opts.reverse
+                        ? (a._ts || 0) - (b._ts || 0)
+                        : (b._ts || 0) - (a._ts || 0)
+                );
+                // Trim to limit after combined sort
+                conversations.splice(limit);
 
                 output(conversations, program.opts().json, () => _printConversations(conversations, info, error, console));
             } catch (e) {

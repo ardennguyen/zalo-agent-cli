@@ -445,12 +445,37 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("delete <msgId> <threadId>")
-        .description("Delete a message you sent")
+        .description("Recall/delete a message. Default: recall for everyone (Thu h\u1ed3i). Use --only-me to hide only for yourself.")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .option("-s, --sender <userId>", "Sender userId (uidFrom). Defaults to own account.")
+        .option("--cli-msg-id <id>", "Client message ID for recall (cliMsgId from send/listen --json). Required for recall-for-all if not in cache.")
+        .option("--only-me", "Hide message only for yourself instead of recalling for everyone")
         .action(async (msgId, threadId, opts) => {
             try {
-                const result = await getApi().deleteMessage(msgId, threadId, Number(opts.type));
-                output(result, program.opts().json, () => success("Message deleted"));
+                const ownId = getActive()?.ownId ?? null;
+                const uidFrom = opts.sender || ownId;
+                const threadType = Number(opts.type);
+
+                if (opts.onlyMe) {
+                    // deleteMessage (onlyMe=true) — hide for self only
+                    if (!uidFrom) {
+                        error("Could not determine sender. Use --sender <userId> or ensure you are logged in.");
+                        return;
+                    }
+                    const dest = {
+                        threadId,
+                        type: threadType,
+                        data: { msgId, uidFrom, cliMsgId: opts.cliMsgId || String(Date.now()) },
+                    };
+                    const result = await getApi().deleteMessage(dest, true);
+                    output(result, program.opts().json, () => success("Message hidden (only for you)"));
+                } else {
+                    // undo (recall for everyone — Thu h\u1ed3i)
+                    const cliMsgId = opts.cliMsgId || null;
+                    const payload = { msgId, cliMsgId };
+                    const result = await getApi().undo(payload, threadId, threadType);
+                    output(result, program.opts().json, () => success("Message recalled (Thu h\u1ed3i) for everyone"));
+                }
             } catch (e) {
                 error(e.message);
             }
@@ -583,6 +608,7 @@ export function registerMsgCommands(program) {
                         if (msgThread !== target && msgSender !== target) continue;
                         const parsed = {
                             msgId:      msg.data?.msgId,
+                            cliMsgId:   msg.data?.cliMsgId || null,
                             threadId:   msg.threadId,
                             senderId:   msg.data?.uidFrom || null,
                             senderName: msg.data?.dName || null,

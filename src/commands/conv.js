@@ -286,12 +286,51 @@ export function registerConvCommands(program) {
         });
 
     conv.command("delete <threadId>")
-        .description("Delete conversation history")
+        .description("Clear conversation history for yourself (Xóa lịch sử). Removes recalled placeholders and all messages up to the anchor from your view.")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .option("--last-msg-id <id>", "Global message ID to delete up to (anchor). Fetched automatically if omitted.")
+        .option("--last-cli-msg-id <id>", "Client message ID of anchor message.")
+        .option("--last-owner-id <id>", "Sender user ID of anchor message. Defaults to own account.")
         .action(async (threadId, opts) => {
             try {
-                const result = await getApi().deleteConversation(threadId, Number(opts.type));
-                output(result, program.opts().json, () => success("Conversation deleted"));
+                const api = getApi();
+                const threadType = Number(opts.type);
+                let globalMsgId  = opts.lastMsgId;
+                let cliMsgId     = opts.lastCliMsgId;
+                let ownerId      = opts.lastOwnerId;
+
+                // Auto-fetch the newest message to use as anchor if not provided
+                if (!globalMsgId || !cliMsgId) {
+                    info("Fetching latest message as anchor...");
+                    const { requestOldMessages } = api.listener;
+                    // Use the msg history WS flow: start listener, get 1 page, take first message
+                    await new Promise((resolve, reject) => {
+                        const timer = setTimeout(() => reject(new Error("Listener timeout")), 10000);
+                        api.listener.on("connected", () => { clearTimeout(timer); resolve(); });
+                        api.listener.on("error", (e) => { clearTimeout(timer); reject(e); });
+                        api.listener.start({ retryOnClose: false });
+                    });
+                    const msgs = await new Promise((resolve) => {
+                        const t = setTimeout(() => resolve([]), 8000);
+                        api.listener.once("old_messages", (m) => { clearTimeout(t); resolve(m); });
+                        api.listener.requestOldMessages(threadType, "0");
+                    });
+                    api.listener.stop?.();
+                    // Find newest message in thread
+                    const match = msgs.find(m => String(m.threadId) === String(threadId));
+                    if (!match) {
+                        error("Could not auto-fetch last message. Use --last-msg-id, --last-cli-msg-id, --last-owner-id.");
+                        return;
+                    }
+                    globalMsgId = match.data?.msgId   ?? globalMsgId;
+                    cliMsgId    = match.data?.cliMsgId ?? cliMsgId;
+                    ownerId     = ownerId ?? match.data?.uidFrom;
+                    info(`Anchor: msgId=${globalMsgId} cliMsgId=${cliMsgId} ownerId=${ownerId}`);
+                }
+
+                const lastMessage = { ownerId: String(ownerId || ""), cliMsgId: String(cliMsgId), globalMsgId: String(globalMsgId) };
+                const result = await api.deleteChat(lastMessage, threadId, threadType);
+                output(result, program.opts().json, () => success("Conversation history cleared for yourself"));
             } catch (e) {
                 error(e.message);
             }

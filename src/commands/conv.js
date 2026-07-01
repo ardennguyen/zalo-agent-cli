@@ -13,8 +13,8 @@ export function registerConvCommands(program) {
     conv.command("recent")
         .description("List recent conversations with thread_id (friends + groups)")
         .option("-n, --limit <n>", "Max results per type", "20")
-        .option("--friend-only, --friends-only", "Show only friend conversations")
-        .option("--group-only, --groups-only", "Show only group conversations")
+        .option("--friends-only", "Show only friend conversations")
+        .option("--groups-only", "Show only group conversations")
         .option("--no-cache", "Bypass local cache and always fetch from Zalo")
         .option("--reverse", "Show oldest activity first instead of newest first")
         .action(async (opts) => {
@@ -56,6 +56,8 @@ export function registerConvCommands(program) {
                                 ? (a._ts || 0) - (b._ts || 0)
                                 : (b._ts || 0) - (a._ts || 0);
                         });
+                        // Trim to limit after combined sort
+                        conversations.splice(limit);
                         output(conversations, program.opts().json, () => _printConversations(conversations, info, error, console));
                         return;
                     }

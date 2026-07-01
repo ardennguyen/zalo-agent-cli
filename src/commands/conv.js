@@ -13,8 +13,8 @@ export function registerConvCommands(program) {
     conv.command("recent")
         .description("List recent conversations with thread_id (friends + groups)")
         .option("-n, --limit <n>", "Max results per type", "20")
-        .option("--friends-only", "Show only friend conversations")
-        .option("--groups-only", "Show only group conversations")
+        .option("--friend-only, --friends-only", "Show only friend conversations")
+        .option("--group-only, --groups-only", "Show only group conversations")
         .option("--no-cache", "Bypass local cache and always fetch from Zalo")
         .option("--reverse", "Show oldest activity first instead of newest first")
         .action(async (opts) => {
@@ -26,11 +26,18 @@ export function registerConvCommands(program) {
 
                 // --- Try local cache first (if db has been seeded) ---
                 if (ownId && dbExists(ownId) && opts.cache !== false) {
-                    const cached = getCachedChats(ownId, {
-                        limit: limit * 2, // fetch more to allow combined sort
-                        friendsOnly: opts.friendsOnly,
-                        groupsOnly:  opts.groupsOnly,
-                    });
+                    const groupsOnlyOpt = opts.groupsOnly || opts.groupOnly;
+                    const friendsOnlyOpt = opts.friendsOnly || opts.friendOnly;
+                    let cached = [];
+                    if (friendsOnlyOpt) {
+                        cached = getCachedChats(ownId, { limit, friendsOnly: true });
+                    } else if (groupsOnlyOpt) {
+                        cached = getCachedChats(ownId, { limit, groupsOnly: true });
+                    } else {
+                        const cachedUsers = getCachedChats(ownId, { limit, friendsOnly: true });
+                        const cachedGroups = getCachedChats(ownId, { limit, groupsOnly: true });
+                        cached = [...cachedUsers, ...cachedGroups];
+                    }
                     if (cached.length > 0) {
                         for (const c of cached) {
                             conversations.push({
@@ -40,19 +47,25 @@ export function registerConvCommands(program) {
                                 typeFlag:    c.thread_type,
                                 lastActive:  c.last_active > 0 ? new Date(c.last_active).toLocaleString() : "",
                                 source:      "cache",
+                                _ts:         c.last_active,
                             });
                         }
-                        // Sort newest-first (default); --reverse = oldest-first
-                        if (!opts.reverse) {
-                            conversations.sort((a, b) => (b._ts || 0) - (a._ts || 0));
-                        }
+                        // Sort: newest-first (default); --reverse = oldest-first
+                        conversations.sort((a, b) => {
+                            return opts.reverse 
+                                ? (a._ts || 0) - (b._ts || 0)
+                                : (b._ts || 0) - (a._ts || 0);
+                        });
                         output(conversations, program.opts().json, () => _printConversations(conversations, info, error, console));
                         return;
                     }
                 }
 
                 // --- Fallback: fetch live from Zalo API + upsert into cache ---
-                if (!opts.groupsOnly) {
+                const groupsOnlyOptFallback = opts.groupsOnly || opts.groupOnly;
+                const friendsOnlyOptFallback = opts.friendsOnly || opts.friendOnly;
+                
+                if (!groupsOnlyOptFallback) {
                     const friends = await api.getAllFriends();
                     const list = Array.isArray(friends) ? friends : [];
                     const sorted = list
@@ -76,7 +89,7 @@ export function registerConvCommands(program) {
                     }
                 }
 
-                if (!opts.friendsOnly) {
+                if (!friendsOnlyOptFallback) {
                     const groupsResult = await api.getAllGroups();
                     const groupIds = Object.keys(groupsResult?.gridVerMap || {});
                     if (groupIds.length > 0) {

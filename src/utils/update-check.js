@@ -15,7 +15,7 @@ export function checkForUpdates(currentVersion, jsonMode) {
     if (jsonMode) return;
 
     try {
-        const latest = execSync("npm view zalo-agent-cli version", {
+        const latest = execSync("npm view github:ardennguyen/zalo-agent-cli version", {
             encoding: "utf8",
             timeout: 5000,
             stdio: ["pipe", "pipe", "pipe"],
@@ -36,7 +36,7 @@ export function checkForUpdates(currentVersion, jsonMode) {
  */
 export function selfUpdate() {
     try {
-        execSync("npm install -g zalo-agent-cli@latest", {
+        execSync("npm install -g github:ardennguyen/zalo-agent-cli", {
             encoding: "utf8",
             stdio: "inherit",
             timeout: 60000,

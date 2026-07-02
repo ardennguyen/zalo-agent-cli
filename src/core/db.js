@@ -328,18 +328,20 @@ export function getCachedMessages(ownId, threadId, opts = {}) {
  * Full-text search across all cached messages.
  * @param {string} ownId
  * @param {string} query - FTS5 query string
- * @param {object} opts - { limit, threadId }
+ * @param {object} opts - { limit, threadId, reverse }
  * @returns {Array}
  */
 export function searchMessages(ownId, query, opts = {}) {
     const db = openDb(ownId);
-    const { limit = 20, threadId = null } = opts;
+    const { limit = 20, threadId = null, reverse = false } = opts;
+    // Default: newest-first (timestamp DESC). --reverse = oldest-first.
+    const tsOrder = reverse ? 'ASC' : 'DESC';
     if (threadId) {
         return db.prepare(`
             SELECT m.* FROM messages m
             JOIN messages_fts f ON m.rowid = f.rowid
             WHERE messages_fts MATCH ? AND m.thread_id = ?
-            ORDER BY rank
+            ORDER BY rank, m.timestamp ${tsOrder}
             LIMIT ?
         `).all(query, threadId, limit);
     }
@@ -347,7 +349,7 @@ export function searchMessages(ownId, query, opts = {}) {
         SELECT m.* FROM messages m
         JOIN messages_fts f ON m.rowid = f.rowid
         WHERE messages_fts MATCH ?
-        ORDER BY rank
+        ORDER BY rank, m.timestamp ${tsOrder}
         LIMIT ?
     `).all(query, limit);
 }

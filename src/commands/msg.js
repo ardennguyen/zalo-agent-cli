@@ -528,9 +528,12 @@ export function registerMsgCommands(program) {
             try {
                 // --- Cache-first: serve from SQLite if available ---
                 if (ownId && dbExists(ownId) && opts.cache !== false) {
+                    // getCachedMessages returns newest-first (ORDER BY timestamp DESC)
                     const cached = getCachedMessages(ownId, threadId, { limit });
                     if (cached.length > 0) {
-                        const msgs = cached.reverse().map((m) => ({
+                        // Default: newest-first (DB order). --reverse = oldest-first.
+                        if (opts.reverse) cached.reverse();
+                        const msgs = cached.map((m) => ({
                             msgId:      m.msg_id,
                             threadId:   m.thread_id,
                             senderId:   m.uid_from,
@@ -680,6 +683,7 @@ export function registerMsgCommands(program) {
         .description("Full-text search across locally cached messages (requires zalo-agent listen to have been run first)")
         .option("-t, --thread <threadId>", "Limit search to a specific thread")
         .option("-n, --limit <n>", "Max results to return", "20")
+        .option("--reverse", "Display results oldest-first instead of newest-first")
         .action((query, opts) => {
             const ownId = getActive()?.ownId ?? null;
             if (!ownId || !dbExists(ownId)) {
@@ -690,6 +694,7 @@ export function registerMsgCommands(program) {
                 const results = searchMessages(ownId, query, {
                     limit:    Number(opts.limit),
                     threadId: opts.thread ?? null,
+                    reverse:  opts.reverse ?? false,
                 });
                 output(results, program.opts().json, () => {
                     if (results.length === 0) {
@@ -707,4 +712,5 @@ export function registerMsgCommands(program) {
                 error(`Search failed: ${e.message}`);
             }
         });
+
 }

@@ -34,10 +34,14 @@ export function registerConvCommands(program) {
                     } else if (groupsOnlyOpt) {
                         cached = getCachedChats(ownId, { limit, groupsOnly: true });
                     } else {
-                        const cachedUsers = getCachedChats(ownId, { limit, friendsOnly: true });
-                        const cachedGroups = getCachedChats(ownId, { limit, groupsOnly: true });
+                        // Fetch a wider pool from each type, then sort+splice so groups
+                        // aren't starved when users have more recent activity.
+                        const fetchN = Math.max(limit * 3, 60);
+                        const cachedUsers  = getCachedChats(ownId, { limit: fetchN, friendsOnly: true });
+                        const cachedGroups = getCachedChats(ownId, { limit: fetchN, groupsOnly: true });
                         cached = [...cachedUsers, ...cachedGroups];
                     }
+
                     if (cached.length > 0) {
                         for (const c of cached) {
                             conversations.push({

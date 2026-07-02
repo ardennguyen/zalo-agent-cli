@@ -74,10 +74,11 @@ export function registerConvCommands(program) {
                 if (!groupsOnlyOptFallback) {
                     const friends = await api.getAllFriends();
                     const list = Array.isArray(friends) ? friends : [];
+                    // Use a wider pool (limit*3) so groups aren't starved after the final sort+splice
                     const sorted = list
                         .filter((f) => f.lastActionTime > 0)
                         .sort((a, b) => b.lastActionTime - a.lastActionTime)
-                        .slice(0, limit);
+                        .slice(0, Math.max(limit * 3, 60));
                     for (const f of sorted) {
                         const lastActiveMs = f.lastActionTime * 1000;
                         conversations.push({
@@ -94,6 +95,7 @@ export function registerConvCommands(program) {
                         }
                     }
                 }
+
 
                 if (!friendsOnlyOptFallback) {
                     const groupsResult = await api.getAllGroups();

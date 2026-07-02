@@ -40,24 +40,26 @@ export function registerFriendCommands(program) {
                 }
 
                 const result = await getApi().getAllFriends();
+                // Normalise to a sorted array (newest-activity-first) for both JSON and human display
+                const profiles = result?.changed_profiles || (Array.isArray(result) ? Object.fromEntries(result.map(f => [f.userId, f])) : result) || {};
+                const sortedEntries = Object.entries(profiles)
+                    .sort(([, a], [, b]) => (b.lastActionTime || 0) - (a.lastActionTime || 0));
+                const sortedList = sortedEntries.map(([, p]) => p);
+
                 // Seed local SQLite cache with fresh friend list
                 if (ownId) {
-                    const entries = Array.isArray(result)
-                        ? result
-                        : Object.values(result?.changed_profiles || result || {});
-                    for (const f of entries) {
+                    for (const f of sortedList) {
                         try { upsertContact(ownId, f); } catch { /* non-blocking */ }
                     }
                 }
-                output(result, program.opts().json, () => {
-                    const profiles = result?.changed_profiles || result || {};
-                    const entries = Object.entries(profiles)
-                        .sort(([, a], [, b]) => (b.lastActionTime || 0) - (a.lastActionTime || 0));
-                    info(`${entries.length} friends`);
-                    for (const [uid, p] of entries) {
+                output(sortedList, program.opts().json, () => {
+                    info(`${sortedList.length} friends`);
+                    for (const p of sortedList) {
+                        const uid = p.userId || p.uid || "?";
                         console.log(`  ${uid}  ${p.displayName || p.zaloName || "?"}`);
                     }
                 });
+
             } catch (e) {
                 error(e.message);
             }

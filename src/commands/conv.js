@@ -80,7 +80,8 @@ export function registerConvCommands(program) {
                         .sort((a, b) => b.lastActionTime - a.lastActionTime)
                         .slice(0, Math.max(limit * 3, 60));
                     for (const f of sorted) {
-                        const lastActiveMs = f.lastActionTime * 1000;
+                        // lastActionTime from getAllFriends() is already in milliseconds (13-digit ms epoch)
+                        const lastActiveMs = f.lastActionTime;
                         conversations.push({
                             threadId:   f.userId,
                             name:       f.displayName || f.zaloName || "?",
@@ -95,6 +96,7 @@ export function registerConvCommands(program) {
                         }
                     }
                 }
+
 
 
                 if (!friendsOnlyOptFallback) {

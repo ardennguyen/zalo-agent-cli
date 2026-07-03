@@ -13,6 +13,8 @@ import { warning } from "./output.js";
  */
 export function checkForUpdates(currentVersion, jsonMode) {
     if (jsonMode) return;
+    if (!process.stdout.isTTY) return;                   // skip in piped / scripted mode
+    if (process.env.ZALO_AGENT_NO_UPDATE_CHECK) return;  // explicit opt-out
 
     try {
         const latest = execSync("npm view github:ardennguyen/zalo-agent-cli version", {

@@ -22,7 +22,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > Xem [skill/SKILL.md](skill/SKILL.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
-> **Zalo Official Account (OA)** — v1.1.0 hỗ trợ Zalo OA API v3.0 chính thức:
+> **Zalo Official Account (OA)** — Zalo OA API v3.0 chính thức:
 > ```bash
 > zalo-agent oa init                                    # Setup wizard (interactive)
 > zalo-agent oa init --app-id <ID> --secret <KEY> --skip-webhook  # Non-interactive (AI agent)
@@ -34,7 +34,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > Xem [docs/official-account.md](docs/official-account.md)
 
 > [!TIP]
-> **MCP Server (AI Agent Integration)** — v1.2.0 hỗ trợ Model Context Protocol cho Claude Code và các MCP client:
+> **MCP Server (AI Agent Integration)** — Model Context Protocol cho Claude Code và các MCP client:
 > ```bash
 > zalo-agent mcp start              # stdio (local Claude Code)
 > zalo-agent mcp start --http 3847 --auth your-secret  # HTTP (VPS)
@@ -144,7 +144,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > See [skill/SKILL.md](skill/SKILL.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
-> **Zalo Official Account (OA)** — v1.1.0 adds official Zalo OA API v3.0:
+> **Zalo Official Account (OA)** — Official Zalo OA API v3.0:
 > ```bash
 > zalo-agent oa init                                    # Setup wizard (interactive)
 > zalo-agent oa init --app-id <ID> --secret <KEY> --skip-webhook  # Non-interactive (AI agent)
@@ -156,7 +156,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > See [docs/official-account.md](docs/official-account.md)
 
 > [!TIP]
-> **MCP Server (AI Agent Integration)** — v1.2.0 adds Model Context Protocol support for Claude Code and MCP clients:
+> **MCP Server (AI Agent Integration)** — Model Context Protocol support for Claude Code and MCP clients:
 > ```bash
 > zalo-agent mcp start              # stdio (local Claude Code)
 > zalo-agent mcp start --http 3847 --auth your-secret  # HTTP (VPS)

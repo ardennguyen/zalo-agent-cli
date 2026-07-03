@@ -45,8 +45,9 @@ export function registerConvCommands(program) {
                     if (groupIds.length > 0) {
                         const batchSize = 50;
                         const batches = [];
-                        for (let i = 0; i < Math.min(groupIds.length, limit); i += batchSize) {
-                            batches.push(groupIds.slice(i, i + batchSize));
+                        const limitedIds = groupIds.slice(0, limit); // cap to limit BEFORE batching
+                        for (let i = 0; i < limitedIds.length; i += batchSize) {
+                            batches.push(limitedIds.slice(i, i + batchSize));
                         }
                         for (const batch of batches) {
                             try {

@@ -1,17 +1,17 @@
 /**
- * Non-blocking update check — warns user if a newer version is available.
- * Fetches package.json directly from GitHub raw content (never uses the npm
- * registry, which has a conflicting "zalo-agent-cli" package from a third party).
- * Runs asynchronously in the background; never blocks CLI execution.
+ * Non-blocking update check — warns user if a newer version is available on GitHub.
+ * Runs silently in background; never blocks CLI execution.
  */
 
-import https from "node:https";
 import { execSync } from "node:child_process";
 import { warning } from "./output.js";
 
 /**
  * Check GitHub for the latest version, warn if outdated.
- * Skipped automatically in piped / scripted environments (non-TTY stdout).
+ * Uses "npm view github:<owner>/<repo>" to fetch directly from the GitHub repository,
+ * NOT from the npm registry (a different, unrelated "zalo-agent-cli" package exists there).
+ *
+ * Skipped automatically when stdout is piped (e.g. tests, scripts, JSON mode, MCP).
  *
  * @param {string} currentVersion - Current package version (from package.json)
  * @param {boolean} jsonMode - Suppress output in JSON mode
@@ -21,30 +21,28 @@ export function checkForUpdates(currentVersion, jsonMode) {
     if (!process.stdout.isTTY) return;                   // skip in piped / scripted mode
     if (process.env.ZALO_AGENT_NO_UPDATE_CHECK) return;  // explicit opt-out
 
-    // Fetch directly from GitHub raw content — avoids the unrelated
-    // "zalo-agent-cli" package on the npm registry (different project, different version).
-    const url =
-        "https://raw.githubusercontent.com/ardennguyen/zalo-agent-cli/main/package.json";
-
-    const req = https.get(url, { timeout: 5000 }, (res) => {
-        let data = "";
-        res.on("data", (chunk) => (data += chunk));
-        res.on("end", () => {
-            try {
-                const { version: latest } = JSON.parse(data);
-                if (latest && latest !== currentVersion) {
-                    warning(
-                        `Update available: ${currentVersion} → ${latest}. Run: zalo-agent update`
-                    );
-                }
-            } catch {
-                // Silent failure — malformed JSON or unexpected response
+    try {
+        // "github:owner/repo" routes npm to GitHub, not the npm registry.
+        // NOTE: avoid "npm view zalo-agent-cli version" — that hits the npm registry
+        // where an unrelated project with the same name is published at a different version.
+        const latest = execSync(
+            "npm view github:ardennguyen/zalo-agent-cli version",
+            {
+                encoding: "utf8",
+                timeout: 5000,
+                stdio: ["pipe", "pipe", "pipe"],
+                windowsHide: true,
             }
-        });
-    });
+        ).trim();
 
-    req.on("error", () => {});              // Silent failure — network issues shouldn't block CLI
-    req.on("timeout", () => req.destroy()); // Don't hang indefinitely
+        if (latest && latest !== currentVersion) {
+            warning(
+                `Update available: ${currentVersion} → ${latest}. Run: zalo-agent update`
+            );
+        }
+    } catch {
+        // Silent failure — network issues shouldn't block CLI usage
+    }
 }
 
 /**

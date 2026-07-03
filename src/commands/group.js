@@ -173,12 +173,21 @@ export function registerGroupCommands(program) {
         .description("List group members")
         .action(async (groupId) => {
             try {
-                const result = await getApi().getGroupInfo(groupId);
-                const members = result?.gridInfoMap?.[groupId]?.memberIds || {};
-                output(members, program.opts().json, () => {
-                    const ids = Object.keys(members);
-                    info(`${ids.length} members`);
-                    ids.forEach((id) => console.log(`  ${id}`));
+                // getGroupInfo requires an array, not a bare string
+                const result = await getApi().getGroupInfo([groupId]);
+                const groupData = result?.gridInfoMap?.[groupId];
+                // memberIds is always [] from the API; member UIDs are in memVerList
+                // as "uid_version" strings (e.g. "1911679535470292669_0")
+                const memVerList  = groupData?.memVerList  || [];
+                const memberUids  = memVerList.map((mv) => mv.split("_")[0]).filter(Boolean);
+                const totalMember = groupData?.totalMember ?? memberUids.length;
+                output(memberUids, program.opts().json, () => {
+                    if (memberUids.length === 0) {
+                        info(`0 members`);
+                        return;
+                    }
+                    info(`${totalMember} member(s):`);
+                    memberUids.forEach((uid) => console.log(`  ${uid}`));
                 });
             } catch (e) {
                 error(e.message);

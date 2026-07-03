@@ -97,7 +97,7 @@ export function registerConvCommands(program) {
         .description("List pinned conversations")
         .action(async () => {
             try {
-                const result = await getApi().getPinnedConversations();
+                const result = await getApi().getPinConversations();
                 output(result, program.opts().json);
             } catch (e) {
                 error(e.message);
@@ -108,7 +108,7 @@ export function registerConvCommands(program) {
         .description("List archived conversations")
         .action(async () => {
             try {
-                const result = await getApi().getArchivedConversations();
+                const result = await getApi().getArchivedChatList();
                 output(result, program.opts().json);
             } catch (e) {
                 error(e.message);

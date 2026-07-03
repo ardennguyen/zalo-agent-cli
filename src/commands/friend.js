@@ -193,7 +193,7 @@ export function registerFriendCommands(program) {
         .description("Check when user was last online")
         .action(async (userId) => {
             try {
-                const result = await getApi().getLastOnline(userId);
+                const result = await getApi().lastOnline(userId);
                 output(result, program.opts().json);
             } catch (e) {
                 error(e.message);

@@ -190,10 +190,16 @@ export async function sendList(userId, elements, messageType = "cs", oaId = "def
     });
 }
 
-/** Get message delivery status. */
+/**
+ * Get ZNS message delivery status.
+ * NOTE: This endpoint only works for ZNS (template/notification) message IDs,
+ * NOT for regular chat message IDs from conv recent/history.
+ * Regular chat messages have no status API — use conv history instead.
+ */
 export async function getMessageStatus(messageId, oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/message/status?message_id=${messageId}`, { token });
+    // Correct host: business.openapi.zalo.me (different from openapi.zalo.me)
+    return oaFetch(`https://business.openapi.zalo.me/message/status?message_id=${messageId}`, { token });
 }
 
 // ─── User / Follower Management ──────────────────────────────────────

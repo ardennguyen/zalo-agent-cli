@@ -208,13 +208,17 @@ export async function getOAProfile(oaId = "default") {
 /** Get follower info by user_id. */
 export async function getFollowerInfo(userId, oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/user/detail?user_id=${userId}`, { token });
+    // Zalo v3 requires data={} JSON param format
+    const data = encodeURIComponent(JSON.stringify({ user_id: userId }));
+    return oaFetch(`${V3_BASE}/user/detail?data=${data}`, { token });
 }
 
 /** Get followers list (paginated). */
 export async function getFollowers(offset = 0, count = 50, oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/user/getlist?offset=${offset}&count=${count}`, { token });
+    // Zalo v3 requires params as data={"offset":N,"count":N} JSON query param, NOT plain ?offset=N&count=N
+    const data = encodeURIComponent(JSON.stringify({ offset, count }));
+    return oaFetch(`${V3_BASE}/user/getlist?data=${data}`, { token });
 }
 
 /** Update follower info (name, phone, address, etc.). */
@@ -306,15 +310,17 @@ export async function uploadFile(filePath, oaId = "default") {
 /** Get recent chat list (v2 API). */
 export async function getRecentChat(offset = 0, count = 10, oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V2_BASE}/listrecentchat?offset=${offset}&count=${count}`, { token });
+    // Zalo v2 requires params as data={"offset":N,"count":N} JSON query param
+    const data = encodeURIComponent(JSON.stringify({ offset, count }));
+    return oaFetch(`${V2_BASE}/listrecentchat?data=${data}`, { token });
 }
 
 /** Get conversation history with a user (v2 API). */
 export async function getConversation(userId, offset = 0, count = 10, oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V2_BASE}/conversation?user_id=${userId}&offset=${offset}&count=${count}`, {
-        token,
-    });
+    // Zalo v2 requires params as data={"user_id":"...","offset":N,"count":N} JSON query param
+    const data = encodeURIComponent(JSON.stringify({ user_id: userId, offset, count }));
+    return oaFetch(`${V2_BASE}/conversation?data=${data}`, { token });
 }
 
 // ─── Menu ────────────────────────────────────────────────────────────
@@ -334,15 +340,18 @@ export async function createArticle(articleData, oaId = "default") {
 }
 
 /** Get article list. */
-export async function getArticleList(offset = 0, limit = 10, oaId = "default") {
+export async function getArticleList(offset = 0, limit = 10, oaId = "default", type = "normal") {
     const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/article/getlist?offset=${offset}&limit=${limit}`, { token });
+    // Correct endpoint: v2.0/article/getslice (NOT v3.0/oa/article/getlist) with flat query params
+    const V2_ART_BASE = "https://openapi.zalo.me/v2.0/article";
+    return oaFetch(`${V2_ART_BASE}/getslice?offset=${offset}&limit=${limit}&type=${type}`, { token });
 }
 
 /** Get article detail. */
 export async function getArticleDetail(articleId, oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/article/getdetail?id=${articleId}`, { token });
+    const V2_ART_BASE = "https://openapi.zalo.me/v2.0/article";
+    return oaFetch(`${V2_ART_BASE}/getdetail?id=${articleId}`, { token });
 }
 
 // ─── Store ───────────────────────────────────────────────────────────
@@ -356,15 +365,16 @@ export async function createProduct(productData, oaId = "default") {
 /** Get product list. */
 export async function getProductList(offset = 0, limit = 10, oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/store/product/getproductofoa?offset=${offset}&limit=${limit}`, {
-        token,
-    });
+    // Correct endpoint: v2.0/mstore (NOT v3.0/store) with flat query params
+    const V2_STORE = "https://openapi.zalo.me/v2.0/mstore";
+    return oaFetch(`${V2_STORE}/product/getproductofoa?offset=${offset}&limit=${limit}`, { token });
 }
 
 /** Get product detail. */
 export async function getProductInfo(productId, oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/store/product/getproduct?id=${productId}`, { token });
+    const V2_STORE = "https://openapi.zalo.me/v2.0/mstore";
+    return oaFetch(`${V2_STORE}/product/getproduct?id=${productId}`, { token });
 }
 
 /** Create category in OA store. */
@@ -380,7 +390,8 @@ export async function createCategory(categoryData, oaId = "default") {
 /** Get category list. */
 export async function getCategoryList(oaId = "default") {
     const token = getToken(oaId);
-    return oaFetch(`${V3_BASE}/store/category/getcategoryofoa`, { token });
+    const V2_STORE = "https://openapi.zalo.me/v2.0/mstore";
+    return oaFetch(`${V2_STORE}/category/getcategoryofoa`, { token });
 }
 
 /** Create order. */

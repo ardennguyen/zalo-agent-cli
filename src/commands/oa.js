@@ -522,9 +522,10 @@ export function registerOACommands(program) {
             try {
                 const result = await getArticleList(Number(opts.offset), Number(opts.limit), opts.oaId);
                 output(result, json(), () => {
-                    const articles = result.data?.articles || [];
+                    // v2.0/article/getslice returns medias (not articles)
+                    const articles = result.data?.medias || result.data?.articles || [];
                     info(`Articles: ${articles.length}`);
-                    articles.forEach((a) => console.log(`  - ${a.id}: ${a.title || "N/A"}`));
+                    articles.forEach((a) => console.log(`  - ${a.id}: ${a.title || "N/A"} [${a.status || ""}]`));
                 });
             } catch (e) {
                 error(e.message);

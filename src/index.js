@@ -71,7 +71,7 @@ program
     .action(() => {
         const ok = selfUpdate();
         if (ok) success(`Updated to latest version`);
-        else error("Update failed. Try manually: npm install -g zalo-agent-cli@latest");
+        else error("Update failed. Try manually: npm install -g @ardennguyen/zalo-agent-cli@latest");
     });
 
 // Register all command groups

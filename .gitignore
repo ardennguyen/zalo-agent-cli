@@ -10,3 +10,6 @@ qr.png
 .DS_Store
 
 agent/
+
+# Agent configuration (local only)
+.agents/

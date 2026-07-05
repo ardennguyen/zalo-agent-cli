@@ -48,7 +48,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 ## Cài đặt
 
 ```bash
-npm install -g zalo-agent-cli
+npm install -g @ardennguyen/zalo-agent-cli
 ```
 
 ## Bắt đầu nhanh
@@ -168,7 +168,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 ### Quick Start
 
 ```bash
-npm install -g zalo-agent-cli
+npm install -g @ardennguyen/zalo-agent-cli
 zalo-agent login                           # 1. Login via QR
 zalo-agent friend search "Name"            # 2. Find a friend
 zalo-agent listen                          # 3. Listen for threadId

@@ -178,8 +178,8 @@ export function registerGroupCommands(program) {
                 const groupData = result?.gridInfoMap?.[groupId];
                 // memberIds is always [] from the API; member UIDs are in memVerList
                 // as "uid_version" strings (e.g. "1911679535470292669_0")
-                const memVerList  = groupData?.memVerList  || [];
-                const memberUids  = memVerList.map((mv) => mv.split("_")[0]).filter(Boolean);
+                const memVerList = groupData?.memVerList || [];
+                const memberUids = memVerList.map((mv) => mv.split("_")[0]).filter(Boolean);
                 const totalMember = groupData?.totalMember ?? memberUids.length;
                 output(memberUids, program.opts().json, () => {
                     if (memberUids.length === 0) {

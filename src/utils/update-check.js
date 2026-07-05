@@ -18,27 +18,22 @@ import { warning } from "./output.js";
  */
 export function checkForUpdates(currentVersion, jsonMode) {
     if (jsonMode) return;
-    if (!process.stdout.isTTY) return;                   // skip in piped / scripted mode
-    if (process.env.ZALO_AGENT_NO_UPDATE_CHECK) return;  // explicit opt-out
+    if (!process.stdout.isTTY) return; // skip in piped / scripted mode
+    if (process.env.ZALO_AGENT_NO_UPDATE_CHECK) return; // explicit opt-out
 
     try {
         // "github:owner/repo" routes npm to GitHub, not the npm registry.
         // NOTE: avoid "npm view zalo-agent-cli version" — that hits the npm registry
         // where an unrelated project with the same name is published at a different version.
-        const latest = execSync(
-            "npm view github:ardennguyen/zalo-agent-cli version",
-            {
-                encoding: "utf8",
-                timeout: 5000,
-                stdio: ["pipe", "pipe", "pipe"],
-                windowsHide: true,
-            }
-        ).trim();
+        const latest = execSync("npm view github:ardennguyen/zalo-agent-cli version", {
+            encoding: "utf8",
+            timeout: 5000,
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+        }).trim();
 
         if (latest && latest !== currentVersion) {
-            warning(
-                `Update available: ${currentVersion} → ${latest}. Run: zalo-agent update`
-            );
+            warning(`Update available: ${currentVersion} → ${latest}. Run: zalo-agent update`);
         }
     } catch {
         // Silent failure — network issues shouldn't block CLI usage

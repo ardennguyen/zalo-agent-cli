@@ -7,6 +7,11 @@ import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning } from "../utils/output.js";
+import { getActive } from "../core/accounts.js";
+import { CONFIG_DIR } from "../core/credentials.js";
+import { acquireLock, releaseLock } from "../core/lock.js";
+import { initDb, insertMessage, upsertThread } from "../core/db.js";
+import { extractMessageText } from "../utils/extract-message-text.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -45,6 +50,25 @@ export function registerListenCommand(program) {
         .option("--auto-accept", "Auto-accept incoming friend requests")
         .option("--save <dir>", "Save messages locally as JSONL files (one file per thread, e.g. --save ./zalo-logs)")
         .action(async (opts) => {
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                process.exit(1);
+            }
+            const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+            if (!acquireLock(accountDir)) {
+                error(`Another listen daemon is already running for account ${activeAcc.ownId}.`);
+                process.exit(1);
+            }
+            try {
+                initDb(join(accountDir, "zalo.db"));
+                info(`Local database initialized at ${accountDir}/zalo.db`);
+            } catch (err) {
+                releaseLock(accountDir);
+                error(`Failed to initialize local DB: ${err.message}`);
+                process.exit(1);
+            }
+
             const jsonMode = program.opts().json;
             const startTime = Date.now();
             let reconnectCount = 0;
@@ -146,6 +170,28 @@ export function registerListenCommand(program) {
                             data,
                             `${dir} [${typeLabel}] [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
                         );
+
+                        try {
+                            const parsedText = isText ? rawContent : extractMessageText(rawContent, msgType);
+                            upsertThread({
+                                threadId: String(msg.threadId),
+                                type: msg.type === THREAD_USER ? "dm" : "group",
+                                name: String(msg.data.dName || ""),
+                                lastUpdate: msg.data.ts ? Number(msg.data.ts) : Date.now(),
+                            });
+                            insertMessage({
+                                msgId: String(msg.data.msgId),
+                                threadId: String(msg.threadId),
+                                senderId: String(msg.data.uidFrom || ""),
+                                senderName: String(msg.data.dName || ""),
+                                text: parsedText || "",
+                                timestamp: msg.data.ts ? Number(msg.data.ts) : Date.now(),
+                                type: isText ? "text" : msgType || "attachment",
+                                raw_data: rawContent,
+                            });
+                        } catch (err) {
+                            console.error(`[listen] DB Insert failed: ${err.message}`);
+                        }
                     });
                 }
 
@@ -284,6 +330,7 @@ export function registerListenCommand(program) {
                     } catch (e) {
                         console.error(`[listen] Stop failed: ${e.message}`);
                     }
+                    releaseLock(accountDir);
                     info(`Stopped. Uptime: ${uptime()}, events: ${eventCount}, reconnects: ${reconnectCount}`);
                     if (saveDir) info(`Messages saved to: ${saveDir}`);
                     resolve();

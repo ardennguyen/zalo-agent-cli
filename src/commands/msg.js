@@ -3,10 +3,13 @@
  * stickers, reactions, delete, forward.
  */
 
-import { resolve } from "path";
+import { resolve, join } from "path";
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
+import { getActive } from "../core/accounts.js";
+import { CONFIG_DIR } from "../core/credentials.js";
+import { initDb, getMessages } from "../core/db.js";
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -498,6 +501,59 @@ export function registerMsgCommands(program) {
             const timeout = Number(opts.timeout);
             const scanLimit = Number(opts.scan);
             const api = getApi();
+
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                process.exit(1);
+            }
+
+            try {
+                // Try fetching from local SQLite cache first
+                const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+                initDb(join(accountDir, "zalo.db"));
+                const localMsgs = getMessages(threadId, limit);
+
+                if (localMsgs && localMsgs.length > 0) {
+                    if (!jsonMode) info(`Found ${localMsgs.length} messages in local cache.`);
+                    const messages = localMsgs.map((m) => ({
+                        msgId: m.msgId,
+                        threadId: m.threadId,
+                        senderId: m.senderId,
+                        senderName: m.senderName,
+                        text: m.text,
+                        timestamp: m.timestamp,
+                        type: m.type,
+                    }));
+
+                    output(
+                        {
+                            threadId,
+                            threadType: threadType === 0 ? "dm" : "group",
+                            count: messages.length,
+                            source: "sqlite",
+                            messages,
+                        },
+                        jsonMode,
+                        () => {
+                            success(`${messages.length} message(s) from ${threadId} (Local Cache)`);
+                            for (const m of messages) {
+                                const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                                const name = m.senderName || m.senderId || "?";
+                                console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                            }
+                        },
+                    );
+
+                    // If we have any cached messages, we return them to demonstrate offline-first.
+                    // In a future update, we can reconcile the gap with the network if localMsgs.length < limit.
+                    return;
+                }
+            } catch (err) {
+                if (!jsonMode && err.message !== "Database not initialized") {
+                    warning(`Local DB query failed: ${err.message}. Falling back to network.`);
+                }
+            }
 
             try {
                 if (!jsonMode && limit > 100) {

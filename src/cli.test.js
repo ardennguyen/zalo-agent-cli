@@ -14,7 +14,13 @@ function run(...args) {
     return execFileSync("node", [CLI, ...args], {
         encoding: "utf-8",
         timeout: 10000,
-        env: { ...process.env, HOME: "/tmp/zalo-agent-cli-test-home" },
+        env: {
+            ...process.env,
+            HOME: "/tmp/zalo-agent-cli-test-home",
+            USERPROFILE: "/tmp/zalo-agent-cli-test-home",
+            LOCALAPPDATA: "/tmp/zalo-agent-cli-test-home",
+            APPDATA: "/tmp/zalo-agent-cli-test-home",
+        },
     });
 }
 

@@ -9,7 +9,7 @@ import { success, error, info, output, warning } from "../utils/output.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getMessages } from "../core/db.js";
+import { initDb, getMessages, insertMessage } from "../core/db.js";
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -488,12 +488,13 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("history <threadId>")
-        .description("Fetch message history. Groups use REST API. DMs use WebSocket stream.")
+        .description("Fetch message history. Groups try REST API then fallback to WebSocket. DMs use WebSocket.")
         .option("-t, --type <n>", "Thread type: 0=User(DM), 1=Group", "0")
         .option("-n, --limit <n>", "Max most-recent messages to fetch", "50")
-        .option("--scan <n>", "Max raw global messages to scan (DM only)", "2000")
-        .option("--from-msg-id <id>", "Anchor message ID to scan older messages from (DM only)")
+        .option("--scan <n>", "Max raw global messages to scan (WebSocket only)", "2000")
+        .option("--from-msg-id <id>", "Anchor message ID to scan older messages from")
         .option("--timeout <ms>", "Timeout in milliseconds waiting for response", "15000")
+        .option("--no-cache", "Force live fetch instead of using local cache, and amend db")
         .action(async (threadId, opts) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
@@ -508,46 +509,60 @@ export function registerMsgCommands(program) {
                 process.exit(1);
             }
 
+            if (!jsonMode) {
+                info(
+                    "Note: To maintain a complete local cache without missing gaps, ensure the 'zalo-cli listen' daemon is running continuously on this device.",
+                );
+            }
+
+            let localMsgs = [];
+            let dbActive = false;
+
             try {
-                // Try fetching from local SQLite cache first
                 const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
                 initDb(join(accountDir, "zalo.db"));
-                const localMsgs = getMessages(threadId, limit);
+                dbActive = true;
 
-                if (localMsgs && localMsgs.length > 0) {
-                    if (!jsonMode) info(`Found ${localMsgs.length} messages in local cache.`);
-                    const messages = localMsgs.map((m) => ({
-                        msgId: m.msgId,
-                        threadId: m.threadId,
-                        senderId: m.senderId,
-                        senderName: m.senderName,
-                        text: m.text,
-                        timestamp: m.timestamp,
-                        type: m.type,
-                    }));
+                if (!opts.noCache) {
+                    localMsgs = getMessages(threadId, limit);
+                    if (localMsgs && localMsgs.length >= limit) {
+                        if (!jsonMode) info(`Found ${localMsgs.length} messages in local cache.`);
+                        const messages = localMsgs.map((m) => ({
+                            msgId: m.msgId,
+                            threadId: m.threadId,
+                            senderId: m.senderId,
+                            senderName: m.senderName,
+                            text: m.text,
+                            timestamp: m.timestamp,
+                            type: m.type,
+                        }));
 
-                    output(
-                        {
-                            threadId,
-                            threadType: threadType === 0 ? "dm" : "group",
-                            count: messages.length,
-                            source: "sqlite",
-                            messages,
-                        },
-                        jsonMode,
-                        () => {
-                            success(`${messages.length} message(s) from ${threadId} (Local Cache)`);
-                            for (const m of messages) {
-                                const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
-                                const name = m.senderName || m.senderId || "?";
-                                console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
-                            }
-                        },
-                    );
-
-                    // If we have any cached messages, we return them to demonstrate offline-first.
-                    // In a future update, we can reconcile the gap with the network if localMsgs.length < limit.
-                    return;
+                        output(
+                            {
+                                threadId,
+                                threadType: threadType === 0 ? "dm" : "group",
+                                count: messages.length,
+                                source: "sqlite",
+                                messages,
+                            },
+                            jsonMode,
+                            () => {
+                                success(`${messages.length} message(s) from ${threadId} (Local Cache)`);
+                                for (const m of messages) {
+                                    const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                                    const name = m.senderName || m.senderId || "?";
+                                    console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                                }
+                            },
+                        );
+                        return;
+                    } else if (localMsgs && localMsgs.length > 0 && !jsonMode) {
+                        info(
+                            `Found only ${localMsgs.length} messages in cache. Falling back to live fetch to reach limit of ${limit}.`,
+                        );
+                    }
+                } else if (!jsonMode) {
+                    info(`--no-cache specified. Fetching live from server and amending database.`);
                 }
             } catch (err) {
                 if (!jsonMode && err.message !== "Database not initialized") {
@@ -560,118 +575,158 @@ export function registerMsgCommands(program) {
                     info(`Warning: fetching up to ${limit} messages.`);
                 }
 
-                if (threadType === 1) {
-                    // Group: Use REST API (reliable, direct fetch)
-                    const history = await api.getGroupChatHistory(threadId, limit);
-                    const messages = (history || []).map((msg) => ({
-                        msgId: msg.msgId,
-                        threadId: threadId,
-                        senderId: msg.uidFrom || null,
-                        senderName: msg.dName || null,
-                        text:
-                            typeof msg.content === "string"
-                                ? msg.content
-                                : extractMessageText(msg.content, msg.msgType),
-                        timestamp: msg.ts ? Number(msg.ts) : null,
-                        type: typeof msg.content === "string" ? "text" : msg.msgType || "attachment",
-                    }));
+                let fetchedMessages = [];
+                let usedRestApi = false;
 
-                    output({ threadId, threadType: "group", count: messages.length, messages }, jsonMode, () => {
-                        success(`${messages.length} message(s) from group ${threadId}`);
-                        for (const m of messages) {
-                            const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
-                            const name = m.senderName || m.senderId || "?";
-                            console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
-                        }
-                    });
-                    return;
+                if (threadType === 1) {
+                    // Group: Try REST API first
+                    try {
+                        const history = await api.getGroupChatHistory(threadId, limit);
+                        fetchedMessages = (history || []).map((msg) => ({
+                            msgId: msg.msgId,
+                            threadId: threadId,
+                            senderId: msg.uidFrom || null,
+                            senderName: msg.dName || null,
+                            text:
+                                typeof msg.content === "string"
+                                    ? msg.content
+                                    : extractMessageText(msg.content, msg.msgType),
+                            timestamp: msg.ts ? Number(msg.ts) : null,
+                            type: typeof msg.content === "string" ? "text" : msg.msgType || "attachment",
+                            raw_data: JSON.stringify(msg),
+                        }));
+                        usedRestApi = true;
+                        if (!jsonMode) info("Fetched group history via REST API.");
+                    } catch (restErr) {
+                        if (!jsonMode)
+                            warning(`REST API failed (${restErr.message}). Falling back to WebSocket stream...`);
+                    }
                 }
 
-                // DM: Use WebSocket global stream scanning
-                const allMessages = [];
-                let lastMsgId = opts.fromMsgId || null;
-                let done = false;
+                if (!usedRestApi) {
+                    // WebSocket global stream scanning (DM or fallback for Group)
+                    const allMessages = [];
+                    let lastMsgId = opts.fromMsgId || null;
+                    let done = false;
 
-                // Start listener
-                await new Promise((resolve, reject) => {
-                    const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 10000);
-                    api.listener.once("connected", () => {
-                        clearTimeout(timer);
-                        resolve();
-                    });
-                    api.listener.once("error", (err) => {
-                        clearTimeout(timer);
-                        reject(err);
-                    });
-                    api.listener.start({ retryOnClose: false });
-                });
-
-                let rawScanned = 0;
-
-                while (!done && rawScanned < scanLimit) {
-                    const page = await new Promise((resolve) => {
-                        const handler = (messages) => {
-                            clearTimeout(timeoutId);
-                            api.listener.removeListener("old_messages", handler);
-                            resolve(messages);
-                        };
-                        const timeoutId = setTimeout(() => {
-                            api.listener.removeListener("old_messages", handler);
-                            resolve([]);
-                        }, timeout);
-
-                        api.listener.on("old_messages", handler);
-                        api.listener.requestOldMessages(threadType, lastMsgId);
+                    // Start listener
+                    await new Promise((resolve, reject) => {
+                        const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 10000);
+                        api.listener.once("connected", () => {
+                            clearTimeout(timer);
+                            resolve();
+                        });
+                        api.listener.once("error", (err) => {
+                            clearTimeout(timer);
+                            reject(err);
+                        });
+                        api.listener.start({ retryOnClose: false });
                     });
 
-                    if (!page || page.length === 0) break;
+                    let rawScanned = 0;
 
-                    rawScanned += page.length;
+                    while (!done && rawScanned < scanLimit) {
+                        const page = await new Promise((resolve) => {
+                            const handler = (messages) => {
+                                clearTimeout(timeoutId);
+                                api.listener.removeListener("old_messages", handler);
+                                resolve(messages);
+                            };
+                            const timeoutId = setTimeout(() => {
+                                api.listener.removeListener("old_messages", handler);
+                                resolve([]);
+                            }, timeout);
 
-                    for (const msg of page) {
-                        // Filter to the requested thread only
-                        if (String(msg.threadId || "") !== String(threadId)) continue;
-                        allMessages.push({
-                            msgId: msg.data?.msgId,
-                            threadId: msg.threadId,
-                            senderId: msg.data?.uidFrom || null,
-                            senderName: msg.data?.dName || null,
-                            text:
-                                typeof msg.data?.content === "string"
-                                    ? msg.data.content
-                                    : extractMessageText(msg.data?.content, msg.data?.msgType),
-                            timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
-                            type: typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
+                            api.listener.on("old_messages", handler);
+                            api.listener.requestOldMessages(threadType, lastMsgId);
                         });
 
-                        if (allMessages.length >= limit) {
-                            done = true;
-                            break;
+                        if (!page || page.length === 0) break;
+
+                        rawScanned += page.length;
+
+                        for (const msg of page) {
+                            if (String(msg.threadId || "") !== String(threadId)) continue;
+                            allMessages.push({
+                                msgId: msg.data?.msgId,
+                                threadId: msg.threadId,
+                                senderId: msg.data?.uidFrom || null,
+                                senderName: msg.data?.dName || null,
+                                text:
+                                    typeof msg.data?.content === "string"
+                                        ? msg.data.content
+                                        : extractMessageText(msg.data?.content, msg.data?.msgType),
+                                timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
+                                type:
+                                    typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
+                                raw_data: JSON.stringify(msg.data),
+                            });
+
+                            if (allMessages.length >= limit) {
+                                done = true;
+                                break;
+                            }
                         }
+
+                        // Advance cursor using the global actionId of the last raw message
+                        const lastMsg = page[page.length - 1];
+                        const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
+                        if (!nextId || nextId === lastMsgId) done = true;
+                        lastMsgId = nextId;
                     }
 
-                    // Advance cursor using the global actionId of the last raw message
-                    const lastMsg = page[page.length - 1];
-                    const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
-                    if (!nextId || nextId === lastMsgId) done = true;
-                    lastMsgId = nextId;
+                    try {
+                        api.listener.stop();
+                    } catch {}
+
+                    if (!jsonMode)
+                        info(`Scanned ${rawScanned} raw WS messages to find ${allMessages.length} target messages.`);
+                    fetchedMessages = allMessages;
                 }
 
-                // Sort newest-first, truncate to limit
-                allMessages.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-                const result = allMessages.slice(0, limit);
+                // Amend DB with live fetched messages
+                if (dbActive && fetchedMessages.length > 0) {
+                    for (const m of fetchedMessages) {
+                        try {
+                            insertMessage(m);
+                        } catch (e) {
+                            // ignore insert errors (e.g. duplicate constraint)
+                        }
+                    }
+                    if (!jsonMode) info("Amended local database with live fetched messages.");
+                }
+
+                // Merge and sort
+                // If we fetched live, we might want to merge with localMsgs in case we didn't fetch enough to hit the limit
+                const mergedMap = new Map();
+                for (const m of localMsgs) mergedMap.set(m.msgId, m);
+                for (const m of fetchedMessages) mergedMap.set(m.msgId, m);
+
+                const mergedArray = Array.from(mergedMap.values());
+                // Sort newest-first (descending timestamp)
+                mergedArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+                const result = mergedArray.slice(0, limit);
+
+                // Format final output
+                const cleanResult = result.map((m) => {
+                    const r = { ...m };
+                    delete r.raw_data;
+                    return r;
+                });
 
                 output(
                     {
                         threadId,
-                        threadType: "dm",
-                        count: result.length,
-                        messages: result,
+                        threadType: threadType === 0 ? "dm" : "group",
+                        count: cleanResult.length,
+                        source: "live",
+                        messages: cleanResult,
                     },
                     jsonMode,
                     () => {
-                        success(`${result.length} message(s) from DM ${threadId} (Scanned ${rawScanned} raw msgs)`);
-                        for (const m of result) {
+                        success(`${cleanResult.length} message(s) from ${threadId}`);
+                        for (const m of cleanResult) {
                             const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                             const name = m.senderName || m.senderId || "?";
                             console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
@@ -679,8 +734,6 @@ export function registerMsgCommands(program) {
                     },
                 );
 
-                // Clean up listener
-                api.listener.stop();
                 process.exit(0);
             } catch (e) {
                 try {

@@ -485,29 +485,58 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("history <threadId>")
-        .description("Fetch message history from a DM or group conversation via WebSocket")
+        .description("Fetch message history. Groups use REST API. DMs use WebSocket stream.")
         .option("-t, --type <n>", "Thread type: 0=User(DM), 1=Group", "0")
         .option("-n, --limit <n>", "Max most-recent messages to fetch", "50")
+        .option("--scan <n>", "Max raw global messages to scan (DM only)", "2000")
+        .option("--from-msg-id <id>", "Anchor message ID to scan older messages from (DM only)")
         .option("--timeout <ms>", "Timeout in milliseconds waiting for response", "15000")
         .action(async (threadId, opts) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
             const limit = Number(opts.limit);
             const timeout = Number(opts.timeout);
+            const scanLimit = Number(opts.scan);
             const api = getApi();
 
             try {
                 if (!jsonMode && limit > 100) {
-                    info(
-                        `Warning: fetching up to ${limit} messages. Large history may use significant memory and bandwidth.`,
-                    );
+                    info(`Warning: fetching up to ${limit} messages.`);
                 }
 
+                if (threadType === 1) {
+                    // Group: Use REST API (reliable, direct fetch)
+                    const history = await api.getGroupChatHistory(threadId, limit);
+                    const messages = (history || []).map((msg) => ({
+                        msgId: msg.msgId,
+                        threadId: threadId,
+                        senderId: msg.uidFrom || null,
+                        senderName: msg.dName || null,
+                        text:
+                            typeof msg.content === "string"
+                                ? msg.content
+                                : extractMessageText(msg.content, msg.msgType),
+                        timestamp: msg.ts ? Number(msg.ts) : null,
+                        type: typeof msg.content === "string" ? "text" : msg.msgType || "attachment",
+                    }));
+
+                    output({ threadId, threadType: "group", count: messages.length, messages }, jsonMode, () => {
+                        success(`${messages.length} message(s) from group ${threadId}`);
+                        for (const m of messages) {
+                            const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                            const name = m.senderName || m.senderId || "?";
+                            console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                        }
+                    });
+                    return;
+                }
+
+                // DM: Use WebSocket global stream scanning
                 const allMessages = [];
-                let lastMsgId = null;
+                let lastMsgId = opts.fromMsgId || null;
                 let done = false;
 
-                // Start listener (required for WebSocket requestOldMessages)
+                // Start listener
                 await new Promise((resolve, reject) => {
                     const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 10000);
                     api.listener.once("connected", () => {
@@ -521,15 +550,9 @@ export function registerMsgCommands(program) {
                     api.listener.start({ retryOnClose: false });
                 });
 
-                // requestOldMessages is a GLOBAL stream — each page contains messages from ALL
-                // threads mixed together, walking newest → oldest. We scan a bounded window of
-                // raw global messages so we always capture the most recent messages for this
-                // thread, regardless of how active other threads are.
-                // Window: at least 2000 raw messages, or limit × 20 for larger requests.
-                const rawScanLimit = Math.max(2000, limit * 20);
                 let rawScanned = 0;
 
-                while (!done && rawScanned < rawScanLimit) {
+                while (!done && rawScanned < scanLimit) {
                     const page = await new Promise((resolve) => {
                         const handler = (messages) => {
                             clearTimeout(timeoutId);
@@ -564,6 +587,11 @@ export function registerMsgCommands(program) {
                             timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
                             type: typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
                         });
+
+                        if (allMessages.length >= limit) {
+                            done = true;
+                            break;
+                        }
                     }
 
                     // Advance cursor using the global actionId of the last raw message
@@ -580,13 +608,13 @@ export function registerMsgCommands(program) {
                 output(
                     {
                         threadId,
-                        threadType: threadType === 0 ? "dm" : "group",
+                        threadType: "dm",
                         count: result.length,
                         messages: result,
                     },
                     jsonMode,
                     () => {
-                        success(`${result.length} message(s) from ${threadId}`);
+                        success(`${result.length} message(s) from DM ${threadId} (Scanned ${rawScanned} raw msgs)`);
                         for (const m of result) {
                             const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                             const name = m.senderName || m.senderId || "?";

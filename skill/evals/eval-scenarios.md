@@ -283,12 +283,12 @@ Each scenario: user prompt → expected step-by-step reasoning → validation cr
 
 ## E20: OA Send Message to Follower
 
-**Prompt:** "Gửi tin nhắn 'Cảm ơn bạn đã liên hệ' cho follower 7794681434929014721 trên OA"
+**Prompt:** "Gửi tin nhắn 'Cảm ơn bạn đã liên hệ' cho follower 7000000000000000001 trên OA"
 
 **Expected reasoning:**
 1. OA messaging → `oa msg text`
 2. Default message type: `cs` (customer service)
-3. Run: `zalo-agent oa msg text 7794681434929014721 "Cảm ơn bạn đã liên hệ"`
+3. Run: `zalo-agent oa msg text 7000000000000000001 "Cảm ơn bạn đã liên hệ"`
 4. Check result for success or error -224 (tier upgrade needed)
 
 **Must include:** `oa msg text`, user-id, message text

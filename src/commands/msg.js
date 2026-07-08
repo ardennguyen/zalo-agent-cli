@@ -487,13 +487,14 @@ export function registerMsgCommands(program) {
     msg.command("history <threadId>")
         .description("Fetch message history from a DM or group conversation via WebSocket")
         .option("-t, --type <n>", "Thread type: 0=User(DM), 1=Group", "0")
-        .option("-n, --limit <n>", "Max messages to fetch (fetches in pages until limit)", "50")
+        .option("-n, --limit <n>", "Max most-recent messages to fetch", "50")
         .option("--timeout <ms>", "Timeout in milliseconds waiting for response", "15000")
         .action(async (threadId, opts) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
             const limit = Number(opts.limit);
             const timeout = Number(opts.timeout);
+            const api = getApi();
 
             try {
                 if (!jsonMode && limit > 100) {
@@ -502,7 +503,6 @@ export function registerMsgCommands(program) {
                     );
                 }
 
-                const api = getApi();
                 const allMessages = [];
                 let lastMsgId = null;
                 let done = false;
@@ -510,26 +510,33 @@ export function registerMsgCommands(program) {
                 // Start listener (required for WebSocket requestOldMessages)
                 await new Promise((resolve, reject) => {
                     const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 10000);
-                    api.listener.on("connected", () => {
+                    api.listener.once("connected", () => {
                         clearTimeout(timer);
                         resolve();
                     });
-                    api.listener.on("error", (err) => {
+                    api.listener.once("error", (err) => {
                         clearTimeout(timer);
                         reject(err);
                     });
                     api.listener.start({ retryOnClose: false });
                 });
 
-                // Fetch pages until limit reached or no more messages
-                while (!done && allMessages.length < limit) {
-                    const pageMessages = await new Promise((resolve) => {
+                // requestOldMessages is a GLOBAL stream — each page contains messages from ALL
+                // threads mixed together, walking newest → oldest. We scan a bounded window of
+                // raw global messages so we always capture the most recent messages for this
+                // thread, regardless of how active other threads are.
+                // Window: at least 2000 raw messages, or limit × 20 for larger requests.
+                const rawScanLimit = Math.max(2000, limit * 20);
+                let rawScanned = 0;
+
+                while (!done && rawScanned < rawScanLimit) {
+                    const page = await new Promise((resolve) => {
                         const handler = (messages) => {
-                            clearTimeout(timer);
+                            clearTimeout(timeoutId);
                             api.listener.removeListener("old_messages", handler);
                             resolve(messages);
                         };
-                        const timer = setTimeout(() => {
+                        const timeoutId = setTimeout(() => {
                             api.listener.removeListener("old_messages", handler);
                             resolve([]);
                         }, timeout);
@@ -538,18 +545,13 @@ export function registerMsgCommands(program) {
                         api.listener.requestOldMessages(threadType, lastMsgId);
                     });
 
-                    if (!pageMessages || pageMessages.length === 0) {
-                        done = true;
-                        break;
-                    }
+                    if (!page || page.length === 0) break;
 
-                    for (const msg of pageMessages) {
-                        if (allMessages.length >= limit) break;
-                        // API returns messages globally — filter to requested thread
-                        const msgThread = String(msg.threadId || "");
-                        const msgSender = String(msg.data?.uidFrom || "");
-                        const target = String(threadId);
-                        if (msgThread !== target && msgSender !== target) continue;
+                    rawScanned += page.length;
+
+                    for (const msg of page) {
+                        // Filter to the requested thread only
+                        if (String(msg.threadId || "") !== String(threadId)) continue;
                         allMessages.push({
                             msgId: msg.data?.msgId,
                             threadId: msg.threadId,
@@ -564,29 +566,28 @@ export function registerMsgCommands(program) {
                         });
                     }
 
-                    // Use last message's actionId for pagination
-                    const lastMsg = pageMessages[pageMessages.length - 1];
+                    // Advance cursor using the global actionId of the last raw message
+                    const lastMsg = page[page.length - 1];
                     const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
-                    if (!nextId || nextId === lastMsgId) {
-                        done = true;
-                    }
+                    if (!nextId || nextId === lastMsgId) done = true;
                     lastMsgId = nextId;
                 }
 
-                // Sort by timestamp (oldest first)
-                allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                // Sort newest-first, truncate to limit
+                allMessages.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+                const result = allMessages.slice(0, limit);
 
                 output(
                     {
                         threadId,
                         threadType: threadType === 0 ? "dm" : "group",
-                        count: allMessages.length,
-                        messages: allMessages,
+                        count: result.length,
+                        messages: result,
                     },
                     jsonMode,
                     () => {
-                        success(`${allMessages.length} message(s) from ${threadId}`);
-                        for (const m of allMessages) {
+                        success(`${result.length} message(s) from ${threadId}`);
+                        for (const m of result) {
                             const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                             const name = m.senderName || m.senderId || "?";
                             console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);

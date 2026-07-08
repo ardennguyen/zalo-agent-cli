@@ -2,8 +2,12 @@
  * Conversation commands — pinned, archived, mute, unmute, read, unread, delete.
  */
 
+import { join } from "path";
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { getActive } from "../core/accounts.js";
+import { CONFIG_DIR } from "../core/credentials.js";
+import { initDb, getRecentThreads } from "../core/db.js";
 
 export function registerConvCommands(program) {
     const conv = program.command("conv").description("Manage conversations");
@@ -14,9 +18,58 @@ export function registerConvCommands(program) {
         .option("--friends-only", "Show only friend conversations")
         .option("--groups-only", "Show only group conversations")
         .action(async (opts) => {
+            const jsonMode = program.opts().json;
+            const limit = Number(opts.limit);
+
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                process.exit(1);
+            }
+
+            try {
+                const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+                initDb(join(accountDir, "zalo.db"));
+                let localThreads = getRecentThreads(limit);
+
+                if (opts.friendsOnly) localThreads = localThreads.filter((t) => t.type === "dm");
+                if (opts.groupsOnly) localThreads = localThreads.filter((t) => t.type === "group");
+
+                if (localThreads && localThreads.length > 0) {
+                    if (!jsonMode) info(`Found ${localThreads.length} recent conversations in local cache.`);
+
+                    const conversations = localThreads.map((t) => ({
+                        threadId: t.threadId,
+                        name: t.name,
+                        type: t.type === "group" ? "Group" : "User",
+                        typeFlag: t.type === "group" ? 1 : 0,
+                        lastActive: t.lastUpdate ? new Date(t.lastUpdate).toLocaleString() : "?",
+                    }));
+
+                    output(conversations, jsonMode, () => {
+                        info(`${conversations.length} conversation(s) (Local Cache):`);
+                        console.log();
+                        console.log("  THREAD_ID               TYPE    NAME");
+                        console.log("  " + "-".repeat(60));
+                        for (const c of conversations) {
+                            const id = c.threadId.padEnd(22);
+                            console.log(`  ${id}  ${c.type.padEnd(12)}  ${c.name}`);
+                        }
+                        console.log();
+                        info("Use thread_id with messaging commands:");
+                        info('  zalo-agent msg send <thread_id> "Hello"           (User)');
+                        info('  zalo-agent msg send <thread_id> "Hello" -t 1      (Group)');
+                    });
+                    return;
+                }
+            } catch (err) {
+                if (!jsonMode && err.message !== "Database not initialized") {
+                    warning(`Local DB query failed: ${err.message}. Falling back to network.`);
+                }
+            }
+
             try {
                 const api = getApi();
-                const limit = Number(opts.limit);
                 const conversations = [];
 
                 // Fetch friends (sorted by lastActionTime = most recent interaction)

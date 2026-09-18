@@ -36,6 +36,29 @@ export function initDb(dbPath) {
       name TEXT,
       phone TEXT
     );
+
+    -- Small key/value store for sync bookkeeping: lastConnectedAt,
+    -- lastDisconnectedAt, lastFullSyncAt, etc. One row per key, per-account
+    -- (this whole DB file is already per-account under accounts/<ownId>/zalo.db).
+    CREATE TABLE IF NOT EXISTS sync_state (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    -- Tracks time windows where we know (or suspect) messages may have been
+    -- missed — mirrors Zalo Web's own client-side "MissingMessageRange" table
+    -- (confirmed live via its IndexedDB schema: id/convId/fromTs/toTs/reason/status)
+    -- but kept account-wide rather than per-conversation, since pullMobileMsg/
+    -- getCrossDB operate on the whole account, not a single thread.
+    CREATE TABLE IF NOT EXISTS sync_gaps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      fromTs INTEGER,
+      toTs INTEGER,
+      reason TEXT,
+      status TEXT DEFAULT 'pending',
+      createdAt INTEGER,
+      resolvedAt INTEGER
+    );
   `);
 
     // Migration for existing DBs
@@ -52,6 +75,57 @@ export function initDb(dbPath) {
     } catch (e) {}
 
     return db;
+}
+
+/** Get a bookkeeping value (e.g. "lastConnectedAt"). Returns null if unset. */
+export function getSyncState(key) {
+    if (!db) throw new Error("Database not initialized");
+    const row = db.prepare("SELECT value FROM sync_state WHERE key = ?").get(key);
+    return row ? row.value : null;
+}
+
+/** Set a bookkeeping value. Value is stringified on write, so callers get
+ * strings back from getSyncState() and should Number()/JSON.parse() as needed. */
+export function setSyncState(key, value) {
+    if (!db) throw new Error("Database not initialized");
+    db.prepare(
+        `
+    INSERT INTO sync_state (key, value) VALUES (@key, @value)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `,
+    ).run({ key, value: String(value) });
+}
+
+/** Record a window of time we may have missed messages in (reason: e.g.
+ * "startup-gap", "reconnect-gap", "manual"). Returns the new gap's id. */
+export function recordSyncGap(fromTs, toTs, reason) {
+    if (!db) throw new Error("Database not initialized");
+    const stmt = db.prepare(`
+    INSERT INTO sync_gaps (fromTs, toTs, reason, status, createdAt)
+    VALUES (@fromTs, @toTs, @reason, 'pending', @createdAt)
+  `);
+    const info = stmt.run({ fromTs, toTs, reason, createdAt: Date.now() });
+    return info.lastInsertRowid;
+}
+
+/** All gaps not yet confirmed synced, oldest first. */
+export function getPendingSyncGaps() {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("SELECT * FROM sync_gaps WHERE status = 'pending' ORDER BY fromTs ASC").all();
+}
+
+/** Mark a gap resolved after a sync round-trip has actually covered it. */
+export function resolveSyncGap(id) {
+    if (!db) throw new Error("Database not initialized");
+    db.prepare("UPDATE sync_gaps SET status = 'resolved', resolvedAt = ? WHERE id = ?").run(Date.now(), id);
+}
+
+/** Mark every currently-pending gap resolved (used after a full sync cycle
+ * completes successfully — we don't currently track gaps per-thread, so a
+ * successful round-trip is treated as covering everything outstanding). */
+export function resolveAllPendingSyncGaps() {
+    if (!db) throw new Error("Database not initialized");
+    db.prepare("UPDATE sync_gaps SET status = 'resolved', resolvedAt = ? WHERE status = 'pending'").run(Date.now());
 }
 
 export function insertMessage(msg) {

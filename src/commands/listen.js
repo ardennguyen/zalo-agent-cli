@@ -13,6 +13,7 @@ import { acquireLock, releaseLock } from "../core/lock.js";
 import { initDb, insertMessage, upsertThread } from "../core/db.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { processMessageMedia } from "../core/media-downloader.js";
+import { SyncManager } from "../core/sync.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -69,6 +70,54 @@ export function registerListenCommand(program) {
                 error(`Failed to initialize local DB: ${err.message}`);
                 process.exit(1);
             }
+
+            // Gap tracking / auto-backfill (task #4): a small per-account
+            // SyncManager shares zalo.db with this listener so a crash,
+            // manual close, or brief WS drop gets its window recorded and
+            // automatically retried via mobile sync, instead of silently
+            // losing whatever arrived while we weren't connected.
+            const syncManager = new SyncManager(getApi(), activeAcc.ownId);
+            const HEARTBEAT_MS = 60 * 1000;
+            let lastHeartbeatAt = 0;
+            function heartbeat() {
+                const now = Date.now();
+                if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
+                lastHeartbeatAt = now;
+                syncManager.markConnected();
+            }
+
+            function attemptBackfill(fromTs, reason) {
+                if (!fromTs) return;
+                const gapId = syncManager.recordGap(fromTs, Date.now(), reason);
+                if (!gapId) return; // gap too small to bother with
+                const mins = Math.round((Date.now() - fromTs) / 60000);
+                info(`Coverage gap detected (${reason}, ~${mins}m). Attempting mobile-sync backfill...`);
+                syncManager.pollSync(0, 0, { force: true }).then((result) => {
+                    if (result.status === "saved") {
+                        success(`Backfilled ${result.saved} message(s) from the missed window.`);
+                    } else if (result.status === "crossdb-error" || result.status === "no-token") {
+                        warning(
+                            `Could not confirm the missed window (${reason}) was backfilled (${result.status}). ` +
+                                `It stays pending and will be retried on next launch or "zalo-agent sync-mobile".`,
+                        );
+                    }
+                }).catch((e) => {
+                    warning(`Backfill attempt failed (non-fatal): ${e.message}`);
+                });
+            }
+
+            // On startup, check how long it's been since we were last known
+            // connected. A short gap (e.g. a quick restart) isn't worth
+            // bothering the phone about; anything longer than ~30s (crash,
+            // reboot, listener closed for a while) gets a real backfill
+            // attempt, clamped to MAX_GAP_MS inside recordGap().
+            const lastConnectedAt = syncManager.getLastConnectedAt();
+            if (lastConnectedAt && Date.now() - lastConnectedAt > 30 * 1000) {
+                attemptBackfill(lastConnectedAt, "startup-gap");
+            } else {
+                syncManager.markConnected();
+            }
+            const heartbeatTimer = setInterval(heartbeat, HEARTBEAT_MS);
 
             const jsonMode = program.opts().json;
             const startTime = Date.now();
@@ -171,6 +220,7 @@ export function registerListenCommand(program) {
                             data,
                             `${dir} [${typeLabel}] [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
                         );
+                        heartbeat();
 
                         try {
                             const mForMedia = {
@@ -268,11 +318,18 @@ export function registerListenCommand(program) {
                 api.listener.on("connected", () => {
                     if (reconnectCount > 0) {
                         info(`Reconnected (#${reconnectCount}, uptime: ${uptime()}, events: ${eventCount})`);
+                        // The socket was down for some window (task #4) — try
+                        // to backfill whatever arrived while we were dropped,
+                        // same as the startup-gap check above.
+                        const disconnectedAt = syncManager.getLastDisconnectedAt();
+                        attemptBackfill(disconnectedAt, "reconnect-gap");
                     }
+                    syncManager.markConnected();
                 });
 
                 api.listener.on("disconnected", (code, _reason) => {
                     warning(`Disconnected (code: ${code}). Auto-retrying...`);
+                    syncManager.markDisconnected();
                 });
 
                 api.listener.on("closed", async (code, _reason) => {
@@ -281,14 +338,18 @@ export function registerListenCommand(program) {
                         process.exit(1);
                     }
                     reconnectCount++;
+                    syncManager.markDisconnected();
                     warning(`Connection closed (code: ${code}). Re-login in 5s... (uptime: ${uptime()})`);
                     await new Promise((r) => setTimeout(r, 5000));
                     try {
                         clearSession();
                         await autoLogin(jsonMode);
                         info("Re-login successful. Restarting listener...");
-                        // Attach ALL handlers to the NEW api (including lifecycle)
+                        // Attach ALL handlers to the NEW api (including lifecycle),
+                        // and repoint the SyncManager at it so pollSync() calls
+                        // during the next gap use a live, authenticated client.
                         const newApi = getApi();
+                        syncManager.api = newApi;
                         attachAllHandlers(newApi);
                         newApi.listener.start({ retryOnClose: true });
                     } catch (e) {
@@ -298,6 +359,7 @@ export function registerListenCommand(program) {
                             clearSession();
                             await autoLogin(jsonMode);
                             const retryApi = getApi();
+                            syncManager.api = retryApi;
                             attachAllHandlers(retryApi);
                             retryApi.listener.start({ retryOnClose: true });
                             info("Re-login successful on retry.");
@@ -338,6 +400,16 @@ export function registerListenCommand(program) {
                         getApi().listener.stop();
                     } catch (e) {
                         console.error(`[listen] Stop failed: ${e.message}`);
+                    }
+                    clearInterval(heartbeatTimer);
+                    // Stamp "last known connected" at the moment we stop, so a
+                    // deliberate close (or the process simply exiting) gives
+                    // the NEXT launch an accurate window to backfill from,
+                    // rather than treating this whole downtime as unknown.
+                    try {
+                        syncManager.markConnected();
+                    } catch (e) {
+                        console.error(`[listen] Failed to stamp shutdown state: ${e.message}`);
                     }
                     releaseLock(accountDir);
                     info(`Stopped. Uptime: ${uptime()}, events: ${eventCount}, reconnects: ${reconnectCount}`);

@@ -1,0 +1,125 @@
+diff --git a/node_modules/zca-js/dist/apis.js b/node_modules/zca-js/dist/apis.js
+index c8b38fb..7f0674c 100644
+--- a/node_modules/zca-js/dist/apis.js
++++ b/node_modules/zca-js/dist/apis.js
+@@ -154,6 +154,10 @@ import { uploadAttachmentFactory } from "./apis/uploadAttachment.js";
+ import { uploadProductPhotoFactory } from "./apis/uploadProductPhoto.js";
+ import { votePollFactory } from "./apis/votePoll.js";
+ import { customFactory } from "./apis/custom.js";
++import { requestSyncMessageFactory } from "./apis/requestSyncMessage.js";
++import { pullMobileMsgFactory } from "./apis/pullMobileMsg.js";
++import { getCrossDBFactory } from "./apis/getCrossDB.js";
++import { deleteSnapshotMobileMsgFactory } from "./apis/deleteSnapshotMobileMsg.js";
+ export class API {
+     constructor(ctx, zpwServiceMap, wsUrls) {
+         this.zpwServiceMap = zpwServiceMap;
+@@ -313,5 +317,9 @@ export class API {
+         this.uploadProductPhoto = uploadProductPhotoFactory(ctx, this);
+         this.votePoll = votePollFactory(ctx, this);
+         this.custom = customFactory(ctx, this);
++        this.requestSyncMessage = requestSyncMessageFactory(ctx, this);
++        this.pullMobileMsg = pullMobileMsgFactory(ctx, this);
++        this.getCrossDB = getCrossDBFactory(ctx, this);
++        this.deleteSnapshotMobileMsg = deleteSnapshotMobileMsgFactory(ctx, this);
+     }
+ }
+diff --git a/node_modules/zca-js/dist/apis/deleteSnapshotMobileMsg.js b/node_modules/zca-js/dist/apis/deleteSnapshotMobileMsg.js
+new file mode 100644
+index 0000000..ec513e6
+--- /dev/null
++++ b/node_modules/zca-js/dist/apis/deleteSnapshotMobileMsg.js
+@@ -0,0 +1,18 @@
++import { ZaloApiError } from "../Errors/ZaloApiError.js";
++import { apiFactory } from "../utils.js";
++
++export const deleteSnapshotMobileMsgFactory = apiFactory()((api, ctx, utils) => {
++    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/delete_snapshot_mobile_msg`);
++    return async function deleteSnapshotMobileMsg(publicKey) {
++        const params = {
++            public_key: publicKey,
++            imei: ctx.imei
++        };
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
++            method: "GET"
++        });
++        return utils.resolve(response);
++    };
++});
+diff --git a/node_modules/zca-js/dist/apis/getCrossDB.js b/node_modules/zca-js/dist/apis/getCrossDB.js
+new file mode 100644
+index 0000000..3bf97b9
+--- /dev/null
++++ b/node_modules/zca-js/dist/apis/getCrossDB.js
+@@ -0,0 +1,18 @@
++import { ZaloApiError } from "../Errors/ZaloApiError.js";
++import { apiFactory } from "../utils.js";
++
++export const getCrossDBFactory = apiFactory()((api, _, utils) => {
++    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/get_crossdb`);
++    return async function getCrossDB(syncSession) {
++        const params = {
++            pc_name: "Web",
++            sync_session: syncSession
++        };
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
++            method: "GET"
++        });
++        return utils.resolve(response);
++    };
++});
+diff --git a/node_modules/zca-js/dist/apis/pullMobileMsg.js b/node_modules/zca-js/dist/apis/pullMobileMsg.js
+new file mode 100644
+index 0000000..ef850ea
+--- /dev/null
++++ b/node_modules/zca-js/dist/apis/pullMobileMsg.js
+@@ -0,0 +1,22 @@
++import { ZaloApiError } from "../Errors/ZaloApiError.js";
++import { apiFactory } from "../utils.js";
++
++export const pullMobileMsgFactory = apiFactory()((api, _, utils) => {
++    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/pull_mobile_msg`);
++    return async function pullMobileMsg(publicKey, fromSeqId = 0, isRetry = 0, tempKey = "") {
++        const params = {
++            pc_name: "Web",
++            public_key: publicKey,
++            from_seq_id: fromSeqId,
++            is_retry: isRetry,
++            min_seq_id: 0,
++            temp_key: tempKey
++        };
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
++            method: "GET"
++        });
++        return utils.resolve(response);
++    };
++});
+diff --git a/node_modules/zca-js/dist/apis/requestSyncMessage.js b/node_modules/zca-js/dist/apis/requestSyncMessage.js
+new file mode 100644
+index 0000000..d459340
+--- /dev/null
++++ b/node_modules/zca-js/dist/apis/requestSyncMessage.js
+@@ -0,0 +1,18 @@
++import { ZaloApiError } from "../Errors/ZaloApiError.js";
++import { apiFactory } from "../utils.js";
++
++export const requestSyncMessageFactory = apiFactory()((api, _, utils) => {
++    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/transfer-sync-v2/request-sync`);
++    return async function requestSyncMessage(reqId, data) {
++        const params = {
++            reqId: String(reqId),
++            data: JSON.stringify(data)
++        };
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
++            method: "GET"
++        });
++        return utils.resolve(response);
++    };
++});

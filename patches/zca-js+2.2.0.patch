@@ -1,8 +1,8 @@
 diff --git a/node_modules/zca-js/dist/apis.js b/node_modules/zca-js/dist/apis.js
-index c8b38fb..7f0674c 100644
+index c8b38fb..ebcf8f9 100644
 --- a/node_modules/zca-js/dist/apis.js
 +++ b/node_modules/zca-js/dist/apis.js
-@@ -154,6 +154,10 @@ import { uploadAttachmentFactory } from "./apis/uploadAttachment.js";
+@@ -154,6 +154,11 @@ import { uploadAttachmentFactory } from "./apis/uploadAttachment.js";
  import { uploadProductPhotoFactory } from "./apis/uploadProductPhoto.js";
  import { votePollFactory } from "./apis/votePoll.js";
  import { customFactory } from "./apis/custom.js";
@@ -10,10 +10,11 @@ index c8b38fb..7f0674c 100644
 +import { pullMobileMsgFactory } from "./apis/pullMobileMsg.js";
 +import { getCrossDBFactory } from "./apis/getCrossDB.js";
 +import { deleteSnapshotMobileMsgFactory } from "./apis/deleteSnapshotMobileMsg.js";
++import { logoutV2Factory } from "./apis/logoutV2.js";
  export class API {
      constructor(ctx, zpwServiceMap, wsUrls) {
          this.zpwServiceMap = zpwServiceMap;
-@@ -313,5 +317,9 @@ export class API {
+@@ -313,5 +318,10 @@ export class API {
          this.uploadProductPhoto = uploadProductPhotoFactory(ctx, this);
          this.votePoll = votePollFactory(ctx, this);
          this.custom = customFactory(ctx, this);
@@ -21,6 +22,7 @@ index c8b38fb..7f0674c 100644
 +        this.pullMobileMsg = pullMobileMsgFactory(ctx, this);
 +        this.getCrossDB = getCrossDBFactory(ctx, this);
 +        this.deleteSnapshotMobileMsg = deleteSnapshotMobileMsgFactory(ctx, this);
++        this.logoutV2 = logoutV2Factory(ctx, this);
      }
  }
 diff --git a/node_modules/zca-js/dist/apis/deleteSnapshotMobileMsg.js b/node_modules/zca-js/dist/apis/deleteSnapshotMobileMsg.js
@@ -69,6 +71,392 @@ index 0000000..3bf97b9
 +            method: "GET"
 +        });
 +        return utils.resolve(response);
++    };
++});
+diff --git a/node_modules/zca-js/dist/apis/loginQR.js b/node_modules/zca-js/dist/apis/loginQR.js
+index 7405811..309c23c 100644
+--- a/node_modules/zca-js/dist/apis/loginQR.js
++++ b/node_modules/zca-js/dist/apis/loginQR.js
+@@ -12,16 +12,33 @@ export var LoginQRCallbackEventType;
+     LoginQRCallbackEventType[LoginQRCallbackEventType["QRCodeDeclined"] = 3] = "QRCodeDeclined";
+     LoginQRCallbackEventType[LoginQRCallbackEventType["GotLoginInfo"] = 4] = "GotLoginInfo";
+ })(LoginQRCallbackEventType || (LoginQRCallbackEventType = {}));
++// Client Hints (sec-ch-ua*) for the QR-login handshake, derived from
++// ctx.secChUa/secChUaPlatform/secChUaMobile when the caller supplies them
++// (see zalo-agent-cli's device-fingerprint generator), falling back to the
++// original hardcoded Chrome-130/Windows literals otherwise — so behavior is
++// unchanged for any caller that doesn't set these ctx fields.
++//
++// Why this exists: the User-Agent header sent for this whole handshake
++// (ctx.userAgent, defaulted in zalo.js to a Firefox UA string) previously
++// had NO relationship to these sec-ch-ua values at all — every request
++// claimed "Firefox/133.0" in User-Agent while separately, unconditionally
++// claiming Chromium/Chrome v130 via Client Hints. Real browsers never
++// produce that combination (Firefox doesn't send sec-ch-ua headers), and
++// it was identical across every zca-js install on earth regardless of what
++// was actually running the CLI. Deriving these from the same ctx fields
++// the caller controls for userAgent keeps the whole fingerprint internally
++// consistent.
++function secChUaHeaders(ctx) {
++    var _a, _b, _c;
++    return {
++        "sec-ch-ua": (_a = ctx.secChUa) !== null && _a !== void 0 ? _a : '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
++        "sec-ch-ua-mobile": (_b = ctx.secChUaMobile) !== null && _b !== void 0 ? _b : "?0",
++        "sec-ch-ua-platform": (_c = ctx.secChUaPlatform) !== null && _c !== void 0 ? _c : '"Windows"',
++    };
++}
+ async function loadLoginPage(ctx) {
+     const response = await request(ctx, "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F", {
+-        headers: {
+-            accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+-            "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+-            "cache-control": "max-age=0",
+-            priority: "u=0, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++        headers: Object.assign({ accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7", "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5", "cache-control": "max-age=0", priority: "u=0, i" }, secChUaHeaders(ctx), {
+             "sec-fetch-dest": "document",
+             "sec-fetch-mode": "navigate",
+             "sec-fetch-site": "same-site",
+@@ -29,7 +46,7 @@ async function loadLoginPage(ctx) {
+             "upgrade-insecure-requests": "1",
+             Referer: "https://chat.zalo.me/",
+             "Referrer-Policy": "strict-origin-when-cross-origin",
+-        },
++        }),
+         method: "GET",
+     });
+     const html = await response.text();
+@@ -37,25 +54,34 @@ async function loadLoginPage(ctx) {
+     const match = html.match(regex);
+     return match === null || match === void 0 ? void 0 : match[1];
+ }
++// `continue` target for the id.zalo.me SSO handshake — "https://zalo.me/pc"
++// on getLoginInfo/verifyClient/generate, distinct from loadLoginPage/
++// waitingScan/waitingConfirm/checkSession's "https://chat.zalo.me/". TWO
++// live-tested attempts (2026-09-19) to unify these on "chat.zalo.me/" both
++// broke QR generation outright (phone reports the QR invalid/unreadable on
++// scan), even after adding the `cliGenQR=1` flag a live capture of the real
++// web client showed on its generate() call. Reverted both times. Whatever
++// the real server-side check is, it isn't fully explained by this request's
++// body fields alone — plausibly something header- or cookie-level from an
++// actual browser session (a CSRF/anti-forgery token embedded in the real
++// loadLoginPage HTML response and echoed back on later calls, which this
++// library never reads because it only regex-extracts the login version out
++// of that HTML — or an Origin/sec-fetch header combination a non-browser
++// HTTP client can't authentically reproduce). Leave `continue` alone here;
++// don't re-attempt this without capturing full REQUEST headers (not just
++// body) from a real browser session for comparison, not just the body.
+ async function getLoginInfo(ctx, version) {
+     const form = new URLSearchParams();
+     form.append("continue", "https://zalo.me/pc");
+     form.append("v", version);
+     return await request(ctx, "https://id.zalo.me/account/logininfo", {
+-        headers: {
+-            accept: "*/*",
+-            "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+-            "content-type": "application/x-www-form-urlencoded",
+-            priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++        headers: Object.assign({ accept: "*/*", "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5", "content-type": "application/x-www-form-urlencoded", priority: "u=1, i" }, secChUaHeaders(ctx), {
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fzalo.me%2Fpc",
+             "Referrer-Policy": "strict-origin-when-cross-origin",
+-        },
++        }),
+         body: form,
+         method: "POST",
+     })
+@@ -68,20 +94,13 @@ async function verifyClient(ctx, version) {
+     form.append("continue", "https://zalo.me/pc");
+     form.append("v", version);
+     return await request(ctx, "https://id.zalo.me/account/verify-client", {
+-        headers: {
+-            accept: "*/*",
+-            "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+-            "content-type": "application/x-www-form-urlencoded",
+-            priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++        headers: Object.assign({ accept: "*/*", "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5", "content-type": "application/x-www-form-urlencoded", priority: "u=1, i" }, secChUaHeaders(ctx), {
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fzalo.me%2Fpc",
+             "Referrer-Policy": "strict-origin-when-cross-origin",
+-        },
++        }),
+         body: form,
+         method: "POST",
+     })
+@@ -93,20 +112,13 @@ async function generate(ctx, version) {
+     form.append("continue", "https://zalo.me/pc");
+     form.append("v", version);
+     return await request(ctx, "https://id.zalo.me/account/authen/qr/generate", {
+-        headers: {
+-            accept: "*/*",
+-            "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+-            "content-type": "application/x-www-form-urlencoded",
+-            priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++        headers: Object.assign({ accept: "*/*", "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5", "content-type": "application/x-www-form-urlencoded", priority: "u=1, i" }, secChUaHeaders(ctx), {
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fzalo.me%2Fpc",
+             "Referrer-Policy": "strict-origin-when-cross-origin",
+-        },
++        }),
+         body: form,
+         method: "POST",
+     })
+@@ -122,20 +134,13 @@ async function waitingScan(ctx, version, code, signal) {
+     form.append("continue", "https://chat.zalo.me/");
+     form.append("v", version);
+     return await request(ctx, "https://id.zalo.me/account/authen/qr/waiting-scan", {
+-        headers: {
+-            accept: "*/*",
+-            "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+-            "content-type": "application/x-www-form-urlencoded",
+-            priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++        headers: Object.assign({ accept: "*/*", "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5", "content-type": "application/x-www-form-urlencoded", priority: "u=1, i" }, secChUaHeaders(ctx), {
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F",
+             "Referrer-Policy": "strict-origin-when-cross-origin",
+-        },
++        }),
+         body: form,
+         method: "POST",
+         signal,
+@@ -153,28 +158,29 @@ async function waitingScan(ctx, version, code, signal) {
+     });
+ }
+ async function waitingConfirm(ctx, version, code, signal) {
++    // Live-captured 2026-09-19 from the real chat.zalo.me/id.zalo.me web
++    // client: its waiting-confirm request body is ONLY continue+code+v (the
++    // same three fields waitingScan sends) — never gToken/gAction. Sending
++    // those two extra, real-client-never-sends fields (as upstream zca-js
++    // did) is very likely why a decline on the phone was never observed
++    // here: the real client's identical 3-field long-poll got error_code
++    // -13 back in a single ~8s round trip the moment the phone declined,
++    // while zca-js kept getting error_code 8 (busy-wait) over and over
++    // until the outer 100s QR timer killed the whole login attempt. Dropped
++    // to match the real client exactly.
+     const form = new URLSearchParams();
+     form.append("code", code);
+-    form.append("gToken", "");
+-    form.append("gAction", "CONFIRM_QR");
+     form.append("continue", "https://chat.zalo.me/");
+     form.append("v", version);
+     logger(ctx).info("Please confirm on your phone");
+     return await request(ctx, "https://id.zalo.me/account/authen/qr/waiting-confirm", {
+-        headers: {
+-            accept: "*/*",
+-            "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+-            "content-type": "application/x-www-form-urlencoded",
+-            priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++        headers: Object.assign({ accept: "*/*", "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5", "content-type": "application/x-www-form-urlencoded", priority: "u=1, i" }, secChUaHeaders(ctx), {
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F",
+             "Referrer-Policy": "strict-origin-when-cross-origin",
+-        },
++        }),
+         body: form,
+         method: "POST",
+         signal,
+@@ -193,39 +199,27 @@ async function waitingConfirm(ctx, version, code, signal) {
+ }
+ async function checkSession(ctx) {
+     return await request(ctx, "https://id.zalo.me/account/checksession?continue=https%3A%2F%2Fchat.zalo.me%2Findex.html", {
+-        headers: {
+-            accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+-            "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+-            priority: "u=0, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++        headers: Object.assign({ accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7", "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5", priority: "u=0, i" }, secChUaHeaders(ctx), {
+             "sec-fetch-dest": "document",
+             "sec-fetch-mode": "navigate",
+             "sec-fetch-site": "same-origin",
+             "upgrade-insecure-requests": "1",
+             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F",
+             "Referrer-Policy": "strict-origin-when-cross-origin",
+-        },
++        }),
+         redirect: "manual",
+         method: "GET",
+     }).catch(logger(ctx).error);
+ }
+ async function getUserInfo(ctx) {
+     return await request(ctx, "https://jr.chat.zalo.me/jr/userinfo", {
+-        headers: {
+-            accept: "*/*",
+-            "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+-            priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++        headers: Object.assign({ accept: "*/*", "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5", priority: "u=1, i" }, secChUaHeaders(ctx), {
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-site",
+             Referer: "https://chat.zalo.me/",
+             "Referrer-Policy": "strict-origin-when-cross-origin",
+-        },
++        }),
+         method: "GET",
+     })
+         .then((res) => res.json())
+@@ -234,6 +228,13 @@ async function getUserInfo(ctx) {
+ export async function loginQR(ctx, options, callback) {
+     ctx.cookie = new CookieJar();
+     ctx.userAgent = options.userAgent;
++    // See secChUaHeaders() above — falls back to the original hardcoded
++    // Chrome-130/Windows literals when the caller (an older zalo-agent-cli,
++    // or any other zca-js consumer) doesn't pass these, so this is purely
++    // additive and doesn't change behavior for anyone not opting in.
++    ctx.secChUa = options.secChUa;
++    ctx.secChUaPlatform = options.secChUaPlatform;
++    ctx.secChUaMobile = options.secChUaMobile;
+     return new Promise(async (resolve, reject) => {
+         var _a;
+         const controller = new AbortController();
+@@ -322,6 +323,18 @@ export async function loginQR(ctx, options, callback) {
+                 throw new ZaloApiError("Cannot get confirm result");
+             clearTimeout(qrTimeout);
+             if (confirmResult.error_code == -13) {
++                // Decline is a terminal state — settle the outer Promise
++                // either way. Upstream zca-js only rejected in the
++                // no-callback branch; with a callback, it fired the
++                // QRCodeDeclined event and then just `return`ed, leaving
++                // the Promise this function returns permanently pending
++                // (the caller's `await loginQR(...)` — e.g.
++                // zalo-agent-cli's `await loginWithQR(...)` — would hang
++                // until the unrelated 100s qrTimeout eventually fired,
++                // misreporting the decline as an expiry). Now the callback
++                // (when present) still fires first for UI purposes, but
++                // this always rejects afterward so the promise settles
++                // immediately.
+                 if (callback) {
+                     callback({
+                         type: LoginQRCallbackEventType.QRCodeDeclined,
+@@ -334,11 +347,9 @@ export async function loginQR(ctx, options, callback) {
+                         },
+                     });
+                 }
+-                else {
+-                    logger(ctx).error("QRCode login declined");
+-                    throw new ZaloApiLoginQRDeclined();
+-                }
+-                return;
++                logger(ctx).error("QRCode login declined");
++                cleanUp();
++                return reject(new ZaloApiLoginQRDeclined());
+             }
+             else if (confirmResult.error_code != 0) {
+                 throw new ZaloApiError(`An error has occurred.\nResponse: ${JSON.stringify(confirmResult, null, 2)}`);
+diff --git a/node_modules/zca-js/dist/apis/logoutV2.js b/node_modules/zca-js/dist/apis/logoutV2.js
+new file mode 100644
+index 0000000..e250100
+--- /dev/null
++++ b/node_modules/zca-js/dist/apis/logoutV2.js
+@@ -0,0 +1,79 @@
++import { ZaloApiError } from "../Errors/ZaloApiError.js";
++import { apiFactory } from "../utils.js";
++
++// CONFIRMED live 2026-09-19 against a real account. Mirrors Zalo Web's own
++// `ServiceURL.logoutV2(imei, compId?)` (commandId 12743, POST
++// /api/v2/login/logOut), reverse-engineered from the production webpack
++// bundle:
++//   static logoutV2(e,t=void 0){
++//     const a = _.b.getDevDomainV3() + "/api/v2/login/logOut?" + this._getCommonParams();
++//     let s = { time, imei: e, computer_name, language };
++//     if (t !== void 0) s.compId = t;
++//     return this._post(a, "params=" + encodeURIComponent(encodeAES(JSON.stringify(s))), null, 12743);
++//   }
++//
++// DOMAIN — resolved by trial (each guess live-tested against a real
++// account):
++//   1. `zpwServiceMap.aext` (aextra-wpa.chat.zalo.me) — the accessor
++//      `getListDevice` uses. DISPROVEN: real HTTP 404.
++//   2. `zpwServiceMap.zavi` (wpa.zaloapp.com) — DISPROVEN: reachable, but a
++//      real API error ({error_code:102, "session key was improperly
++//      submitted..."}) — `zaloapp.com` is a different registrable domain
++//      from `zalo.me`, so the zpw_sek session cookie (scoped to `.zalo.me`)
++//      never reached it.
++//   3. `https://wpa.chat.zalo.me` (HARDCODED, not from zpwServiceMap) —
++//      CONFIRMED CORRECT, live-tested 2026-09-19. Matches `getSettings.js`
++//      in this same package (a genuinely working, authenticated,
++//      hardcoded-domain call) and the known hardcoded PRE-login host this
++//      package's `login.js` already uses. Live response:
++//      `{"error_code":0,"error_message":"Successful.","data":1}`.
++//   4. `https://stg-wpa.chat.zalo.me` — what the real production webpack
++//      bundle's `getDevDomainV3()` singleton actually returned when called
++//      live in-browser 2026-09-18 (via webpack-jsonp module-cache capture,
++//      zero real requests made). CONFIRMED CORRECT end-to-end, live-tested
++//      2026-09-19 via a real `logout --purge`: "Server session invalidated
++//      for imei e239d3d5…", no fallback warning — a real authenticated
++//      call against this domain, not just the direct-call capture. ACTIVE
++//      BELOW. Candidate #3 above is left documented as the previously-
++//      confirmed fallback in case this domain is ever retired/changed, but
++//      is no longer needed.
++//
++// ENCRYPTION — the response body above is CONFIRMED to be plain JSON, not
++// the usual AES-encrypted `data` field most zca-js API responses use.
++// `utils.resolve()` defaults to `isEncrypted = true`, which tried to
++// AES-decrypt the literal number `1` and, because crypto-js silently
++// returns an empty string on bad ciphertext/padding rather than throwing,
++// produced "Failed to parse response data: SyntaxError: Unexpected end of
++// JSON input" (from `JSON.parse("")`) even though the call had already
++// succeeded server-side. Fixed by passing `isEncrypted = false` to
++// `utils.resolve()` here so `result.data` is used as-is.
++//
++// (Earlier iterations of this file also had a real bug where
++// `utils.resolve(response)` was called without `await` — since it wraps
++// an `async function`, that returned a pending Promise instead of the
++// actual result, which silently broke a since-removed multi-candidate
++// fallback loop. Not relevant now that the domain is confirmed and this
++// is back to a single direct call, but noted here in case this file ever
++// grows a retry/fallback again: always `await utils.resolve(...)`.)
++export const logoutV2Factory = apiFactory()((api, ctx, utils) => {
++    const serviceURL = utils.makeURL("https://stg-wpa.chat.zalo.me/api/v2/login/logOut");
++    return async function logoutV2(compId = undefined) {
++        const params = {
++            time: Date.now(),
++            imei: ctx.imei,
++            computer_name: "Web",
++            language: ctx.language || "vi"
++        };
++        if (compId !== undefined) params.compId = compId;
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(serviceURL, {
++            method: "POST",
++            body: new URLSearchParams({
++                params: encryptedParams,
++            }),
++        });
++        // isEncrypted = false — see the file header note above.
++        return await utils.resolve(response, undefined, false);
 +    };
 +});
 diff --git a/node_modules/zca-js/dist/apis/pullMobileMsg.js b/node_modules/zca-js/dist/apis/pullMobileMsg.js

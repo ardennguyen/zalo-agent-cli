@@ -18,14 +18,17 @@ export function initDb(dbPath) {
       text TEXT,
       timestamp INTEGER,
       type TEXT,
-      raw_data TEXT
+      raw_data TEXT,
+      localPath TEXT,
+      has_attachment INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS threads (
       threadId TEXT PRIMARY KEY,
       type TEXT,
       name TEXT,
-      lastUpdate INTEGER
+      lastUpdate INTEGER,
+      sync_timestamp INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS contacts (
@@ -35,6 +38,19 @@ export function initDb(dbPath) {
     );
   `);
 
+    // Migration for existing DBs
+    try {
+        db.exec("ALTER TABLE messages ADD COLUMN localPath TEXT");
+    } catch (e) {
+        // column probably already exists
+    }
+    try {
+        db.exec("ALTER TABLE messages ADD COLUMN has_attachment INTEGER DEFAULT 0");
+    } catch (e) {}
+    try {
+        db.exec("ALTER TABLE threads ADD COLUMN sync_timestamp INTEGER DEFAULT 0");
+    } catch (e) {}
+
     return db;
 }
 
@@ -42,13 +58,15 @@ export function insertMessage(msg) {
     if (!db) throw new Error("Database not initialized");
 
     const stmt = db.prepare(`
-    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data)
-    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data)
+    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment)
+    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment)
     ON CONFLICT(msgId) DO UPDATE SET
       text = excluded.text,
       timestamp = excluded.timestamp,
       type = excluded.type,
-      raw_data = excluded.raw_data
+      raw_data = excluded.raw_data,
+      localPath = COALESCE(excluded.localPath, messages.localPath),
+      has_attachment = excluded.has_attachment
   `);
 
     const raw_data =
@@ -63,6 +81,8 @@ export function insertMessage(msg) {
         timestamp: msg.timestamp,
         type: msg.type,
         raw_data: raw_data,
+        localPath: msg.localPath || null,
+        has_attachment: msg.has_attachment ? 1 : 0,
     });
 }
 
@@ -92,12 +112,13 @@ export function upsertThread(thread) {
     if (!db) throw new Error("Database not initialized");
 
     const stmt = db.prepare(`
-    INSERT INTO threads (threadId, type, name, lastUpdate)
-    VALUES (@threadId, @type, @name, @lastUpdate)
+    INSERT INTO threads (threadId, type, name, lastUpdate, sync_timestamp)
+    VALUES (@threadId, @type, @name, @lastUpdate, @sync_timestamp)
     ON CONFLICT(threadId) DO UPDATE SET
       type = excluded.type,
       name = excluded.name,
-      lastUpdate = excluded.lastUpdate
+      lastUpdate = excluded.lastUpdate,
+      sync_timestamp = COALESCE(excluded.sync_timestamp, threads.sync_timestamp)
   `);
 
     return stmt.run({
@@ -105,6 +126,7 @@ export function upsertThread(thread) {
         type: thread.type,
         name: thread.name,
         lastUpdate: thread.lastUpdate,
+        sync_timestamp: thread.sync_timestamp || null,
     });
 }
 

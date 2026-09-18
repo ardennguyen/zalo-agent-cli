@@ -12,6 +12,7 @@ import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { initDb, insertMessage, upsertThread } from "../core/db.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
+import { processMessageMedia } from "../core/media-downloader.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -172,6 +173,13 @@ export function registerListenCommand(program) {
                         );
 
                         try {
+                            const mForMedia = {
+                                msgId: String(msg.data.msgId),
+                                raw_data: typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent),
+                                type: msgType || "attachment",
+                            };
+                            const mediaProcessed = await processMessageMedia(mForMedia);
+
                             const parsedText = isText ? rawContent : extractMessageText(rawContent, msgType);
                             upsertThread({
                                 threadId: String(msg.threadId),
@@ -188,6 +196,7 @@ export function registerListenCommand(program) {
                                 timestamp: msg.data.ts ? Number(msg.data.ts) : Date.now(),
                                 type: isText ? "text" : msgType || "attachment",
                                 raw_data: rawContent,
+                                localPath: mediaProcessed.localPath || null,
                             });
                         } catch (err) {
                             console.error(`[listen] DB Insert failed: ${err.message}`);

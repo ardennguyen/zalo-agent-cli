@@ -10,6 +10,12 @@ import { extractMessageText } from "../utils/extract-message-text.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getMessages, insertMessage } from "../core/db.js";
+import { processMessageMedia } from "../core/media-downloader.js";
+import { pathToFileURL } from "url";
+
+const utilsPath = join(process.cwd(), "node_modules", "zca-js", "dist", "utils.js");
+const utils = await import(pathToFileURL(utilsPath).href);
+const { request, makeURL } = utils;
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -523,10 +529,11 @@ export function registerMsgCommands(program) {
                 initDb(join(accountDir, "zalo.db"));
                 dbActive = true;
 
-                if (!opts.noCache) {
+                if (opts.cache !== false) {
                     localMsgs = getMessages(threadId, limit);
                     if (localMsgs && localMsgs.length >= limit) {
                         if (!jsonMode) info(`Found ${localMsgs.length} messages in local cache.`);
+                        await Promise.all(localMsgs.map((m) => processMessageMedia(m)));
                         const messages = localMsgs.map((m) => ({
                             msgId: m.msgId,
                             threadId: m.threadId,
@@ -535,6 +542,7 @@ export function registerMsgCommands(program) {
                             text: m.text,
                             timestamp: m.timestamp,
                             type: m.type,
+                            localPath: m.localPath,
                         }));
 
                         output(
@@ -551,7 +559,8 @@ export function registerMsgCommands(program) {
                                 for (const m of messages) {
                                     const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                                     const name = m.senderName || m.senderId || "?";
-                                    console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                                    const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
+                                    console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
                                 }
                             },
                         );
@@ -561,7 +570,7 @@ export function registerMsgCommands(program) {
                             `Found only ${localMsgs.length} messages in cache. Falling back to live fetch to reach limit of ${limit}.`,
                         );
                     }
-                } else if (!jsonMode) {
+                } else if (opts.cache === false && !jsonMode) {
                     info(`--no-cache specified. Fetching live from server and amending database.`);
                 }
             } catch (err) {
@@ -577,6 +586,26 @@ export function registerMsgCommands(program) {
 
                 let fetchedMessages = [];
                 let usedRestApi = false;
+
+                // Auto-sync: Trigger a silent pull_mobile_msg to ensure server has the latest encrypted payloads
+                // from the phone before we fetch them via REST or WebSocket.
+                if (!jsonMode) info("Triggering background sync to ensure latest messages...");
+                try {
+                    const ctx = api.getContext();
+                    const url = makeURL(ctx, `${api.zpwServiceMap.file[0]}/api/message/pull_mobile_msg`, {
+                        pc_name: "Web",
+                        public_key: "",
+                        from_seq_id: 0,
+                        is_retry: 0,
+                        min_seq_id: 0,
+                        temp_key: "",
+                        imei: ctx.imei,
+                    });
+                    // Fire and wait briefly
+                    await request(ctx, url).catch(() => {});
+                } catch (e) {
+                    // Ignore sync errors
+                }
 
                 if (threadType === 1) {
                     // Group: Try REST API first
@@ -707,6 +736,7 @@ export function registerMsgCommands(program) {
                 mergedArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
                 const result = mergedArray.slice(0, limit);
+                await Promise.all(result.map((m) => processMessageMedia(m)));
 
                 // Format final output
                 const cleanResult = result.map((m) => {
@@ -729,7 +759,8 @@ export function registerMsgCommands(program) {
                         for (const m of cleanResult) {
                             const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                             const name = m.senderName || m.senderId || "?";
-                            console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}`);
+                            const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
+                            console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
                         }
                     },
                 );

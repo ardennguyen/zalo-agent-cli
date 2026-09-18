@@ -6,6 +6,9 @@ accounts.json
 .env
 .env.*
 qr.png
+test_qr.png
+confirm_payload.json
+history_dump.json
 *.log
 .DS_Store
 

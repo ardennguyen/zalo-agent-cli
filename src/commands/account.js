@@ -5,7 +5,15 @@
 
 import { writeFileSync, chmodSync } from "fs";
 import { resolve } from "path";
-import { loginWithQR, loginWithCredentials, extractCredentials, clearSession } from "../core/zalo-client.js";
+import {
+    loginWithQR,
+    loginWithCredentials,
+    extractCredentials,
+    clearSession,
+    getApi,
+    autoLogin,
+    isLoggedIn,
+} from "../core/zalo-client.js";
 import { saveCredentials, loadCredentials } from "../core/credentials.js";
 import { listAccounts, getActive, setActive, addAccount, removeAccount, getAccount } from "../core/accounts.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
@@ -116,10 +124,50 @@ export function registerAccountCommands(program) {
 
     account
         .command("remove <ownerId>")
-        .description("Remove account and delete its credentials")
-        .action((ownerId) => {
-            if (removeAccount(ownerId)) {
-                success(`Account ${ownerId} removed`);
+        .description(
+            "Fully remove an account from this machine: invalidates its server-side session (if it's the active/logged-in one), wipes its local data directory (db, media, sync keys, daemon.lock), deletes its credentials, and drops it from the registry",
+        )
+        .action(async (ownerId) => {
+            const acc = getAccount(ownerId);
+            if (!acc) {
+                error(`Account not found: ${ownerId}`);
+                return;
+            }
+
+            // Best-effort remote session invalidation, mirroring what
+            // `logout` does — same reverse-engineered logoutV2() call. Only
+            // attempted when the account being removed is the currently
+            // active one, since that's the only case where autoLogin() can
+            // give us a live API session to invalidate through; a
+            // non-active account's server-side session (if any) is left
+            // alone, same as this command always did.
+            if (getActive()?.ownId === ownerId) {
+                await autoLogin(program.opts().json);
+                if (isLoggedIn()) {
+                    try {
+                        await getApi().logoutV2();
+                        info(`Server session invalidated for ${ownerId}`);
+                    } catch (e) {
+                        warning(
+                            `Could not confirm server-side logout for ${ownerId} (continuing with local removal): ${e.message}`,
+                        );
+                    }
+                } else {
+                    warning(`Could not establish a session to invalidate remotely for ${ownerId} (continuing with local removal)`);
+                }
+                clearSession();
+            }
+
+            const { removed, wiped, skippedLocked } = removeAccount(ownerId);
+            if (skippedLocked) {
+                warning(
+                    `Removal aborted: a "listen" daemon (pid ${skippedLocked.pid}) is still running for ${ownerId}. Stop it, then re-run.`,
+                );
+                info("Credentials and account registration were left untouched.");
+                return;
+            }
+            if (removed) {
+                success(`Account ${ownerId} removed${wiped ? " — local data deleted" : ""}`);
             } else {
                 error(`Account not found: ${ownerId}`);
             }
@@ -174,5 +222,43 @@ export function registerAccountCommands(program) {
             success(`Exported to ${outPath}`);
             warning("This file contains login credentials. Keep it secure and do not commit to git.");
             info(`Import on another machine: zalo-agent login --credentials ${opts.output}`);
+        });
+
+    account
+        .command("devices")
+        .description("List devices/sessions currently linked to this account (read-only)")
+        .action(async () => {
+            try {
+                // "account" subcommands are excluded from the preAction
+                // autoLogin hook (they run their own explicit login/switch
+                // flows), so trigger it here — same pattern mcp.js uses.
+                await autoLogin(program.opts().json);
+                // getListDevice() returns { devices: {...} } directly —
+                // zca-js's resolveResponse() unwraps result.data itself
+                // when called with no callback, so there's no extra .data
+                // layer to destructure here (confirmed against the real
+                // API: destructuring .data silently produced undefined).
+                const result = await getApi().getListDevice();
+                const devices = result?.devices;
+                const companions = devices?.companions || [];
+                output({ devices }, program.opts().json, () => {
+                    if (!devices) {
+                        info("No device data returned.");
+                        return;
+                    }
+                    console.log(`  This session (master): ${devices.masterId}`);
+                    console.log(`  Last updated:          ${new Date(devices.lastUpdateTs).toLocaleString()}`);
+                    if (!companions.length) {
+                        info("No other devices/sessions linked to this account.");
+                    } else {
+                        console.log(`  Other linked sessions (${companions.length}):`);
+                        for (const c of companions) {
+                            console.log(`    - ${JSON.stringify(c)}`);
+                        }
+                    }
+                });
+            } catch (e) {
+                error(`Failed to list devices: ${e.message}`);
+            }
         });
 }

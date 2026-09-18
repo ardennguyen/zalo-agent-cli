@@ -4,12 +4,13 @@
  */
 
 import fs from "fs";
-import { Zalo, LoginQRCallbackEventType } from "zca-js";
+import { Zalo } from "zca-js";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { ProxyAgent } from "undici";
 import { getActive } from "./accounts.js";
 import { loadCredentials } from "./credentials.js";
 import { info } from "../utils/output.js";
+import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
 
 /**
  * Read image dimensions from file header bytes (PNG, JPEG, GIF).
@@ -147,14 +148,43 @@ export async function loginWithCredentials(creds, proxyUrl = null) {
  * @param {function} onQrGenerated - callback(qrData) when QR is ready
  * @returns {object} - {api, ownId}
  */
-export async function loginWithQR(proxyUrl = null, onQrGenerated = null) {
+export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
     const zalo = createZalo(proxyUrl);
 
-    const api = await zalo.loginQR(null, (event) => {
-        if (event.type === LoginQRCallbackEventType.QRCodeGenerated && onQrGenerated) {
-            onQrGenerated(event);
-        }
-    });
+    // Zalo's server reads the sec-ch-ua Client Hints headers (not the
+    // User-Agent header) to fill in the "Thiết bị" device label on the
+    // phone's QR-confirm screen. zca-js's own default is internally
+    // inconsistent — a Firefox User-Agent alongside hardcoded Chrome
+    // Client Hints, a combination no real browser produces, and identical
+    // across every zca-js install. Generating a coherent, varied
+    // fingerprint here (once, at initial QR login) fixes both: the device
+    // label becomes accurate, and it's no longer a fixed, correlatable
+    // signal shared by every user of this tool. It persists automatically
+    // for this account afterward via the saved credentials' userAgent
+    // field — see extractCredentials()/loginWithCredentials() below.
+    const fingerprint = generateDeviceFingerprint();
+    info(`Using device fingerprint: Chrome (${fingerprint.secChUaPlatform.replace(/"/g, "")})`);
+
+    const api = await zalo.loginQR(
+        {
+            userAgent: fingerprint.userAgent,
+            secChUa: fingerprint.secChUa,
+            secChUaPlatform: fingerprint.secChUaPlatform,
+            secChUaMobile: fingerprint.secChUaMobile,
+        },
+        (event) => {
+            // Forward every event type (QRCodeGenerated, QRCodeScanned,
+            // QRCodeDeclined, QRCodeExpired) — not just QRCodeGenerated,
+            // which is all this used to pass through (hence the old
+            // "onQrGenerated" name). Callers that only care about the QR
+            // image (account.js's `account login`) are unaffected: they
+            // already call displayQR(event) unconditionally, which no-ops
+            // on event types without an image.
+            if (onQrEvent) {
+                onQrEvent(event);
+            }
+        },
+    );
 
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);

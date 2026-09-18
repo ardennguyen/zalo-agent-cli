@@ -5,7 +5,9 @@
 import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import nodefetch from "node-fetch";
+// Node >=22 (see engines in package.json) has a native, global `fetch` —
+// no need for the `node-fetch` package, which drags in a deprecated
+// node-domexception polyfill via formdata-polyfill/fetch-blob.
 
 /** Bank name aliases (lowercase, no spaces) → BIN codes. */
 export const BANK_NAME_TO_BIN = {
@@ -219,9 +221,12 @@ export async function generateQrTransferImage(bin, accountNumber, amount = null,
     const outPath = join(tmpDir, "qr.png");
 
     try {
-        const resp = await nodefetch(url, {
+        // node-fetch's `timeout` option isn't a thing on native fetch —
+        // use AbortSignal.timeout() instead (same pattern already used for
+        // the webhook POST in commands/listen.js).
+        const resp = await fetch(url, {
             headers: { "User-Agent": "Mozilla/5.0" },
-            timeout: 15000,
+            signal: AbortSignal.timeout(15000),
         });
         if (!resp.ok) return null;
         const buffer = Buffer.from(await resp.arrayBuffer());

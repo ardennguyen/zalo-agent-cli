@@ -21,11 +21,21 @@ export function registerFriendCommands(program) {
             try {
                 const result = await getApi().getAllFriends();
                 output(result, program.opts().json, () => {
-                    const profiles = result?.changed_profiles || result || {};
-                    const entries = Object.entries(profiles);
-                    info(`${entries.length} friends`);
-                    for (const [uid, p] of entries) {
-                        console.log(`  ${uid}  ${p.displayName || p.zaloName || "?"}`);
+                    const friends = Array.isArray(result) ? result : [];
+
+                    // Sort by lastActionTime (most recent interaction first)
+                    const sorted = [...friends].sort((a, b) => {
+                        const tA = a.lastActionTime || 0;
+                        const tB = b.lastActionTime || 0;
+                        return tB - tA;
+                    });
+
+                    info(`${sorted.length} friend(s)`);
+                    for (const p of sorted) {
+                        const dateStr = p.lastActionTime ? new Date(p.lastActionTime * 1000).toLocaleString() : "Never";
+                        console.log(
+                            `  ${p.userId.padEnd(20)}  ${(p.displayName || p.zaloName || "?").padEnd(25)} [Last Activity: ${dateStr}]`,
+                        );
                     }
                 });
             } catch (e) {

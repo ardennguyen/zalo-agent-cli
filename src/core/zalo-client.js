@@ -195,7 +195,8 @@ export async function autoLogin(jsonMode = false) {
         if (!jsonMode) {
             info(`Auto-login: ${active.name || active.ownId}`);
         }
-    } catch {
+    } catch (e) {
         // Silent failure — user can login manually
+        console.error("AutoLogin failed:", e.message);
     }
 }

@@ -59,9 +59,15 @@ export function registerMCPCommands(program) {
         .option("--auth <token>", "Bearer token for HTTP auth (only with --http)")
         .option("--host <address>", "HTTP bind address (default: 127.0.0.1, only with --http)")
         .action(async (opts) => {
+            // Safety net: redirect ALL console.log to stderr for the entire MCP process.
+            // Stdout is the MCP JSON-RPC transport — any non-JSON output corrupts the stream.
+            // This catches rogue prints from dependencies (zca-js, chalk, etc.) that we can't control.
+            console.log = (...args) => console.error(...args);
+
             // Perform login explicitly here — preAction hook skips "mcp"
+            // Pass jsonMode=true to suppress info() output — stdout is the MCP transport channel
             try {
-                await autoLogin(false);
+                await autoLogin(true);
             } catch (e) {
                 console.error("[mcp] Auto-login failed:", e.message);
                 process.exit(1);
@@ -165,7 +171,7 @@ export function registerMCPCommands(program) {
                     await new Promise((r) => setTimeout(r, 5000));
                     try {
                         clearSession();
-                        await autoLogin(false);
+                        await autoLogin(true);
                         console.error("[mcp] Re-login successful. Restarting listener...");
                         const newApi = getApi();
                         attachListenerHandlers(newApi);
@@ -175,7 +181,7 @@ export function registerMCPCommands(program) {
                         await new Promise((r) => setTimeout(r, 30000));
                         try {
                             clearSession();
-                            await autoLogin(false);
+                            await autoLogin(true);
                             const retryApi = getApi();
                             attachListenerHandlers(retryApi);
                             retryApi.listener.start({ retryOnClose: true });

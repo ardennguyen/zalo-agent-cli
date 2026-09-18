@@ -28,6 +28,7 @@ import { registerCatalogCommands } from "./commands/catalog.js";
 import { registerListenCommand } from "./commands/listen.js";
 import { registerOACommands } from "./commands/oa.js";
 import { registerMCPCommands } from "./commands/mcp.js";
+import { registerSyncCommands } from "./commands/sync.js";
 import { autoLogin } from "./core/zalo-client.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
 import { success, error, warning } from "./utils/output.js";
@@ -91,5 +92,6 @@ registerCatalogCommands(program);
 registerListenCommand(program);
 registerOACommands(program);
 registerMCPCommands(program);
+registerSyncCommands(program);
 
 program.parse();

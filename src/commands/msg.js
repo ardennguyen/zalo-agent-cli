@@ -11,11 +11,6 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getMessages, insertMessage } from "../core/db.js";
 import { processMessageMedia } from "../core/media-downloader.js";
-import { pathToFileURL } from "url";
-
-const utilsPath = join(process.cwd(), "node_modules", "zca-js", "dist", "utils.js");
-const utils = await import(pathToFileURL(utilsPath).href);
-const { request, makeURL } = utils;
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -533,7 +528,28 @@ export function registerMsgCommands(program) {
                     localMsgs = getMessages(threadId, limit);
                     if (localMsgs && localMsgs.length >= limit) {
                         if (!jsonMode) info(`Found ${localMsgs.length} messages in local cache.`);
-                        await Promise.all(localMsgs.map((m) => processMessageMedia(m)));
+                        // processMessageMedia() only mutates the in-memory row —
+                        // it doesn't write back to zalo.db itself. Previously a
+                        // lazily-discovered localPath was shown in this one
+                        // command's output and then forgotten: the DB row stayed
+                        // NULL forever unless that message separately came
+                        // through the live-fetch amend path. Persist it back
+                        // here (only when it's newly found, to avoid a write on
+                        // every single cache read).
+                        await Promise.all(
+                            localMsgs.map(async (m) => {
+                                const hadLocalPath = !!m.localPath;
+                                await processMessageMedia(m);
+                                if (!hadLocalPath && m.localPath) {
+                                    try {
+                                        insertMessage(m);
+                                    } catch (e) {
+                                        // Non-fatal — the path is still shown in this
+                                        // command's output even if persisting it fails.
+                                    }
+                                }
+                            }),
+                        );
                         const messages = localMsgs.map((m) => ({
                             msgId: m.msgId,
                             threadId: m.threadId,
@@ -586,26 +602,6 @@ export function registerMsgCommands(program) {
 
                 let fetchedMessages = [];
                 let usedRestApi = false;
-
-                // Auto-sync: Trigger a silent pull_mobile_msg to ensure server has the latest encrypted payloads
-                // from the phone before we fetch them via REST or WebSocket.
-                if (!jsonMode) info("Triggering background sync to ensure latest messages...");
-                try {
-                    const ctx = api.getContext();
-                    const url = makeURL(ctx, `${api.zpwServiceMap.file[0]}/api/message/pull_mobile_msg`, {
-                        pc_name: "Web",
-                        public_key: "",
-                        from_seq_id: 0,
-                        is_retry: 0,
-                        min_seq_id: 0,
-                        temp_key: "",
-                        imei: ctx.imei,
-                    });
-                    // Fire and wait briefly
-                    await request(ctx, url).catch(() => {});
-                } catch (e) {
-                    // Ignore sync errors
-                }
 
                 if (threadType === 1) {
                     // Group: Try REST API first

@@ -39,7 +39,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > zalo-agent mcp start              # stdio (local Claude Code)
 > zalo-agent mcp start --http 3847 --auth your-secret  # HTTP (VPS)
 > ```
-> 4 tools: get_messages · send_message · list_threads · mark_read
+> 7 tools: get_messages · send_message · list_threads · search_threads · mark_read · get_history · view_media
 > Auto-reconnect · thread filter · noise reduction · group notifications
 > Xem [MCP Guide](skill/references/mcp-guide.md)
 
@@ -105,7 +105,7 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `label` | Nhãn hội thoại | [Nhãn](https://github.com/ardennguyen/zalo-agent-cli/wiki/Nh%C3%A3n) |
 | `catalog` | zBusiness — danh mục sản phẩm | [zBusiness](https://github.com/ardennguyen/zalo-agent-cli/wiki/zBusiness) |
 | `listen` | Lắng nghe tin nhắn real-time, webhook, lưu JSONL | [Lắng nghe](https://github.com/ardennguyen/zalo-agent-cli/wiki/L%E1%BA%AFng-Nghe) |
-| `account` | Đa tài khoản & proxy | [Tài khoản](https://github.com/ardennguyen/zalo-agent-cli/wiki/T%C3%A0i-Kho%E1%BA%A3n) |
+| `account` | Đa tài khoản & proxy, xem thiết bị đã liên kết | [Tài khoản](https://github.com/ardennguyen/zalo-agent-cli/wiki/T%C3%A0i-Kho%E1%BA%A3n) |
 | **`oa`** | **Zalo Official Account API v3.0 — OAuth, tin nhắn, follower, tag, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
 
 Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/%C4%90a-T%C3%A0i-Kho%E1%BA%A3n-&-Proxy) · [Cài đặt VPS](https://github.com/ardennguyen/zalo-agent-cli/wiki/C%C3%A0i-%C4%90%E1%BA%B7t-VPS) · [Thẻ chuyển khoản & QR](https://github.com/ardennguyen/zalo-agent-cli/wiki/Th%E1%BA%BB-Chuy%E1%BB%83n-Kho%E1%BA%A3n-&-QR) · [Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)
@@ -161,7 +161,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > zalo-agent mcp start              # stdio (local Claude Code)
 > zalo-agent mcp start --http 3847 --auth your-secret  # HTTP (VPS)
 > ```
-> 4 tools: get_messages · send_message · list_threads · mark_read
+> 7 tools: get_messages · send_message · list_threads · search_threads · mark_read · get_history · view_media
 > Auto-reconnect · thread filter · noise reduction · group notifications
 > See [MCP Guide](skill/references/mcp-guide.md)
 
@@ -193,7 +193,7 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)**
 | `label` | Conversation labels | [Labels](https://github.com/ardennguyen/zalo-agent-cli/wiki/Labels) |
 | `catalog` | zBusiness catalogs & products | [Catalog](https://github.com/ardennguyen/zalo-agent-cli/wiki/Catalog) |
 | `listen` | Real-time listener, webhook, JSONL | [Listener](https://github.com/ardennguyen/zalo-agent-cli/wiki/Listener) |
-| `account` | Multi-account & proxy | [Accounts](https://github.com/ardennguyen/zalo-agent-cli/wiki/Accounts) |
+| `account` | Multi-account & proxy, linked-device listing | [Accounts](https://github.com/ardennguyen/zalo-agent-cli/wiki/Accounts) |
 | **`oa`** | **Zalo Official Account API v3.0 — OAuth, messaging, followers, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
 
 

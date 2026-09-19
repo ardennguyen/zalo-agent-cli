@@ -106,6 +106,8 @@ zalo-agent account list                          # List
 zalo-agent account login -p "proxy" -n "Shop"    # Add with proxy
 zalo-agent account switch <ownerId>              # Switch
 zalo-agent account export -o creds.json          # Export
+zalo-agent account devices                       # List linked devices/sessions (read-only)
+zalo-agent account remove <ownerId>               # Invalidate remote session + wipe local data + delete creds
 ```
 
 ### Official Account (OA) — API v3.0
@@ -131,13 +133,17 @@ zalo-agent mcp start --http <port>                  # HTTP transport (for VPS/re
 zalo-agent mcp start --auth <token>                 # Bearer token auth (HTTP mode)
 zalo-agent mcp start --config <path>                # Custom config file
 ```
-MCP tools exposed:
+MCP tools exposed (7 — personal account only, no OA tools yet):
 - `zalo_get_messages` — Get buffered messages with cursor-based pagination (incremental reads)
 - `zalo_send_message` — Send text message to a thread (DM or group)
 - `zalo_list_threads` — List active threads with unread counts and metadata
-- `zalo_mark_read` — Discard messages up to a given cursor
+- `zalo_search_threads` — Fuzzy Vietnamese-aware search for a thread by name
+- `zalo_mark_read` — Discard buffered messages up to a given cursor (global, not per-thread)
+- `zalo_get_history` — Fetch older messages (up to ~2 weeks) directly from the Zalo server, paginated
+- `zalo_view_media` — Open a received image/audio/video attachment with the system viewer (auto-downloads if needed)
 
 Use stdio mode for local Claude Code, HTTP mode for VPS deployments.
+Note: Official Account (`oa ...`), catalog, poll, reminder, auto-reply, and label commands are CLI-only — they are not (yet) exposed as MCP tools.
 Full reference: `references/mcp-guide.md`
 
 ### Other: profile, conv, poll, reminder, auto-reply, label, catalog, logout

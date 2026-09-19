@@ -131,11 +131,16 @@ done
 ### Khác
 
 ```bash
-zalo-agent oa menu '{"buttons":[...]}'         # Cập nhật menu OA
-zalo-agent oa article create '{"title":"..."}'  # Tạo bài viết
-zalo-agent oa article list                      # Danh sách bài viết
-zalo-agent oa store product-list                # Danh sách sản phẩm
-zalo-agent oa store category-list               # Danh mục
+zalo-agent oa menu '{"buttons":[...]}'              # Cập nhật menu OA
+zalo-agent oa article create '{"title":"..."}'       # Tạo bài viết
+zalo-agent oa article list                           # Danh sách bài viết
+zalo-agent oa article detail <article-id>            # Chi tiết bài viết
+zalo-agent oa store product-create '{"name":"..."}'  # Tạo sản phẩm
+zalo-agent oa store product-list                     # Danh sách sản phẩm
+zalo-agent oa store product-info <product-id>        # Chi tiết sản phẩm
+zalo-agent oa store category-create '{"name":"..."}' # Tạo danh mục
+zalo-agent oa store category-list                    # Danh mục
+zalo-agent oa store order-create '{"...":"..."}'     # Tạo đơn hàng
 ```
 
 ---

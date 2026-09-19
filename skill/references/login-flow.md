@@ -35,6 +35,7 @@ Firewall must allow at least one of these ports for remote access.
 | QR expired | Re-run `zalo-agent login --qr-url &` |
 | Already logged in | `zalo-agent logout` first |
 | Wrong QR scanner | Must use **Zalo app → QR Scanner**, NOT phone camera |
+| Declined on phone | Login exits immediately with "Login declined on phone" (does not hang until the 60s QR timeout) — just re-run `zalo-agent login --qr-url &` |
 
 ## Method 2: Headless (Credentials File)
 No human interaction. For automation, CI, server migration.

@@ -189,6 +189,8 @@ These tests require a real Zalo account and phone for QR scanning.
 - [ ] `zalo-agent login --qr-url` — HTTP server starts, QR viewable at localhost URL
 - [ ] `zalo-agent login --credentials ./creds.json` — skip QR, login from exported file
 - [ ] Auto-login on subsequent commands (no manual login needed)
+- [ ] Scan the QR and **decline** on the phone — CLI shows "Login declined on phone" (or emits `QRCodeDeclined`/`qr_declined` in `--json`) immediately, within one long-poll round trip; it does NOT hang until the ~60s QR timeout
+- [ ] Scan the QR (don't confirm yet) — CLI shows the scanning account's name/avatar before confirmation completes
 
 ### Logout
 
@@ -203,7 +205,10 @@ These tests require a real Zalo account and phone for QR scanning.
 - [ ] `zalo-agent account login --proxy URL --name "Shop"` — adds new account
 - [ ] `zalo-agent account switch <ID>` — switches active, re-logins with correct proxy
 - [ ] `zalo-agent account export -o ./creds.json` — file created with 0600 perms
-- [ ] `zalo-agent account remove <ID>` — account + credentials deleted
+- [ ] `zalo-agent account remove <ID>` (active account) — invalidates the server session ("Server session invalidated for..."), wipes `~/.zalo-agent-cli/accounts/<ID>/` (db, media, sync keys), deletes credentials, drops from registry
+- [ ] `zalo-agent account remove <ID>` while a `listen` daemon holds that account's lock — removal is refused with the daemon's PID, credentials/registry untouched
+- [ ] `zalo-agent account devices` — lists linked devices/sessions (master + companions) for the active account, read-only
+- [ ] Log back into an already-registered account (`login` or `account login`) — it becomes `active` again even if a different account was left active from a prior session
 
 ### Messaging
 
@@ -226,6 +231,18 @@ These tests require a real Zalo account and phone for QR scanning.
 ### Groups
 
 - [ ] `zalo-agent group list` — lists groups
+
+### MCP Server
+
+- [ ] `zalo-agent mcp start` — connects over stdio, logs go to stderr only (stdout carries only MCP JSON-RPC)
+- [ ] `zalo_get_messages` returns `{messages, cursor, hasMore}`; `since` correctly excludes already-seen messages
+- [ ] `zalo_send_message` returns `{success, messageId}` and the message is actually delivered
+- [ ] `zalo_list_threads` reflects unread counts that match what `zalo_get_messages` would return
+- [ ] `zalo_search_threads` finds a group/friend by a Vietnamese name with accents stripped from the query
+- [ ] `zalo_mark_read` with a cursor discards buffered messages across **all** threads at/below that cursor (it is not thread-scoped)
+- [ ] `zalo_get_history` paginates via `lastMsgId` and returns messages older than what's in the live buffer
+- [ ] `zalo_view_media` opens an already-downloaded attachment, and downloads-then-opens one that isn't cached yet
+- [ ] `zalo-agent mcp start --http <port> --auth <token>` — HTTP transport requires the bearer token; requests without it are rejected
 
 ### JSON Output
 

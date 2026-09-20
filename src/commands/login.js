@@ -20,6 +20,7 @@ import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { startQrServer } from "../utils/qr-http-server.js";
 import { success, error, info, warning, output } from "../utils/output.js";
+import { parseIntOption } from "../utils/parse-options.js";
 
 /**
  * Delete the local chat cache (zalo.db + WAL/SHM sidecars) and downloaded
@@ -64,7 +65,7 @@ export function registerLoginCommands(program) {
         .option("-p, --proxy <url>", "Proxy URL (http/https/socks5://[user:pass@]host:port)")
         .option("-n, --name <label>", "Friendly name for this account", "")
         .option("--qr-url", "Start local HTTP server to view QR in browser (for VPS/headless)")
-        .option("-q, --qr-port <port>", "Port for QR HTTP server (default: 18927)", parseInt)
+        .option("-q, --qr-port <port>", "Port for QR HTTP server (default: 18927)", parseIntOption)
         .option("--credentials <path>", "Login from exported credentials file (skip QR)")
         .action(async (opts) => {
             // Credential-based login (headless/CI)
@@ -104,9 +105,19 @@ export function registerLoginCommands(program) {
                     switch (event.type) {
                         case LoginQRCallbackEventType.QRCodeGenerated:
                             displayQR(event);
-                            // Always start HTTP server for QR scanning (no flag needed)
+                            // The QR is a login token, so the HTTP view binds
+                            // loopback unless --qr-url explicitly asks for LAN
+                            // exposure (the VPS/headless case the flag exists
+                            // for). It used to bind 0.0.0.0 unconditionally,
+                            // handing anyone on the network a usable login QR
+                            // on every `zalo-agent login`.
                             if (!qrServer) {
-                                qrServer = startQrServer(getQRPath(), opts.qrPort || 18927);
+                                qrServer = startQrServer(
+                                    getQRPath(),
+                                    opts.qrPort || 18927,
+                                    [opts.qrPort || 18927, 8080, 3000, 9000],
+                                    Boolean(opts.qrUrl),
+                                );
                             }
                             break;
 
@@ -203,7 +214,7 @@ export function registerLoginCommands(program) {
         )
         .option(
             "--delete-history",
-            "Also delete the local chat cache (zalo.db + downloaded media) for this account — mirrors the web app's \"Delete chat history on logout\" checkbox. Superseded by --purge, which wipes more than just this.",
+            'Also delete the local chat cache (zalo.db + downloaded media) for this account — mirrors the web app\'s "Delete chat history on logout" checkbox. Superseded by --purge, which wipes more than just this.',
         )
         .option(
             "--no-remote",
@@ -256,7 +267,9 @@ export function registerLoginCommands(program) {
                         // whole purge aborts, not just the file wipe.
                         purgeBlockedPid = skippedLocked.pid;
                     } else {
-                        historyMsg = wiped ? " — local account data deleted" : " — no local account data found to delete";
+                        historyMsg = wiped
+                            ? " — local account data deleted"
+                            : " — no local account data found to delete";
                     }
                 } catch (e) {
                     // Don't let a filesystem-level failure here (locked

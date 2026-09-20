@@ -4,6 +4,7 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { parseIntOption } from "../utils/parse-options.js";
 
 /** Extract numeric error code from zca-js error message string. */
 function extractErrorCode(msg) {
@@ -32,7 +33,8 @@ export function registerFriendCommands(program) {
 
                     info(`${sorted.length} friend(s)`);
                     for (const p of sorted) {
-                        const dateStr = p.lastActionTime ? new Date(p.lastActionTime * 1000).toLocaleString() : "Never";
+                        // epoch MILLISECONDS — the old x1000 printed year 58687
+                        const dateStr = p.lastActionTime ? new Date(p.lastActionTime).toLocaleString() : "Never";
                         console.log(
                             `  ${p.userId.padEnd(20)}  ${(p.displayName || p.zaloName || "?").padEnd(25)} [Last Activity: ${dateStr}]`,
                         );
@@ -244,8 +246,8 @@ export function registerFriendCommands(program) {
     friend
         .command("alias-list")
         .description("List all friend aliases")
-        .option("-c, --count <n>", "Page size", parseInt, 100)
-        .option("-p, --page <n>", "Page number", parseInt, 1)
+        .option("-c, --count <n>", "Page size", parseIntOption, 100)
+        .option("-p, --page <n>", "Page number", parseIntOption, 1)
         .action(async (opts) => {
             try {
                 const result = await getApi().getAliasList(opts.count, opts.page);

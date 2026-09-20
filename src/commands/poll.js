@@ -4,6 +4,7 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { parseIntOption } from "../utils/parse-options.js";
 
 export function registerPollCommands(program) {
     const poll = program.command("poll").description("Create and manage polls in groups");
@@ -14,14 +15,18 @@ export function registerPollCommands(program) {
         .option("--add-options", "Allow members to add new options")
         .option("--anonymous", "Hide voter identities")
         .option("--hide-preview", "Hide results until voted")
-        .option("--expire <minutes>", "Auto-close after N minutes", parseInt)
+        .option("--expire <minutes>", "Auto-close after N minutes", parseIntOption)
         .action(async (groupId, question, options, opts) => {
             try {
                 if (options.length < 2) {
                     error("A poll requires at least 2 options.");
                     return;
                 }
-                const expiredTime = opts.expire ? opts.expire * 60 * 1000 : 0;
+                // Zalo wants an ABSOLUTE epoch-ms deadline, not a duration.
+                // Sending the raw duration (60 min => 3_600_000) read as
+                // Jan 1 1970 and the whole call was rejected with
+                // "Tham số không hợp lệ". 0 still means "never expires".
+                const expiredTime = opts.expire ? Date.now() + opts.expire * 60 * 1000 : 0;
                 const result = await getApi().createPoll(
                     {
                         question,

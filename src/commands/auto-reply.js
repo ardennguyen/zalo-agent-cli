@@ -4,6 +4,28 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, output } from "../utils/output.js";
+import { parseIntOption } from "../utils/parse-options.js";
+
+/** One year in milliseconds — the default window for an open-ended rule. */
+const DEFAULT_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
+
+/**
+ * Resolve the {startTime, endTime} window for an auto-reply rule.
+ *
+ * These used to default to 0/0, which Zalo rejects outright with
+ * "Tham số không hợp lệ" — so `auto-reply create` could never succeed on
+ * its defaults. Zalo treats the pair as a real active window, so an unset
+ * start means "from now" and an unset end means "no foreseeable end",
+ * expressed as a far-future timestamp rather than 0.
+ *
+ * @param {{start?: number, end?: number}} opts
+ * @returns {{startTime: number, endTime: number}}
+ */
+function activeWindow(opts) {
+    const startTime = Number.isFinite(opts.start) && opts.start > 0 ? opts.start : Date.now();
+    const endTime = Number.isFinite(opts.end) && opts.end > 0 ? opts.end : startTime + DEFAULT_WINDOW_MS;
+    return { startTime, endTime };
+}
 
 export function registerAutoReplyCommands(program) {
     const ar = program.command("auto-reply").description("Manage auto-reply messages");
@@ -23,17 +45,16 @@ export function registerAutoReplyCommands(program) {
         .description("Create an auto-reply rule")
         .option("--enable", "Enable the rule (default: true)", true)
         .option("--no-enable", "Create disabled")
-        .option("--start <ms>", "Start time (epoch ms)", parseInt, 0)
-        .option("--end <ms>", "End time (epoch ms)", parseInt, 0)
-        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseInt, 0)
+        .option("--start <ms>", "Start time (epoch ms; default: now)", parseIntOption)
+        .option("--end <ms>", "End time (epoch ms; default: one year out)", parseIntOption)
+        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseIntOption, 0)
         .option("--uids <ids...>", "Specific user IDs to auto-reply to")
         .action(async (content, opts) => {
             try {
                 const payload = {
                     content,
                     isEnable: opts.enable,
-                    startTime: opts.start,
-                    endTime: opts.end,
+                    ...activeWindow(opts),
                     scope: opts.scope,
                 };
                 if (opts.uids) payload.uids = opts.uids;
@@ -48,9 +69,9 @@ export function registerAutoReplyCommands(program) {
         .description("Update an auto-reply rule")
         .option("--enable", "Enable the rule")
         .option("--no-enable", "Disable the rule")
-        .option("--start <ms>", "Start time (epoch ms)", parseInt, 0)
-        .option("--end <ms>", "End time (epoch ms)", parseInt, 0)
-        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseInt, 0)
+        .option("--start <ms>", "Start time (epoch ms; default: now)", parseIntOption)
+        .option("--end <ms>", "End time (epoch ms; default: one year out)", parseIntOption)
+        .option("--scope <n>", "Scope: 0=all, 1=friends, 2=strangers", parseIntOption, 0)
         .option("--uids <ids...>", "Specific user IDs")
         .action(async (id, content, opts) => {
             try {
@@ -58,8 +79,7 @@ export function registerAutoReplyCommands(program) {
                     id: Number(id),
                     content,
                     isEnable: opts.enable ?? true,
-                    startTime: opts.start,
-                    endTime: opts.end,
+                    ...activeWindow(opts),
                     scope: opts.scope,
                 };
                 if (opts.uids) payload.uids = opts.uids;

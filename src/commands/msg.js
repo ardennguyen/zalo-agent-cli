@@ -6,6 +6,7 @@
 import { resolve, join } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
+import { parseIntOption } from "../utils/parse-options.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
@@ -76,6 +77,117 @@ function parseMarkdownStyles(input) {
     }
 
     return { plain, styles };
+}
+
+/**
+ * Extensions zca-js uploads through its inline-image path.
+ *
+ * uploadAttachment() routes on EXTENSION, not on which CLI command was used:
+ * these four resolve their upload promise synchronously, `gif` is split off
+ * by sendMessage() into its own inline path, and **everything else** —
+ * bmp, tiff, heic, avif, svg, mp4, pdf, … — takes the "others"/"video" path,
+ * which waits on a WebSocket upload-complete frame.
+ *
+ * Zalo does not restrict these formats (its `restricted_ext_file` denylist
+ * covers only executables: exe, cmd, bat, com, lnk, vbs, msi, …), so a user
+ * can legitimately hand `send-image` a .bmp. It simply arrives as a file
+ * attachment rather than an inline image.
+ */
+const INLINE_IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
+
+/** True when every path is a format Zalo renders inline. */
+function allInlineImages(paths) {
+    return paths.every((p) => INLINE_IMAGE_EXTS.has(p.split(".").pop().toLowerCase()));
+}
+
+/**
+ * Send attachments, bringing the WebSocket listener up first when any of
+ * them needs it.
+ *
+ * zca-js's uploadAttachment() resolves synchronously for inline images, but
+ * for "video" and "others" it registers an entry in ctx.uploadCallbacks and
+ * awaits a promise that ONLY apis/listen.js can settle, when the
+ * upload-complete control frame arrives. With no listener there is no
+ * timeout and no fallback — the await never settles and the command hangs
+ * with no output at all.
+ *
+ * Both `send-image` and `send-file` hit this, because the routing is by
+ * extension: `send-image photo.bmp` takes the same "others" path as
+ * `send-file doc.pdf`. So the listener decision is made from the actual
+ * paths, not from the command name.
+ *
+ * @param {object} api
+ * @param {string[]} absPaths
+ * @param {string} threadId
+ * @param {number} type
+ * @param {object} opts - {caption, uploadTimeout}
+ * @returns {Promise<{result?: object, error?: string}>}
+ */
+async function sendAttachments(api, absPaths, threadId, type, opts) {
+    const needsListener = !allInlineImages(absPaths);
+    let listenerStarted = false;
+
+    if (needsListener) {
+        try {
+            await new Promise((res, rej) => {
+                const timer = setTimeout(() => rej(new Error("Listener connection timeout")), 15000);
+                api.listener.once("connected", () => {
+                    clearTimeout(timer);
+                    listenerStarted = true;
+                    res();
+                });
+                api.listener.once("error", (err) => {
+                    clearTimeout(timer);
+                    rej(err);
+                });
+                api.listener.start({ retryOnClose: false });
+            });
+        } catch (e) {
+            return { error: `Could not open the upload channel: ${e.message}` };
+        }
+    }
+
+    try {
+        const result = await withTimeout(
+            api.sendMessage({ msg: opts.caption, attachments: absPaths }, threadId, type),
+            Number(opts.uploadTimeout),
+            "Upload timed out waiting for Zalo's upload-complete event",
+        );
+        return { result, listenerStarted };
+    } catch (e) {
+        return { error: e.message, listenerStarted };
+    } finally {
+        if (listenerStarted) {
+            try {
+                api.listener.stop();
+            } catch {
+                // Nothing useful to do — we're exiting anyway.
+            }
+        }
+    }
+}
+
+/**
+ * Reject with `message` if `promise` hasn't settled within `ms`.
+ *
+ * Used by the attachment path: zca-js's non-inline upload waits on a
+ * WebSocket event with no timeout of its own, so a dropped or missed
+ * upload-complete frame would otherwise hang the command indefinitely.
+ * Better to fail loudly than to look frozen.
+ *
+ * @param {Promise} promise
+ * @param {number} ms
+ * @param {string} message
+ */
+function withTimeout(promise, ms, message) {
+    if (!Number.isFinite(ms) || ms <= 0) return promise;
+    let timer;
+    return Promise.race([
+        promise.finally(() => clearTimeout(timer)),
+        new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(message)), ms);
+        }),
+    ]);
 }
 
 /**
@@ -160,38 +272,108 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("send-image <threadId> <paths...>")
-        .description("Send one or more images")
+        .description("Send one or more images (jpg/jpeg/png/webp/gif render inline; other formats arrive as files)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")
+        .option("--upload-timeout <ms>", "Max wait for the upload-complete event", "120000")
         .action(async (threadId, paths, opts) => {
-            try {
-                const absPaths = paths.map((p) => resolve(p));
-                const result = await getApi().sendMessage(
-                    { msg: opts.caption, attachments: absPaths },
-                    threadId,
-                    Number(opts.type),
+            const absPaths = paths.map((p) => resolve(p));
+
+            // A format Zalo does not render inline (bmp, tiff, heic, …) is
+            // still uploaded — Zalo only denylists executables — but it
+            // arrives as a file attachment. Say so rather than letting the
+            // command name quietly mislead.
+            const offbeat = absPaths.filter((p) => !INLINE_IMAGE_EXTS.has(p.split(".").pop().toLowerCase()));
+            if (offbeat.length && !program.opts().json) {
+                warning(
+                    `Not an inline image format: ${offbeat.map((p) => p.split(/[\\/]/).pop()).join(", ")} — ` +
+                        `will arrive as a file attachment. Convert to PNG/JPEG for an inline image.`,
                 );
-                output(result, program.opts().json, () => success(`Image(s) sent to ${threadId}`));
-            } catch (e) {
-                error(e.message);
             }
+
+            const {
+                result,
+                error: err,
+                listenerStarted,
+            } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts);
+            if (err) error(err);
+            else output(result, program.opts().json, () => success(`Image(s) sent to ${threadId}`));
+
+            // Only force-exit when the listener ran; it leaves handles behind
+            // that keep the event loop alive. The pure-inline path needs no
+            // such thing, so leave its exit behavior untouched.
+            if (listenerStarted) process.exit(err ? 1 : 0);
+            else if (err) process.exitCode = 1;
         });
 
     msg.command("send-file <threadId> <paths...>")
         .description("Send files (docx, pdf, zip, etc.)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")
+        .option("--upload-timeout <ms>", "Max wait for the upload-complete event", "120000")
         .action(async (threadId, paths, opts) => {
+            // Non-image attachments need the WebSocket listener running.
+            //
+            // zca-js's uploadAttachment() branches on file extension: for
+            // "image" it resolves its internal promise synchronously, but
+            // for "video" and "others" it registers an entry in
+            // ctx.uploadCallbacks and awaits a promise that ONLY
+            // apis/listen.js resolves, when the upload-complete control
+            // frame arrives over the socket. With no listener running there
+            // is no timeout and no fallback — the await simply never
+            // settles, so `msg send-file` used to hang forever with no
+            // output at all. (`send-image` above is unaffected, which is
+            // why it works.)
+            //
+            // So: bring the listener up, send, then tear it down. The
+            // listener is stopped in `finally` so a failure can't leave the
+            // socket open and the process hanging on an active handle.
+            const api = getApi();
+            let listenerStarted = false;
+            let ok = false;
+            try {
+                await new Promise((res, rej) => {
+                    const timer = setTimeout(() => rej(new Error("Listener connection timeout")), 15000);
+                    api.listener.once("connected", () => {
+                        clearTimeout(timer);
+                        listenerStarted = true;
+                        res();
+                    });
+                    api.listener.once("error", (err) => {
+                        clearTimeout(timer);
+                        rej(err);
+                    });
+                    api.listener.start({ retryOnClose: false });
+                });
+            } catch (e) {
+                error(`Could not open the upload channel: ${e.message}`);
+                return;
+            }
+
             try {
                 const absPaths = paths.map((p) => resolve(p));
-                const result = await getApi().sendMessage(
-                    { msg: opts.caption, attachments: absPaths },
-                    threadId,
-                    Number(opts.type),
+                const result = await withTimeout(
+                    api.sendMessage({ msg: opts.caption, attachments: absPaths }, threadId, Number(opts.type)),
+                    Number(opts.uploadTimeout),
+                    "Upload timed out waiting for Zalo's upload-complete event",
                 );
                 output(result, program.opts().json, () => success(`File(s) sent to ${threadId}`));
+                ok = true;
             } catch (e) {
                 error(e.message);
+            } finally {
+                if (listenerStarted) {
+                    try {
+                        api.listener.stop();
+                    } catch {
+                        // Nothing useful to do — we're exiting anyway.
+                    }
+                }
+                // listener.stop() closes the socket but does not release
+                // every handle it registered, so the event loop stays alive
+                // and the command would sit there, done but not exited.
+                // `msg history` resolves the same problem the same way.
+                process.exit(ok ? 0 : 1);
             }
         });
 
@@ -247,7 +429,7 @@ export function registerMsgCommands(program) {
     msg.command("send-qr-transfer <threadId> <accountNumber>")
         .description("Generate VietQR and send as image")
         .requiredOption("-b, --bank <name>", "Bank name or BIN code")
-        .option("-a, --amount <n>", "Transfer amount in VND", parseInt)
+        .option("-a, --amount <n>", "Transfer amount in VND", parseIntOption)
         .option("-m, --content <text>", "Transfer content (max 50 chars)")
         .option("--template <tpl>", "QR style: compact, print, qronly", "compact")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
@@ -333,7 +515,7 @@ export function registerMsgCommands(program) {
     msg.command("send-voice <threadId> <voiceUrl>")
         .description("Send a voice message from URL")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
-        .option("--ttl <ms>", "Time to live in milliseconds", parseInt, 0)
+        .option("--ttl <ms>", "Time to live in milliseconds", parseIntOption, 0)
         .action(async (threadId, voiceUrl, opts) => {
             try {
                 info(`Sending voice: ${voiceUrl}`);
@@ -363,9 +545,9 @@ export function registerMsgCommands(program) {
         .requiredOption("--thumb <url>", "Thumbnail image URL")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")
-        .option("-d, --duration <ms>", "Video duration in milliseconds", parseInt)
-        .option("-W, --width <px>", "Video width", parseInt, 1280)
-        .option("-H, --height <px>", "Video height", parseInt, 720)
+        .option("-d, --duration <ms>", "Video duration in milliseconds", parseIntOption)
+        .option("-W, --width <px>", "Video width", parseIntOption, 1280)
+        .option("-H, --height <px>", "Video height", parseIntOption, 720)
         .action(async (threadId, videoUrl, opts) => {
             try {
                 info(`Sending video: ${videoUrl}`);
@@ -502,11 +684,23 @@ export function registerMsgCommands(program) {
             const limit = Number(opts.limit);
             const timeout = Number(opts.timeout);
             const scanLimit = Number(opts.scan);
-            const api = getApi();
 
+            // Order matters: getApi() throws when there is no session, and
+            // this line sits outside any try/catch. Calling it ABOVE the
+            // guard made the friendly message unreachable — a logged-out
+            // user got a raw Node stack trace instead. `conv recent` gets
+            // this order right; keep them consistent.
             const activeAcc = getActive();
             if (!activeAcc) {
                 error("No active account. Please login first.");
+                process.exit(1);
+            }
+
+            let api;
+            try {
+                api = getApi();
+            } catch (e) {
+                error(e.message);
                 process.exit(1);
             }
 

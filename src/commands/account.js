@@ -153,7 +153,9 @@ export function registerAccountCommands(program) {
                         );
                     }
                 } else {
-                    warning(`Could not establish a session to invalidate remotely for ${ownerId} (continuing with local removal)`);
+                    warning(
+                        `Could not establish a session to invalidate remotely for ${ownerId} (continuing with local removal)`,
+                    );
                 }
                 clearSession();
             }

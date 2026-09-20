@@ -31,6 +31,18 @@ function resolveAccountDir(accountName) {
 export const MAX_GAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 /**
+ * How recently a sync must have completed for a fresh one to be treated as
+ * redundant and skipped. This is the CLI equivalent of Zalo Web's own
+ * redundant-sync gate: after a successful sync, Zalo Web sets a
+ * `0_sufficient_msg_ts` marker and records the run in `0_sync_download_stats_v1`,
+ * and clicking "Đồng bộ tin nhắn" again while those are fresh is a silent no-op —
+ * it never re-opens the transfer session, so it never re-pings the phone
+ * (confirmed by a live capture, 2026-09-21). Bypass with `{force: true}`
+ * (the `sync-mobile --force` flag).
+ */
+export const SYNC_FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
+
+/**
  * Best-effort field aliases for a single synced message, mirroring the shape
  * `src/commands/listen.js` already normalizes live WS messages into before
  * calling insertMessage()/upsertThread(). The exact shape of a `get_crossdb`
@@ -181,6 +193,63 @@ export class SyncManager {
     }
 
     /**
+     * Record that a sync of `kind` just completed a full server round-trip.
+     * This single marker is what {@link checkSyncFreshness} reads, so every
+     * sync path that reaches the server should call it on success.
+     *
+     * @param {string} [kind] - which path completed ("backfill" | "legacy" | "transfer").
+     */
+    markSyncSuccess(kind = "sync") {
+        this._ensureDb();
+        setSyncState("lastSyncOkAt", Date.now());
+        setSyncState("lastSyncOkKind", String(kind));
+    }
+
+    /**
+     * ms epoch of the last successful sync round-trip across any path, or null
+     * if we have never completed one. Reads only the unified `lastSyncOkAt`
+     * marker (set by {@link markSyncSuccess}); a db written before that marker
+     * existed simply reports null and syncs once to establish it, rather than
+     * risk over-suppressing from an older per-path/attempt timestamp.
+     *
+     * @returns {number|null}
+     */
+    getLastSuccessfulSyncAt() {
+        this._ensureDb();
+        const v = getSyncState("lastSyncOkAt");
+        return v ? Number(v) : null;
+    }
+
+    /**
+     * Decide whether a sync can be skipped because we completed one recently
+     * and know of no coverage gap — the CLI equivalent of Zalo Web's
+     * redundant-sync debounce (see {@link SYNC_FRESHNESS_MS}), so repeated runs
+     * don't spam the socket or, for the phone-waking transfer-sync path, the
+     * owner's phone.
+     *
+     * A pending coverage gap always forces a sync, and so does `force`.
+     * Otherwise we skip when the last success is younger than `freshnessMs`.
+     * `now`/`freshnessMs` are injectable for tests.
+     *
+     * @param {{force?: boolean, freshnessMs?: number, now?: number}} [opts]
+     * @returns {{skip: boolean, reason: string, lastSyncAt: number|null, ageMs: number|null}}
+     */
+    checkSyncFreshness(opts = {}) {
+        this._ensureDb();
+        const force = opts.force === true;
+        const freshnessMs = Number.isFinite(opts.freshnessMs) ? opts.freshnessMs : SYNC_FRESHNESS_MS;
+        const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+        const lastSyncAt = this.getLastSuccessfulSyncAt();
+        const ageMs = lastSyncAt === null ? null : Math.max(0, now - lastSyncAt);
+
+        if (force) return { skip: false, reason: "forced", lastSyncAt, ageMs };
+        if (getPendingSyncGaps().length > 0) return { skip: false, reason: "pending-gap", lastSyncAt, ageMs };
+        if (lastSyncAt === null) return { skip: false, reason: "never-synced", lastSyncAt, ageMs };
+        if (ageMs < freshnessMs) return { skip: true, reason: "fresh", lastSyncAt, ageMs };
+        return { skip: false, reason: "stale", lastSyncAt, ageMs };
+    }
+
+    /**
      * One full sync cycle:
      *  1. pullMobileMsg() — nudges the phone and gets back a short opaque
      *     token (confirmed live: 64 raw bytes, NOT message content — see
@@ -227,7 +296,7 @@ export class SyncManager {
             // exist in Zalo Web's bundle but NOTHING calls them — 0 call sites
             // across all 4,642 loaded modules. Current Zalo syncs over the
             // WebSocket instead (cmd 590/591, "transfer-sync-v2"). See
-            // tests/NOTES.md § Mobile sync.
+            // agent/work/transfer-sync-v2/NOTES.md § Mobile sync.
             //
             // Retrying therefore cannot help, and every retry used to push a
             // notification to a real person's phone. One attempt, then stop.
@@ -259,6 +328,7 @@ export class SyncManager {
         resolveAllPendingSyncGaps();
         setSyncState("lastFullSyncAt", Date.now());
         setSyncState("lastConnectionOk", "true");
+        this.markSyncSuccess("legacy");
 
         return result;
     }
@@ -277,7 +347,7 @@ export class SyncManager {
      * with `lastId: null` and with the exact anchor ids Zalo Web sends. Zalo
      * Web gets the same empty answer and falls back to `transfer-sync-v2`
      * (cmd 590/591, libsignal), which is not implemented here. Treat this as a
-     * cheap probe, not a guaranteed restore. See tests/NOTES.md § Mobile sync.
+     * cheap probe, not a guaranteed restore. See agent/work/transfer-sync-v2/NOTES.md § Mobile sync.
      *
      * The caller owns the socket: it must hold `daemon.lock`, start the
      * listener, and stop it afterwards. This method only issues the two
@@ -307,8 +377,14 @@ export class SyncManager {
                 if (timer) clearTimeout(timer);
                 setSyncState("lastBackfillAt", Date.now());
                 // A completed round-trip means we have asked the server what
-                // we missed and been answered, so known gaps are covered.
-                if (reason === "complete") resolveAllPendingSyncGaps();
+                // we missed and been answered, so known gaps are covered and
+                // the freshness debounce should treat us as synced. A timeout
+                // is only a partial answer, so it neither resolves gaps nor
+                // arms the debounce.
+                if (reason === "complete") {
+                    resolveAllPendingSyncGaps();
+                    this.markSyncSuccess("backfill");
+                }
                 resolve({ status: "backfilled", saved, total, reason });
             };
 

@@ -446,14 +446,14 @@ Each scenario: user prompt → expected step-by-step reasoning → validation cr
 
 **Expected reasoning:**
 1. Messages missed while disconnected aren't in the WebSocket stream
-2. `zalo-agent sync-mobile` asks the phone's Zalo app to push them into `zalo.db`
-3. This needs a human: open **Zalo mobile → Settings → Sync Messages → Sync Now**
-4. CLI polls every 5s for up to ~2 minutes
-5. Afterwards read them with `zalo-agent msg history <threadId>` (served from the cache)
-6. If it returns "already synced" instantly and messages are still missing, re-run with `--force`
+2. `zalo-agent sync-mobile` asks the server for old messages over the socket — no phone interaction — but Zalo currently answers empty, so be honest that it usually recovers nothing
+3. It needs `daemon.lock`, so stop `listen` first; Zalo's one-web-session rule also means it closes a browser Zalo Web session on the same account
+4. Afterwards read them with `zalo-agent msg history <threadId>` (served from the cache)
+5. `--wait <seconds>` bounds it; `--force` skips the "already synced" debounce
+6. The old phone-to-PC transfer is retired — `--legacy` still tries it once, but recovers nothing
 
-**Must include:** `sync-mobile`, the phone-side Sync Now step, `msg history` afterward, `--force` for the debounce
-**Must NOT:** Claim the messages are unrecoverable, promise it works without touching the phone
+**Must include:** that `listen` is the only reliable way to capture messages, `msg history` to read the cache, stopping `listen` before `sync-mobile`
+**Must NOT:** Promise `sync-mobile` will recover the gap, instruct the human to tap **Sync Now** on the phone, or present `--legacy` as a working path
 
 ---
 

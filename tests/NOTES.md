@@ -552,3 +552,139 @@ conflict and make it constant. **The lock discipline has to come first.**
 
 Item 5 is independent and small. Items 1–3 are the prerequisite for any
 auto-start being safe; item 4 is a product decision, not a patch.
+
+---
+
+## Mobile sync: the endpoint is retired — measured, 2026-09-20
+
+`sync-mobile` never worked, and the reason was not a bug in this repo. It was
+built on a Zalo API that no longer does anything.
+
+### How this was measured
+
+Credentials were purged, then Zalo Web was opened in an instrumented browser
+and driven by hand. Three things were inspected: the full JS bundle, the live
+WebSocket frames, and IndexedDB.
+
+### 1. Zalo Web does not call `pull_mobile_msg` or `get_crossdb`
+
+Both endpoints are still **defined** in Zalo Web's bundle (`lazy/1.*.js`),
+with a command-id map that matches what zca-js sends:
+
+| Command id | Path                                      |
+| ---------- | ----------------------------------------- |
+| 12000      | `/api/message/pull_mobile_msg`            |
+| 12412      | `/api/message/get_crossdb`                |
+| 12003      | `/api/message/delete_snapshot_mobile_msg` |
+| 12700      | `/api/message/cancel_pull_mobile_msg`     |
+
+But searching the **live module registry** — all 4,642 loaded modules, read
+out of webpack's own cache — finds **zero call sites**. The definitions are
+dead code. That is why `pullMobileMsg` returns an empty string rather than an
+error: the endpoint answers, it just has nothing to give.
+
+A second, smaller defect turned up in the same comparison: Zalo Web's legacy
+`pullMobileMsg` sent `imei`, and **zca-js does not**. Worth knowing, but it
+does not resurrect a retired endpoint.
+
+### 2. What the client actually does: transfer-sync-v2, over the socket
+
+Captured live by hooking the page's `WebSocket` before the app opened it, then
+clicking **Settings → Dữ liệu → Đồng bộ tin nhắn**:
+
+```
+out cmd 590 subCmd 0   {"data":{"syncId":"qgc2GyPbMFVOuTDxA4eHiUi1BYmqinC4",
+                        "syncType":0,"ek":"BWZE1TnKbYhX5HqLYcE/uC0ulAEzPa73…",
+                        "ik":"BWcjl04aFG140ayIY9Ruz4z6E9EMeYifpiB9ahZ1yE1S",
+                        "toDevice":0,"tempKey":"","deviceName":"Unknown Browser - Windows",
+                        "req":{"type":"conversation","priority":0,"queries":[…]}}}
+in  cmd 590            (ack)
+in  cmd 601 × N        (the actual payload, 500–925 bytes each)
+out cmd 591 subCmd 0   {"data":{"syncId":"…","toDevice":0,"reason":1}}
+```
+
+Then a second round with `"req":{"type":"message","priority":2,…}`.
+
+The command map (module `Qtro`):
+
+| Cmd | Name                                   |
+| --- | -------------------------------------- |
+| 590 | `SYNC_MESSAGE.REQUEST`                 |
+| 591 | `SYNC_MESSAGE.ACK_DELETE_SYNC_SESSION` |
+| 592 | `SYNC_MESSAGE.REQUEST_MOBILE_WAKE_UP`  |
+| 534 | `PUSH_MISS_MSG`                        |
+
+`ek`/`ik` are Curve25519 public keys (33 bytes, `0x05` prefix) — this is
+libsignal, which is why `libs/libsignal-protocol.static.js` is loaded. The
+phone encrypts, the PC decrypts; the client's own telemetry enumerates
+`MOBILE_ENCRYPTION_FAILED`, `PC_DECRYPTION_FAILED`, `MOBILE_PARTITION_NOT_FOUND`.
+
+**Implementing transfer-sync-v2 is a project, not a patch.** It needs a
+libsignal identity keypair registered with Zalo, a session with the phone, and
+the `req.queries` partition descriptors (whose internals were truncated in
+capture and are still unknown). Recorded here so nobody has to re-derive it.
+
+### 3. Clicking "Sync" when there is no gap does nothing at all
+
+With `sync_<ownId>.missing_message_range` empty, clicking **Đồng bộ tin nhắn**
+produced **zero frames** beyond a routine `PING_ACTIVE`. The real client
+short-circuits on its own gap state and never disturbs the phone.
+
+This vindicates the debounce in `SyncManager.pollSync()` — it mirrors the real
+client — and condemns the old retry loop, which pinged the phone ~24 times
+over two minutes precisely when there was nothing to fetch.
+
+### 4. Old-message pulls do not fill the gap either — measured twice
+
+Zalo Web's own IndexedDB (`zdb_<ownId>`, `msginfo_<ownId>`, `sync_<ownId>`)
+was deleted and the page reloaded, reproducing a first-login restore. On
+reconnect the client fires a burst of **old-message pulls**:
+
+```
+out cmd 510 subCmd 1   {"first":true,"lastId":"8285042762011","preIds":[]}   ← DMs
+out cmd 511 subCmd 1   {"first":true,"lastId":"8284972075537","preIds":[]}   ← groups
+out cmd 515 / 517 / 518 / 610 / 611 / 603                                     ← other stores
+```
+
+**The 510/511 responses came back essentially empty** — 381 bytes each, versus
+the 500–4,000-byte `cmd 601` frames that carried the real payload later. The
+web UI at that point showed two conversations and a banner pointing at Zalo PC
+for anything older. Only when **transfer-sync-v2** ran (cmd 590 → 601 ×N → 591)
+did the history appear.
+
+This was then confirmed directly against the CLI, twice:
+
+| Attempt                                                                 | Result          |
+| ----------------------------------------------------------------------- | --------------- |
+| `sync-mobile` (zca-js default, `lastId: null`)                          | 0 DMs, 0 groups |
+| Probe with Zalo Web's exact anchors (`8285042762011` / `8284972075537`) | 0 DMs, 0 groups |
+
+So **`requestOldMessages` is not a working backfill** for this account, and the
+`lastId` is not the missing ingredient.
+
+**What `sync-mobile` therefore does now.** It issues the 510/511 pulls — they
+are free, they touch no phone, and they occasionally may return something —
+and persists anything that arrives via the same `insertMessage()`/
+`upsertThread()` the listener uses. When the answer is empty it **says so
+plainly** rather than reporting success, and points at `listen` for capturing
+messages going forward.
+
+This is a deliberate downgrade in promise from what the command used to claim.
+The old behavior was not a working sync either; it was a retired endpoint plus
+a two-minute retry loop that notified the owner's phone roughly 24 times per
+run. Replacing a harmful no-op with an honest no-op is the actual improvement
+here. **A real full-history sync requires implementing transfer-sync-v2.**
+
+### Consequences for the rest of the project
+
+- `listen`'s auto-backfill on reconnect calls `pollSync()`, which now returns
+  `legacy-retired` instead of pretending a retry might help. Pointing it at
+  `backfillOverSocket()` would be nearly free (the listener already holds a
+  socket) but, on this evidence, would recover nothing — so it is not worth
+  doing until transfer-sync-v2 exists.
+- **`PUSH_MISS_MSG` (cmd 534) is unhandled by zca-js.** Its listener ignores
+  every command it does not recognize, with no catch-all event, so the CLI
+  cannot see missed-message pushes at all. Exposing it needs a
+  `patch-package` patch against zca-js. Not attempted here: the command was
+  never observed carrying data during this session, and shipping an unverified
+  decoder is how the original `sync-mobile` got into this state.

@@ -30,7 +30,7 @@ zalo-agent listen --auto-accept                            # Auto-accept friend 
 - **Writes to the local SQLite cache** — every received message is inserted into `~/.zalo-agent-cli/accounts/<ownId>/zalo.db` (tables: `messages`, `threads`, `contacts`, `sync_state`, `sync_gaps`). This is what makes `zalo-agent msg history <id>` fast and able to return more than the ~20 messages the Zalo API hands back.
 - **Auto-downloads media** — images, audio, and video land in `~/.zalo-agent-cli/accounts/<ownId>/media/`, organized per thread with date/sender in the filename.
 - **Holds an exclusive lock** — `daemon.lock` in the account directory. A second `listen` for the same account is refused, and `account remove` / `logout --purge` refuse while the lock is held. A stale lock (dead PID) is detected and reclaimed automatically.
-- **Backfills gaps** — it records connect/disconnect timestamps, and on startup or after a reconnect, if the last known-connected time is more than ~30s old, it automatically triggers the same mobile-sync mechanism as `zalo-agent sync-mobile` to pull whatever the phone has that the daemon missed.
+- **Backfills gaps** — it records connect/disconnect timestamps, and on startup or after a reconnect, if the last known-connected time is more than ~30s old, it automatically triggers the legacy mobile-sync mechanism. **That endpoint has been retired by Zalo and now recovers nothing** — see tests/NOTES.md § Mobile sync. Rewiring it to the socket backfill `zalo-agent sync-mobile` now uses is open work.
 
 ## Webhook Integration
 Forward events to n8n, Make, Zapier, or custom endpoint:

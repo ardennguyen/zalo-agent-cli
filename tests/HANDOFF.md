@@ -25,14 +25,15 @@ passed as of the last full run. Gates (`format`, `lint`, `format:check`,
 | Zalo Web             | Signed out by the CLI login. The two cannot coexist — see NOTES.md.                                                            |
 | `tests/targets.json` | Group `4546985820537230880`, DM `4025260187856951526` (Tiểu Hồ). Gitignored.                                                   |
 | Uncommitted work     | **Everything.** Nothing has been committed yet. Two commits were requested: test-suite changes and source changes, separately. |
-| `sync-mobile`        | **BROKEN and UNVERIFIED** — see below. Do not run it casually; every attempt notifies the user's phone.                        |
+| `sync-mobile`        | **Rewritten 2026-09-20.** Default path backfills over the WebSocket and never touches the phone; only `--legacy` does.         |
 
 ### Hard rules learned the hard way
 
-1. **Never run `sync-mobile` without explicit, immediate permission.** Each
-   attempt pushes a notification to the owner's phone. This was violated three
-   times in one session. The live test for it is gated behind
-   `ZALO_TEST_SYNC_MOBILE=1` and must stay that way.
+1. **Never run `sync-mobile --legacy` without explicit, immediate permission.**
+   That path pushes a notification to the owner's phone. It was violated three
+   times in one session, back when it was the default and looped for two
+   minutes. It is now opt-in, runs once, and its live test stays gated behind
+   `ZALO_TEST_SYNC_MOBILE=1`. The default `sync-mobile` is phone-free.
 2. **Zalo allows one web session per account.** `zalo-agent login` signs Zalo
    Web out and vice versa — instantly, server-side, with no socket involved.
    Measured. See NOTES.md § One web session per account.
@@ -69,23 +70,48 @@ Zalo defect. It was ours — we sent `NaN`. That NOTES.md row must be corrected.
 Every `.option(..., parseInt, <default>)` call site needs a safe integer
 coercion instead. Grep: `grep -rn "parseInt," src/commands/`.
 
-### 2. `sync-mobile` does not work
+### 2. `sync-mobile` — HARM FIXED, SYNC STILL IMPOSSIBLE (2026-09-20)
 
-Even after the user completed the phone-side sync (Settings → Sync Messages →
-Sync Now), every `pullMobileMsg` returned `No session token returned`. Cause
-unknown. Suspect: the RSA sync keys under `accounts/<ownId>/sync/` were wiped
-by `logout --purge` and the new keypair is not registered with Zalo, so the
-phone has nothing to encrypt to.
+The endpoint it was built on is retired. Measured directly against the live
+Zalo Web client: `/api/message/pull_mobile_msg` and `/api/message/get_crossdb`
+still exist in Zalo Web's bundle but have **zero call sites** across all 4,642
+loaded modules. The empty return was the endpoint being dead, not the phone
+being slow — so the two-minute retry loop could never have worked, and every
+retry notified a real person.
 
-Two bugs already fixed in `src/commands/sync.js`:
+Current Zalo syncs over the WebSocket instead (`transfer-sync-v2`: cmd 590
+request / 591 dispose / 592 mobile wake-up, libsignal-encrypted).
 
-- **Overlapping polls.** It used `setInterval(async …, 5000)`, which does not
-  await its callback; `pollSync()` takes longer than 5s, so attempts stacked
-  and the phone got several _simultaneous_ pushes per tick. Now a sequential
-  `for` loop.
-- **No user control.** Added `--wait <seconds>` and `--interval <seconds>`
-  (default 10s, raised from 5s). NOTE: these are themselves affected by bug #1
-  above — `--wait 90` was silently ignored and ran the 120s default.
+**Read this before trusting the new command.** The first version of this fix
+assumed a freshly-wiped Zalo Web client restores itself with plain old-message
+pulls (cmd 510/511), which zca-js already supports. **That was a misreading of
+the trace, and the live test caught it.** Measured twice — once via the CLI and
+once with a probe using Zalo Web's exact `lastId` anchors — 510/511 return
+**0 messages**. Zalo Web gets the same empty answer and falls back to
+transfer-sync-v2.
+
+So `sync-mobile` now: issues the free 510/511 probe, persists anything that
+arrives, and **says plainly when the answer is empty** instead of reporting
+success. It never touches the phone. The retired REST path survives as
+`--legacy`, one attempt only. Full evidence, frame captures and command map in
+[NOTES.md](NOTES.md) § Mobile sync.
+
+**There is no working full-history sync in this tool today**, and there will
+not be one until transfer-sync-v2 is implemented. What was fixed is the harm
+(phone spam) and the dishonesty (reporting a dead path as a pending retry).
+
+Still open, in order of value:
+
+- **transfer-sync-v2** — the only path observed carrying any data, and so the
+  only way to make this command genuinely sync. A project, not a patch:
+  libsignal identity keypair, a session with the phone, and the `req.queries`
+  partition descriptors, which were truncated in capture. See NOTES.md for the
+  captured frames and the command map. Rewiring `listen`'s reconnect backfill
+  is NOT worth doing before this exists — every available path returns empty.
+- **`PUSH_MISS_MSG` (cmd 534) is invisible to zca-js** — its listener silently
+  ignores unrecognized commands with no catch-all event. Exposing it needs a
+  `patch-package` patch. Not done: the command was never observed carrying data,
+  and shipping an unverified decoder is how this command broke originally.
 
 ### 3. Listener / cache coherence (the original ask)
 

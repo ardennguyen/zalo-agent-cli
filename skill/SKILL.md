@@ -38,7 +38,7 @@ zalo-agent whoami                # Full profile of the logged-in user
 zalo-agent logout                # Invalidate the session server-side, keep credentials
 zalo-agent logout --delete-history  # ...and delete the local chat cache (zalo.db + media)
 zalo-agent logout --purge        # ...and wipe all local data + credentials + registry entry
-zalo-agent sync-mobile [-F]      # Pull messages from the phone's Zalo app into the local cache
+zalo-agent sync-mobile [-F]      # Backfill recent history from the server into the local cache
 zalo-agent update                # Self-update to the latest published version
 ```
 `logout --purge` and `account remove` refuse while a `listen` daemon still holds the account's `daemon.lock`.
@@ -96,10 +96,13 @@ Production-ready with pm2. Details: `references/listen-mode-guide.md`
 ### Local Cache & Sync
 ```bash
 zalo-agent msg history <ID> -n 50      # Reads from ~/.zalo-agent-cli/accounts/<ownId>/zalo.db
-zalo-agent sync-mobile                 # Ask the phone's Zalo app to push missing messages
+zalo-agent sync-mobile                 # Backfill recent history over the WebSocket (no phone contact)
 zalo-agent sync-mobile --force         # Skip the "already synced" debounce shortcut
+zalo-agent sync-mobile --legacy        # Try the retired phone-transfer endpoint (pings the phone, one attempt)
 ```
-`sync-mobile` prompts the human to open **Zalo mobile → Settings → Sync Messages → Sync Now**, then polls every 5s for up to ~2 minutes. `listen` performs this backfill automatically after a reconnect or on startup when the last known-connected time is more than ~30s old.
+`sync-mobile` asks the server for old messages over the socket (cmd 510/511) and writes anything that arrives to `zalo.db`. **Measured 2026-09-20: Zalo returns an empty set, so this normally recovers nothing** — the command reports that plainly instead of claiming success. There is no working full-history sync today; use `listen` to capture messages going forward. It needs `daemon.lock`, so stop `listen` first, and Zalo's one-web-session rule means it closes a browser Zalo Web session on the same account.
+
+The phone-to-PC transfer this command used to attempt has been **retired by Zalo** — `--legacy` still tries it, once, and will almost certainly report nothing. `listen` still runs the old backfill on reconnect, which now recovers nothing; see tests/NOTES.md § Mobile sync.
 
 ### Friends
 ```bash
@@ -223,7 +226,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - `cliMsgId` required for: react, undo → get from `--json send` or `--json listen`
 - Mentions only in groups (`-t 1`)
 - QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting out the 60s timeout
-- `sync-mobile` requires the human to tap **Sync Now** in the Zalo mobile app — not automatable
+- `sync-mobile` is fully automatable now; only `--legacy` reaches the phone, and that path is retired
 - 1 proxy per account recommended (shared proxies risk a ban)
 - Credentials: `~/.zalo-agent-cli/` (personal, 0600) and `~/.zalo-agent/` (OA, 0600) — different directories
 - Per-account data: `~/.zalo-agent-cli/accounts/<ownId>/` (`zalo.db`, `media/`, `sync/`, `daemon.lock`)

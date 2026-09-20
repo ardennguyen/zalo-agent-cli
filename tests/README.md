@@ -168,17 +168,19 @@ bare `npm run test:e2e` cannot end your session.
 
 `run-e2e.js` sets these for you based on its flags; you rarely set them by hand.
 
-`ZALO_TEST_SYNC_MOBILE` is the exception — `run-e2e.js` never sets it. `sync-mobile`
-re-polls Zalo every 5 s for ~2 minutes when the phone has not answered, so each
-run puts ~25 notifications on a real device. Set it by hand, once, when the
+`ZALO_TEST_SYNC_MOBILE` is the exception — `run-e2e.js` never sets it. It gates
+`sync-mobile --legacy`, the retired phone-transfer path, which is the only part
+of the command that still reaches a real device. Set it by hand, once, when the
 phone's owner is expecting it:
 
 ```bash
 ZALO_TEST_LIVE=1 ZALO_TEST_SYNC_MOBILE=1 node --test tests/e2e/tier3-mutate-restore.test.js
 ```
 
-Everything about `sync-mobile` that does not need a phone — flag parsing, the
-no-account guard — is covered offline in `tests/cli/validation.test.js`.
+`sync-mobile`'s default path needs no phone at all, and runs in tier 3 under
+plain `ZALO_TEST_LIVE=1`. Flag parsing and the no-account guard are covered
+offline in `tests/cli/validation.test.js`, and the backfill logic itself against
+a fake listener in `tests/unit/sync-backfill.test.js`.
 
 ### Setup
 
@@ -435,10 +437,13 @@ real client and a QR scan.
 
 ### Sync
 
-- [ ] `sync-mobile` — prompts for the phone-side sync, polls ~2 minutes
-- [ ] `sync-mobile` twice — the second returns "already synced" instantly
-- [ ] `sync-mobile --force` — skips the debounce
+- [ ] `sync-mobile` — backfills over the socket and reports a saved/total count
+- [ ] `sync-mobile` while `listen` is running — refuses, naming the lock
+- [ ] `sync-mobile` while Zalo Web is open — reports the one-web-session rule
+- [ ] `sync-mobile --legacy` — one attempt, then reports the retired endpoint
+- [ ] `sync-mobile --legacy --force` — skips the debounce
 - [ ] Kill `listen`, wait >30s, restart — a backfill is attempted for the gap
+      (currently the retired path, so it recovers nothing — see NOTES.md)
 
 ### MCP server
 

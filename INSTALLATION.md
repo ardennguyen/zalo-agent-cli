@@ -241,7 +241,7 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | `npx zalo-agent whoami` | Show the logged-in user's full profile |
 | `npx zalo-agent login [--qr-url] [--credentials <path>] [-p <proxy>]` | QR login, or restore from an exported credentials file |
 | `npx zalo-agent logout [--delete-history] [--purge] [--no-remote]` | Invalidate the session server-side; optionally delete the local cache or wipe the account entirely |
-| `npx zalo-agent sync-mobile [-F]` | Pull messages from your phone's Zalo app into the local cache |
+| `npx zalo-agent sync-mobile [-F]` | Backfill recent message history from the server into the local cache |
 | `npx zalo-agent update` | Self-update to the latest published version |
 | `npx zalo-agent mcp start [--http <port>] [--auth <token>] [--host <addr>]` | Start the MCP server |
 

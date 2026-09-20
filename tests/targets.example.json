@@ -1,0 +1,38 @@
+{
+    "$comment": [
+        "Live E2E target configuration. Copy to tests/targets.json and fill in.",
+        "tests/targets.json is gitignored — never commit real IDs.",
+        "",
+        "EVERY id listed under `disposable` is treated as expendable: the suite",
+        "will send to it, edit it, delete messages in it, wipe its history, and",
+        "(tier 5 only) disperse it. Nothing outside this list is ever written to.",
+        "",
+        "`denylist` is a hard stop: if an id ever appears in both lists, or a",
+        "destructive helper is handed a denylisted id, the suite throws before",
+        "the call is made."
+    ],
+
+    "home": "F:/Coding/zalo-mcp/.zalo-test-home",
+    "accountOwnId": "PUT_YOUR_OWN_ID_HERE",
+
+    "disposable": {
+        "group": {
+            "threadId": "PUT_GROUP_ID_HERE",
+            "name": "PUT_GROUP_NAME_HERE",
+            "memberIds": ["MEMBER_ID_1", "MEMBER_ID_2"]
+        },
+        "dm": {
+            "threadId": "PUT_FRIEND_ID_HERE",
+            "name": "PUT_FRIEND_NAME_HERE"
+        }
+    },
+
+    "denylist": [],
+
+    "notes": [
+        "memberIds must NOT include your own ownId — `group create` adds you as owner.",
+        "If the tier-5 disperse test runs, the group is recreated from `name` +",
+        "`memberIds`, so keep both accurate. The recreated group gets a NEW",
+        "threadId, which the suite writes back into this file."
+    ]
+}

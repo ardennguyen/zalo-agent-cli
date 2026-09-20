@@ -1,71 +1,76 @@
 {
-  "name": "@ardennguyen/zalo-agent-cli",
-  "version": "2.0.0",
-  "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
-  "type": "module",
-  "bin": {
-    "zalo-agent": "src/index.js"
-  },
-  "main": "./src/index.js",
-  "files": [
-    "src/",
-    "LICENSE",
-    "DISCLAIMER.md"
-  ],
-  "scripts": {
-    "test": "node --test src/*.test.js src/**/*.test.js",
-    "lint": "eslint src/",
-    "lint:fix": "eslint src/ --fix",
-    "format": "prettier --write src/",
-    "format:check": "prettier --check src/",
-    "release": "npm version patch -m 'release: v%s' && git push origin main --tags",
-    "prepublishOnly": "npm run lint && npm test",
-    "postinstall": "patch-package"
-  },
-  "keywords": [
-    "zalo",
-    "cli",
-    "automation",
-    "messaging",
-    "vietnam",
-    "proxy",
-    "vietqr",
-    "zca-js",
-    "official-account",
-    "zalo-oa",
-    "webhook"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/ardennguyen/zalo-agent-cli"
-  },
-  "author": "ardennguyen",
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
-  "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^13.0.3",
-    "chalk": "^5.6.2",
-    "commander": "^15.0.0",
-    "express": "^5.2.1",
-    "https-proxy-agent": "^9.1.0",
-    "node-fetch": "^3.3.2",
-    "undici": "^8.5.0",
-    "zca-js": "^2.2.0",
-    "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "eslint": "^10.0.3",
-    "patch-package": "^8.0.1",
-    "prettier": "^3.8.1"
-  },
-  "allowScripts": {
-    "better-sqlite3@13.0.3": true,
-    "@ardennguyen/zalo-agent-cli@2.0.0": true
-  }
+    "name": "@ardennguyen/zalo-agent-cli",
+    "version": "2.0.0",
+    "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
+    "type": "module",
+    "bin": {
+        "zalo-agent": "src/index.js"
+    },
+    "main": "./src/index.js",
+    "files": [
+        "src/",
+        "LICENSE",
+        "DISCLAIMER.md"
+    ],
+    "scripts": {
+        "test": "node --test src/*.test.js src/**/*.test.js tests/unit/*.test.js tests/cli/*.test.js",
+        "lint": "eslint src/ tests/",
+        "lint:fix": "eslint src/ tests/ --fix",
+        "format": "prettier --write src/ tests/",
+        "format:check": "prettier --check src/ tests/",
+        "release": "npm version patch -m 'release: v%s' && git push origin main --tags",
+        "prepublishOnly": "npm run lint && npm test",
+        "postinstall": "patch-package",
+        "test:unit": "node --test tests/unit/*.test.js",
+        "test:cli": "node --test tests/cli/*.test.js",
+        "test:e2e": "node tests/run-e2e.js",
+        "test:e2e:destructive": "node tests/run-e2e.js --destructive"
+    },
+    "keywords": [
+        "zalo",
+        "cli",
+        "automation",
+        "messaging",
+        "vietnam",
+        "proxy",
+        "vietqr",
+        "zca-js",
+        "official-account",
+        "zalo-oa",
+        "webhook"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/ardennguyen/zalo-agent-cli"
+    },
+    "author": "ardennguyen",
+    "license": "MIT",
+    "publishConfig": {
+        "access": "public"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
+        "better-sqlite3": "^13.0.3",
+        "chalk": "^5.6.2",
+        "commander": "^15.0.0",
+        "express": "^5.2.1",
+        "https-proxy-agent": "^9.1.0",
+        "image-size": "^2.0.4",
+        "node-fetch": "^3.3.2",
+        "undici": "^8.5.0",
+        "zca-js": "^2.2.0",
+        "zod": "^4.4.3"
+    },
+    "devDependencies": {
+        "eslint": "^10.0.3",
+        "patch-package": "^8.0.1",
+        "prettier": "^3.8.1"
+    },
+    "allowScripts": {
+        "better-sqlite3@13.0.3": true,
+        "@ardennguyen/zalo-agent-cli@2.0.0": true
+    }
 }

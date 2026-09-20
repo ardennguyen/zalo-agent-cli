@@ -25,3 +25,11 @@ jobs:
       - run: npm test
       - run: node src/index.js --version
       - run: node src/index.js --help
+
+      # The live E2E suite never runs in CI — it needs a real Zalo session and
+      # writes to real conversations. Importing the tier files without
+      # ZALO_TEST_LIVE=1 is inert (every suite skips), so this is purely a
+      # syntax/import check: it catches a broken tier file at PR time instead
+      # of when someone next runs the live suite by hand.
+      - name: E2E tier files import cleanly (no live session, no writes)
+        run: node --test tests/e2e/*.test.js

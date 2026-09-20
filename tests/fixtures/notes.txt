@@ -1,0 +1,9 @@
+zalo-agent-cli test fixture
+===========================
+
+A plain-text attachment used by the live E2E suite to exercise the
+non-image upload path (zca-js fileType "others"), which goes through a
+different code path than images: it waits on a WebSocket upload-complete
+event rather than resolving inline.
+
+This file is committed on purpose. Do not delete it.

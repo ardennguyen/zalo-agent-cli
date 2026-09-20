@@ -16,3 +16,8 @@ agent/
 
 # Agent configuration (local only)
 .agents/
+
+# Live E2E local state (never commit real thread ids or credentials)
+tests/targets.json
+tests/.artifacts.json
+tests/.credential-backup/

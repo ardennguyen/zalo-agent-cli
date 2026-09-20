@@ -24,8 +24,16 @@ zalo-agent status
 ```
 
 ### Port Selection
-QR HTTP server auto-tries: 18927 → 8080 → 3000 → 9000. First available wins.
+QR HTTP server auto-tries: 18927 → 8080 → 3000 → 9000. First available wins. Override the first choice with `-q, --qr-port <port>`.
 Firewall must allow at least one of these ports for remote access.
+
+### QR events surfaced during login
+| Event | What the CLI does |
+|-------|-------------------|
+| generated | Prints the QR (terminal ASCII + browser URL), saves `~/.zalo-agent-cli/qr.png` |
+| scanned | Prints the scanning account's display name and avatar URL, prompts to confirm on the phone |
+| declined | Fails immediately with "Login declined on phone" (`QRCodeDeclined` / `qr_declined` in `--json`) |
+| expired | Auto-retries with a fresh QR |
 
 ### Troubleshooting
 | Issue | Fix |
@@ -75,3 +83,21 @@ zalo-agent account list
 Formats: `http://user:pass@host:port`, `socks5://user:pass@host:port`
 Tested: IPRoyal residential, datacenter proxies.
 Rule: 1 unique proxy per account — shared proxies risk ban.
+
+## Logging Out & Removing Accounts
+
+Pick by how much you want gone. All four are distinct:
+
+| Command | Server session | Credentials | Local cache (`zalo.db`, `media/`) | Registry entry |
+|---------|:---:|:---:|:---:|:---:|
+| `logout` | invalidated | kept | kept | kept |
+| `logout --no-remote` | left valid (local-only) | kept | kept | kept |
+| `logout --delete-history` | invalidated | kept | **deleted** | kept |
+| `logout --purge` | invalidated | **deleted** | **deleted** | **removed** |
+| `account remove <ownerId>` | invalidated (if that account is active) | **deleted** | **deleted** | **removed** |
+
+- `logout` (default) performs a real server-side `logoutV2()` — a later authenticated request fails with error 600. `--no-remote` restores the old local-only behavior, leaving the cookie valid indefinitely.
+- `--purge` and `account remove` **abort** if a `listen` daemon still holds that account's `daemon.lock`, reporting the PID. Stop the daemon first.
+- `zalo-agent account devices` lists the sessions Zalo currently has linked to the active account (read-only) — useful to confirm a logout actually took effect on the server side.
+
+After a purge, `~/.zalo-agent-cli/credentials/` is empty, `accounts.json` is `[]`, and `accounts/<ownId>/` is gone.

@@ -17,7 +17,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > Đăng nhập Zalo Web (hoặc ứng dụng PC khác) sẽ thu hồi phiên của CLI ngay lập tức
 > ở phía máy chủ, kể cả khi không có tiến trình nào đang chạy. Ngược lại,
 > `zalo-agent login` sẽ đăng xuất Zalo Web. Ứng dụng điện thoại không bị ảnh hưởng.
-> Đo ngày 20/09/2026; chi tiết trong [tests/NOTES.md](tests/NOTES.md).
+> Đo ngày 20/09/2026.
 > Lệnh `oa` là ngoại lệ — chúng dùng **API chính thức** của Zalo OA, không có rủi ro ban.
 
 > [!TIP]
@@ -133,7 +133,7 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 - **178 lệnh** phủ hết tính năng Zalo cá nhân
 - **Zalo Official Account (OA) API v3.0** — OAuth login, gửi tin nhắn, follower, tag, bài viết, cửa hàng, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 7 tools cho Claude Code và các MCP client
-- **Bộ nhớ đệm cục bộ (SQLite)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync-mobile` thử backfill từ server qua WebSocket (hiện Zalo trả về rỗng — xem tests/NOTES.md)
+- **Bộ nhớ đệm cục bộ (SQLite)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync-mobile` thử backfill từ server qua WebSocket (hiện Zalo trả về rỗng)
 - Tự động tải media (ảnh/audio/video) về `~/.zalo-agent-cli/accounts/<id>/media/`
 - Thẻ chuyển khoản (55+ ngân hàng VN) & QR VietQR
 - Lắng nghe real-time với webhook & lưu JSONL local
@@ -155,7 +155,6 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 | [skill/references/login-flow.md](skill/references/login-flow.md) | Các cách đăng nhập (QR, proxy, credentials) |
 | [skill/references/listen-mode-guide.md](skill/references/listen-mode-guide.md) | Vận hành listener và webhook |
 | [tests/README.md](tests/README.md) | Cách chạy và viết test: bộ offline, E2E phân tầng + checklist thủ công |
-| [tests/NOTES.md](tests/NOTES.md) | Ghi chú kiểm thử: lỗi đã biết, vấn đề thượng nguồn, lý do thiết kế |
 | [DISCLAIMER.md](DISCLAIMER.md) | Điều khoản đầy đủ và cảnh báo rủi ro |
 | [AGENTS.md](AGENTS.md) | Quy tắc dự án cho AI coding agent |
 | [Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki) | Tài liệu công khai, song ngữ EN + VN |
@@ -171,7 +170,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > Signing into Zalo Web (or another PC client) revokes the CLI's session
 > server-side, instantly, even with nothing running. The reverse is also true:
 > `zalo-agent login` signs Zalo Web out. Your phone app is unaffected.
-> Measured 2026-09-20; details in [tests/NOTES.md](tests/NOTES.md).
+> Measured 2026-09-20.
 
 > [!TIP]
 > **AI Agent Skill** — Use with OpenClaw, Claude Code, or any SKILL.md-compatible agent:
@@ -250,7 +249,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 - **178 commands** covering the personal-account Zalo surface
 - **Zalo Official Account (OA) API v3.0** — OAuth login, messaging, followers, tags, articles, store, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 7 tools for Claude Code and other MCP clients
-- **Local SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync-mobile` attempts a server-side backfill (which Zalo currently answers empty — see tests/NOTES.md)
+- **Local SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync-mobile` attempts a server-side backfill (which Zalo currently answers empty)
 - Automatic media download to `~/.zalo-agent-cli/accounts/<id>/media/`
 - Bank cards (55+ VN banks) and VietQR payment images
 - Real-time listener with webhook forwarding and local JSONL archival
@@ -272,7 +271,6 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 | [skill/references/login-flow.md](skill/references/login-flow.md) | Login methods (QR, proxy, credentials file) |
 | [skill/references/listen-mode-guide.md](skill/references/listen-mode-guide.md) | Listener and webhook operation |
 | [tests/README.md](tests/README.md) | How to run and write the tests: offline suite, tiered live E2E, manual checklist |
-| [tests/NOTES.md](tests/NOTES.md) | Test findings: known defects, upstream issues, design rationale |
 | [DISCLAIMER.md](DISCLAIMER.md) | Full terms and risk warning |
 | [AGENTS.md](AGENTS.md) | Project rules for AI coding agents |
 | [Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki) | Public docs, bilingual EN + VN |

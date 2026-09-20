@@ -11,7 +11,7 @@
  * `listener.requestOldMessages()` plus the `old_messages` event, so the whole
  * path is drivable — and testable — with a fake listener and no Zalo session.
  *
- * See tests/NOTES.md § Mobile sync.
+ * See agent/work/transfer-sync-v2/NOTES.md § Mobile sync.
  */
 
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

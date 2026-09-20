@@ -214,7 +214,7 @@ describe("tier 4 · local chat cache", { skip }, () => {
 // ── 4. Conversation history wipe — LAST ────────────────────────────────
 
 describe("tier 4 · conversation history wipe (runs last)", { skip }, () => {
-    // NOTE on what these can and cannot assert — see tests/NOTES.md § Ordering.
+    // NOTE on what these can and cannot assert — see agent/work/transfer-sync-v2/NOTES.md § Ordering.
     //
     // The obvious check ("send a probe, wipe, confirm the probe is gone")
     // does not work, for two independent reasons:
@@ -315,7 +315,7 @@ describe("tier 4 · local logout, traffic, then re-sync", { skip }, () => {
         assert.ok(existsSync(dbPath), "fetching history should have created/kept the cache db");
     });
 
-    // KNOWN GAP — see tests/NOTES.md § Ordering.
+    // KNOWN GAP — see agent/work/transfer-sync-v2/NOTES.md § Ordering.
     // `msg history` calls insertMessage() but never upsertThread(), so the
     // `threads` table stays empty however much history is fetched. Only
     // `listen` and `sync` populate it — which is why `conv recent` almost

@@ -10,6 +10,24 @@ import { SyncManager } from "../core/sync.js";
 /** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
 const CLOSE_DUPLICATE = 3000;
 
+/**
+ * Human-friendly relative age for the "already synced …" skip message.
+ *
+ * @param {number|null} ms - age in milliseconds, or null.
+ * @returns {string}
+ */
+function formatAge(ms) {
+    if (ms == null || !Number.isFinite(ms) || ms < 1000) return "moments";
+    const sec = Math.round(ms / 1000);
+    if (sec < 60) return `${sec} seconds`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return min === 1 ? "1 minute" : `${min} minutes`;
+    const hr = Math.round(min / 60);
+    if (hr < 24) return hr === 1 ? "1 hour" : `${hr} hours`;
+    const day = Math.round(hr / 24);
+    return day === 1 ? "1 day" : `${day} days`;
+}
+
 export function registerSyncCommands(program) {
     program
         .command("sync-mobile")
@@ -20,7 +38,7 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-F, --force",
-            "With --legacy: skip the local 'already synced' shortcut and hit the network anyway (mirrors Zalo Web's own behavior of only re-syncing when it thinks something's missing). The default path has no such shortcut, so this is a no-op without --legacy",
+            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — mirroring Zalo Web, which only re-syncs when it thinks something is missing. Applies to both the default socket backfill and --legacy",
         )
         .option(
             "-L, --legacy",
@@ -32,10 +50,6 @@ export function registerSyncCommands(program) {
             if (!activeAcc) {
                 error("No active account. Please login first.");
                 process.exit(1);
-            }
-
-            if (opts.force && !opts.legacy) {
-                warning("--force only affects --legacy; the socket backfill always runs. Ignoring it.");
             }
 
             if (opts.legacy) {
@@ -67,7 +81,7 @@ export function registerSyncCommands(program) {
  * So this is a probe that costs nothing and occasionally may return something,
  * not a restore. What it improves on is harm, not capability: the version it
  * replaced pinged the owner's phone ~24 times per run chasing a retired REST
- * endpoint that could never answer. See tests/NOTES.md § Mobile sync.
+ * endpoint that could never answer. See agent/work/transfer-sync-v2/NOTES.md § Mobile sync.
  *
  * @param {{ownId: string, name?: string}} activeAcc
  * @param {{wait?: number}} opts
@@ -75,22 +89,35 @@ export function registerSyncCommands(program) {
 async function runSocketBackfill(activeAcc, opts) {
     const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
 
-    // The backfill opens a WebSocket and writes to zalo.db, which is exactly
-    // what the `listen` daemon does. One socket and one db writer per account.
-    if (!acquireLock(accountDir)) {
-        error(`A listen daemon is already running for account ${activeAcc.ownId}.`);
-        info("Stop it first, or let it keep the cache up to date on its own — it writes the same rows.");
-        process.exit(1);
-    }
-
+    // Build the SyncManager first so we can consult the local sync-freshness
+    // marker BEFORE touching the network. A redundant run should neither open
+    // a socket (which would evict a live Zalo Web session) nor, once the
+    // transfer-sync path lands, wake the owner's phone — the same debounce Zalo
+    // Web applies to its own "Đồng bộ tin nhắn".
     let api;
     let syncManager;
     try {
         api = getApi();
         syncManager = new SyncManager(api, activeAcc.ownId);
     } catch (err) {
-        releaseLock(accountDir);
         error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
+
+    const freshness = syncManager.checkSyncFreshness({ force: opts.force });
+    if (freshness.skip) {
+        success(`Already synced ${formatAge(freshness.ageMs)} ago — skipping to avoid re-pinging the server.`);
+        info(
+            "Nothing looks missing since then. Pass --force to sync anyway, or run `zalo-agent listen` to keep the cache live.",
+        );
+        process.exit(0);
+    }
+
+    // The backfill opens a WebSocket and writes to zalo.db, which is exactly
+    // what the `listen` daemon does. One socket and one db writer per account.
+    if (!acquireLock(accountDir)) {
+        error(`A listen daemon is already running for account ${activeAcc.ownId}.`);
+        info("Stop it first, or let it keep the cache up to date on its own — it writes the same rows.");
         process.exit(1);
     }
 
@@ -147,7 +174,7 @@ async function runSocketBackfill(activeAcc, opts) {
                         "comes back as cmd 601. That handshake (transfer-sync-v2) is NOT implemented here, so the " +
                         "absence of a notification on your phone means no real sync took place.",
                 );
-                info("See tests/NOTES.md § Mobile sync. To capture messages from now on, run: zalo-agent listen");
+                info("To capture messages from now on, run: zalo-agent listen");
                 exitCode = 0;
             } else {
                 success(`Backfilled ${res.saved}/${res.total} message(s) into the local cache.`);

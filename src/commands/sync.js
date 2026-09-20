@@ -1,139 +1,221 @@
+import { join } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { getActive } from "../core/accounts.js";
-import { error, info, success, output } from "../utils/output.js";
+import { CONFIG_DIR } from "../core/credentials.js";
+import { acquireLock, releaseLock } from "../core/lock.js";
+import { error, info, success, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { SyncManager } from "../core/sync.js";
 
-/**
- * Write a progress tick.
- *
- * These are pure human chatter, so they must never reach stdout in machine
- * mode — a stream of dots in front of a JSON payload is exactly the kind of
- * thing that breaks `| jq`. See src/utils/output.js for the stdout contract.
- */
-function progress(ch) {
-    if (process.env.ZALO_JSON_MODE) process.stderr.write(ch);
-    else process.stdout.write(ch);
-}
+/** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
+const CLOSE_DUPLICATE = 3000;
 
 export function registerSyncCommands(program) {
     program
         .command("sync-mobile")
         .description(
-            "Trigger a manual sync of messages from your Zalo mobile app, and save results into the local cache (zalo.db).",
+            "Backfill recent message history from Zalo's servers into the local cache (zalo.db). " +
+                "The old phone-to-PC transfer this command used to perform has been retired by Zalo — " +
+                "use --legacy to try it anyway.",
         )
         .option(
             "-F, --force",
-            "Skip the local 'already synced' shortcut and always hit the mobile-sync API (mirrors Zalo Web's own behavior of only re-pinging the phone when it actually thinks something's missing)",
+            "With --legacy: skip the local 'already synced' shortcut and hit the network anyway (mirrors Zalo Web's own behavior of only re-syncing when it thinks something's missing). The default path has no such shortcut, so this is a no-op without --legacy",
         )
-        .option("-w, --wait <seconds>", "Give up after this long (default: 120)", parseIntOption, 120)
-        .option("-i, --interval <seconds>", "Seconds between attempts (default: 10)", parseIntOption, 10)
+        .option(
+            "-L, --legacy",
+            "Try the retired pull_mobile_msg/get_crossdb phone-transfer endpoint instead. One attempt only — it pings your mobile app",
+        )
+        .option("-w, --wait <seconds>", "Give up after this long", parseIntOption, 30)
         .action(async (opts) => {
             const activeAcc = getActive();
             if (!activeAcc) {
                 error("No active account. Please login first.");
                 process.exit(1);
             }
-            try {
-                const api = getApi();
-                const syncManager = new SyncManager(api, activeAcc.ownId);
 
-                // First attempt respects the local debounce cache (task #3):
-                // if we have no known coverage gap and our last known
-                // connection state was healthy, this returns instantly
-                // without pinging the phone at all — same shortcut Zalo Web
-                // itself takes when you click "Sync" twice in one session.
-                const first = await syncManager.pollSync(0, 0, { force: !!opts.force });
-
-                if (first.status === "already-synced") {
-                    success("Already synced — no known missed messages since the last successful sync.");
-                    info("Pass --force to check the mobile app anyway.");
-                    process.exit(0);
-                }
-                if (first.status === "saved") {
-                    success(`Synced ${first.saved}/${first.total} message(s) from mobile into the local cache.`);
-                    success("Sync complete.");
-                    process.exit(0);
-                }
-                if (first.status === "empty-or-unrecognized") {
-                    success("Sync round-trip completed — nothing new to save.");
-                    process.exit(0);
-                }
-                if (first.status === "crossdb-error") {
-                    error(`Sync failed: ${first.error}`);
-                    process.exit(1);
-                }
-
-                // Only "no-token" (pullMobileMsg itself returned nothing —
-                // the phone may need a moment) falls through to a bounded
-                // retry loop. Every retry here forces a real check: once the
-                // first successful round-trip completes it marks us
-                // "caught up" internally, so retries must bypass that cache
-                // or they'd short-circuit to "already-synced" instead of
-                // actually trying again.
-                info("Please open Zalo on your mobile device and navigate to Settings -> Sync Messages -> Sync Now.");
-                info("Waiting for sync data from mobile...");
-
-                // Poll SEQUENTIALLY — each attempt starts only after the
-                // previous one has finished, then waits the interval.
-                //
-                // This used to be `setInterval(async () => { await pollSync() }, 5000)`,
-                // which does NOT wait for its async callback. pollSync() is a
-                // network round-trip that pushes a notification to the user's
-                // phone and routinely takes longer than 5s, so attempts
-                // overlapped and piled up — the phone received several
-                // simultaneous sync requests per tick instead of one every 5s.
-                // Reported by a user as "hitting my phone simultaneously over
-                // and over", and it is exactly that.
-                //
-                // Every ping here is a real interruption on someone's device,
-                // so the loop is bounded, sequential, and stops at the first
-                // success.
-                // Each attempt is a real notification on the user's phone, so
-                // the interval defaults to 10s rather than the original 5s,
-                // and both the interval and the total budget are now the
-                // caller's choice via --interval / --wait.
-                const intervalMs = Math.max(1, Number(opts.interval) || 10) * 1000;
-                const maxAttempts = Math.max(1, Math.floor(((Number(opts.wait) || 120) * 1000) / intervalMs));
-                const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-                info(
-                    `Checking every ${intervalMs / 1000}s for up to ${Math.round((maxAttempts * intervalMs) / 1000)}s ` +
-                        `(${maxAttempts} attempt(s)). Each attempt pings your phone — Ctrl-C to stop early.`,
-                );
-
-                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-                    await sleep(intervalMs);
-
-                    try {
-                        const result = await syncManager.pollSync(0, 1, { force: true });
-
-                        if (result.status === "saved") {
-                            success(
-                                `\nSynced ${result.saved}/${result.total} message(s) from mobile into the local cache.`,
-                            );
-                            success("Sync complete.");
-                            process.exit(0);
-                        } else if (result.status === "crossdb-error") {
-                            progress("x");
-                        } else {
-                            progress(".");
-                        }
-                    } catch (e) {
-                        // "Tham số không hợp lệ" usually means no sync available yet
-                        if (e.message.includes("Tham số không hợp lệ")) {
-                            progress(".");
-                        } else {
-                            error(`\nSync error: ${e.message}`);
-                        }
-                    }
-                }
-
-                error("\nTimeout waiting for sync data from mobile.");
-                process.exit(1);
-            } catch (err) {
-                error(`Failed: ${err.message}`);
-                process.exit(1);
+            if (opts.force && !opts.legacy) {
+                warning("--force only affects --legacy; the socket backfill always runs. Ignoring it.");
             }
+
+            if (opts.legacy) {
+                await runLegacySync(activeAcc, opts);
+                return;
+            }
+            await runSocketBackfill(activeAcc, opts);
         });
+}
+
+/**
+ * Best-effort backfill: ask Zalo's servers for old messages over the WebSocket
+ * (socket cmd 510 for DMs, 511 for groups) and write whatever comes back into
+ * zalo.db.
+ *
+ * HONEST STATUS, measured 2026-09-20: on the account this was developed
+ * against, Zalo answers both commands with an EMPTY set — including when given
+ * the exact `lastId` anchors Zalo Web itself sends. Zalo Web gets the same
+ * empty answer and then falls back to `transfer-sync-v2` (socket cmd 590/591,
+ * libsignal-encrypted), which is the only path observed carrying real data and
+ * is NOT implemented here.
+ *
+ * So this is a probe that costs nothing and occasionally may return something,
+ * not a guaranteed restore. It is still strictly better than what it replaced,
+ * which pinged the owner's phone ~24 times chasing a retired REST endpoint.
+ * See tests/NOTES.md § Mobile sync for the full trace.
+ *
+ * @param {{ownId: string, name?: string}} activeAcc
+ * @param {{wait?: number}} opts
+ */
+async function runSocketBackfill(activeAcc, opts) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+
+    // The backfill opens a WebSocket and writes to zalo.db, which is exactly
+    // what the `listen` daemon does. One socket and one db writer per account.
+    if (!acquireLock(accountDir)) {
+        error(`A listen daemon is already running for account ${activeAcc.ownId}.`);
+        info("Stop it first, or let it keep the cache up to date on its own — it writes the same rows.");
+        process.exit(1);
+    }
+
+    let api;
+    let syncManager;
+    try {
+        api = getApi();
+        syncManager = new SyncManager(api, activeAcc.ownId);
+    } catch (err) {
+        releaseLock(accountDir);
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
+
+    const waitMs = Math.max(1, Number(opts.wait) || 30) * 1000;
+    let exitCode = 1;
+
+    try {
+        info("Connecting…");
+        const connected = await new Promise((res) => {
+            let settled = false;
+            const done = (v) => {
+                if (settled) return;
+                settled = true;
+                res(v);
+            };
+            const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), waitMs);
+            api.listener.on("connected", () => {
+                clearTimeout(timer);
+                done({ ok: true });
+            });
+            api.listener.on("closed", (code) => {
+                clearTimeout(timer);
+                done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
+            });
+            api.listener.on("error", (e) => {
+                clearTimeout(timer);
+                done({ ok: false, reason: e && e.message ? e.message : "socket error" });
+            });
+            api.listener.start({ retryOnClose: false });
+        });
+
+        if (!connected.ok) {
+            if (connected.reason === "duplicate") {
+                error("Zalo closed this connection: another web session is already open on this account.");
+                info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+            } else {
+                error(`Could not open a connection: ${connected.reason}`);
+            }
+        } else {
+            syncManager.markConnected();
+            info("Requesting recent history from the server…");
+            const res = await syncManager.backfillOverSocket(api.listener, {
+                timeoutMs: waitMs,
+                onBatch: ({ count, threadType }) => {
+                    info(`  received ${count} ${threadType === 0 ? "direct" : "group"} message(s)`);
+                },
+            });
+
+            if (res.total === 0) {
+                warning("The server returned no history on this path.");
+                info(
+                    "Measured 2026-09-20: Zalo answers the old-message pull with an empty set even when given the " +
+                        "exact anchor ids Zalo Web uses. The only sync path that still carries data is " +
+                        "transfer-sync-v2, which this tool does not implement — see tests/NOTES.md § Mobile sync.",
+                );
+                info("To capture messages from now on, run: zalo-agent listen");
+                exitCode = 0;
+            } else {
+                success(`Backfilled ${res.saved}/${res.total} message(s) into the local cache.`);
+                if (res.reason === "timeout") {
+                    warning("Stopped on the wait limit — re-run with a longer --wait if you expected more.");
+                }
+                exitCode = 0;
+            }
+        }
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+    } finally {
+        try {
+            api.listener.stop();
+        } catch {
+            // Already closed — nothing to clean up.
+        }
+        releaseLock(accountDir);
+    }
+
+    process.exit(exitCode);
+}
+
+/**
+ * The retired path, kept behind --legacy so the behavior stays inspectable.
+ *
+ * `/api/message/pull_mobile_msg` and `/api/message/get_crossdb` are still
+ * present in Zalo Web's own bundle but have ZERO call sites in it — the client
+ * moved to a WebSocket protocol (cmd 590/591, "transfer-sync-v2"). The
+ * endpoints answer with an empty payload rather than an error, which is why
+ * this used to look like "the phone hasn't replied yet" and retry for two
+ * minutes, putting a notification on the owner's phone each time.
+ *
+ * It runs exactly once now.
+ *
+ * @param {{ownId: string}} activeAcc
+ * @param {{force?: boolean}} opts
+ */
+async function runLegacySync(activeAcc, opts) {
+    warning(
+        "--legacy uses an endpoint Zalo has retired. This pings your mobile app and will most likely find nothing.",
+    );
+    try {
+        const syncManager = new SyncManager(getApi(), activeAcc.ownId);
+        const res = await syncManager.pollSync(0, 0, { force: !!opts.force });
+
+        switch (res.status) {
+            case "already-synced":
+                success("Already synced — no known missed messages since the last successful sync.");
+                info("Pass --force to check anyway.");
+                process.exit(0);
+                break;
+            case "saved":
+                success(`Synced ${res.saved}/${res.total} message(s) from mobile into the local cache.`);
+                process.exit(0);
+                break;
+            case "empty-or-unrecognized":
+                success("Sync round-trip completed — nothing new to save.");
+                process.exit(0);
+                break;
+            case "legacy-retired":
+                error("The legacy mobile-sync endpoint returned nothing — Zalo no longer serves it.");
+                info("Run `zalo-agent sync-mobile` without --legacy to backfill over the WebSocket instead.");
+                process.exit(1);
+                break;
+            case "crossdb-error":
+                error(`Sync failed: ${res.error}`);
+                process.exit(1);
+                break;
+            default:
+                error(`Unrecognized sync result: ${res.status}`);
+                process.exit(1);
+        }
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
 }

@@ -12,6 +12,11 @@ import {
     getPendingSyncGaps,
     resolveAllPendingSyncGaps,
 } from "./db.js";
+import { extractMessageText } from "../utils/extract-message-text.js";
+
+/** zca-js ThreadType values, mirrored so this module doesn't import the enum. */
+const THREAD_TYPE_USER = 0;
+const THREAD_TYPE_GROUP = 1;
 
 function resolveAccountDir(accountName) {
     return resolve(CONFIG_DIR, "accounts", accountName);
@@ -216,8 +221,18 @@ export class SyncManager {
         const pullRes = await this.api.pullMobileMsg(this.keys.publicKey, fromSeqId, isRetry, "");
         const token = this._unwrap(pullRes);
         if (!token) {
-            console.log(`[Sync] No session token returned — nothing to pull yet.`);
-            return { status: "no-token", raw: pullRes };
+            // MEASURED 2026-09-20 against the live Zalo Web client: this is
+            // not "the phone hasn't answered yet", it is the endpoint being
+            // retired. `/api/message/pull_mobile_msg` and `get_crossdb` still
+            // exist in Zalo Web's bundle but NOTHING calls them — 0 call sites
+            // across all 4,642 loaded modules. Current Zalo syncs over the
+            // WebSocket instead (cmd 590/591, "transfer-sync-v2"). See
+            // tests/NOTES.md § Mobile sync.
+            //
+            // Retrying therefore cannot help, and every retry used to push a
+            // notification to a real person's phone. One attempt, then stop.
+            console.log(`[Sync] pullMobileMsg returned no session token — the legacy mobile-sync endpoint is retired.`);
+            return { status: "legacy-retired", raw: pullRes };
         }
 
         console.log(`[Sync] Got sync session token, calling getCrossDB...`);
@@ -246,6 +261,121 @@ export class SyncManager {
         setSyncState("lastConnectionOk", "true");
 
         return result;
+    }
+
+    /**
+     * Backfill recent history straight from Zalo's servers over an already-open
+     * WebSocket, writing it into the same zalo.db the `listen` daemon uses.
+     *
+     * Uses socket cmd 510 (DMs) and 511 (groups), subCmd 1, payload
+     * `{first: true, lastId, preIds: []}` — which zca-js already speaks via
+     * `listener.requestOldMessages()` and the `old_messages` event, so no
+     * patch to the library is needed.
+     *
+     * MEASURED 2026-09-20, and worth knowing before trusting this: Zalo
+     * returned an EMPTY set for both commands on the development account, both
+     * with `lastId: null` and with the exact anchor ids Zalo Web sends. Zalo
+     * Web gets the same empty answer and falls back to `transfer-sync-v2`
+     * (cmd 590/591, libsignal), which is not implemented here. Treat this as a
+     * cheap probe, not a guaranteed restore. See tests/NOTES.md § Mobile sync.
+     *
+     * The caller owns the socket: it must hold `daemon.lock`, start the
+     * listener, and stop it afterwards. This method only issues the two
+     * requests and persists whatever comes back.
+     *
+     * @param {import("zca-js").Listener} listener A started zca-js listener.
+     * @param {{timeoutMs?: number, onBatch?: (info: object) => void}} [opts]
+     * @returns {Promise<{status: string, saved: number, total: number, reason: string}>}
+     */
+    async backfillOverSocket(listener, opts = {}) {
+        this._ensureDb();
+        const timeoutMs = Math.max(1000, Number(opts.timeoutMs) || 30000);
+        const onBatch = typeof opts.onBatch === "function" ? opts.onBatch : () => {};
+
+        let saved = 0;
+        let total = 0;
+        const answered = new Set();
+
+        return new Promise((resolve) => {
+            let settled = false;
+            let timer = null;
+
+            const finish = (reason) => {
+                if (settled) return;
+                settled = true;
+                listener.removeListener("old_messages", handler);
+                if (timer) clearTimeout(timer);
+                setSyncState("lastBackfillAt", Date.now());
+                // A completed round-trip means we have asked the server what
+                // we missed and been answered, so known gaps are covered.
+                if (reason === "complete") resolveAllPendingSyncGaps();
+                resolve({ status: "backfilled", saved, total, reason });
+            };
+
+            const handler = (msgs, threadType) => {
+                answered.add(threadType);
+                const batch = Array.isArray(msgs) ? msgs : [];
+                total += batch.length;
+                for (const msg of batch) {
+                    if (this._persistSocketMessage(msg, threadType)) saved++;
+                }
+                onBatch({ threadType, count: batch.length, saved, total });
+                // Both thread types have reported in — nothing more is coming.
+                if (answered.has(THREAD_TYPE_USER) && answered.has(THREAD_TYPE_GROUP)) finish("complete");
+            };
+
+            listener.on("old_messages", handler);
+            timer = setTimeout(() => finish("timeout"), timeoutMs);
+
+            try {
+                listener.requestOldMessages(THREAD_TYPE_USER);
+                listener.requestOldMessages(THREAD_TYPE_GROUP);
+            } catch (e) {
+                console.error(`[Sync] requestOldMessages failed: ${e.message}`);
+                finish("request-failed");
+            }
+        });
+    }
+
+    /**
+     * Persist one `old_messages` entry using the exact same field mapping the
+     * `listen` daemon applies to live messages, so a row written by a backfill
+     * is indistinguishable from one written live.
+     *
+     * @returns {boolean} true when a row was written.
+     */
+    _persistSocketMessage(msg, threadType) {
+        const raw = msg && msg.data;
+        if (!raw || !raw.msgId || !msg.threadId) return false;
+
+        const content = raw.content;
+        const isText = typeof content === "string";
+        const msgType = raw.msgType || null;
+        const timestamp = raw.ts ? Number(raw.ts) : Date.now();
+
+        try {
+            upsertThread({
+                threadId: String(msg.threadId),
+                type: threadType === THREAD_TYPE_USER ? "dm" : "group",
+                name: String(raw.dName || ""),
+                lastUpdate: timestamp,
+                sync_timestamp: Date.now(),
+            });
+            insertMessage({
+                msgId: String(raw.msgId),
+                threadId: String(msg.threadId),
+                senderId: String(raw.uidFrom || ""),
+                senderName: String(raw.dName || ""),
+                text: (isText ? content : extractMessageText(content, msgType)) || "",
+                timestamp,
+                type: isText ? "text" : msgType || "attachment",
+                raw_data: content,
+            });
+            return true;
+        } catch (e) {
+            console.error(`[Sync] Failed to save backfilled message ${raw.msgId}: ${e.message}`);
+            return false;
+        }
     }
 
     /** zca-js's apiFactory convention isn't 100% consistent about whether a

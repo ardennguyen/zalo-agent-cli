@@ -14,7 +14,9 @@ history_dump.json
 
 agent/
 
-# Agent configuration (local only)
+# AI agent communication / configuration (local only)
+AGENTS.md
+CLAUDE.md
 .agents/
 
 # Live E2E local state (never commit real thread ids or credentials)

@@ -6,6 +6,7 @@
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { parseIntOption } from "../utils/parse-options.js";
 
 export function registerGroupCommands(program) {
     const group = program.command("group").description("Manage groups");
@@ -223,7 +224,12 @@ export function registerGroupCommands(program) {
         .description("Rename a group")
         .action(async (groupId, name) => {
             try {
-                const result = await getApi().changeGroupName(groupId, name);
+                // zca-js declares changeGroupName(name, groupId) — name
+                // FIRST. Passing (groupId, name) handed Zalo the group id as
+                // the new name and the name as the group id, so every rename
+                // failed with "Tham số không hợp lệ". Note changeGroupAvatar
+                // below takes (source, groupId), which is the same shape.
+                const result = await getApi().changeGroupName(name, groupId);
                 output(result, program.opts().json, () => success(`Group renamed to "${name}"`));
             } catch (e) {
                 error(e.message);
@@ -489,8 +495,8 @@ export function registerGroupCommands(program) {
     group
         .command("blocked <groupId>")
         .description("List blocked members in a group")
-        .option("-c, --count <n>", "Items per page", parseInt, 50)
-        .option("-p, --page <n>", "Page number", parseInt, 1)
+        .option("-c, --count <n>", "Items per page", parseIntOption, 50)
+        .option("-p, --page <n>", "Page number", parseIntOption, 1)
         .action(async (groupId, opts) => {
             try {
                 const result = await getApi().getGroupBlockedMember({ page: opts.page, count: opts.count }, groupId);

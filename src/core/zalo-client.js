@@ -4,6 +4,8 @@
  */
 
 import fs from "fs";
+import { basename } from "node:path";
+import { imageSizeFromFile } from "image-size/fromFile";
 import { Zalo } from "zca-js";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { ProxyAgent } from "undici";
@@ -13,64 +15,67 @@ import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
 
 /**
- * Read image dimensions from file header bytes (PNG, JPEG, GIF).
- * Returns { width, height, size } or null on failure.
+ * Read image dimensions for zca-js's `imageMetadataGetter`.
+ *
+ * zca-js 2.0.0 dropped its `sharp` dependency and now requires callers to
+ * supply this. It is consumed for the inline-image upload paths —
+ * jpg/jpeg/png/webp via getImageMetaData(), gif via getGifMetaData() — and
+ * the width/height go straight into the upload params the recipient's
+ * client uses to lay the message out.
+ *
+ * Two deliberate choices here:
+ *
+ * 1. **Dimensions come from `image-size`, not hand-rolled header parsing.**
+ *    Zalo restricts only executables (`restricted_ext_file` is exe, cmd,
+ *    bat, …), so a user can hand `send-image` a bmp, tiff, heic or avif.
+ *    Parsing four formats by hand and returning null for the rest turned an
+ *    unusual input into an opaque "Failed to get image metadata". image-size
+ *    is pure JS with zero dependencies and covers ~20 formats.
+ *
+ * 2. **EXIF orientation is applied.** image-size *reports* `orientation` but
+ *    does not act on it. Orientations 5–8 are the 90° rotations, where the
+ *    stored dimensions are transposed relative to how the image displays —
+ *    the common case being a phone photo. Sending stored dimensions there
+ *    makes the recipient's layout box the wrong way round, so they are
+ *    swapped.
+ *
+ * Throws rather than returning null: zca-js turns a falsy return into a
+ * generic ZaloApiError, which tells the user nothing about which file was
+ * the problem or why.
+ *
+ * Exported for testing; not part of the CLI's public surface.
+ *
+ * @param {string} filePath
+ * @returns {Promise<{width: number, height: number, size: number}>}
+ * @throws {Error} when the file is unreadable or is not a recognized image
  */
-async function readImageMetadata(filePath) {
+export async function readImageMetadata(filePath) {
     const stat = await fs.promises.stat(filePath);
-    const buf = Buffer.alloc(32);
-    const fh = await fs.promises.open(filePath, "r");
+
+    let dims;
     try {
-        await fh.read(buf, 0, 32, 0);
-    } finally {
-        await fh.close();
+        // Reads incrementally rather than slurping the file, which matters
+        // because Zalo permits attachments up to 1 GB.
+        dims = await imageSizeFromFile(filePath);
+    } catch (e) {
+        throw new Error(
+            `Could not read image dimensions from "${basename(filePath)}": ${e.message}. ` +
+                `Zalo renders jpg/jpeg/png/webp/gif inline; other formats are sent as file attachments.`,
+        );
     }
 
-    let width = 0;
-    let height = 0;
-
-    // PNG: bytes 0-3 = 0x89504E47, width at 16, height at 20 (big-endian)
-    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
-        width = buf.readUInt32BE(16);
-        height = buf.readUInt32BE(20);
-    }
-    // GIF: "GIF87a" or "GIF89a", width at 6, height at 8 (little-endian)
-    else if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
-        width = buf.readUInt16LE(6);
-        height = buf.readUInt16LE(8);
-    }
-    // JPEG: 0xFFD8 — scan segments via file handle to avoid loading entire file
-    else if (buf[0] === 0xff && buf[1] === 0xd8) {
-        const jfh = await fs.promises.open(filePath, "r");
-        try {
-            const seg = Buffer.alloc(9); // enough for marker(2) + length(2) + precision(1) + h(2) + w(2)
-            let pos = 2; // skip SOI
-            while (pos < stat.size - 9) {
-                const { bytesRead } = await jfh.read(seg, 0, 4, pos);
-                if (bytesRead < 4 || seg[0] !== 0xff) break;
-                const marker = seg[1];
-                if (
-                    (marker >= 0xc0 && marker <= 0xc3) ||
-                    (marker >= 0xc5 && marker <= 0xc7) ||
-                    (marker >= 0xc9 && marker <= 0xcb) ||
-                    (marker >= 0xcd && marker <= 0xcf)
-                ) {
-                    // Read 5 more bytes: segment length(2) + precision(1) + height(2) + width(2)
-                    await jfh.read(seg, 0, 7, pos + 2);
-                    height = seg.readUInt16BE(3);
-                    width = seg.readUInt16BE(5);
-                    break;
-                }
-                const segLen = seg.readUInt16BE(2);
-                pos += 2 + segLen;
-            }
-        } finally {
-            await jfh.close();
-        }
+    if (!dims || !dims.width || !dims.height) {
+        throw new Error(`Could not read image dimensions from "${basename(filePath)}": no usable size in the header.`);
     }
 
-    if (width === 0 || height === 0) return null;
-    return { width, height, size: stat.size };
+    // EXIF orientations 5-8 rotate by 90°, transposing width and height.
+    const transposed = dims.orientation >= 5 && dims.orientation <= 8;
+
+    return {
+        width: transposed ? dims.height : dims.width,
+        height: transposed ? dims.width : dims.height,
+        size: stat.size,
+    };
 }
 
 let _api = null;
@@ -226,7 +231,30 @@ export async function autoLogin(jsonMode = false) {
             info(`Auto-login: ${active.name || active.ownId}`);
         }
     } catch (e) {
-        // Silent failure — user can login manually
-        console.error("AutoLogin failed:", e.message);
+        // A revoked session is by far the most common cause, and the bare
+        // upstream message ("Đăng nhập thất bại") sends people looking for a
+        // bug that isn't there.
+        //
+        // Measured 2026-09-20: this CLI authenticates as a WEB client — the
+        // same device class as Zalo Web. Zalo permits one such session per
+        // account, so logging into Zalo Web revokes this one *server-side*,
+        // instantly and silently. The credential file on disk is left
+        // byte-identical; only the server rejects it. The reverse is also
+        // true: `zalo-agent login` logs Zalo Web out. The phone app is a
+        // different device class and is unaffected.
+        //
+        // Saying only "Not logged in. Run: zalo-agent login" is actively
+        // unhelpful here: that advice works, but it will log the user's
+        // browser out again, and they will loop.
+        const revoked = /đăng nhập thất bại|login failed|zpw_sek|kh[oô]ng đúng|600/i.test(e.message || "");
+        console.error(`AutoLogin failed: ${e.message}`);
+        if (revoked) {
+            console.error(
+                "  This session was revoked, which normally means Zalo Web or another PC\n" +
+                    "  client signed in on this account — only one such session is allowed at a\n" +
+                    "  time. Running `zalo-agent login` will restore the CLI, but it will sign\n" +
+                    "  that other session out. The phone app is unaffected either way.",
+            );
+        }
     }
 }

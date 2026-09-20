@@ -177,8 +177,22 @@ export function getMessages(threadId, limit = 50, fromTimestamp = null) {
     return db.prepare(query).all(...params);
 }
 
-export function getRecentThreads(limit = 20) {
+/**
+ * Most recently active threads, newest first.
+ *
+ * `type` filters in SQL rather than after the fact. That distinction is the
+ * whole point: `getRecentThreads(5)` followed by a JS filter returns the
+ * groups *among the newest five threads of any kind* — frequently none —
+ * whereas asking for 5 groups should return the 5 newest groups.
+ *
+ * @param {number} [limit=20]
+ * @param {"dm"|"group"|null} [type=null] - null means both
+ */
+export function getRecentThreads(limit = 20, type = null) {
     if (!db) throw new Error("Database not initialized");
+    if (type) {
+        return db.prepare("SELECT * FROM threads WHERE type = ? ORDER BY lastUpdate DESC LIMIT ?").all(type, limit);
+    }
     return db.prepare("SELECT * FROM threads ORDER BY lastUpdate DESC LIMIT ?").all(limit);
 }
 

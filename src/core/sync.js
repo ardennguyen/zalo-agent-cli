@@ -54,7 +54,7 @@ function normalizeSyncedMessage(raw) {
         threadId: String(threadId),
         senderId: String(senderId),
         senderName: String(senderName),
-        text: isText ? rawContent : (rawContent ? JSON.stringify(rawContent) : ""),
+        text: isText ? rawContent : rawContent ? JSON.stringify(rawContent) : "",
         timestamp,
         type: isText ? "text" : msgType || "attachment",
         raw_data: rawContent,

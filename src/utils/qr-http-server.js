@@ -13,9 +13,19 @@ import { info } from "./output.js";
  * Start a temporary HTTP server that serves the QR image.
  * @param {string} qrImagePath - path to QR PNG file
  * @param {number} port - default 18927
+ * @param {number[]} tryPorts - ports to try in order
+ * @param {boolean} exposeOnLan - bind 0.0.0.0 instead of 127.0.0.1
+ *
+ *   The QR is a **login token**: anyone who can fetch and scan it before it
+ *   expires signs in as this account. Binding 0.0.0.0 therefore offers the
+ *   account to the whole network, so it is opt-in (`--qr-url`) rather than
+ *   the default. Loopback still covers the ordinary desktop case, where the
+ *   browser is on the same machine.
+ *
  * @returns {{ url: string, close: () => void }}
  */
-export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080, 3000, 9000]) {
+export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080, 3000, 9000], exposeOnLan = false) {
+    const bindHost = exposeOnLan ? "0.0.0.0" : "127.0.0.1";
     const server = http.createServer(async (req, res) => {
         if (req.url === "/qr" || req.url === "/") {
             if (!existsSync(qrImagePath)) {
@@ -133,7 +143,13 @@ setInterval(async()=>{
 
     function tryListen() {
         const p = tryPorts[currentPortIdx];
-        server.listen(p, "0.0.0.0");
+        server.listen(p, bindHost);
+        // Never let the QR server be the reason the process stays alive. It
+        // is a convenience view onto a file, not work in its own right — and
+        // an orphaned one holds its port long after login finished, so the
+        // NEXT login silently falls through to 8080. (Observed: a login's
+        // server still serving HTTP 200 on 18927 hours later.)
+        server.unref();
     }
 
     server.on("listening", async () => {

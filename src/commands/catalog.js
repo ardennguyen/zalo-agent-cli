@@ -5,6 +5,7 @@
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { parseIntOption } from "../utils/parse-options.js";
 
 export function registerCatalogCommands(program) {
     const catalog = program.command("catalog").description("Manage Zalo Shop catalogs and products");
@@ -12,8 +13,8 @@ export function registerCatalogCommands(program) {
     catalog
         .command("list")
         .description("List all catalogs")
-        .option("-l, --limit <n>", "Items per page", parseInt, 20)
-        .option("-p, --page <n>", "Page number", parseInt, 0)
+        .option("-l, --limit <n>", "Items per page", parseIntOption, 20)
+        .option("-p, --page <n>", "Page number", parseIntOption, 0)
         .action(async (opts) => {
             try {
                 const result = await getApi().getCatalogList({ limit: opts.limit, page: opts.page });
@@ -62,8 +63,8 @@ export function registerCatalogCommands(program) {
     catalog
         .command("products <catalogId>")
         .description("List products in a catalog")
-        .option("-l, --limit <n>", "Items per page", parseInt, 100)
-        .option("-p, --page <n>", "Page number", parseInt, 0)
+        .option("-l, --limit <n>", "Items per page", parseIntOption, 100)
+        .option("-p, --page <n>", "Page number", parseIntOption, 0)
         .action(async (catalogId, opts) => {
             try {
                 const result = await getApi().getProductCatalogList({

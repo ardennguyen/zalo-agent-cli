@@ -5,6 +5,7 @@
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { parseIntOption } from "../utils/parse-options.js";
 
 /** Valid privacy setting keys and their human-readable labels + value descriptions. */
 const SETTING_MAP = {
@@ -185,8 +186,8 @@ export function registerProfileCommands(program) {
     profile
         .command("avatars")
         .description("List your avatar gallery")
-        .option("-c, --count <n>", "Page size", parseInt, 50)
-        .option("-p, --page <n>", "Page number", parseInt, 1)
+        .option("-c, --count <n>", "Page size", parseIntOption, 50)
+        .option("-p, --page <n>", "Page number", parseIntOption, 1)
         .action(async (opts) => {
             try {
                 const result = await getApi().getAvatarList(opts.count, opts.page);

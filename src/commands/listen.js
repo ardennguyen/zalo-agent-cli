@@ -92,18 +92,21 @@ export function registerListenCommand(program) {
                 if (!gapId) return; // gap too small to bother with
                 const mins = Math.round((Date.now() - fromTs) / 60000);
                 info(`Coverage gap detected (${reason}, ~${mins}m). Attempting mobile-sync backfill...`);
-                syncManager.pollSync(0, 0, { force: true }).then((result) => {
-                    if (result.status === "saved") {
-                        success(`Backfilled ${result.saved} message(s) from the missed window.`);
-                    } else if (result.status === "crossdb-error" || result.status === "no-token") {
-                        warning(
-                            `Could not confirm the missed window (${reason}) was backfilled (${result.status}). ` +
-                                `It stays pending and will be retried on next launch or "zalo-agent sync-mobile".`,
-                        );
-                    }
-                }).catch((e) => {
-                    warning(`Backfill attempt failed (non-fatal): ${e.message}`);
-                });
+                syncManager
+                    .pollSync(0, 0, { force: true })
+                    .then((result) => {
+                        if (result.status === "saved") {
+                            success(`Backfilled ${result.saved} message(s) from the missed window.`);
+                        } else if (result.status === "crossdb-error" || result.status === "no-token") {
+                            warning(
+                                `Could not confirm the missed window (${reason}) was backfilled (${result.status}). ` +
+                                    `It stays pending and will be retried on next launch or "zalo-agent sync-mobile".`,
+                            );
+                        }
+                    })
+                    .catch((e) => {
+                        warning(`Backfill attempt failed (non-fatal): ${e.message}`);
+                    });
             }
 
             // On startup, check how long it's been since we were last known

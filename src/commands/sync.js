@@ -58,10 +58,16 @@ export function registerSyncCommands(program) {
  * libsignal-encrypted), which is the only path observed carrying real data and
  * is NOT implemented here.
  *
+ * DO NOT read "no phone contact" as a feature. The phone IS the data source:
+ * the account owner confirmed that a real Zalo Web sync makes their phone show
+ * a request notification, which means cmd 590 causes the server to wake the
+ * phone, and the phone encrypts the payload that comes back as cmd 601. A run
+ * of this command that leaves the phone silent has not synced anything.
+ *
  * So this is a probe that costs nothing and occasionally may return something,
- * not a guaranteed restore. It is still strictly better than what it replaced,
- * which pinged the owner's phone ~24 times chasing a retired REST endpoint.
- * See tests/NOTES.md § Mobile sync for the full trace.
+ * not a restore. What it improves on is harm, not capability: the version it
+ * replaced pinged the owner's phone ~24 times per run chasing a retired REST
+ * endpoint that could never answer. See tests/NOTES.md § Mobile sync.
  *
  * @param {{ownId: string, name?: string}} activeAcc
  * @param {{wait?: number}} opts
@@ -134,13 +140,14 @@ async function runSocketBackfill(activeAcc, opts) {
             });
 
             if (res.total === 0) {
-                warning("The server returned no history on this path.");
+                warning("No history returned — and your phone was never asked.");
                 info(
-                    "Measured 2026-09-20: Zalo answers the old-message pull with an empty set even when given the " +
-                        "exact anchor ids Zalo Web uses. The only sync path that still carries data is " +
-                        "transfer-sync-v2, which this tool does not implement — see tests/NOTES.md § Mobile sync.",
+                    "A real Zalo sync notifies your phone, because the phone is the data source: Zalo Web sends " +
+                        "socket cmd 590, the server wakes the phone, the phone encrypts and uploads, and the payload " +
+                        "comes back as cmd 601. That handshake (transfer-sync-v2) is NOT implemented here, so the " +
+                        "absence of a notification on your phone means no real sync took place.",
                 );
-                info("To capture messages from now on, run: zalo-agent listen");
+                info("See tests/NOTES.md § Mobile sync. To capture messages from now on, run: zalo-agent listen");
                 exitCode = 0;
             } else {
                 success(`Backfilled ${res.saved}/${res.total} message(s) into the local cache.`);

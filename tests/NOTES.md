@@ -675,39 +675,82 @@ a two-minute retry loop that notified the owner's phone roughly 24 times per
 run. Replacing a harmful no-op with an honest no-op is the actual improvement
 here. **A real full-history sync requires implementing transfer-sync-v2.**
 
-### 5. The phone notification is the tell — reported by the account owner
+### 5. The CLI CAN drive the real sync — VERIFIED live, 2026-09-21
 
-**The owner confirmed that clicking Sync in Zalo Web makes their phone show a
-request notification.** That single observation settles what the protocol is
-doing, and corrects a framing error made earlier in this work.
+This is the important result, and it overturns the conclusion in § 4.
 
-The phone is the **data source**. The sequence is:
+**Sending socket cmd 590 from the CLI makes the phone display Zalo's real sync
+prompt.** The account owner's phone showed:
 
-1. Web sends cmd **590** with a fresh `ek`/`ik` keypair and a query descriptor.
-2. The server **wakes the phone** — this is the notification the owner sees.
-3. The phone encrypts the requested partition to the web client's key and uploads.
-4. The server relays it down as cmd **601** frames.
-5. Web sends cmd **591** to dispose the sync session.
+> Đồng bộ tin nhắn lên máy tính **zalo-agent-cli probe**?
+> [ ĐỒNG BỘ NGAY ] [ KHÔNG ĐỒNG BỘ VỚI THIẾT BỊ NÀY ]
 
-Cmd **592** (`REQUEST_MOBILE_WAKE_UP`) exists as an explicit wake, though it was
-not observed in the captured trace — the 590 request alone appears to be enough.
+— with `deviceName` rendered verbatim from the payload the CLI sent. No browser
+involved. zca-js needs no patch for this: `listener.sendWs()` already frames
+arbitrary commands.
 
-**Therefore "no phone contact" is a symptom, not a feature.** An earlier draft
-of this work presented the new `sync-mobile` never touching the phone as correct
-behavior. It is not: a run that leaves the phone silent has not synced anything.
-The command now says exactly that when it comes back empty.
+#### The exchange, as measured
 
-What was genuinely worth fixing is still worth fixing — the old command pinged
-the phone ~24 times per run against an endpoint that could never answer, which
-is noise, not sync. But the goal state involves the phone lighting up **once**,
-the way Zalo Web does it.
+```
+out cmd 592  {"data":{"syncId","toDevice":0},"reqId":"req_wake"}
+in  cmd 592  {"error_code":0,"data":{"reqId":"req_wake","err":0,"ts":…}}
+out cmd 590  {"data":{syncId,syncType:0,ek,ik,toDevice:0,tempKey:"",
+                      deviceName,req:{type,priority,batchSize,queries}},"reqId":…}
+in  cmd 590  {"error_code":0,"data":{"reqId":"req_sync","err":0,"ts":…}}
+in  cmd 601  control act_type="transfer_sync2" act="transfer_status"
+             data={"syncId":…,"fromDevice":0,"status":3}   ← WaitingConfirm
+in  cmd 601  … "status":4                                    ← Confirmed (user tapped)
+out cmd 591  {"data":{syncId,toDevice:0,reason:1},"reqId":…}  ← dispose
+```
 
-**Not yet verified:** whether the CLI can trigger that wake itself by sending
-cmd 590/592 over its own socket. A probe was written
-(`scratchpad/probe-sync590.mjs`: one 592, one 590 with a generated X25519
-keypair, then 591 to dispose) but not run — it notifies a real device, so it
-needs the owner's explicit go-ahead. If the phone does light up, the remaining
-unknowns are the `req.queries` descriptor shape and decrypting the 601 payload.
+`ek`/`ik` are freshly generated X25519 public keys in libsignal DJB wire format
+(`0x05` || 32 raw bytes, base64). Nothing pre-registered was needed.
+
+#### The status enum (from the bundle)
+
+| Value | Name                                                                            |
+| ----- | ------------------------------------------------------------------------------- |
+| 1     | `Active`                                                                        |
+| 2     | `Idle`                                                                          |
+| 3     | `WaitingConfirm`                                                                |
+| 4     | `Confirmed`                                                                     |
+| 6     | `UserReject`                                                                    |
+| 8     | `MasterDeviceBusy`                                                              |
+|       | `BypassConfirmed`, `UserCancel`, `MasterDeviceLowStorage`, `MasterDeviceLogout` |
+
+Event acts (`act_type: "transfer_sync2"`): `transfer_after_login`,
+`transfer_status`, **`upload_batch`** (the actual data), `transfer_error`.
+
+#### Why zca-js sees none of it
+
+These arrive inside **cmd 601**, which zca-js's listener _does_ decode — but it
+only dispatches `act_type` of `file_done`, `group` and `fr`. `transfer_sync2`
+falls through and is silently dropped. Surfacing it needs either a
+`patch-package` patch or a raw `listener.ws` tap like the probe uses.
+
+#### The one remaining unknown: `req.queries`
+
+Every probe sent `queries: []`. The phone reached `Confirmed` and then sent
+**no `upload_batch` frames** — unsurprising, since an empty query list asks for
+nothing. Zalo Web sends two rounds, `{type:"conversation",priority:0}` then
+`{type:"message",priority:2}`, each with a populated `queries` array whose
+contents were truncated in capture (the frame tap kept only the first 300
+bytes). The builder is not in any downloaded chunk, and the published
+`sourceMappingURL` 404s.
+
+**So the blocker is no longer "can we talk to the phone" — it is one payload
+field.** Recovering it needs a re-capture from Zalo Web with a wider frame tap.
+
+#### Operational warning learned the hard way
+
+Do **not** send cmd 591 while a transfer is in flight. The first probe disposed
+after 30s, before the owner tapped confirm, which cancelled the session
+server-side — and left the phone showing "Đang đồng bộ tin nhắn…" indefinitely.
+Dispose only after `upload_batch` completes, or not at all.
+
+**`sync-mobile` deliberately does NOT ship this handshake yet.** Initiating it
+puts a confirmation prompt on a real person's phone; doing that while we cannot
+consume the result would interrupt them for nothing.
 
 ### Consequences for the rest of the project
 

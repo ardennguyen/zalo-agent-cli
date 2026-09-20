@@ -107,12 +107,31 @@ not be one until transfer-sync-v2 is implemented. What was fixed is the harm
 
 Still open, in order of value:
 
-- **transfer-sync-v2** — the only path observed carrying any data, and so the
-  only way to make this command genuinely sync. A project, not a patch:
-  libsignal identity keypair, a session with the phone, and the `req.queries`
-  partition descriptors, which were truncated in capture. See NOTES.md for the
-  captured frames and the command map. Rewiring `listen`'s reconnect backfill
-  is NOT worth doing before this exists — every available path returns empty.
+- **transfer-sync-v2 — MOSTLY SOLVED, one field left.** VERIFIED 2026-09-21:
+  sending socket cmd 590 from the CLI makes the owner's phone show Zalo's real
+  sync prompt, with our `deviceName` rendered verbatim. The owner tapped
+  confirm and the server reported `status:4` (Confirmed). No libsignal
+  registration was needed — freshly generated X25519 keys in DJB wire format
+  were accepted, and zca-js needs no patch to send the frame
+  (`listener.sendWs()`).
+
+    **The only blocker is `req.queries`.** Every probe sent `queries: []`, so the
+    phone confirmed and then had nothing to upload. Zalo Web populates it over
+    two rounds (`type:"conversation"` then `type:"message"`); the contents were
+    truncated in capture and the builder is not in any downloaded chunk. Recover
+    it with a re-capture from Zalo Web using a wider frame tap, then the data
+    arrives as cmd 601 controls with `act:"upload_batch"`.
+
+    **zca-js drops all of it**: its listener decodes cmd 601 but only dispatches
+    `act_type` of `file_done`/`group`/`fr`, so `transfer_sync2` vanishes. Use a
+    raw `listener.ws` tap (as the probes do) or patch-package.
+
+    **Never send cmd 591 mid-transfer** — doing so cancelled a session and left
+    the owner's phone stuck showing "Đang đồng bộ tin nhắn…".
+
+    Probes: `scratchpad/probe-sync590.mjs`, `probe-sync-full.mjs`,
+    `listen-sync.mjs`. Full frame dumps in NOTES.md § 5.
+
 - **`PUSH_MISS_MSG` (cmd 534) is invisible to zca-js** — its listener silently
   ignores unrecognized commands with no catch-all event. Exposing it needs a
   `patch-package` patch. Not done: the command was never observed carrying data,

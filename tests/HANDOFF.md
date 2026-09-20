@@ -91,10 +91,15 @@ once with a probe using Zalo Web's exact `lastId` anchors — 510/511 return
 transfer-sync-v2.
 
 So `sync-mobile` now: issues the free 510/511 probe, persists anything that
-arrives, and **says plainly when the answer is empty** instead of reporting
-success. It never touches the phone. The retired REST path survives as
-`--legacy`, one attempt only. Full evidence, frame captures and command map in
-[NOTES.md](NOTES.md) § Mobile sync.
+arrives, and **says plainly when the answer is empty**. The retired REST path
+survives as `--legacy`, one attempt only. Full evidence, frame captures and
+command map in [NOTES.md](NOTES.md) § Mobile sync.
+
+**Do not read "it never touches the phone" as a feature.** The owner confirmed
+that a real Zalo Web sync makes their phone show a request notification — the
+phone is the data source, cmd 590 wakes it, and it encrypts the payload that
+returns as cmd 601. A run that leaves the phone silent has not synced anything.
+An earlier draft of this work got that backwards; NOTES.md § 5 has the detail.
 
 **There is no working full-history sync in this tool today**, and there will
 not be one until transfer-sync-v2 is implemented. What was fixed is the harm

@@ -675,6 +675,40 @@ a two-minute retry loop that notified the owner's phone roughly 24 times per
 run. Replacing a harmful no-op with an honest no-op is the actual improvement
 here. **A real full-history sync requires implementing transfer-sync-v2.**
 
+### 5. The phone notification is the tell — reported by the account owner
+
+**The owner confirmed that clicking Sync in Zalo Web makes their phone show a
+request notification.** That single observation settles what the protocol is
+doing, and corrects a framing error made earlier in this work.
+
+The phone is the **data source**. The sequence is:
+
+1. Web sends cmd **590** with a fresh `ek`/`ik` keypair and a query descriptor.
+2. The server **wakes the phone** — this is the notification the owner sees.
+3. The phone encrypts the requested partition to the web client's key and uploads.
+4. The server relays it down as cmd **601** frames.
+5. Web sends cmd **591** to dispose the sync session.
+
+Cmd **592** (`REQUEST_MOBILE_WAKE_UP`) exists as an explicit wake, though it was
+not observed in the captured trace — the 590 request alone appears to be enough.
+
+**Therefore "no phone contact" is a symptom, not a feature.** An earlier draft
+of this work presented the new `sync-mobile` never touching the phone as correct
+behavior. It is not: a run that leaves the phone silent has not synced anything.
+The command now says exactly that when it comes back empty.
+
+What was genuinely worth fixing is still worth fixing — the old command pinged
+the phone ~24 times per run against an endpoint that could never answer, which
+is noise, not sync. But the goal state involves the phone lighting up **once**,
+the way Zalo Web does it.
+
+**Not yet verified:** whether the CLI can trigger that wake itself by sending
+cmd 590/592 over its own socket. A probe was written
+(`scratchpad/probe-sync590.mjs`: one 592, one 590 with a generated X25519
+keypair, then 591 to dispose) but not run — it notifies a real device, so it
+needs the owner's explicit go-ahead. If the phone does light up, the remaining
+unknowns are the `req.queries` descriptor shape and decrypting the 601 payload.
+
 ### Consequences for the rest of the project
 
 - `listen`'s auto-backfill on reconnect calls `pollSync()`, which now returns

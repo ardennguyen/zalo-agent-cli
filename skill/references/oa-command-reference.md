@@ -1,6 +1,11 @@
 # Official Account (OA) Command Reference
 
-Zalo OA API v3.0 — official API, separate from personal account.
+Zalo OA API v3.0 — official API, separate from personal account. **32 commands.**
+
+- Every `oa` command accepts `--oa-id <id>` (default `"default"`) for multi-OA, and `--json`.
+- `oa` commands skip the unofficial-API disclaimer and skip the personal-account auto-login — they manage their own OAuth token.
+- Credentials live in `~/.zalo-agent/oa-credentials.json` — a **different directory** from the personal account's `~/.zalo-agent-cli/`.
+- **No OA command is exposed as an MCP tool.** Agents connected over MCP must shell out: `zalo-agent --json oa <command>`.
 
 ## Setup
 
@@ -28,6 +33,33 @@ zalo-agent oa setup <access-token>
 # Check connection
 zalo-agent oa whoami
 ```
+
+### `oa init` flags
+
+The wizard switches to **agent (non-interactive) mode** as soon as `--app-id` is present.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--app-id <id>` | — | Zalo App ID (triggers non-interactive mode) |
+| `--secret <key>` | — | Zalo App Secret Key |
+| `--oa-id <id>` | `default` | OA identifier for multi-OA |
+| `--tunnel <type>` | `ngrok` (agent mode) | `ngrok` \| `cloudflared` \| `none` |
+| `--webhook-url <url>` | — | Save an existing webhook URL (VPS, n8n) instead of creating a tunnel |
+| `--verify-code <code>` | — | Zalo domain verification code |
+| `-p, --port <port>` | `3000` | Local webhook listener port |
+| `--skip-webhook` | `false` | Skip webhook setup entirely |
+| `--skip-login` | `false` | Skip OAuth (use an already-saved token) |
+
+### `oa login` flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--app-id <id>` / `--secret <key>` | — | App credentials |
+| `-p, --port <port>` | `3456` | Local OAuth callback server port |
+| `--callback-host <url>` | — | VPS mode: bind `0.0.0.0`, don't auto-open a browser, use this host in the redirect URI |
+| `--oa-id <id>` | `default` | OA identifier |
+
+OAuth times out after 2 minutes.
 
 ## Messaging
 
@@ -79,21 +111,40 @@ zalo-agent oa conv history <user-id> [--offset 0] [--count 10]
 zalo-agent oa listen -p 3000                           # Basic
 zalo-agent oa listen -p 3000 -s <OA_SECRET>            # MAC verify
 zalo-agent oa listen -e user_send_text,follow           # Filter events
+zalo-agent oa listen --path /zalo                       # Change webhook path (default /webhook)
 zalo-agent oa listen --verify-domain <CODE>             # Domain verification
 zalo-agent oa listen --no-verify                        # Skip MAC (dev)
 zalo-agent --json oa listen                             # JSON pipe
 ```
 
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p, --port <port>` | `3000` | Listen port |
+| `-s, --secret <key>` | — | OA Secret Key for HMAC-SHA256 MAC verification (timing-safe compare). Warns if absent |
+| `--no-verify` | `false` | Disable MAC verification even with a secret set (dev only) |
+| `-e, --events <list>` | `all` | Comma-separated event filter |
+| `--path <path>` | `/webhook` | Webhook URL path |
+| `--verify-domain <code>` | — | Serve `/zalo_verifier<code>.html` for domain verification |
+
 Events: follow, unfollow, user_send_text, user_send_image, user_send_file, user_send_location, user_send_sticker, user_send_gif, user_click_button, user_click_link
+
+Zalo's `hub.challenge` GET verification is answered automatically. Request bodies are capped at 1MB.
 
 ## Menu, Articles, Store
 
 ```bash
-zalo-agent oa menu '{"buttons":[...]}'
-zalo-agent oa article create '{"title":"..."}' | list | detail <id>
-zalo-agent oa store product-create | product-list | product-info <id>
-zalo-agent oa store category-create | category-list
-zalo-agent oa store order-create '{"...":"..."}'
+zalo-agent oa menu '{"buttons":[...]}'                        # Update the OA chat menu
+
+zalo-agent oa article create '{"title":"..."}'                 # Create/broadcast an article
+zalo-agent oa article list [--offset 0] [--limit 10]           # List articles
+zalo-agent oa article detail <article-id>                      # Article details/status
+
+zalo-agent oa store product-create '{"name":"..."}'            # Create a product
+zalo-agent oa store product-list [--offset 0] [--limit 10]     # List products
+zalo-agent oa store product-info <product-id>                  # Product details
+zalo-agent oa store category-create '{"name":"..."}'           # Create a category
+zalo-agent oa store category-list                              # List categories
+zalo-agent oa store order-create '{"...":"..."}'               # Create an order
 ```
 
 ## Multi-OA

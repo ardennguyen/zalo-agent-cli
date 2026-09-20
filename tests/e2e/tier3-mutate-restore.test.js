@@ -397,51 +397,82 @@ describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// sync-mobile — OFF BY DEFAULT. It pings the user's phone.
+// sync-mobile
 //
-// Each run of `sync-mobile` calls pullMobileMsg, and when Zalo returns no
-// session token (the normal case) it then RE-POLLS every 5 seconds for ~2
-// minutes — ~24 further pings. Three tests at ~25 pings each put ~75
-// notifications on a real phone in a few minutes. That happened once; it is
-// not happening again by accident.
+// The default path no longer touches the phone at all. It opens a WebSocket
+// and asks the server for recent history (cmd 510/511), which is what the real
+// Zalo Web client does — see tests/NOTES.md § Mobile sync. It is still gated
+// as a live test for a different reason: Zalo permits ONE web session per
+// account, so running it will close a `listen` daemon or a browser Zalo Web
+// session on the same account.
 //
-// So this suite is gated behind its own flag, ON TOP OF ZALO_TEST_LIVE, and
-// runs exactly ONE command instead of three. Enable it deliberately, when the
-// phone's owner is expecting it:
+// --legacy keeps the retired pull_mobile_msg path, and THAT still pings the
+// phone, so it keeps its own opt-in flag on top of ZALO_TEST_LIVE:
 //
 //     ZALO_TEST_LIVE=1 ZALO_TEST_SYNC_MOBILE=1 node --test tests/e2e/tier3-mutate-restore.test.js
 //
-// The rest of the command's surface (flag parsing, the no-account guard) is
-// covered offline in tests/cli/ at zero cost to anyone's phone.
+// The rest of the surface (flag parsing, the no-account guard) is covered
+// offline in tests/cli/, and the backfill itself is unit-tested against a fake
+// listener in tests/unit/sync-backfill.test.js — both at zero cost.
 // ---------------------------------------------------------------------------
-const SYNC_MOBILE = process.env.ZALO_TEST_SYNC_MOBILE === "1";
-const syncSkip = skip || (SYNC_MOBILE ? false : "needs ZALO_TEST_SYNC_MOBILE=1 — this command pings a real phone");
-
-describe("tier 3 · sync-mobile (opt-in: pings a real phone)", { skip: syncSkip }, () => {
-    // One invocation, and every assertion is made against it. sync-mobile
-    // cannot make the phone do anything by itself — it prints instructions and
-    // waits for the user to run Settings -> Sync Messages -> Sync Now by hand.
+describe("tier 3 · sync-mobile (socket backfill — no phone contact)", { skip }, () => {
     let r;
 
     before(async () => {
-        if (syncSkip) return;
-        r = await runCli(["sync-mobile"], live(T, { timeout: 200_000 }));
+        if (skip) return;
+        r = await runCli(["sync-mobile", "--wait", "45"], live(T, { timeout: 120_000 }));
     });
 
     it("bounds its own wait rather than hanging", () => {
-        assert.equal(r.killed, false, "sync-mobile must cap itself (~2 min)");
+        assert.equal(r.killed, false, "sync-mobile must cap itself");
     });
 
     it("reports a recognizable outcome", () => {
         assert.match(
             r.all,
-            /Already synced|Sync complete|nothing new to save|Timeout waiting for sync data|Sync failed/,
+            /Backfilled \d+\/\d+ message|returned no history|already running|another web session|Could not open a connection/,
             `no recognizable outcome: ${r.all.slice(-300)}`,
         );
     });
 
-    it("names the exact phone-side steps when it needs them", () => {
-        if (!/Waiting for sync data/.test(r.all)) return;
-        assert.match(r.all, /Settings -> Sync Messages -> Sync Now/, "the instruction must name the phone path");
+    it("never reaches the phone on the default path", () => {
+        assert.doesNotMatch(r.all, /pullMobileMsg|Sync Messages -> Sync Now/, "the default path must stay off-phone");
+    });
+
+    it("explains the one-web-session rule when Zalo closes it as a duplicate", () => {
+        if (!/another web session/.test(r.all)) return;
+        assert.match(r.all, /one web session per account/i);
+    });
+});
+
+const SYNC_MOBILE = process.env.ZALO_TEST_SYNC_MOBILE === "1";
+const syncSkip = skip || (SYNC_MOBILE ? false : "needs ZALO_TEST_SYNC_MOBILE=1 — --legacy pings a real phone");
+
+describe("tier 3 · sync-mobile --legacy (opt-in: pings a real phone)", { skip: syncSkip }, () => {
+    // ONE invocation. The retired endpoint answers empty, and this now stops
+    // there instead of re-polling for two minutes.
+    let r;
+
+    before(async () => {
+        if (syncSkip) return;
+        r = await runCli(["sync-mobile", "--legacy"], live(T, { timeout: 90_000 }));
+    });
+
+    it("makes exactly one attempt and stops", () => {
+        assert.equal(r.killed, false, "--legacy must not loop");
+        assert.doesNotMatch(r.all, /Waiting for sync data/, "the retry loop is gone");
+    });
+
+    it("reports a recognizable outcome", () => {
+        assert.match(
+            r.all,
+            /Already synced|no longer serves it|nothing new to save|Synced \d+\/\d+ message|Sync failed/,
+            `no recognizable outcome: ${r.all.slice(-300)}`,
+        );
+    });
+
+    it("points at the working command when the endpoint is dead", () => {
+        if (!/no longer serves it/.test(r.all)) return;
+        assert.match(r.all, /without --legacy/, "a dead end must name the path that works");
     });
 });

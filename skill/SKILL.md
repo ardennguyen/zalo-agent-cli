@@ -102,7 +102,7 @@ zalo-agent sync-mobile --legacy        # Try the retired phone-transfer endpoint
 ```
 `sync-mobile` asks the server for old messages over the socket (cmd 510/511) and writes anything that arrives to `zalo.db`. **Measured 2026-09-20: Zalo returns an empty set, so this normally recovers nothing** — the command reports that plainly instead of claiming success. A real Zalo sync makes the user's **phone show a notification** (the phone is the data source, woken by socket cmd 590); if the phone stays silent, nothing synced. That handshake is not implemented. There is no working full-history sync today; use `listen` to capture messages going forward. It needs `daemon.lock`, so stop `listen` first, and Zalo's one-web-session rule means it closes a browser Zalo Web session on the same account.
 
-The phone-to-PC transfer this command used to attempt has been **retired by Zalo** — `--legacy` still tries it, once, and will almost certainly report nothing. `listen` still runs the old backfill on reconnect, which now recovers nothing; see tests/NOTES.md § Mobile sync.
+The phone-to-PC transfer this command used to attempt has been **retired by Zalo** — `--legacy` still tries it, once, and will almost certainly report nothing. `listen` still runs the old backfill on reconnect, which now recovers nothing.
 
 ### Friends
 ```bash

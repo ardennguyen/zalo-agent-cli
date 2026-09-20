@@ -16,7 +16,7 @@ import { initDb, getRecentThreads, getMessages } from "../core/db.js";
  * Groups expose a REST history endpoint; DMs do not, so the caller has to
  * supply the ids by hand there. Both paths are best-effort: Zalo's history
  * APIs lag live traffic, so the "newest" message found may not be the true
- * newest (see tests/NOTES.md § Ordering).
+ * newest (see agent/work/transfer-sync-v2/NOTES.md § Ordering).
  *
  * @param {object} api
  * @param {string} threadId
@@ -401,7 +401,7 @@ export function registerConvCommands(program) {
                 // API reports is used as the anchor.
                 //
                 // Caveat worth knowing: that history API lags live traffic (see
-                // tests/NOTES.md § Ordering), so messages newer than the anchor
+                // agent/work/transfer-sync-v2/NOTES.md § Ordering), so messages newer than the anchor
                 // can survive. Pass the three ids explicitly for an exact
                 // boundary.
                 let { ownerId, cliMsgId, globalMsgId } = opts;

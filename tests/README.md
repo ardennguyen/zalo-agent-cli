@@ -20,8 +20,7 @@ npm run format                # Prettier auto-fix
 npm run format:check          # Prettier verify (what CI runs)
 ```
 
-> Findings, known defects and design rationale live in **[NOTES.md](NOTES.md)** —
-> this file is how to run and write the tests.
+> This file is how to run and write the tests.
 
 ### Pre-commit gate
 
@@ -38,7 +37,6 @@ npm run format && npm run lint && npm run format:check && npm test
 ```
 tests/
 ├── README.md                    # this file — how to run and write the tests
-├── NOTES.md                     # findings, known defects, design rationale
 ├── targets.example.json         # live-target template (committed)
 ├── targets.json                 # your real targets (GITIGNORED)
 ├── run-e2e.js                   # live orchestrator — enforces tier order
@@ -405,8 +403,7 @@ second machine, a proxy, or an OA app.
 ### Session exclusivity (needs two clients)
 
 Zalo allows one web session per account and this CLI occupies it. Verified
-2026-09-20; see [NOTES.md](NOTES.md). Cannot be automated — it needs a second
-real client and a QR scan.
+2026-09-20. Cannot be automated — it needs a second real client and a QR scan.
 
 - [ ] With the CLI logged in and NO listener running, sign into Zalo Web — the next CLI API call fails with `Đăng nhập thất bại`
 - [ ] The failure message explains the cause and the trade-off, not just `Run: zalo-agent login`
@@ -438,12 +435,14 @@ real client and a QR scan.
 ### Sync
 
 - [ ] `sync-mobile` — backfills over the socket and reports a saved/total count
+- [ ] `sync-mobile` twice in a row — the second run reports "Already synced … ago"
+      and exits without opening a socket; `--force` overrides it
 - [ ] `sync-mobile` while `listen` is running — refuses, naming the lock
 - [ ] `sync-mobile` while Zalo Web is open — reports the one-web-session rule
 - [ ] `sync-mobile --legacy` — one attempt, then reports the retired endpoint
 - [ ] `sync-mobile --legacy --force` — skips the debounce
 - [ ] Kill `listen`, wait >30s, restart — a backfill is attempted for the gap
-      (currently the retired path, so it recovers nothing — see NOTES.md)
+      (currently the retired path, so it recovers nothing)
 
 ### MCP server
 

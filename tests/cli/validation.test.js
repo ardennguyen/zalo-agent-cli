@@ -229,7 +229,7 @@ describe("--json stdout contract", () => {
         assert.throws(() => JSON.parse(r.stdout.trim()));
     });
 
-    // Still open — see tests/NOTES.md § Known issues #2. Exit codes are a
+    // Still open — see agent/work/transfer-sync-v2/NOTES.md § Known issues #2. Exit codes are a
     // separate contract from output shape, and changing them would break
     // scripts that check `$?` today. A --json consumer detects failure via
     // the `.error` key instead.

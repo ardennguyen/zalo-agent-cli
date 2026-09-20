@@ -379,7 +379,7 @@ describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
         }
     });
 
-    // KNOWN GAP — see tests/NOTES.md § Ordering.
+    // KNOWN GAP — see agent/work/transfer-sync-v2/NOTES.md § Ordering.
     // `conv recent` reads the sqlite `threads` table first and silently falls
     // back to a live path when it is empty. There is no --no-cache flag to
     // force either branch, so a caller cannot tell which one answered.
@@ -401,7 +401,7 @@ describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
 //
 // The default path no longer touches the phone at all. It opens a WebSocket
 // and asks the server for recent history (cmd 510/511), which is what the real
-// Zalo Web client does — see tests/NOTES.md § Mobile sync. It is still gated
+// Zalo Web client does — see agent/work/transfer-sync-v2/NOTES.md § Mobile sync. It is still gated
 // as a live test for a different reason: Zalo permits ONE web session per
 // account, so running it will close a `listen` daemon or a browser Zalo Web
 // session on the same account.

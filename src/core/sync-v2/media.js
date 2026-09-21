@@ -398,6 +398,7 @@ export async function downloadSyncedMedia(opts = {}) {
  *
  * @param {object} opts
  * @param {number} opts.olderThanDays - delete media attached to messages older than this
+ * @param {boolean} [opts.all=false] - delete every downloaded file regardless of age
  * @param {string} [opts.threadId] - restrict to one thread
  * @param {boolean} [opts.dryRun=false] - report what would go, delete nothing
  * @param {number} [opts.now=Date.now()] - injectable for tests
@@ -405,13 +406,16 @@ export async function downloadSyncedMedia(opts = {}) {
  * @returns {Promise<{considered:number, deleted:number, missing:number, failed:number, bytes:number, cutoff:number, failures:Array<object>}>}
  */
 export async function pruneDownloadedMedia(opts = {}) {
-    const { olderThanDays, threadId, dryRun = false, now = Date.now(), onProgress = () => {} } = opts;
+    const { olderThanDays, threadId, all = false, dryRun = false, now = Date.now(), onProgress = () => {} } = opts;
     const days = Number(olderThanDays);
-    const stats = { considered: 0, deleted: 0, missing: 0, failed: 0, bytes: 0, cutoff: 0, failures: [] };
-    if (!Number.isFinite(days) || days <= 0) return stats;
+    const stats = { considered: 0, deleted: 0, missing: 0, failed: 0, bytes: 0, cutoff: 0, all: false, failures: [] };
+    // Two distinct modes. `all` is explicit rather than "a cutoff of now",
+    // so no arithmetic slip on a date can quietly become delete-everything.
+    if (!all && (!Number.isFinite(days) || days <= 0)) return stats;
 
-    const cutoff = now - days * 86400000;
-    stats.cutoff = cutoff;
+    const cutoff = all ? null : now - days * 86400000;
+    stats.all = Boolean(all);
+    stats.cutoff = cutoff === null ? 0 : cutoff;
     const rows = getDownloadedMediaBefore(cutoff, threadId || null);
     stats.considered = rows.length;
 

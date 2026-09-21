@@ -136,12 +136,12 @@ export function registerSyncCommands(program) {
         )
         .option("--thumbs", "Also save thumbnails alongside the full media")
         .option(
-            "--prune <days>",
-            "Delete downloaded media attached to messages older than N days, instead of downloading. " +
-                "Message text is never touched, and the row goes back in the download queue, so this " +
-                "reclaims disk without losing history. Combine with --dry-run to preview",
-            parseIntAtLeast(1),
+            "--prune <days|all>",
+            "Delete downloaded media instead of downloading it: either attached to messages older than " +
+                "N days, or `all` for every downloaded file. Message text is never touched. Always " +
+                "preview with --dry-run first",
         )
+        .option("--all", "With --prune, delete every downloaded file regardless of age")
         .option(
             "--all-history",
             "Consider every attachment, not just those inside the window the last mobile sync covered",
@@ -154,8 +154,22 @@ export function registerSyncCommands(program) {
         .option("--dry-run", "Report what would be fetched without downloading anything")
         .action(async (opts) => {
             if (opts.prune !== undefined) {
+                // Validate the argument BEFORE anything else, so a typo is
+                // reported as a typo rather than as "no active account".
+                const wantsAll = Boolean(opts.all) || String(opts.prune).toLowerCase() === "all";
+                const n = Number(opts.prune);
+                if (!wantsAll && (!Number.isInteger(n) || n < 1)) {
+                    error(`--prune needs a whole number of days (1 or more), or "all". Got: ${opts.prune}`);
+                    info("Run: zalo-agent sync-media --prune 90 --dry-run");
+                    process.exit(1);
+                }
                 await runMediaPrune(requireAccount(), opts);
                 return;
+            }
+            if (opts.all) {
+                error("--all only means anything together with --prune.");
+                info("Run: zalo-agent sync-media --prune all --dry-run");
+                process.exit(1);
             }
             await runMediaDownload(requireAccount(), opts);
         });
@@ -325,24 +339,36 @@ async function runMediaPrune(activeAcc, opts) {
     const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
-    const days = Number(opts.prune);
+    // "all" is a mode, not a very large number of days: a cutoff computed from
+    // a bad date could silently become delete-everything, a named mode cannot.
+    const wantsAll = Boolean(opts.all) || String(opts.prune).toLowerCase() === "all";
+    const days = wantsAll ? 0 : Number(opts.prune);
+    if (!wantsAll && (!Number.isInteger(days) || days < 1)) {
+        error(`--prune needs a whole number of days (1 or more), or "all". Got: ${opts.prune}`);
+        info("Run: zalo-agent sync-media --prune 90 --dry-run");
+        process.exit(1);
+    }
+
+    const scope = wantsAll ? "every downloaded file" : `media older than ${days} day(s)`;
     const stats = await pruneDownloadedMedia({
         olderThanDays: days,
+        all: wantsAll,
         threadId: opts.thread,
         dryRun: Boolean(opts.dryRun),
     });
 
-    const cutoff = new Date(stats.cutoff).toISOString().slice(0, 10);
+    const cutoff = stats.all ? "any date" : new Date(stats.cutoff).toISOString().slice(0, 10);
     if (!stats.considered) {
-        success(`Nothing to prune — no downloaded media older than ${days} day(s) (before ${cutoff}).`);
+        success(`Nothing to prune — no downloaded media matched ${scope}.`);
         process.exit(0);
     }
     if (opts.dryRun) {
-        success(`Dry run: ${stats.considered} file(s), ${formatBytes(stats.bytes)}, older than ${cutoff}.`);
+        success(`Dry run: ${stats.considered} file(s), ${formatBytes(stats.bytes)} — ${scope}.`);
         info("Message text is untouched; pruned files can be re-downloaded while their links live.");
+        info("Re-run without --dry-run to delete them.");
         process.exit(0);
     }
-    success(`Deleted ${stats.deleted} file(s), reclaiming ${formatBytes(stats.bytes)} (older than ${cutoff}).`);
+    success(`Deleted ${stats.deleted} file(s), reclaiming ${formatBytes(stats.bytes)} (${scope}, before ${cutoff}).`);
     if (stats.missing) info(`${stats.missing} row(s) pointed at files already gone — those pointers were cleared.`);
     if (stats.failed) {
         warning(`${stats.failed} file(s) could not be deleted.`);

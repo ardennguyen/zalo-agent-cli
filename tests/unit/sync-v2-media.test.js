@@ -817,3 +817,63 @@ describe("pruning is a decision, not a gap to refill", () => {
         assert.equal(s.downloaded, 1);
     });
 });
+
+describe("pruneDownloadedMedia — all mode", () => {
+    const DAY = 86400000;
+    const NOW = 1_760_000_000_000;
+
+    const seedAges = async (...daysAgo) => {
+        for (const d of daysAgo) row({ timestamp: NOW - d * DAY }, [photo("/ok.jpg")]);
+        await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+    };
+
+    it("deletes every downloaded file regardless of age", async () => {
+        await seedAges(1, 40, 400);
+        const s = await pruneDownloadedMedia({ all: true, now: NOW });
+        assert.equal(s.deleted, 3, "recent files included too");
+        assert.equal(s.all, true);
+    });
+
+    it("an age-based prune still spares recent files", async () => {
+        await seedAges(1, 40);
+        const s = await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
+        assert.equal(s.deleted, 1, "only the old one");
+    });
+
+    it("all mode is a separate mode, not a huge cutoff", async () => {
+        // A cutoff computed from a bad date could silently become
+        // delete-everything; a named mode cannot be reached by arithmetic.
+        await seedAges(1);
+        const byDays = await pruneDownloadedMedia({ olderThanDays: 0, now: NOW });
+        assert.equal(byDays.deleted, 0, "a zero window must delete nothing");
+        const byAll = await pruneDownloadedMedia({ all: true, now: NOW });
+        assert.equal(byAll.deleted, 1);
+    });
+
+    it("dry run in all mode deletes nothing", async () => {
+        await seedAges(1, 40);
+        const s = await pruneDownloadedMedia({ all: true, now: NOW, dryRun: true });
+        assert.equal(s.considered, 2);
+        assert.equal(s.deleted, 0);
+        assert.ok(
+            getMessages("t1").every((m) => m.localPath),
+            "files must survive a dry run",
+        );
+    });
+
+    it("all mode can still be scoped to one thread", async () => {
+        upsertThread({ threadId: "t2", type: "dm", name: "Other", lastUpdate: 1 });
+        await seedAges(1);
+        row({ threadId: "t2", timestamp: NOW }, [photo("/ok.jpg")]);
+        await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+        const s = await pruneDownloadedMedia({ all: true, now: NOW, threadId: "t2" });
+        assert.equal(s.deleted, 1, "only the named thread");
+    });
+
+    it("all mode still records the prune, so a sync does not undo it", async () => {
+        await seedAges(1);
+        await pruneDownloadedMedia({ all: true, now: NOW });
+        const again = await downloadSyncedMedia({ accountDir: dir, limit: 100 });
+        assert.equal(again.considered, 0);
+    });
+});

@@ -7,9 +7,13 @@
  *   1. message-level deletes (delete, undo)  ← need the messages to exist
  *   2. account-level artifact deletes        ← independent of messages
  *   3. local-cache deletion                  ← independent of the server
- *   4. conv delete (wipes thread history)    ← LAST: it removes the very
- *      messages steps 1–2 operate on, so anything after it would have
- *      nothing left to act against
+ *
+ * `conv delete` used to live here as step 4. It moved to tier 5a: wiping a
+ * conversation destroys server-side history with no undo, and tier 4 runs
+ * on a bare `npm run test:e2e`, so the only thing standing between a
+ * default live run and permanent history loss was ZALO_TEST_LIVE=1 — the
+ * same gate that unlocks read-only tier 1. Blast radius, not execution
+ * order, decides the tier.
  *
  * Reads tests/.artifacts.json, written by tier 2. If that file is missing
  * the tier degrades to the paths that don't need it rather than failing.
@@ -50,14 +54,99 @@ after(() => {
 // ── 1. Message-level deletes ───────────────────────────────────────────
 
 describe("tier 4 · message deletion", { skip }, () => {
-    it("deletes a freshly sent group message (one-sided delete)", async () => {
+    // Zalo exposes two different deletes and they are not interchangeable:
+    //
+    //   msg delete  → deleteMessage(dest, onlyMe=true)  removes the message
+    //                 from YOUR view only; the other side still sees it.
+    //   msg undo    → undo(payload, …)                  recalls it for
+    //                 everyone, which is what the phone app's "Thu hồi" does.
+    //
+    // Both need the message's cliMsgId, which is client-generated and cannot
+    // be derived from the msgId — hence `send()` returning both.
+    //
+    // These assertions demand SUCCESS. They used to accept
+    // `hasSuccess(...) || errorLineOf(...)`, which is true for every possible
+    // outcome, and that tautology hid a real defect: `msg delete` was calling
+    // deleteMessage(msgId, threadId, type) against a signature of
+    // (dest, onlyMe), so every invocation died on "Cannot read properties of
+    // undefined (reading 'uidFrom')" and the test still passed.
+    it("deletes a freshly sent group message from our own view only", async () => {
         const sent = await send(T, T.group, mark("to be deleted"));
         await sleep(800);
         assertDisposable(T.group.threadId, "msg delete");
-        const r = await runCli(["msg", "delete", "-t", "1", sent.msgId, T.group.threadId], live(T));
+        const r = await runCli(
+            ["msg", "delete", "-t", "1", "-c", sent.cliMsgId, sent.msgId, T.group.threadId],
+            live(T),
+        );
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-        assert.ok(hasSuccess(r.stdout) || errorLineOf(r.stdout), "expected a definite outcome");
+        assert.equal(errorLineOf(r.stdout), null, `msg delete failed: ${r.all.slice(0, 300)}`);
+        assert.ok(hasSuccess(r.stdout), `msg delete did not report success: ${r.all.slice(0, 300)}`);
     });
+
+    it("refuses a one-sided delete it has no cliMsgId for, instead of crashing", async () => {
+        assertDisposable(T.group.threadId, "msg delete");
+        const r = await runCli(["msg", "delete", "-t", "1", "9999999999999", T.group.threadId], live(T));
+        assert.doesNotMatch(r.all, /Cannot read properties|at Command\.|Unhandled/, r.all.slice(0, 300));
+        assert.match(errorLineOf(r.stdout) || "", /cliMsgId is required/);
+    });
+
+    it("rejects --everyone on our OWN message and points at undo", async () => {
+        const sent = await send(T, T.group, mark("everyone-delete probe"));
+        await sleep(800);
+        assertDisposable(T.group.threadId, "msg delete");
+        const r = await runCli(
+            ["msg", "delete", "-t", "1", "--everyone", "-c", sent.cliMsgId, sent.msgId, T.group.threadId],
+            live(T),
+        );
+        assert.match(errorLineOf(r.stdout) || "", /undo/i, `expected Zalo's own guidance: ${r.all.slice(0, 300)}`);
+        // Leave nothing behind — the probe survived the rejected delete.
+        await undoMsg(T, T.group, sent.msgId, sent.cliMsgId);
+    });
+
+    // DM parity for the one-sided delete. Zalo routes it to a different
+    // endpoint per thread type — /api/message/delete for a DM versus
+    // /api/group/deletemsg for a group — and additionally rejects
+    // onlyMe=false outright in a private chat, so the DM branch has its own
+    // server-side rules that the group branch never exercises.
+    it(
+        "deletes a freshly sent DM message from our own view only",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            const sent = await send(T, T.dm, mark("dm to be deleted"));
+            await sleep(800);
+            assertDisposable(T.dm.threadId, "msg delete");
+            const r = await runCli(
+                ["msg", "delete", "-t", "0", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId],
+                live(T),
+            );
+            assert.doesNotMatch(r.all, /Cannot read properties|at Command\.|Unhandled/, r.all.slice(0, 300));
+            assert.equal(errorLineOf(r.stdout), null, `DM msg delete failed: ${r.all.slice(0, 300)}`);
+            assert.ok(hasSuccess(r.stdout), `DM msg delete did not report success: ${r.all.slice(0, 300)}`);
+        },
+    );
+
+    it(
+        "refuses --everyone in a private chat, which Zalo does not allow at all",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            const sent = await send(T, T.dm, mark("dm everyone-delete probe"));
+            await sleep(800);
+            assertDisposable(T.dm.threadId, "msg delete");
+            const r = await runCli(
+                ["msg", "delete", "-t", "0", "--everyone", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId],
+                live(T),
+            );
+            // Zalo checks "is this my own message" before "is this a private
+            // chat", so either refusal is correct — what matters is that it
+            // refuses cleanly rather than crashing or silently succeeding.
+            assert.match(
+                errorLineOf(r.stdout) || "",
+                /undo|private chat/i,
+                `expected a clean refusal: ${r.all.slice(0, 300)}`,
+            );
+            await undoMsg(T, T.dm, sent.msgId, sent.cliMsgId);
+        },
+    );
 
     it("recalls a freshly sent group message for both sides (undo)", async () => {
         const sent = await send(T, T.group, mark("to be recalled"));
@@ -211,74 +300,6 @@ describe("tier 4 · local chat cache", { skip }, () => {
     });
 });
 
-// ── 4. Conversation history wipe — LAST ────────────────────────────────
-
-describe("tier 4 · conversation history wipe (runs last)", { skip }, () => {
-    // NOTE on what these can and cannot assert — see agent/work/transfer-sync-v2/NOTES.md § Ordering.
-    //
-    // The obvious check ("send a probe, wipe, confirm the probe is gone")
-    // does not work, for two independent reasons:
-    //
-    //   1. `msg history` is not a reliable oracle. It is built on Zalo's
-    //      OLD-message backfill (getGroupChatHistory for groups,
-    //      requestOldMessages over the socket for DMs), and it lags live
-    //      traffic badly — measured ~1.5 h stale on this account, and not
-    //      advancing between consecutive calls. A just-sent message simply
-    //      is not in it.
-    //
-    //   2. For a GROUP, `conv delete` removes the conversation from YOUR
-    //      view; it does not delete the group's messages for everyone. So
-    //      even a fresh oracle should still see them.
-    //
-    // What is verifiable is asserted instead: the command reports success,
-    // the thread survives it, and it stays usable.
-
-    it("wipes the disposable GROUP's conversation and reports success", async () => {
-        assertDisposable(T.group.threadId, "conv delete");
-        const del = await runCli(["conv", "delete", "-t", "1", T.group.threadId], live(T, { timeout: 120_000 }));
-        assert.equal(errorLineOf(del.stdout), null, `conv delete failed: ${del.all.slice(0, 300)}`);
-        assert.ok(hasSuccess(del.stdout), "expected a success line");
-        await sleep(1500);
-    });
-
-    it(
-        "wipes the DM's conversation and reports success",
-        { skip: skip || (T?.dm ? false : "no DM target configured") },
-        async () => {
-            assertDisposable(T.dm.threadId, "conv delete");
-            const del = await runCli(["conv", "delete", "-t", "0", T.dm.threadId], live(T, { timeout: 120_000 }));
-            assert.equal(errorLineOf(del.stdout), null, `conv delete failed: ${del.all.slice(0, 300)}`);
-            await sleep(1500);
-        },
-    );
-
-    it("wiping history does not disperse or rename the group", async () => {
-        const info = await runJson(["group", "info", T.group.threadId], live(T));
-        assert.equal(info.ok, true, info.error);
-        assert.equal(info.data?.gridInfoMap?.[T.group.threadId]?.name, T.group.name);
-    });
-
-    it("the group still has all its members after the wipe", async () => {
-        const members = await runJson(["group", "members", T.group.threadId], live(T));
-        assert.equal(members.ok, true, members.error);
-        const ids = (members.data || []).map(String);
-        assert.ok(ids.includes(T.accountOwnId));
-        for (const m of T.group.memberIds) assert.ok(ids.includes(m), `member ${m} lost`);
-    });
-
-    it("the thread is still writable after its history is wiped", async () => {
-        const sent = await send(T, T.group, mark("post-wipe write"));
-        assert.ok(sent.msgId, "a wiped conversation must still accept new messages");
-        await undoMsg(T, T.group, sent.msgId, sent.cliMsgId);
-    });
-
-    it("wiping is idempotent — a second delete does not error", async () => {
-        assertDisposable(T.group.threadId, "conv delete");
-        const again = await runCli(["conv", "delete", "-t", "1", T.group.threadId], live(T, { timeout: 120_000 }));
-        assert.doesNotMatch(again.all, /at Command\.|Unhandled/, again.all.slice(0, 300));
-    });
-});
-
 describe("tier 4 · local logout, traffic, then re-sync", { skip }, () => {
     // The scenario the cache exists for: the CLI is "logged out" locally,
     // messages happen, and later commands must still work. `--no-remote`
@@ -316,28 +337,52 @@ describe("tier 4 · local logout, traffic, then re-sync", { skip }, () => {
     });
 
     // KNOWN GAP — see agent/work/transfer-sync-v2/NOTES.md § Ordering.
-    // `msg history` calls insertMessage() but never upsertThread(), so the
-    // `threads` table stays empty however much history is fetched. Only
-    // `listen` and `sync` populate it — which is why `conv recent` almost
-    // always falls through to its (meaningless) live ordering.
+    // `msg history` calls insertMessage() but never upsertThread(), so it
+    // cannot add a thread row however much history it fetches. Only
+    // `listen`, `sync` and `sync-v2` populate `threads` — which is why
+    // `conv recent` almost always falls through to its (meaningless) live
+    // ordering.
+    //
+    // This measures the DELTA across the history call, not the absolute
+    // count. It used to assert `threads === 0`, which was only ever true
+    // while `sync-mobile` recovered nothing: tier 3 runs `sync-mobile`
+    // against this same zalo.db before tier 4, so once the transfer-sync-v2
+    // restore started working the table legitimately held thousands of rows
+    // and the absolute assertion failed for the right reason at the wrong
+    // altitude. The delta is what the claim was always about.
     it("CHARACTERIZATION: fetching history does not populate the threads table", async () => {
         const dbPath = join(T.home, ".zalo-agent-cli", "accounts", T.accountOwnId, "zalo.db");
         if (!existsSync(dbPath)) return;
 
+        const { default: Database } = await import("better-sqlite3");
+        const countThreads = () => {
+            const db = new Database(dbPath, { readonly: true });
+            try {
+                return db.prepare("SELECT COUNT(*) c FROM threads").get().c;
+            } finally {
+                db.close();
+            }
+        };
+
+        const before = countThreads();
         await runJson(
             ["msg", "history", "-t", "1", "-n", "5", "--no-cache", T.group.threadId],
             live(T, { timeout: 180_000 }),
         );
 
-        const { default: Database } = await import("better-sqlite3");
         const db = new Database(dbPath, { readonly: true });
+        let messages;
         try {
-            const messages = db.prepare("SELECT COUNT(*) c FROM messages").get().c;
-            const threads = db.prepare("SELECT COUNT(*) c FROM threads").get().c;
-            assert.ok(messages > 0, "history should have written messages");
-            assert.equal(threads, 0, "threads stays empty — only `listen`/`sync` call upsertThread()");
+            messages = db.prepare("SELECT COUNT(*) c FROM messages").get().c;
         } finally {
             db.close();
         }
+
+        assert.ok(messages > 0, "history should have written messages");
+        assert.equal(
+            countThreads(),
+            before,
+            "msg history must not add a thread row — only `listen`/`sync` call upsertThread()",
+        );
     });
 });

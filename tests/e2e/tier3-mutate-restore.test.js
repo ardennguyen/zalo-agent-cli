@@ -15,6 +15,8 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { runCli, runJson, hasSuccess, errorLineOf } from "../helpers/cli.js";
 import { gate, live, sleep, assertDisposable } from "../helpers/live.js";
 
@@ -46,6 +48,52 @@ describe("tier 3 · conversation mute", { skip }, () => {
     it("accepts a finite mute duration", async () => {
         assertDisposable(T.group.threadId, "conv mute");
         await ok(["conv", "mute", "-t", "1", "-d", "3600", T.group.threadId], "mute 1h");
+    });
+});
+
+// DM parity for the per-conversation toggles. Each of these takes
+// `-t/--type` and Zalo routes 0=User and 1=Group to different endpoints,
+// but the suite only ever drove `-t 1`. Grouped into one describe with a
+// single restoring `after()` so an abort mid-block still puts the DM back
+// — it is a real person's thread, not a disposable group.
+describe("tier 3 · DM conversation toggles", { skip: skip || (T?.dm ? false : "no DM target configured") }, () => {
+    after(async () => {
+        if (!g.run || !T?.dm) return;
+        // Best-effort restore of every toggle this block touches.
+        await runCli(["conv", "unmute", "-t", "0", T.dm.threadId], live(T));
+        await runCli(["conv", "unhide", "-t", "0", T.dm.threadId], live(T));
+        await runCli(["conv", "auto-delete", "-t", "0", T.dm.threadId, "off"], live(T));
+        await runCli(["conv", "read", "-t", "0", T.dm.threadId], live(T));
+    });
+
+    it("mutes and unmutes the DM", async () => {
+        assertDisposable(T.dm.threadId, "conv mute");
+        await ok(["conv", "mute", "-t", "0", "-d", "-1", T.dm.threadId], "dm mute");
+        await sleep(400);
+        await ok(["conv", "unmute", "-t", "0", T.dm.threadId], "dm unmute");
+    });
+
+    it("marks the DM read, then unread, then read again", async () => {
+        assertDisposable(T.dm.threadId, "conv read");
+        await ok(["conv", "read", "-t", "0", T.dm.threadId], "dm read");
+        await sleep(400);
+        await ok(["conv", "unread", "-t", "0", T.dm.threadId], "dm unread");
+        await sleep(400);
+        await ok(["conv", "read", "-t", "0", T.dm.threadId], "dm read again");
+    });
+
+    it("hides and unhides the DM", async () => {
+        assertDisposable(T.dm.threadId, "conv hide");
+        await ok(["conv", "hide", "-t", "0", T.dm.threadId], "dm hide");
+        await sleep(400);
+        await ok(["conv", "unhide", "-t", "0", T.dm.threadId], "dm unhide");
+    });
+
+    it("sets a DM auto-delete TTL and turns it back off", async () => {
+        assertDisposable(T.dm.threadId, "conv auto-delete");
+        await ok(["conv", "auto-delete", "-t", "0", T.dm.threadId, "7d"], "dm ttl 7d");
+        await sleep(400);
+        await ok(["conv", "auto-delete", "-t", "0", T.dm.threadId, "off"], "dm ttl off");
     });
 });
 
@@ -286,6 +334,71 @@ describe("tier 3 · message history and local cache", { skip }, () => {
         assert.equal(r.ok, true, r.error);
         assert.ok(r.data.messages.length <= 3, `expected ≤3 messages, got ${r.data.messages.length}`);
     });
+
+    // DM parity, and not a formality: groups and DMs take completely
+    // different code paths here. A group first tries the REST endpoint
+    // getGroupChatHistory and only falls back to the socket; a DM has no
+    // REST endpoint at all and goes straight to requestOldMessages over the
+    // WebSocket. Testing only `-t 1` left that whole branch unexercised —
+    // and it mattered: because nothing ever history-fetched the DM, its
+    // cache held only sync-v2 rows with no cliMsgId, which is exactly what
+    // made `conv delete` on a DM impossible (see tier 5a).
+    it(
+        "msg history returns messages for the DM over the socket path",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            const r = await runJson(
+                ["msg", "history", "-t", "0", "-n", "10", T.dm.threadId],
+                live(T, { timeout: 180_000 }),
+            );
+            assert.equal(r.ok, true, r.error);
+            assert.equal(String(r.data.threadId), T.dm.threadId);
+            // "dm", not "user": the CLI reports the thread type in its own
+            // vocabulary, which does not mirror zca-js's ThreadType.User.
+            assert.equal(r.data.threadType, "dm");
+            assert.ok(Array.isArray(r.data.messages));
+        },
+    );
+
+    it(
+        "a DM history fetch caches rows that carry a cliMsgId",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            await runJson(
+                ["msg", "history", "-t", "0", "-n", "10", "--no-cache", T.dm.threadId],
+                live(T, { timeout: 180_000 }),
+            );
+
+            const dbPath = join(T.home, ".zalo-agent-cli", "accounts", T.accountOwnId, "zalo.db");
+            if (!existsSync(dbPath)) return;
+
+            const { default: Database } = await import("better-sqlite3");
+            const db = new Database(dbPath, { readonly: true });
+            let withCli = 0;
+            try {
+                const rows = db
+                    .prepare("SELECT senderId, raw_data FROM messages WHERE threadId = ? ORDER BY timestamp DESC")
+                    .all(T.dm.threadId);
+                for (const row of rows) {
+                    let raw = {};
+                    try {
+                        raw = JSON.parse(row.raw_data || "{}");
+                    } catch {
+                        continue;
+                    }
+                    if ((raw.data ?? raw).cliMsgId !== undefined) withCli++;
+                }
+            } finally {
+                db.close();
+            }
+
+            // The socket backfill persists the full frame; the sync-v2
+            // restore persists a minimal shape without cliMsgId. Only the
+            // former yields a usable `conv delete` anchor, so this is the
+            // precondition that tier 5a's DM wipe depends on.
+            assert.ok(withCli > 0, "a DM history fetch must cache at least one row carrying a cliMsgId");
+        },
+    );
 });
 
 describe("tier 3 · polls (vote lifecycle)", { skip }, () => {
@@ -427,10 +540,17 @@ describe("tier 3 · sync-mobile (socket backfill — no phone contact)", { skip 
         assert.equal(r.killed, false, "sync-mobile must cap itself");
     });
 
+    // "Already synced … skipping" is a legitimate outcome, not a failure.
+    // The freshness debounce landed after this regex was written, so any
+    // run following an earlier one inside the window failed here for doing
+    // exactly the right thing — the debounce exists precisely to avoid
+    // re-pinging. Whether it fires depends on how recently the suite last
+    // ran, which made this the kind of test that passes alone and fails in
+    // sequence.
     it("reports a recognizable outcome", () => {
         assert.match(
             r.all,
-            /Backfilled \d+\/\d+ message|returned no history|already running|another web session|Could not open a connection/,
+            /Backfilled \d+\/\d+ message|returned no history|already running|another web session|Could not open a connection|Already synced .* skipping/,
             `no recognizable outcome: ${r.all.slice(-300)}`,
         );
     });

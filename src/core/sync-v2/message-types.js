@@ -27,6 +27,7 @@ export const SYNC_MSG_TYPES = {
     10: "sticker",
     12: "link", // link/media preview, action "recommened.link"
     15: "card", // OA / system rich card, attach.type "l.a.*"
+    18: "location", // shared location; attach params carry latitude/longitude
     19: "video", // MSG_VIDEO
     20: "group_event", // action "msginfo.actionlist"
     21: "profile_card", // action "show.profile"
@@ -349,7 +350,20 @@ export function classifyLiveMessage(data) {
         const url = content.href || content.oriUrl || content.normalUrl || undefined;
         const thumbUrl = content.thumb || content.thumbUrl || undefined;
         const kind = kindFromUrl(url) || (MEDIA_TYPES.has(type) ? type : type);
-        if (url || thumbUrl || content.title || Object.keys(params).length) {
+        // A sticker is identified by catalogue + id, not a URL, so the generic
+        // test below never fired for one: the same sticker produced one
+        // attachment from a sync and zero from the listener, and its text read
+        // "[sticker]" instead of "[sticker <cat>/<id>]". Mirrors the sync
+        // branch in extractSyncAttachments.
+        if (type === "sticker") {
+            attachments.push({
+                kind: "sticker",
+                catId: content.catId ?? content.cat_id ?? null,
+                stickerId: content.id ?? content.stickerId ?? null,
+                stickerType: content.type ?? null,
+                params: Object.keys(params).length ? params : undefined,
+            });
+        } else if (url || thumbUrl || content.title || Object.keys(params).length) {
             attachments.push({
                 kind,
                 url,
@@ -371,10 +385,18 @@ export function classifyLiveMessage(data) {
     }
 
     const downloadable = attachments.filter((a) => (a.url || a.thumbUrl) && MEDIA_TYPES.has(a.kind));
+    // Hand extractSyncText the SAME shape the sync path gives it. It reads the
+    // first attachment's params to build an event/poll sentence, so passing a
+    // synthetic empty meta made every system event read as a bare "[event]"
+    // when captured live and as its real text when restored from the phone.
+    const liveMeta =
+        attachments.length && attachments[0].params
+            ? { attachsList: [{ params: JSON.stringify(attachments[0].params) }] }
+            : {};
     const text =
         typeof content === "string"
             ? content.trim()
-            : extractSyncText({ content: "", meta: {} }, type, attachments) || `[${type}]`;
+            : extractSyncText({ content: "", meta: liveMeta }, type, attachments) || `[${type}]`;
 
     return {
         type,
@@ -387,6 +409,13 @@ export function classifyLiveMessage(data) {
             cliMsgId: data?.cliMsgId === undefined || data?.cliMsgId === null ? undefined : String(data.cliMsgId),
             content: typeof content === "string" ? content || undefined : content,
             attachments: attachments.length ? attachments : undefined,
+            // The sync path records these; the live path dropped them, so the
+            // same message was richer or poorer depending on how it was
+            // captured. zca-js supplies all of them on a live event.
+            quote: data?.quote || undefined,
+            mentions: data?.mentions?.length ? data.mentions : undefined,
+            ttl: data?.ttl ? Number(data.ttl) : undefined,
+            property: data?.propertyExt || undefined,
         },
     };
 }

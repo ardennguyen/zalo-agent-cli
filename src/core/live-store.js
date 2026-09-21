@@ -212,14 +212,20 @@ export function storeLiveReaction(reaction) {
     // notification's id instead, so every reaction landed on a row that does
     // not exist and getReactions({msgId}) for the real message found nothing.
     // Measured on six live reactions: six rows under six notification ids,
-    // where the correct result is one row per reacted message.
+    // where the correct result is one row per (message, person, icon) -- Zalo
+    // accumulates, so three icons on one message are three reactions, all
+    // displayed.
     const targets = Array.isArray(c.rMsg) ? c.rMsg : [];
     if (!targets.length) return { stored: false, reason: "reaction names no message" };
 
     const icon = c.rIcon ?? d.rIcon ?? d.icon ?? "";
-    // 0 is a real reaction type (HAHA), so it must not be coerced away.
+    // 0 is a real reaction type (HAHA), so it must not be coerced away -- and a
+    // missing type must not become 0, which `Number(null)` would make it.
     const rTypeRaw = c.rType ?? d.rType;
-    const rType = Number.isFinite(Number(rTypeRaw)) ? Number(rTypeRaw) : null;
+    const rType =
+        rTypeRaw === null || rTypeRaw === undefined || rTypeRaw === "" || !Number.isFinite(Number(rTypeRaw))
+            ? null
+            : Number(rTypeRaw);
     const ts = Number(d.ts) || Date.now();
 
     let stored = 0;

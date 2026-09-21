@@ -40,6 +40,7 @@ zalo-agent logout --delete-history  # ...and delete the local chat cache (zalo.d
 zalo-agent logout --purge        # ...and wipe all local data + credentials + registry entry
 zalo-agent sync-mobile --transfer # Restore full history from the phone into zalo.db (one confirm)
 zalo-agent sync-media             # Re-run/resume the media fetch on its own (no phone confirm)
+zalo-agent sync-media --prune 90  # Free disk: delete downloaded media older than 90 days (keeps text)
 zalo-agent update                # Self-update to the latest published version
 ```
 `logout --purge` and `account remove` refuse while a `listen` daemon still holds the account's `daemon.lock`.
@@ -107,6 +108,14 @@ zalo-agent sync-media                        # Re-run/resume the media fetch on 
 zalo-agent sync-media --kind photo,video --dry-run   # ...plan the fetch without touching the network
 zalo-agent sync-boards                       # Notes, pinned messages, polls, reminders — NOT in the message stream
 zalo-agent sync-cloud                        # Walk the zCloud media index (records where backups live)
+
+# Cleanup. Always preview with --dry-run; none of these contact Zalo.
+zalo-agent sync-media --prune 90 --dry-run   # Delete downloaded media older than N days (message text kept)
+zalo-agent sync-media --prune all            # ...every downloaded file, regardless of age
+zalo-agent sync-media --prune-orphans        # ...media of conversations the account no longer has
+zalo-agent sync-media --include-pruned       # Re-fetch media you previously pruned
+zalo-agent conv forget <threadId>            # Remove ALL local data for one conversation
+zalo-agent conv forget --orphans             # ...for every conversation the account no longer has
 zalo-agent sync-mobile --legacy              # Retired endpoint (pings the phone, one attempt, recovers nothing)
 ```
 **`sync-mobile --transfer` is the working full-history restore** (transfer-sync-v2, socket cmd 590/591). It sends ONE sync request the owner confirms on their phone, enumerates every conversation, requests message history in shards of ≤30, decrypts with Zalo's `libzproto` WASM (fetched+cached from Zalo's CDN on first run), decodes protobuf, maps each opaque conversation id to the real numeric threadId + name via the friend/group lists, and writes to `zalo.db`. The phone is the data source, so it **must** show a confirmation prompt — tap it. Non-friend/OA conversations may stay keyed by an opaque id. Needs `daemon.lock` (stop `listen` first); Zalo's one-web-session rule applies.

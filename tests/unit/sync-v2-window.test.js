@@ -10,7 +10,7 @@
  *
  * A pure function, so the whole contract is pinned here without a session: the
  * default is full history, an explicit window is never wider than the
- * `FULL_HISTORY_FROM` floor, and junk degrades to the default rather than to
+ * `FULL_HISTORY_FROM` bound, and junk degrades to the default rather than to
  * NaN bounds (a NaN `from` would be sent to the phone verbatim).
  */
 
@@ -38,9 +38,12 @@ describe("sync-v2 resolveSyncWindow", () => {
         assert.match(w.label, /full history/);
     });
 
-    it("treats the full-history floor as 2024-01-01, and says so in the label", () => {
-        assert.equal(FULL_HISTORY_FROM, Date.parse("2024-01-01T00:00:00.000Z"));
-        assert.match(resolveSyncWindow(null, NOW).label, /2024-01-01/);
+    it("full history means the beginning of time, not a hardcoded year", () => {
+        // This was pinned at 2024-01-01, which silently made "full history"
+        // skip everything older — an account with 2018 messages never had them
+        // requested, and nothing in the output said so.
+        assert.equal(FULL_HISTORY_FROM, 0);
+        assert.match(resolveSyncWindow(null, NOW).label, /full history/i);
     });
 
     it("narrows `from` to the last N days", () => {
@@ -59,18 +62,30 @@ describe("sync-v2 resolveSyncWindow", () => {
         }
     });
 
-    it("clamps a window that reaches past the floor instead of widening the request", () => {
-        const w = resolveSyncWindow(9999, NOW);
+    it("a window reaching past the beginning is just full history", () => {
+        // 9999 days used to clamp against the 2024 floor; with the bound at the
+        // epoch it lands in 1999, which is a perfectly valid request. Only a
+        // window older than the epoch itself clamps now.
+        const past = Math.ceil(NOW / DAY) + 1;
+        const w = resolveSyncWindow(past, NOW);
         assert.equal(w.from, FULL_HISTORY_FROM, "never ask for more than the default already asks for");
         assert.equal(w.clamped, true);
-        assert.equal(w.days, 9999, "the requested value is kept for reporting");
+        assert.equal(w.days, past, "the requested value is kept for reporting");
         assert.match(w.label, /full history/);
     });
 
-    it("clamping kicks in exactly at the floor, not before it", () => {
-        const daysToFloor = Math.floor((NOW - FULL_HISTORY_FROM) / DAY);
-        assert.equal(resolveSyncWindow(daysToFloor, NOW).clamped, false);
-        assert.equal(resolveSyncWindow(daysToFloor + 1, NOW).clamped, true);
+    it("a multi-year --days is honoured rather than silently truncated", () => {
+        // The old floor turned any window older than 2024 into 2024. An account
+        // with 2018 history needs --days 3000 to actually mean 2018.
+        const w = resolveSyncWindow(3000, NOW);
+        assert.equal(w.clamped, false);
+        assert.ok(w.from < Date.parse("2024-01-01T00:00:00.000Z"), "must reach past the old floor");
+    });
+
+    it("clamping kicks in exactly at the bound, not before it", () => {
+        const daysToBound = Math.floor((NOW - FULL_HISTORY_FROM) / DAY);
+        assert.equal(resolveSyncWindow(daysToBound, NOW).clamped, false);
+        assert.equal(resolveSyncWindow(daysToBound + 1, NOW).clamped, true);
     });
 
     it("falls back to full history for zero, negative and non-numeric input", () => {
@@ -91,5 +106,40 @@ describe("sync-v2 resolveSyncWindow", () => {
         const a = resolveSyncWindow(30, NOW);
         const b = resolveSyncWindow(30, NOW + 5 * DAY);
         assert.equal(b.from - a.from, 5 * DAY);
+    });
+});
+
+describe("resolveSyncWindow — explicit --from", () => {
+    const NOW2 = Date.parse("2026-09-21T12:00:00.000Z");
+
+    it("accepts a date far older than the old 2024 floor", () => {
+        // The whole point: an account with 2018 history must be able to ask for it.
+        const w = resolveSyncWindow(null, NOW2, "2018-01-01");
+        assert.equal(w.from, Date.parse("2018-01-01T00:00:00.000Z"));
+        assert.equal(w.clamped, false);
+        assert.match(w.label, /2018-01-01/);
+    });
+
+    it("overrides --days, being the more specific request", () => {
+        const w = resolveSyncWindow(7, NOW2, "2019-06-01");
+        assert.equal(w.from, Date.parse("2019-06-01T00:00:00.000Z"));
+        assert.equal(w.days, null);
+    });
+
+    it("accepts epoch milliseconds too", () => {
+        const ts = Date.parse("2020-03-04T00:00:00.000Z");
+        assert.equal(resolveSyncWindow(null, NOW2, ts).from, ts);
+    });
+
+    it("falls back to full history on junk rather than to a silent narrow window", () => {
+        for (const bad of ["not-a-date", "", "1999-13-45", NaN]) {
+            const w = resolveSyncWindow(null, NOW2, bad);
+            assert.equal(w.from, FULL_HISTORY_FROM, `${JSON.stringify(bad)} must not narrow the run`);
+        }
+    });
+
+    it("rejects a future date and a pre-Zalo date", () => {
+        assert.equal(resolveSyncWindow(null, NOW2, "2099-01-01").from, FULL_HISTORY_FROM);
+        assert.equal(resolveSyncWindow(null, NOW2, "1990-01-01").from, FULL_HISTORY_FROM);
     });
 });

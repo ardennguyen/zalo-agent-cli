@@ -72,16 +72,35 @@ function guessExt(att, url, contentType) {
 }
 
 /**
- * A Zalo CDN URL that has lapsed answers 200 with a short JSON error body
- * instead of failing the request, so the body has to be inspected.
+ * Classify a non-file response: is the media gone, or are we just being told
+ * to slow down?
+ *
+ * This distinction matters more than it looks. Treating throttling as expiry
+ * tells someone their photos are permanently lost when they are sitting on the
+ * CDN untouched — a real run reported 4,894 "expired" links, and a single
+ * request minutes later pulled one of them down as a 25 MB video. Only a
+ * signal that genuinely means "this object no longer exists" may be called
+ * expired; everything else is retryable.
+ *
+ * @returns {"ok"|"expired"|"throttled"}
  */
-function looksExpired(status, contentType, head) {
-    if (status === 403 || status === 404 || status === 410) return true;
-    if (status !== 200) return false;
+function classifyResponse(status, contentType, head) {
+    // Explicit rate limiting, and the 5xx family, are always retryable.
+    if (status === 429 || status >= 500) return "throttled";
+    // 404/410 are the only statuses that mean the object is gone. 403 is NOT:
+    // Zalo returns it both for a lapsed signature and under load.
+    if (status === 404 || status === 410) return "expired";
+    if (status === 403) return "throttled";
+    if (status !== 200) return "throttled";
+
     const ct = String(contentType || "").toLowerCase();
-    if (!ct.includes("json") && !ct.includes("text/")) return false;
+    if (!ct.includes("json") && !ct.includes("text/")) return "ok";
     const text = head.toString("utf8", 0, Math.min(head.length, 400));
-    return /err_code|invalid signature|expired|not\s*found/i.test(text);
+    // The documented lapsed-signature body. Anything vaguer (a bare err_code,
+    // a rate-limit notice) is treated as retryable rather than terminal.
+    if (/invalid\s*signature|expired/i.test(text)) return "expired";
+    if (/too\s*many|rate\s*limit|busy|try\s*again/i.test(text)) return "throttled";
+    return "throttled";
 }
 
 /** Per-attachment destination path. */
@@ -104,11 +123,32 @@ function attachmentsOf(row) {
     }
 }
 
-/** Fetch a URL, returning the bytes or a reason it failed. */
-async function fetchBytes(url, signal) {
+/**
+ * Default per-request deadline. Without one a stalled connection blocks its
+ * worker forever: `fetch()` has no built-in timeout, so four hung requests
+ * silently froze an entire download with the process still alive and healthy.
+ */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
+
+/**
+ * Consecutive throttled responses before the run stops entirely. Pushing on
+ * past this point neither recovers files nor does the account any favours.
+ */
+export const THROTTLE_GIVE_UP = 25;
+
+/**
+ * Fetch a URL, returning the bytes or a reason it failed.
+ *
+ * @param {string} url
+ * @param {number} timeoutMs - hard deadline covering headers AND body
+ */
+async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
     let res;
     let buf;
     let ct;
+    // One signal for the whole exchange: a server that sends headers promptly
+    // and then stops writing the body is exactly the stall this guards against.
+    const signal = AbortSignal.timeout(timeoutMs);
     try {
         res = await fetch(url, { signal, redirect: "follow" });
         // Reading the body must be guarded too, not just the request. A
@@ -118,11 +158,16 @@ async function fetchBytes(url, signal) {
         buf = Buffer.from(await res.arrayBuffer());
         ct = res.headers.get("content-type");
     } catch (e) {
-        return { ok: false, reason: `network: ${e.message || e}` };
+        const why =
+            e?.name === "TimeoutError" || e?.name === "AbortError"
+                ? `timed out after ${timeoutMs}ms`
+                : e?.message || String(e);
+        return { ok: false, throttled: true, reason: `network: ${why}` };
     }
-    if (looksExpired(res.status, ct, buf)) return { ok: false, expired: true, reason: "expired url" };
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
-    if (!buf.length) return { ok: false, reason: "empty body" };
+    const verdict = classifyResponse(res.status, ct, buf);
+    if (verdict === "expired") return { ok: false, expired: true, reason: `gone (HTTP ${res.status})` };
+    if (verdict === "throttled") return { ok: false, throttled: true, reason: `throttled (HTTP ${res.status})` };
+    if (!buf.length) return { ok: false, throttled: true, reason: "empty body" };
     return { ok: true, buf, contentType: ct };
 }
 
@@ -141,6 +186,10 @@ async function fetchBytes(url, signal) {
  * @param {boolean} [opts.thumbs=false] - also save thumbnails
  * @param {boolean} [opts.dryRun=false] - report what would be fetched, write nothing
  * @param {Map<string,{name:string,type:string}>} [opts.threadNames] - threadId -> display name
+ * @param {number} [opts.backoffBaseMs=1000] - base for the exponential backoff on throttling;
+ *   0 disables the pause (tests)
+ * @param {number} [opts.timeoutMs=60000] - per-request deadline; without one a stalled
+ *   connection blocks its worker indefinitely
  * @param {(req: object) => Promise<object>} [opts.renewLink] - pre-built renewal caller;
  *   defaults to one derived from `api`. Injectable so the renewal path can be
  *   exercised without round-tripping Zalo's request crypto.
@@ -160,6 +209,8 @@ export async function downloadSyncedMedia(opts = {}) {
         thumbs = false,
         dryRun = false,
         threadNames,
+        timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+        backoffBaseMs = 1000,
         onProgress = () => {},
     } = opts;
     const kinds = opts.kinds ? new Set(opts.kinds) : DOWNLOADABLE_KINDS;
@@ -185,8 +236,10 @@ export async function downloadSyncedMedia(opts = {}) {
         skipped: 0,
         failed: 0,
         expired: 0,
+        throttled: 0,
         renewed: 0,
         bytes: 0,
+        abortedEarly: false,
         failures: [],
     };
     if (!jobs.length || dryRun) {
@@ -205,8 +258,21 @@ export async function downloadSyncedMedia(opts = {}) {
 
     const mediaRoot = resolve(accountDir, "media");
     let cursor = 0;
+    // Consecutive throttled responses across all workers. Zalo starts dropping
+    // connections under sustained load, and charging on through nine thousand
+    // attachments marking each one failed is both useless and the surest way to
+    // get an account flagged -- so the run backs off and then gives up.
+    let throttleStreak = 0;
+    let stopAll = false;
+    const backoff = async () => {
+        const wait = Math.min(30000, backoffBaseMs * 2 ** Math.min(throttleStreak, 5));
+        onProgress({ phase: "throttled", detail: `backing off ${Math.round(wait / 1000)}s`, streak: throttleStreak });
+        await new Promise((r) => setTimeout(r, wait));
+    };
+
     const worker = async () => {
         for (;;) {
+            if (stopAll) return;
             const job = jobs[cursor++];
             if (!job) return;
             try {
@@ -232,7 +298,7 @@ export async function downloadSyncedMedia(opts = {}) {
             const folder = threadNames?.get(String(row.threadId))?.name || row.threadId;
             const dir = join(mediaRoot, sanitize(folder));
 
-            let got = await fetchBytes(url);
+            let got = await fetchBytes(url, timeoutMs);
 
             // One renewal attempt: only helps while Zalo still holds the file.
             if (!got.ok && got.expired && renewLink) {
@@ -248,7 +314,7 @@ export async function downloadSyncedMedia(opts = {}) {
                     const fresh = extractRenewedUrls(resp);
                     const next = fresh?.normalUrl || fresh?.hdUrl || fresh?.thumbUrl;
                     if (next) {
-                        got = await fetchBytes(next);
+                        got = await fetchBytes(next, timeoutMs);
                         if (got.ok) stats.renewed++;
                     }
                 } catch (e) {
@@ -259,6 +325,18 @@ export async function downloadSyncedMedia(opts = {}) {
             }
 
             if (!got.ok) {
+                if (got.throttled) {
+                    stats.throttled++;
+                    throttleStreak++;
+                    if (throttleStreak >= THROTTLE_GIVE_UP) {
+                        stopAll = true;
+                        stats.abortedEarly = true;
+                        return;
+                    }
+                    await backoff();
+                } else {
+                    throttleStreak = 0;
+                }
                 stats.failed++;
                 if (stats.failures.length < 20) {
                     stats.failures.push({ msgId: row.msgId, kind: att.kind, reason: got.reason });
@@ -285,6 +363,7 @@ export async function downloadSyncedMedia(opts = {}) {
                     /* a missing row is not worth failing the download over */
                 }
             }
+            throttleStreak = 0;
             stats.downloaded++;
             stats.bytes += got.buf.length;
             onProgress({

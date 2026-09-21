@@ -58,6 +58,12 @@ export function registerSyncCommands(program) {
             parseIntAtLeast(1),
         )
         .option(
+            "--from <date>",
+            "Restore everything from this date onward (YYYY-MM-DD), --transfer only. Overrides --days. " +
+                "The default is already everything your phone still holds, so this is for deliberately " +
+                "narrowing a run, not widening it",
+        )
+        .option(
             "-L, --legacy",
             "Try the retired pull_mobile_msg/get_crossdb phone-transfer endpoint instead. One attempt only — it pings your mobile app",
         )
@@ -75,6 +81,11 @@ export function registerSyncCommands(program) {
             if (opts.messagesOnly && !opts.transfer) {
                 error("--messages-only only applies to the real phone-backed restore.");
                 info("Run: zalo-agent sync-mobile --transfer --messages-only");
+                process.exit(1);
+            }
+            if (opts.from !== undefined && !opts.transfer) {
+                error("--from only applies to the real phone-backed restore.");
+                info(`Run: zalo-agent sync-mobile --transfer --from ${opts.from}`);
                 process.exit(1);
             }
             if (opts.days !== undefined && !opts.transfer) {
@@ -116,6 +127,13 @@ export function registerSyncCommands(program) {
         .option("-d, --days <n>", "Only attachments from the last N days", parseIntAtLeast(1))
         .option("-c, --concurrency <n>", "Parallel downloads", parseIntAtLeast(1), 4)
         .option("-m, --max-size <mb>", "Skip attachments larger than this many MB", parseIntAtLeast(1))
+        .option(
+            "--timeout <seconds>",
+            "Give up on a single download after this long. Guards against a server that sends headers " +
+                "then stops writing, which would otherwise block a worker forever",
+            parseIntAtLeast(5),
+            60,
+        )
         .option("--thumbs", "Also save thumbnails alongside the full media")
         .option("--dry-run", "Report what would be fetched without downloading anything")
         .action(async (opts) => {
@@ -225,6 +243,7 @@ async function runMediaDownload(activeAcc, opts) {
         since: opts.days ? Date.now() - opts.days * 86400000 : undefined,
         concurrency: opts.concurrency,
         maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
+        timeoutMs: (opts.timeout || 60) * 1000,
         thumbs: Boolean(opts.thumbs),
         dryRun: Boolean(opts.dryRun),
         threadNames: threadNameMap(),
@@ -245,11 +264,20 @@ async function runMediaDownload(activeAcc, opts) {
     success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
     if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
-        warning(`${stats.expired} link(s) had expired.`);
+        warning(`${stats.expired} link(s) are gone (HTTP 404/410 or a lapsed signature).`);
         info("Zalo only keeps media for a limited time; past that the file exists only on the sending device.");
     }
-    if (stats.failed) {
-        warning(`${stats.failed} attachment(s) failed.`);
+    if (stats.throttled) {
+        warning(`${stats.throttled} request(s) were refused or dropped — almost certainly rate limiting, not expiry.`);
+        info("Those attachments are still marked pending, so re-running picks them up. Wait a while first.");
+        info("A lower --concurrency makes a long run far less likely to trip it.");
+    }
+    if (stats.abortedEarly) {
+        warning("Stopped early: Zalo kept refusing requests. Nothing is lost — re-run later to continue.");
+    }
+    const other = stats.failed - stats.expired - stats.throttled;
+    if (other > 0) {
+        warning(`${other} attachment(s) failed for other reasons.`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
     process.exit(0);
@@ -408,7 +436,7 @@ async function runTransferSync(activeAcc, opts) {
         process.exit(1);
     }
 
-    const win = resolveSyncWindow(opts.days);
+    const win = resolveSyncWindow(opts.days, Date.now(), opts.from);
 
     // Debounce: skip a redundant run so we don't re-ping the phone, unless
     // --force. Asking for a wider window than the last run covered is not
@@ -450,6 +478,7 @@ async function runTransferSync(activeAcc, opts) {
             const sv = new SyncV2(api, activeAcc.ownId);
             const res = await sv.restore({
                 days: opts.days,
+                from: opts.from,
                 waitMs,
                 onStatus: ({ phase, detail }) => {
                     if (phase === "confirm") warning(detail);
@@ -558,10 +587,14 @@ async function fetchMediaAfterRestore(accountDir, api) {
     success(`Downloaded ${stats.downloaded}/${stats.considered} file(s) (${formatBytes(stats.bytes)}).`);
     if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
-        warning(`${stats.expired} link(s) had expired and could not be renewed.`);
+        warning(`${stats.expired} link(s) are gone and could not be renewed.`);
         info("Zalo keeps media for a limited time; past that the file exists only on the sending device.");
     }
-    if (stats.failed - stats.expired > 0) warning(`${stats.failed - stats.expired} other failure(s).`);
+    if (stats.throttled) {
+        warning(`${stats.throttled} request(s) were refused or dropped — rate limiting, not expiry.`);
+        info("Re-run `zalo-agent sync-media` later to pick them up; a lower --concurrency helps.");
+    }
+    if (stats.abortedEarly) warning("Media stopped early under sustained throttling; nothing is lost.");
 }
 
 /**

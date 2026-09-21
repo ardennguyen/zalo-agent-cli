@@ -10,7 +10,14 @@ import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
 import { downloadSyncedMedia, pruneDownloadedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
-import { initDb, getRecentThreads, countPendingAttachments, getSyncState, getOrphanThreads } from "../core/db.js";
+import {
+    initDb,
+    getRecentThreads,
+    countPendingAttachments,
+    getSyncState,
+    setSyncState,
+    getOrphanThreads,
+} from "../core/db.js";
 
 /** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
 const CLOSE_DUPLICATE = 3000;
@@ -445,6 +452,16 @@ async function runBoardSync(activeAcc, opts) {
         warning(opts.thread ? `Thread ${opts.thread} is not in the local cache.` : "No threads in the local cache.");
         info("Run `zalo-agent sync-mobile --transfer` first.");
         process.exit(0);
+    }
+
+    // A live board event flags its thread; those go first so a quick run after
+    // seeing "Board changed" refreshes the thing that actually moved.
+    const stale = threads.filter((t) => getSyncState(`boardStale:${t.threadId}`));
+    if (stale.length && !opts.thread) {
+        info(`${stale.length} thread(s) had a board change since the last pass — doing those first.`);
+        const rest = threads.filter((t) => !getSyncState(`boardStale:${t.threadId}`));
+        threads.length = 0;
+        threads.push(...stale, ...rest);
     }
 
     info(`Checking ${threads.length} thread(s) — one request each, so this is paced deliberately.`);

@@ -12,7 +12,15 @@
  * Both paths now funnel through here, so a message stored during a sync is
  * byte-for-byte the same row the listener would have written.
  */
-import { insertMessage, upsertThread, upsertReaction, markMessageRecalled, markThreadGone } from "./db.js";
+import {
+    insertMessage,
+    upsertThread,
+    upsertReaction,
+    markMessageRecalled,
+    markThreadGone,
+    setSyncState,
+    setMessageStatus,
+} from "./db.js";
 import { classifyLiveMessage } from "./sync-v2/message-types.js";
 
 /** zca-js ThreadType.User */
@@ -185,4 +193,76 @@ export function storeGroupEvent(event) {
         return { gone: false };
     }
     return { gone: true, threadId: String(threadId) };
+}
+
+/**
+ * Group events that change a board: notes, pinned messages, polls, reminders.
+ *
+ * These carry only a delta, and applying one correctly means knowing the board
+ * item's full current shape — which the event does not supply. Rather than
+ * guess and write a half-populated row, the thread is flagged as having a stale
+ * board so the next `sync-boards` refetches it authoritatively. Recording the
+ * need is cheap; inventing the data is not.
+ */
+const BOARD_EVENTS = new Set([
+    "new_pin_topic",
+    "update_pin_topic",
+    "reorder_pin_topic",
+    "unpin_topic",
+    "update_board",
+    "remove_board",
+    "update_topic",
+    "remove_topic",
+    "remind_topic",
+    "accept_remind",
+    "reject_remind",
+]);
+
+/**
+ * Note that a conversation's board changed.
+ *
+ * @param {object} event - the zca-js group event
+ * @returns {{stale: boolean, threadId?: string}}
+ */
+export function noteBoardChange(event) {
+    const type = String(event?.type || "").toLowerCase();
+    if (!BOARD_EVENTS.has(type)) return { stale: false };
+    const threadId = event?.threadId;
+    if (threadId === undefined || threadId === null) return { stale: false };
+    try {
+        // A key per thread, so `sync-boards` can refresh only what moved rather
+        // than walking every conversation again.
+        setSyncState(`boardStale:${threadId}`, String(Date.now()));
+    } catch {
+        return { stale: false };
+    }
+    return { stale: true, threadId: String(threadId) };
+}
+
+/**
+ * Apply a seen/delivered receipt to the messages it covers.
+ *
+ * The mobile sync carries msgStatus per message, so a restore establishes
+ * delivery state — but it then goes stale, because nothing was tracking the
+ * receipts that arrive afterwards. These events are the live half of the same
+ * field, not UI noise.
+ *
+ * @param {Array<object>|object} payload - zca-js seen/delivered event
+ * @param {number} status - Sync2 MessageStatus (4 received, 5 seen)
+ * @returns {{updated: number}}
+ */
+export function storeReceipts(payload, status) {
+    const list = Array.isArray(payload) ? payload : payload ? [payload] : [];
+    let updated = 0;
+    for (const entry of list) {
+        const d = entry?.data || entry || {};
+        const msgId = d.msgId ?? d.globalMsgId;
+        if (msgId === undefined || msgId === null) continue;
+        try {
+            updated += setMessageStatus(String(msgId), status).changes || 0;
+        } catch {
+            /* one bad receipt must not stop the rest */
+        }
+    }
+    return { updated };
 }

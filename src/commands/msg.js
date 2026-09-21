@@ -11,7 +11,7 @@ import { extractMessageText } from "../utils/extract-message-text.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getMessages, insertMessage } from "../core/db.js";
-import { processMessageMedia } from "../core/media-downloader.js";
+import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 
 /**
  * Look one message up in the local SQLite cache by its global msgId.
@@ -806,28 +806,25 @@ export function registerMsgCommands(program) {
                     localMsgs = getMessages(threadId, limit);
                     if (localMsgs && localMsgs.length >= limit) {
                         if (!jsonMode) info(`Found ${localMsgs.length} messages in local cache.`);
-                        // processMessageMedia() only mutates the in-memory row —
-                        // it doesn't write back to zalo.db itself. Previously a
-                        // lazily-discovered localPath was shown in this one
-                        // command's output and then forgotten: the DB row stayed
-                        // NULL forever unless that message separately came
-                        // through the live-fetch amend path. Persist it back
-                        // here (only when it's newly found, to avoid a write on
-                        // every single cache read).
-                        await Promise.all(
-                            localMsgs.map(async (m) => {
-                                const hadLocalPath = !!m.localPath;
-                                await processMessageMedia(m);
-                                if (!hadLocalPath && m.localPath) {
-                                    try {
-                                        insertMessage(m);
-                                    } catch (e) {
-                                        // Non-fatal — the path is still shown in this
-                                        // command's output even if persisting it fails.
-                                    }
-                                }
-                            }),
-                        );
+                        // Fetch through the shared downloader, which writes to
+                        // accounts/<ownId>/media/<threadName>/ and records the
+                        // path itself. The old per-command downloader used a
+                        // different flat layout and its extension logic keyed off
+                        // Number(message.type) -- always NaN for a string type --
+                        // so reading history quietly scattered files into a second
+                        // location that nothing else knew about.
+                        try {
+                            await downloadSyncedMedia({
+                                api,
+                                accountDir,
+                                threadId,
+                                limit,
+                                concurrency: 2,
+                            });
+                            localMsgs = getMessages(threadId, limit);
+                        } catch {
+                            /* showing history must not fail because media did */
+                        }
                         const messages = localMsgs.map((m) => ({
                             msgId: m.msgId,
                             threadId: m.threadId,
@@ -1010,7 +1007,6 @@ export function registerMsgCommands(program) {
                 mergedArray.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
                 const result = mergedArray.slice(0, limit);
-                await Promise.all(result.map((m) => processMessageMedia(m)));
 
                 // Format final output
                 const cleanResult = result.map((m) => {

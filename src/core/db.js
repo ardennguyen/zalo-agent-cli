@@ -368,8 +368,15 @@ export function upsertThread(thread) {
     VALUES (@threadId, @type, @name, @lastUpdate, @sync_timestamp, @respondedByMe, @lastGlobalId, @lastClientId)
     ON CONFLICT(threadId) DO UPDATE SET
       type = excluded.type,
-      name = excluded.name,
-      lastUpdate = excluded.lastUpdate,
+      -- Never overwrite a known name with a blank one: the sync upserts threads
+      -- per message and only some of those carry a display name.
+      name = CASE WHEN excluded.name IS NULL OR excluded.name = '' THEN threads.name ELSE excluded.name END,
+      -- MAX, not assignment. A sync calls this once per message, and messages
+      -- do not arrive newest-first, so a plain assignment left every thread
+      -- stamped with whichever message happened to be processed last -- which
+      -- is what made conv recent order wrongly after a sync. (No backticks:
+      -- this sits inside a JS template literal.)
+      lastUpdate = MAX(COALESCE(excluded.lastUpdate, 0), COALESCE(threads.lastUpdate, 0)),
       sync_timestamp = COALESCE(excluded.sync_timestamp, threads.sync_timestamp),
       respondedByMe = COALESCE(excluded.respondedByMe, threads.respondedByMe),
       lastGlobalId = COALESCE(excluded.lastGlobalId, threads.lastGlobalId),
@@ -735,7 +742,20 @@ export function getCloudItemByMsgId(msgId) {
     return db.prepare("SELECT * FROM cloud_items WHERE msgId = ? LIMIT 1").get(String(msgId)) || null;
 }
 
-/** Sync2.Message.MessageStatus, the only place delivery/read state arrives. */
+/**
+ * Advance a message's delivery state.
+ *
+ * Only ever forwards: a late-arriving "delivered" must not undo a "seen" that
+ * already landed, and re-syncing an older snapshot must not either.
+ */
+export function setMessageStatus(msgId, status) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare("UPDATE messages SET msgStatus = MAX(COALESCE(msgStatus, 0), ?) WHERE msgId = ?")
+        .run(Number(status) || 0, String(msgId));
+}
+
+/** Sync2.Message.MessageStatus: delivery and read state. */
 export const MESSAGE_STATUS = {
     0: "unspecified",
     1: "failed",

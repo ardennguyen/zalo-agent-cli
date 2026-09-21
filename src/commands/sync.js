@@ -9,6 +9,7 @@ import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
 import { downloadSyncedMedia, pruneDownloadedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
+import { drainReactions } from "../core/sync-v2/reactions.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
 import {
     initDb,
@@ -190,6 +191,26 @@ export function registerSyncCommands(program) {
                 process.exit(1);
             }
             await runMediaDownload(requireAccount(), opts);
+        });
+
+    program
+        .command("sync-reactions")
+        .description(
+            "Retrieve existing reactions from Zalo's servers into the local cache. Reactions are the one " +
+                "thing a transfer sync cannot restore — the Sync2 payload has no reaction field — but they " +
+                "ARE served over the socket (cmd 610 for 1-1, 611 for groups), which is how Zalo Web shows " +
+                "them after a fresh login. Needs no phone confirmation",
+        )
+        .option("-w, --wait <seconds>", "Per-page deadline", parseIntAtLeast(1), 15)
+        .option("-p, --pages <n>", "Max pages per thread type", parseIntAtLeast(1), 20)
+        .option(
+            "--no-removals",
+            "Do not apply un-react entries from the backlog. The default DOES apply them, because the " +
+                "backlog is an ordered action log rather than a snapshot: skipping them leaves reactions " +
+                "that were later taken off. Use this only to see every reaction a message ever had",
+        )
+        .action(async (opts) => {
+            await runReactionSync(requireAccount(), opts);
         });
 
     program
@@ -480,6 +501,128 @@ async function runBoardSync(activeAcc, opts) {
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.threadId} (${f.what}): ${f.reason}`);
     }
     process.exit(0);
+}
+
+/**
+ * Retrieve the reaction backlog over the socket. No phone confirmation.
+ *
+ * Reactions were long documented here as unrecoverable, which conflated two
+ * things: the transfer-sync payload genuinely has no reaction field, but the
+ * socket serves them on cmd 610/611 and Zalo Web asks for both on every
+ * connect. Measured on a real account, one request pair returned 28 direct and
+ * 50 group reactions while the local cache held one row.
+ *
+ * @param {{ownId: string, name?: string}} activeAcc
+ * @param {{wait?: number, pages?: number, applyRemovals?: boolean}} opts
+ */
+async function runReactionSync(activeAcc, opts) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    initDb(join(accountDir, "zalo.db"));
+
+    let api;
+    try {
+        api = getApi();
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
+
+    // One socket and one db writer per account, same as every other path that
+    // opens the WebSocket.
+    if (!acquireLock(accountDir)) {
+        error(`A listen daemon (or MCP server) is already running for account ${activeAcc.ownId}.`);
+        info("Stop it first — Zalo permits one web session per account.");
+        process.exit(1);
+    }
+
+    const waitMs = Math.max(1, Number(opts.wait) || 15) * 1000;
+    let exitCode = 1;
+
+    try {
+        info("Connecting…");
+        const connected = await new Promise((res) => {
+            let settled = false;
+            const done = (v) => {
+                if (settled) return;
+                settled = true;
+                res(v);
+            };
+            const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), waitMs);
+            api.listener.on("connected", () => {
+                clearTimeout(timer);
+                done({ ok: true });
+            });
+            api.listener.on("closed", (code) => {
+                clearTimeout(timer);
+                done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
+            });
+            api.listener.on("error", (e) => {
+                clearTimeout(timer);
+                done({ ok: false, reason: e && e.message ? e.message : "socket error" });
+            });
+            api.listener.start({ retryOnClose: false });
+        });
+
+        if (!connected.ok) {
+            if (connected.reason === "duplicate") {
+                error("Zalo closed this connection: another web session is already open on this account.");
+                info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+            } else {
+                error(`Could not open a connection: ${connected.reason}`);
+            }
+        } else {
+            info("Requesting the reaction backlog (cmd 610 for 1-1, 611 for groups)…");
+            const stats = await drainReactions({
+                listener: api.listener,
+                timeoutMs: waitMs,
+                maxPages: opts.pages,
+                applyRemovals: opts.removals !== false,
+                onProgress: (p) => {
+                    if (p.phase === "page") {
+                        info(`  ${p.type} page ${p.page}: ${p.received} reaction(s)${p.more ? " (more)" : ""}`);
+                    } else if (p.phase === "timeout") {
+                        warning(`  ${p.type}: ${p.detail}`);
+                    } else if (p.phase === "warn") {
+                        warning(`  ${p.detail}`);
+                    }
+                },
+            });
+
+            if (stats.received === 0) {
+                warning("The server returned no reactions.");
+                info(
+                    "That is a caught-up queue, not a missing feature: this channel is what Zalo Web itself " +
+                        "asks on every connect. Reactions arriving from now on are captured by `zalo-agent listen`.",
+                );
+            } else {
+                success(
+                    `Stored ${stats.stored} of ${stats.received} reaction(s) ` +
+                        `(${stats.byType.dm} direct, ${stats.byType.group} group; ${stats.changed} row(s) changed).`,
+                );
+                if (stats.skippedRemovals) {
+                    warning(
+                        `Skipped ${stats.skippedRemovals} un-react entr(y/ies) because of --no-removals, so the ` +
+                            "cache now holds reactions that were later taken off.",
+                    );
+                }
+                if (stats.truncated) {
+                    warning(`Stopped at the ${opts.pages}-page cap; re-run with a higher --pages for the rest.`);
+                }
+            }
+            exitCode = 0;
+        }
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+    } finally {
+        try {
+            api.listener.stop();
+        } catch {
+            // Already closed — nothing to clean up.
+        }
+        releaseLock(accountDir);
+    }
+
+    process.exit(exitCode);
 }
 
 /** Walk the zCloud index. No phone, no socket. */

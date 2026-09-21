@@ -192,17 +192,38 @@ export function storeLiveMessage(msg, opts = {}) {
 }
 
 /**
+ * A reaction event's content, whichever form it arrives in.
+ *
+ * @param {object|string|undefined} content
+ * @returns {object}
+ */
+function parseContent(content) {
+    if (typeof content !== "string") return content || {};
+    try {
+        return JSON.parse(content) || {};
+    } catch {
+        return {};
+    }
+}
+
+/**
  * Store one reaction.
  *
- * Reactions exist only on this path: the Sync2 protobuf has no reaction field,
- * so a reaction not captured live is never recoverable from the phone.
+ * The Sync2 protobuf has no reaction field, so a transfer sync never restores
+ * one. That does not make them unrecoverable: Zalo serves the reaction backlog
+ * over the socket on cmd 610/611, which `sync-reactions` drains through this
+ * same writer.
  *
  * @param {object} reaction - the zca-js reaction event
  * @returns {{stored: boolean, reason?: string}}
  */
 export function storeLiveReaction(reaction) {
     const d = reaction?.data || {};
-    const c = d.content || {};
+    // zca-js parses `content` for a LIVE reaction (cmd 612) but hands it over
+    // as a raw JSON string for a retrieved one (cmd 610/611 -> old_reactions).
+    // Reading `.rMsg` off the string finds nothing and silently stores no
+    // reaction, so one writer has to accept both.
+    const c = parseContent(d.content);
     const userId = d.uidFrom ?? reaction?.uidFrom;
     if (userId === undefined || userId === null) return { stored: false, reason: "reaction names no user" };
 

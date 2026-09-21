@@ -290,6 +290,14 @@ Requires a Zalo Shop / zBusiness account.
 
 ---
 
+## Reactions — `sync-reactions`
+
+| Command | Description |
+|---------|-------------|
+| `sync-reactions [-w, --wait <seconds>] [-p, --pages <n>] [--no-removals]` | Retrieve existing reactions from Zalo's servers into `zalo.db`. Reactions are the one thing `sync-mobile --transfer` cannot restore — the Sync2 payload has no reaction field — but they **are** served over the socket on cmd 610 (1-1) and 611 (group), which is how Zalo Web shows them after a fresh login. Needs no phone confirmation. Takes `daemon.lock`, so stop `listen`/`mcp start` first. The backlog is an ordered **action log**, not a snapshot: it replays adds *and* un-reacts, so they are applied in sequence by default and the result converges on what the app shows (measured: a message whose backlog held four events settled to the one reaction the app displayed). `--no-removals` keeps every reaction a message ever had, which is deliberately *not* the app's state. Pages with the server's own `lastActionId`/`more` cursor, capped by `--pages` (default 20). |
+
+---
+
 ## MCP Server — `mcp start` (AI agent integration)
 
 | Command | Description |

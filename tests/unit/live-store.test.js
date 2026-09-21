@@ -881,3 +881,36 @@ describe("reaction results are observable", () => {
         assert.deepEqual(r.msgIds, ["m1"]);
     });
 });
+
+describe("a retrieved reaction (cmd 610/611) reaches the same writer", () => {
+    // zca-js parses `content` for a live reaction (cmd 612) and does NOT for a
+    // retrieved one — it hands the raw JSON string through to the
+    // `old_reactions` event. One writer has to take both forms or a historical
+    // import silently stores nothing.
+    const stringContentEvent = () => ({
+        threadId: "t1",
+        isGroup: true,
+        data: {
+            msgId: "notif",
+            msgType: "chat.reaction",
+            uidFrom: "u2",
+            ts: 1,
+            content: JSON.stringify({ rMsg: [{ gMsgID: "m1", cMsgID: 42 }], rIcon: "/-heart", rType: 5 }),
+        },
+    });
+
+    it("stores a reaction whose content is still a JSON string", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", msgType: "webchat", content: "hi" }));
+        const r = storeLiveReaction(stringContentEvent());
+        assert.equal(r.stored, true);
+        const [got] = getReactions({ msgId: "m1" });
+        assert.equal(got.icon, "/-heart");
+        assert.equal(got.rType, 5);
+    });
+
+    it("does not throw on content that is not JSON at all", () => {
+        const r = storeLiveReaction({ threadId: "t1", data: { uidFrom: "u2", content: "not json" } });
+        assert.equal(r.stored, false);
+        assert.match(r.reason, /names no message/);
+    });
+});

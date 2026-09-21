@@ -564,6 +564,7 @@ export class SyncV2 {
                     respondedByMe: c.respondedByMe,
                     lastGlobalId: c.lastGlobalId,
                     lastClientId: c.lastClientId,
+                    lastTs: Number(c.lastTs) || 0,
                 });
             }
             if (!conversations) {
@@ -592,12 +593,24 @@ export class SyncV2 {
                 }
             }
 
-            const partitions = convs.map((c) => ({
-                partition: (c.convType === 2 ? "group/" : "oneone/") + c.convId,
-                from: win.from,
-                to: win.to,
-                limit: 2147483647,
-            }));
+            // `to` is per conversation, not a global bound. Zalo Web sends each
+            // partition its own conversation's `lastTs` -- a capture of one run
+            // shows 30 distinct `to` values across 30 partitions -- and asks for
+            // an unbounded `to` only on the conversation round, where it does
+            // not yet know what the latest message is. Sending MAX_SAFE_INTEGER
+            // per partition asks the phone to scan to the year 285428 for a
+            // conversation that has been quiet since 2024.
+            const askedTo = Math.min(win.to, Date.now());
+            const partitions = convs.map((c) => {
+                const lastTs = Number(c.lastTs) || 0;
+                return {
+                    partition: (c.convType === 2 ? "group/" : "oneone/") + c.convId,
+                    from: win.from,
+                    // Never past what the caller asked for, and never past now.
+                    to: lastTs > 0 ? Math.min(lastTs, askedTo) : askedTo,
+                    limit: 2147483647,
+                };
+            });
             const shards = [];
             for (let i = 0; i < partitions.length; i += shardSize) shards.push(partitions.slice(i, i + shardSize));
             onStatus({ phase: "messages", detail: `${conversations} conversations in ${shards.length} batch(es)` });

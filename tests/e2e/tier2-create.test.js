@@ -46,6 +46,63 @@ function remember(thread, sent, what) {
     return sent;
 }
 
+/**
+ * Record an ATTACHMENT send from its raw `runJson` result.
+ *
+ * Text sends go through `send()`, which returns a tidy {msgId, cliMsgId}.
+ * Attachment sends do not: `msg send-image` with several paths answers with
+ * an ARRAY of per-attachment results, a single attachment answers with one
+ * object, and the msgId sits under `message` on some paths and at the top
+ * level on others — the same shape drift tests/README.md warns about for
+ * create endpoints. Rather than guess, walk the payload and collect every
+ * {msgId, cliMsgId} pair it contains.
+ *
+ * This matters more than it looks. Tier 4 recalls only what the ledger
+ * holds, and until now the ledger held plain-text sends ONLY — every image,
+ * file, sticker, link, card, bank card and QR transfer was left behind.
+ * For the group that is merely untidy, since tier 5a wipes the thread. For
+ * the DM it is not: `conv delete` removes history from OUR side only, so
+ * `msg undo` is the one thing that takes a message out of the other
+ * person's view. An untracked DM attachment stays visible to them forever.
+ *
+ * @param {object} thread - targets.group or targets.dm
+ * @param {object} r - the runJson() result of a send-* command
+ * @param {string} what - label for the ledger
+ * @returns {number} how many messages were recorded
+ */
+function rememberSent(thread, r, what) {
+    if (!r?.ok) return 0;
+
+    const found = [];
+    const walk = (node) => {
+        if (!node || typeof node !== "object") return;
+        if (Array.isArray(node)) {
+            node.forEach(walk);
+            return;
+        }
+        const msgId = node.msgId ?? node.message?.msgId;
+        const cliMsgId = node.cliMsgId ?? node.message?.cliMsgId;
+        if (msgId && cliMsgId) found.push({ msgId: String(msgId), cliMsgId: String(cliMsgId) });
+        for (const v of Object.values(node)) if (v && typeof v === "object") walk(v);
+    };
+    // cliMsgId usually sits beside `message`, not inside it, so seed the
+    // scan with the top-level pairing before descending.
+    const top = r.data?.message?.msgId;
+    const topCli = r.data?.cliMsgId;
+    if (top && topCli) found.push({ msgId: String(top), cliMsgId: String(topCli) });
+    walk(r.data);
+
+    const seen = new Set();
+    let n = 0;
+    for (const m of found) {
+        if (seen.has(m.msgId)) continue;
+        seen.add(m.msgId);
+        remember(thread, m, what);
+        n++;
+    }
+    return n;
+}
+
 // Media comes from tests/fixtures/ — real encoder output, committed, so
 // these tests upload the same bytes every run and a failure means Zalo
 // changed, not that a runtime-generated stub was malformed.
@@ -119,6 +176,7 @@ describe("tier 2 · image attachments", { skip }, () => {
                 live(T, { timeout: 180_000 }),
             );
             assert.equal(r.ok, true, `${fx.name}: ${r.error}`);
+            rememberSent(T.group, r, `image ${key}`);
         });
     }
 
@@ -140,6 +198,7 @@ describe("tier 2 · image attachments", { skip }, () => {
             live(T, { timeout: 180_000 }),
         );
         assert.equal(r.ok, true, r.error);
+        rememberSent(T.group, r, "multi-image");
     });
 
     it("sends an image to the DM target", { skip: skip || (T?.dm ? false : "no DM target") }, async () => {
@@ -149,6 +208,7 @@ describe("tier 2 · image attachments", { skip }, () => {
             live(T, { timeout: 180_000 }),
         );
         assert.equal(r.ok, true, r.error);
+        rememberSent(T.dm, r, "dm-image");
     });
 
     it("reports a missing image path instead of failing silently", async () => {
@@ -227,6 +287,7 @@ describe("tier 2 · file attachments", { skip }, () => {
                 live(T, { timeout: 45_000 }),
             );
             assert.equal(r.ok, true, `${fx.name}: ${r.error}`);
+            rememberSent(T.group, r, `file ${key}`);
             const id = r.data?.attachment?.[0]?.msgId;
             assert.ok(id, `expected an attachment msgId, got ${JSON.stringify(r.data)}`);
         });
@@ -250,6 +311,7 @@ describe("tier 2 · file attachments", { skip }, () => {
             return;
         }
         assert.equal(r.data?.attachment?.length, 2, "both files should come back with msgIds");
+        rememberSent(T.group, r, "multi-file");
     });
 
     it("sends a file to the DM target", { skip: skip || (T?.dm ? false : "no DM target") }, async () => {
@@ -259,6 +321,7 @@ describe("tier 2 · file attachments", { skip }, () => {
             live(T, { timeout: 45_000 }),
         );
         assert.equal(r.ok, true, r.error);
+        rememberSent(T.dm, r, "dm-file");
     });
 
     it("exits cleanly instead of leaving the listener holding the event loop", async () => {
@@ -299,6 +362,14 @@ describe("tier 2 · file attachments", { skip }, () => {
         assert.ok(hasSuccess(r.stdout) || /Link sent/.test(r.stdout), r.stdout.slice(0, 300));
     });
 
+    // NOT tracked for recall, deliberately: link / sticker / card / bank /
+    // QR all go through runCli rather than runJson, so there is no parsed
+    // payload to take a msgId from — the tests only assert a success line.
+    // That is acceptable ONLY because every one of them is group-only, and
+    // tier 5a wipes the group conversation. None of them is ever sent to
+    // the DM, where an unrecalled message would stay in a real person's
+    // view forever. If one of these is ever pointed at T.dm, switch it to
+    // runJson and rememberSent() it first.
     it("searches and sends a sticker", async () => {
         assertDisposable(T.group.threadId, "msg sticker");
         const r = await runCli(["msg", "sticker", "-t", "1", T.group.threadId, "hello"], live(T, { timeout: 120_000 }));
@@ -480,6 +551,26 @@ describe("tier 2 · reminders", { skip }, () => {
         const id = r.data?.id || r.data?.reminderId || r.data?.topicId;
         if (id) artifacts.reminders.push({ id: String(id), threadId: T.group.threadId, type: 1 });
     });
+
+    // DM parity. Every `reminder` subcommand takes `-t/--type` with 0=User,
+    // and Zalo serves DM reminders from /api/board/oneone/list rather than
+    // the group's /api/board/listReminder — a genuinely different endpoint
+    // behind the same CLI surface. The suite used to exercise only `-t 1`,
+    // so the whole 1:1 branch was unverified.
+    it(
+        "creates a reminder in the DM as well — the 1:1 endpoint is a different one",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            assertDisposable(T.dm.threadId, "reminder create");
+            const r = await runJson(
+                ["reminder", "create", "-t", "0", T.dm.threadId, TAGGED("dm reminder"), "--emoji", "⏰"],
+                live(T, { timeout: 120_000 }),
+            );
+            assert.equal(r.ok, true, r.error);
+            const id = r.data?.id || r.data?.reminderId || r.data?.topicId;
+            if (id) artifacts.reminders.push({ id: String(id), threadId: T.dm.threadId, type: 0 });
+        },
+    );
 });
 
 describe("tier 2 · group notes", { skip }, () => {
@@ -490,6 +581,21 @@ describe("tier 2 · group notes", { skip }, () => {
             live(T, { timeout: 120_000 }),
         );
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+    });
+
+    // There is deliberately no DM equivalent here, and that is a finding
+    // rather than an omission: zca-js types createNote as
+    // createNote(options, groupId) — group-only — so the CLI cannot make a
+    // note ("Ghi chú") on a 1:1 thread at all. zca-js DOES ship
+    // getFriendBoardList(conversationId), the DM-side board reader, but no
+    // CLI command exposes it (only sync-v2/board.js touches getListBoard).
+    // Until a command surfaces it there is nothing to drive from here.
+    it("CHARACTERIZATION: notes are group-only — the CLI has no DM board command", () => {
+        assert.equal(
+            typeof T.dm?.threadId === "string" || T.dm === null,
+            true,
+            "DM target shape unchanged; this test documents a missing command, not a failure",
+        );
     });
 });
 

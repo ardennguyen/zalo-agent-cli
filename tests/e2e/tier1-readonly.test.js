@@ -316,6 +316,19 @@ describe("tier 1 · misc read-only surfaces", { skip }, () => {
         const r = await readJson(["reminder", "list", "-t", "1", T.group.threadId], live(T));
         assert.equal(r.ok, true, r.error);
     });
+
+    // DM parity: `-t 0` hits /api/board/oneone/list, a different endpoint
+    // from the group's /api/board/listReminder. Reading both here means a
+    // retirement or shape change on either side fails in tier 1, before
+    // any tier has written anything.
+    it(
+        "reminder list responds for the DM too — a different endpoint",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            const r = await readJson(["reminder", "list", "-t", "0", T.dm.threadId], live(T));
+            assert.equal(r.ok, true, r.error);
+        },
+    );
 });
 
 describe("tier 1 · --json cleanliness", { skip }, () => {

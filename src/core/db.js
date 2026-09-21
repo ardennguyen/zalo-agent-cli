@@ -21,7 +21,8 @@ export function initDb(dbPath) {
       raw_data TEXT,
       localPath TEXT,
       has_attachment INTEGER DEFAULT 0,
-      msgStatus INTEGER
+      msgStatus INTEGER,
+      mediaPrunedAt INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS threads (
@@ -200,6 +201,13 @@ export function initDb(dbPath) {
     // than living unnamed inside raw_data.
     try {
         db.exec("ALTER TABLE messages ADD COLUMN msgStatus INTEGER");
+    } catch {}
+    // When media was deliberately pruned. Pruning clears localPath, which would
+    // otherwise put the row straight back in the download queue -- so the next
+    // sync would re-fetch exactly what was just deleted on purpose. This marks
+    // the decision so automatic fetches skip it.
+    try {
+        db.exec("ALTER TABLE messages ADD COLUMN mediaPrunedAt INTEGER");
     } catch {}
 
     return db;
@@ -386,14 +394,18 @@ export function upsertThread(thread) {
  * @param {number} [opts.since] - only messages at/after this epoch ms
  * @param {number} [opts.until] - only messages at/before this epoch ms
  * @param {boolean} [opts.onlyMissing=true] - skip rows already downloaded
+ * @param {boolean} [opts.includePruned=false] - also consider media deliberately pruned
  * @param {number} [opts.limit=500]
  */
 export function getAttachmentMessages(opts = {}) {
     if (!db) throw new Error("Database not initialized");
-    const { threadId, since, until, onlyMissing = true, limit = 500 } = opts;
+    const { threadId, since, until, onlyMissing = true, includePruned = false, limit = 500 } = opts;
     const where = ["has_attachment = 1"];
     const params = [];
     if (onlyMissing) where.push("localPath IS NULL");
+    // A deliberate prune is a decision, not a gap to be refilled. Automatic
+    // fetches respect it; an explicit re-fetch can opt back in.
+    if (!includePruned) where.push("mediaPrunedAt IS NULL");
     if (threadId) (where.push("threadId = ?"), params.push(String(threadId)));
     if (Number.isFinite(since)) (where.push("timestamp >= ?"), params.push(since));
     if (Number.isFinite(until)) (where.push("timestamp <= ?"), params.push(until));
@@ -467,22 +479,31 @@ export function getDownloadedMediaBefore(before, threadId = null) {
  * Clearing `localPath` is what puts the row back in the download queue, so a
  * pruned message can be fetched again later if its link is still alive.
  */
-export function clearMessageLocalPath(msgId) {
+export function clearMessageLocalPath(msgId, prunedAt = null) {
     if (!db) throw new Error("Database not initialized");
-    return db.prepare("UPDATE messages SET localPath = NULL WHERE msgId = ?").run(String(msgId));
+    return db
+        .prepare("UPDATE messages SET localPath = NULL, mediaPrunedAt = ? WHERE msgId = ?")
+        .run(prunedAt === null ? null : Number(prunedAt), String(msgId));
 }
 
-/** Record where an attachment was written to disk. */
+/**
+ * Record where an attachment was written to disk.
+ *
+ * Clears any prune marker: the file is back, so the earlier decision to remove
+ * it no longer applies.
+ */
 export function setMessageLocalPath(msgId, localPath) {
     if (!db) throw new Error("Database not initialized");
-    return db.prepare("UPDATE messages SET localPath = ? WHERE msgId = ?").run(localPath, String(msgId));
+    return db
+        .prepare("UPDATE messages SET localPath = ?, mediaPrunedAt = NULL WHERE msgId = ?")
+        .run(localPath, String(msgId));
 }
 
 /** How many attachment-bearing messages are still undownloaded. */
 export function countPendingAttachments(threadId = null) {
     if (!db) throw new Error("Database not initialized");
     const sql =
-        "SELECT count(*) AS n FROM messages WHERE has_attachment = 1 AND localPath IS NULL" +
+        "SELECT count(*) AS n FROM messages WHERE has_attachment = 1 AND localPath IS NULL AND mediaPrunedAt IS NULL" +
         (threadId ? " AND threadId = ?" : "");
     return (threadId ? db.prepare(sql).get(String(threadId)) : db.prepare(sql).get()).n;
 }

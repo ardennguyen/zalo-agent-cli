@@ -186,6 +186,7 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
  * @param {boolean} [opts.thumbs=false] - also save thumbnails
  * @param {boolean} [opts.dryRun=false] - report what would be fetched, write nothing
  * @param {Map<string,{name:string,type:string}>} [opts.threadNames] - threadId -> display name
+ * @param {boolean} [opts.includePruned=false] - re-fetch media that was deliberately pruned
  * @param {number} [opts.backoffBaseMs=1000] - base for the exponential backoff on throttling;
  *   0 disables the pause (tests)
  * @param {number} [opts.timeoutMs=60000] - per-request deadline; without one a stalled
@@ -210,12 +211,13 @@ export async function downloadSyncedMedia(opts = {}) {
         dryRun = false,
         threadNames,
         timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+        includePruned = false,
         backoffBaseMs = 1000,
         onProgress = () => {},
     } = opts;
     const kinds = opts.kinds ? new Set(opts.kinds) : DOWNLOADABLE_KINDS;
 
-    const rows = getAttachmentMessages({ threadId, since, until, limit, onlyMissing: true });
+    const rows = getAttachmentMessages({ threadId, since, until, limit, onlyMissing: true, includePruned });
     const jobs = [];
     for (const row of rows) {
         let index = 0;
@@ -422,7 +424,7 @@ export async function pruneDownloadedMedia(opts = {}) {
             stats.missing++;
             if (!dryRun) {
                 try {
-                    clearMessageLocalPath(row.msgId);
+                    clearMessageLocalPath(row.msgId, now);
                 } catch {
                     /* the row may have been removed since */
                 }
@@ -435,7 +437,7 @@ export async function pruneDownloadedMedia(opts = {}) {
         }
         try {
             fs.rmSync(row.localPath, { force: true });
-            clearMessageLocalPath(row.msgId);
+            clearMessageLocalPath(row.msgId, now);
             stats.deleted++;
             stats.bytes += size;
             onProgress({ phase: "pruned", msgId: row.msgId, path: row.localPath, bytes: size });

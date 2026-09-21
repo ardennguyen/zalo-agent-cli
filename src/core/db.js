@@ -138,8 +138,12 @@ export function initDb(dbPath) {
 
     -- Reactions. NOT in the mobile sync payload at all -- the Sync2 protobuf
     -- has no reaction field -- so these exist only from live listener events.
-    -- Keyed by (msgId, userId) because one person holds at most one reaction on
-    -- a message: reacting again replaces it, and removing sends an empty icon.
+    --
+    -- Keyed by (msgId, userId, ICON), because Zalo ACCUMULATES: one person can
+    -- hold several different reactions on the same message at once, and all of
+    -- them are displayed. Confirmed against the app -- three icons sent to one
+    -- message show as three. A (msgId, userId) key kept only the last one and
+    -- silently discarded the rest.
     CREATE TABLE IF NOT EXISTS reactions (
       id TEXT PRIMARY KEY,
       msgId TEXT,
@@ -164,6 +168,7 @@ export function initDb(dbPath) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(msgId);
+    CREATE INDEX IF NOT EXISTS idx_reactions_msg_user ON reactions(msgId, userId);
     CREATE INDEX IF NOT EXISTS idx_reactions_thread ON reactions(threadId);
     CREATE INDEX IF NOT EXISTS idx_cloud_thread ON cloud_items(threadId);
     CREATE INDEX IF NOT EXISTS idx_cloud_msg ON cloud_items(msgId);
@@ -870,11 +875,43 @@ export const MESSAGE_STATUS = {
  * (msgId, userId): reacting again replaces it, and Zalo signals removal by
  * sending an empty icon, which deletes the row rather than storing a blank.
  */
+/**
+ * A reaction type as a number, or null when Zalo did not send one.
+ *
+ * `Number.isFinite(Number(v))` is not enough on its own: `Number(null)` is 0,
+ * and 0 is a real reaction type (HAHA), so a missing type silently became a
+ * haha -- and a removal that named no type deleted the wrong row.
+ *
+ * @param {unknown} v
+ * @returns {number|null}
+ */
+function reactionType(v) {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
 export function upsertReaction(r) {
     if (!db) throw new Error("Database not initialized");
-    const id = `${r.msgId}:${r.userId}`;
+    // The icon is part of the identity: the same person holding both a heart
+    // and a haha on one message is two rows, which is what Zalo displays.
+    const id = `${r.msgId}:${r.userId}:${r.icon}`;
     if (!r.icon) {
-        return db.prepare("DELETE FROM reactions WHERE id = ?").run(id);
+        // A removal arrives with an empty icon, which does not say WHICH of
+        // several reactions to drop. When rType identifies one, drop that one;
+        // otherwise drop this person's reactions on that message entirely,
+        // because keeping a stale set is worse than losing a distinction Zalo
+        // did not give us. (No removal frame has been captured yet -- when one
+        // is, this is the branch to check against it.)
+        const rType = reactionType(r.rType);
+        if (rType !== null) {
+            return db
+                .prepare("DELETE FROM reactions WHERE msgId = ? AND userId = ? AND rType = ?")
+                .run(String(r.msgId), String(r.userId), rType);
+        }
+        return db
+            .prepare("DELETE FROM reactions WHERE msgId = ? AND userId = ?")
+            .run(String(r.msgId), String(r.userId));
     }
     return db
         .prepare(
@@ -890,8 +927,8 @@ export function upsertReaction(r) {
             threadId: r.threadId != null ? String(r.threadId) : null,
             userId: String(r.userId),
             icon: r.icon,
-            // 0 is a real reaction type (HAHA); `|| null` threw it away.
-            rType: Number.isFinite(Number(r.rType)) ? Number(r.rType) : null,
+            // 0 is a real reaction type (HAHA), and a missing one is not 0.
+            rType: reactionType(r.rType),
             source: r.source || "listen",
             timestamp: Number(r.timestamp) || Date.now(),
         });

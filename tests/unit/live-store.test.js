@@ -739,14 +739,30 @@ describe("storeLiveReaction", () => {
         assert.equal(getReactions({ msgId: "8289917724705" }).length, 0, "nothing under the notification id");
     });
 
-    it("keeps one row per person per message — reacting again replaces", () => {
+    it("keeps EVERY icon one person puts on a message — Zalo accumulates", () => {
+        // Confirmed against the app: three icons sent to one message show as
+        // three. A (msgId, userId) key kept only the last and dropped two.
         target();
         storeLiveReaction(reactEvent({}, { rIcon: "/-strong", rType: 3 }));
         storeLiveReaction(reactEvent({ msgId: "notif2" }, { rIcon: "/-heart", rType: 5 }));
         storeLiveReaction(reactEvent({ msgId: "notif3" }, { rIcon: ":>", rType: 0 }));
         const all = getReactions({ msgId: "m1" });
-        assert.equal(all.length, 1, "three reactions from one person on one message is one row");
-        assert.equal(all[0].icon, ":>", "the last one wins");
+        assert.equal(all.length, 3);
+        assert.deepEqual(all.map((r) => r.icon).sort(), ["/-heart", "/-strong", ":>"]);
+    });
+
+    it("is idempotent — the same icon twice is still one row", () => {
+        target();
+        storeLiveReaction(reactEvent({}, { rIcon: "/-heart", rType: 5 }));
+        storeLiveReaction(reactEvent({ msgId: "notif2" }, { rIcon: "/-heart", rType: 5 }));
+        assert.equal(getReactions({ msgId: "m1" }).length, 1);
+    });
+
+    it("keeps two people's identical icons apart", () => {
+        target();
+        storeLiveReaction(reactEvent({ uidFrom: "u2" }, { rIcon: "/-heart", rType: 5 }));
+        storeLiveReaction(reactEvent({ uidFrom: "u3", msgId: "notif2" }, { rIcon: "/-heart", rType: 5 }));
+        assert.equal(getReactions({ msgId: "m1" }).length, 2);
     });
 
     it("preserves rType 0, which is a real type (HAHA)", () => {
@@ -755,11 +771,23 @@ describe("storeLiveReaction", () => {
         assert.equal(getReactions({ msgId: "m1" })[0].rType, 0, "`|| null` threw a real value away");
     });
 
-    it("removes the reaction when the icon is empty", () => {
+    it("removes the reaction matching rType when the icon is empty", () => {
         target();
-        storeLiveReaction(reactEvent());
-        storeLiveReaction(reactEvent({ msgId: "notif2" }, { rIcon: "" }));
-        assert.equal(getReactions({ msgId: "m1" }).length, 0);
+        storeLiveReaction(reactEvent({}, { rIcon: "/-strong", rType: 3 }));
+        storeLiveReaction(reactEvent({ msgId: "n2" }, { rIcon: "/-heart", rType: 5 }));
+        // An empty icon is a removal; rType is the only thing naming which one.
+        storeLiveReaction(reactEvent({ msgId: "n3" }, { rIcon: "", rType: 3 }));
+        const left = getReactions({ msgId: "m1" });
+        assert.equal(left.length, 1);
+        assert.equal(left[0].icon, "/-heart", "only the named reaction is dropped");
+    });
+
+    it("drops all of that person's reactions when a removal names no type", () => {
+        target();
+        storeLiveReaction(reactEvent({}, { rIcon: "/-strong", rType: 3 }));
+        storeLiveReaction(reactEvent({ msgId: "n2" }, { rIcon: "/-heart", rType: 5 }));
+        storeLiveReaction(reactEvent({ msgId: "n3" }, { rIcon: "", rType: null }));
+        assert.equal(getReactions({ msgId: "m1" }).length, 0, "a stale set is worse than a lost distinction");
     });
 
     it("resolves by cMsgID when gMsgID is absent", () => {

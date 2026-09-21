@@ -26,6 +26,7 @@ import { initDb, insertMessage, upsertThread, setSyncState, runInTransaction } f
 import { ensureAssets, loadCodecs } from "./assets.js";
 import { classifySyncMessage } from "./message-types.js";
 import { resolveNonFriendDms } from "./gid.js";
+import { attachLiveStore } from "../live-store.js";
 
 /**
  * Lower bound of a "full history" sync: the beginning of time.
@@ -372,6 +373,17 @@ export class SyncV2 {
             }
         };
         L.ws.on("message", onMsg);
+
+        // Zalo Web does not freeze while a sync runs: new messages keep arriving
+        // on the same socket and keep being stored. A full-history run holds this
+        // socket for many minutes, so without this everything that landed during
+        // it was dropped -- a hole precisely where the sync promises completeness.
+        const detachLive = attachLiveStore(L, (what, detail) =>
+            onStatus({
+                phase: "live",
+                detail: `stored a live ${what}${detail?.threadId ? ` in ${detail.threadId}` : ""}`,
+            }),
+        );
 
         // Why the socket went away matters: Zalo's 3000 means "another session
         // took the account", anything else points elsewhere. Without this the
@@ -774,6 +786,9 @@ export class SyncV2 {
             await new Promise((r) => setTimeout(r, 1500));
             try {
                 L.ws.removeListener("message", onMsg);
+            } catch {}
+            try {
+                detachLive();
             } catch {}
         }
         return done(reason);

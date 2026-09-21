@@ -7,8 +7,14 @@
  *
  *   groups : {group_board}/api/board/list          -> notes + pinned + polls
  *            {group_board}/api/board/listReminder  -> reminders
- *   DMs    : {group_board}/api/board/oneone/list   -> reminders
+ *   DMs    : {group_board}/api/board/oneone/list   -> the SAME board kinds
  *            {friend_board}/api/friendboard/list   -> the friend board
+ *
+ * Boards are NOT a group-only feature. A 1-1 conversation has notes, pinned
+ * messages and reminders too, behind /api/board/oneone/* (list/create/update/
+ * remove, cmd 12430-12432). An earlier version of this module asked for
+ * reminders on a DM and nothing else, so every pinned message and note in a 1-1
+ * conversation was silently missing.
  *
  * The conversation *events* that announce these do arrive as messages — a
  * reminder shows up as msgType 24, a closed poll as msgType 26 — but those are
@@ -20,11 +26,59 @@
  * of the phone-backed restore — no confirmation is needed and nothing here
  * touches the WebSocket.
  */
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { ThreadType } from "zca-js";
 import { upsertBoardItem, upsertReminder } from "../db.js";
 
+const require = createRequire(import.meta.url);
+
 /** zca-js BoardType: what /api/board/list returns per item. */
 export const BOARD_TYPES = { 1: "note", 2: "pinned_message", 3: "poll" };
+
+let _utils = null;
+/** zca-js internals, located the same way ./gid.js does. */
+function zcaUtils() {
+    if (_utils) return _utils;
+    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
+    return _utils;
+}
+
+/**
+ * List a 1-1 conversation's board (notes, pinned messages, polls).
+ *
+ * zca-js exposes /api/board/oneone/list only through getListReminder, hardwired
+ * to board_type 1, so reminders were the only thing a DM ever returned. This
+ * asks the same endpoint for every board type, which is what Zalo Web does.
+ *
+ * @returns {Promise<{items: Array<object>}>}
+ */
+async function listOneOneBoard(api, threadId, page, pageSize) {
+    const zu = zcaUtils();
+    const base = `${api.zpwServiceMap.group_board[0]}/api/board/oneone/list`;
+    const call = zu.apiFactory()((_api, ctx, utils) => async () => {
+        const params = {
+            objectData: JSON.stringify({
+                uid: String(threadId),
+                board_type: 0, // 0 = every kind, not just reminders
+                page,
+                count: pageSize,
+                last_id: 0,
+                last_type: 0,
+            }),
+            imei: ctx.imei,
+        };
+        const enc = utils.encodeAES(JSON.stringify(params));
+        if (!enc) throw new Error("failed to encrypt oneone board params");
+        const resp = await utils.request(utils.makeURL(base, { params: enc }), { method: "GET" });
+        return utils.resolve(resp);
+    })(api.getContext(), api);
+
+    const raw = await call();
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const items = parsed?.items || parsed?.data?.items || (Array.isArray(parsed) ? parsed : []);
+    return { items };
+}
 
 /** Stringify an id Zalo may send as a number, or leave it null. */
 const str = (v) => (v === undefined || v === null ? null : String(v));
@@ -180,18 +234,21 @@ export async function syncBoards(opts = {}) {
             if (!t) return;
             const isGroup = t.type === "group";
 
-            // Notes / pinned messages / polls. Groups only: Zalo exposes no
-            // equivalent board listing for a 1-1 conversation.
-            if (boards && isGroup) {
+            // Notes / pinned messages / polls, for BOTH thread kinds. A group
+            // uses /api/board/list; a 1-1 uses /api/board/oneone/list, which
+            // takes the same board_type filter.
+            if (boards) {
                 for (let page = 1; page <= maxPages; page++) {
                     let resp;
                     try {
-                        resp = await api.getListBoard({ page, count: pageSize }, t.threadId);
+                        resp = isGroup
+                            ? await api.getListBoard({ page, count: pageSize }, t.threadId)
+                            : await listOneOneBoard(api, t.threadId, page, pageSize);
                     } catch (e) {
                         note(t.threadId, "board", e);
                         break;
                     }
-                    const items = resp?.items || [];
+                    const items = resp?.items || resp?.data?.items || [];
                     for (const item of items) {
                         const row = normalizeBoardItem(item, t.threadId, t.type);
                         if (!row) continue;

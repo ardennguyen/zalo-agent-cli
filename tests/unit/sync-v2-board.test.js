@@ -193,12 +193,22 @@ describe("syncBoards", () => {
         assert.equal(getBoardItems("g1", 3)[0].title, "Lunch where?");
     });
 
-    it("does not ask for a board on a DM", async () => {
-        // Zalo has no per-item board listing for 1-1 conversations.
+    it("asks for a DM board too, on the oneone endpoint rather than the group one", async () => {
+        // Boards are NOT group-only: a 1-1 conversation has notes, pinned
+        // messages and reminders behind /api/board/oneone/*. An earlier version
+        // asked DMs for reminders and nothing else, so every pinned message and
+        // note in a 1-1 conversation was silently missing.
         const api = stubApi({ board: [NOTE] });
-        await syncBoards({ api, threads: [{ threadId: "u1", type: "dm" }], delayMs: 0 });
-        assert.equal(api.calls.board.length, 0);
-        assert.equal(api.calls.reminder.length, 1);
+        const stats = await syncBoards({ api, threads: [{ threadId: "u1", type: "dm" }], delayMs: 0 });
+        assert.equal(api.calls.board.length, 0, "a DM must not use the GROUP board endpoint");
+        assert.equal(api.calls.reminder.length, 1, "reminders still come from the reminder endpoint");
+        // The stub carries no zpwServiceMap, so the oneone call fails - which is
+        // itself the proof that it was attempted at all.
+        assert.ok(stats.failed >= 1, "a DM board request should have been made");
+        assert.ok(
+            stats.failures.some((f) => f.what === "board"),
+            "the failure should be the board request",
+        );
     });
 
     it("routes reminders to the right thread type", async () => {

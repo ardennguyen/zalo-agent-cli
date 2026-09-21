@@ -363,8 +363,8 @@ export function registerListenCommand(program) {
 
                 // --- Reaction events ---
                 // Storage is NOT gated on --events. Reactions exist only on
-                // this socket -- the mobile sync payload has no reaction field,
-                // so one not captured live is unrecoverable -- and the default
+                // this socket -- the mobile sync payload has no reaction field
+                // -- and the default
                 // --events value does not include them, so gating the write
                 // meant a plain `zalo-agent listen` permanently lost every
                 // reaction it watched go past. --events decides what you SEE.

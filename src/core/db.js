@@ -137,7 +137,11 @@ export function initDb(dbPath) {
     );
 
     -- Reactions. NOT in the mobile sync payload at all -- the Sync2 protobuf
-    -- has no reaction field -- so these exist only from live listener events.
+    -- has no reaction field. They are NOT unrecoverable, though: the socket
+    -- serves them on cmd 610 (1-1) and 611 (group), which is how Zalo Web shows
+    -- them after a fresh login, so they arrive either live (cmd 612) or from
+    -- the sync-reactions command. (No backticks in this SQL: it sits inside a
+    -- JS template literal, so one would close it and break the module.)
     --
     -- Keyed by (msgId, userId, ICON), because Zalo ACCUMULATES: one person can
     -- hold several different reactions on the same message at once, and all of

@@ -12,7 +12,7 @@ separate suites with very different risk profiles:
 opens a socket and never reads your real `~/.zalo-agent-cli/`.
 
 ```bash
-npm test                      # 636 offline tests — no Zalo session needed
+npm test                      # 880 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -53,7 +53,8 @@ tests/
 ├── unit/                        # offline, pure logic + filesystem
 │   ├── accounts.test.js         credentials.test.js   lock.test.js
 │   ├── db.test.js               mcp-config.test.js    oa-client.test.js
-│   └── pure-helpers.test.js
+│   ├── image-metadata.test.js   pure-helpers.test.js
+│   └── sync-backfill.test.js    sync-freshness.test.js  sync-v2-decode.test.js
 ├── cli/                         # offline, drives the real binary
 │   ├── surface.test.js          # every command/subcommand/flag is registered
 │   └── validation.test.js       # every guard that fires before a network call
@@ -127,6 +128,9 @@ deliberate test update rather than a silent break for anyone piping to `jq`.
 | `unit/oa-client.test.js`      | OA storage is a _separate_ directory from personal creds, multi-OA namespacing, OAuth URL building, message-type path-injection guard                                   |
 | `unit/image-metadata.test.js` | `readImageMetadata()` across PNG/JPEG/GIF/WebP/BMP/TIFF, all 8 EXIF orientations, descriptive-throw contract, plus fixture SHA-256 integrity                            |
 | `unit/pure-helpers.test.js`   | every bank alias round-trips, `maskProxy` never leaks, `extractMessageText` priority + circular safety, fingerprint internal consistency, `isNewerVersion` semver edges |
+| `unit/sync-backfill.test.js`  | `backfillOverSocket()` against a fake listener: batch accumulation, per-thread-type routing, timeout/`request-failed` exits, gap resolution                             |
+| `unit/sync-freshness.test.js` | `checkSyncFreshness()` — the one-hour debounce, the `--force` override, and the pending-gap escape hatch that defeats the debounce                                      |
+| `unit/sync-v2-decode.test.js` | transfer-sync-v2 pure decode path: `splitChunks()` length-framing (including a declared length that overruns the buffer), `decodeFrame()` across `encrypt` 0/1/2/3      |
 | `cli/surface.test.js`         | **the full command manifest** — every group, subcommand and behavior-changing flag                                                                                      |
 | `cli/validation.test.js`      | every guard that fires before a network call                                                                                                                            |
 
@@ -158,27 +162,48 @@ outright and checked first. An id appearing in both lists fails the whole run.
 **3. Additive env gates.** A bare `npm test` cannot reach a network call; a
 bare `npm run test:e2e` cannot end your session.
 
-| Gate                        | Unlocks                                                                |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `ZALO_TEST_LIVE=1`          | tiers 1–4                                                              |
-| `+ ZALO_TEST_DESTRUCTIVE=1` | tier 5a–5c (group disperse + recreate, history wipe, reversible purge) |
-| `+ ZALO_TEST_END_SESSION=1` | tier 5d (real logout / purge — **requires a QR re-scan**)              |
+| Gate                        | Unlocks                                                                                   |
+| --------------------------- | ----------------------------------------------------------------------------------------- |
+| `ZALO_TEST_LIVE=1`          | tiers 1–4                                                                                 |
+| `+ ZALO_TEST_DESTRUCTIVE=1` | tier 5a–5d (conversation wipe, group disperse + recreate, history wipe, reversible purge) |
+| `+ ZALO_TEST_END_SESSION=1` | tier 5e (real logout / purge — **requires a QR re-scan**)                                 |
 
 `run-e2e.js` sets these for you based on its flags; you rarely set them by hand.
 
 `ZALO_TEST_SYNC_MOBILE` is the exception — `run-e2e.js` never sets it. It gates
-`sync-mobile --legacy`, the retired phone-transfer path, which is the only part
-of the command that still reaches a real device. Set it by hand, once, when the
-phone's owner is expecting it:
+`sync-mobile --legacy`, the retired phone-transfer path. Set it by hand, once,
+when the phone's owner is expecting it:
 
 ```bash
 ZALO_TEST_LIVE=1 ZALO_TEST_SYNC_MOBILE=1 node --test tests/e2e/tier3-mutate-restore.test.js
 ```
 
 `sync-mobile`'s default path needs no phone at all, and runs in tier 3 under
-plain `ZALO_TEST_LIVE=1`. Flag parsing and the no-account guard are covered
-offline in `tests/cli/validation.test.js`, and the backfill logic itself against
-a fake listener in `tests/unit/sync-backfill.test.js`.
+plain `ZALO_TEST_LIVE=1`.
+
+**`sync-mobile --transfer` has no automated coverage at any tier**, and that is
+deliberate. It is the one command whose whole purpose is to wake the owner's
+phone and wait for a human to tap "ĐỒNG BỘ NGAY" — there is nothing a test
+harness can assert without a person holding the device, and an unattended run
+just leaves an unanswered prompt. It lives in the [manual
+checklist](#sync) instead. What _is_ automated:
+
+| Layer                               | Covers                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `tests/cli/surface.test.js`         | that `--transfer` is registered at all (`FLAG_CONTRACT["sync-mobile"]`)                                 |
+| `tests/unit/sync-v2-decode.test.js` | the pure decode chain — `splitChunks()` length-framing, `decodeFrame()` across all four `encrypt` modes |
+| `tests/unit/sync-freshness.test.js` | the debounce that stops `--transfer` re-pinging the phone                                               |
+
+The socket backfill logic itself is covered against a fake listener in
+`tests/unit/sync-backfill.test.js`.
+
+> **Known gap.** `tests/cli/validation.test.js` has offline guards for `--force`
+> and `--legacy` (boolean-flag parsing, unknown-flag rejection, the no-account
+> exit) but **none for `--transfer`**. Nothing offline asserts that
+> `sync-mobile --transfer` stops at the account guard before opening a socket,
+> or that `--transfer --force` parses as two flags rather than `--transfer`
+> swallowing the next argument. Those are cheap to add and belong next to the
+> existing `--legacy` cases.
 
 ### Setup
 
@@ -205,8 +230,8 @@ cp tests/targets.example.json tests/targets.json
 npm run test:e2e                          # tiers 1–4 (default)
 node tests/run-e2e.js --tier 1            # a single tier
 node tests/run-e2e.js --through 3         # tiers 1–3
-node tests/run-e2e.js --destructive       # tiers 1–5c
-node tests/run-e2e.js --end-session       # tiers 1–5d  ⚠ QR re-scan needed
+node tests/run-e2e.js --destructive       # tiers 1–5d
+node tests/run-e2e.js --end-session       # tiers 1–5e  ⚠ QR re-scan needed
 node tests/run-e2e.js --keep-going        # don't stop at the first failing tier
 ```
 
@@ -257,24 +282,38 @@ group in a state that blocks its own cleanup.
 1. message deletes (`delete`, `undo`) — need the messages to still exist
 2. account-artifact deletes — independent of messages
 3. local cache — independent of the server
-4. **`conv delete` last** — it wipes the very history steps 1–2 operate on, so
-   anything after it would have nothing left to act against
+
+The two message deletes are **different operations** and both are asserted:
+`msg delete` removes a message from your own view only
+(`deleteMessage(dest, onlyMe=true)`), while `msg undo` recalls it for everyone
+(what the phone app calls "Thu hồi"). Both need the message's `cliMsgId`,
+which is client-generated and cannot be derived from the `msgId`.
+
+`conv delete` **used to be step 4 here** and has moved to tier 5a. Execution
+order was never the problem — blast radius was. Wiping a conversation
+destroys history with no undo, and tier 4 runs on a bare
+`npm run test:e2e`, which put permanent history loss behind `ZALO_TEST_LIVE=1`
+— the same gate that unlocks read-only tier 1.
 
 **Tier 5 — irreversible.** Split by how hard each step is to come back from:
 
-- **5a** `group disperse` → **immediately recreate** with the same name and
+- **5a** `conv delete` — permanently wipes a thread's history, for the group
+  and the DM. First within tier 5 because it costs messages, not the group.
+  The tier then asserts the thread survived: same name, same members, still
+  writable, and a second delete is idempotent.
+- **5b** `group disperse` → **immediately recreate** with the same name and
   members, then write the new id back into `targets.json`. The old group id
   dies forever; the group itself is restored. If disperse succeeds but
   recreation fails, the tier prints a loud `MANUAL ACTION REQUIRED` notice.
-- **5b** `logout --delete-history` — wipes `zalo.db` and `media/`; credentials
+- **5c** `logout --delete-history` — wipes `zalo.db` and `media/`; credentials
   survive and the cache rebuilds.
-- **5c** `logout --no-remote --purge` — exercises the **entire** purge
+- **5d** `logout --no-remote --purge` — exercises the **entire** purge
   filesystem path (credential deletion, account-dir wipe, registry drop) while
   leaving the _server_ session valid, because `--no-remote` skips `logoutV2()`.
   The suite backs the credential up first and restores it after, then asserts
   the session is actually back. This proves the purge code works **without
-  costing a QR re-scan** — which is why it is separate from 5d.
-- **5d** real `logout` then `logout --purge` — calls `logoutV2()`, which
+  costing a QR re-scan** — which is why it is separate from 5e.
+- **5e** real `logout` then `logout --purge` — calls `logoutV2()`, which
   genuinely invalidates the session at Zalo's servers. **Nothing restores
   this**; you must scan a QR code on your phone. Behind its own gate, last.
 

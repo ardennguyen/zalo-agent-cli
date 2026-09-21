@@ -4,9 +4,13 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { error, info, success, warning } from "../utils/output.js";
-import { parseIntOption } from "../utils/parse-options.js";
+import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { SyncManager } from "../core/sync.js";
-import { SyncV2 } from "../core/sync-v2/index.js";
+import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
+import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
+import { syncBoards } from "../core/sync-v2/board.js";
+import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
+import { initDb, getRecentThreads, countPendingAttachments } from "../core/db.js";
 
 /** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
 const CLOSE_DUPLICATE = 3000;
@@ -47,11 +51,38 @@ export function registerSyncCommands(program) {
             "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — mirroring Zalo Web, which only re-syncs when it thinks something is missing",
         )
         .option(
+            "-d, --days <n>",
+            "Restore only the last N days of history instead of everything (--transfer only). " +
+                "A narrower window asks the phone for fewer conversations, so the run is much shorter. " +
+                "Default: full history",
+            parseIntAtLeast(1),
+        )
+        .option(
             "-L, --legacy",
             "Try the retired pull_mobile_msg/get_crossdb phone-transfer endpoint instead. One attempt only — it pings your mobile app",
         )
+        .option(
+            "-M, --messages-only",
+            "Restore messages but do NOT fetch their media. By default a transfer sync downloads the attachments it " +
+                "recorded once the messages are stored, because a message whose photo or file is missing is only half " +
+                "restored. Use this when you want the history quickly and will run `sync-media` later",
+        )
         .option("-w, --wait <seconds>", "Give up after this long", parseIntOption, 30)
         .action(async (opts) => {
+            // --days is a property of the cmd 590 query the phone answers, so
+            // it only means anything on the transfer path. Say so instead of
+            // accepting the flag and quietly ignoring it.
+            if (opts.messagesOnly && !opts.transfer) {
+                error("--messages-only only applies to the real phone-backed restore.");
+                info("Run: zalo-agent sync-mobile --transfer --messages-only");
+                process.exit(1);
+            }
+            if (opts.days !== undefined && !opts.transfer) {
+                error("--days only applies to the real phone-backed restore.");
+                info(`Run: zalo-agent sync-mobile --transfer --days ${opts.days}`);
+                process.exit(1);
+            }
+
             const activeAcc = getActive();
             if (!activeAcc) {
                 error("No active account. Please login first.");
@@ -68,6 +99,258 @@ export function registerSyncCommands(program) {
             }
             await runSocketBackfill(activeAcc, opts);
         });
+
+    program
+        .command("sync-media")
+        .description(
+            "Download the attachments a mobile sync recorded. transfer-sync carries only CDN " +
+                "references, never file bytes, so this is the separate fetch step. Needs no phone " +
+                "confirmation. Expired links are retried once through Zalo's renewlink endpoint",
+        )
+        .option("-T, --thread <threadId>", "Only this conversation")
+        .option(
+            "-k, --kind <kinds>",
+            `Comma-separated kinds to fetch (${[...DOWNLOADABLE_KINDS].join(", ")}). Default: all of them`,
+        )
+        .option("-n, --limit <n>", "Consider at most this many messages", parseIntAtLeast(1), 500)
+        .option("-d, --days <n>", "Only attachments from the last N days", parseIntAtLeast(1))
+        .option("-c, --concurrency <n>", "Parallel downloads", parseIntAtLeast(1), 4)
+        .option("-m, --max-size <mb>", "Skip attachments larger than this many MB", parseIntAtLeast(1))
+        .option("--thumbs", "Also save thumbnails alongside the full media")
+        .option("--dry-run", "Report what would be fetched without downloading anything")
+        .action(async (opts) => {
+            await runMediaDownload(requireAccount(), opts);
+        });
+
+    program
+        .command("sync-boards")
+        .description(
+            "Sync notes, pinned messages, polls and reminders into the local cache. These are NOT " +
+                "part of the message stream — Zalo keeps them behind per-thread board endpoints — so " +
+                "they need this separate pass. Needs no phone confirmation",
+        )
+        .option("-T, --thread <threadId>", "Only this conversation")
+        .option("-n, --limit <n>", "Visit at most this many threads (most recent first)", parseIntAtLeast(1), 200)
+        .option("-c, --concurrency <n>", "Threads fetched in parallel", parseIntAtLeast(1), 3)
+        .option("--no-reminders", "Skip reminders")
+        .option("--no-boards", "Skip notes/pinned messages/polls")
+        .action(async (opts) => {
+            await runBoardSync(requireAccount(), opts);
+        });
+
+    program
+        .command("sync-cloud")
+        .description(
+            "Walk the zCloud ('Cloud của tôi') media index and record it locally — the same " +
+                "reconciliation Zalo Web runs when it receives a cloud verify event. Records where " +
+                "each backup lives; it does not download or decrypt cloud blobs",
+        )
+        .option("-p, --pages <n>", "Maximum pages to walk", parseIntAtLeast(1), 50)
+        .option("-s, --page-size <n>", "Items per page (Zalo Web uses 300)", parseIntAtLeast(1), 300)
+        .option("-r, --resume <noiseId>", "Resume from this cursor instead of starting over")
+        .action(async (opts) => {
+            await runCloudSync(requireAccount(), opts);
+        });
+}
+
+/** The active account, or exit with the same message every command uses. */
+function requireAccount() {
+    const acc = getActive();
+    if (!acc) {
+        error("No active account. Please login first.");
+        process.exit(1);
+    }
+    return acc;
+}
+
+/** threadId -> {name, type} for folder naming, from the local cache. */
+function threadNameMap(limit = 5000) {
+    const map = new Map();
+    try {
+        for (const t of getRecentThreads(limit)) {
+            map.set(String(t.threadId), { name: t.name || String(t.threadId), type: t.type });
+        }
+    } catch {
+        /* an empty cache just means folders fall back to thread ids */
+    }
+    return map;
+}
+
+const MB = 1024 * 1024;
+
+/** Download attachments recorded by an earlier sync. No phone, no socket. */
+async function runMediaDownload(activeAcc, opts) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    initDb(join(accountDir, "zalo.db"));
+
+    let kinds;
+    if (opts.kind) {
+        kinds = String(opts.kind)
+            .split(",")
+            .map((k) => k.trim().toLowerCase())
+            .filter(Boolean);
+        const unknown = kinds.filter((k) => !DOWNLOADABLE_KINDS.has(k));
+        if (unknown.length) {
+            error(`Unknown kind(s): ${unknown.join(", ")}`);
+            info(`Valid kinds: ${[...DOWNLOADABLE_KINDS].join(", ")}`);
+            process.exit(1);
+        }
+    }
+
+    const pending = countPendingAttachments(opts.thread || null);
+    if (!pending) {
+        success("No attachments waiting to be downloaded.");
+        info("Run `zalo-agent sync-mobile --transfer` first if you have not synced yet.");
+        process.exit(0);
+    }
+    info(`${pending} attachment(s) not yet downloaded.`);
+
+    // Media lives behind the same session as everything else, but only the
+    // renewal of an expired URL actually needs it — so a missing session
+    // degrades to "fetch what is still live" rather than failing outright.
+    let api = null;
+    try {
+        api = getApi();
+    } catch {
+        warning("No active session — expired links cannot be renewed on this run.");
+    }
+
+    let last = 0;
+    const stats = await downloadSyncedMedia({
+        api,
+        accountDir,
+        threadId: opts.thread,
+        kinds,
+        limit: opts.limit,
+        since: opts.days ? Date.now() - opts.days * 86400000 : undefined,
+        concurrency: opts.concurrency,
+        maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
+        thumbs: Boolean(opts.thumbs),
+        dryRun: Boolean(opts.dryRun),
+        threadNames: threadNameMap(),
+        onProgress: (p) => {
+            if (p.phase === "dry-run") info(p.detail);
+            // One line per 25 files keeps a 10k-file run readable.
+            if (p.phase === "saved" && (p.done === p.total || p.done - last >= 25)) {
+                last = p.done;
+                info(`  ${p.done}/${p.total} downloaded`);
+            }
+        },
+    });
+
+    if (opts.dryRun) {
+        success(`Dry run: ${stats.considered} attachment(s) would be fetched.`);
+        process.exit(0);
+    }
+    success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
+    if (stats.expired) {
+        warning(`${stats.expired} link(s) had expired.`);
+        info("Zalo only keeps media for a limited time; past that the file exists only on the sending device.");
+    }
+    if (stats.failed) {
+        warning(`${stats.failed} attachment(s) failed.`);
+        for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
+    }
+    process.exit(0);
+}
+
+/** Sync board items + reminders for the cached threads. No phone, no socket. */
+async function runBoardSync(activeAcc, opts) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    initDb(join(accountDir, "zalo.db"));
+
+    let api;
+    try {
+        api = getApi();
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
+
+    const all = getRecentThreads(opts.limit);
+    const threads = (opts.thread ? all.filter((t) => String(t.threadId) === String(opts.thread)) : all).map((t) => ({
+        threadId: String(t.threadId),
+        type: t.type,
+        name: t.name,
+    }));
+    if (!threads.length) {
+        warning(opts.thread ? `Thread ${opts.thread} is not in the local cache.` : "No threads in the local cache.");
+        info("Run `zalo-agent sync-mobile --transfer` first.");
+        process.exit(0);
+    }
+
+    info(`Checking ${threads.length} thread(s) — one request each, so this is paced deliberately.`);
+    let last = 0;
+    const stats = await syncBoards({
+        api,
+        threads,
+        boards: opts.boards !== false,
+        reminders: opts.reminders !== false,
+        concurrency: opts.concurrency,
+        onProgress: (p) => {
+            if (p.done === p.total || p.done - last >= 25) {
+                last = p.done;
+                info(`  ${p.done}/${p.total} threads`);
+            }
+        },
+    });
+
+    success(
+        `Stored ${stats.boardItems} board item(s) and ${stats.reminders} reminder(s) from ${stats.threads} thread(s).`,
+    );
+    if (stats.failed) {
+        warning(`${stats.failed} request(s) failed (left groups and blocked peers are expected here).`);
+        for (const f of stats.failures.slice(0, 5)) info(`  ${f.threadId} (${f.what}): ${f.reason}`);
+    }
+    process.exit(0);
+}
+
+/** Walk the zCloud index. No phone, no socket. */
+async function runCloudSync(activeAcc, opts) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    initDb(join(accountDir, "zalo.db"));
+
+    let api;
+    try {
+        api = getApi();
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
+
+    info("Walking the zCloud media index…");
+    const stats = await syncCloudIndex({
+        api,
+        lastNoiseId: opts.resume || "",
+        pageSize: opts.pageSize,
+        maxPages: opts.pages,
+        onProgress: (p) => info(`  page ${p.page}: ${p.items} item(s) so far`),
+    });
+
+    if (stats.failed && !stats.items) {
+        error("Could not read the cloud index.");
+        for (const f of stats.failures.slice(0, 3)) info(`  ${f.reason}`);
+        info("This account may not have zCloud enabled, or the endpoint may have changed.");
+        process.exit(1);
+    }
+    success(`Recorded ${stats.items} cloud item(s) across ${stats.pages} page(s).`);
+    if (stats.lastNoiseId) info(`Resume cursor: ${stats.lastNoiseId}`);
+    info("Cloud blobs are stored encrypted; this pass records where they live, it does not download them.");
+    process.exit(0);
+}
+
+/** Human-readable byte count for the download summary. */
+function formatBytes(n) {
+    if (!n) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0;
+    let v = n;
+    while (v >= 1024 && i < units.length - 1) {
+        v /= 1024;
+        i++;
+    }
+    return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 /**
@@ -110,7 +393,7 @@ function connectListener(api, waitMs) {
  * owner confirms on their phone. See src/core/sync-v2/index.js.
  *
  * @param {{ownId: string, name?: string}} activeAcc
- * @param {{force?: boolean, wait?: number}} opts
+ * @param {{force?: boolean, wait?: number, days?: number}} opts
  */
 async function runTransferSync(activeAcc, opts) {
     const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
@@ -125,12 +408,19 @@ async function runTransferSync(activeAcc, opts) {
         process.exit(1);
     }
 
-    // Debounce: skip a redundant run so we don't re-ping the phone, unless --force.
-    const freshness = syncManager.checkSyncFreshness({ force: opts.force });
+    const win = resolveSyncWindow(opts.days);
+
+    // Debounce: skip a redundant run so we don't re-ping the phone, unless
+    // --force. Asking for a wider window than the last run covered is not
+    // redundant, so that is allowed through (reason "wider-window").
+    const freshness = syncManager.checkSyncFreshness({ force: opts.force, coversFrom: win.from });
     if (freshness.skip) {
         success(`Already synced ${formatAge(freshness.ageMs)} ago — skipping to avoid re-pinging your phone.`);
         info("Pass --force to sync anyway.");
         process.exit(0);
+    }
+    if (freshness.reason === "wider-window") {
+        info(`Last sync covered less than this — syncing ${win.label} despite the recent run.`);
     }
 
     if (!acquireLock(accountDir)) {
@@ -154,25 +444,49 @@ async function runTransferSync(activeAcc, opts) {
             }
         } else {
             syncManager.markConnected();
+            info(`Restoring ${win.label}.`);
+            if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
             warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
             const sv = new SyncV2(api, activeAcc.ownId);
             const res = await sv.restore({
+                days: opts.days,
                 waitMs,
                 onStatus: ({ phase, detail }) => {
                     if (phase === "confirm") warning(detail);
                     else if (detail) info(`  ${detail}`);
                 },
             });
-            if (res.conversations === 0) {
+            if (res.conversations === 0 && res.reason === "empty-window") {
+                // The phone answered; the window is just empty. Different
+                // problem, different advice.
+                success(`Nothing to restore — no conversation activity in ${win.label}.`);
+                if (win.days) info("Pass a larger --days, or drop --days for full history.");
+                exitCode = 0;
+            } else if (res.reason === "partial") {
+                warning(
+                    `Partial restore: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) before the run was cut short.`,
+                );
+                info("What arrived is stored. Re-run with --force to fetch the rest.");
+                exitCode = 0;
+            } else if (res.conversations === 0) {
                 warning("No conversations returned — the phone prompt may not have been confirmed in time. Try again.");
                 exitCode = 0;
             } else {
                 success(
-                    `Restored ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) into the local cache.`,
+                    `Restored ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) (${win.label}) into the local cache.`,
                 );
                 info(
                     `Threads resolved to real ids/names: ${res.threadsMapped}; unresolved (non-friend or OA): ${res.threadsUnmapped}.`,
                 );
+                const breakdown = Object.entries(res.typeCounts || {})
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 8)
+                    .map(([t, c]) => `${t} ${c}`)
+                    .join(", ");
+                if (breakdown) info(`By type: ${breakdown}.`);
+                if (res.attachmentsSaved) {
+                    info(`${res.attachmentsSaved} message(s) carry media.`);
+                }
                 exitCode = 0;
             }
         }
@@ -186,7 +500,68 @@ async function runTransferSync(activeAcc, opts) {
         }
         releaseLock(accountDir);
     }
+
+    // Media is fetched only after the socket is closed and the lock released:
+    // it needs neither, and holding them through a multi-thousand-file
+    // download would block `listen` for no reason. A failure here never turns
+    // a successful restore into a failed run -- the messages are already safe.
+    if (exitCode === 0 && !opts.messagesOnly) {
+        try {
+            await fetchMediaAfterRestore(accountDir, api);
+        } catch (err) {
+            warning(`Media download stopped: ${err.message}`);
+            info("The messages are stored. Run `zalo-agent sync-media` to retry the files.");
+        }
+    } else if (exitCode === 0 && opts.messagesOnly) {
+        const pending = countPendingAttachments();
+        if (pending)
+            info(`${pending} attachment(s) left undownloaded (--messages-only). Run \`zalo-agent sync-media\`.`);
+    }
     process.exit(exitCode);
+}
+
+/**
+ * Download everything the restore just recorded.
+ *
+ * Deliberately uncapped: the point of a default-on fetch is that a restored
+ * conversation is complete, and a silent 500-file ceiling would leave it not
+ * obviously broken. Interrupting is safe -- `sync-media` resumes from whatever
+ * still has no localPath.
+ *
+ * @param {string} accountDir
+ * @param {object|null} api - needed only to renew expired links
+ */
+async function fetchMediaAfterRestore(accountDir, api) {
+    const pending = countPendingAttachments();
+    if (!pending) return;
+
+    info(`Downloading ${pending} attachment(s) — no phone confirmation needed. Ctrl-C is safe; it resumes.`);
+    let last = 0;
+    // Tallied here rather than read off the result: the result does not exist
+    // until the whole download resolves, so progress lines would all read 0 B.
+    let bytes = 0;
+    const stats = await downloadSyncedMedia({
+        api,
+        accountDir,
+        limit: Number.MAX_SAFE_INTEGER,
+        concurrency: 4,
+        threadNames: threadNameMap(),
+        onProgress: (p) => {
+            if (p.phase !== "saved") return;
+            bytes += p.bytes || 0;
+            if (p.done === p.total || p.done - last >= 50) {
+                last = p.done;
+                info(`  ${p.done}/${p.total} files (${formatBytes(bytes)})`);
+            }
+        },
+    });
+    success(`Downloaded ${stats.downloaded}/${stats.considered} file(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
+    if (stats.expired) {
+        warning(`${stats.expired} link(s) had expired and could not be renewed.`);
+        info("Zalo keeps media for a limited time; past that the file exists only on the sending device.");
+    }
+    if (stats.failed - stats.expired > 0) warning(`${stats.failed - stats.expired} other failure(s).`);
 }
 
 /**

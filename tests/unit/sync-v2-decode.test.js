@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import zlib from "node:zlib";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { decodeFrame, splitChunks } from "../../src/core/sync-v2/index.js";
+import { decodeFrame, splitChunks, isSessionComplete, resolveWaitBudget } from "../../src/core/sync-v2/index.js";
 
 /** Build a Zalo frame body `{encrypt, data}` the way the server would. */
 function makeFrame(obj, encrypt, keyB64) {
@@ -121,5 +121,76 @@ describe("sync-v2 splitChunks", () => {
         const h = Buffer.alloc(4);
         h.writeUInt32LE(9999, 0);
         assert.equal(splitChunks(Buffer.concat([h, Buffer.from("short")])).length, 0);
+    });
+});
+
+describe("isSessionComplete — when has the phone finished a round?", () => {
+    const S = (want, covered, sawLast = false) => ({
+        want: new Set(want),
+        covered: new Set(covered),
+        sawLast,
+    });
+
+    it("completes a message round once every partition is covered", () => {
+        assert.equal(isSessionComplete(S(["oneone/a", "group/b"], ["oneone/a", "group/b"])), true);
+    });
+
+    it("does NOT complete while a partition is still outstanding", () => {
+        assert.equal(isSessionComplete(S(["oneone/a", "group/b"], ["oneone/a"])), false);
+    });
+
+    it("completes on full coverage even when isLast never arrives", () => {
+        // The captured Zalo Web run ends its last message session with
+        // isLast=0 and disposes it anyway; waiting for isLast hangs the run.
+        assert.equal(isSessionComplete(S(["oneone/a"], ["oneone/a"], false)), true);
+    });
+
+    it("completes on isLast even before full coverage", () => {
+        assert.equal(isSessionComplete(S(["oneone/a", "group/b"], [], true)), true);
+    });
+
+    it("needs isLast for the conversation round, which has no partitions", () => {
+        assert.equal(isSessionComplete(S([], [])), false);
+        assert.equal(isSessionComplete(S([], [], true)), true);
+    });
+
+    it("tolerates extra coverage the request did not ask for", () => {
+        assert.equal(isSessionComplete(S(["oneone/a"], ["oneone/a", "oneone/z"])), true);
+    });
+
+    it("is false for a missing or empty state", () => {
+        assert.equal(isSessionComplete(null), false);
+        assert.equal(isSessionComplete({}), false);
+    });
+});
+
+describe("resolveWaitBudget — a missing budget must never mean 'do not wait'", () => {
+    it("uses the requested budget when it is sane", () => {
+        assert.equal(resolveWaitBudget(5000, 180000), 5000);
+    });
+
+    it("falls back when the budget is missing", () => {
+        // The regression: waitDone(id) with no budget produced Date.now()+undefined
+        // = NaN, so the wait loop exited immediately and a phone confirmation
+        // that had three minutes to arrive was given none.
+        assert.equal(resolveWaitBudget(undefined, 180000), 180000);
+    });
+
+    it("falls back on NaN, zero and negatives", () => {
+        for (const bad of [NaN, 0, -1, Infinity, "600", null]) {
+            assert.equal(resolveWaitBudget(bad, 180000), 180000, `budget ${String(bad)} should fall back`);
+        }
+    });
+
+    it("never returns something non-positive, even with a broken fallback", () => {
+        for (const bad of [undefined, NaN, 0, -5]) {
+            const v = resolveWaitBudget(undefined, bad);
+            assert.ok(Number.isFinite(v) && v > 0, `fallback ${String(bad)} produced ${v}`);
+        }
+    });
+
+    it("a resolved budget always yields a future deadline", () => {
+        const dl = Date.now() + resolveWaitBudget(undefined, undefined);
+        assert.ok(Date.now() < dl, "deadline must be in the future or the loop never waits");
     });
 });

@@ -103,6 +103,48 @@ describe("SyncManager sync-freshness debounce", () => {
         assert.equal(r.reason, "pending-gap");
     });
 
+    it("a narrow --days run does not suppress a later, wider one", () => {
+        const DAY = 24 * 60 * 60 * 1000;
+        const dayAgo = Date.now() - DAY;
+        manager.markSyncSuccess("transfer", { coveredFrom: dayAgo });
+        const last = manager.getLastSuccessfulSyncAt();
+
+        const r = manager.checkSyncFreshness({ now: last + 60_000, coversFrom: dayAgo - 30 * DAY });
+        assert.equal(r.skip, false, "asking for a month after syncing a day is not a redundant repeat");
+        assert.equal(r.reason, "wider-window");
+        assert.equal(r.coveredFrom, dayAgo);
+    });
+
+    it("still skips a repeat of the same or a narrower window", () => {
+        const DAY = 24 * 60 * 60 * 1000;
+        const monthAgo = Date.now() - 30 * DAY;
+        manager.markSyncSuccess("transfer", { coveredFrom: monthAgo });
+        const last = manager.getLastSuccessfulSyncAt();
+
+        assert.equal(manager.checkSyncFreshness({ now: last + 1000, coversFrom: monthAgo }).skip, true, "same window");
+        assert.equal(
+            manager.checkSyncFreshness({ now: last + 1000, coversFrom: Date.now() - DAY }).skip,
+            true,
+            "narrower window",
+        );
+    });
+
+    it("a path that records no window keeps the plain freshness behavior", () => {
+        manager.markSyncSuccess("backfill");
+        assert.equal(manager.getLastSyncCoveredFrom(), null);
+        const last = manager.getLastSuccessfulSyncAt();
+        const r = manager.checkSyncFreshness({ now: last + 1000, coversFrom: 0 });
+        assert.equal(r.skip, true, "unknown coverage must not turn every run into a wider-window run");
+        assert.equal(r.reason, "fresh");
+    });
+
+    it("a later window-less success clears a stale coverage marker", () => {
+        manager.markSyncSuccess("transfer", { coveredFrom: Date.now() - 24 * 60 * 60 * 1000 });
+        assert.ok(manager.getLastSyncCoveredFrom() > 0);
+        manager.markSyncSuccess("backfill");
+        assert.equal(manager.getLastSyncCoveredFrom(), null, "the marker must describe the LATEST success");
+    });
+
     it("a completed backfill that stored messages arms the debounce", async () => {
         const listener = new FakeListener();
         assert.equal(manager.getLastSuccessfulSyncAt(), null);

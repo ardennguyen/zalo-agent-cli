@@ -191,6 +191,9 @@ const TOP_LEVEL = [
     "whoami",
     "listen",
     "sync-mobile",
+    "sync-media",
+    "sync-boards",
+    "sync-cloud",
     ...Object.keys(COMMAND_SURFACE),
 ];
 
@@ -198,11 +201,22 @@ const TOP_LEVEL = [
 const FLAG_CONTRACT = {
     login: ["--proxy", "--name", "--qr-url", "--qr-port", "--credentials"],
     logout: ["--purge", "--delete-history", "--no-remote"],
-    "sync-mobile": ["--transfer", "--force", "--legacy", "--wait"],
+    "sync-mobile": ["--transfer", "--force", "--days", "--legacy", "--wait", "--messages-only"],
+    // The fetch/board/cloud passes are deliberately separate commands: only
+    // the message restore needs a phone confirmation, so none of these
+    // should ever be reachable only via sync-mobile.
+    "sync-media": ["--thread", "--kind", "--limit", "--days", "--concurrency", "--max-size", "--thumbs", "--dry-run"],
+    "sync-boards": ["--thread", "--limit", "--concurrency", "--no-reminders", "--no-boards"],
+    "sync-cloud": ["--pages", "--page-size", "--resume"],
     "msg send": ["--type", "--mention", "--style", "--md", "--react"],
     "msg send-qr-transfer": ["--bank", "--amount", "--content", "--template", "--type"],
     "msg send-bank": ["--bank", "--name", "--type"],
     "msg undo": ["--cli-msg-id", "--type"],
+    // The two deletes are different operations and must stay separately
+    // addressable: `msg delete` is one-sided (onlyMe), `msg undo` recalls
+    // for everyone. --cli-msg-id is required by both because Zalo's
+    // deleteMessage/undo both key on it.
+    "msg delete": ["--cli-msg-id", "--uid-from", "--everyone", "--type"],
     "msg history": ["--limit", "--scan", "--from-msg-id", "--timeout", "--no-cache", "--type"],
     "conv mute": ["--duration", "--type"],
     "conv recent": ["--limit", "--friends-only", "--groups-only"],

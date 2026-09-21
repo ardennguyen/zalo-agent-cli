@@ -39,6 +39,7 @@ zalo-agent logout                # Invalidate the session server-side, keep cred
 zalo-agent logout --delete-history  # ...and delete the local chat cache (zalo.db + media)
 zalo-agent logout --purge        # ...and wipe all local data + credentials + registry entry
 zalo-agent sync-mobile --transfer # Restore full history from the phone into zalo.db (one confirm)
+zalo-agent sync-media             # Re-run/resume the media fetch on its own (no phone confirm)
 zalo-agent update                # Self-update to the latest published version
 ```
 `logout --purge` and `account remove` refuse while a `listen` daemon still holds the account's `daemon.lock`.
@@ -96,12 +97,20 @@ Production-ready with pm2. Details: `references/listen-mode-guide.md`
 ### Local Cache & Sync
 ```bash
 zalo-agent msg history <ID> -n 50      # Reads from ~/.zalo-agent-cli/accounts/<ownId>/zalo.db
-zalo-agent sync-mobile --transfer      # REAL restore: pulls your history from the phone into zalo.db (one confirm on the phone)
-zalo-agent sync-mobile                 # Best-effort server socket backfill (usually empty; no phone contact)
-zalo-agent sync-mobile --force         # Skip the "already synced recently" debounce
-zalo-agent sync-mobile --legacy        # Retired endpoint (pings the phone, one attempt, recovers nothing)
+zalo-agent sync-mobile --transfer            # REAL restore: pulls your history from the phone into zalo.db (one confirm on the phone)
+zalo-agent sync-mobile --transfer --days 30  # ...only the last 30 days (default is full history) — far shorter run
+zalo-agent sync-mobile                       # Best-effort server socket backfill (usually empty; no phone contact)
+zalo-agent sync-mobile --force               # Skip the "already synced recently" debounce
+zalo-agent sync-mobile --transfer --messages-only    # ...history only, skip the media fetch
+zalo-agent sync-media                        # Re-run/resume the media fetch on its own — no phone needed
+zalo-agent sync-media --kind photo,video --dry-run   # ...plan the fetch without touching the network
+zalo-agent sync-boards                       # Notes, pinned messages, polls, reminders — NOT in the message stream
+zalo-agent sync-cloud                        # Walk the zCloud media index (records where backups live)
+zalo-agent sync-mobile --legacy              # Retired endpoint (pings the phone, one attempt, recovers nothing)
 ```
 **`sync-mobile --transfer` is the working full-history restore** (transfer-sync-v2, socket cmd 590/591). It sends ONE sync request the owner confirms on their phone, enumerates every conversation, requests message history in shards of ≤30, decrypts with Zalo's `libzproto` WASM (fetched+cached from Zalo's CDN on first run), decodes protobuf, maps each opaque conversation id to the real numeric threadId + name via the friend/group lists, and writes to `zalo.db`. The phone is the data source, so it **must** show a confirmation prompt — tap it. Non-friend/OA conversations may stay keyed by an opaque id. Needs `daemon.lock` (stop `listen` first); Zalo's one-web-session rule applies.
+
+`--days <n>` narrows the restore to the last *n* days; the default is full history (everything since 2024-01-01). The window applies to the conversation round as well, so a short window means fewer conversations, fewer shards and a much shorter run. It requires `--transfer`. The debounce records how far back the last run reached, so a narrow sync never suppresses a wider one.
 
 Without `--transfer`, `sync-mobile` only does a best-effort server socket backfill (cmd 510/511) that usually returns empty. The old phone-to-PC transfer is retired — `--legacy` still tries it once and recovers nothing.
 
@@ -167,7 +176,10 @@ zalo-agent mcp start --http <port> --auth <token>   # Bearer token auth (HTTP mo
 zalo-agent mcp start --http <port> --host 0.0.0.0   # Bind address (default 127.0.0.1)
 zalo-agent mcp start --config <path>                # Custom config (default ~/.zalo-agent-cli/mcp-config.json)
 ```
-The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <token>]`) is a pass-through that spawns exactly this command — so the tool surface below is identical whether the client talks to `zalo-agent mcp start` or to `zalo-mcp/mcp-server.js`.
+The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <token>]`) spawns exactly this command, so the **tool surface below is identical** whether the client talks to `zalo-agent mcp start` or to `zalo-mcp/mcp-server.js`. Two caveats that are not identical:
+
+- **The wrapper forwards only `--http` and `--auth`.** `--host` and `--config` are dropped silently — `node mcp-server.js --http 3847 --host 0.0.0.0` stays on `127.0.0.1`. For those, run `zalo-agent mcp start` directly.
+- **The wrapper serves the CLI version its `package.json` pins**, not the newest one. A tool added in a newer CLI is unreachable through the wrapper until that pin is bumped. Check with `node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"` inside the install.
 
 **MCP tools exposed (7 — personal account only):**
 
@@ -197,7 +209,8 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 | Friends, groups, conversations, profile | **none** | `zalo-agent --json friend\|group\|conv\|profile …` |
 | Polls, reminders, auto-reply, quick-msg, labels, catalog | **none** | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Multi-account, devices, export | **none** | `zalo-agent --json account …` |
-| Local cache / mobile sync | **none** | `zalo-agent --json sync-mobile`, `msg history` |
+| Restore history from the phone | **none** | `zalo-agent sync-mobile --transfer` (prompts the phone; not `--json`-friendly — it streams progress) |
+| Read cached history | `zalo_get_history` (live server fetch) | `zalo-agent --json msg history <id>` (reads `zalo.db`) |
 | Official Account (all 32 commands) | **none** | `zalo-agent --json oa …` |
 
 **Rule of thumb:** use an MCP tool when one exists; otherwise shell out to `zalo-agent <command> --json` and parse the JSON. Do not claim a capability is unavailable just because it has no MCP tool.
@@ -228,9 +241,12 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - Mentions only in groups (`-t 1`)
 - QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting out the 60s timeout
 - `sync-mobile --transfer` is the real history restore; it deliberately prompts the phone once (that is the data source). The default (no flag) and `--legacy` do not restore data
+- `--transfer` restores full history by default. Suggest `--days <n>` when the user only needs recent messages — on a busy account that is the difference between ~50 message rounds and a handful
 - 1 proxy per account recommended (shared proxies risk a ban)
 - Credentials: `~/.zalo-agent-cli/` (personal, 0600) and `~/.zalo-agent/` (OA, 0600) — different directories
 - Per-account data: `~/.zalo-agent-cli/accounts/<ownId>/` (`zalo.db`, `media/`, `sync/`, `daemon.lock`)
+- **Two media directories.** `listen`/`msg` download to `~/.zalo-agent-cli/accounts/<ownId>/media/`; the MCP server and `zalo_view_media` download to `~/.zalo-agent-cli/media/<threadName>/` (account-agnostic — the default behind `media.downloadDir`). Don't assume a path returned by `zalo_view_media` lives under `accounts/`
+- **`logout --purge` / `account remove` do NOT delete the MCP media directory.** They wipe `accounts/<ownId>/` only, so attachments the MCP server downloaded survive. If a user asks you to remove an account for privacy, say this and point at `~/.zalo-agent-cli/media/` — do not delete it on your own initiative
 - MCP buffer is in-memory only — it holds messages received since the server started; use `zalo_get_history` for anything older
 - MCP HTTP mode binds `127.0.0.1` unless `--host` says otherwise; always pair a non-loopback `--host` with `--auth`
 - OA token expires ~25h → use `oa refresh` to renew

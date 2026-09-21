@@ -4,7 +4,7 @@
  */
 
 import { resolve, join } from "path";
-import { getApi } from "../core/zalo-client.js";
+import { getApi, getOwnId } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
@@ -12,6 +12,43 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getMessages, insertMessage } from "../core/db.js";
 import { processMessageMedia } from "../core/media-downloader.js";
+
+/**
+ * Look one message up in the local SQLite cache by its global msgId.
+ *
+ * `deleteMessage` needs the message's `cliMsgId` and `uidFrom`, neither of
+ * which can be derived from the msgId — cliMsgId is client-generated and
+ * only the sender ever saw it. Anything `listen`, `sync` or a prior
+ * `msg history` wrote is here, so a message the CLI has seen before does
+ * not need the ids passed by hand. Returns null when the message is not
+ * cached (a just-sent one will not be — `msg send` does not write to the db).
+ *
+ * @param {string} threadId
+ * @param {string} msgId
+ * @returns {{cliMsgId: string, uidFrom: string}|null}
+ */
+function cachedMessageById(threadId, msgId) {
+    try {
+        const activeAcc = getActive();
+        if (!activeAcc) return null;
+        initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+        const row = getMessages(threadId, 200).find((m) => String(m.msgId) === String(msgId));
+        if (!row) return null;
+
+        let raw = {};
+        try {
+            raw = JSON.parse(row.raw_data || "{}");
+        } catch {
+            /* raw_data is optional */
+        }
+        const data = raw.data ?? raw;
+        const cliMsgId = data.cliMsgId;
+        const uidFrom = row.senderId ?? data.uidFrom;
+        return cliMsgId ? { cliMsgId: String(cliMsgId), uidFrom: uidFrom ? String(uidFrom) : null } : null;
+    } catch {
+        return null;
+    }
+}
 
 /**
  * TextStyle codes matching zca-js TextStyle enum.
@@ -629,12 +666,59 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("delete <msgId> <threadId>")
-        .description("Delete a message you sent")
+        .description("Delete a message from your own view only (use `msg undo` to recall it for everyone)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .option("-c, --cli-msg-id <id>", "Message's cliMsgId (get from `msg send --json` or `listen --json`)")
+        .option("--uid-from <id>", "Message sender's id (defaults to your own id)")
+        .option(
+            "--everyone",
+            "Delete for everyone instead of just you. Only valid for SOMEONE ELSE'S message in a group — " +
+                "Zalo rejects it for your own messages (use `msg undo`) and in private chats",
+        )
         .action(async (msgId, threadId, opts) => {
             try {
-                const result = await getApi().deleteMessage(msgId, threadId, Number(opts.type));
-                output(result, program.opts().json, () => success("Message deleted"));
+                const type = Number(opts.type);
+
+                // zca-js takes deleteMessage(dest, onlyMe) where dest is
+                // {data: {cliMsgId, msgId, uidFrom}, threadId, type} — NOT
+                // (msgId, threadId, type), which is what this used to pass.
+                // That shape put a bare string where `dest` belongs, so every
+                // invocation died on "Cannot read properties of undefined
+                // (reading 'uidFrom')" before reaching the network.
+                //
+                // cliMsgId is not derivable from msgId, exactly as for `undo`:
+                // it is a client-generated id that only the sender ever saw.
+                // Look in the local cache first, then insist the caller
+                // supplies it rather than guessing.
+                let cliMsgId = opts.cliMsgId;
+                let uidFrom = opts.uidFrom;
+
+                if (!cliMsgId || !uidFrom) {
+                    const cached = cachedMessageById(threadId, msgId);
+                    cliMsgId = cliMsgId || cached?.cliMsgId;
+                    uidFrom = uidFrom || cached?.uidFrom;
+                }
+                uidFrom = uidFrom || getOwnId();
+
+                if (!cliMsgId) {
+                    error(
+                        "cliMsgId is required to delete a message and is not in the local cache. " +
+                            "Pass --cli-msg-id (from `msg send --json` or `listen --json`).",
+                    );
+                    return;
+                }
+
+                const result = await getApi().deleteMessage(
+                    {
+                        data: { cliMsgId: String(cliMsgId), msgId: String(msgId), uidFrom: String(uidFrom) },
+                        threadId,
+                        type,
+                    },
+                    Boolean(opts.everyone) === false,
+                );
+                output(result, program.opts().json, () =>
+                    success(opts.everyone ? "Message deleted for everyone" : "Message deleted from your view"),
+                );
             } catch (e) {
                 error(e.message);
             }

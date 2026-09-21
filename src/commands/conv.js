@@ -42,25 +42,50 @@ async function newestMessageAnchor(api, threadId, type) {
     // Source 2: the local SQLite cache. Anything `listen`, `sync` or a prior
     // `msg history` wrote is here, and rows carry the raw payload, which is
     // where cliMsgId lives.
+    //
+    // Scan BACKWARDS rather than trusting the newest row, because not every
+    // writer stores a usable payload. `listen` and the `msg history` socket
+    // backfill persist the full frame (cliMsgId, uidFrom, …); the sync-v2
+    // restore persists a minimal shape with no cliMsgId at all. A thread
+    // whose newest rows came from sync-v2 therefore has a newest row that
+    // cannot anchor anything, while older rows can — measured on a live
+    // account as 10 usable rows out of 294 for a group, and 0 out of 43 for
+    // a DM that had never been history-fetched. Reading only row 1 turned
+    // that into "Could not determine the last message", and made the group
+    // path succeed or fail on the luck of which writer touched it last.
+    //
+    // Deleting backwards from a slightly older anchor leaves the newest few
+    // messages in place, which is the same staleness `msg history` already
+    // has (see agent/work/transfer-sync-v2/NOTES.md § Ordering) and is far
+    // better than refusing outright.
     try {
         const activeAcc = getActive();
         if (!activeAcc) return null;
         initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
-        const [row] = getMessages(threadId, 1);
-        if (!row) return null;
 
-        let raw = {};
-        try {
-            raw = JSON.parse(row.raw_data || "{}");
-        } catch {
-            /* raw_data is optional */
+        for (const row of getMessages(threadId, ANCHOR_SCAN_DEPTH)) {
+            let raw = {};
+            try {
+                raw = JSON.parse(row.raw_data || "{}");
+            } catch {
+                continue; // unparseable payload — try an older row
+            }
+            const data = raw.data ?? raw;
+            const anchor = toAnchor(row.senderId ?? data.uidFrom, data.cliMsgId, row.msgId ?? data.msgId);
+            if (anchor) return anchor;
         }
-        const data = raw.data ?? raw;
-        return toAnchor(row.senderId ?? data.uidFrom, data.cliMsgId, row.msgId ?? data.msgId);
+        return null;
     } catch {
         return null;
     }
 }
+
+/**
+ * How many cached rows to inspect before giving up on finding an anchor.
+ * Deep enough to see past a run of sync-v2 rows, shallow enough that the
+ * lookup stays a single cheap query.
+ */
+const ANCHOR_SCAN_DEPTH = 200;
 
 /** Build the deleteChat anchor triple, or null when any part is missing. */
 function toAnchor(ownerId, cliMsgId, globalMsgId) {
@@ -409,9 +434,15 @@ export function registerConvCommands(program) {
                 if (!ownerId || !cliMsgId || !globalMsgId) {
                     const anchor = await newestMessageAnchor(api, threadId, type);
                     if (!anchor) {
+                        // Reached when nothing in the local cache carries a
+                        // cliMsgId — typically a thread that has only ever
+                        // been touched by the sync-v2 restore. One history
+                        // fetch populates the full frames and fixes it, so
+                        // name that rather than only the manual escape hatch.
                         error(
-                            "Could not determine the last message to delete backwards from. " +
-                                "Pass --owner-id, --cli-msg-id and --global-msg-id explicitly.",
+                            "Could not determine the last message to delete backwards from — no cached message " +
+                                `for this thread carries a cliMsgId. Run \`zalo-agent msg history -t ${type} ${threadId}\` ` +
+                                "first, or pass --owner-id, --cli-msg-id and --global-msg-id explicitly.",
                         );
                         return;
                     }

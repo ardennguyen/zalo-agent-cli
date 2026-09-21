@@ -220,6 +220,24 @@ export function isSessionComplete(state) {
     return (state.covered?.size ?? 0) >= want;
 }
 
+/**
+ * The id a synced message should be stored under.
+ *
+ * `globalId` is the server id and the one every other path names a message by
+ * (a reaction's `gMsgID`, a removal's `globalDelMsgId`). It is absent on some
+ * messages, and jspb renders an absent uint64 as the string "0" — truthy — so
+ * a plain `globalId || clientId` stored them all under the literal id "0",
+ * where they overwrote one another through insertMessage's upsert.
+ *
+ * @param {object} msg - a decoded Sync2.Message.Message
+ * @returns {string}
+ */
+function syncMsgId(msg) {
+    const gid = msg?.globalId;
+    if (gid !== undefined && gid !== null && String(gid) !== "0" && String(gid) !== "") return String(gid);
+    return String(msg?.clientId ?? "");
+}
+
 export class SyncV2 {
     /**
      * @param {object} api - a logged-in zca-js API (from getApi()).
@@ -742,7 +760,17 @@ export class SyncV2 {
                                             lastClientId: cm.lastClientId,
                                         });
                                         insertMessage({
-                                            msgId: String(msg.globalId || msg.clientId),
+                                            // jspb renders an unset uint64 as
+                                            // the STRING "0", which is truthy,
+                                            // so `globalId || clientId` kept it
+                                            // and every message without a
+                                            // global id collided on the primary
+                                            // key "0", overwriting each other.
+                                            // 0 means absent here, exactly as
+                                            // it does in a removal's
+                                            // globalDelMsgId and a reaction's
+                                            // gMsgID.
+                                            msgId: syncMsgId(msg),
                                             threadId,
                                             senderId: String(msg.senderId || ""),
                                             senderName: "",

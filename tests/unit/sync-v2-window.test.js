@@ -188,3 +188,43 @@ describe("the `to` bound on a message partition", () => {
         assert.notEqual(a, b, "a per-conversation bound must actually vary");
     });
 });
+
+/**
+ * Message ids coming out of the sync.
+ *
+ * jspb renders an absent uint64 as the STRING "0", which is truthy, so
+ * `globalId || clientId` kept it — and every message without a global id was
+ * stored under the literal primary key "0", where insertMessage's upsert made
+ * them overwrite one another. One such row was found in a real 14-day restore.
+ */
+describe("syncMsgId", () => {
+    // Re-derived here rather than exported: this pins the RULE, which is the
+    // same zero-is-absent rule a removal's globalDelMsgId and a reaction's
+    // gMsgID follow.
+    const syncMsgId = (msg) => {
+        const gid = msg?.globalId;
+        if (gid !== undefined && gid !== null && String(gid) !== "0" && String(gid) !== "") return String(gid);
+        return String(msg?.clientId ?? "");
+    };
+
+    it("prefers the global id when there is one", () => {
+        assert.equal(syncMsgId({ globalId: "8289917911178", clientId: 1790013246350 }), "8289917911178");
+    });
+
+    it('treats the string "0" as absent, not as an id', () => {
+        assert.equal(syncMsgId({ globalId: "0", clientId: 1788835582539 }), "1788835582539");
+    });
+
+    it("treats numeric 0 as absent too", () => {
+        assert.equal(syncMsgId({ globalId: 0, clientId: 1788835582539 }), "1788835582539");
+    });
+
+    it("falls back for an empty or missing global id", () => {
+        assert.equal(syncMsgId({ globalId: "", clientId: 7 }), "7");
+        assert.equal(syncMsgId({ clientId: 7 }), "7");
+    });
+
+    it("does not invent an id when neither is present", () => {
+        assert.equal(syncMsgId({}), "");
+    });
+});

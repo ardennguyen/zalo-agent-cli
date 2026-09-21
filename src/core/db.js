@@ -897,18 +897,12 @@ export function upsertReaction(r) {
     // and a haha on one message is two rows, which is what Zalo displays.
     const id = `${r.msgId}:${r.userId}:${r.icon}`;
     if (!r.icon) {
-        // A removal arrives with an empty icon, which does not say WHICH of
-        // several reactions to drop. When rType identifies one, drop that one;
-        // otherwise drop this person's reactions on that message entirely,
-        // because keeping a stale set is worse than losing a distinction Zalo
-        // did not give us. (No removal frame has been captured yet -- when one
-        // is, this is the branch to check against it.)
-        const rType = reactionType(r.rType);
-        if (rType !== null) {
-            return db
-                .prepare("DELETE FROM reactions WHERE msgId = ? AND userId = ? AND rType = ?")
-                .run(String(r.msgId), String(r.userId), rType);
-        }
+        // Removal is ALL-OR-NOTHING, measured against a real frame: un-reacting
+        // sends rIcon "" with rType -1 -- a sentinel, not one of the types to
+        // match -- and the app offers no way to drop one of several icons. An
+        // earlier build read that -1 as a type and deleted WHERE rType = -1,
+        // which matched nothing, so a removal silently left the reactions in
+        // place.
         return db
             .prepare("DELETE FROM reactions WHERE msgId = ? AND userId = ?")
             .run(String(r.msgId), String(r.userId));

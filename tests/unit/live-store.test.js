@@ -771,23 +771,39 @@ describe("storeLiveReaction", () => {
         assert.equal(getReactions({ msgId: "m1" })[0].rType, 0, "`|| null` threw a real value away");
     });
 
-    it("removes the reaction matching rType when the icon is empty", () => {
+    it("clears every icon on the message when un-reacted — the captured shape is rIcon '' with rType -1", () => {
+        // Zalo's removal is all-or-nothing: the app has no way to drop one of
+        // several icons, and the frame carries rType -1 as a SENTINEL. Matching
+        // it as a type deleted nothing and left three stale reactions behind.
         target();
         storeLiveReaction(reactEvent({}, { rIcon: "/-strong", rType: 3 }));
         storeLiveReaction(reactEvent({ msgId: "n2" }, { rIcon: "/-heart", rType: 5 }));
-        // An empty icon is a removal; rType is the only thing naming which one.
-        storeLiveReaction(reactEvent({ msgId: "n3" }, { rIcon: "", rType: 3 }));
-        const left = getReactions({ msgId: "m1" });
-        assert.equal(left.length, 1);
-        assert.equal(left[0].icon, "/-heart", "only the named reaction is dropped");
+        storeLiveReaction(reactEvent({ msgId: "n3" }, { rIcon: ":>", rType: 0 }));
+        assert.equal(getReactions({ msgId: "m1" }).length, 3);
+        storeLiveReaction(reactEvent({ msgId: "n4" }, { rIcon: "", rType: -1 }));
+        assert.equal(getReactions({ msgId: "m1" }).length, 0);
     });
 
-    it("drops all of that person's reactions when a removal names no type", () => {
+    it("clears them whatever rType a removal carries", () => {
         target();
         storeLiveReaction(reactEvent({}, { rIcon: "/-strong", rType: 3 }));
-        storeLiveReaction(reactEvent({ msgId: "n2" }, { rIcon: "/-heart", rType: 5 }));
-        storeLiveReaction(reactEvent({ msgId: "n3" }, { rIcon: "", rType: null }));
-        assert.equal(getReactions({ msgId: "m1" }).length, 0, "a stale set is worse than a lost distinction");
+        storeLiveReaction(reactEvent({ msgId: "n2" }, { rIcon: "", rType: null }));
+        assert.equal(getReactions({ msgId: "m1" }).length, 0);
+    });
+
+    it("a removal touches only that person, on only that message", () => {
+        target();
+        storeLiveMessage(liveMsg({}, { msgId: "m2", msgType: "webchat", content: "other" }));
+        storeLiveReaction(reactEvent({ uidFrom: "u2" }, { rIcon: "/-heart", rType: 5 }));
+        storeLiveReaction(reactEvent({ uidFrom: "u3", msgId: "n2" }, { rIcon: "/-heart", rType: 5 }));
+        storeLiveReaction(
+            reactEvent({ uidFrom: "u2", msgId: "n3" }, { rIcon: "/-heart", rType: 5, rMsg: [{ gMsgID: "m2" }] }),
+        );
+        storeLiveReaction(reactEvent({ uidFrom: "u2", msgId: "n4" }, { rIcon: "", rType: -1 }));
+        const left = getReactions({ msgId: "m1" });
+        assert.equal(left.length, 1, "u3's reaction survives");
+        assert.equal(left[0].userId, "u3");
+        assert.equal(getReactions({ msgId: "m2" }).length, 1, "u2's reaction on another message survives");
     });
 
     it("resolves by cMsgID when gMsgID is absent", () => {

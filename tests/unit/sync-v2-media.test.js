@@ -724,11 +724,14 @@ describe("pruneDownloadedMedia", () => {
         assert.equal(still.text, "[photo]", "and keep its text");
     });
 
-    it("clears localPath so the row can be fetched again", async () => {
+    it("clears localPath but does NOT silently requeue the row", async () => {
+        // Clearing localPath alone would put the row straight back in the
+        // download queue, so the next sync would re-fetch exactly what was just
+        // deleted on purpose. The prune is recorded so that cannot happen.
         const id = await downloaded(40);
         await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
         assert.equal(getMessages("t1").find((m) => m.msgId === id).localPath, null);
-        assert.equal(countPendingAttachments(), 1, "pruned media goes back in the queue");
+        assert.equal(countPendingAttachments(), 0, "a pruned row is not pending work");
     });
 
     it("dry run reports without deleting", async () => {
@@ -765,5 +768,52 @@ describe("pruneDownloadedMedia", () => {
             const s = await pruneDownloadedMedia({ olderThanDays: bad, now: NOW });
             assert.equal(s.deleted, 0, `olderThanDays=${String(bad)} must delete nothing`);
         }
+    });
+});
+
+describe("pruning is a decision, not a gap to refill", () => {
+    const DAY = 86400000;
+    const NOW = 1_760_000_000_000;
+
+    const downloadedThenPruned = async () => {
+        row({ timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
+        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
+    };
+
+    it("does not re-download pruned media on a later run", async () => {
+        // Prune clears localPath to requeue the row, so without a marker the
+        // very next sync silently undoes the cleanup.
+        await downloadedThenPruned();
+        const again = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        assert.equal(again.considered, 0, "a pruned attachment must stay pruned");
+        assert.equal(again.downloaded, 0);
+    });
+
+    it("excludes pruned media from the pending count", async () => {
+        await downloadedThenPruned();
+        assert.equal(countPendingAttachments(), 0, "pruned media is not 'pending'");
+    });
+
+    it("re-fetches only when explicitly asked", async () => {
+        await downloadedThenPruned();
+        const back = await downloadSyncedMedia({ accountDir: dir, limit: 50, includePruned: true });
+        assert.equal(back.downloaded, 1, "--include-pruned should bring it back");
+    });
+
+    it("clears the marker once the file is downloaded again", async () => {
+        await downloadedThenPruned();
+        await downloadSyncedMedia({ accountDir: dir, limit: 50, includePruned: true });
+        // The file is back, so the earlier removal no longer applies: an
+        // ordinary run must now treat it like any other downloaded row.
+        const after = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        assert.equal(after.considered, 0, "already downloaded, nothing to do");
+        assert.ok(getMessages("t1")[0].localPath, "and it has a path again");
+    });
+
+    it("leaves never-pruned media fetchable as normal", async () => {
+        row({ timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
+        const s = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        assert.equal(s.downloaded, 1);
     });
 });

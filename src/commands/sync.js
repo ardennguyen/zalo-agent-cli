@@ -146,6 +146,11 @@ export function registerSyncCommands(program) {
             "--all-history",
             "Consider every attachment, not just those inside the window the last mobile sync covered",
         )
+        .option(
+            "--include-pruned",
+            "Also re-fetch media you previously pruned. Pruning is treated as a decision, so it is " +
+                "skipped by automatic fetches until you ask for it back",
+        )
         .option("--dry-run", "Report what would be fetched without downloading anything")
         .action(async (opts) => {
             if (opts.prune !== undefined) {
@@ -276,6 +281,7 @@ async function runMediaDownload(activeAcc, opts) {
         maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
         timeoutMs: (opts.timeout || 60) * 1000,
         thumbs: Boolean(opts.thumbs),
+        includePruned: Boolean(opts.includePruned),
         dryRun: Boolean(opts.dryRun),
         threadNames: threadNameMap(),
         onProgress: (p) => {
@@ -599,7 +605,7 @@ async function runTransferSync(activeAcc, opts) {
     // a successful restore into a failed run -- the messages are already safe.
     if (exitCode === 0 && !opts.messagesOnly) {
         try {
-            await fetchMediaAfterRestore(accountDir, api);
+            await fetchMediaAfterRestore(accountDir, api, win.from);
         } catch (err) {
             warning(`Media download stopped: ${err.message}`);
             info("The messages are stored. Run `zalo-agent sync-media` to retry the files.");
@@ -615,7 +621,8 @@ async function runTransferSync(activeAcc, opts) {
 /**
  * Download everything the restore just recorded.
  *
- * Deliberately uncapped: the point of a default-on fetch is that a restored
+ * Scoped to the window just synced and never to pruned media, but otherwise
+ * uncapped: the point of a default-on fetch is that a restored
  * conversation is complete, and a silent 500-file ceiling would leave it not
  * obviously broken. Interrupting is safe -- `sync-media` resumes from whatever
  * still has no localPath.
@@ -623,7 +630,7 @@ async function runTransferSync(activeAcc, opts) {
  * @param {string} accountDir
  * @param {object|null} api - needed only to renew expired links
  */
-async function fetchMediaAfterRestore(accountDir, api) {
+async function fetchMediaAfterRestore(accountDir, api, since) {
     const pending = countPendingAttachments();
     if (!pending) return;
 
@@ -636,6 +643,12 @@ async function fetchMediaAfterRestore(accountDir, api) {
         api,
         accountDir,
         limit: Number.MAX_SAFE_INTEGER,
+        // Only media inside the window this run actually covered, and never
+        // anything deliberately pruned. Without both, a sync silently undoes a
+        // `sync-media --prune`: pruning clears localPath to requeue the row, so
+        // an unscoped fetch re-downloads exactly what was just deleted.
+        since: Number.isFinite(since) && since > 0 ? since : undefined,
+        includePruned: false,
         concurrency: 4,
         threadNames: threadNameMap(),
         onProgress: (p) => {

@@ -11,7 +11,8 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { initDb, insertMessage, upsertThread } from "../core/db.js";
-import { processMessageMedia } from "../core/media-downloader.js";
+import { storeLiveReaction, storeLiveUndo } from "../core/live-store.js";
+import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { SyncManager } from "../core/sync.js";
 
@@ -226,13 +227,6 @@ export function registerListenCommand(program) {
                         heartbeat();
 
                         try {
-                            const mForMedia = {
-                                msgId: String(msg.data.msgId),
-                                raw_data: typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent),
-                                type: msgType || "attachment",
-                            };
-                            const mediaProcessed = await processMessageMedia(mForMedia);
-
                             // One vocabulary for both capture paths: a photo is
                             // `photo` whether it arrived live or from a mobile
                             // sync, and it carries the same attachment shape, so
@@ -254,8 +248,33 @@ export function registerListenCommand(program) {
                                 type: info.type,
                                 raw_data: info.raw,
                                 has_attachment: info.hasAttachment,
-                                localPath: mediaProcessed.localPath || null,
+                                msgStatus: msg.data.status ?? msg.data.msgStatus,
                             });
+                            // Fetch through the SAME downloader the mobile sync
+                            // uses, rather than the old flat one: it gets the
+                            // request deadline, the expiry-vs-throttling
+                            // classification and the per-thread folders. The row
+                            // is already stored with has_attachment, so the
+                            // downloader finds it by query. Fire and forget --
+                            // a slow CDN must never stall event processing.
+                            if (info.hasAttachment) {
+                                downloadSyncedMedia({
+                                    api,
+                                    accountDir,
+                                    threadId: String(msg.threadId),
+                                    limit: 5,
+                                    concurrency: 2,
+                                    threadNames: new Map([
+                                        [
+                                            String(msg.threadId),
+                                            {
+                                                name: String(msg.data.dName || msg.threadId),
+                                                type: msg.type === THREAD_USER ? "dm" : "group",
+                                            },
+                                        ],
+                                    ]),
+                                }).catch((err) => console.error(`[listen] media download failed: ${err.message}`));
+                            }
                         } catch (err) {
                             console.error(`[listen] DB Insert failed: ${err.message}`);
                         }
@@ -319,8 +338,30 @@ export function registerListenCommand(program) {
                             },
                             `Reaction in ${reaction.threadId}`,
                         );
+                        // Reactions exist ONLY here: the mobile sync payload has
+                        // no reaction field, so an unstored one is gone for good.
+                        const stored = storeLiveReaction(reaction);
+                        if (!stored.stored && stored.reason) {
+                            console.error(`[listen] reaction not stored: ${stored.reason}`);
+                        }
                     });
                 }
+
+                // --- Undo / recall ---
+                // Always on, regardless of --events. A recall is the sender
+                // withdrawing a message; a cache that keeps the text readable
+                // afterwards is retaining something they took back. This is the
+                // one event that must never be opt-in.
+                api.listener.on("undo", (u) => {
+                    const d = u?.data || {};
+                    const target = String(d.globalMsgId ?? d.msgId ?? "");
+                    emitEvent(
+                        { event: "undo", threadId: u?.threadId, isSelf: u?.isSelf, msgId: target },
+                        `Recalled message ${target} in ${u?.threadId}`,
+                    );
+                    const r = storeLiveUndo(u);
+                    if (!r.stored && r.reason) console.error(`[listen] recall not applied: ${r.reason}`);
+                });
 
                 // --- Lifecycle events (MUST be on same listener for reconnect to work) ---
                 api.listener.on("connected", () => {

@@ -20,7 +20,8 @@ export function initDb(dbPath) {
       type TEXT,
       raw_data TEXT,
       localPath TEXT,
-      has_attachment INTEGER DEFAULT 0
+      has_attachment INTEGER DEFAULT 0,
+      msgStatus INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS threads (
@@ -133,6 +134,35 @@ export function initDb(dbPath) {
       sync_timestamp INTEGER
     );
 
+    -- Reactions. NOT in the mobile sync payload at all -- the Sync2 protobuf
+    -- has no reaction field -- so these exist only from live listener events.
+    -- Keyed by (msgId, userId) because one person holds at most one reaction on
+    -- a message: reacting again replaces it, and removing sends an empty icon.
+    CREATE TABLE IF NOT EXISTS reactions (
+      id TEXT PRIMARY KEY,
+      msgId TEXT,
+      threadId TEXT,
+      userId TEXT,
+      icon TEXT,
+      rType INTEGER,
+      source TEXT,
+      timestamp INTEGER
+    );
+
+    -- Conversation-level state: pinned, unread-marked. Like reactions, none of
+    -- this travels in the sync payload; it comes from REST reads and live
+    -- events. Applies to 1-1 conversations as much as to groups.
+    CREATE TABLE IF NOT EXISTS conv_state (
+      threadId TEXT PRIMARY KEY,
+      pinned INTEGER,
+      pinnedAt INTEGER,
+      unreadMarked INTEGER,
+      unreadMarkedAt INTEGER,
+      updatedAt INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(msgId);
+    CREATE INDEX IF NOT EXISTS idx_reactions_thread ON reactions(threadId);
     CREATE INDEX IF NOT EXISTS idx_cloud_thread ON cloud_items(threadId);
     CREATE INDEX IF NOT EXISTS idx_cloud_msg ON cloud_items(msgId);
     CREATE INDEX IF NOT EXISTS idx_messages_thread_ts ON messages(threadId, timestamp DESC);
@@ -163,6 +193,13 @@ export function initDb(dbPath) {
     } catch {}
     try {
         db.exec("ALTER TABLE threads ADD COLUMN lastClientId TEXT");
+    } catch {}
+    // Sync2.Message.MessageStatus: 0 unspecified, 1 fail, 2 sending, 3 sent,
+    // 4 received, 5 seen. The mobile sync carries this per message -- it is the
+    // only place delivery/read state arrives -- so it gets a real column rather
+    // than living unnamed inside raw_data.
+    try {
+        db.exec("ALTER TABLE messages ADD COLUMN msgStatus INTEGER");
     } catch {}
 
     return db;
@@ -240,15 +277,18 @@ export function insertMessage(msg) {
     if (!db) throw new Error("Database not initialized");
 
     const stmt = db.prepare(`
-    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment)
-    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment)
+    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
+    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
     ON CONFLICT(msgId) DO UPDATE SET
       text = excluded.text,
       timestamp = excluded.timestamp,
       type = excluded.type,
       raw_data = excluded.raw_data,
       localPath = COALESCE(excluded.localPath, messages.localPath),
-      has_attachment = excluded.has_attachment
+      has_attachment = excluded.has_attachment,
+      -- Never regress delivery state: a re-sync of an older snapshot must not
+      -- turn a seen message back into merely received.
+      msgStatus = MAX(COALESCE(excluded.msgStatus, 0), COALESCE(messages.msgStatus, 0))
   `);
 
     const raw_data =
@@ -265,6 +305,7 @@ export function insertMessage(msg) {
         raw_data: raw_data,
         localPath: msg.localPath || null,
         has_attachment: msg.has_attachment ? 1 : 0,
+        msgStatus: Number.isFinite(Number(msg.msgStatus)) ? Number(msg.msgStatus) : null,
     });
 }
 
@@ -589,6 +630,108 @@ export function getCloudItems(threadId = null, limit = 500) {
 export function getCloudItemByMsgId(msgId) {
     if (!db) throw new Error("Database not initialized");
     return db.prepare("SELECT * FROM cloud_items WHERE msgId = ? LIMIT 1").get(String(msgId)) || null;
+}
+
+/** Sync2.Message.MessageStatus, the only place delivery/read state arrives. */
+export const MESSAGE_STATUS = {
+    0: "unspecified",
+    1: "failed",
+    2: "sending",
+    3: "sent",
+    4: "received",
+    5: "seen",
+};
+
+/**
+ * Record a reaction.
+ *
+ * One person holds at most one reaction per message, so the key is
+ * (msgId, userId): reacting again replaces it, and Zalo signals removal by
+ * sending an empty icon, which deletes the row rather than storing a blank.
+ */
+export function upsertReaction(r) {
+    if (!db) throw new Error("Database not initialized");
+    const id = `${r.msgId}:${r.userId}`;
+    if (!r.icon) {
+        return db.prepare("DELETE FROM reactions WHERE id = ?").run(id);
+    }
+    return db
+        .prepare(
+            `INSERT INTO reactions (id, msgId, threadId, userId, icon, rType, source, timestamp)
+       VALUES (@id, @msgId, @threadId, @userId, @icon, @rType, @source, @timestamp)
+     ON CONFLICT(id) DO UPDATE SET
+       icon = excluded.icon, rType = excluded.rType,
+       source = excluded.source, timestamp = excluded.timestamp`,
+        )
+        .run({
+            id,
+            msgId: String(r.msgId),
+            threadId: r.threadId != null ? String(r.threadId) : null,
+            userId: String(r.userId),
+            icon: r.icon,
+            rType: Number(r.rType) || null,
+            source: r.source || "listen",
+            timestamp: Number(r.timestamp) || Date.now(),
+        });
+}
+
+/** Reactions on one message, or across a thread. */
+export function getReactions({ msgId = null, threadId = null, limit = 500 } = {}) {
+    if (!db) throw new Error("Database not initialized");
+    if (msgId) return db.prepare("SELECT * FROM reactions WHERE msgId = ?").all(String(msgId));
+    if (threadId)
+        return db
+            .prepare("SELECT * FROM reactions WHERE threadId = ? ORDER BY timestamp DESC LIMIT ?")
+            .all(String(threadId), limit);
+    return db.prepare("SELECT * FROM reactions ORDER BY timestamp DESC LIMIT ?").all(limit);
+}
+
+/**
+ * Mark a message recalled without deleting the row.
+ *
+ * Zalo's "Thu hồi" removes the message for everyone; a cache that keeps the
+ * text readable afterwards is retaining something the sender withdrew. The row
+ * stays so the conversation still shows that something was there and when.
+ */
+export function markMessageRecalled(msgId, at = Date.now()) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare(
+            "UPDATE messages SET type = 'deleted', text = '[deleted]', raw_data = json_object('src','undo','recalledAt',?) WHERE msgId = ?",
+        )
+        .run(at, String(msgId));
+}
+
+/** Pinned / unread-marked state for a conversation. Applies to DMs too. */
+export function upsertConvState(st) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare(
+            `INSERT INTO conv_state (threadId, pinned, pinnedAt, unreadMarked, unreadMarkedAt, updatedAt)
+       VALUES (@threadId, @pinned, @pinnedAt, @unreadMarked, @unreadMarkedAt, @updatedAt)
+     ON CONFLICT(threadId) DO UPDATE SET
+       pinned = COALESCE(excluded.pinned, conv_state.pinned),
+       pinnedAt = COALESCE(excluded.pinnedAt, conv_state.pinnedAt),
+       unreadMarked = COALESCE(excluded.unreadMarked, conv_state.unreadMarked),
+       unreadMarkedAt = COALESCE(excluded.unreadMarkedAt, conv_state.unreadMarkedAt),
+       updatedAt = excluded.updatedAt`,
+        )
+        .run({
+            threadId: String(st.threadId),
+            pinned: st.pinned === undefined ? null : st.pinned ? 1 : 0,
+            pinnedAt: st.pinned === undefined ? null : Number(st.pinnedAt) || Date.now(),
+            unreadMarked: st.unreadMarked === undefined ? null : st.unreadMarked ? 1 : 0,
+            unreadMarkedAt: st.unreadMarked === undefined ? null : Number(st.unreadMarkedAt) || Date.now(),
+            updatedAt: Date.now(),
+        });
+}
+
+/** Conversation state for one thread, or every thread that has any. */
+export function getConvState(threadId = null) {
+    if (!db) throw new Error("Database not initialized");
+    return threadId
+        ? db.prepare("SELECT * FROM conv_state WHERE threadId = ?").get(String(threadId)) || null
+        : db.prepare("SELECT * FROM conv_state ORDER BY updatedAt DESC").all();
 }
 
 export function upsertContact(contact) {

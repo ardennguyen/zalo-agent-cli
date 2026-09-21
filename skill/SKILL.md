@@ -98,7 +98,8 @@ Production-ready with pm2. Details: `references/listen-mode-guide.md`
 ```bash
 zalo-agent msg history <ID> -n 50      # Reads from ~/.zalo-agent-cli/accounts/<ownId>/zalo.db
 zalo-agent sync-mobile --transfer            # REAL restore: pulls your history from the phone into zalo.db (one confirm on the phone)
-zalo-agent sync-mobile --transfer --days 30  # ...only the last 30 days (default is full history) — far shorter run
+zalo-agent sync-mobile --transfer --days 30  # ...only the last 30 days (default is ALL history, no date floor)
+zalo-agent sync-mobile --transfer --from 2018-01-01  # ...everything from an explicit date onward
 zalo-agent sync-mobile                       # Best-effort server socket backfill (usually empty; no phone contact)
 zalo-agent sync-mobile --force               # Skip the "already synced recently" debounce
 zalo-agent sync-mobile --transfer --messages-only    # ...history only, skip the media fetch

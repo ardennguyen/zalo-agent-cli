@@ -28,12 +28,21 @@ import { classifySyncMessage } from "./message-types.js";
 import { resolveNonFriendDms } from "./gid.js";
 
 /**
- * Lower bound of a "full history" sync. Zalo Web asks the phone for 14/30
- * days; this floor is what lets the CLI pull everything instead. It IS a
- * floor, not the beginning of time — messages older than 2024-01-01 are never
- * requested, so "full history" means "everything since this date".
+ * Lower bound of a "full history" sync: the beginning of time.
+ *
+ * This used to be pinned at 2024-01-01, which quietly made "full history" mean
+ * "the last couple of years" — an account with messages from 2018 never had
+ * them requested from the phone at all, with nothing in the output saying so.
+ * Zalo itself asks for 14/30 days and the bound is just the `from` field of the
+ * cmd 590 query, so there is no protocol reason to stop at any particular year.
+ *
+ * Use `--from` (see {@link resolveSyncWindow}) to raise it deliberately when a
+ * narrower window is actually wanted.
  */
-export const FULL_HISTORY_FROM = 1704067200000; // 2024-01-01
+export const FULL_HISTORY_FROM = 0;
+
+/** Zalo launched in 2012; nothing can predate it. Used only to sanity-check `--from`. */
+const EARLIEST_PLAUSIBLE = 1325376000000; // 2012-01-01
 const MAX_TS = 9007199254740991;
 /**
  * Wait allowance per message shard. The phone serves shards sequentially,
@@ -63,21 +72,31 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * @param {number} [now=Date.now()] - injectable for tests.
  * @returns {{days: number|null, from: number, to: number, clamped: boolean, label: string}}
  */
-export function resolveSyncWindow(days, now = Date.now()) {
-    const since = (ts) => new Date(ts).toISOString().slice(0, 10);
+export function resolveSyncWindow(days, now = Date.now(), fromTs = undefined) {
+    const since = (ts) => (ts > 0 ? new Date(ts).toISOString().slice(0, 10) : "the beginning");
+
+    // An explicit --from wins over --days: it is the more specific request.
+    if (fromTs !== undefined && fromTs !== null && fromTs !== "") {
+        const t = typeof fromTs === "number" ? fromTs : Date.parse(fromTs);
+        if (Number.isFinite(t) && t >= EARLIEST_PLAUSIBLE && t <= now) {
+            return { days: null, from: t, to: MAX_TS, clamped: false, label: `everything since ${since(t)}` };
+        }
+        return {
+            days: null,
+            from: FULL_HISTORY_FROM,
+            to: MAX_TS,
+            clamped: true,
+            label: `full history (--from was not a usable date, so: everything)`,
+        };
+    }
+
     const n = Number(days);
     const full = { days: null, from: FULL_HISTORY_FROM, to: MAX_TS, clamped: false };
-    if (!Number.isFinite(n) || n <= 0) {
-        return { ...full, label: `full history (since ${since(FULL_HISTORY_FROM)})` };
-    }
+    if (!Number.isFinite(n) || n <= 0) return { ...full, label: "full history (everything your phone still holds)" };
+
     const wanted = now - n * DAY_MS;
     if (wanted <= FULL_HISTORY_FROM) {
-        return {
-            ...full,
-            days: n,
-            clamped: true,
-            label: `the last ${n} days — further back than the ${since(FULL_HISTORY_FROM)} floor, so: full history`,
-        };
+        return { ...full, days: n, clamped: true, label: `the last ${n} days — which is all of it, so: full history` };
     }
     return {
         days: n,
@@ -282,6 +301,7 @@ export class SyncV2 {
      *
      * @param {object} [opts]
      * @param {number|null} [opts.days=null] only sync the last N days; falsy = full history.
+     * @param {string|number} [opts.from] explicit lower bound (date string or epoch ms); beats `days`.
      * @param {number} [opts.shardSize=30] partitions per message round (server caps ~30).
      * @param {number} [opts.waveSize=4] message sessions open at once (Zalo Web uses 4).
      * @param {number} [opts.waitMs=120000] per-phase wait budget.
@@ -296,7 +316,7 @@ export class SyncV2 {
         const log = (m) => onStatus({ phase: "info", detail: m });
         // The caller announces the window (it also decides the debounce on it);
         // it comes back on the result too, so no status line is emitted here.
-        const win = resolveSyncWindow(opts.days);
+        const win = resolveSyncWindow(opts.days, Date.now(), opts.from);
 
         onStatus({ phase: "assets", detail: "loading decryption assets" });
         const assets = await ensureAssets(resolve(this.accountDir, "sync", "zproto-cache"), log);

@@ -21,7 +21,13 @@ import {
     getLinkMessages,
     getRecentThreads,
 } from "../../src/core/db.js";
-import { downloadSyncedMedia, DOWNLOADABLE_KINDS, sanitize } from "../../src/core/sync-v2/media.js";
+import {
+    downloadSyncedMedia,
+    DOWNLOADABLE_KINDS,
+    sanitize,
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    THROTTLE_GIVE_UP,
+} from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/core/sync-v2/renewlink.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-media-test-"));
@@ -58,6 +64,29 @@ before(async () => {
             res.write(Buffer.alloc(1000));
             res.socket.on("error", () => {});
             return res.socket.destroy();
+        }
+        if (path === "/hang.jpg") {
+            // Headers, then silence forever: the exact stall that froze a real
+            // download for 20 minutes with the process still alive.
+            res.writeHead(200, { "content-type": "image/jpeg", "content-length": "1000000" });
+            res.write(Buffer.alloc(10));
+            return; // never end()
+        }
+        if (path === "/forbidden.jpg") {
+            res.writeHead(403);
+            return res.end("");
+        }
+        if (path === "/ratelimit.jpg") {
+            res.writeHead(429, { "content-type": "application/json" });
+            return res.end(JSON.stringify({ err_code: "429", message: "Too many requests" }));
+        }
+        if (path === "/servererr.jpg") {
+            res.writeHead(503);
+            return res.end("busy");
+        }
+        if (path === "/vagueerr.jpg") {
+            res.writeHead(200, { "content-type": "application/json" });
+            return res.end(JSON.stringify({ err_code: "1" }));
         }
         if (path === "/gone.jpg") {
             res.writeHead(404);
@@ -247,7 +276,7 @@ describe("downloadSyncedMedia — expiry", () => {
 
     it("records a bounded list of failures", async () => {
         for (let i = 0; i < 30; i++) row({}, [photo("/gone.jpg")]);
-        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, backoffBaseMs: 0 });
         assert.equal(stats.failed, 30);
         assert.ok(stats.failures.length <= 20, "failure list should stay bounded");
     });
@@ -511,7 +540,7 @@ describe("one broken download must not abort the run", () => {
         // Regression: res.arrayBuffer() sat outside the try/catch, so a single
         // dropped body took down a 9,850-file download after 100 files.
         row({}, [photo("/truncated.jpg")]);
-        const stats = await downloadSyncedMedia({ accountDir: dir });
+        const stats = await downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0 });
         assert.equal(stats.failed, 1);
         assert.equal(stats.downloaded, 0);
         assert.match(stats.failures[0].reason, /network/);
@@ -520,7 +549,7 @@ describe("one broken download must not abort the run", () => {
     it("keeps downloading the rest after one broken body", async () => {
         row({}, [photo("/truncated.jpg")]);
         for (let i = 0; i < 5; i++) row({}, [photo("/ok.jpg")]);
-        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, concurrency: 2 });
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, concurrency: 2, backoffBaseMs: 0 });
         assert.equal(stats.downloaded, 5, "the five good files must still land");
         assert.equal(stats.failed, 1);
     });
@@ -535,5 +564,125 @@ describe("one broken download must not abort the run", () => {
             threadNames: new Map([["t1", { name: "ok", type: "group" }]]),
         });
         assert.equal(stats.downloaded + stats.failed, 2);
+    });
+});
+
+describe("a stalled connection must not block the run forever", () => {
+    it("times out a server that sends headers then goes silent", async () => {
+        // fetch() has no built-in timeout. Without an explicit signal a hung
+        // request blocks its worker indefinitely; four of them froze a real
+        // 9,713-file download at 225 with the process still alive.
+        row({}, [photo("/hang.jpg")]);
+        const t0 = Date.now();
+        const stats = await downloadSyncedMedia({ accountDir: dir, timeoutMs: 700, backoffBaseMs: 0 });
+        assert.equal(stats.downloaded, 0);
+        assert.equal(stats.failed, 1);
+        assert.match(stats.failures[0].reason, /timed out/);
+        assert.ok(Date.now() - t0 < 8000, "must give up promptly, not hang");
+    });
+
+    it("keeps draining the queue past a hung request", async () => {
+        row({}, [photo("/hang.jpg")]);
+        for (let i = 0; i < 4; i++) row({}, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 2,
+            timeoutMs: 700,
+            backoffBaseMs: 0,
+        });
+        assert.equal(stats.downloaded, 4, "the healthy files must still arrive");
+        assert.equal(stats.failed, 1);
+    });
+
+    it("cannot stall every worker at once", async () => {
+        // With concurrency 2 and three hung URLs, a missing timeout means the
+        // run never returns at all.
+        for (let i = 0; i < 3; i++) row({}, [photo("/hang.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            concurrency: 2,
+            timeoutMs: 700,
+            backoffBaseMs: 0,
+        });
+        assert.equal(stats.failed, 3);
+    });
+
+    it("ships a sane default deadline", () => {
+        assert.ok(DEFAULT_REQUEST_TIMEOUT_MS > 0 && DEFAULT_REQUEST_TIMEOUT_MS <= 120000);
+    });
+});
+
+describe("expiry vs throttling — the difference is not cosmetic", () => {
+    // A run once reported 4,894 "expired" links; a single request minutes later
+    // pulled one of them down as a 25 MB video. Calling throttling "expired"
+    // tells someone their photos are gone when they are sitting on the CDN.
+    const only = async (route, extra = {}) => {
+        row({}, [photo(route)]);
+        return downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0, ...extra });
+    };
+
+    it("404 means gone", async () => {
+        const s = await only("/gone.jpg");
+        assert.equal(s.expired, 1);
+        assert.equal(s.throttled, 0);
+    });
+
+    it("403 is NOT treated as gone — Zalo returns it under load too", async () => {
+        const s = await only("/forbidden.jpg");
+        assert.equal(s.expired, 0, "403 must not be called expiry");
+        assert.equal(s.throttled, 1);
+    });
+
+    it("429 is throttling", async () => {
+        const s = await only("/ratelimit.jpg");
+        assert.equal(s.expired, 0);
+        assert.equal(s.throttled, 1);
+    });
+
+    it("5xx is throttling, not expiry", async () => {
+        const s = await only("/servererr.jpg");
+        assert.equal(s.expired, 0);
+        assert.equal(s.throttled, 1);
+    });
+
+    it("a documented lapsed-signature body is expiry", async () => {
+        const s = await only("/expired.jpg");
+        assert.equal(s.expired, 1);
+    });
+
+    it("a bare err_code is too vague to call expiry", async () => {
+        const s = await only("/vagueerr.jpg");
+        assert.equal(s.expired, 0, "err_code alone could be a rate-limit notice");
+        assert.equal(s.throttled, 1);
+    });
+
+    it("a dropped connection is never expiry", async () => {
+        const s = await only("/truncated.jpg");
+        assert.equal(s.expired, 0);
+        assert.equal(s.throttled, 1);
+    });
+
+    it("gives up once throttling is sustained, instead of burning the queue", async () => {
+        // The failing run marked 9,455 attachments failed while being throttled.
+        for (let i = 0; i < THROTTLE_GIVE_UP + 20; i++) row({}, [photo("/ratelimit.jpg")]);
+        const s = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 200,
+            concurrency: 1,
+            backoffBaseMs: 0,
+        });
+        assert.equal(s.abortedEarly, true, "a sustained throttle must stop the run");
+        assert.ok(s.throttled <= THROTTLE_GIVE_UP + 5, `stopped after ${s.throttled}, expected ~${THROTTLE_GIVE_UP}`);
+        assert.ok(s.considered > s.throttled, "it should not have attempted the whole queue");
+    });
+
+    it("a success resets the throttle streak", async () => {
+        row({}, [photo("/ratelimit.jpg")]);
+        for (let i = 0; i < 5; i++) row({}, [photo("/ok.jpg")]);
+        const s = await downloadSyncedMedia({ accountDir: dir, limit: 50, concurrency: 1, backoffBaseMs: 0 });
+        assert.equal(s.abortedEarly, false);
+        assert.equal(s.downloaded, 5);
     });
 });

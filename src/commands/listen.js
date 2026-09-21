@@ -13,11 +13,13 @@ import { acquireLock, releaseLock } from "../core/lock.js";
 import { initDb } from "../core/db.js";
 import {
     storeLiveMessage,
+    storeLiveDelete,
     storeLiveReaction,
     storeLiveUndo,
     storeGroupEvent,
     noteBoardChange,
     storeReceipts,
+    isRemovalMessage,
 } from "../core/live-store.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
@@ -195,7 +197,36 @@ export function registerListenCommand(program) {
                     api.listener.on("message", async (msg) => {
                         if (opts.filter === "user" && msg.type !== THREAD_USER) return;
                         if (opts.filter === "group" && msg.type !== THREAD_GROUP) return;
-                        if (!opts.self && msg.isSelf) return;
+                        // --no-self hides our own messages from stdout, the
+                        // webhook and the JSONL -- it does not delete them from
+                        // the cache. They are half of every conversation.
+                        const mute = !opts.self && msg.isSelf;
+
+                        // A "delete for me" frame rides the message channel but
+                        // removes a message rather than adding one, so it is
+                        // reported as the removal it is -- never as an incoming
+                        // message, which would have a webhook receiver acting on
+                        // a msgId that names only the notification.
+                        if (isRemovalMessage(msg.data)) {
+                            const r = storeLiveDelete(msg);
+                            if (!mute) {
+                                emitEvent(
+                                    {
+                                        event: "deleted_for_me",
+                                        threadId: msg.threadId,
+                                        msgId: r.msgId ?? null,
+                                        applied: r.stored,
+                                    },
+                                    r.stored
+                                        ? `Deleted for me: ${r.msgId} in ${msg.threadId}` +
+                                              (r.mediaRemoved ? " (media removed)" : "")
+                                        : `Delete for me could not be applied: ${r.reason}`,
+                                );
+                            }
+                            if (!r.stored) console.error(`[listen] delete-for-me not applied: ${r.reason}`);
+                            heartbeat();
+                            return;
+                        }
 
                         const rawContent = msg.data.content;
                         const isText = typeof rawContent === "string";
@@ -226,10 +257,12 @@ export function registerListenCommand(program) {
                         };
                         const dir = msg.isSelf ? "→" : "←";
                         const typeLabel = msg.type === THREAD_USER ? "DM" : "GR";
-                        emitEvent(
-                            data,
-                            `${dir} [${typeLabel}] [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
-                        );
+                        if (!mute) {
+                            emitEvent(
+                                data,
+                                `${dir} [${typeLabel}] [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
+                            );
+                        }
                         heartbeat();
 
                         // One writer for live traffic: storeLiveMessage is the
@@ -365,13 +398,15 @@ export function registerListenCommand(program) {
                 // afterwards is retaining something they took back. This is the
                 // one event that must never be opt-in.
                 api.listener.on("undo", (u) => {
-                    const d = u?.data || {};
-                    const target = String(d.globalMsgId ?? d.msgId ?? "");
-                    emitEvent(
-                        { event: "undo", threadId: u?.threadId, isSelf: u?.isSelf, msgId: target },
-                        `Recalled message ${target} in ${u?.threadId}`,
-                    );
                     const r = storeLiveUndo(u);
+                    // The recalled id comes from content, not from the
+                    // notification's own msgId -- printing the latter named a
+                    // message nobody had ever seen.
+                    const target = r.msgId ?? String(u?.data?.content?.globalMsgId ?? "");
+                    emitEvent(
+                        { event: "undo", threadId: u?.threadId, isSelf: u?.isSelf, msgId: target, applied: r.stored },
+                        `Recalled message ${target} in ${u?.threadId}${r.mediaRemoved ? " (media removed)" : ""}`,
+                    );
                     if (!r.stored && r.reason) console.error(`[listen] recall not applied: ${r.reason}`);
                 });
 

@@ -143,3 +143,48 @@ describe("resolveSyncWindow — explicit --from", () => {
         assert.equal(resolveSyncWindow(null, NOW2, "1990-01-01").from, FULL_HISTORY_FROM);
     });
 });
+
+describe("the `to` bound on a message partition", () => {
+    // Zalo Web sends each partition its own conversation's lastTs — a captured
+    // run shows 30 distinct `to` values across 30 partitions — and reserves an
+    // unbounded `to` for the conversation round, where the latest message is
+    // not yet known. MAX_SAFE_INTEGER per partition asks the phone to scan to
+    // the year 285428 for a conversation quiet since 2024.
+    const NOW3 = Date.parse("2026-09-21T12:00:00.000Z");
+
+    /** Mirrors the bound the restore computes per conversation. */
+    const partitionTo = (lastTs, winTo, now = NOW3) => {
+        const askedTo = Math.min(winTo, now);
+        const t = Number(lastTs) || 0;
+        return t > 0 ? Math.min(t, askedTo) : askedTo;
+    };
+
+    it("uses the conversation's own lastTs", () => {
+        const lastTs = Date.parse("2025-03-04T00:00:00.000Z");
+        assert.equal(partitionTo(lastTs, resolveSyncWindow(null, NOW3).to), lastTs);
+    });
+
+    it("never asks beyond now, even on the default unbounded window", () => {
+        const to = partitionTo(0, resolveSyncWindow(null, NOW3).to);
+        assert.equal(to, NOW3);
+        assert.notEqual(to, Number.MAX_SAFE_INTEGER, "MAX_SAFE_INTEGER is not a real timestamp");
+    });
+
+    it("never asks beyond now even if a conversation claims a future lastTs", () => {
+        const future = NOW3 + 365 * 24 * 3600 * 1000;
+        assert.equal(partitionTo(future, resolveSyncWindow(null, NOW3).to), NOW3);
+    });
+
+    it("falls back to now when lastTs is missing or junk", () => {
+        for (const bad of [0, null, undefined, NaN, "x"]) {
+            assert.equal(partitionTo(bad, resolveSyncWindow(null, NOW3).to), NOW3, `lastTs=${String(bad)}`);
+        }
+    });
+
+    it("distinct conversations get distinct bounds", () => {
+        const winTo = resolveSyncWindow(null, NOW3).to;
+        const a = partitionTo(Date.parse("2024-05-01T00:00:00.000Z"), winTo);
+        const b = partitionTo(Date.parse("2026-01-01T00:00:00.000Z"), winTo);
+        assert.notEqual(a, b, "a per-conversation bound must actually vary");
+    });
+});

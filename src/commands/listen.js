@@ -373,15 +373,24 @@ export function registerListenCommand(program) {
                     if (!r.stored && r.reason) console.error(`[listen] reaction not stored: ${r.reason}`);
                     if (!enabledEvents.has("reaction")) return;
                     if (!opts.self && reaction.isSelf) return;
+                    // Name the icon and the message. "Reaction in <thread>" was
+                    // true of a reaction stored against the wrong message, a
+                    // removal that deleted nothing, and a working one alike.
+                    const on = r.msgIds?.filter(Boolean).join(",") || "?";
+                    const what = r.removing
+                        ? `Reactions cleared on ${on} (${r.changed} removed)`
+                        : `Reaction ${r.icon} on ${on}`;
                     emitEvent(
                         {
                             event: "reaction",
                             threadId: reaction.threadId,
                             isSelf: reaction.isSelf,
                             isGroup: reaction.isGroup,
+                            removing: r.removing ?? null,
+                            changed: r.changed ?? null,
                             data: reaction.data,
                         },
-                        `Reaction in ${reaction.threadId}`,
+                        `${what} in ${reaction.threadId}`,
                     );
                 });
 

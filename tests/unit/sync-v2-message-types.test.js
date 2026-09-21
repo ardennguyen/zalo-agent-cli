@@ -17,6 +17,8 @@ import {
     extractSyncText,
     SYNC_MSG_TYPES,
     MEDIA_TYPES,
+    classifyLiveMessage,
+    LIVE_MSG_TYPES,
 } from "../../src/core/sync-v2/message-types.js";
 
 /** Build a decoded sync message with one attachment. */
@@ -423,5 +425,90 @@ describe("nothing the phone sent is dropped", () => {
         const a = classifySyncMessage(msg(3, "", { href: "https://photo-stal-1.zdn.vn/a.jpg", params: "{broken" }))
             .attachments[0];
         assert.equal(a.params, "{broken");
+    });
+});
+
+describe("classifyLiveMessage — one vocabulary for both capture paths", () => {
+    it("maps every zca-js live type into the sync vocabulary", () => {
+        // Stored verbatim, `WHERE type='photo'` misses every listener row and
+        // `WHERE type='chat.photo'` misses every synced one.
+        const expected = {
+            webchat: "text",
+            "chat.photo": "photo",
+            "chat.video.msg": "video",
+            "share.file": "file",
+            "chat.gif": "gif",
+            "chat.sticker": "sticker",
+            "chat.voice": "voice",
+            "chat.undo": "deleted",
+            "group.poll": "poll_event",
+        };
+        for (const [live, want] of Object.entries(expected)) {
+            assert.equal(LIVE_MSG_TYPES[live], want, `${live} should map to ${want}`);
+        }
+    });
+
+    it("produces the same type name as the sync path for a photo", () => {
+        const live = classifyLiveMessage({
+            msgType: "chat.photo",
+            content: { href: "https://photo-stal-3.zdn.vn/a/b.jpg", params: { width: 800 } },
+        });
+        const synced = classifySyncMessage(msg(3, "", PHOTO));
+        assert.equal(live.type, synced.type);
+        assert.equal(live.attachments[0].kind, synced.attachments[0].kind);
+    });
+
+    it("sets hasAttachment so sync-media can see live-captured media", () => {
+        // Without this the listener's photos are invisible to the downloader.
+        const r = classifyLiveMessage({
+            msgType: "chat.photo",
+            content: { href: "https://photo-stal-3.zdn.vn/a/b.jpg" },
+        });
+        assert.equal(r.hasAttachment, true);
+    });
+
+    it("keeps a plain text message plain", () => {
+        const r = classifyLiveMessage({ msgType: "webchat", content: "  hello  " });
+        assert.deepEqual([r.type, r.text, r.hasAttachment], ["text", "hello", false]);
+    });
+
+    it("extracts file details from the live shape", () => {
+        const r = classifyLiveMessage({
+            msgType: "share.file",
+            content: {
+                href: "https://file-stal-2.dlfl.vn/x/r.pdf",
+                title: "report.pdf",
+                params: { fileExt: "pdf", fileSize: 4096 },
+            },
+        });
+        assert.equal(r.type, "file");
+        assert.equal(r.attachments[0].ext, "pdf");
+        assert.equal(r.attachments[0].size, 4096);
+        assert.equal(r.text, "[file] report.pdf");
+    });
+
+    it("records cliMsgId and marks the source", () => {
+        const r = classifyLiveMessage({ msgType: "webchat", content: "hi", cliMsgId: 77 });
+        assert.equal(r.raw.cliMsgId, "77");
+        assert.equal(r.raw.src, "listen");
+    });
+
+    it("never leaves a live media row blank", () => {
+        for (const t of ["chat.photo", "chat.video.msg", "chat.sticker", "chat.undo"]) {
+            const r = classifyLiveMessage({ msgType: t, content: {} });
+            assert.notEqual(r.text.trim(), "", `${t} produced a blank row`);
+        }
+    });
+
+    it("survives an unknown live type instead of dropping it", () => {
+        const r = classifyLiveMessage({ msgType: "chat.somethingnew", content: { title: "x" } });
+        assert.equal(r.type, "chat.somethingnew");
+        assert.equal(r.raw.msgType, "chat.somethingnew");
+    });
+
+    it("tolerates a missing payload", () => {
+        const r = classifyLiveMessage({});
+        assert.equal(r.hasAttachment, false);
+        assert.equal(typeof r.type, "string");
     });
 });

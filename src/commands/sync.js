@@ -7,10 +7,10 @@ import { error, info, success, warning } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
-import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
+import { downloadSyncedMedia, pruneDownloadedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
-import { initDb, getRecentThreads, countPendingAttachments } from "../core/db.js";
+import { initDb, getRecentThreads, countPendingAttachments, getSyncState } from "../core/db.js";
 
 /** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
 const CLOSE_DUPLICATE = 3000;
@@ -135,8 +135,23 @@ export function registerSyncCommands(program) {
             60,
         )
         .option("--thumbs", "Also save thumbnails alongside the full media")
+        .option(
+            "--prune <days>",
+            "Delete downloaded media attached to messages older than N days, instead of downloading. " +
+                "Message text is never touched, and the row goes back in the download queue, so this " +
+                "reclaims disk without losing history. Combine with --dry-run to preview",
+            parseIntAtLeast(1),
+        )
+        .option(
+            "--all-history",
+            "Consider every attachment, not just those inside the window the last mobile sync covered",
+        )
         .option("--dry-run", "Report what would be fetched without downloading anything")
         .action(async (opts) => {
+            if (opts.prune !== undefined) {
+                await runMediaPrune(requireAccount(), opts);
+                return;
+            }
             await runMediaDownload(requireAccount(), opts);
         });
 
@@ -215,6 +230,22 @@ async function runMediaDownload(activeAcc, opts) {
         }
     }
 
+    // Follow the window the last mobile sync covered. Fetching media for
+    // messages outside it is pointless work: those rows were never refreshed,
+    // so their links are the oldest and likeliest to be dead. --all-history
+    // opts out, and an explicit --days still wins.
+    let since = opts.days ? Date.now() - opts.days * 86400000 : undefined;
+    if (since === undefined && !opts.allHistory) {
+        const covered = Number(getSyncState("lastSyncOkFrom"));
+        if (Number.isFinite(covered) && covered > 0) {
+            since = covered;
+            info(
+                `Limiting to the window the last sync covered (since ${new Date(covered).toISOString().slice(0, 10)}).`,
+            );
+            info("Pass --all-history to consider everything in the cache.");
+        }
+    }
+
     const pending = countPendingAttachments(opts.thread || null);
     if (!pending) {
         success("No attachments waiting to be downloaded.");
@@ -240,7 +271,7 @@ async function runMediaDownload(activeAcc, opts) {
         threadId: opts.thread,
         kinds,
         limit: opts.limit,
-        since: opts.days ? Date.now() - opts.days * 86400000 : undefined,
+        since,
         concurrency: opts.concurrency,
         maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
         timeoutMs: (opts.timeout || 60) * 1000,
@@ -280,6 +311,38 @@ async function runMediaDownload(activeAcc, opts) {
         warning(`${other} attachment(s) failed for other reasons.`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
+    process.exit(0);
+}
+
+/** Delete downloaded media older than N days. Never removes message rows. */
+async function runMediaPrune(activeAcc, opts) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    initDb(join(accountDir, "zalo.db"));
+
+    const days = Number(opts.prune);
+    const stats = await pruneDownloadedMedia({
+        olderThanDays: days,
+        threadId: opts.thread,
+        dryRun: Boolean(opts.dryRun),
+    });
+
+    const cutoff = new Date(stats.cutoff).toISOString().slice(0, 10);
+    if (!stats.considered) {
+        success(`Nothing to prune — no downloaded media older than ${days} day(s) (before ${cutoff}).`);
+        process.exit(0);
+    }
+    if (opts.dryRun) {
+        success(`Dry run: ${stats.considered} file(s), ${formatBytes(stats.bytes)}, older than ${cutoff}.`);
+        info("Message text is untouched; pruned files can be re-downloaded while their links live.");
+        process.exit(0);
+    }
+    success(`Deleted ${stats.deleted} file(s), reclaiming ${formatBytes(stats.bytes)} (older than ${cutoff}).`);
+    if (stats.missing) info(`${stats.missing} row(s) pointed at files already gone — those pointers were cleared.`);
+    if (stats.failed) {
+        warning(`${stats.failed} file(s) could not be deleted.`);
+        for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
+    }
+    info("Message history is unchanged; these attachments are queued for download again.");
     process.exit(0);
 }
 

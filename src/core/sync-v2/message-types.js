@@ -283,3 +283,110 @@ export function classifySyncMessage(msg) {
         },
     };
 }
+
+/**
+ * zca-js live-event msgType -> the SAME vocabulary the sync path uses.
+ *
+ * The listener and the mobile sync describe identical things in different
+ * words: a photo arrives as `chat.photo` live and as numeric msgType 3 from the
+ * phone. Stored verbatim, `WHERE type = 'photo'` silently misses every
+ * listener-captured row and `WHERE type = 'chat.photo'` misses every synced
+ * one. One vocabulary, one set of queries.
+ */
+export const LIVE_MSG_TYPES = {
+    webchat: "text",
+    "chat.photo": "photo",
+    "chat.video.msg": "video",
+    "share.file": "file",
+    "chat.gif": "gif",
+    "chat.sticker": "sticker",
+    "chat.voice": "voice",
+    "chat.doodle": "doodle",
+    "chat.link": "link",
+    "chat.recommended": "link",
+    "chat.zalo.me": "link",
+    "chat.location.new": "location",
+    "chat.todo": "event",
+    "group.poll": "poll_event",
+    "chat.undo": "deleted",
+    "chat.delete": "deleted",
+    "chat.ecard": "card",
+};
+
+/** Read `params` from a live payload, which may be an object or a JSON string. */
+function liveParams(content) {
+    const p = content?.params;
+    if (!p) return {};
+    if (typeof p === "object") return p;
+    try {
+        return JSON.parse(p);
+    } catch {
+        return {};
+    }
+}
+
+/**
+ * Classify a live listener message into the same shape as a synced one.
+ *
+ * The payload differs from the protobuf: here `content` really is an object for
+ * media, URLs are named `href`/`oriUrl`/`normalUrl`/`hdUrl`, and there is no
+ * `meta` wrapper. What comes out is deliberately identical to
+ * {@link classifySyncMessage} so both paths write interchangeable rows and one
+ * downloader serves both.
+ *
+ * @param {{msgType?: string, content?: object|string, msgId?: string|number, cliMsgId?: string|number}} data
+ *   the zca-js `msg.data` object
+ * @returns {{type: string, text: string, hasAttachment: boolean, attachments: Array<object>, raw: object}}
+ */
+export function classifyLiveMessage(data) {
+    const rawType = data?.msgType || "";
+    const type = LIVE_MSG_TYPES[rawType] || (typeof data?.content === "string" ? "text" : rawType || "attachment");
+    const content = data?.content;
+    const attachments = [];
+
+    if (content && typeof content === "object") {
+        const params = liveParams(content);
+        const url = content.href || content.oriUrl || content.normalUrl || undefined;
+        const thumbUrl = content.thumb || content.thumbUrl || undefined;
+        const kind = kindFromUrl(url) || (MEDIA_TYPES.has(type) ? type : type);
+        if (url || thumbUrl || content.title || Object.keys(params).length) {
+            attachments.push({
+                kind,
+                url,
+                thumbUrl,
+                hdUrl: content.hdUrl || (typeof params.hd === "string" ? params.hd : undefined),
+                title: content.title || undefined,
+                description: content.description || undefined,
+                action: content.action || undefined,
+                fileName: type === "file" ? content.title || undefined : undefined,
+                ext: params.fileExt || content.fileExt || undefined,
+                size: Number(pick(params, "fileSize", "video_file_size")) || Number(content.fileSize) || undefined,
+                checksum: params.checksum || content.checksum || undefined,
+                width: Number(pick(params, "width", "video_width", "tWidth")) || undefined,
+                height: Number(pick(params, "height", "video_height", "tHeight")) || undefined,
+                duration: Number(pick(params, "duration")) || undefined,
+                params: Object.keys(params).length ? params : undefined,
+            });
+        }
+    }
+
+    const downloadable = attachments.filter((a) => (a.url || a.thumbUrl) && MEDIA_TYPES.has(a.kind));
+    const text =
+        typeof content === "string"
+            ? content.trim()
+            : extractSyncText({ content: "", meta: {} }, type, attachments) || `[${type}]`;
+
+    return {
+        type,
+        text,
+        hasAttachment: downloadable.length > 0,
+        attachments,
+        raw: {
+            src: "listen",
+            msgType: rawType || undefined,
+            cliMsgId: data?.cliMsgId === undefined || data?.cliMsgId === null ? undefined : String(data.cliMsgId),
+            content: typeof content === "string" ? content || undefined : content,
+            attachments: attachments.length ? attachments : undefined,
+        },
+    };
+}

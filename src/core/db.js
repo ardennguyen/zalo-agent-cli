@@ -400,6 +400,37 @@ export function getLinkMessages(opts = {}) {
         .all(...params);
 }
 
+/**
+ * Downloaded attachments older than `before`, for pruning.
+ *
+ * Returns the rows rather than deleting anything: the caller has to see what it
+ * is about to remove from disk, and a dry run has to be possible.
+ *
+ * @param {number} before - epoch ms; rows with an older timestamp are returned
+ * @param {string} [threadId] - restrict to one thread
+ * @returns {Array<{msgId: string, threadId: string, timestamp: number, localPath: string}>}
+ */
+export function getDownloadedMediaBefore(before, threadId = null) {
+    if (!db) throw new Error("Database not initialized");
+    const sql =
+        "SELECT msgId, threadId, timestamp, localPath FROM messages " +
+        "WHERE localPath IS NOT NULL AND timestamp < ?" +
+        (threadId ? " AND threadId = ?" : "") +
+        " ORDER BY timestamp ASC";
+    return threadId ? db.prepare(sql).all(before, String(threadId)) : db.prepare(sql).all(before);
+}
+
+/**
+ * Forget where an attachment was stored, after its file has been removed.
+ *
+ * Clearing `localPath` is what puts the row back in the download queue, so a
+ * pruned message can be fetched again later if its link is still alive.
+ */
+export function clearMessageLocalPath(msgId) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("UPDATE messages SET localPath = NULL WHERE msgId = ?").run(String(msgId));
+}
+
 /** Record where an attachment was written to disk. */
 export function setMessageLocalPath(msgId, localPath) {
     if (!db) throw new Error("Database not initialized");

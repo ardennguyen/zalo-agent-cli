@@ -16,7 +16,7 @@
  */
 import fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { getAttachmentMessages, setMessageLocalPath } from "../db.js";
+import { getAttachmentMessages, setMessageLocalPath, getDownloadedMediaBefore, clearMessageLocalPath } from "../db.js";
 import { extractRenewedUrls, makeRenewLink } from "./renewlink.js";
 
 /** Kinds that point at a byte stream worth saving. */
@@ -379,5 +379,70 @@ export async function downloadSyncedMedia(opts = {}) {
     };
 
     await Promise.all(Array.from({ length: Math.max(1, Math.min(16, concurrency)) }, worker));
+    return stats;
+}
+
+/**
+ * Delete downloaded media for messages older than a cutoff.
+ *
+ * Only files this tool recorded are touched: the candidate list comes from rows
+ * that actually carry a `localPath`, so nothing outside the media directory is
+ * ever considered. Clearing `localPath` afterwards puts the row back in the
+ * download queue, so pruning is a space decision, not a permanent one -- the
+ * file can be refetched later if its link is still alive.
+ *
+ * The message row itself is never deleted. Losing the text of a conversation to
+ * reclaim disk space is not a trade anyone asked for.
+ *
+ * @param {object} opts
+ * @param {number} opts.olderThanDays - delete media attached to messages older than this
+ * @param {string} [opts.threadId] - restrict to one thread
+ * @param {boolean} [opts.dryRun=false] - report what would go, delete nothing
+ * @param {number} [opts.now=Date.now()] - injectable for tests
+ * @param {(p: object) => void} [opts.onProgress]
+ * @returns {Promise<{considered:number, deleted:number, missing:number, failed:number, bytes:number, cutoff:number, failures:Array<object>}>}
+ */
+export async function pruneDownloadedMedia(opts = {}) {
+    const { olderThanDays, threadId, dryRun = false, now = Date.now(), onProgress = () => {} } = opts;
+    const days = Number(olderThanDays);
+    const stats = { considered: 0, deleted: 0, missing: 0, failed: 0, bytes: 0, cutoff: 0, failures: [] };
+    if (!Number.isFinite(days) || days <= 0) return stats;
+
+    const cutoff = now - days * 86400000;
+    stats.cutoff = cutoff;
+    const rows = getDownloadedMediaBefore(cutoff, threadId || null);
+    stats.considered = rows.length;
+
+    for (const row of rows) {
+        let size = 0;
+        try {
+            size = fs.statSync(row.localPath).size;
+        } catch {
+            // Already gone from disk -- still worth clearing the stale pointer.
+            stats.missing++;
+            if (!dryRun) {
+                try {
+                    clearMessageLocalPath(row.msgId);
+                } catch {
+                    /* the row may have been removed since */
+                }
+            }
+            continue;
+        }
+        if (dryRun) {
+            stats.bytes += size;
+            continue;
+        }
+        try {
+            fs.rmSync(row.localPath, { force: true });
+            clearMessageLocalPath(row.msgId);
+            stats.deleted++;
+            stats.bytes += size;
+            onProgress({ phase: "pruned", msgId: row.msgId, path: row.localPath, bytes: size });
+        } catch (e) {
+            stats.failed++;
+            if (stats.failures.length < 20) stats.failures.push({ msgId: row.msgId, reason: e.message });
+        }
+    }
     return stats;
 }

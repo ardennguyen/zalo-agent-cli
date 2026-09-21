@@ -19,6 +19,8 @@ import {
     upsertThread,
     getOrphanThreads,
     forgetThread,
+    getSyncState,
+    getBoardItems,
 } from "../../src/core/db.js";
 import {
     storeLiveMessage,
@@ -26,6 +28,8 @@ import {
     storeLiveUndo,
     attachLiveStore,
     storeGroupEvent,
+    noteBoardChange,
+    storeReceipts,
 } from "../../src/core/live-store.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-live-test-"));
@@ -304,5 +308,86 @@ describe("forgetThread / getOrphanThreads", () => {
         const counts = forgetThread("nope");
         assert.equal(counts.messages, 0);
         assert.equal(counts.threads, 0);
+    });
+});
+
+describe("board changes and delivery receipts — the rest of the live path", () => {
+    it("flags a thread stale on pin, unpin, board and reminder events", () => {
+        for (const t of ["new_pin_topic", "unpin_topic", "update_board", "remove_topic", "remind_topic"]) {
+            const r = noteBoardChange({ type: t, threadId: `g-${t}` });
+            assert.equal(r.stale, true, t);
+            assert.ok(getSyncState(`boardStale:g-${t}`), `${t} should record the flag`);
+        }
+    });
+
+    it("applies to 1-1 conversations as much as to groups", () => {
+        // Pin/unpin/reminder are not group-specific.
+        assert.equal(noteBoardChange({ type: "new_pin_topic", threadId: "u1" }).stale, true);
+        assert.ok(getSyncState("boardStale:u1"));
+    });
+
+    it("ignores group events that do not touch a board", () => {
+        for (const t of ["join", "update_avatar", "add_admin", "new_link"]) {
+            assert.equal(noteBoardChange({ type: t, threadId: "g1" }).stale, false, t);
+        }
+    });
+
+    it("writes no board row from a delta it cannot fully populate", () => {
+        // The event carries a change, not the item's shape; inventing a row
+        // would be worse than refetching one.
+        noteBoardChange({ type: "new_pin_topic", threadId: "g1" });
+        assert.equal(getBoardItems("g1").length, 0);
+    });
+
+    it("advances msgStatus on a delivery receipt", () => {
+        insertMessage({
+            msgId: "m1",
+            threadId: "t1",
+            senderId: "u",
+            senderName: "",
+            text: "x",
+            timestamp: 1,
+            type: "text",
+            msgStatus: 3,
+        });
+        assert.equal(storeReceipts({ data: { msgId: "m1" } }, 4).updated, 1);
+        assert.equal(getMessages("t1")[0].msgStatus, 4);
+    });
+
+    it("never walks delivery state backwards", () => {
+        // A late "delivered" must not undo a "seen" that already landed.
+        insertMessage({
+            msgId: "m1",
+            threadId: "t1",
+            senderId: "u",
+            senderName: "",
+            text: "x",
+            timestamp: 1,
+            type: "text",
+            msgStatus: 5,
+        });
+        storeReceipts({ data: { msgId: "m1" } }, 4);
+        assert.equal(getMessages("t1")[0].msgStatus, 5, "seen must survive a later delivered");
+    });
+
+    it("handles a batch of receipts", () => {
+        for (const id of ["a", "b", "c"]) {
+            insertMessage({
+                msgId: id,
+                threadId: "t1",
+                senderId: "u",
+                senderName: "",
+                text: "x",
+                timestamp: 1,
+                type: "text",
+                msgStatus: 3,
+            });
+        }
+        const r = storeReceipts([{ data: { msgId: "a" } }, { data: { msgId: "b" } }], 5);
+        assert.equal(r.updated, 2);
+    });
+
+    it("shrugs off a receipt for a message it does not have", () => {
+        assert.equal(storeReceipts({ data: { msgId: "unknown" } }, 5).updated, 0);
     });
 });

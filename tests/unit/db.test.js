@@ -401,3 +401,38 @@ describe("getRecentThreads — type filtering", () => {
         assert.deepEqual(getRecentThreads(10, "group"), []);
     });
 });
+
+describe("thread ordering after a sync", () => {
+    it("keeps the newest timestamp when messages arrive out of order", () => {
+        // The sync upserts a thread once per message, and messages do not
+        // arrive newest-first. A plain assignment left each thread stamped with
+        // whichever message happened to be processed last, so `conv recent`
+        // ordered by an arbitrary message rather than the newest one.
+        open(join(ROOT, "ordering.db"));
+        upsertThread({ threadId: "t1", type: "dm", name: "Alice", lastUpdate: 3000 });
+        upsertThread({ threadId: "t1", type: "dm", name: "Alice", lastUpdate: 1000 });
+        assert.equal(getRecentThreads(10)[0].lastUpdate, 3000);
+    });
+
+    it("orders conversations newest-first regardless of write order", () => {
+        open(join(ROOT, "ordering2.db"));
+        upsertThread({ threadId: "old", type: "dm", name: "Old", lastUpdate: 1000 });
+        upsertThread({ threadId: "new", type: "dm", name: "New", lastUpdate: 9000 });
+        upsertThread({ threadId: "mid", type: "dm", name: "Mid", lastUpdate: 5000 });
+        upsertThread({ threadId: "new", type: "dm", name: "New", lastUpdate: 2000 });
+        assert.deepEqual(
+            getRecentThreads(10).map((t) => t.threadId),
+            ["new", "mid", "old"],
+        );
+    });
+
+    it("does not let a nameless upsert erase a known display name", () => {
+        // Only some synced messages carry dName; the rest must not blank it.
+        open(join(ROOT, "ordering3.db"));
+        upsertThread({ threadId: "t1", type: "dm", name: "Alice", lastUpdate: 2 });
+        upsertThread({ threadId: "t1", type: "dm", name: "", lastUpdate: 3 });
+        const [t] = getRecentThreads(10);
+        assert.equal(t.name, "Alice");
+        assert.equal(t.lastUpdate, 3, "but the newer timestamp still applies");
+    });
+});

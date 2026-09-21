@@ -11,7 +11,13 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { initDb, insertMessage, upsertThread } from "../core/db.js";
-import { storeLiveReaction, storeLiveUndo, storeGroupEvent } from "../core/live-store.js";
+import {
+    storeLiveReaction,
+    storeLiveUndo,
+    storeGroupEvent,
+    noteBoardChange,
+    storeReceipts,
+} from "../core/live-store.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { SyncManager } from "../core/sync.js";
@@ -324,6 +330,16 @@ export function registerListenCommand(program) {
                         // Leaving or being removed means this conversation is no
                         // longer ours. Flag it so it surfaces as an orphan;
                         // deleting the local copy stays an explicit decision.
+                        // Pin, unpin, note, poll and reminder changes: flag the
+                        // board stale so the next sync-boards refetches it. The
+                        // event carries a delta, not the item's full shape.
+                        const board = noteBoardChange(event);
+                        if (board.stale) {
+                            emitEvent(
+                                { event: "board_changed", threadId: board.threadId, type: event.type },
+                                `Board changed in ${board.threadId} (${event.type}) — run sync-boards to refresh`,
+                            );
+                        }
                         const gone = storeGroupEvent(event);
                         if (gone.gone) {
                             emitEvent(
@@ -356,6 +372,13 @@ export function registerListenCommand(program) {
                         }
                     });
                 }
+
+                // --- Delivery receipts ---
+                // The sync establishes msgStatus per message; without these it
+                // goes stale the moment the restore finishes. Always on: this is
+                // durable state, not the typing/presence noise it resembles.
+                api.listener.on("delivered_messages", (m) => storeReceipts(m, 4));
+                api.listener.on("seen_messages", (m) => storeReceipts(m, 5));
 
                 // --- Undo / recall ---
                 // Always on, regardless of --events. A recall is the sender

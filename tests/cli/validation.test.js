@@ -257,6 +257,29 @@ describe("sync-mobile — offline surface", () => {
         assert.match(r.all, /unknown option/i);
     });
 
+    it("registers --days and documents that the default is full history", async () => {
+        const { stdout } = await runCli(["sync-mobile", "--help"], opts);
+        assert.match(stdout, /-d, --days/);
+        assert.match(stdout, /full history/i, "--days must state the default window it narrows");
+    });
+
+    it("refuses --days without --transfer instead of accepting and ignoring it", async () => {
+        // The window is a field of the cmd 590 query only the transfer path
+        // sends, so on any other path the flag would be a silent no-op.
+        const r = await runCli(["sync-mobile", "--days", "7"], opts);
+        assert.equal(r.code, 1);
+        assert.match(r.all, /--days only applies/i);
+        assert.match(r.all, /--transfer --days 7/, "should hand back the corrected command");
+    });
+
+    it("rejects a --days value that is not a whole number of days >= 1", async () => {
+        for (const bad of ["0", "-3", "1.5", "week"]) {
+            const r = await runCli(["sync-mobile", "--transfer", "--days", bad], opts);
+            assert.notEqual(r.code, 0, `--days ${bad} must not be accepted`);
+            assert.match(r.all, /whole number/i, `--days ${bad} should fail on the value, not later`);
+        }
+    });
+
     it("exits 1 with a login pointer when there is no account — before any network contact", async () => {
         const r = await runCli(["sync-mobile"], opts);
         assert.equal(r.code, 1);

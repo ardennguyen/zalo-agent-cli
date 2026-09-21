@@ -198,11 +198,32 @@ export class SyncManager {
      * sync path that reaches the server should call it on success.
      *
      * @param {string} [kind] - which path completed ("backfill" | "legacy" | "transfer").
+     * @param {{coveredFrom?: number}} [opts] - ms epoch this run reached back to,
+     *   for the paths that know their window (transfer-sync does; the socket
+     *   backfill does not). Recorded so a later, WIDER sync is not suppressed
+     *   by {@link checkSyncFreshness}. Always rewritten, so the marker never
+     *   describes an older run than `lastSyncOkAt`.
      */
-    markSyncSuccess(kind = "sync") {
+    markSyncSuccess(kind = "sync", opts = {}) {
         this._ensureDb();
         setSyncState("lastSyncOkAt", Date.now());
         setSyncState("lastSyncOkKind", String(kind));
+        setSyncState("lastSyncOkFrom", Number.isFinite(opts.coveredFrom) ? String(opts.coveredFrom) : "");
+    }
+
+    /**
+     * ms epoch the last successful sync reached back to, or null when that
+     * path never recorded a window (socket backfill, legacy, or a db written
+     * before this marker existed).
+     *
+     * @returns {number|null}
+     */
+    getLastSyncCoveredFrom() {
+        this._ensureDb();
+        const v = getSyncState("lastSyncOkFrom");
+        if (v === null || v === "") return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
     }
 
     /**
@@ -228,11 +249,15 @@ export class SyncManager {
      * owner's phone.
      *
      * A pending coverage gap always forces a sync, and so does `force`.
-     * Otherwise we skip when the last success is younger than `freshnessMs`.
+     * Otherwise we skip when the last success is younger than `freshnessMs` —
+     * unless the caller is asking for a WIDER window than the last success
+     * covered (`coversFrom` older than the recorded `lastSyncOkFrom`). A
+     * `--days 1` run must not suppress a full-history run an hour later:
+     * that is a request for data we do not have, not a redundant repeat.
      * `now`/`freshnessMs` are injectable for tests.
      *
-     * @param {{force?: boolean, freshnessMs?: number, now?: number}} [opts]
-     * @returns {{skip: boolean, reason: string, lastSyncAt: number|null, ageMs: number|null}}
+     * @param {{force?: boolean, freshnessMs?: number, now?: number, coversFrom?: number}} [opts]
+     * @returns {{skip: boolean, reason: string, lastSyncAt: number|null, ageMs: number|null, coveredFrom: number|null}}
      */
     checkSyncFreshness(opts = {}) {
         this._ensureDb();
@@ -241,12 +266,17 @@ export class SyncManager {
         const now = Number.isFinite(opts.now) ? opts.now : Date.now();
         const lastSyncAt = this.getLastSuccessfulSyncAt();
         const ageMs = lastSyncAt === null ? null : Math.max(0, now - lastSyncAt);
+        const coveredFrom = this.getLastSyncCoveredFrom();
+        const out = (skip, reason) => ({ skip, reason, lastSyncAt, ageMs, coveredFrom });
 
-        if (force) return { skip: false, reason: "forced", lastSyncAt, ageMs };
-        if (getPendingSyncGaps().length > 0) return { skip: false, reason: "pending-gap", lastSyncAt, ageMs };
-        if (lastSyncAt === null) return { skip: false, reason: "never-synced", lastSyncAt, ageMs };
-        if (ageMs < freshnessMs) return { skip: true, reason: "fresh", lastSyncAt, ageMs };
-        return { skip: false, reason: "stale", lastSyncAt, ageMs };
+        if (force) return out(false, "forced");
+        if (getPendingSyncGaps().length > 0) return out(false, "pending-gap");
+        if (lastSyncAt === null) return out(false, "never-synced");
+        if (ageMs < freshnessMs) {
+            const widening = Number.isFinite(opts.coversFrom) && coveredFrom !== null && coveredFrom > opts.coversFrom;
+            return widening ? out(false, "wider-window") : out(true, "fresh");
+        }
+        return out(false, "stale");
     }
 
     /**

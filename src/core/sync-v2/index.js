@@ -22,13 +22,71 @@
 import zlib from "node:zlib";
 import crypto from "node:crypto";
 import { resolve } from "node:path";
-import { initDb, insertMessage, upsertThread, setSyncState } from "../db.js";
-import { extractMessageText } from "../../utils/extract-message-text.js";
+import { initDb, insertMessage, upsertThread, setSyncState, runInTransaction } from "../db.js";
 import { ensureAssets, loadCodecs } from "./assets.js";
+import { classifySyncMessage } from "./message-types.js";
 import { resolveNonFriendDms } from "./gid.js";
 
-const FROM_FLOOR = 1704067200000; // 2024-01-01; sync window lower bound
+/**
+ * Lower bound of a "full history" sync. Zalo Web asks the phone for 14/30
+ * days; this floor is what lets the CLI pull everything instead. It IS a
+ * floor, not the beginning of time — messages older than 2024-01-01 are never
+ * requested, so "full history" means "everything since this date".
+ */
+export const FULL_HISTORY_FROM = 1704067200000; // 2024-01-01
 const MAX_TS = 9007199254740991;
+/**
+ * Wait allowance per message shard. The phone serves shards sequentially,
+ * so the overall budget scales with how many were sent rather than being a
+ * flat number that is either too small for a full history or absurd for a
+ * one-shard run.
+ */
+const PER_SHARD_BUDGET_MS = 30000;
+/**
+ * How many message sessions may be open on the phone at once. Zalo Web
+ * opens four; fifty at once got the socket dropped with no error frame.
+ */
+const DEFAULT_WAVE_SIZE = 4;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Turn the `--days` option into the `from`/`to` bounds carried by every
+ * cmd 590 query — the conversation round as well as the message rounds, so a
+ * narrow window also means fewer conversations, fewer shards and a shorter run.
+ *
+ * A falsy `days` (the default) means full history. A window reaching further
+ * back than {@link FULL_HISTORY_FROM} is clamped to it, so `--days 9999` is
+ * exactly the default rather than a wider request never tested against the
+ * server.
+ *
+ * @param {number|null|undefined} days - how many days back to sync.
+ * @param {number} [now=Date.now()] - injectable for tests.
+ * @returns {{days: number|null, from: number, to: number, clamped: boolean, label: string}}
+ */
+export function resolveSyncWindow(days, now = Date.now()) {
+    const since = (ts) => new Date(ts).toISOString().slice(0, 10);
+    const n = Number(days);
+    const full = { days: null, from: FULL_HISTORY_FROM, to: MAX_TS, clamped: false };
+    if (!Number.isFinite(n) || n <= 0) {
+        return { ...full, label: `full history (since ${since(FULL_HISTORY_FROM)})` };
+    }
+    const wanted = now - n * DAY_MS;
+    if (wanted <= FULL_HISTORY_FROM) {
+        return {
+            ...full,
+            days: n,
+            clamped: true,
+            label: `the last ${n} days — further back than the ${since(FULL_HISTORY_FROM)} floor, so: full history`,
+        };
+    }
+    return {
+        days: n,
+        from: wanted,
+        to: MAX_TS,
+        clamped: false,
+        label: `the last ${n} day${n === 1 ? "" : "s"} (since ${since(wanted)})`,
+    };
+}
 
 const randId = (n = 32) =>
     [...crypto.randomBytes(n)]
@@ -100,6 +158,46 @@ export function decodeFrame(parsed, cipherKey) {
         }
     }
     return JSON.parse(out.toString("utf8"));
+}
+
+/**
+ * Has a sync session delivered everything it was asked for?
+ *
+ * `isLast` looks like the end marker and mostly is, but a captured Zalo Web run
+ * ends its final message session with `isLast=0` and disposes it anyway. What
+ * actually completes a message session is coverage: every partition in the
+ * cmd 590 request has come back inside some batch's `scopes`. The conversation
+ * round asks for the empty partition and its batches carry no scopes, so there
+ * `isLast` is the only signal available.
+ *
+ * @param {{want: Set<string>, covered: Set<string>, sawLast: boolean}} state
+ * @returns {boolean}
+ */
+/**
+ * Resolve a wait budget, refusing to produce something that means "do not wait".
+ *
+ * This exists because of a real regression: a call site that forgot to pass the
+ * budget produced `Date.now() + undefined` = NaN, every comparison against NaN
+ * is false, and the wait loop exited on its first check -- so a sync round that
+ * should have waited three minutes for a phone confirmation returned instantly
+ * and reported "not confirmed in time".
+ *
+ * @param {number|undefined} budgetMs - the requested budget
+ * @param {number} fallbackMs - used when the request is missing or nonsensical
+ * @returns {number} a finite, positive number of milliseconds
+ */
+export function resolveWaitBudget(budgetMs, fallbackMs) {
+    if (Number.isFinite(budgetMs) && budgetMs > 0) return budgetMs;
+    if (Number.isFinite(fallbackMs) && fallbackMs > 0) return fallbackMs;
+    return 30000;
+}
+
+export function isSessionComplete(state) {
+    if (!state) return false;
+    if (state.sawLast) return true;
+    const want = state.want?.size ?? 0;
+    if (!want) return false; // conversation round: only isLast can end it
+    return (state.covered?.size ?? 0) >= want;
 }
 
 export class SyncV2 {
@@ -183,16 +281,22 @@ export class SyncV2 {
      * its own listener lifecycle.
      *
      * @param {object} [opts]
+     * @param {number|null} [opts.days=null] only sync the last N days; falsy = full history.
      * @param {number} [opts.shardSize=30] partitions per message round (server caps ~30).
+     * @param {number} [opts.waveSize=4] message sessions open at once (Zalo Web uses 4).
      * @param {number} [opts.waitMs=120000] per-phase wait budget.
      * @param {(s: {phase: string, detail?: string}) => void} [opts.onStatus]
-     * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string}>}
+     * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string, days:number|null, from:number, confirmed:boolean}>}
      */
     async restore(opts = {}) {
         const shardSize = Math.min(30, Math.max(1, opts.shardSize || 30));
+        const waveSize = Math.min(30, Math.max(1, opts.waveSize || DEFAULT_WAVE_SIZE));
         const waitMs = Math.max(30000, opts.waitMs || 120000);
         const onStatus = typeof opts.onStatus === "function" ? opts.onStatus : () => {};
         const log = (m) => onStatus({ phase: "info", detail: m });
+        // The caller announces the window (it also decides the debounce on it);
+        // it comes back on the result too, so no status line is emitted here.
+        const win = resolveSyncWindow(opts.days);
 
         onStatus({ phase: "assets", detail: "loading decryption assets" });
         const assets = await ensureAssets(resolve(this.accountDir, "sync", "zproto-cache"), log);
@@ -239,7 +343,9 @@ export class SyncV2 {
                         });
                 } else if (c.content.act === "upload_batch") {
                     s.batches.push(dj);
-                    if (dj.isLast) s.done = true;
+                    for (const sc of dj.scopes || []) if (sc?.partition) s.covered.add(sc.partition);
+                    if (dj.isLast) s.sawLast = true;
+                    s.done = isSessionComplete(s);
                 } else if (/error/i.test(c.content.act)) {
                     s.err = dj;
                 }
@@ -247,23 +353,109 @@ export class SyncV2 {
         };
         L.ws.on("message", onMsg);
 
-        const newSession = (kind) => {
+        // Why the socket went away matters: Zalo's 3000 means "another session
+        // took the account", anything else points elsewhere. Without this the
+        // only symptom is a silent stall, which is what made the first two
+        // runs so hard to diagnose.
+        let closeInfo = null;
+        const onClose = (code, reason) => {
+            closeInfo = { code, reason: String(reason || "") };
+            onStatus({
+                phase: "warn",
+                detail: `socket closed (code ${code}${closeInfo.reason ? ": " + closeInfo.reason : ""})`,
+            });
+        };
+        const onSockErr = (e) => {
+            closeInfo = closeInfo || { code: "error", reason: e?.message || String(e) };
+            onStatus({ phase: "warn", detail: `socket error: ${closeInfo.reason}` });
+        };
+        try {
+            L.ws.on("close", onClose);
+            L.ws.on("error", onSockErr);
+        } catch {
+            /* an older ws shape without these events is not fatal */
+        }
+
+        const newSession = (kind, wantPartitions = []) => {
             const id = randId();
-            sessions.set(id, { kind, batches: [], statuses: [], done: false, err: null });
+            sessions.set(id, {
+                kind,
+                batches: [],
+                statuses: [],
+                done: false,
+                sawLast: false,
+                err: null,
+                disposed: false,
+                // Completion is measured by coverage: every partition asked for
+                // has to come back in some batch's `scopes`.
+                want: new Set(wantPartitions.filter(Boolean)),
+                covered: new Set(),
+            });
             return id;
         };
-        const waitDone = async (id) => {
-            const dl = Date.now() + waitMs;
+
+        /**
+         * Wait for one session to finish.
+         *
+         * `isLast` is NOT a reliable end marker -- a captured Zalo Web run ends
+         * its final message session with isLast=0 and disposes it anyway. What
+         * actually marks a message session complete is that every requested
+         * partition has appeared in a batch's `scopes`. The conversation round
+         * asks for the empty partition and carries no scopes, so it still falls
+         * back to isLast.
+         *
+         * Returns why it stopped, so the caller can tell "no data" from
+         * "the socket died" from "the phone never answered".
+         */
+        const waitDone = async (id, budgetMs) => {
+            const dl = Date.now() + resolveWaitBudget(budgetMs, waitMs);
             const s = sessions.get(id);
-            while (!s.done && !s.err && Date.now() < dl) await new Promise((r) => setTimeout(r, 300));
+            while (!s.done && !s.err && Date.now() < dl) {
+                // A closed socket can never deliver the rest, so stop now
+                // instead of burning the whole budget waiting on a dead wire.
+                // zca-js sets `this.ws = null` on close, so an absent socket is
+                // just as dead as one reporting CLOSING/CLOSED -- checking only
+                // readyState missed every real disconnect.
+                if (!L.ws || L.ws.readyState > 1) return "socket-closed";
+                await new Promise((r) => setTimeout(r, 300));
+            }
+            if (s.err) return "error";
+            if (s.done) return "done";
+            return "timeout";
+        };
+
+        /** Dispose one session the moment it finishes, as Zalo Web does. */
+        const disposeOne = (id) => {
+            const s = sessions.get(id);
+            if (!s || s.disposed) return;
+            s.disposed = true;
+            try {
+                this._dispose(L, id);
+            } catch {
+                /* the socket may already be gone; nothing to release */
+            }
         };
 
         const ik = zproto.generateKeyPair();
         let conversations = 0,
-            messagesSaved = 0;
+            messagesSaved = 0,
+            attachmentsSaved = 0;
         const mappedThreads = new Set(),
             unmappedThreads = new Set();
+        /** type name -> count, for the command's summary line. */
+        const typeCounts = Object.create(null);
         let reason = "complete";
+        // Did the phone actually answer? transfer_status 4 = Confirmed,
+        // 5 = Authorized. Needed to tell "empty window" from "never tapped".
+        let confirmed = false;
+        const done = (r) =>
+            this._result(conversations, messagesSaved, mappedThreads, unmappedThreads, r, {
+                days: win.days,
+                from: win.from,
+                confirmed,
+                attachmentsSaved,
+                typeCounts: { ...typeCounts },
+            });
 
         // decrypt one session's batches -> decoded proto objects
         const eachChunkObj = async (s, ek, protoClass, onObj) => {
@@ -273,6 +465,7 @@ export class SyncV2 {
                 .sort((a, b) => (a.batchType === 2 ? -1 : 1) - (b.batchType === 2 ? -1 : 1) || a.idx - b.idx);
             for (const bt of ordered) {
                 if (!bt.msgUrl) continue;
+                await new Promise((r) => setImmediate(r));
                 let blob;
                 try {
                     const r = await fetch(bt.msgUrl);
@@ -282,6 +475,13 @@ export class SyncV2 {
                     continue;
                 }
                 for (const chunk of splitChunks(blob)) {
+                    // Hand the event loop back before each chunk. Decode and
+                    // store are synchronous and a single shard can carry tens of
+                    // thousands of messages; zca-js keeps the socket alive with
+                    // a setInterval ping, and a blocked loop means a missed ping
+                    // means Zalo drops the connection mid-run. This is the same
+                    // problem Zalo Web avoids by decoding in a worker thread.
+                    await new Promise((r) => setImmediate(r));
                     try {
                         let plain;
                         if (bt.batchType === 2) {
@@ -317,20 +517,41 @@ export class SyncV2 {
                 type: "conversation",
                 priority: 0,
                 batchSize: 2000,
-                queries: [{ partition: "", from: FROM_FLOOR, to: MAX_TS, limit: 2147483647 }],
+                queries: [{ partition: "", from: win.from, to: win.to, limit: 2147483647 }],
             });
-            await waitDone(convId);
+            const convWhy = await waitDone(convId, waitMs);
             const convSession = sessions.get(convId);
             if (convSession.err) throw new Error(`conversation round failed: ${JSON.stringify(convSession.err)}`);
+            if (convWhy === "socket-closed") throw new Error("connection dropped while waiting for the phone");
+            confirmed = convSession.statuses.some((st) => Number(st) >= 4);
 
             const convs = [];
             await eachChunkObj(convSession, ekConv, C.SyncChunk, (obj) => {
                 for (const c of obj.conversationsList || []) convs.push(c);
             });
+            // Zalo Web releases the conversation session as soon as it has the
+            // list, before asking for any messages. Match that: it clears the
+            // phone's banner for that round instead of holding it open.
+            disposeOne(convId);
             conversations = convs.length;
+            // The conversation round carries per-thread state the message
+            // rounds never repeat (whether you have replied, and the ids of the
+            // newest message). Keep it keyed by the opaque convId so the
+            // message loop can attach it once the real threadId is known.
+            const convMeta = new Map();
+            for (const c of convs) {
+                convMeta.set(c.convId, {
+                    respondedByMe: c.respondedByMe,
+                    lastGlobalId: c.lastGlobalId,
+                    lastClientId: c.lastClientId,
+                });
+            }
             if (!conversations) {
-                reason = "no-conversations";
-                return this._result(conversations, messagesSaved, mappedThreads, unmappedThreads, reason);
+                // With --days an empty result is expected when nothing happened
+                // in the window, so separate that from a prompt that was never
+                // confirmed — the two need opposite advice from the caller.
+                reason = confirmed ? "empty-window" : "no-conversations";
+                return done(reason);
             }
 
             // Tier 3: resolve 1-1 conversations not in the friend list (non-friends, OA) to
@@ -353,8 +574,8 @@ export class SyncV2 {
 
             const partitions = convs.map((c) => ({
                 partition: (c.convType === 2 ? "group/" : "oneone/") + c.convId,
-                from: FROM_FLOOR,
-                to: MAX_TS,
+                from: win.from,
+                to: win.to,
                 limit: 2147483647,
             }));
             const shards = [];
@@ -362,55 +583,155 @@ export class SyncV2 {
             onStatus({ phase: "messages", detail: `${conversations} conversations in ${shards.length} batch(es)` });
 
             // ---- message rounds (sharded) ----
-            const shardMeta = [];
-            for (const shard of shards) {
-                const ek = zproto.generateKeyPair();
-                const sid = newSession("msg");
-                shardMeta.push({ sid, ek });
-                this._send590(L, "msg", sid, ek, ik, { type: "message", priority: 2, batchSize: 2000, queries: shard });
-                await new Promise((r) => setTimeout(r, 600));
-            }
-            for (const m of shardMeta) await waitDone(m.sid);
+            // Requests go out in waves. Zalo Web opens at most FOUR message
+            // sessions at once and the phone serves them one at a time; firing
+            // all fifty shards of a full-history run at once got the socket
+            // dropped with no error frame, so the in-flight count is capped.
+            // Within a wave the requests still go out together, which is what
+            // makes them inherit the single confirmation.
+            const waves = [];
+            for (let i = 0; i < shards.length; i += waveSize) waves.push(shards.slice(i, i + waveSize));
+            const sendWave = async (wave) => {
+                const meta = [];
+                for (const shard of wave) {
+                    const ek = zproto.generateKeyPair();
+                    const sid = newSession(
+                        "msg",
+                        shard.map((q) => q.partition),
+                    );
+                    meta.push({ sid, ek });
+                    this._send590(L, "msg", sid, ek, ik, {
+                        type: "message",
+                        priority: 2,
+                        batchSize: 2000,
+                        queries: shard,
+                    });
+                    await new Promise((r) => setTimeout(r, 600));
+                }
+                return meta;
+            };
 
-            // ---- decrypt + decode + store ----
-            for (const m of shardMeta) {
-                await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, (obj) => {
-                    for (const part of obj.partitionsList || []) {
-                        const gid = /^(?:oneone|group)\/(.+)$/.exec(part.id)?.[1];
-                        const hit = gid && threadMap.get(gid);
-                        const isGroup = part.id.startsWith("group/");
-                        const threadId = hit ? hit.id : part.id;
-                        (hit ? mappedThreads : unmappedThreads).add(threadId);
-                        for (const msg of part.messagesList || []) {
-                            const isText = typeof msg.content === "string";
-                            try {
-                                upsertThread({
-                                    threadId,
-                                    type: hit ? hit.type : isGroup ? "group" : "dm",
-                                    name: hit ? hit.name : "",
-                                    lastUpdate: Number(msg.timestamp) || 0,
-                                    sync_timestamp: Date.now(),
-                                });
-                                insertMessage({
-                                    msgId: String(msg.globalId || msg.clientId),
-                                    threadId,
-                                    senderId: String(msg.senderId || ""),
-                                    senderName: "",
-                                    text: isText ? msg.content : extractMessageText(msg.content, msg.msgType) || "",
-                                    timestamp: Number(msg.timestamp) || 0,
-                                    type: isText ? "text" : msg.msgType || "attachment",
-                                    raw_data: msg.content,
-                                });
-                                messagesSaved++;
-                            } catch {
-                                /* dedupe/constraint — keep going */
-                            }
-                        }
+            // One budget for the whole run, not one per shard: a per-shard
+            // budget multiplies (50 shards x 10 min = eight hours of waiting on
+            // a phone that already went quiet). It scales with the shard count
+            // because the phone serves them one at a time -- a full-history run
+            // is 50 shards and genuinely needs longer than a one-shard run --
+            // and a dropped socket aborts immediately regardless, so a long
+            // budget costs nothing when something actually breaks.
+            const runBudget = Math.max(waitMs, shards.length * PER_SHARD_BUDGET_MS);
+            const runDeadline = Date.now() + runBudget;
+            onStatus({
+                phase: "messages",
+                detail: `waiting up to ${Math.round(runBudget / 60000)} min for the phone to serve ${shards.length} batch(es)`,
+            });
+            let finished = 0;
+            let socketDied = false;
+            let stop = false;
+            const shardMeta = [];
+
+            // ---- wave by wave: send, wait, decrypt, decode, store ----
+            // Storing per shard rather than after all of them means an
+            // interrupted run keeps what it already pulled.
+            for (const wave of waves) {
+                if (stop) break;
+                const waveMeta = await sendWave(wave);
+                shardMeta.push(...waveMeta);
+                for (const m of waveMeta) {
+                    const left = runDeadline - Date.now();
+                    const why = left > 0 ? await waitDone(m.sid, left) : "timeout";
+                    if (why === "socket-closed") {
+                        socketDied = true;
+                        stop = true;
+                        onStatus({
+                            phase: "warn",
+                            detail:
+                                `connection lost after ${finished}/${shards.length} batch(es) — keeping what arrived` +
+                                (closeInfo
+                                    ? ` [close ${closeInfo.code}${closeInfo.reason ? ": " + closeInfo.reason : ""}]`
+                                    : " [no close event seen]"),
+                        });
+                        break;
                     }
-                });
+                    if (why === "timeout") {
+                        stop = true;
+                        onStatus({
+                            phase: "warn",
+                            detail: `timed out after ${finished}/${shards.length} batch(es) — keeping what arrived`,
+                        });
+                        break;
+                    }
+                    if (why === "error") {
+                        onStatus({ phase: "warn", detail: `batch failed: ${JSON.stringify(sessions.get(m.sid).err)}` });
+                        continue;
+                    }
+
+                    const before = messagesSaved;
+                    await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, (obj) => {
+                        // One transaction per decoded chunk rather than one per
+                        // row: thousands of individual WAL commits is both slow
+                        // and a long block on the event loop.
+                        runInTransaction(() => {
+                            for (const part of obj.partitionsList || []) {
+                                const gid = /^(?:oneone|group)\/(.+)$/.exec(part.id)?.[1];
+                                const hit = gid && threadMap.get(gid);
+                                const isGroup = part.id.startsWith("group/");
+                                const threadId = hit ? hit.id : part.id;
+                                (hit ? mappedThreads : unmappedThreads).add(threadId);
+                                const cm = (gid && convMeta.get(gid)) || {};
+                                for (const msg of part.messagesList || []) {
+                                    // The payload's numeric msgType + meta decide the row;
+                                    // `content` is always a string, so it cannot.
+                                    const info = classifySyncMessage(msg);
+                                    try {
+                                        upsertThread({
+                                            threadId,
+                                            type: hit ? hit.type : isGroup ? "group" : "dm",
+                                            name: hit ? hit.name : "",
+                                            lastUpdate: Number(msg.timestamp) || 0,
+                                            sync_timestamp: Date.now(),
+                                            respondedByMe: cm.respondedByMe,
+                                            lastGlobalId: cm.lastGlobalId,
+                                            lastClientId: cm.lastClientId,
+                                        });
+                                        insertMessage({
+                                            msgId: String(msg.globalId || msg.clientId),
+                                            threadId,
+                                            senderId: String(msg.senderId || ""),
+                                            senderName: "",
+                                            text: info.text,
+                                            timestamp: Number(msg.timestamp) || 0,
+                                            type: info.type,
+                                            raw_data: info.raw,
+                                            has_attachment: info.hasAttachment,
+                                        });
+                                        messagesSaved++;
+                                        if (info.hasAttachment) attachmentsSaved++;
+                                        typeCounts[info.type] = (typeCounts[info.type] || 0) + 1;
+                                    } catch {
+                                        /* dedupe/constraint — keep going */
+                                    }
+                                }
+                            }
+                        });
+                    });
+
+                    finished++;
+                    // Per-shard progress: without it a 50-shard run prints nothing
+                    // between "50 batch(es)" and the final total, so a stall looks
+                    // exactly like work in progress.
+                    onStatus({
+                        phase: "progress",
+                        detail: `batch ${finished}/${shards.length} — ${messagesSaved - before} new message(s), ${messagesSaved} total`,
+                    });
+                }
             }
+            if (socketDied && !messagesSaved) throw new Error("connection dropped before any messages arrived");
+            if (finished < shards.length) reason = "partial";
             setSyncState("lastSyncOkAt", Date.now());
             setSyncState("lastSyncOkKind", "transfer");
+            // How far back this run actually covered, so a later, WIDER sync is
+            // not silently skipped by the freshness debounce.
+            setSyncState("lastSyncOkFrom", String(win.from));
         } finally {
             for (const id of sessions.keys()) {
                 try {
@@ -422,10 +743,17 @@ export class SyncV2 {
                 L.ws.removeListener("message", onMsg);
             } catch {}
         }
-        return this._result(conversations, messagesSaved, mappedThreads, unmappedThreads, reason);
+        return done(reason);
     }
 
-    _result(conversations, messagesSaved, mapped, unmapped, reason) {
-        return { conversations, messagesSaved, threadsMapped: mapped.size, threadsUnmapped: unmapped.size, reason };
+    _result(conversations, messagesSaved, mapped, unmapped, reason, extra = {}) {
+        return {
+            conversations,
+            messagesSaved,
+            threadsMapped: mapped.size,
+            threadsUnmapped: unmapped.size,
+            reason,
+            ...extra,
+        };
     }
 }

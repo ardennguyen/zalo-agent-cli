@@ -6,6 +6,7 @@ import { acquireLock, releaseLock } from "../core/lock.js";
 import { error, info, success, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { SyncManager } from "../core/sync.js";
+import { SyncV2 } from "../core/sync-v2/index.js";
 
 /** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
 const CLOSE_DUPLICATE = 3000;
@@ -32,13 +33,18 @@ export function registerSyncCommands(program) {
     program
         .command("sync-mobile")
         .description(
-            "Backfill recent message history from Zalo's servers into the local cache (zalo.db). " +
-                "The old phone-to-PC transfer this command used to perform has been retired by Zalo — " +
-                "use --legacy to try it anyway.",
+            "Restore message history from your phone into the local cache (zalo.db). " +
+                "Use --transfer for the real phone-backed restore (transfer-sync-v2): it sends one " +
+                "sync request your phone confirms, then decrypts and stores your history. " +
+                "The default path is a best-effort server socket backfill (usually empty); --legacy is retired.",
+        )
+        .option(
+            "-t, --transfer",
+            "Real mobile restore over transfer-sync-v2: enumerate conversations, request message history, decrypt (libzproto) and write it to zalo.db. Sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears",
         )
         .option(
             "-F, --force",
-            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — mirroring Zalo Web, which only re-syncs when it thinks something is missing. Applies to both the default socket backfill and --legacy",
+            "Skip the 'already synced recently' shortcut and sync anyway. By default a sync is skipped when a successful one completed within the last hour and no gap is pending — mirroring Zalo Web, which only re-syncs when it thinks something is missing",
         )
         .option(
             "-L, --legacy",
@@ -52,12 +58,135 @@ export function registerSyncCommands(program) {
                 process.exit(1);
             }
 
+            if (opts.transfer) {
+                await runTransferSync(activeAcc, opts);
+                return;
+            }
             if (opts.legacy) {
                 await runLegacySync(activeAcc, opts);
                 return;
             }
             await runSocketBackfill(activeAcc, opts);
         });
+}
+
+/**
+ * Open the listener socket and resolve once connected (or on close/error/timeout).
+ *
+ * @param {object} api
+ * @param {number} waitMs
+ * @returns {Promise<{ok: boolean, reason?: string}>}
+ */
+function connectListener(api, waitMs) {
+    return new Promise((res) => {
+        let settled = false;
+        const done = (v) => {
+            if (settled) return;
+            settled = true;
+            res(v);
+        };
+        const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), waitMs);
+        api.listener.on("connected", () => {
+            clearTimeout(timer);
+            done({ ok: true });
+        });
+        api.listener.on("closed", (code) => {
+            clearTimeout(timer);
+            done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
+        });
+        api.listener.on("error", (e) => {
+            clearTimeout(timer);
+            done({ ok: false, reason: e && e.message ? e.message : "socket error" });
+        });
+        api.listener.start({ retryOnClose: false });
+    });
+}
+
+/**
+ * Real mobile restore over transfer-sync-v2 (socket cmd 590/591): enumerate
+ * conversations, request message history sharded at <=30 partitions, decrypt
+ * with libzproto, decode protobuf, map opaque conv ids to real thread ids via
+ * the friend/group lists, and write into zalo.db. Sends ONE sync request the
+ * owner confirms on their phone. See src/core/sync-v2/index.js.
+ *
+ * @param {{ownId: string, name?: string}} activeAcc
+ * @param {{force?: boolean, wait?: number}} opts
+ */
+async function runTransferSync(activeAcc, opts) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+
+    let api;
+    let syncManager;
+    try {
+        api = getApi();
+        syncManager = new SyncManager(api, activeAcc.ownId);
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
+
+    // Debounce: skip a redundant run so we don't re-ping the phone, unless --force.
+    const freshness = syncManager.checkSyncFreshness({ force: opts.force });
+    if (freshness.skip) {
+        success(`Already synced ${formatAge(freshness.ageMs)} ago — skipping to avoid re-pinging your phone.`);
+        info("Pass --force to sync anyway.");
+        process.exit(0);
+    }
+
+    if (!acquireLock(accountDir)) {
+        error(`A listen daemon is already running for account ${activeAcc.ownId}.`);
+        info("Stop it first — one socket per account.");
+        process.exit(1);
+    }
+
+    // Transfer sync needs time for the phone confirmation; use a generous window.
+    const waitMs = Math.max(180, Number(opts.wait) || 0) * 1000;
+    let exitCode = 1;
+    try {
+        info("Connecting…");
+        const connected = await connectListener(api, 30000);
+        if (!connected.ok) {
+            if (connected.reason === "duplicate") {
+                error("Zalo closed this connection: another web session is already open on this account.");
+                info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+            } else {
+                error(`Could not open a connection: ${connected.reason}`);
+            }
+        } else {
+            syncManager.markConnected();
+            warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
+            const sv = new SyncV2(api, activeAcc.ownId);
+            const res = await sv.restore({
+                waitMs,
+                onStatus: ({ phase, detail }) => {
+                    if (phase === "confirm") warning(detail);
+                    else if (detail) info(`  ${detail}`);
+                },
+            });
+            if (res.conversations === 0) {
+                warning("No conversations returned — the phone prompt may not have been confirmed in time. Try again.");
+                exitCode = 0;
+            } else {
+                success(
+                    `Restored ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) into the local cache.`,
+                );
+                info(
+                    `Threads resolved to real ids/names: ${res.threadsMapped}; unresolved (non-friend or OA): ${res.threadsUnmapped}.`,
+                );
+                exitCode = 0;
+            }
+        }
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+    } finally {
+        try {
+            api.listener.stop();
+        } catch {
+            // already closed
+        }
+        releaseLock(accountDir);
+    }
+    process.exit(exitCode);
 }
 
 /**

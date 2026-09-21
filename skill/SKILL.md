@@ -38,7 +38,7 @@ zalo-agent whoami                # Full profile of the logged-in user
 zalo-agent logout                # Invalidate the session server-side, keep credentials
 zalo-agent logout --delete-history  # ...and delete the local chat cache (zalo.db + media)
 zalo-agent logout --purge        # ...and wipe all local data + credentials + registry entry
-zalo-agent sync-mobile [-F]      # Backfill recent history from the server into the local cache
+zalo-agent sync-mobile --transfer # Restore full history from the phone into zalo.db (one confirm)
 zalo-agent update                # Self-update to the latest published version
 ```
 `logout --purge` and `account remove` refuse while a `listen` daemon still holds the account's `daemon.lock`.
@@ -96,13 +96,14 @@ Production-ready with pm2. Details: `references/listen-mode-guide.md`
 ### Local Cache & Sync
 ```bash
 zalo-agent msg history <ID> -n 50      # Reads from ~/.zalo-agent-cli/accounts/<ownId>/zalo.db
-zalo-agent sync-mobile                 # Backfill recent history over the WebSocket (no phone contact)
-zalo-agent sync-mobile --force         # Skip the "already synced" debounce shortcut
-zalo-agent sync-mobile --legacy        # Try the retired phone-transfer endpoint (pings the phone, one attempt)
+zalo-agent sync-mobile --transfer      # REAL restore: pulls your history from the phone into zalo.db (one confirm on the phone)
+zalo-agent sync-mobile                 # Best-effort server socket backfill (usually empty; no phone contact)
+zalo-agent sync-mobile --force         # Skip the "already synced recently" debounce
+zalo-agent sync-mobile --legacy        # Retired endpoint (pings the phone, one attempt, recovers nothing)
 ```
-`sync-mobile` asks the server for old messages over the socket (cmd 510/511) and writes anything that arrives to `zalo.db`. **Measured 2026-09-20: Zalo returns an empty set, so this normally recovers nothing** — the command reports that plainly instead of claiming success. A real Zalo sync makes the user's **phone show a notification** (the phone is the data source, woken by socket cmd 590); if the phone stays silent, nothing synced. That handshake is not implemented. There is no working full-history sync today; use `listen` to capture messages going forward. It needs `daemon.lock`, so stop `listen` first, and Zalo's one-web-session rule means it closes a browser Zalo Web session on the same account.
+**`sync-mobile --transfer` is the working full-history restore** (transfer-sync-v2, socket cmd 590/591). It sends ONE sync request the owner confirms on their phone, enumerates every conversation, requests message history in shards of ≤30, decrypts with Zalo's `libzproto` WASM (fetched+cached from Zalo's CDN on first run), decodes protobuf, maps each opaque conversation id to the real numeric threadId + name via the friend/group lists, and writes to `zalo.db`. The phone is the data source, so it **must** show a confirmation prompt — tap it. Non-friend/OA conversations may stay keyed by an opaque id. Needs `daemon.lock` (stop `listen` first); Zalo's one-web-session rule applies.
 
-The phone-to-PC transfer this command used to attempt has been **retired by Zalo** — `--legacy` still tries it, once, and will almost certainly report nothing. `listen` still runs the old backfill on reconnect, which now recovers nothing.
+Without `--transfer`, `sync-mobile` only does a best-effort server socket backfill (cmd 510/511) that usually returns empty. The old phone-to-PC transfer is retired — `--legacy` still tries it once and recovers nothing.
 
 ### Friends
 ```bash
@@ -226,7 +227,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - `cliMsgId` required for: react, undo → get from `--json send` or `--json listen`
 - Mentions only in groups (`-t 1`)
 - QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting out the 60s timeout
-- `sync-mobile` is fully automatable now; only `--legacy` reaches the phone, and that path is retired
+- `sync-mobile --transfer` is the real history restore; it deliberately prompts the phone once (that is the data source). The default (no flag) and `--legacy` do not restore data
 - 1 proxy per account recommended (shared proxies risk a ban)
 - Credentials: `~/.zalo-agent-cli/` (personal, 0600) and `~/.zalo-agent/` (OA, 0600) — different directories
 - Per-account data: `~/.zalo-agent-cli/accounts/<ownId>/` (`zalo.db`, `media/`, `sync/`, `daemon.lock`)

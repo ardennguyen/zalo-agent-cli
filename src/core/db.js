@@ -210,6 +210,35 @@ export function initDb(dbPath) {
     try {
         db.exec("ALTER TABLE messages ADD COLUMN mediaPrunedAt INTEGER");
     } catch {}
+    // An older listener stored the raw live msgType as the row type, so
+    // removals landed as 'chat.undo'/'chat.delete' and media as
+    // 'chat.photo'/'share.file'/... Every query keyed on the shared vocabulary
+    // (starting with the removal ones) is short by exactly those rows, so
+    // normalize them once. Idempotent: matches only the legacy spellings.
+    try {
+        db.prepare(
+            `UPDATE messages SET type = CASE type
+               WHEN 'chat.undo' THEN 'deleted'
+               WHEN 'chat.delete' THEN 'deleted'
+               WHEN 'webchat' THEN 'text'
+               WHEN 'chat.photo' THEN 'photo'
+               WHEN 'chat.video.msg' THEN 'video'
+               WHEN 'share.file' THEN 'file'
+               WHEN 'chat.gif' THEN 'gif'
+               WHEN 'chat.sticker' THEN 'sticker'
+               WHEN 'chat.voice' THEN 'voice'
+               WHEN 'chat.doodle' THEN 'doodle'
+               WHEN 'chat.ecard' THEN 'card'
+               WHEN 'chat.recommended' THEN 'link'
+               WHEN 'chat.link' THEN 'link'
+               ELSE type END
+             WHERE type IN ('chat.undo','chat.delete','webchat','chat.photo','chat.video.msg','share.file',
+                            'chat.gif','chat.sticker','chat.voice','chat.doodle','chat.ecard',
+                            'chat.recommended','chat.link')`,
+        ).run();
+    } catch {
+        /* a fresh database has nothing to normalize */
+    }
     // When the conversation stopped being ours: dispersed, deleted, or we were
     // removed. Nothing else records this, so without it a vanished group keeps
     // its messages and media forever with no code path that would revisit them.
@@ -318,8 +347,12 @@ export function insertMessage(msg) {
       localPath = COALESCE(excluded.localPath, messages.localPath),
       has_attachment = excluded.has_attachment,
       -- Never regress delivery state: a re-sync of an older snapshot must not
-      -- turn a seen message back into merely received.
-      msgStatus = MAX(COALESCE(excluded.msgStatus, 0), COALESCE(messages.msgStatus, 0))
+      -- turn a seen message back into merely received. NULL is preserved as
+      -- NULL, because "we were never told" is not the same as status 0, and
+      -- with read receipts switched off it is the normal state.
+      msgStatus = CASE
+        WHEN excluded.msgStatus IS NULL AND messages.msgStatus IS NULL THEN NULL
+        ELSE MAX(COALESCE(excluded.msgStatus, 0), COALESCE(messages.msgStatus, 0)) END
   `);
 
     const raw_data =
@@ -525,7 +558,7 @@ export function getLinkMessages(opts = {}) {
               json_extract(a.value, '$.title') AS title,
               json_extract(a.value, '$.description') AS description,
               json_extract(a.value, '$.thumbUrl') AS thumbUrl
-       FROM messages m, json_each(json_extract(m.raw_data, '$.attachments')) a
+       FROM messages m, json_each(CASE WHEN json_valid(m.raw_data) THEN json_extract(m.raw_data, '$.attachments') END) a
        WHERE ${where.join(" AND ")}
        ORDER BY m.timestamp DESC LIMIT ?`,
         )
@@ -881,13 +914,81 @@ export function getReactions({ msgId = null, threadId = null, limit = 500 } = {}
  * text readable afterwards is retaining something the sender withdrew. The row
  * stays so the conversation still shows that something was there and when.
  */
-export function markMessageRecalled(msgId, at = Date.now()) {
+export function markMessageRecalled(msgId, at = Date.now(), opts = {}) {
     if (!db) throw new Error("Database not initialized");
-    return db
+    const row = db
+        .prepare("SELECT type, raw_data, localPath, has_attachment FROM messages WHERE msgId = ?")
+        .get(String(msgId));
+    // Nothing to tombstone. Reported rather than swallowed: the previous
+    // version always claimed success, which is how a recall handler that
+    // updated zero rows went unnoticed.
+    if (!row) return { changes: 0, localPath: null, missing: true };
+
+    // Keep the identifiers, drop the content. `cliMsgId` is the only local copy
+    // of a client id and `msg delete` / `msg undo` / `conv delete` all need it,
+    // so replacing raw_data wholesale made a recalled message undeletable.
+    // `originalType` mirrors what the phone itself preserves for a removed
+    // message (params.original_type), so our tombstone is no poorer than
+    // Zalo's own.
+    let cliMsgId;
+    try {
+        cliMsgId = JSON.parse(row.raw_data)?.cliMsgId;
+    } catch {
+        /* 108k legacy rows hold the bare content string, not JSON */
+    }
+    const raw = JSON.stringify({
+        src: "listen",
+        removedAs: opts.reason === "delete-for-me" ? "delete-for-me" : "recall",
+        removedAt: Number(at) || Date.now(),
+        originalType: row.type,
+        cliMsgId: cliMsgId === undefined || cliMsgId === null ? undefined : String(cliMsgId),
+    });
+    const hadMedia = row.has_attachment === 1 || !!row.localPath;
+
+    const res = db
         .prepare(
-            "UPDATE messages SET type = 'deleted', text = '[deleted]', raw_data = json_object('src','undo','recalledAt',?) WHERE msgId = ?",
+            `UPDATE messages SET
+         type = 'deleted',
+         text = '[deleted]',
+         raw_data = @raw,
+         -- The media goes with the message. Leaving has_attachment set would
+         -- queue the attachment of a just-withdrawn message for download;
+         -- mediaPrunedAt is the existing "do not fetch this again" marker.
+         has_attachment = 0,
+         localPath = NULL,
+         mediaPrunedAt = CASE WHEN @hadMedia = 1 THEN @at ELSE mediaPrunedAt END
+       WHERE msgId = @msgId`,
         )
-        .run(at, String(msgId));
+        .run({ raw, at: Number(at) || Date.now(), hadMedia: hadMedia ? 1 : 0, msgId: String(msgId) });
+
+    return { changes: res.changes, localPath: row.localPath || null, originalType: row.type, missing: false };
+}
+
+/**
+ * Find a message by the client-side id its sender generated.
+ *
+ * A "delete for me" frame names its target by `clientDelMsgId` when the
+ * deleting client did not know the server id, so this is the only way to
+ * resolve it. Guarded with json_valid() because an older writer stored the
+ * bare content string in raw_data on six figures of rows, and an unguarded
+ * json_extract over this table raises "malformed JSON" and takes the whole
+ * query with it.
+ *
+ * @param {string|number} cliMsgId
+ * @returns {object|null}
+ */
+export function findMessageByClientId(cliMsgId) {
+    if (!db) throw new Error("Database not initialized");
+    if (cliMsgId === undefined || cliMsgId === null || cliMsgId === "") return null;
+    return (
+        db
+            .prepare(
+                `SELECT * FROM messages
+         WHERE json_valid(raw_data) AND json_extract(raw_data, '$.cliMsgId') = ?
+         ORDER BY timestamp DESC LIMIT 1`,
+            )
+            .get(String(cliMsgId)) || null
+    );
 }
 
 /** Pinned / unread-marked state for a conversation. Applies to DMs too. */

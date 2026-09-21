@@ -348,6 +348,8 @@ Claude Code / MCP Client
 - **Cursor-based**: `zalo_get_messages`/`zalo_mark_read` dùng cursor dạng số nguyên tăng dần toàn cục (`_globalCursor`), không dùng chuỗi
 - **Bền vững**: mọi tin nhắn nhận được đều ghi vào `~/.zalo-agent-cli/accounts/<ownId>/zalo.db` (qua `core/live-store.js`, cùng đường ghi với `listen` và mobile sync), kèm reaction, thu hồi, trạng thái đã nhận/đã xem, và cờ "đã rời nhóm". Restart **không** mất dữ liệu nữa — chỉ ring buffer (con trỏ đọc tăng dần) là trong bộ nhớ
 - **Một session / một account**: `mcp start` giữ `daemon.lock` như `listen`. Chạy cả hai cùng account sẽ bị từ chối kèm thông báo rõ, thay vì để Zalo âm thầm ngắt một trong hai socket
+- **Thu hồi / xoá**: `mcp start` áp dụng cả hai loại xoá của Zalo lên đúng tin nhắn bị xoá (thu hồi cho mọi người → event `undo`; xoá ở phía tôi → `message` với `msgType: chat.delete`), thay vì lưu thành tin mới; media đã tải về cũng bị xoá theo
+- **Tin nhắn của chính bạn**: `selfListen` đã bật, nên mọi tin bạn gửi từ điện thoại/Zalo Web/CLI đều được ghi vào cache (trước đây bị thư viện bỏ trước khi tới handler). Bộ lọc `watchThreads` chỉ ảnh hưởng tới buffer mà agent đọc
 - **Bộ lọc chỉ lọc buffer**: `watchThreads` và bộ lọc nhiễu quyết định agent *thấy* gì; cache vẫn lưu đầy đủ
 - **Media auto-download**: ảnh/audio/video nhận được tự tải nền, tổ chức theo thư mục thread; `zalo_view_media` mở file có sẵn hoặc tải trước khi mở
 

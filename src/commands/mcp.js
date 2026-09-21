@@ -220,6 +220,14 @@ export function registerMCPCommands(program) {
                     // every message it had ever seen.
                     const threadName = nameCache?.get(String(msg.threadId))?.name || undefined;
                     const stored = storeLiveMessage(msg, { threadName });
+                    // A "delete for me" frame removes a message; it must not be
+                    // buffered as one for an agent to read.
+                    if (stored.removal) {
+                        const r = stored.removal;
+                        if (r.stored) console.error(`[mcp] deleted for me: ${r.msgId}`);
+                        else console.error(`[mcp] delete-for-me not applied: ${r.reason}`);
+                        return;
+                    }
                     if (!stored.stored) {
                         console.error(`[mcp] message not stored: ${stored.reason}`);
                         return;

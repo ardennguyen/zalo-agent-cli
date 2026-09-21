@@ -751,6 +751,14 @@ export class SyncV2 {
                                             type: info.type,
                                             raw_data: info.raw,
                                             has_attachment: info.hasAttachment,
+                                            // The phone is the only source of
+                                            // delivery/read state, and this was
+                                            // parsed and then dropped on the way
+                                            // to the column: 87k rows carried a
+                                            // real status inside raw_data while
+                                            // the column stayed NULL on all of
+                                            // them.
+                                            msgStatus: info.raw?.msgStatus,
                                         });
                                         messagesSaved++;
                                         if (info.hasAttachment) attachmentsSaved++;

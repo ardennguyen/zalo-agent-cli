@@ -112,6 +112,15 @@ function createZalo(proxyUrl) {
         // Suppress zca-js internal INFO logs when --json to keep stdout clean
         logging: !process.env.ZALO_JSON_MODE,
         imageMetadataGetter: readImageMetadata,
+        // Deliver our own traffic too. zca-js defaults this off, which is
+        // right for a bot that would otherwise answer itself, and wrong for a
+        // local cache: without it, everything the owner sends -- from their
+        // phone, from Zalo Web, from this CLI -- is dropped before any handler
+        // sees it, so every conversation in zalo.db holds one side of itself.
+        // It also made the new delivery receipts inert, since a receipt updates
+        // the row of a message WE sent and that row was never written.
+        // `listen --no-self` still hides self messages from stdout/webhook/JSONL.
+        selfListen: true,
     };
     if (proxyUrl) {
         // HttpsProxyAgent for WebSocket (ws lib), ProxyAgent dispatcher for HTTP fetch

@@ -8,12 +8,15 @@
  */
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
     initDb,
     getMessages,
+    findMessageByClientId,
+    getLinkMessages,
+    markMessageRecalled,
     getReactions,
     insertMessage,
     upsertThread,
@@ -21,6 +24,7 @@ import {
     forgetThread,
     getSyncState,
     clearSyncState,
+    setMessageLocalPath,
     getBoardItems,
     getRecentThreads,
     getThreadNames,
@@ -29,6 +33,8 @@ import {
     storeLiveMessage,
     storeLiveReaction,
     storeLiveUndo,
+    storeLiveDelete,
+    isRemovalMessage,
     attachLiveStore,
     storeGroupEvent,
     noteBoardChange,
@@ -85,9 +91,14 @@ describe("storeLiveMessage", () => {
         assert.equal(row.has_attachment, 1, "otherwise sync-media can never see it");
     });
 
-    it("records msgStatus so delivery state survives", () => {
+    it("does NOT copy the live status field into the Sync2 msgStatus column", () => {
+        // These are two different enums. The live `status` is undocumented
+        // (zca-js declares only `status: number`) and arrived as 1 -- which the
+        // column defines as "failed" -- on the owner's own successfully-sent
+        // messages. Delivery state comes from the mobile sync and from the
+        // delivered/seen receipt events, which storeReceipts applies.
         storeLiveMessage(liveMsg({}, { msgType: "webchat", content: "hi", status: 5 }));
-        assert.equal(getMessages("t1")[0].msgStatus, 5);
+        assert.equal(getMessages("t1")[0].msgStatus, null);
     });
 
     it("refuses an event with no msgId rather than writing a junk row", () => {
@@ -130,45 +141,6 @@ describe("storeLiveReaction", () => {
     it("refuses an event missing msgId or userId", () => {
         assert.equal(storeLiveReaction({ data: { uidFrom: "u" } }).stored, false);
         assert.equal(storeLiveReaction({ data: { msgId: "m" } }).stored, false);
-    });
-});
-
-describe("storeLiveUndo", () => {
-    const seed = () =>
-        insertMessage({
-            msgId: "orig",
-            threadId: "t1",
-            senderId: "u1",
-            senderName: "",
-            text: "something private",
-            timestamp: 1,
-            type: "text",
-        });
-
-    it("marks the recalled message instead of leaving its text readable", () => {
-        // A recall withdraws a message for everyone; a cache that keeps the
-        // text is retaining something the sender took back.
-        seed();
-        const r = storeLiveUndo({ threadId: "t1", data: { globalMsgId: "orig", ts: 99 } });
-        assert.equal(r.stored, true);
-        const [row] = getMessages("t1");
-        assert.equal(row.type, "deleted");
-        assert.notEqual(row.text, "something private");
-    });
-
-    it("keeps the row so the conversation still shows something was said", () => {
-        seed();
-        storeLiveUndo({ threadId: "t1", data: { globalMsgId: "orig" } });
-        assert.equal(getMessages("t1").length, 1, "the row must not be deleted outright");
-    });
-
-    it("accepts msgId as well as globalMsgId", () => {
-        seed();
-        assert.equal(storeLiveUndo({ data: { msgId: "orig" } }).stored, true);
-    });
-
-    it("refuses an undo with no target", () => {
-        assert.equal(storeLiveUndo({ data: {} }).stored, false);
     });
 });
 
@@ -463,5 +435,295 @@ describe("board-stale flag lifecycle", () => {
         clearSyncState("boardStale:g1");
         assert.equal(getSyncState("boardStale:g1"), null);
         assert.ok(getSyncState("boardStale:g2"));
+    });
+});
+
+/**
+ * Removal, both kinds.
+ *
+ * Zalo delivers them on two different channels and names the target in two
+ * different places. The previous implementation read the target from the top
+ * level of the undo payload, where zca-js puts the NOTIFICATION's own id
+ * (models/Undo.d.ts: TUndo has no globalMsgId, TUndoContent does), so every
+ * live recall updated zero rows while reporting success -- and a delete-for-me
+ * was inserted as a brand-new message row. These pin the real shapes.
+ */
+describe("removal — recall for everyone", () => {
+    const victim = () =>
+        storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 4242, msgType: "webchat", content: "secret" }));
+
+    // The shape zca-js actually emits: target inside content.
+    const undoEvent = (over = {}) => ({
+        threadId: "t1",
+        isSelf: true,
+        isGroup: false,
+        data: {
+            msgId: "999999",
+            cliMsgId: "888888",
+            msgType: "chat.undo",
+            uidFrom: "u9",
+            ts: 1_750_000_009_000,
+            content: { globalMsgId: 1, cliMsgId: 2, deleteMsg: 3, srcId: 4, destId: 5, ...over },
+        },
+    });
+
+    it("tombstones the message named by content.globalMsgId", () => {
+        victim();
+        const r = storeLiveUndo(undoEvent({ globalMsgId: "m1" }));
+        assert.equal(r.stored, true);
+        assert.equal(r.msgId, "m1");
+        const [row] = getMessages("t1");
+        assert.equal(row.type, "deleted");
+        assert.equal(row.text, "[deleted]");
+    });
+
+    it("does NOT tombstone the notification's own id", () => {
+        victim();
+        storeLiveUndo(undoEvent({ globalMsgId: "m1" }));
+        assert.equal(getMessages("t1").length, 1, "no row is created for the notification itself");
+        assert.equal(getMessages("t1")[0].msgId, "m1");
+    });
+
+    it("reports failure when it changed nothing, instead of claiming success", () => {
+        const r = storeLiveUndo(undoEvent({ globalMsgId: "never-seen" }));
+        assert.equal(r.stored, false, "a recall for an uncached message is not a success");
+        assert.match(r.reason, /no cached message/);
+    });
+
+    it("falls back to content.cliMsgId when no global id is given", () => {
+        victim();
+        const r = storeLiveUndo(undoEvent({ globalMsgId: 0, cliMsgId: 4242 }));
+        assert.equal(r.stored, true);
+        assert.equal(r.msgId, "m1");
+    });
+
+    it("keeps cliMsgId, which msg delete / msg undo / conv delete still need", () => {
+        victim();
+        storeLiveUndo(undoEvent({ globalMsgId: "m1" }));
+        const raw = JSON.parse(getMessages("t1")[0].raw_data);
+        assert.equal(raw.cliMsgId, "4242", "replacing raw_data wholesale made a recalled message undeletable");
+    });
+
+    it("records what was removed and why, like the phone's params.original_type", () => {
+        storeLiveMessage(
+            liveMsg({}, { msgId: "m2", msgType: "chat.photo", content: { href: "https://photo-stal-3.zdn.vn/a.jpg" } }),
+        );
+        storeLiveUndo(undoEvent({ globalMsgId: "m2" }));
+        const raw = JSON.parse(getMessages("t1").find((r) => r.msgId === "m2").raw_data);
+        assert.equal(raw.originalType, "photo");
+        assert.equal(raw.removedAs, "recall");
+        assert.ok(raw.removedAt > 0);
+    });
+});
+
+describe("removal — delete for me only", () => {
+    // Real captured shape: content is an ARRAY, which is why zca-js routes it
+    // to the message channel rather than to undo.
+    const deleteEvent = (entry) => ({
+        threadId: "t1",
+        type: 0,
+        isSelf: true,
+        data: {
+            msgId: "770001",
+            cliMsgId: "770002",
+            msgType: "chat.delete",
+            uidFrom: "u9",
+            ts: 1_750_000_010_000,
+            content: [{ type: 1, actionType: 0, uidFrom: "u9", uidTo: "t1", destId: "t1", ...entry }],
+        },
+    });
+
+    it("is recognised as a removal, not a message", () => {
+        assert.equal(isRemovalMessage({ msgType: "chat.delete" }), true);
+        assert.equal(isRemovalMessage({ msgType: "chat.undo" }), true);
+        assert.equal(isRemovalMessage({ msgType: "webchat" }), false);
+    });
+
+    it("applies to the target named by globalDelMsgId", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 11, msgType: "webchat", content: "bye" }));
+        const r = storeLiveDelete(deleteEvent({ globalDelMsgId: "m1", clientDelMsgId: 11 }));
+        assert.equal(r.stored, true);
+        assert.equal(getMessages("t1")[0].type, "deleted");
+    });
+
+    it("resolves by clientDelMsgId when globalDelMsgId is 0 — both shapes were captured live", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 1790008960580, msgType: "webchat", content: "bye" }));
+        const r = storeLiveDelete(deleteEvent({ globalDelMsgId: 0, clientDelMsgId: 1790008960580 }));
+        assert.equal(r.stored, true);
+        assert.equal(r.msgId, "m1");
+    });
+
+    it("creates no phantom row for the deletion notification itself", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 11, msgType: "webchat", content: "bye" }));
+        storeLiveMessage(deleteEvent({ globalDelMsgId: "m1", clientDelMsgId: 11 }));
+        const rows = getMessages("t1");
+        assert.equal(rows.length, 1, "the delete frame must not become a message row");
+        assert.equal(rows[0].msgId, "m1");
+        assert.equal(rows[0].type, "deleted");
+    });
+
+    it("routes through storeLiveMessage without ever inserting", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 11, msgType: "webchat", content: "bye" }));
+        const out = storeLiveMessage(deleteEvent({ globalDelMsgId: "m1", clientDelMsgId: 11 }));
+        assert.equal(out.removal.stored, true);
+        assert.equal(out.info, null, "there is no message to classify");
+    });
+
+    it("is distinguished from a recall in the stored row", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 11, msgType: "webchat", content: "bye" }));
+        storeLiveDelete(deleteEvent({ globalDelMsgId: "m1", clientDelMsgId: 11 }));
+        // The phone ships one representation for both (msgType 36), so the
+        // distinction only survives if we record it.
+        assert.equal(JSON.parse(getMessages("t1")[0].raw_data).removedAs, "delete-for-me");
+    });
+
+    it("says so when the frame carries no usable target", () => {
+        const r = storeLiveDelete({ threadId: "t1", data: { msgType: "chat.delete", content: [] } });
+        assert.equal(r.stored, false);
+    });
+});
+
+describe("removal — the media goes with the message", () => {
+    it("takes the row out of the download queue instead of fetching a withdrawn photo", () => {
+        storeLiveMessage(
+            liveMsg({}, { msgId: "m1", msgType: "chat.photo", content: { href: "https://photo-stal-3.zdn.vn/a.jpg" } }),
+        );
+        assert.equal(getMessages("t1")[0].has_attachment, 1);
+        markMessageRecalled("m1");
+        const row = getMessages("t1")[0];
+        assert.equal(row.has_attachment, 0, "otherwise sync-media downloads the media of a recalled message");
+        assert.equal(row.localPath, null);
+        assert.ok(row.mediaPrunedAt > 0, "mediaPrunedAt is the existing do-not-refetch marker");
+    });
+
+    it("deletes an already-downloaded file", () => {
+        const file = join(ROOT, "victim.jpg");
+        writeFileSync(file, "bytes");
+        storeLiveMessage(
+            liveMsg({}, { msgId: "m1", msgType: "chat.photo", content: { href: "https://photo-stal-3.zdn.vn/a.jpg" } }),
+        );
+        setMessageLocalPath("m1", file);
+        const r = markMessageRecalled("m1");
+        assert.equal(r.localPath, file, "the caller is told which file to remove");
+        assert.equal(existsSync(file), true, "db layer does not touch the filesystem itself");
+        // live-store is what removes it
+        writeFileSync(file, "bytes");
+        storeLiveMessage(
+            liveMsg(
+                {},
+                {
+                    msgId: "m2",
+                    cliMsgId: 77,
+                    msgType: "chat.photo",
+                    content: { href: "https://photo-stal-3.zdn.vn/b.jpg" },
+                },
+            ),
+        );
+        setMessageLocalPath("m2", file);
+        const out = storeLiveDelete({
+            threadId: "t1",
+            data: { msgType: "chat.delete", ts: 1, content: [{ globalDelMsgId: "m2" }] },
+        });
+        assert.equal(out.mediaRemoved, true);
+        assert.equal(existsSync(file), false, "keeping the file retains exactly what was withdrawn");
+    });
+
+    it("reports missing rather than throwing for an unknown message", () => {
+        const r = markMessageRecalled("nope");
+        assert.equal(r.changes, 0);
+        assert.equal(r.missing, true);
+    });
+});
+
+describe("cache robustness against legacy rows", () => {
+    it("finds a message by client id without tripping on non-JSON raw_data", () => {
+        // An older writer stored the bare content string in raw_data on six
+        // figures of rows; an unguarded json_extract over the table throws
+        // SQLITE_ERROR "malformed JSON" and takes the whole query with it.
+        insertMessage({
+            msgId: "legacy",
+            threadId: "t1",
+            senderId: "u",
+            senderName: "",
+            text: "hello",
+            timestamp: 1,
+            type: "text",
+            raw_data: "hello",
+        });
+        storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 55, msgType: "webchat", content: "x" }));
+        const found = findMessageByClientId(55);
+        assert.equal(found?.msgId, "m1");
+    });
+
+    it("getLinkMessages survives a cache holding non-JSON raw_data", () => {
+        insertMessage({
+            msgId: "legacy",
+            threadId: "t1",
+            senderId: "u",
+            senderName: "",
+            text: "hello",
+            timestamp: 1,
+            type: "text",
+            raw_data: "hello",
+        });
+        storeLiveMessage(
+            liveMsg({}, { msgId: "m1", msgType: "chat.recommended", content: { href: "https://e.com/x", title: "T" } }),
+        );
+        assert.doesNotThrow(() => getLinkMessages({ threadId: "t1" }));
+    });
+
+    it("normalizes legacy row types on open, so a removal query is not short", () => {
+        insertMessage({
+            msgId: "old1",
+            threadId: "t1",
+            senderId: "u",
+            senderName: "",
+            text: "[deleted]",
+            timestamp: 1,
+            type: "chat.undo",
+            raw_data: "{}",
+        });
+        insertMessage({
+            msgId: "old2",
+            threadId: "t1",
+            senderId: "u",
+            senderName: "",
+            text: "hi",
+            timestamp: 2,
+            type: "webchat",
+            raw_data: "{}",
+        });
+        const path = join(ROOT, `legacy${n++}.sqlite`);
+        // re-open the SAME file to trigger the migration
+        const h = opened[opened.length - 1];
+        h.close();
+        opened.push(initDb(h.name));
+        const types = getMessages("t1", 50).reduce((a, r) => ((a[r.type] = (a[r.type] || 0) + 1), a), {});
+        assert.equal(types["chat.undo"], undefined, "a legacy removal row must be findable as 'deleted'");
+        assert.equal(types["webchat"], undefined);
+        assert.ok(types.deleted >= 1);
+        assert.ok(path);
+    });
+});
+
+describe("msgStatus is not written from the live status field", () => {
+    it("leaves msgStatus NULL for a live message", () => {
+        // The live `status` field is an undocumented enum, not Sync2's
+        // MessageStatus: the owner's own successfully-sent messages arrived
+        // carrying 1, which this column defines as "failed".
+        storeLiveMessage(liveMsg({}, { msgType: "webchat", content: "hi", status: 1 }));
+        assert.equal(getMessages("t1")[0].msgStatus, null);
+    });
+
+    it("still takes a real receipt", () => {
+        storeLiveMessage(liveMsg({}, { msgType: "webchat", content: "hi", status: 1 }));
+        storeReceipts([{ data: { msgId: "m1" } }], 4);
+        assert.equal(getMessages("t1")[0].msgStatus, 4);
+    });
+
+    it("keeps NULL as NULL across a re-insert rather than collapsing it to 0", () => {
+        storeLiveMessage(liveMsg({}, { msgType: "webchat", content: "hi" }));
+        storeLiveMessage(liveMsg({}, { msgType: "webchat", content: "hi again" }));
+        assert.equal(getMessages("t1")[0].msgStatus, null, "unknown is not the same as status 0");
     });
 });

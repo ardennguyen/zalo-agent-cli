@@ -12,6 +12,7 @@
  * Both paths now funnel through here, so a message stored during a sync is
  * byte-for-byte the same row the listener would have written.
  */
+import fs from "node:fs";
 import {
     insertMessage,
     upsertThread,
@@ -20,6 +21,7 @@ import {
     markThreadGone,
     setSyncState,
     setMessageStatus,
+    findMessageByClientId,
 } from "./db.js";
 import { classifyLiveMessage } from "./sync-v2/message-types.js";
 
@@ -51,6 +53,90 @@ function nameFromLiveMessage(msg) {
 }
 
 /**
+ * Live msgTypes that are not messages at all but instructions to remove one.
+ *
+ * Zalo delivers the two kinds of removal on two different channels:
+ *
+ *   "Thu hoi" (recall for everyone)  -> the `undo` event, because its content
+ *                                        is an OBJECT carrying `deleteMsg`.
+ *   "Xoa o phia toi" (delete for me) -> an ordinary `message` event with
+ *                                        msgType "chat.delete", because its
+ *                                        content is an ARRAY, so zca-js's
+ *                                        `deleteMsg` check cannot match it.
+ *
+ * The second one therefore arrives here, in the message path, and must never
+ * be stored as a message: it is keyed by its own notification id, so inserting
+ * it created a phantom row that exists nowhere in Zalo while the message it
+ * removes stayed fully readable.
+ */
+const REMOVAL_MSG_TYPES = new Set(["chat.delete", "chat.undo"]);
+
+/**
+ * Is this `message` event actually an instruction to remove a message?
+ *
+ * Exported so a consumer can branch BEFORE rendering it: emitting a `message`
+ * webhook event for a deletion frame is the same category of mistake as
+ * storing one, and a receiver routing on `event` would act on a message that
+ * does not exist.
+ *
+ * @param {object} data - the event's `data` payload
+ * @returns {boolean}
+ */
+export function isRemovalMessage(data) {
+    return REMOVAL_MSG_TYPES.has(data?.msgType);
+}
+
+/**
+ * Delete a media file a removed message had already pulled down.
+ *
+ * The file only exists because we fetched it, and the phone strips every CDN
+ * reference from a removed message (its attachments survive as `kind: "meta"`
+ * with no url), so Zalo itself keeps no way to serve it again. Keeping our copy
+ * would mean holding the one thing the sender withdrew.
+ *
+ * @param {string|null} localPath
+ * @returns {boolean} true when a file was removed
+ */
+function dropMediaFile(localPath) {
+    if (!localPath) return false;
+    try {
+        fs.rmSync(localPath, { force: true });
+        return true;
+    } catch (e) {
+        console.error(`[live-store] could not remove media of a deleted message: ${e.message}`);
+        return false;
+    }
+}
+
+/**
+ * Apply a removal to the message it names, wherever the id came from.
+ *
+ * @param {object} target - {msgId} or {cliMsgId}; msgId wins when both are given
+ * @param {"recall"|"delete-for-me"} reason
+ * @param {number} at - epoch ms
+ * @returns {{stored: boolean, msgId?: string, reason?: string, mediaRemoved?: boolean}}
+ */
+function applyRemoval(target, reason, at) {
+    let msgId = target.msgId === undefined || target.msgId === null ? null : String(target.msgId);
+    // A zero globalMsgId means "not supplied", not "message zero".
+    if (msgId === "0" || msgId === "") msgId = null;
+
+    if (!msgId && target.cliMsgId) {
+        const row = findMessageByClientId(target.cliMsgId);
+        if (row) msgId = String(row.msgId);
+    }
+    if (!msgId) return { stored: false, reason: "removal names no message we hold" };
+
+    const res = markMessageRecalled(msgId, at, { reason });
+    if (!res.changes) {
+        // Not an error worth failing on: Zalo can name a message older than
+        // anything this cache ever saw.
+        return { stored: false, msgId, reason: `no cached message ${msgId}` };
+    }
+    return { stored: true, msgId, reason, mediaRemoved: dropMediaFile(res.localPath) };
+}
+
+/**
  * Store one live message event.
  *
  * @param {object} msg - the zca-js message event (`{threadId, type, data, isSelf}`)
@@ -64,6 +150,12 @@ function nameFromLiveMessage(msg) {
 export function storeLiveMessage(msg, opts = {}) {
     const data = msg?.data;
     if (!data || data.msgId === undefined || data.msgId === null) return { stored: false, reason: "no msgId" };
+
+    // A "delete for me" frame rides the message channel but is not a message.
+    if (REMOVAL_MSG_TYPES.has(data.msgType)) {
+        const removal = storeLiveDelete(msg);
+        return { stored: removal.stored, removal, info: null };
+    }
 
     const info = classifyLiveMessage(data);
     const authoritative = typeof opts.threadName === "string" && opts.threadName !== "";
@@ -85,7 +177,12 @@ export function storeLiveMessage(msg, opts = {}) {
             type: info.type,
             raw_data: info.raw,
             has_attachment: info.hasAttachment,
-            msgStatus: data.status ?? data.msgStatus,
+            // NOT data.status. The live `status` field is an undocumented
+            // enum (zca-js declares only `status: number`) and is not Sync2's
+            // MessageStatus, which this column holds: four of the owner's own
+            // successfully-sent messages arrived carrying 1, which that column
+            // defines as "failed". Delivery state comes from the mobile sync
+            // and from the delivered/seen receipt events instead.
         });
     } catch (e) {
         return { stored: false, reason: e.message };
@@ -140,14 +237,47 @@ export function storeLiveReaction(reaction) {
  */
 export function storeLiveUndo(undo) {
     const d = undo?.data || {};
-    const target = d.globalMsgId ?? d.msgId;
-    if (target === undefined || target === null || target === "") return { stored: false, reason: "no target msgId" };
+    // The recalled message is named INSIDE content. The event's own top-level
+    // msgId identifies the notification (zca-js models/Undo.d.ts: TUndo has no
+    // globalMsgId, TUndoContent does), so reading it from there tombstoned the
+    // notification's id -- a row that does not exist -- and every live recall
+    // silently updated nothing while reporting success.
+    const c = d.content || {};
     try {
-        markMessageRecalled(String(target), Number(d.ts) || Date.now());
+        return applyRemoval({ msgId: c.globalMsgId, cliMsgId: c.cliMsgId }, "recall", Number(d.ts) || Date.now());
     } catch (e) {
         return { stored: false, reason: e.message };
     }
-    return { stored: true, msgId: String(target) };
+}
+
+/**
+ * Apply a "delete for me" (Xoa o phia toi) to the message it removes.
+ *
+ * Zalo names the target twice: `globalDelMsgId` when the deleting client knew
+ * the server id, and `clientDelMsgId` always. Both shapes were captured live
+ * (one frame carried globalDelMsgId 0 with only the client id, the next carried
+ * a real global id), so both have to be handled.
+ *
+ * The phone ships no flag distinguishing this from a recall -- every removal
+ * reaches the sync as msgType 36 -- so the distinction is recorded locally in
+ * the tombstone's `removedAs`.
+ *
+ * @param {object} msg - the zca-js message event with msgType "chat.delete"
+ * @returns {{stored: boolean, msgId?: string, reason?: string, mediaRemoved?: boolean}}
+ */
+export function storeLiveDelete(msg) {
+    const d = msg?.data || {};
+    const entry = Array.isArray(d.content) ? d.content[0] : d.content;
+    if (!entry || typeof entry !== "object") return { stored: false, reason: "delete frame carried no target" };
+    try {
+        return applyRemoval(
+            { msgId: entry.globalDelMsgId, cliMsgId: entry.clientDelMsgId },
+            "delete-for-me",
+            Number(d.ts) || Date.now(),
+        );
+    } catch (e) {
+        return { stored: false, reason: e.message };
+    }
 }
 
 /**

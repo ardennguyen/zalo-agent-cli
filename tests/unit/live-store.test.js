@@ -108,42 +108,6 @@ describe("storeLiveMessage", () => {
     });
 });
 
-describe("storeLiveReaction", () => {
-    it("stores a reaction — the sync payload has none, so this is the only source", () => {
-        const r = storeLiveReaction({ threadId: "t1", data: { msgId: "m1", uidFrom: "u2", rIcon: "/-heart", ts: 5 } });
-        assert.equal(r.stored, true);
-        const [got] = getReactions({ msgId: "m1" });
-        assert.equal(got.icon, "/-heart");
-        assert.equal(got.userId, "u2");
-    });
-
-    it("replaces rather than duplicating when someone reacts again", () => {
-        const base = { threadId: "t1", data: { msgId: "m1", uidFrom: "u2", ts: 1 } };
-        storeLiveReaction({ ...base, data: { ...base.data, rIcon: ":>" } });
-        storeLiveReaction({ ...base, data: { ...base.data, rIcon: "/-heart" } });
-        const all = getReactions({ msgId: "m1" });
-        assert.equal(all.length, 1);
-        assert.equal(all[0].icon, "/-heart");
-    });
-
-    it("an empty icon removes the reaction", () => {
-        storeLiveReaction({ threadId: "t1", data: { msgId: "m1", uidFrom: "u2", rIcon: ":>" } });
-        storeLiveReaction({ threadId: "t1", data: { msgId: "m1", uidFrom: "u2", rIcon: "" } });
-        assert.equal(getReactions({ msgId: "m1" }).length, 0);
-    });
-
-    it("keeps different people's reactions separate", () => {
-        storeLiveReaction({ threadId: "t1", data: { msgId: "m1", uidFrom: "a", rIcon: ":>" } });
-        storeLiveReaction({ threadId: "t1", data: { msgId: "m1", uidFrom: "b", rIcon: "/-heart" } });
-        assert.equal(getReactions({ msgId: "m1" }).length, 2);
-    });
-
-    it("refuses an event missing msgId or userId", () => {
-        assert.equal(storeLiveReaction({ data: { uidFrom: "u" } }).stored, false);
-        assert.equal(storeLiveReaction({ data: { msgId: "m" } }).stored, false);
-    });
-});
-
 describe("attachLiveStore", () => {
     /** Minimal EventEmitter-shaped stub of api.listener. */
     const fakeListener = () => {
@@ -725,5 +689,105 @@ describe("msgStatus is not written from the live status field", () => {
         storeLiveMessage(liveMsg({}, { msgType: "webchat", content: "hi" }));
         storeLiveMessage(liveMsg({}, { msgType: "webchat", content: "hi again" }));
         assert.equal(getMessages("t1")[0].msgStatus, null, "unknown is not the same as status 0");
+    });
+});
+
+/**
+ * Reactions, with the shape Zalo actually sends.
+ *
+ * The reacted-to message is named in `content.rMsg[]` (`gMsgID` / `cMsgID`),
+ * not by the event's own `msgId` — which identifies the reaction
+ * notification. Reading the latter filed six live reactions under six
+ * notification ids, so `getReactions({msgId})` for the real message returned
+ * nothing. These pin the captured shape.
+ */
+describe("storeLiveReaction", () => {
+    const reactEvent = (over = {}, content = {}) => ({
+        threadId: "t1",
+        isSelf: true,
+        isGroup: true,
+        data: {
+            actionId: "1721009213808",
+            msgId: "8289917724705", // the NOTIFICATION's id
+            cliMsgId: "1790013228896",
+            msgType: "chat.reaction",
+            uidFrom: "u2",
+            idTo: "t1",
+            ts: "1790013230126",
+            content: {
+                rMsg: [{ gMsgID: "m1", cMsgID: 1790008981269, msgType: 1 }],
+                rIcon: "/-strong",
+                rType: 3,
+                source: 6,
+                ...content,
+            },
+            ...over,
+        },
+    });
+
+    const target = () =>
+        storeLiveMessage(liveMsg({}, { msgId: "m1", cliMsgId: 1790008981269, msgType: "webchat", content: "hi" }));
+
+    it("stores the reaction against the message reacted to, not the notification", () => {
+        target();
+        const r = storeLiveReaction(reactEvent());
+        assert.equal(r.stored, true);
+        const [got] = getReactions({ msgId: "m1" });
+        assert.ok(got, "the reaction has to be findable by the message it is on");
+        assert.equal(got.icon, "/-strong");
+        assert.equal(got.userId, "u2");
+        assert.equal(getReactions({ msgId: "8289917724705" }).length, 0, "nothing under the notification id");
+    });
+
+    it("keeps one row per person per message — reacting again replaces", () => {
+        target();
+        storeLiveReaction(reactEvent({}, { rIcon: "/-strong", rType: 3 }));
+        storeLiveReaction(reactEvent({ msgId: "notif2" }, { rIcon: "/-heart", rType: 5 }));
+        storeLiveReaction(reactEvent({ msgId: "notif3" }, { rIcon: ":>", rType: 0 }));
+        const all = getReactions({ msgId: "m1" });
+        assert.equal(all.length, 1, "three reactions from one person on one message is one row");
+        assert.equal(all[0].icon, ":>", "the last one wins");
+    });
+
+    it("preserves rType 0, which is a real type (HAHA)", () => {
+        target();
+        storeLiveReaction(reactEvent({}, { rIcon: ":>", rType: 0 }));
+        assert.equal(getReactions({ msgId: "m1" })[0].rType, 0, "`|| null` threw a real value away");
+    });
+
+    it("removes the reaction when the icon is empty", () => {
+        target();
+        storeLiveReaction(reactEvent());
+        storeLiveReaction(reactEvent({ msgId: "notif2" }, { rIcon: "" }));
+        assert.equal(getReactions({ msgId: "m1" }).length, 0);
+    });
+
+    it("resolves by cMsgID when gMsgID is absent", () => {
+        target();
+        const r = storeLiveReaction(reactEvent({}, { rMsg: [{ gMsgID: 0, cMsgID: 1790008981269 }] }));
+        assert.equal(r.stored, true);
+        assert.equal(getReactions({ msgId: "m1" }).length, 1);
+    });
+
+    it("handles a reaction naming several messages", () => {
+        target();
+        storeLiveMessage(liveMsg({}, { msgId: "m2", msgType: "webchat", content: "hi2" }));
+        const r = storeLiveReaction(reactEvent({}, { rMsg: [{ gMsgID: "m1" }, { gMsgID: "m2" }] }));
+        assert.equal(r.count, 2);
+        assert.equal(getReactions({ threadId: "t1" }).length, 2);
+    });
+
+    it("reports a reaction that names no message instead of writing a junk row", () => {
+        const r = storeLiveReaction(reactEvent({}, { rMsg: [] }));
+        assert.equal(r.stored, false);
+        assert.equal(getReactions({ threadId: "t1" }).length, 0);
+    });
+
+    it("stores a reaction for a message this cache never saw, keyed by its real id", () => {
+        // Zalo can name a message older than anything cached; the reaction is
+        // still real and the id is still the right key.
+        const r = storeLiveReaction(reactEvent({}, { rMsg: [{ gMsgID: "ancient" }] }));
+        assert.equal(r.stored, true);
+        assert.equal(getReactions({ msgId: "ancient" }).length, 1);
     });
 });

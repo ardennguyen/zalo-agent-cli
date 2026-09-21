@@ -27,6 +27,7 @@ import {
     sanitize,
     DEFAULT_REQUEST_TIMEOUT_MS,
     THROTTLE_GIVE_UP,
+    pruneDownloadedMedia,
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/core/sync-v2/renewlink.js";
 
@@ -684,5 +685,85 @@ describe("expiry vs throttling — the difference is not cosmetic", () => {
         const s = await downloadSyncedMedia({ accountDir: dir, limit: 50, concurrency: 1, backoffBaseMs: 0 });
         assert.equal(s.abortedEarly, false);
         assert.equal(s.downloaded, 5);
+    });
+});
+
+describe("pruneDownloadedMedia", () => {
+    const DAY = 86400000;
+    const NOW = 1_760_000_000_000;
+
+    /** A row whose media is already on disk, aged `daysAgo`. */
+    const downloaded = async (daysAgo) => {
+        const id = row({ timestamp: NOW - daysAgo * DAY }, [photo("/ok.jpg")]);
+        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        return id;
+    };
+
+    it("deletes media older than the cutoff and reclaims the bytes", async () => {
+        await downloaded(40);
+        const before = getMessages("t1")[0].localPath;
+        assert.ok(existsSync(before));
+        const s = await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
+        assert.equal(s.deleted, 1);
+        assert.ok(s.bytes > 0);
+        assert.ok(!existsSync(before), "the file should be gone from disk");
+    });
+
+    it("leaves media inside the window alone", async () => {
+        await downloaded(5);
+        const s = await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
+        assert.equal(s.considered, 0);
+        assert.equal(s.deleted, 0);
+    });
+
+    it("never deletes the message itself", async () => {
+        const id = await downloaded(40);
+        await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
+        const still = getMessages("t1").find((m) => m.msgId === id);
+        assert.ok(still, "the message row must survive");
+        assert.equal(still.text, "[photo]", "and keep its text");
+    });
+
+    it("clears localPath so the row can be fetched again", async () => {
+        const id = await downloaded(40);
+        await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
+        assert.equal(getMessages("t1").find((m) => m.msgId === id).localPath, null);
+        assert.equal(countPendingAttachments(), 1, "pruned media goes back in the queue");
+    });
+
+    it("dry run reports without deleting", async () => {
+        await downloaded(40);
+        const path = getMessages("t1")[0].localPath;
+        const s = await pruneDownloadedMedia({ olderThanDays: 30, now: NOW, dryRun: true });
+        assert.equal(s.considered, 1);
+        assert.equal(s.deleted, 0);
+        assert.ok(s.bytes > 0, "a dry run should still size the job");
+        assert.ok(existsSync(path), "nothing may be removed on a dry run");
+    });
+
+    it("clears a stale pointer when the file is already gone", async () => {
+        await downloaded(40);
+        const path = getMessages("t1")[0].localPath;
+        rmSync(path, { force: true });
+        const s = await pruneDownloadedMedia({ olderThanDays: 30, now: NOW });
+        assert.equal(s.missing, 1);
+        assert.equal(getMessages("t1")[0].localPath, null);
+    });
+
+    it("can be scoped to one thread", async () => {
+        upsertThread({ threadId: "t2", type: "dm", name: "Other", lastUpdate: 1 });
+        await downloaded(40);
+        row({ threadId: "t2", timestamp: NOW - 40 * DAY }, [photo("/ok.jpg")]);
+        await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        const s = await pruneDownloadedMedia({ olderThanDays: 30, now: NOW, threadId: "t2" });
+        assert.equal(s.deleted, 1, "only the named thread");
+    });
+
+    it("refuses a nonsensical window instead of deleting everything", async () => {
+        await downloaded(400);
+        for (const bad of [0, -1, NaN, undefined, "x"]) {
+            const s = await pruneDownloadedMedia({ olderThanDays: bad, now: NOW });
+            assert.equal(s.deleted, 0, `olderThanDays=${String(bad)} must delete nothing`);
+        }
     });
 });

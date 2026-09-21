@@ -11,8 +11,8 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { initDb, insertMessage, upsertThread } from "../core/db.js";
-import { extractMessageText } from "../utils/extract-message-text.js";
 import { processMessageMedia } from "../core/media-downloader.js";
+import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { SyncManager } from "../core/sync.js";
 
 /** Thread types matching zca-js ThreadType enum */
@@ -233,7 +233,11 @@ export function registerListenCommand(program) {
                             };
                             const mediaProcessed = await processMessageMedia(mForMedia);
 
-                            const parsedText = isText ? rawContent : extractMessageText(rawContent, msgType);
+                            // One vocabulary for both capture paths: a photo is
+                            // `photo` whether it arrived live or from a mobile
+                            // sync, and it carries the same attachment shape, so
+                            // `sync-media` can fetch it either way.
+                            const info = classifyLiveMessage(msg.data);
                             upsertThread({
                                 threadId: String(msg.threadId),
                                 type: msg.type === THREAD_USER ? "dm" : "group",
@@ -245,10 +249,11 @@ export function registerListenCommand(program) {
                                 threadId: String(msg.threadId),
                                 senderId: String(msg.data.uidFrom || ""),
                                 senderName: String(msg.data.dName || ""),
-                                text: parsedText || "",
+                                text: info.text || "",
                                 timestamp: msg.data.ts ? Number(msg.data.ts) : Date.now(),
-                                type: isText ? "text" : msgType || "attachment",
-                                raw_data: rawContent,
+                                type: info.type,
+                                raw_data: info.raw,
+                                has_attachment: info.hasAttachment,
                                 localPath: mediaProcessed.localPath || null,
                             });
                         } catch (err) {

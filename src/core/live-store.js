@@ -202,26 +202,53 @@ export function storeLiveMessage(msg, opts = {}) {
  */
 export function storeLiveReaction(reaction) {
     const d = reaction?.data || {};
-    const msgId = d.msgId ?? d.globalMsgId;
+    const c = d.content || {};
     const userId = d.uidFrom ?? reaction?.uidFrom;
-    if (msgId === undefined || msgId === null || userId === undefined || userId === null) {
-        return { stored: false, reason: "missing msgId or userId" };
+    if (userId === undefined || userId === null) return { stored: false, reason: "reaction names no user" };
+
+    // The reacted-to message is named inside content, in `rMsg`, exactly as the
+    // recall target is: `gMsgID` is the server id and `cMsgID` the client one.
+    // Reading the event's own top-level `msgId` stored the REACTION
+    // notification's id instead, so every reaction landed on a row that does
+    // not exist and getReactions({msgId}) for the real message found nothing.
+    // Measured on six live reactions: six rows under six notification ids,
+    // where the correct result is one row per reacted message.
+    const targets = Array.isArray(c.rMsg) ? c.rMsg : [];
+    if (!targets.length) return { stored: false, reason: "reaction names no message" };
+
+    const icon = c.rIcon ?? d.rIcon ?? d.icon ?? "";
+    // 0 is a real reaction type (HAHA), so it must not be coerced away.
+    const rTypeRaw = c.rType ?? d.rType;
+    const rType = Number.isFinite(Number(rTypeRaw)) ? Number(rTypeRaw) : null;
+    const ts = Number(d.ts) || Date.now();
+
+    let stored = 0;
+    for (const t of targets) {
+        let msgId = t?.gMsgID === undefined || t?.gMsgID === null ? null : String(t.gMsgID);
+        if (msgId === "0" || msgId === "") msgId = null;
+        if (!msgId && t?.cMsgID) {
+            const row = findMessageByClientId(t.cMsgID);
+            if (row) msgId = String(row.msgId);
+        }
+        if (!msgId) continue;
+        try {
+            upsertReaction({
+                msgId,
+                threadId: reaction?.threadId === undefined ? null : String(reaction.threadId),
+                userId: String(userId),
+                // An empty icon is how a removal is signalled; upsertReaction
+                // deletes rather than storing a blank.
+                icon,
+                rType,
+                timestamp: ts,
+            });
+            stored++;
+        } catch (e) {
+            return { stored: false, reason: e.message };
+        }
     }
-    try {
-        upsertReaction({
-            msgId: String(msgId),
-            threadId: reaction?.threadId === undefined ? null : String(reaction.threadId),
-            userId: String(userId),
-            // An empty icon is how a removal is signalled; upsertReaction
-            // deletes rather than storing a blank.
-            icon: d.content?.rIcon ?? d.rIcon ?? d.icon ?? "",
-            rType: d.content?.rType ?? d.rType,
-            timestamp: Number(d.ts) || Date.now(),
-        });
-    } catch (e) {
-        return { stored: false, reason: e.message };
-    }
-    return { stored: true };
+    if (!stored) return { stored: false, reason: "reaction target not resolvable" };
+    return { stored: true, count: stored };
 }
 
 /**

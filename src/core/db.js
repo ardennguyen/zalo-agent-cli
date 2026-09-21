@@ -890,7 +890,8 @@ export function upsertReaction(r) {
             threadId: r.threadId != null ? String(r.threadId) : null,
             userId: String(r.userId),
             icon: r.icon,
-            rType: Number(r.rType) || null,
+            // 0 is a real reaction type (HAHA); `|| null` threw it away.
+            rType: Number.isFinite(Number(r.rType)) ? Number(r.rType) : null,
             source: r.source || "listen",
             timestamp: Number(r.timestamp) || Date.now(),
         });

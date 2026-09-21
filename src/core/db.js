@@ -465,12 +465,46 @@ export function getLinkMessages(opts = {}) {
  */
 export function getDownloadedMediaBefore(before, threadId = null) {
     if (!db) throw new Error("Database not initialized");
-    const sql =
-        "SELECT msgId, threadId, timestamp, localPath FROM messages " +
-        "WHERE localPath IS NOT NULL AND timestamp < ?" +
-        (threadId ? " AND threadId = ?" : "") +
-        " ORDER BY timestamp ASC";
-    return threadId ? db.prepare(sql).all(before, String(threadId)) : db.prepare(sql).all(before);
+    // `before === null` means every downloaded file regardless of age. It is a
+    // separate mode rather than a very large cutoff so that an accidental
+    // arithmetic slip on a date can never become "delete everything".
+    const wherePieces = ["localPath IS NOT NULL"];
+    const params = [];
+    if (before !== null) {
+        wherePieces.push("timestamp < ?");
+        params.push(before);
+    }
+    if (threadId) {
+        wherePieces.push("threadId = ?");
+        params.push(String(threadId));
+    }
+    return db
+        .prepare(
+            `SELECT msgId, threadId, timestamp, localPath FROM messages WHERE ${wherePieces.join(" AND ")} ORDER BY timestamp ASC`,
+        )
+        .all(...params);
+}
+
+/**
+ * Threads that still have rows but were not seen in the most recent
+ * conversation list — a dispersed group, a deleted chat, a group you were
+ * removed from. Their messages and media linger with nothing ever refreshing
+ * them, and no command currently reclaims that space.
+ *
+ * @param {string[]} liveThreadIds - thread ids the latest sync returned
+ * @returns {Array<{threadId: string, name: string, files: number}>}
+ */
+export function getOrphanThreads(liveThreadIds = []) {
+    if (!db) throw new Error("Database not initialized");
+    const live = new Set((liveThreadIds || []).map(String));
+    const rows = db
+        .prepare(
+            `SELECT t.threadId, t.name, COUNT(m.localPath) AS files
+       FROM threads t LEFT JOIN messages m ON m.threadId = t.threadId AND m.localPath IS NOT NULL
+       GROUP BY t.threadId, t.name`,
+        )
+        .all();
+    return rows.filter((r) => !live.has(String(r.threadId)));
 }
 
 /**

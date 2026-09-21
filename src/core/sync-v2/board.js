@@ -203,7 +203,10 @@ function asList(resp) {
  * @param {number} [opts.delayMs=120] - pause between calls within a worker
  * @param {number} [opts.pageSize=50]
  * @param {number} [opts.maxPages=10] - board pagination cap per thread
- * @param {(p: object) => void} [opts.onProgress]
+ * @param {(p: object) => void} [opts.onProgress] - one `{phase: "thread",
+ *   threadId, ok}` event per finished thread, where `ok` is false if any of
+ *   that thread's own calls failed. Callers that clear per-thread state must
+ *   check it.
  * @returns {Promise<{threads:number, boardItems:number, reminders:number, failed:number, failures:Array<object>}>}
  */
 export async function syncBoards(opts = {}) {
@@ -234,6 +237,16 @@ export async function syncBoards(opts = {}) {
             if (!t) return;
             const isGroup = t.type === "group";
 
+            // Per-thread, not per-run: the caller clears a thread's "board
+            // changed" flag on the strength of this, and a run-wide failure
+            // count would clear the flag for a thread whose fetch actually
+            // failed -- losing the one signal that says to come back to it.
+            let hadFailure = false;
+            const noteHere = (what, e) => {
+                hadFailure = true;
+                note(t.threadId, what, e);
+            };
+
             // Notes / pinned messages / polls, for BOTH thread kinds. A group
             // uses /api/board/list; a 1-1 uses /api/board/oneone/list, which
             // takes the same board_type filter.
@@ -245,7 +258,7 @@ export async function syncBoards(opts = {}) {
                             ? await api.getListBoard({ page, count: pageSize }, t.threadId)
                             : await listOneOneBoard(api, t.threadId, page, pageSize);
                     } catch (e) {
-                        note(t.threadId, "board", e);
+                        noteHere("board", e);
                         break;
                     }
                     const items = resp?.items || resp?.data?.items || [];
@@ -256,7 +269,7 @@ export async function syncBoards(opts = {}) {
                             upsertBoardItem(row);
                             stats.boardItems++;
                         } catch (e) {
-                            note(t.threadId, "board-write", e);
+                            noteHere("board-write", e);
                         }
                     }
                     if (items.length < pageSize) break;
@@ -278,11 +291,11 @@ export async function syncBoards(opts = {}) {
                             upsertReminder(row);
                             stats.reminders++;
                         } catch (e) {
-                            note(t.threadId, "reminder-write", e);
+                            noteHere("reminder-write", e);
                         }
                     }
                 } catch (e) {
-                    note(t.threadId, "reminder", e);
+                    noteHere("reminder", e);
                 }
             }
 
@@ -291,6 +304,7 @@ export async function syncBoards(opts = {}) {
                 phase: "thread",
                 threadId: t.threadId,
                 name: t.name,
+                ok: !hadFailure,
                 done: stats.threads,
                 total: threads.length,
                 boardItems: stats.boardItems,

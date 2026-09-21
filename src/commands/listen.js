@@ -10,8 +10,9 @@ import { success, error, info, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
-import { initDb, insertMessage, upsertThread } from "../core/db.js";
+import { initDb } from "../core/db.js";
 import {
+    storeLiveMessage,
     storeLiveReaction,
     storeLiveUndo,
     storeGroupEvent,
@@ -19,7 +20,6 @@ import {
     storeReceipts,
 } from "../core/live-store.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
-import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { SyncManager } from "../core/sync.js";
 
 /** Thread types matching zca-js ThreadType enum */
@@ -232,57 +232,31 @@ export function registerListenCommand(program) {
                         );
                         heartbeat();
 
-                        try {
-                            // One vocabulary for both capture paths: a photo is
-                            // `photo` whether it arrived live or from a mobile
-                            // sync, and it carries the same attachment shape, so
-                            // `sync-media` can fetch it either way.
-                            const info = classifyLiveMessage(msg.data);
-                            upsertThread({
+                        // One writer for live traffic: storeLiveMessage is the
+                        // same function a running mobile sync uses, so a row
+                        // written here is indistinguishable from a restored one,
+                        // and the type vocabulary (photo, not chat.photo) is
+                        // shared with it.
+                        const stored = storeLiveMessage(msg);
+                        if (!stored.stored) {
+                            console.error(`[listen] message not stored: ${stored.reason}`);
+                            return;
+                        }
+                        // Fetch through the SAME downloader the mobile sync
+                        // uses: it brings the request deadline, the
+                        // expiry-vs-throttling classification and the shared
+                        // per-conversation folders. The row is already stored
+                        // with has_attachment, so the downloader finds it by
+                        // query. Fire and forget -- a slow CDN must never stall
+                        // event processing.
+                        if (stored.info.hasAttachment) {
+                            downloadSyncedMedia({
+                                api,
+                                accountDir,
                                 threadId: String(msg.threadId),
-                                type: msg.type === THREAD_USER ? "dm" : "group",
-                                name: String(msg.data.dName || ""),
-                                lastUpdate: msg.data.ts ? Number(msg.data.ts) : Date.now(),
-                            });
-                            insertMessage({
-                                msgId: String(msg.data.msgId),
-                                threadId: String(msg.threadId),
-                                senderId: String(msg.data.uidFrom || ""),
-                                senderName: String(msg.data.dName || ""),
-                                text: info.text || "",
-                                timestamp: msg.data.ts ? Number(msg.data.ts) : Date.now(),
-                                type: info.type,
-                                raw_data: info.raw,
-                                has_attachment: info.hasAttachment,
-                                msgStatus: msg.data.status ?? msg.data.msgStatus,
-                            });
-                            // Fetch through the SAME downloader the mobile sync
-                            // uses, rather than the old flat one: it gets the
-                            // request deadline, the expiry-vs-throttling
-                            // classification and the per-thread folders. The row
-                            // is already stored with has_attachment, so the
-                            // downloader finds it by query. Fire and forget --
-                            // a slow CDN must never stall event processing.
-                            if (info.hasAttachment) {
-                                downloadSyncedMedia({
-                                    api,
-                                    accountDir,
-                                    threadId: String(msg.threadId),
-                                    limit: 5,
-                                    concurrency: 2,
-                                    threadNames: new Map([
-                                        [
-                                            String(msg.threadId),
-                                            {
-                                                name: String(msg.data.dName || msg.threadId),
-                                                type: msg.type === THREAD_USER ? "dm" : "group",
-                                            },
-                                        ],
-                                    ]),
-                                }).catch((err) => console.error(`[listen] media download failed: ${err.message}`));
-                            }
-                        } catch (err) {
-                            console.error(`[listen] DB Insert failed: ${err.message}`);
+                                limit: 5,
+                                concurrency: 2,
+                            }).catch((err) => console.error(`[listen] media download failed: ${err.message}`));
                         }
                     });
                 }
@@ -316,62 +290,67 @@ export function registerListenCommand(program) {
                 }
 
                 // --- Group events ---
-                if (enabledEvents.has("group")) {
-                    api.listener.on("group_event", (event) => {
+                // Also ungated for storage, for the same reason: with the
+                // default --events, being removed from a group was never
+                // recorded, so its local copy stayed invisible to `conv forget
+                // --orphans`, and a pin or note change never marked its board
+                // stale. Both are durable state; only the printing is optional.
+                api.listener.on("group_event", (event) => {
+                    // Pin, unpin, note, poll and reminder changes: flag the
+                    // board stale so the next sync-boards refetches it. The
+                    // event carries a delta, not the item's full shape.
+                    const board = noteBoardChange(event);
+                    // Leaving or being removed means this conversation is no
+                    // longer ours. Flag it so it surfaces as an orphan;
+                    // deleting the local copy stays an explicit decision.
+                    const gone = storeGroupEvent(event);
+                    if (!enabledEvents.has("group")) return;
+                    emitEvent(
+                        {
+                            event: `group_${event.type}`,
+                            threadId: event.threadId,
+                            isSelf: event.isSelf,
+                            data: event.data,
+                        },
+                        `Group: ${event.type} — ${event.threadId}`,
+                    );
+                    if (board.stale) {
                         emitEvent(
-                            {
-                                event: `group_${event.type}`,
-                                threadId: event.threadId,
-                                isSelf: event.isSelf,
-                                data: event.data,
-                            },
-                            `Group: ${event.type} — ${event.threadId}`,
+                            { event: "board_changed", threadId: board.threadId, type: event.type },
+                            `Board changed in ${board.threadId} (${event.type}) — run sync-boards to refresh`,
                         );
-                        // Leaving or being removed means this conversation is no
-                        // longer ours. Flag it so it surfaces as an orphan;
-                        // deleting the local copy stays an explicit decision.
-                        // Pin, unpin, note, poll and reminder changes: flag the
-                        // board stale so the next sync-boards refetches it. The
-                        // event carries a delta, not the item's full shape.
-                        const board = noteBoardChange(event);
-                        if (board.stale) {
-                            emitEvent(
-                                { event: "board_changed", threadId: board.threadId, type: event.type },
-                                `Board changed in ${board.threadId} (${event.type}) — run sync-boards to refresh`,
-                            );
-                        }
-                        const gone = storeGroupEvent(event);
-                        if (gone.gone) {
-                            emitEvent(
-                                { event: "thread_gone", threadId: gone.threadId },
-                                `No longer in ${gone.threadId} — its local history is now orphaned (see \`conv forget\`)`,
-                            );
-                        }
-                    });
-                }
+                    }
+                    if (gone.gone) {
+                        emitEvent(
+                            { event: "thread_gone", threadId: gone.threadId },
+                            `No longer in ${gone.threadId} — its local history is now orphaned (see \`conv forget\`)`,
+                        );
+                    }
+                });
 
                 // --- Reaction events ---
-                if (enabledEvents.has("reaction")) {
-                    api.listener.on("reaction", (reaction) => {
-                        if (!opts.self && reaction.isSelf) return;
-                        emitEvent(
-                            {
-                                event: "reaction",
-                                threadId: reaction.threadId,
-                                isSelf: reaction.isSelf,
-                                isGroup: reaction.isGroup,
-                                data: reaction.data,
-                            },
-                            `Reaction in ${reaction.threadId}`,
-                        );
-                        // Reactions exist ONLY here: the mobile sync payload has
-                        // no reaction field, so an unstored one is gone for good.
-                        const stored = storeLiveReaction(reaction);
-                        if (!stored.stored && stored.reason) {
-                            console.error(`[listen] reaction not stored: ${stored.reason}`);
-                        }
-                    });
-                }
+                // Storage is NOT gated on --events. Reactions exist only on
+                // this socket -- the mobile sync payload has no reaction field,
+                // so one not captured live is unrecoverable -- and the default
+                // --events value does not include them, so gating the write
+                // meant a plain `zalo-agent listen` permanently lost every
+                // reaction it watched go past. --events decides what you SEE.
+                api.listener.on("reaction", (reaction) => {
+                    const r = storeLiveReaction(reaction);
+                    if (!r.stored && r.reason) console.error(`[listen] reaction not stored: ${r.reason}`);
+                    if (!enabledEvents.has("reaction")) return;
+                    if (!opts.self && reaction.isSelf) return;
+                    emitEvent(
+                        {
+                            event: "reaction",
+                            threadId: reaction.threadId,
+                            isSelf: reaction.isSelf,
+                            isGroup: reaction.isGroup,
+                            data: reaction.data,
+                        },
+                        `Reaction in ${reaction.threadId}`,
+                    );
+                });
 
                 // --- Delivery receipts ---
                 // The sync establishes msgStatus per message; without these it

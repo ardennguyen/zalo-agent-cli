@@ -361,3 +361,55 @@ describe("BOARD_TYPES", () => {
         assert.deepEqual(BOARD_TYPES, { 1: "note", 2: "pinned_message", 3: "poll" });
     });
 });
+
+describe("syncBoards per-thread outcome", () => {
+    it("reports ok:true for a thread whose own calls all succeeded", async () => {
+        const api = stubApi({ board: [NOTE] });
+        const seen = [];
+        await syncBoards({
+            api,
+            threads: [{ threadId: "g1", type: "group" }],
+            reminders: false,
+            delayMs: 0,
+            onProgress: (p) => p.phase === "thread" && seen.push(p),
+        });
+        assert.equal(seen.length, 1);
+        assert.equal(seen[0].ok, true);
+        assert.equal(seen[0].threadId, "g1");
+    });
+
+    it("reports ok:false for the thread that failed, not for its neighbours", async () => {
+        // The caller clears a per-thread "board changed" flag on this, so a
+        // run-wide failure count would clear the flag for the one thread that
+        // still needs refetching.
+        const api = {
+            calls: { board: [] },
+            getListBoard: async (opts, groupId) => {
+                api.calls.board.push({ groupId });
+                if (groupId === "g2") throw new Error("403");
+                return { items: [NOTE], count: 1 };
+            },
+        };
+        const seen = new Map();
+        await syncBoards({
+            api,
+            threads: [
+                { threadId: "g1", type: "group" },
+                { threadId: "g2", type: "group" },
+                { threadId: "g3", type: "group" },
+            ],
+            reminders: false,
+            concurrency: 1,
+            delayMs: 0,
+            onProgress: (p) => p.phase === "thread" && seen.set(p.threadId, p.ok),
+        });
+        assert.deepEqual(
+            [...seen],
+            [
+                ["g1", true],
+                ["g2", false],
+                ["g3", true],
+            ],
+        );
+    });
+});

@@ -5,46 +5,76 @@
  * IMPORTANT: All diagnostic output uses console.error() — stdout is the MCP transport channel.
  */
 
+import { join } from "path";
 import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
+import { getActive } from "../core/accounts.js";
+import { CONFIG_DIR } from "../core/credentials.js";
+import { acquireLock, releaseLock } from "../core/lock.js";
+import { initDb } from "../core/db.js";
+import {
+    storeLiveMessage,
+    storeLiveReaction,
+    storeLiveUndo,
+    storeGroupEvent,
+    noteBoardChange,
+    storeReceipts,
+} from "../core/live-store.js";
+import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
 import { loadMCPConfig, parseDuration } from "../mcp/mcp-config.js";
-import { extractMessageText } from "../utils/extract-message-text.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
-import { autoDownloadMedia, isDownloadableMedia } from "../mcp/media-downloader.js";
 
 /** Zalo close code for duplicate web session — fatal, do not retry */
 const CLOSE_DUPLICATE = 3000;
 
+/** Sync2.Message.MessageStatus values carried by live receipts. */
+const STATUS_RECEIVED = 4;
+const STATUS_SEEN = 5;
+
 /**
  * Normalize a raw zca-js message event into the buffer's message shape.
+ *
+ * Classification comes from the shared `classifyLiveMessage`, the same
+ * function the listener and the mobile sync use, so an agent reading
+ * `zalo_get_messages` sees the same `type` vocabulary (`photo`, `video`,
+ * `file`) as `msg history` and the same attachment fields — rather than the
+ * raw `chat.photo` strings this used to emit, which never matched anything
+ * else in the tool.
+ *
  * @param {object} msg - Raw zca-js message event
+ * @param {object} [info] - Pre-computed classification, when the caller has one
  * @returns {object} Normalized message
  */
-function normalizeMessage(msg) {
-    const rawContent = msg.data.content;
-    const isText = typeof rawContent === "string";
+export function normalizeMessage(msg, info = null) {
+    const data = msg.data || {};
+    const cls = info || classifyLiveMessage(data);
+    const media = cls.attachments.find((a) => a.url || a.thumbUrl) || null;
     return {
-        id: msg.data.msgId,
+        id: data.msgId,
         threadId: msg.threadId,
         threadType: msg.type === 0 ? "dm" : "group",
-        senderId: msg.data.uidFrom || null,
-        senderName: msg.data.dName || null,
-        text: isText ? rawContent : extractMessageText(rawContent, msg.data.msgType),
-        timestamp: Date.now(),
-        type: isText ? "text" : msg.data.msgType || "attachment",
-        attachment:
-            !isText && rawContent
-                ? {
-                      type: msg.data.msgType,
-                      url: rawContent.href || null,
-                      description: rawContent.title || null,
-                  }
-                : null,
+        senderId: data.uidFrom || null,
+        senderName: data.dName || null,
+        text: cls.text,
+        // The message's own timestamp, not the moment we happened to process
+        // it: buffer eviction is age-based, and Date.now() made every message
+        // look brand new.
+        timestamp: data.ts ? Number(data.ts) : Date.now(),
+        type: cls.type,
+        attachment: media
+            ? {
+                  type: cls.type,
+                  url: media.url || media.thumbUrl || null,
+                  description: media.title || null,
+                  localPath: null,
+              }
+            : null,
         replyTo: null,
     };
 }
@@ -73,6 +103,46 @@ export function registerMCPCommands(program) {
                 process.exit(1);
             }
 
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                console.error("[mcp] No active account. Run `zalo-agent login` first.");
+                process.exit(1);
+            }
+            const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+
+            // This server now opens the account's WebSocket *and* writes to
+            // zalo.db, which is exactly what the `listen` daemon does. Zalo
+            // allows one web session per account and the cache allows one
+            // writer, so the lock that used to guard only `listen` has to guard
+            // this too — previously both could start, and Zalo silently killed
+            // one of the two sockets.
+            if (!acquireLock(accountDir)) {
+                console.error(
+                    `[mcp] Another listener (listen daemon or MCP server) is already running for account ${activeAcc.ownId}.`,
+                );
+                console.error("[mcp] Stop it first — Zalo permits one web session per account.");
+                process.exit(1);
+            }
+            let lockHeld = true;
+            const dropLock = () => {
+                if (!lockHeld) return;
+                lockHeld = false;
+                try {
+                    releaseLock(accountDir);
+                } catch (e) {
+                    console.error(`[mcp] Failed to release lock: ${e.message}`);
+                }
+            };
+
+            try {
+                initDb(join(accountDir, "zalo.db"));
+                console.error(`[mcp] Local cache: ${join(accountDir, "zalo.db")}`);
+            } catch (e) {
+                dropLock();
+                console.error(`[mcp] Failed to initialize local DB: ${e.message}`);
+                process.exit(1);
+            }
+
             // Load MCP config (config path option reserved for future use)
             const config = loadMCPConfig();
             console.error("[mcp] Config loaded:", JSON.stringify(config.limits));
@@ -97,17 +167,19 @@ export function registerMCPCommands(program) {
                 if (opts.http) {
                     const port = Number(opts.http);
                     if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                        dropLock();
                         console.error(`[mcp] Invalid port: ${opts.http}. Must be 1-65535.`);
                         process.exit(1);
                     }
-                    const deps = { api: getApi(), buffer, filter, config, nameCache };
+                    const deps = { api: getApi(), buffer, filter, config, nameCache, accountDir };
                     const authToken = opts.auth?.trim() || null;
                     httpServer = createHTTPServer(registerTools, deps, port, authToken, opts.host || "127.0.0.1");
                     console.error(`[mcp] HTTP server started on port ${port}`);
                 } else {
-                    await createMCPServer(getApi(), buffer, filter, config, nameCache);
+                    await createMCPServer(getApi(), buffer, filter, config, nameCache, accountDir);
                 }
             } catch (e) {
+                dropLock();
                 console.error("[mcp] Failed to start MCP server:", e.message);
                 process.exit(1);
             }
@@ -118,16 +190,46 @@ export function registerMCPCommands(program) {
             let reconnectCount = 0;
 
             /**
+             * Fetch a message's attachments into the same per-conversation
+             * folders every other command uses. Fire-and-forget.
+             * @param {string} threadId
+             */
+            function fetchMedia(threadId) {
+                downloadSyncedMedia({
+                    api: getApi(),
+                    accountDir,
+                    threadId,
+                    limit: 5,
+                    concurrency: 2,
+                    mediaRoot: config.media?.downloadDir || undefined,
+                }).catch((e) => console.error(`[mcp] media download failed: ${e.message}`));
+            }
+
+            /**
              * Attach Zalo listener handlers to the current API instance.
              * Must be called again after each re-login with the new API instance.
              * @param {object} api - zca-js API instance
              */
             function attachListenerHandlers(api) {
                 api.listener.on("message", (msg) => {
-                    // Skip self-sent messages
+                    // Persist FIRST and unconditionally. The buffer is what an
+                    // agent polls; the cache is the durable record, and it must
+                    // not depend on whether a thread happens to be watched or
+                    // whether a message survives the noise filter. This server
+                    // used to hold everything in memory only, so a restart lost
+                    // every message it had ever seen.
+                    const threadName = nameCache?.get(String(msg.threadId))?.name || undefined;
+                    const stored = storeLiveMessage(msg, { threadName });
+                    if (!stored.stored) {
+                        console.error(`[mcp] message not stored: ${stored.reason}`);
+                        return;
+                    }
+                    if (stored.info.hasAttachment) fetchMedia(String(msg.threadId));
+
+                    // Skip self-sent messages for the agent-facing buffer
                     if (msg.isSelf) return;
 
-                    const normalized = normalizeMessage(msg);
+                    const normalized = normalizeMessage(msg, stored.info);
 
                     // Apply thread watch filter
                     if (!filter.shouldWatch(normalized.threadId, normalized.threadType)) return;
@@ -135,18 +237,31 @@ export function registerMCPCommands(program) {
                     // Apply noise filter (stickers, system msgs, short emoji)
                     if (!filter.shouldKeep(normalized)) return;
 
-                    // Auto-download media (images, audio, video) in background
-                    if (normalized.attachment?.url && isDownloadableMedia(normalized.type)) {
-                        const threadName = nameCache?.get(normalized.threadId)?.name || null;
-                        autoDownloadMedia(normalized, {
-                            downloadDir: config.media?.downloadDir || undefined,
-                            threadName,
-                        });
-                    }
-
                     buffer.push(normalized.threadId, normalized);
                     notifier.onMessage(normalized);
                     console.error(`[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`);
+                });
+
+                // Everything below is durable state that exists only on this
+                // socket, so it is stored regardless of the watch filter — the
+                // filter decides what an agent is shown, not what is kept.
+                api.listener.on("reaction", (reaction) => {
+                    const r = storeLiveReaction(reaction);
+                    if (!r.stored && r.reason) console.error(`[mcp] reaction not stored: ${r.reason}`);
+                });
+
+                api.listener.on("undo", (u) => {
+                    const r = storeLiveUndo(u);
+                    if (!r.stored && r.reason) console.error(`[mcp] recall not applied: ${r.reason}`);
+                });
+
+                api.listener.on("delivered_messages", (m) => storeReceipts(m, STATUS_RECEIVED));
+                api.listener.on("seen_messages", (m) => storeReceipts(m, STATUS_SEEN));
+
+                api.listener.on("group_event", (event) => {
+                    noteBoardChange(event);
+                    const gone = storeGroupEvent(event);
+                    if (gone.gone) console.error(`[mcp] no longer in ${gone.threadId} — local history orphaned`);
                 });
 
                 api.listener.on("connected", () => {
@@ -161,6 +276,7 @@ export function registerMCPCommands(program) {
 
                 api.listener.on("closed", async (code) => {
                     if (code === CLOSE_DUPLICATE) {
+                        dropLock();
                         console.error("[mcp] Duplicate Zalo Web session detected. Exiting.");
                         process.exit(1);
                     }
@@ -187,6 +303,7 @@ export function registerMCPCommands(program) {
                             retryApi.listener.start({ retryOnClose: true });
                             console.error("[mcp] Re-login successful on retry.");
                         } catch (e2) {
+                            dropLock();
                             console.error(`[mcp] Re-login retry failed: ${e2.message}. Exiting.`);
                             process.exit(1);
                         }
@@ -205,6 +322,7 @@ export function registerMCPCommands(program) {
                 api.listener.start({ retryOnClose: true });
                 console.error("[mcp] Zalo listener started. MCP server ready.");
             } catch (e) {
+                dropLock();
                 console.error("[mcp] Failed to start listener:", e.message);
                 process.exit(1);
             }
@@ -213,11 +331,17 @@ export function registerMCPCommands(program) {
             process.on("SIGINT", () => {
                 try {
                     getApi().listener.stop();
-                } catch {}
+                } catch {
+                    /* already stopped */
+                }
                 notifier?.destroy();
                 httpServer?.close();
+                dropLock();
                 process.exit(0);
             });
+            // A lock outliving its process blocks the next launch until the
+            // stale-PID check reclaims it, so release it on any exit path.
+            process.on("exit", dropLock);
 
             // Keep process alive (MCP server runs on stdio — process must not exit)
             await new Promise(() => {});

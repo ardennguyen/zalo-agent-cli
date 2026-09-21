@@ -92,7 +92,7 @@ zalo-agent listen --events message,friend,group,reaction   # All events
 zalo-agent listen --save ./logs                            # Save JSONL locally
 ```
 Default `--events` is `message,friend` — `group` and `reaction` must be requested explicitly.
-Every received message is also written to the per-account SQLite cache (`zalo.db`) and its media auto-downloaded. Only **one** `listen` process per account (enforced by `daemon.lock`), and it cannot coexist with `mcp start` or browser Zalo on the same account.
+Every received message is also written to the per-account SQLite cache (`zalo.db`) and its media auto-downloaded. Reactions, recalls, delivery receipts, board changes and "you left this group" are stored too, on every run — `--events` decides what is printed, not what is kept. Only **one** live socket per account (enforced by `daemon.lock`, shared with `mcp start`), and it cannot coexist with browser Zalo on the same account.
 Production-ready with pm2. Details: `references/listen-mode-guide.md`
 
 ### Local Cache & Sync

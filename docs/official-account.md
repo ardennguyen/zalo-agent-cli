@@ -249,6 +249,9 @@ pm2 start "zalo-agent oa listen -p 3000 -s <SECRET>" --name zalo-oa
 
 Lưu tại `~/.zalo-agent/oa-credentials.json` (quyền 0600, chỉ owner đọc được).
 
+> [!IMPORTANT]
+> Thư mục này là `~/.zalo-agent/` — **không có hậu tố `-cli`**. Tài khoản cá nhân dùng `~/.zalo-agent-cli/`. Hai đường dẫn khác nhau hoàn toàn: xoá cái này không ảnh hưởng cái kia, và `logout --purge` của tài khoản cá nhân không đụng tới credentials OA.
+
 ```json
 {
   "default": {
@@ -260,6 +263,12 @@ Lưu tại `~/.zalo-agent/oa-credentials.json` (quyền 0600, chỉ owner đọc
     "updatedAt": "2026-03-17T..."
   }
 }
+```
+
+`expiresIn` tính bằng giây — `90000` ≈ **25 giờ**. Sau đó mọi lệnh OA sẽ trả về lỗi `-216`. Làm mới bằng `zalo-agent oa refresh` (dùng refresh token đã lưu, không cần mở browser lại). Với listener chạy dài ngày, nên đặt cron làm mới token mỗi ~24 giờ:
+
+```bash
+0 */12 * * * zalo-agent oa refresh --oa-id default >/dev/null 2>&1
 ```
 
 **Multi-OA:** Dùng `--oa-id` để quản lý nhiều OA:

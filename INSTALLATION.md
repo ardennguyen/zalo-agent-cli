@@ -13,6 +13,13 @@ This document covers deploying the **`zalo-mcp`** wrapper — a self-contained, 
 
 Because the wrapper is a pass-through, **the MCP tool surface is defined entirely by `src/mcp/mcp-tools.js` in this repo** — whichever `zalo-agent-cli` version `zalo-mcp` has installed.
 
+> [!NOTE]
+> `zalo-mcp`'s `package.json` pins an exact `@ardennguyen/zalo-agent-cli` version. The tools you actually get are the ones registered **in that pinned version**, not the newest published one. Check with:
+> ```bash
+> node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
+> ```
+> Run `./zalo-mcp.sh update` (or `.\zalo-mcp.ps1 update`) to pull a newer engine.
+
 ---
 
 ## Prerequisites
@@ -145,7 +152,16 @@ node mcp-server.js --http 3847                 # port from arg, or ZALO_MCP_HTTP
 node mcp-server.js --http 3847 --auth <token>  # require a bearer token
 ```
 
-Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>]`. Extra flags available when calling the CLI directly:
+Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>]`.
+
+> [!IMPORTANT]
+> **The wrapper forwards only `--http` and `--auth`.** `--host` and `--config` are *not* passed through — `node mcp-server.js --http 3847 --host 0.0.0.0` silently drops the `--host` and stays bound to `127.0.0.1`. To bind a non-loopback address or point at a custom config, invoke the CLI directly:
+> ```bash
+> zalo-agent mcp start --http 3847 --auth <token> --host 0.0.0.0
+> ```
+> The *tool surface* is identical either way; only the flag surface differs.
+
+Full flag set when calling the CLI directly:
 
 | Flag | Default | Description |
 |:---|:---|:---|
@@ -218,13 +234,23 @@ Everything the CLI persists lives under `~/.zalo-agent-cli/`:
 ├── accounts.json                  # Account registry (0600)
 ├── credentials/cred_<ownId>.json  # Per-account session credentials (0600)
 ├── mcp-config.json                # Optional MCP config
+├── media/<threadName>/            # Media downloaded by the MCP server (account-agnostic)
 ├── accounts/<ownId>/
 │   ├── zalo.db                    # SQLite message/thread cache (WAL)
-│   ├── media/                     # Auto-downloaded attachments
+│   ├── media/                     # Media downloaded by `listen` / `msg` (per account)
 │   ├── sync/                      # RSA sync keys
 │   └── daemon.lock                # Held while a `listen` daemon runs
 └── qr.png                         # Most recent login QR
 ```
+
+> [!NOTE]
+> **There are two media directories, and they are not the same one.** `listen` and `msg` save attachments per account under `accounts/<ownId>/media/` as `<msgId>_<filename>`. The MCP server and `zalo_view_media` save to `~/.zalo-agent-cli/media/<threadName>/` as `<date>_<time>_<sender>_<msgId>.<ext>` — account-agnostic, and the default behind `mcp-config.json`'s `media.downloadDir`.
+
+> [!WARNING]
+> **The MCP media directory is not removed by `logout --purge` or `account remove`.** Those wipe `accounts/<ownId>/` and the credential file; `~/.zalo-agent-cli/media/` sits outside that path, so real message attachments survive. Delete it by hand when removing an account for privacy reasons:
+> ```bash
+> rm -rf ~/.zalo-agent-cli/media/
+> ```
 
 Official Account credentials are stored separately at `~/.zalo-agent/oa-credentials.json`.
 
@@ -295,6 +321,9 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 | `Duplicate Zalo Web session detected. Exiting.` | Only one WebSocket per account. Close Zalo Web in the browser, and don't run `listen` and `mcp start` for the same account at once |
 | `account remove` / `logout --purge` refuses with a PID | A `listen` daemon holds `daemon.lock` for that account. Stop it first |
 | `Thread name cache not initialized yet` from `zalo_search_threads` | The cache builds at MCP startup by fetching all groups + friends. Retry after a few seconds |
+| HTTP MCP server unreachable from another machine despite `--host 0.0.0.0` | You passed `--host` to `mcp-server.js`, which doesn't forward it. Run `zalo-agent mcp start --http <port> --auth <token> --host 0.0.0.0` directly |
+| `zalo_view_media` saves somewhere other than `accounts/<ownId>/media/` | Expected — the MCP downloader writes to `~/.zalo-agent-cli/media/<threadName>/`. Override with `media.downloadDir` |
+| `sync-mobile` reports nothing and your phone never prompted | You ran it without `--transfer`. The default path is a server-side probe that normally returns empty; `--transfer` is the real restore |
 | OA call fails with `-216` | Access token expired → `npx zalo-agent oa refresh` |
 | OA call fails with `-224` | OA tier too low → see [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing) |
 | A "new version available" notice never appears | It is skipped when stdout isn't a TTY, in `--json` mode, or when `ZALO_AGENT_NO_UPDATE_CHECK` is set |

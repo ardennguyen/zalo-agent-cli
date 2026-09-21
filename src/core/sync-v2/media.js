@@ -16,7 +16,13 @@
  */
 import fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { getAttachmentMessages, setMessageLocalPath, getDownloadedMediaBefore, clearMessageLocalPath } from "../db.js";
+import {
+    getAttachmentMessages,
+    setMessageLocalPath,
+    getDownloadedMediaBefore,
+    clearMessageLocalPath,
+    getThreadNames,
+} from "../db.js";
 import { extractRenewedUrls, makeRenewLink } from "./renewlink.js";
 
 /** Kinds that point at a byte stream worth saving. */
@@ -185,8 +191,10 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
  * @param {number} [opts.maxBytes] - skip attachments larger than this
  * @param {boolean} [opts.thumbs=false] - also save thumbnails
  * @param {boolean} [opts.dryRun=false] - report what would be fetched, write nothing
- * @param {Map<string,{name:string,type:string}>} [opts.threadNames] - threadId -> display name
+ * @param {Map<string,{name:string,type:string}>} [opts.threadNames] - threadId -> display name;
+ *   omit it to read the local cache, which is what keeps every caller's folders identical
  * @param {boolean} [opts.includePruned=false] - re-fetch media that was deliberately pruned
+ * @param {string} [opts.mediaRoot] - override the media root (defaults to <accountDir>/media)
  * @param {number} [opts.backoffBaseMs=1000] - base for the exponential backoff on throttling;
  *   0 disables the pause (tests)
  * @param {number} [opts.timeoutMs=60000] - per-request deadline; without one a stalled
@@ -212,10 +220,17 @@ export async function downloadSyncedMedia(opts = {}) {
         threadNames,
         timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
         includePruned = false,
+        mediaRoot: mediaRootOpt,
         backoffBaseMs = 1000,
         onProgress = () => {},
     } = opts;
     const kinds = opts.kinds ? new Set(opts.kinds) : DOWNLOADABLE_KINDS;
+
+    // One definition of a conversation's folder. A caller holding a fresher map
+    // passes it; everyone else gets the cache's, so the listener, `msg history`
+    // and a sync file the same conversation in one place instead of three
+    // (sender name / thread id / real name).
+    const names = threadNames || getThreadNames();
 
     const rows = getAttachmentMessages({ threadId, since, until, limit, onlyMissing: true, includePruned });
     const jobs = [];
@@ -258,7 +273,9 @@ export async function downloadSyncedMedia(opts = {}) {
         }
     }
 
-    const mediaRoot = resolve(accountDir, "media");
+    // The MCP server honours a configured download dir; everything else files
+    // media under the account's own data dir.
+    const mediaRoot = mediaRootOpt ? resolve(mediaRootOpt) : resolve(accountDir, "media");
     let cursor = 0;
     // Consecutive throttled responses across all workers. Zalo starts dropping
     // connections under sustained load, and charging on through nine thousand
@@ -297,7 +314,7 @@ export async function downloadSyncedMedia(opts = {}) {
     const runJob = async (job) => {
         {
             const { row, att, url } = job;
-            const folder = threadNames?.get(String(row.threadId))?.name || row.threadId;
+            const folder = names.get(String(row.threadId))?.name || row.threadId;
             const dir = join(mediaRoot, sanitize(folder));
 
             let got = await fetchBytes(url, timeoutMs);
@@ -308,7 +325,7 @@ export async function downloadSyncedMedia(opts = {}) {
                 try {
                     const resp = await renewLink({
                         threadId: row.threadId,
-                        threadType: threadNames?.get(String(row.threadId))?.type,
+                        threadType: names.get(String(row.threadId))?.type,
                         msgType: JSON.parse(row.raw_data || "{}").msgType,
                         msgInfo: { normalUrl: att.url, hdUrl: att.hdUrl, thumbUrl: att.thumbUrl },
                         clientId: JSON.parse(row.raw_data || "{}").cliMsgId,

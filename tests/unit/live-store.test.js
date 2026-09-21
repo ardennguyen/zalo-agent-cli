@@ -20,7 +20,10 @@ import {
     getOrphanThreads,
     forgetThread,
     getSyncState,
+    clearSyncState,
     getBoardItems,
+    getRecentThreads,
+    getThreadNames,
 } from "../../src/core/db.js";
 import {
     storeLiveMessage,
@@ -389,5 +392,76 @@ describe("board changes and delivery receipts — the rest of the live path", ()
 
     it("shrugs off a receipt for a message it does not have", () => {
         assert.equal(storeReceipts({ data: { msgId: "unknown" } }, 5).updated, 0);
+    });
+});
+
+describe("conversation naming", () => {
+    const nameOf = (id) => getRecentThreads(50).find((t) => t.threadId === id)?.name;
+
+    it("does not rename a group after whoever spoke in it last", () => {
+        // A group has exactly ONE name, and no message carries it: `dName` is
+        // the sender's display name. Letting it through renamed a synced group
+        // to a member's name on its next message.
+        upsertThread({ threadId: "g5", type: "group", name: "Team Marketing", lastUpdate: 1 });
+        storeLiveMessage(liveMsg({ threadId: "g5", type: 1 }, { dName: "Alice", content: "hi team" }));
+        assert.equal(nameOf("g5"), "Team Marketing");
+    });
+
+    it("leaves a group it has never seen unnamed rather than inventing one", () => {
+        storeLiveMessage(liveMsg({ threadId: "g6", type: 1 }, { dName: "Alice", content: "hi" }));
+        assert.equal(nameOf("g6"), "", "a sender's name is not the group's name");
+    });
+
+    it("names a 1-1 from the contact's own message — there the two coincide", () => {
+        storeLiveMessage(liveMsg({ threadId: "u9", type: 0 }, { uidFrom: "u9", dName: "Chi Lan", content: "hi" }));
+        assert.equal(nameOf("u9"), "Chi Lan");
+    });
+
+    it("does not name a 1-1 from a message we sent — that carries OUR name", () => {
+        storeLiveMessage(liveMsg({ threadId: "u9", type: 0 }, { uidFrom: "me", dName: "Me", content: "hi" }));
+        assert.equal(nameOf("u9"), "");
+    });
+
+    it("keeps a deliberate alias instead of the contact's current display name", () => {
+        upsertThread({ threadId: "u9", type: "dm", name: "Ke toan cong ty", lastUpdate: 1 });
+        storeLiveMessage(liveMsg({ threadId: "u9", type: 0 }, { uidFrom: "u9", dName: "Chi Lan", content: "hi" }));
+        assert.equal(nameOf("u9"), "Ke toan cong ty");
+    });
+
+    it("accepts an authoritative name from a caller that has one", () => {
+        // The MCP server holds a real group/friend index, so its name wins.
+        upsertThread({ threadId: "g7", type: "group", name: "stale", lastUpdate: 1 });
+        storeLiveMessage(liveMsg({ threadId: "g7", type: 1 }, { dName: "Alice", content: "x" }), {
+            threadName: "Bao Tri He Thong",
+        });
+        assert.equal(nameOf("g7"), "Bao Tri He Thong");
+    });
+
+    it("hands every caller the same folder name for a conversation", () => {
+        upsertThread({ threadId: "g8", type: "group", name: "Team Marketing", lastUpdate: 1 });
+        storeLiveMessage(liveMsg({ threadId: "g8", type: 1 }, { dName: "Alice", content: "x" }));
+        assert.equal(getThreadNames().get("g8").name, "Team Marketing");
+    });
+
+    it("falls back to the thread id when nothing has named the conversation", () => {
+        storeLiveMessage(liveMsg({ threadId: "g9", type: 1 }, { dName: "Alice", content: "x" }));
+        assert.equal(getThreadNames().get("g9").name, "g9");
+    });
+});
+
+describe("board-stale flag lifecycle", () => {
+    it("can be cleared, so the next sync-boards pass means something", () => {
+        noteBoardChange({ threadId: "g1", type: "new_pin_topic" });
+        assert.ok(getSyncState("boardStale:g1"), "set by the live event");
+        clearSyncState("boardStale:g1");
+        assert.equal(getSyncState("boardStale:g1"), null, "a flag never cleared is a flag always true");
+    });
+
+    it("clearing one thread's flag leaves the others alone", () => {
+        noteBoardChange({ threadId: "g1", type: "unpin_topic" });
+        noteBoardChange({ threadId: "g2", type: "update_board" });
+        clearSyncState("boardStale:g1");
+        assert.equal(getSyncState("boardStale:g1"), null);
+        assert.ok(getSyncState("boardStale:g2"));
     });
 });

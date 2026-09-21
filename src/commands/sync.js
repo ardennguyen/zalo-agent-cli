@@ -13,9 +13,10 @@ import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
 import {
     initDb,
     getRecentThreads,
+    getThreadNames,
     countPendingAttachments,
     getSyncState,
-    setSyncState,
+    clearSyncState,
     getOrphanThreads,
 } from "../core/db.js";
 
@@ -232,19 +233,6 @@ function requireAccount() {
     return acc;
 }
 
-/** threadId -> {name, type} for folder naming, from the local cache. */
-function threadNameMap(limit = 5000) {
-    const map = new Map();
-    try {
-        for (const t of getRecentThreads(limit)) {
-            map.set(String(t.threadId), { name: t.name || String(t.threadId), type: t.type });
-        }
-    } catch {
-        /* an empty cache just means folders fall back to thread ids */
-    }
-    return map;
-}
-
 const MB = 1024 * 1024;
 
 /** Download attachments recorded by an earlier sync. No phone, no socket. */
@@ -314,7 +302,7 @@ async function runMediaDownload(activeAcc, opts) {
         thumbs: Boolean(opts.thumbs),
         includePruned: Boolean(opts.includePruned),
         dryRun: Boolean(opts.dryRun),
-        threadNames: threadNameMap(),
+        threadNames: getThreadNames(),
         onProgress: (p) => {
             if (p.phase === "dry-run") info(p.detail);
             // One line per 25 files keeps a 10k-file run readable.
@@ -473,6 +461,10 @@ async function runBoardSync(activeAcc, opts) {
         reminders: opts.reminders !== false,
         concurrency: opts.concurrency,
         onProgress: (p) => {
+            // The flag exists to say "come back to this one". Clearing it is
+            // what makes the next run's prioritization mean anything, and it
+            // must not be cleared for a thread whose own fetch failed.
+            if (p.phase === "thread" && p.ok) clearSyncState(`boardStale:${p.threadId}`);
             if (p.done === p.total || p.done - last >= 25) {
                 last = p.done;
                 info(`  ${p.done}/${p.total} threads`);
@@ -754,7 +746,7 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
         since: Number.isFinite(since) && since > 0 ? since : undefined,
         includePruned: false,
         concurrency: 4,
-        threadNames: threadNameMap(),
+        threadNames: getThreadNames(),
         onProgress: (p) => {
             if (p.phase !== "saved") return;
             bytes += p.bytes || 0;

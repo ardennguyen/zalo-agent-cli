@@ -239,6 +239,22 @@ export function setSyncState(key, value) {
     ).run({ key, value: String(value) });
 }
 
+/**
+ * Remove a bookkeeping value.
+ *
+ * Needed because some keys are per-thread flags rather than durable state:
+ * `boardStale:<threadId>` says "this conversation's board moved, refetch it",
+ * and a flag that is never cleared is indistinguishable from one that was
+ * never set. Without this, every thread that ever saw a pin stayed "stale"
+ * forever and the prioritization it exists for degraded to a no-op.
+ *
+ * @param {string} key
+ */
+export function clearSyncState(key) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("DELETE FROM sync_state WHERE key = ?").run(key);
+}
+
 /** Record a window of time we may have missed messages in (reason: e.g.
  * "startup-gap", "reconnect-gap", "manual"). Returns the new gap's id. */
 export function recordSyncGap(fromTs, toTs, reason) {
@@ -342,6 +358,20 @@ export function getMessages(threadId, limit = 50, fromTimestamp = null) {
 }
 
 /**
+ * One message by its global id, or null.
+ *
+ * Callers that hold a msgId and nothing else (the MCP media tool, a delete
+ * that needs the row's cliMsgId) had to scan a thread's messages to find it.
+ *
+ * @param {string} msgId
+ * @returns {object|null}
+ */
+export function getMessageById(msgId) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("SELECT * FROM messages WHERE msgId = ?").get(String(msgId)) || null;
+}
+
+/**
  * Most recently active threads, newest first.
  *
  * `type` filters in SQL rather than after the fact. That distinction is the
@@ -370,7 +400,17 @@ export function upsertThread(thread) {
       type = excluded.type,
       -- Never overwrite a known name with a blank one: the sync upserts threads
       -- per message and only some of those carry a display name.
-      name = CASE WHEN excluded.name IS NULL OR excluded.name = '' THEN threads.name ELSE excluded.name END,
+      --
+      -- A nameHint write is weaker still: it fills a name in but never replaces
+      -- one. A live message carries the SENDER's display name (dName), which is
+      -- not the conversation's name -- a group has exactly one name, and a 1-1
+      -- is titled by the contact's alias when we set one. Letting a per-message
+      -- field win renamed a synced group after its next message and replaced a
+      -- deliberate alias with whatever the contact currently calls themselves.
+      name = CASE
+        WHEN excluded.name IS NULL OR excluded.name = '' THEN threads.name
+        WHEN @nameHint = 1 AND threads.name IS NOT NULL AND threads.name != '' THEN threads.name
+        ELSE excluded.name END,
       -- MAX, not assignment. A sync calls this once per message, and messages
       -- do not arrive newest-first, so a plain assignment left every thread
       -- stamped with whichever message happened to be processed last -- which
@@ -393,7 +433,32 @@ export function upsertThread(thread) {
         respondedByMe: thread.respondedByMe === undefined ? null : thread.respondedByMe ? 1 : 0,
         lastGlobalId: thread.lastGlobalId === undefined ? null : String(thread.lastGlobalId),
         lastClientId: thread.lastClientId === undefined ? null : String(thread.lastClientId),
+        nameHint: thread.nameHint ? 1 : 0,
     });
+}
+
+/**
+ * threadId -> {name, type} for every cached conversation.
+ *
+ * One map, one definition of a conversation's folder and label, shared by the
+ * sync, the listener and `msg history`. They each used to derive it
+ * differently -- the sync from this table, the listener from the arriving
+ * message's `dName`, `msg history` not at all -- so one conversation's media
+ * could land in three different folders depending on which command fetched it.
+ *
+ * @param {number} [limit=5000]
+ * @returns {Map<string, {name: string, type: string}>}
+ */
+export function getThreadNames(limit = 5000) {
+    const map = new Map();
+    try {
+        for (const t of getRecentThreads(limit)) {
+            map.set(String(t.threadId), { name: t.name || String(t.threadId), type: t.type });
+        }
+    } catch {
+        /* an empty or unopened cache just means folders fall back to thread ids */
+    }
+    return map;
 }
 
 /**

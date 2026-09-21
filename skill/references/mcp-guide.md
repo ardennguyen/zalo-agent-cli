@@ -69,7 +69,15 @@ curl http://localhost:3847/health
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) là một wrapper mỏng: `mcp-server.js` chỉ spawn `zalo-agent mcp start` và pipe stdio qua, đồng thời forward `--http` và `--auth`. **Danh sách tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) là một wrapper mỏng: `mcp-server.js` chỉ spawn `zalo-agent mcp start` và pipe stdio qua. **Danh sách tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+
+> [!WARNING]
+> **Wrapper chỉ forward `--http` và `--auth`.** `--host` và `--config` bị bỏ qua âm thầm — `node mcp-server.js --http 3847 --host 0.0.0.0` vẫn bind `127.0.0.1` và máy khác không kết nối được. Muốn dùng hai flag đó thì gọi thẳng `zalo-agent mcp start`.
+>
+> Ngoài ra wrapper chạy đúng phiên bản CLI mà `package.json` của nó **ghim**, không phải bản mới nhất. Tool mới thêm ở CLI phiên bản sau sẽ chưa dùng được qua wrapper cho tới khi pin đó được nâng và publish. Kiểm tra bằng:
+> ```bash
+> node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
+> ```
 
 ```bash
 node mcp-server.js                       # stdio
@@ -202,7 +210,9 @@ Xoá tin khỏi buffer đến cursor chỉ định — **áp dụng cho toàn b�
 ---
 
 ### `zalo_get_history`
-Lấy tin nhắn cũ (tối đa ~2 tuần) trực tiếp từ server Zalo — khác với `zalo_get_messages` (đọc từ buffer trong bộ nhớ). Dùng `lastMsgId` để phân trang. Cảnh báo: limit lớn có thể tốn nhiều băng thông/bộ nhớ — nên bắt đầu với limit nhỏ và phân trang dần.
+Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức toàn bộ những gì `mcp start`/`listen` đã lưu và những gì `zalo-agent sync-mobile --transfer` đã khôi phục từ điện thoại (có thể là toàn bộ lịch sử) — chỉ khi cache không có gì cho thread đó mới hỏi server Zalo. Phân trang cache bằng `before` (epoch ms, lấy từ `cursor` của lần trước), phân trang đường server bằng `lastMsgId`. Trường `source` trong kết quả cho biết dữ liệu đến từ `"cache"` hay `"server"`.
+
+> Vì sao cache trước: trên các account hiện tại, Zalo trả về **rỗng** cho yêu cầu lịch sử qua socket (cmd 510/511) — chính Zalo Web cũng vậy rồi fallback sang `transfer-sync-v2`. Bản trước chỉ hỏi server nên tool này gần như luôn trả 0 tin, trong khi `zalo-agent msg history` đọc cùng một cache và trả về đầy đủ.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -227,7 +237,7 @@ Lấy tin nhắn cũ (tối đa ~2 tuần) trực tiếp từ server Zalo — kh
 ---
 
 ### `zalo_view_media`
-Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định của hệ thống. Media được tự động tải về khi nhận (auto-download), tổ chức theo thư mục thread. Nếu chưa tải, tool sẽ tải trước rồi mở.
+Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định của hệ thống. Media được tự động tải về khi nhận (auto-download) vào `accounts/<ownId>/media/<tên-hội-thoại>/`. Đường dẫn lấy từ `localPath` trong cache, nên mở được cả tin nhắn đến **trước khi** tiến trình này khởi động — không còn phụ thuộc vào buffer trong bộ nhớ. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng rồi mở.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -238,7 +248,7 @@ Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định 
 
 **Kết quả mẫu:**
 ```json
-{ "success": true, "path": "/home/user/.zalo-agent-cli/media/Nhóm dự án/2026-09-19_Phúc_image.jpg", "mediaType": "image" }
+{ "success": true, "path": "/home/user/.zalo-agent-cli/accounts/1234/media/Nhóm dự án/2026-09-19-14-05_8286035781_photo.jpg", "mediaType": "photo" }
 ```
 
 ---
@@ -264,7 +274,8 @@ MCP server chỉ expose **7 tool cho tài khoản cá nhân**. Mọi thứ còn 
 | Hồ sơ (11 lệnh) | — | `zalo-agent --json profile …` |
 | Khảo sát, nhắc nhở, trả lời tự động, tin nhắn nhanh, nhãn, catalog | — | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
-| Cache cục bộ / đồng bộ từ điện thoại | — | `zalo-agent --json sync-mobile` |
+| Khôi phục lịch sử từ điện thoại | — | `zalo-agent sync-mobile --transfer` (ping điện thoại, cần xác nhận một lần) |
+| Đọc lịch sử từ cache cục bộ | `zalo_get_history` (fetch live từ server) | `zalo-agent --json msg history <id>` (đọc `zalo.db`) |
 | Official Account (32 lệnh) | — | `zalo-agent --json oa …` |
 
 **Nguyên tắc:** có MCP tool thì dùng tool; không có thì gọi CLI. Đừng trả lời "không làm được" chỉ vì chưa có MCP tool tương ứng.
@@ -314,7 +325,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `limits.autoDigestThreshold` | Ngưỡng số tin để kích hoạt digest (nếu bật) |
 | `limits.bufferMaxAge` | Tuổi tin tối đa trong buffer trước khi bị dọn (ví dụ `"2h"`) |
 | `limits.bufferMaxSize` | Số tin tối đa giữ lại mỗi thread |
-| `media.downloadDir` | Thư mục lưu media tải về (mặc định `~/.zalo-agent-cli/media/`) |
+| `media.downloadDir` | Ghi đè thư mục gốc lưu media của MCP server. Mặc định (bỏ trống) dùng đúng chỗ mọi lệnh khác dùng: `accounts/<ownId>/media/<tên-hội-thoại>/`, và chỗ đó **bị** `logout --purge` / `account remove` xóa. Đặt giá trị riêng nếu muốn media nằm ngoài vùng dữ liệu account |
 | `media.autoOpen` | Giá trị mặc định cho tham số `open` của `zalo_view_media` |
 
 ---
@@ -335,7 +346,9 @@ Claude Code / MCP Client
 
 - **Auto-reconnect**: WebSocket tự kết nối lại khi mất mạng hoặc bị đóng; tự re-login nếu cần (trừ trường hợp phát hiện phiên trùng — `CLOSE_DUPLICATE` — thì thoát hẳn để tránh xung đột với phiên khác)
 - **Cursor-based**: `zalo_get_messages`/`zalo_mark_read` dùng cursor dạng số nguyên tăng dần toàn cục (`_globalCursor`), không dùng chuỗi
-- **Stateless transport**: MCP server không tự lưu file — toàn bộ state (buffer, cache) nằm trong bộ nhớ tiến trình, mất khi restart
+- **Bền vững**: mọi tin nhắn nhận được đều ghi vào `~/.zalo-agent-cli/accounts/<ownId>/zalo.db` (qua `core/live-store.js`, cùng đường ghi với `listen` và mobile sync), kèm reaction, thu hồi, trạng thái đã nhận/đã xem, và cờ "đã rời nhóm". Restart **không** mất dữ liệu nữa — chỉ ring buffer (con trỏ đọc tăng dần) là trong bộ nhớ
+- **Một session / một account**: `mcp start` giữ `daemon.lock` như `listen`. Chạy cả hai cùng account sẽ bị từ chối kèm thông báo rõ, thay vì để Zalo âm thầm ngắt một trong hai socket
+- **Bộ lọc chỉ lọc buffer**: `watchThreads` và bộ lọc nhiễu quyết định agent *thấy* gì; cache vẫn lưu đầy đủ
 - **Media auto-download**: ảnh/audio/video nhận được tự tải nền, tổ chức theo thư mục thread; `zalo_view_media` mở file có sẵn hoặc tải trước khi mở
 
 ---

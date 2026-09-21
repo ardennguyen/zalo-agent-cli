@@ -5,10 +5,21 @@
 
 import { parseDuration } from "./mcp-config.js";
 
-/** Emoji prefix per message type for notification previews */
+/**
+ * Emoji prefix per message type for notification previews.
+ *
+ * Keyed on the shared type vocabulary (`photo`, not `image`) that
+ * `classifyLiveMessage` produces for every capture path; `image` stays as an
+ * alias so a message buffered by an older build still renders.
+ */
 const TYPE_EMOJI = {
     text: "💬",
+    photo: "📷",
     image: "📷",
+    sticker: "😀",
+    card: "🪪",
+    location: "📍",
+    doodle: "🖌️",
     file: "📎",
     link: "🔗",
     video: "🎬",
@@ -20,7 +31,12 @@ const TYPE_EMOJI = {
 /** Vietnamese label per message type for notification breakdown */
 const TYPE_LABEL = {
     text: "text",
+    photo: "ảnh",
     image: "ảnh",
+    sticker: "sticker",
+    card: "thẻ",
+    location: "vị trí",
+    doodle: "hình vẽ",
     file: "file",
     link: "link",
     video: "video",

@@ -27,10 +27,37 @@ import { classifyLiveMessage } from "./sync-v2/message-types.js";
 const THREAD_USER = 0;
 
 /**
+ * What a live message can honestly tell us about its conversation's name.
+ *
+ * `dName` on a message is the SENDER's display name, not the conversation's
+ * title. The two only coincide in one case: a 1-1 message written by the
+ * contact the 1-1 is with, where the thread id IS that contact's id.
+ *
+ * A group has exactly one name and no message carries it, so a group message
+ * contributes nothing here -- it must come from `getGroupInfo` (the sync) or
+ * the MCP thread-name cache. Returning "" lets {@link upsertThread} keep
+ * whatever is already known instead of renaming the group after its sender.
+ *
+ * @param {object} msg - the zca-js message event
+ * @returns {string} a usable conversation name, or ""
+ */
+function nameFromLiveMessage(msg) {
+    if (msg?.type !== THREAD_USER) return "";
+    const from = msg?.data?.uidFrom;
+    if (from === undefined || from === null) return "";
+    // Our own outgoing 1-1 message carries OUR name, not the contact's.
+    if (String(from) !== String(msg.threadId)) return "";
+    return String(msg.data.dName || "");
+}
+
+/**
  * Store one live message event.
  *
  * @param {object} msg - the zca-js message event (`{threadId, type, data, isSelf}`)
  * @param {object} [opts]
+ * @param {string} [opts.threadName] - authoritative conversation name, when the
+ *   caller has one (the MCP server's thread-name cache does). Supplying it
+ *   replaces a weaker stored name; without it the write can only fill a blank.
  * @param {(info: object, msg: object) => void} [opts.onStored] - called after a successful write
  * @returns {{stored: boolean, info?: object, reason?: string}}
  */
@@ -39,12 +66,14 @@ export function storeLiveMessage(msg, opts = {}) {
     if (!data || data.msgId === undefined || data.msgId === null) return { stored: false, reason: "no msgId" };
 
     const info = classifyLiveMessage(data);
+    const authoritative = typeof opts.threadName === "string" && opts.threadName !== "";
     try {
         upsertThread({
             threadId: String(msg.threadId),
             type: msg.type === THREAD_USER ? "dm" : "group",
-            name: String(data.dName || ""),
+            name: authoritative ? opts.threadName : nameFromLiveMessage(msg),
             lastUpdate: data.ts ? Number(data.ts) : Date.now(),
+            nameHint: !authoritative,
         });
         insertMessage({
             msgId: String(data.msgId),

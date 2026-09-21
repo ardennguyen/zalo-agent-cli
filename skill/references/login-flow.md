@@ -101,3 +101,15 @@ Pick by how much you want gone. All four are distinct:
 - `zalo-agent account devices` lists the sessions Zalo currently has linked to the active account (read-only) — useful to confirm a logout actually took effect on the server side.
 
 After a purge, `~/.zalo-agent-cli/credentials/` is empty, `accounts.json` is `[]`, and `accounts/<ownId>/` is gone.
+
+> **What a purge does NOT remove:** `~/.zalo-agent-cli/media/` — the directory the **MCP server** downloads attachments into. It sits outside `accounts/<ownId>/`, so real message media survives every command in the table above. If a user purges for privacy reasons, tell them; the cleanup is `rm -rf ~/.zalo-agent-cli/media/`. Official Account credentials at `~/.zalo-agent/oa-credentials.json` are also untouched — a different directory entirely.
+
+## One web session per account
+
+Zalo allows a single web session per account, and this CLI occupies it (measured 2026-09-20):
+
+- Signing into Zalo Web, or another PC client, **revokes the CLI's session server-side instantly** — even with no CLI process running. The next API call fails with `Đăng nhập thất bại`.
+- The reverse also holds: `zalo-agent login` signs Zalo Web out.
+- The **phone app is unaffected** — it is a separate session type.
+- Revocation is server-side, so the credential file on disk is unchanged. `status` is a local check and will still report `loggedIn: true` against a dead session — use `whoami` to probe liveness.
+- This is also why `listen`, `mcp start`, and `sync-mobile` cannot run concurrently on one account. A duplicate closes the socket with code 3000, which is fatal by design.

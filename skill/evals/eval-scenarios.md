@@ -393,6 +393,38 @@ Each scenario: user prompt → expected step-by-step reasoning → validation cr
 
 ---
 
+## E26b: MCP — The `zalo-mcp` Wrapper Drops `--host`
+
+**Prompt:** "I installed zalo-mcp and ran `node mcp-server.js --http 3847 --auth abc --host 0.0.0.0`, but my agent on another machine can't connect"
+
+**Expected reasoning:**
+1. The wrapper forwards **only** `--http` and `--auth` — `--host` (and `--config`) are dropped silently, with no error
+2. So the server is still bound to `127.0.0.1` and is unreachable from any other machine; the symptom is a connection refusal, not a 401
+3. Fix: call the CLI directly — `zalo-agent mcp start --http 3847 --auth abc --host 0.0.0.0` — or use an SSH tunnel and keep the loopback bind
+4. Confirm with `curl http://<vps>:3847/health` from the remote machine (no token needed)
+5. Separately: the wrapper serves whatever CLI version its `package.json` pins, so a tool missing from the client's list may just mean a stale pin — check it and run the wrapper's `update`
+
+**Must include:** that `--host` is not forwarded by the wrapper, the direct `zalo-agent mcp start` command as the fix, `/health` as the unauthenticated check
+**Must NOT:** Blame the firewall or the token first, claim the wrapper is a full pass-through, or suggest editing `mcp-server.js` in a deployed install
+
+---
+
+## E26c: MCP — Where `zalo_view_media` Actually Writes
+
+**Prompt:** (agent is connected over MCP) "Save that photo she sent and tell me where it went"
+
+**Expected reasoning:**
+1. `zalo_view_media(messageId, threadId?)` downloads if needed and returns `{success, path, mediaType}`
+2. Report the `path` **as returned** — it is under `~/.zalo-agent-cli/media/<threadName>/`, named `<date>_<time>_<sender>_<msgId>.<ext>`
+3. Do not assume it is under `accounts/<ownId>/media/` — that per-account tree belongs to `listen`/`msg`, a different downloader
+4. Set `open: false` when the user only wants it saved, not launched in a system viewer
+5. If asked to relocate it, point at `media.downloadDir` in `mcp-config.json` rather than moving files behind the server's back
+
+**Must include:** the returned `path` verbatim, `~/.zalo-agent-cli/media/` as the MCP location, `open: false` when only saving
+**Must NOT:** State the file is in `accounts/<ownId>/media/`, invent a path instead of using the tool's response, or claim `logout --purge` will later clean it up
+
+---
+
 ## E27: MCP — Capability Outside the Tool Set
 
 **Prompt:** (agent is connected over MCP) "Send the photo at ./receipt.jpg to the Ke Toan group"
@@ -446,14 +478,15 @@ Each scenario: user prompt → expected step-by-step reasoning → validation cr
 
 **Expected reasoning:**
 1. Messages missed while disconnected aren't in the WebSocket stream
-2. `zalo-agent sync-mobile` asks the server for old messages over the socket — no phone interaction — but Zalo currently answers empty, so be honest that it usually recovers nothing
-3. It needs `daemon.lock`, so stop `listen` first; Zalo's one-web-session rule also means it closes a browser Zalo Web session on the same account
-4. Afterwards read them with `zalo-agent msg history <threadId>` (served from the cache)
-5. `--wait <seconds>` bounds it; `--force` skips the "already synced" debounce
-6. The old phone-to-PC transfer is retired — `--legacy` still tries it once, but recovers nothing
+2. **`zalo-agent sync-mobile --transfer` is the answer** — it restores history from the phone into `zalo.db` (transfer-sync-v2)
+3. Say up front that the phone **will** show a sync request and the owner must tap **"ĐỒNG BỘ NGAY"** — that is how the command works, not a malfunction. One tap covers the whole run
+4. It needs `daemon.lock`, so stop `listen` first; Zalo's one-web-session rule also means it closes a browser Zalo Web session on the same account
+5. Afterwards read the messages with `zalo-agent msg history <threadId>` (served from the cache)
+6. `--wait <seconds>` bounds each phase (floored at 180s under `--transfer`); `--force` skips the one-hour "already synced" debounce
+7. Mention the caveats honestly: bare `sync-mobile` (no flag) is a server-side probe that usually returns empty and never contacts the phone; `--legacy` is a retired endpoint that recovers nothing; conversations with non-friends and OAs may land under an opaque id rather than a real name
 
-**Must include:** that `listen` is the only reliable way to capture messages, `msg history` to read the cache, stopping `listen` before `sync-mobile`
-**Must NOT:** Promise `sync-mobile` will recover the gap, instruct the human to tap **Sync Now** on the phone, or present `--legacy` as a working path
+**Must include:** `sync-mobile --transfer`, the phone confirmation prompt, stopping `listen` first, `msg history` to read the result
+**Must NOT:** Claim the gap is unrecoverable, recommend bare `sync-mobile` or `--legacy` as the fix, present the phone prompt as a bug or something to avoid, or promise `--transfer` works without the owner tapping the phone
 
 ---
 

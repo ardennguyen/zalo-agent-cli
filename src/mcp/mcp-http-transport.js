@@ -17,7 +17,7 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8
 /**
  * Create HTTP MCP server with optional bearer token auth.
  * @param {Function} registerToolsFn - Registers tools on a McpServer instance
- * @param {object} deps - { api, buffer, filter, config }
+ * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir }
  * @param {number} port
  * @param {string|null} authToken - Bearer token (null = no auth)
  * @returns {import("http").Server}
@@ -44,7 +44,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     app.post("/mcp", async (req, res) => {
         try {
             const server = new McpServer({ name: "zalo-agent", version: pkg.version });
-            registerToolsFn(server, deps.api, deps.buffer, deps.filter, deps.config, deps.nameCache);
+            registerToolsFn(server, deps.api, deps.buffer, deps.filter, deps.config, deps.nameCache, deps.accountDir);
 
             const transport = new StreamableHTTPServerTransport({
                 sessionIdGenerator: undefined, // stateless mode

@@ -4,7 +4,9 @@
  */
 
 import { z } from "zod";
-import { downloadMedia, openFile } from "./media-downloader.js";
+import { openFile } from "../utils/open-file.js";
+import { getMessages, getMessageById } from "../core/db.js";
+import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 
 /** Thread type constants matching zca-js ThreadType enum */
@@ -29,6 +31,56 @@ function err(message) {
 }
 
 /**
+ * Read a thread's history out of the local cache.
+ *
+ * Returns null when the cache has nothing for the thread, which is the signal
+ * to fall back to asking Zalo.
+ *
+ * @param {string} threadId
+ * @param {number} limit
+ * @param {number} [before] - epoch ms; return messages older than this
+ * @param {object} [nameCache]
+ * @returns {object|null} tool payload, or null when the cache is empty/unopened
+ */
+function cacheHistory(threadId, limit, before, nameCache) {
+    let rows;
+    try {
+        rows = getMessages(String(threadId), limit, before);
+    } catch {
+        return null; // no db open in this process — server path it is
+    }
+    if (!rows || rows.length === 0) return null;
+
+    const messages = rows
+        .map((m) => ({
+            msgId: m.msgId,
+            threadId: m.threadId,
+            senderId: m.senderId || null,
+            senderName: m.senderName || null,
+            text: m.text,
+            timestamp: m.timestamp,
+            type: m.type,
+            localPath: m.localPath || undefined,
+            hasAttachment: m.has_attachment ? true : undefined,
+            msgStatus: m.msgStatus ?? undefined,
+        }))
+        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+    const info = nameCache?.get(String(threadId));
+    if (info) for (const m of messages) m.threadName = info.name;
+
+    return {
+        threadId: String(threadId),
+        source: "cache",
+        count: messages.length,
+        messages,
+        // Oldest returned timestamp: pass it back as `before` for the next page.
+        cursor: messages.length ? messages[0].timestamp : (before ?? null),
+        hasMore: rows.length >= limit,
+    };
+}
+
+/**
  * Register all Zalo MCP tools on the server.
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server
  * @param {object} api - zca-js API instance
@@ -36,8 +88,9 @@ function err(message) {
  * @param {import("./thread-filter.js").ThreadFilter} filter
  * @param {object} config - MCP config
  * @param {import("./thread-name-cache.js").ThreadNameCache} [nameCache] - Thread name cache
+ * @param {string} [accountDir] - account data dir; media is fetched into <accountDir>/media
  */
-export function registerTools(server, api, buffer, filter, config, nameCache) {
+export function registerTools(server, api, buffer, filter, config, nameCache, accountDir) {
     const maxPerPoll = config.limits?.maxMessagesPerPoll ?? 20;
 
     // --- zalo_get_messages ---
@@ -200,9 +253,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
         {
             title: "Get Zalo Message History",
             description:
-                "Fetch historical messages from a Zalo DM or group conversation (up to ~2 weeks). " +
-                "Unlike zalo_get_messages (which reads from the live buffer), this fetches older messages " +
-                "from the Zalo server. Use 'lastMsgId' cursor from previous response for pagination. " +
+                "Fetch historical messages from a Zalo DM or group conversation. " +
+                "Reads the local cache first (everything the listener and `zalo-agent sync-mobile --transfer` " +
+                "have stored, which can be the full history), and falls back to asking the Zalo server " +
+                "when the cache has nothing for the thread. Page the cache with 'before' (epoch ms, from the " +
+                "previous response's cursor) and the server path with 'lastMsgId'. " +
                 "WARNING: Large limits may consume significant memory/bandwidth. Start with a small limit and paginate.",
             inputSchema: z.object({
                 threadId: z.string().describe("Thread ID to fetch history from"),
@@ -218,11 +273,24 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
                     .string()
                     .optional()
                     .nullable()
-                    .describe("Cursor: last message ID from previous fetch for pagination"),
+                    .describe("Cursor: last message ID from previous fetch, for the server-side path"),
+                before: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe("Cursor: return cached messages older than this epoch-ms timestamp"),
             }),
         },
-        async ({ threadId, threadType, limit, lastMsgId }) => {
+        async ({ threadId, threadType, limit, lastMsgId, before }) => {
             try {
+                // The cache is the better source and usually the only one that
+                // answers: Zalo returns an empty set for the socket history
+                // request on current accounts, while the cache holds whatever
+                // the listener saw and whatever a transfer sync restored.
+                const cached = cacheHistory(threadId, limit, before, nameCache);
+                if (cached) return ok(cached);
+
                 const allMessages = [];
                 let cursor = lastMsgId || null;
                 let done = false;
@@ -291,6 +359,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
                 return ok({
                     threadId,
                     threadType: threadType === 0 ? "dm" : "group",
+                    source: "server",
                     count: allMessages.length,
                     messages: allMessages,
                     cursor: cursor,
@@ -324,26 +393,47 @@ export function registerTools(server, api, buffer, filter, config, nameCache) {
         },
         async ({ messageId, threadId, open }) => {
             try {
-                const allMessages = buffer.read(threadId, 0, 9999).messages;
-                const message = allMessages.find((m) => m.id === messageId);
-                if (!message) return err(`Message ${messageId} not found in buffer`);
-                if (!message.attachment?.url) return err(`Message ${messageId} has no media attachment`);
+                // The cached row is authoritative: it records where a fetched
+                // file actually landed, so a message that arrived before this
+                // process started is still openable. The buffer is only a
+                // fallback for a thread id.
+                let row = null;
+                try {
+                    row = getMessageById(messageId);
+                } catch (e) {
+                    console.error("[mcp-tools] cache unavailable:", e.message);
+                }
+                const buffered = buffer.read(threadId, 0, 9999).messages.find((m) => m.id === messageId) || null;
+                if (!row && !buffered) return err(`Message ${messageId} not found in cache or buffer`);
+                if (row && !row.has_attachment && !buffered?.attachment?.url) {
+                    return err(`Message ${messageId} has no media attachment`);
+                }
 
-                // Use local file if already auto-downloaded, otherwise download now
-                let localPath = message.attachment.localPath;
+                let localPath = row?.localPath || null;
                 if (!localPath) {
-                    const threadName = nameCache?.get(message.threadId)?.name || null;
-                    const result = await downloadMedia(message, {
-                        downloadDir: mediaConfig.downloadDir || undefined,
-                        autoOpen: false,
-                        threadName,
+                    // Same downloader as the CLI, so the file lands in the one
+                    // per-conversation folder every other command reads from.
+                    const stats = await downloadSyncedMedia({
+                        api,
+                        accountDir,
+                        threadId: String(row?.threadId || buffered?.threadId || threadId || ""),
+                        limit: 50,
+                        concurrency: 2,
+                        mediaRoot: mediaConfig.downloadDir || undefined,
                     });
-                    localPath = result.path;
+                    localPath = getMessageById(messageId)?.localPath || null;
+                    if (!localPath) {
+                        return err(
+                            `Could not fetch media for ${messageId} ` +
+                                `(${stats.expired} expired, ${stats.throttled} throttled, ${stats.failed} failed). ` +
+                                `Zalo media links expire; try zalo-agent sync-media.`,
+                        );
+                    }
                 }
 
                 if (open) openFile(localPath);
 
-                return ok({ success: true, path: localPath, mediaType: message.type });
+                return ok({ success: true, path: localPath, mediaType: row?.type || buffered?.type || null });
             } catch (e) {
                 console.error("[mcp-tools] zalo_view_media error:", e.message);
                 return err(e.message);

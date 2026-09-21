@@ -12,9 +12,13 @@
  * module is reachable offline with fakes — no session, no socket, no server.
  */
 
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
+import { initDb, insertMessage, upsertThread } from "../../src/core/db.js";
 
 /** The exact tool surface. Changing this list is a deliberate act — see AGENTS.md §10. */
 const EXPECTED_TOOLS = [
@@ -56,6 +60,7 @@ function deps(overrides = {}) {
         filter: { isWatched: () => true },
         config: { limits: { maxMessagesPerPoll: 20 } },
         nameCache: { ready: true, get: () => null, search: () => [] },
+        accountDir: undefined,
         ...overrides,
     };
 }
@@ -63,7 +68,7 @@ function deps(overrides = {}) {
 function register(overrides) {
     const server = fakeServer();
     const d = deps(overrides);
-    registerTools(server, d.api, d.buffer, d.filter, d.config, d.nameCache);
+    registerTools(server, d.api, d.buffer, d.filter, d.config, d.nameCache, d.accountDir);
     return { server, ...d };
 }
 
@@ -263,5 +268,144 @@ describe("MCP handlers", () => {
         });
         const r = await server.call("zalo_list_threads", { type: "all" });
         assert.equal(r.isError, true, "a throw would take the whole MCP server down");
+    });
+});
+
+/**
+ * The cache-backed half of the tool surface.
+ *
+ * `zalo_get_history` used to ask Zalo over the socket, which current accounts
+ * answer with an empty set, while the CLI read the same history straight out
+ * of zalo.db. These lock in the cache-first behavior that closed that gap.
+ */
+describe("MCP tools read the local cache", () => {
+    const ROOT = mkdtempSync(join(tmpdir(), "zalo-mcp-tools-"));
+    const handles = [];
+    let n = 0;
+
+    beforeEach(() => {
+        handles.push(initDb(join(ROOT, `db${n++}.sqlite`)));
+    });
+
+    after(() => {
+        for (const h of handles) {
+            try {
+                h.close();
+            } catch {
+                /* already closed */
+            }
+        }
+        try {
+            rmSync(ROOT, { recursive: true, force: true });
+        } catch {
+            /* a lingering WAL handle is not worth failing the run over */
+        }
+    });
+
+    const cache = (rows) => {
+        upsertThread({ threadId: "t1", type: "dm", name: "Chi Lan", lastUpdate: 9 });
+        for (const r of rows) {
+            insertMessage({
+                msgId: r.msgId,
+                threadId: "t1",
+                senderId: "u2",
+                senderName: "Chi Lan",
+                text: r.text ?? "hi",
+                timestamp: r.ts,
+                type: r.type ?? "text",
+                raw_data: r.raw ?? "hi",
+                has_attachment: r.attach ? 1 : 0,
+                localPath: r.localPath,
+            });
+        }
+    };
+
+    /** An api whose history request answers immediately, so no test waits 10s. */
+    const emptyServerApi = () => {
+        let handler = null;
+        return {
+            listener: {
+                on: (_e, h) => (handler = h),
+                removeListener: () => {},
+                requestOldMessages: () => handler?.([]),
+            },
+        };
+    };
+
+    it("zalo_get_history answers from the cache, oldest first", async () => {
+        cache([
+            { msgId: "m2", ts: 200, text: "second" },
+            { msgId: "m1", ts: 100, text: "first" },
+        ]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 50 }));
+        assert.equal(out.source, "cache");
+        assert.deepEqual(
+            out.messages.map((m) => m.text),
+            ["first", "second"],
+        );
+        assert.equal(out.cursor, 100, "the oldest timestamp, to page further back");
+    });
+
+    it("zalo_get_history pages backwards with `before`", async () => {
+        cache([
+            { msgId: "m1", ts: 100 },
+            { msgId: "m2", ts: 200 },
+            { msgId: "m3", ts: 300 },
+        ]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 50, before: 200 }));
+        assert.deepEqual(
+            out.messages.map((m) => m.msgId),
+            ["m1"],
+        );
+    });
+
+    it("zalo_get_history surfaces cached delivery state and media paths", async () => {
+        cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: "/tmp/a.jpg" }]);
+        const { server } = register({ api: emptyServerApi() });
+        const [msg] = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 50 })).messages;
+        assert.equal(msg.type, "photo");
+        assert.equal(msg.localPath, "/tmp/a.jpg");
+        assert.equal(msg.hasAttachment, true);
+    });
+
+    it("zalo_get_history falls back to the server when the cache is empty", async () => {
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "nope", limit: 50 }));
+        assert.equal(out.source, "server");
+        assert.equal(out.count, 0);
+    });
+
+    it("zalo_get_history takes a `before` cursor only as a positive timestamp", () => {
+        const { server } = register();
+        const s = server.tools.get("zalo_get_history").meta.inputSchema;
+        assert.throws(() => s.parse({ threadId: "t1", before: -1 }));
+        assert.equal(s.parse({ threadId: "t1", before: 1_750_000_000_000 }).before, 1_750_000_000_000);
+    });
+
+    it("zalo_view_media returns the path the cache recorded, without refetching", async () => {
+        cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: "/tmp/a.jpg" }]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_view_media", { messageId: "m1", open: false }));
+        assert.equal(out.success, true);
+        assert.equal(out.path, "/tmp/a.jpg");
+        assert.equal(out.mediaType, "photo");
+    });
+
+    it("zalo_view_media says so when the message carries no media", async () => {
+        cache([{ msgId: "m1", ts: 100 }]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = await server.call("zalo_view_media", { messageId: "m1", open: false });
+        assert.equal(out.isError, true);
+        assert.match(out.content[0].text, /no media attachment/i);
+    });
+
+    it("zalo_view_media reports an unknown message rather than throwing", async () => {
+        cache([{ msgId: "m1", ts: 100 }]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = await server.call("zalo_view_media", { messageId: "gone", open: false });
+        assert.equal(out.isError, true);
+        assert.match(out.content[0].text, /not found/i);
     });
 });

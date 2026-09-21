@@ -106,6 +106,7 @@ const COMMAND_SURFACE = {
         "disperse",
     ],
     conv: [
+        "forget",
         "recent",
         "pinned",
         "archived",

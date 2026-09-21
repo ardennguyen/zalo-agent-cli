@@ -33,7 +33,8 @@ export function initDb(dbPath) {
       sync_timestamp INTEGER DEFAULT 0,
       respondedByMe INTEGER,
       lastGlobalId TEXT,
-      lastClientId TEXT
+      lastClientId TEXT,
+      leftAt INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS contacts (
@@ -208,6 +209,12 @@ export function initDb(dbPath) {
     // the decision so automatic fetches skip it.
     try {
         db.exec("ALTER TABLE messages ADD COLUMN mediaPrunedAt INTEGER");
+    } catch {}
+    // When the conversation stopped being ours: dispersed, deleted, or we were
+    // removed. Nothing else records this, so without it a vanished group keeps
+    // its messages and media forever with no code path that would revisit them.
+    try {
+        db.exec("ALTER TABLE threads ADD COLUMN leftAt INTEGER");
     } catch {}
 
     return db;
@@ -494,17 +501,58 @@ export function getDownloadedMediaBefore(before, threadId = null) {
  * @param {string[]} liveThreadIds - thread ids the latest sync returned
  * @returns {Array<{threadId: string, name: string, files: number}>}
  */
-export function getOrphanThreads(liveThreadIds = []) {
+export function getOrphanThreads(liveThreadIds = null) {
     if (!db) throw new Error("Database not initialized");
-    const live = new Set((liveThreadIds || []).map(String));
     const rows = db
         .prepare(
-            `SELECT t.threadId, t.name, COUNT(m.localPath) AS files
-       FROM threads t LEFT JOIN messages m ON m.threadId = t.threadId AND m.localPath IS NOT NULL
-       GROUP BY t.threadId, t.name`,
+            `SELECT t.threadId, t.name, t.type, t.leftAt,
+              COUNT(m.msgId) AS messages,
+              SUM(CASE WHEN m.localPath IS NOT NULL THEN 1 ELSE 0 END) AS files
+       FROM threads t LEFT JOIN messages m ON m.threadId = t.threadId
+       GROUP BY t.threadId, t.name, t.type, t.leftAt`,
         )
         .all();
-    return rows.filter((r) => !live.has(String(r.threadId)));
+    // Two independent signals. `leftAt` is what a live event or an explicit
+    // disperse/delete records. A conversation list, when one is supplied,
+    // catches the rest: anything still holding rows that the account no longer
+    // knows about.
+    if (!Array.isArray(liveThreadIds)) return rows.filter((r) => r.leftAt);
+    const live = new Set(liveThreadIds.map(String));
+    return rows.filter((r) => r.leftAt || !live.has(String(r.threadId)));
+}
+
+/** Record that a conversation is no longer ours (dispersed, deleted, removed). */
+export function markThreadGone(threadId, at = Date.now()) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("UPDATE threads SET leftAt = ? WHERE threadId = ?").run(Number(at), String(threadId));
+}
+
+/**
+ * Delete every local trace of one conversation.
+ *
+ * Deliberately explicit and never automatic. Files on disk are the caller's
+ * job (see pruneDownloadedMedia); this clears the rows, and reports what it
+ * removed so the caller can say so rather than claim a silent success.
+ *
+ * @returns {{messages:number, threads:number, boardItems:number, reminders:number, reactions:number, cloudItems:number, convState:number}}
+ */
+export function forgetThread(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    const id = String(threadId);
+    const counts = {};
+    const run = (key, sql) => {
+        counts[key] = db.prepare(sql).run(id).changes;
+    };
+    db.transaction(() => {
+        run("messages", "DELETE FROM messages WHERE threadId = ?");
+        run("reactions", "DELETE FROM reactions WHERE threadId = ?");
+        run("boardItems", "DELETE FROM board_items WHERE threadId = ?");
+        run("reminders", "DELETE FROM reminders WHERE threadId = ?");
+        run("cloudItems", "DELETE FROM cloud_items WHERE threadId = ?");
+        run("convState", "DELETE FROM conv_state WHERE threadId = ?");
+        run("threads", "DELETE FROM threads WHERE threadId = ?");
+    })();
+    return counts;
 }
 
 /**

@@ -11,7 +11,7 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { initDb, insertMessage, upsertThread } from "../core/db.js";
-import { storeLiveReaction, storeLiveUndo } from "../core/live-store.js";
+import { storeLiveReaction, storeLiveUndo, storeGroupEvent } from "../core/live-store.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { SyncManager } from "../core/sync.js";
@@ -321,6 +321,16 @@ export function registerListenCommand(program) {
                             },
                             `Group: ${event.type} — ${event.threadId}`,
                         );
+                        // Leaving or being removed means this conversation is no
+                        // longer ours. Flag it so it surfaces as an orphan;
+                        // deleting the local copy stays an explicit decision.
+                        const gone = storeGroupEvent(event);
+                        if (gone.gone) {
+                            emitEvent(
+                                { event: "thread_gone", threadId: gone.threadId },
+                                `No longer in ${gone.threadId} — its local history is now orphaned (see \`conv forget\`)`,
+                            );
+                        }
                     });
                 }
 

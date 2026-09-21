@@ -12,7 +12,7 @@
  * Both paths now funnel through here, so a message stored during a sync is
  * byte-for-byte the same row the listener would have written.
  */
-import { insertMessage, upsertThread, upsertReaction, markMessageRecalled } from "./db.js";
+import { insertMessage, upsertThread, upsertReaction, markMessageRecalled, markThreadGone } from "./db.js";
 import { classifyLiveMessage } from "./sync-v2/message-types.js";
 
 /** zca-js ThreadType.User */
@@ -153,4 +153,36 @@ export function attachLiveStore(listener, onEvent = () => {}) {
             }
         }
     };
+}
+
+/**
+ * Group events that mean the conversation stopped being ours.
+ *
+ * Only `isSelf` matters: someone else leaving a group changes nothing about our
+ * copy of it. zca-js has no distinct "dispersed" event -- a disperse surfaces as
+ * the members leaving -- so LEAVE and REMOVE_MEMBER are the signals available.
+ */
+const GONE_EVENTS = new Set(["leave", "remove_member", "block_member"]);
+
+/**
+ * Note a group event, marking the thread gone when it says we are out.
+ *
+ * Nothing is deleted here. Being removed from a group is not permission to
+ * destroy the local copy of it — the thread is flagged so it shows up as an
+ * orphan, and removing it stays an explicit decision (`conv forget`).
+ *
+ * @param {object} event - the zca-js group event
+ * @returns {{gone: boolean, threadId?: string}}
+ */
+export function storeGroupEvent(event) {
+    const type = String(event?.type || "").toLowerCase();
+    if (!event?.isSelf || !GONE_EVENTS.has(type)) return { gone: false };
+    const threadId = event?.threadId;
+    if (threadId === undefined || threadId === null) return { gone: false };
+    try {
+        markThreadGone(String(threadId), Date.now());
+    } catch {
+        return { gone: false };
+    }
+    return { gone: true, threadId: String(threadId) };
 }

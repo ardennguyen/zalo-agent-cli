@@ -7,7 +7,8 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getRecentThreads, getMessages } from "../core/db.js";
+import { initDb, getRecentThreads, getMessages, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
+import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
 
 /**
  * Find the newest message in a thread and return the anchor triple
@@ -452,11 +453,85 @@ export function registerConvCommands(program) {
                 }
 
                 const result = await api.deleteChat({ ownerId, cliMsgId, globalMsgId }, threadId, type);
+                // Zalo forgets it; we were not. Flag the thread so its leftover
+                // rows and downloaded media surface as orphaned rather than
+                // sitting there with nothing that would ever revisit them.
+                try {
+                    markThreadGone(String(threadId));
+                } catch {
+                    /* no local cache for this thread is fine */
+                }
                 output(result, program.opts().json, () =>
                     success(`Conversation ${threadId} deleted (backwards from message ${globalMsgId})`),
                 );
             } catch (e) {
                 error(e.message);
             }
+        });
+
+    conv.command("forget [threadId]")
+        .description(
+            "Delete this machine's local copy of a conversation: its messages, reactions, board items, " +
+                "reminders, cloud index and downloaded media. Zalo is not contacted — this only removes " +
+                "what is cached here. Use --orphans for every conversation the account no longer has",
+        )
+        .option("--orphans", "Forget every orphaned conversation instead of a named one")
+        .option("--dry-run", "Report what would be removed without removing it")
+        .action(async (threadId, opts) => {
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                process.exit(1);
+            }
+            if (!threadId && !opts.orphans) {
+                error("Give a threadId, or --orphans to forget every conversation the account no longer has.");
+                process.exit(1);
+            }
+            const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+            initDb(join(accountDir, "zalo.db"));
+
+            const targets = opts.orphans
+                ? getOrphanThreads().map((t) => ({ threadId: String(t.threadId), name: t.name, ...t }))
+                : [{ threadId: String(threadId), name: "" }];
+
+            if (!targets.length) {
+                success("No orphaned conversations — nothing to forget.");
+                process.exit(0);
+            }
+
+            if (opts.dryRun) {
+                info(`Would forget ${targets.length} conversation(s):`);
+                for (const t of targets.slice(0, 20)) {
+                    info(
+                        `  ${t.threadId}${t.name ? ` (${t.name})` : ""}${t.messages ? ` — ${t.messages} message(s), ${t.files || 0} file(s)` : ""}`,
+                    );
+                }
+                info("Re-run without --dry-run to remove them. This does not contact Zalo.");
+                process.exit(0);
+            }
+
+            let removed = 0;
+            let files = 0;
+            for (const t of targets) {
+                // Files first: forgetThread drops the rows that point at them,
+                // and a deleted row would leave its media stranded on disk.
+                try {
+                    const pruned = await pruneDownloadedMedia({ all: true, threadId: t.threadId });
+                    files += pruned.deleted;
+                } catch (e) {
+                    warning(`Media cleanup failed for ${t.threadId}: ${e.message}`);
+                }
+                try {
+                    const counts = forgetThread(t.threadId);
+                    removed += counts.messages || 0;
+                } catch (e) {
+                    error(`Failed to forget ${t.threadId}: ${e.message}`);
+                }
+            }
+            success(
+                `Forgot ${targets.length} conversation(s): ${removed} message(s) and ${files} file(s) removed locally.`,
+            );
+            info("Nothing was sent to Zalo; this only cleared the local cache.");
+            process.exit(0);
         });
 }

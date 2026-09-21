@@ -437,6 +437,7 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 - [ ] `sync-mobile` — backfills over the socket and reports a saved/total count
 - [ ] `sync-mobile` twice in a row — the second run reports "Already synced … ago"
       and exits without opening a socket; `--force` overrides it
+- [ ] `sync-mobile --transfer` — one phone confirm, then restores history into zalo.db with real thread names
 - [ ] `sync-mobile` while `listen` is running — refuses, naming the lock
 - [ ] `sync-mobile` while Zalo Web is open — reports the one-web-session rule
 - [ ] `sync-mobile --legacy` — one attempt, then reports the retired endpoint

@@ -376,14 +376,15 @@ export class SyncManager {
                 listener.removeListener("old_messages", handler);
                 if (timer) clearTimeout(timer);
                 setSyncState("lastBackfillAt", Date.now());
-                // A completed round-trip means we have asked the server what
-                // we missed and been answered, so known gaps are covered and
-                // the freshness debounce should treat us as synced. A timeout
-                // is only a partial answer, so it neither resolves gaps nor
-                // arms the debounce.
+                // A completed round-trip means we asked the server what we
+                // missed and were answered, so known gaps are covered. But only
+                // ARM the freshness debounce when we actually stored something —
+                // an empty socket backfill (the common case here) must not mark
+                // us "synced" and thereby suppress a real `sync-mobile --transfer`.
+                // A timeout is a partial answer: it neither resolves gaps nor arms.
                 if (reason === "complete") {
                     resolveAllPendingSyncGaps();
-                    this.markSyncSuccess("backfill");
+                    if (saved > 0) this.markSyncSuccess("backfill");
                 }
                 resolve({ status: "backfilled", saved, total, reason });
             };

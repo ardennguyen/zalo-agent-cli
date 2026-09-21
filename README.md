@@ -133,7 +133,7 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 - **178 lệnh** phủ hết tính năng Zalo cá nhân
 - **Zalo Official Account (OA) API v3.0** — OAuth login, gửi tin nhắn, follower, tag, bài viết, cửa hàng, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 7 tools cho Claude Code và các MCP client
-- **Bộ nhớ đệm cục bộ (SQLite)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync-mobile` thử backfill từ server qua WebSocket (hiện Zalo trả về rỗng)
+- **Bộ nhớ đệm cục bộ (SQLite)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync-mobile --transfer` khôi phục toàn bộ lịch sử từ điện thoại vào `zalo.db` (giải mã transfer-sync-v2; xác nhận một lần trên điện thoại)
 - Tự động tải media (ảnh/audio/video) về `~/.zalo-agent-cli/accounts/<id>/media/`
 - Thẻ chuyển khoản (55+ ngân hàng VN) & QR VietQR
 - Lắng nghe real-time với webhook & lưu JSONL local
@@ -249,7 +249,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 - **178 commands** covering the personal-account Zalo surface
 - **Zalo Official Account (OA) API v3.0** — OAuth login, messaging, followers, tags, articles, store, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 7 tools for Claude Code and other MCP clients
-- **Local SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync-mobile` attempts a server-side backfill (which Zalo currently answers empty)
+- **Local SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync-mobile --transfer` restores full history from the phone into `zalo.db` (transfer-sync-v2 decrypt; one confirmation on the phone)
 - Automatic media download to `~/.zalo-agent-cli/accounts/<id>/media/`
 - Bank cards (55+ VN banks) and VietQR payment images
 - Real-time listener with webhook forwarding and local JSONL archival

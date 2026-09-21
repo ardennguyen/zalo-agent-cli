@@ -198,7 +198,7 @@ const TOP_LEVEL = [
 const FLAG_CONTRACT = {
     login: ["--proxy", "--name", "--qr-url", "--qr-port", "--credentials"],
     logout: ["--purge", "--delete-history", "--no-remote"],
-    "sync-mobile": ["--force", "--legacy", "--wait"],
+    "sync-mobile": ["--transfer", "--force", "--legacy", "--wait"],
     "msg send": ["--type", "--mention", "--style", "--md", "--react"],
     "msg send-qr-transfer": ["--bank", "--amount", "--content", "--template", "--type"],
     "msg send-bank": ["--bank", "--name", "--type"],

@@ -103,17 +103,36 @@ describe("SyncManager sync-freshness debounce", () => {
         assert.equal(r.reason, "pending-gap");
     });
 
-    it("a completed socket backfill arms the debounce", async () => {
+    it("a completed backfill that stored messages arms the debounce", async () => {
         const listener = new FakeListener();
         assert.equal(manager.getLastSuccessfulSyncAt(), null);
 
+        const done = manager.backfillOverSocket(listener, { timeoutMs: 2000 });
+        listener.deliver(
+            [{ threadId: "t1", data: { msgId: "m1", uidFrom: "42", dName: "X", content: "hi", ts: 1700000000000 } }],
+            THREAD_USER,
+        );
+        listener.deliver([], THREAD_GROUP);
+        const res = await done;
+
+        assert.equal(res.reason, "complete");
+        assert.equal(res.saved, 1);
+        assert.ok(
+            manager.getLastSuccessfulSyncAt() > 0,
+            "a completed backfill that saved rows must stamp lastSyncOkAt",
+        );
+    });
+
+    it("an EMPTY completed backfill does NOT arm the debounce (won't suppress a real --transfer)", async () => {
+        const listener = new FakeListener();
         const done = manager.backfillOverSocket(listener, { timeoutMs: 2000 });
         listener.deliver([], THREAD_USER);
         listener.deliver([], THREAD_GROUP);
         const res = await done;
 
         assert.equal(res.reason, "complete");
-        assert.ok(manager.getLastSuccessfulSyncAt() > 0, "a completed backfill must stamp lastSyncOkAt");
+        assert.equal(res.saved, 0);
+        assert.equal(manager.getLastSuccessfulSyncAt(), null, "an empty backfill must not mark us synced");
     });
 
     it("a timed-out backfill does NOT arm the debounce", async () => {

@@ -835,3 +835,49 @@ describe("storeLiveReaction", () => {
         assert.equal(getReactions({ msgId: "ancient" }).length, 1);
     });
 });
+
+describe("reaction results are observable", () => {
+    const ev = (content) => ({
+        threadId: "t1",
+        data: {
+            msgId: "notif",
+            msgType: "chat.reaction",
+            uidFrom: "u2",
+            ts: 1,
+            content: { rMsg: [{ gMsgID: "m1" }], ...content },
+        },
+    });
+
+    it("reports how many rows an add actually wrote", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", msgType: "webchat", content: "hi" }));
+        const r = storeLiveReaction(ev({ rIcon: "/-heart", rType: 5 }));
+        assert.equal(r.changed, 1);
+        assert.equal(r.removing, false);
+        assert.equal(r.icon, "/-heart");
+    });
+
+    it("reports 0 removed when there was nothing to remove", () => {
+        // Exactly the case seen live: a removal arriving for a message whose
+        // reactions this cache never held. Success with changed:0 is the
+        // signal that used to be invisible.
+        storeLiveMessage(liveMsg({}, { msgId: "m1", msgType: "webchat", content: "hi" }));
+        const r = storeLiveReaction(ev({ rIcon: "", rType: -1 }));
+        assert.equal(r.stored, true);
+        assert.equal(r.removing, true);
+        assert.equal(r.changed, 0);
+    });
+
+    it("reports how many a real removal cleared", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", msgType: "webchat", content: "hi" }));
+        storeLiveReaction(ev({ rIcon: "/-heart", rType: 5 }));
+        storeLiveReaction(ev({ rIcon: ":>", rType: 0 }));
+        const r = storeLiveReaction(ev({ rIcon: "", rType: -1 }));
+        assert.equal(r.changed, 2);
+    });
+
+    it("names the message the reaction landed on", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "m1", msgType: "webchat", content: "hi" }));
+        const r = storeLiveReaction(ev({ rIcon: "/-heart", rType: 5 }));
+        assert.deepEqual(r.msgIds, ["m1"]);
+    });
+});

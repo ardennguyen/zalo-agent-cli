@@ -228,7 +228,13 @@ export function storeLiveReaction(reaction) {
             : Number(rTypeRaw);
     const ts = Number(d.ts) || Date.now();
 
+    // Report what actually CHANGED, not merely that we tried. Three bugs in
+    // this family hid behind a success flag that was set unconditionally: a
+    // removal that deleted nothing and an add that wrote to a non-existent id
+    // both looked identical to a working one in the logs.
     let stored = 0;
+    let changed = 0;
+    const removing = !icon;
     for (const t of targets) {
         let msgId = t?.gMsgID === undefined || t?.gMsgID === null ? null : String(t.gMsgID);
         if (msgId === "0" || msgId === "") msgId = null;
@@ -238,7 +244,7 @@ export function storeLiveReaction(reaction) {
         }
         if (!msgId) continue;
         try {
-            upsertReaction({
+            const res = upsertReaction({
                 msgId,
                 threadId: reaction?.threadId === undefined ? null : String(reaction.threadId),
                 userId: String(userId),
@@ -249,12 +255,13 @@ export function storeLiveReaction(reaction) {
                 timestamp: ts,
             });
             stored++;
+            changed += res?.changes ?? 0;
         } catch (e) {
             return { stored: false, reason: e.message };
         }
     }
     if (!stored) return { stored: false, reason: "reaction target not resolvable" };
-    return { stored: true, count: stored };
+    return { stored: true, count: stored, changed, removing, icon, msgIds: targets.map((t) => t?.gMsgID) };
 }
 
 /**

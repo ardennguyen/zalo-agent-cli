@@ -487,6 +487,9 @@ export class SyncV2 {
                 confirmed,
                 attachmentsSaved,
                 typeCounts: { ...typeCounts },
+                // Every threadId the conversation round accounted for. Anything
+                // cached outside this list is orphaned.
+                liveThreadIds: [...mappedThreads, ...unmappedThreads],
             });
 
         // decrypt one session's batches -> decoded proto objects

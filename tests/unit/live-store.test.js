@@ -11,8 +11,22 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initDb, getMessages, getReactions, insertMessage } from "../../src/core/db.js";
-import { storeLiveMessage, storeLiveReaction, storeLiveUndo, attachLiveStore } from "../../src/core/live-store.js";
+import {
+    initDb,
+    getMessages,
+    getReactions,
+    insertMessage,
+    upsertThread,
+    getOrphanThreads,
+    forgetThread,
+} from "../../src/core/db.js";
+import {
+    storeLiveMessage,
+    storeLiveReaction,
+    storeLiveUndo,
+    attachLiveStore,
+    storeGroupEvent,
+} from "../../src/core/live-store.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-live-test-"));
 const opened = [];
@@ -199,5 +213,96 @@ describe("attachLiveStore", () => {
         attachLiveStore(l, (what) => seen.push(what));
         l.fire("message", liveMsg({}, { msgType: "webchat", content: "x" }));
         assert.deepEqual(seen, ["message"]);
+    });
+});
+
+describe("storeGroupEvent — leaving a conversation", () => {
+    it("flags the thread when we leave", () => {
+        upsertThread({ threadId: "g1", type: "group", name: "Old Group", lastUpdate: 1 });
+        const r = storeGroupEvent({ type: "leave", threadId: "g1", isSelf: true });
+        assert.equal(r.gone, true);
+        assert.equal(getOrphanThreads().length, 1);
+    });
+
+    it("ignores someone ELSE leaving", () => {
+        upsertThread({ threadId: "g1", type: "group", name: "Still Ours", lastUpdate: 1 });
+        assert.equal(storeGroupEvent({ type: "leave", threadId: "g1", isSelf: false }).gone, false);
+        assert.equal(getOrphanThreads().length, 0);
+    });
+
+    it("ignores events that do not mean we are out", () => {
+        upsertThread({ threadId: "g1", type: "group", name: "G", lastUpdate: 1 });
+        for (const t of ["update", "new_link", "add_admin", "new_pin_topic"]) {
+            assert.equal(storeGroupEvent({ type: t, threadId: "g1", isSelf: true }).gone, false, t);
+        }
+        assert.equal(getOrphanThreads().length, 0);
+    });
+
+    it("deletes nothing — being removed is not permission to destroy the copy", () => {
+        upsertThread({ threadId: "g1", type: "group", name: "G", lastUpdate: 1 });
+        insertMessage({
+            msgId: "keep",
+            threadId: "g1",
+            senderId: "u",
+            senderName: "",
+            text: "still here",
+            timestamp: 1,
+            type: "text",
+        });
+        storeGroupEvent({ type: "remove_member", threadId: "g1", isSelf: true });
+        assert.equal(getMessages("g1").length, 1, "history must survive until explicitly forgotten");
+    });
+});
+
+describe("forgetThread / getOrphanThreads", () => {
+    const seed = (threadId) => {
+        upsertThread({ threadId, type: "group", name: threadId, lastUpdate: 1 });
+        insertMessage({
+            msgId: `${threadId}-m`,
+            threadId,
+            senderId: "u",
+            senderName: "",
+            text: "hello",
+            timestamp: 1,
+            type: "text",
+        });
+    };
+
+    it("finds threads absent from the live conversation list", () => {
+        seed("g1");
+        seed("g2");
+        const orphans = getOrphanThreads(["g1"]);
+        assert.equal(orphans.length, 1);
+        assert.equal(orphans[0].threadId, "g2");
+    });
+
+    it("counts what each orphan is holding", () => {
+        seed("g1");
+        const [o] = getOrphanThreads([]);
+        assert.equal(o.messages, 1);
+        assert.equal(o.files, 0);
+    });
+
+    it("without a live list, only explicitly-flagged threads count", () => {
+        seed("g1");
+        assert.equal(getOrphanThreads().length, 0, "an unflagged thread is not assumed gone");
+        storeGroupEvent({ type: "leave", threadId: "g1", isSelf: true });
+        assert.equal(getOrphanThreads().length, 1);
+    });
+
+    it("forgetThread removes every trace of one conversation", () => {
+        seed("g1");
+        seed("g2");
+        const counts = forgetThread("g1");
+        assert.equal(counts.messages, 1);
+        assert.equal(counts.threads, 1);
+        assert.equal(getMessages("g1").length, 0);
+        assert.equal(getMessages("g2").length, 1, "other conversations are untouched");
+    });
+
+    it("forgetThread on an unknown thread is a no-op, not an error", () => {
+        const counts = forgetThread("nope");
+        assert.equal(counts.messages, 0);
+        assert.equal(counts.threads, 0);
     });
 });

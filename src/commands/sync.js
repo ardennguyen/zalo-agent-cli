@@ -10,7 +10,7 @@ import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
 import { downloadSyncedMedia, pruneDownloadedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
-import { initDb, getRecentThreads, countPendingAttachments, getSyncState } from "../core/db.js";
+import { initDb, getRecentThreads, countPendingAttachments, getSyncState, getOrphanThreads } from "../core/db.js";
 
 /** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
 const CLOSE_DUPLICATE = 3000;
@@ -143,6 +143,12 @@ export function registerSyncCommands(program) {
         )
         .option("--all", "With --prune, delete every downloaded file regardless of age")
         .option(
+            "--prune-orphans",
+            "Delete downloaded media belonging to conversations the account no longer has — dispersed " +
+                "groups, deleted chats, groups you were removed from. Message text is kept; use " +
+                "`conv forget --orphans` to remove that too",
+        )
+        .option(
             "--all-history",
             "Consider every attachment, not just those inside the window the last mobile sync covered",
         )
@@ -153,6 +159,10 @@ export function registerSyncCommands(program) {
         )
         .option("--dry-run", "Report what would be fetched without downloading anything")
         .action(async (opts) => {
+            if (opts.pruneOrphans) {
+                await runPruneOrphans(requireAccount(), opts);
+                return;
+            }
             if (opts.prune !== undefined) {
                 // Validate the argument BEFORE anything else, so a typo is
                 // reported as a typo rather than as "no active account".
@@ -331,6 +341,40 @@ async function runMediaDownload(activeAcc, opts) {
         warning(`${other} attachment(s) failed for other reasons.`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
+    process.exit(0);
+}
+
+/** Reclaim media held by conversations the account no longer has. */
+async function runPruneOrphans(activeAcc, opts) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    initDb(join(accountDir, "zalo.db"));
+
+    const orphans = getOrphanThreads().filter((t) => t.files > 0);
+    if (!orphans.length) {
+        success("No orphaned conversations are holding downloaded media.");
+        info("Orphans are found from leave/disperse events and from the conversation list a sync returns.");
+        process.exit(0);
+    }
+
+    const totalFiles = orphans.reduce((n, t) => n + (t.files || 0), 0);
+    if (opts.dryRun) {
+        success(`Dry run: ${totalFiles} file(s) across ${orphans.length} orphaned conversation(s).`);
+        for (const t of orphans.slice(0, 15)) {
+            info(`  ${t.threadId}${t.name ? ` (${t.name})` : ""} — ${t.files} file(s)`);
+        }
+        info("Message text is kept. Use `conv forget --orphans` to remove that too.");
+        process.exit(0);
+    }
+
+    let deleted = 0;
+    let bytes = 0;
+    for (const t of orphans) {
+        const st = await pruneDownloadedMedia({ all: true, threadId: t.threadId });
+        deleted += st.deleted;
+        bytes += st.bytes;
+    }
+    success(`Deleted ${deleted} file(s) (${formatBytes(bytes)}) from ${orphans.length} orphaned conversation(s).`);
+    info("Their message text is still here — `conv forget --orphans` removes that too.");
     process.exit(0);
 }
 
@@ -610,6 +654,23 @@ async function runTransferSync(activeAcc, opts) {
                 if (breakdown) info(`By type: ${breakdown}.`);
                 if (res.attachmentsSaved) {
                     info(`${res.attachmentsSaved} message(s) carry media.`);
+                }
+                // The conversation round is the only authoritative list of what
+                // the account still has. Anything cached outside it is orphaned
+                // and nothing else would ever notice.
+                try {
+                    const orphans = getOrphanThreads(res.liveThreadIds || null);
+                    const withData = orphans.filter((t) => (t.messages || 0) + (t.files || 0) > 0);
+                    if (withData.length) {
+                        const files = withData.reduce((n, t) => n + (t.files || 0), 0);
+                        warning(
+                            `${withData.length} conversation(s) are no longer on your account but still cached here (${files} downloaded file(s)).`,
+                        );
+                        info("Reclaim the space with `zalo-agent sync-media --prune-orphans`,");
+                        info("or remove them entirely with `zalo-agent conv forget --orphans`.");
+                    }
+                } catch {
+                    /* orphan reporting must never fail a successful restore */
                 }
                 exitCode = 0;
             }

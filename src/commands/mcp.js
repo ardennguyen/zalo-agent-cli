@@ -10,6 +10,7 @@ import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { startDaemonChannel } from "../core/daemon-channel.js";
 import { initDb } from "../core/db.js";
 import {
     storeLiveMessage,
@@ -124,9 +125,17 @@ export function registerMCPCommands(program) {
                 process.exit(1);
             }
             let lockHeld = true;
+            // Torn down with the lock, and from the same single place, so no
+            // exit path can leave a channel descriptor pointing at a dead port.
+            let channel = null;
             const dropLock = () => {
                 if (!lockHeld) return;
                 lockHeld = false;
+                try {
+                    channel?.stop();
+                } catch (e) {
+                    console.error(`[mcp] Failed to close upload channel: ${e.message}`);
+                }
                 try {
                     releaseLock(accountDir);
                 } catch (e) {
@@ -329,6 +338,20 @@ export function registerMCPCommands(program) {
                 attachListenerHandlers(api);
                 api.listener.start({ retryOnClose: true });
                 console.error("[mcp] Zalo listener started. MCP server ready.");
+                // This process holds the account's one permitted socket, so it
+                // performs attachment uploads for any CLI send too -- otherwise
+                // `msg send-file` opens a second session and Zalo kills this
+                // one. Best-effort: a failed channel only costs the fallback.
+                try {
+                    channel = await startDaemonChannel({
+                        getApi,
+                        accountDir,
+                        onLog: (m) => console.error(`[mcp] ${m}`),
+                    });
+                    console.error(`[mcp] Upload channel ready on 127.0.0.1:${channel.port}`);
+                } catch (e) {
+                    console.error(`[mcp] Upload channel unavailable: ${e.message}`);
+                }
             } catch (e) {
                 dropLock();
                 console.error("[mcp] Failed to start listener:", e.message);

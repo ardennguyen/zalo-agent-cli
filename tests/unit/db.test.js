@@ -246,6 +246,24 @@ describe("threads", () => {
         for (let i = 0; i < 5; i++) upsertThread({ threadId: `t${i}`, type: "dm", name: `T${i}`, lastUpdate: i });
         assert.equal(getRecentThreads(2).length, 2);
     });
+
+    it("never downgrades a known group to a dm", () => {
+        // A live message is typed by the socket command that carried it, and
+        // the server echoes the sender's own message back on the channel
+        // matching the type the SEND declared. Sending to a group with the
+        // default thread type therefore returns the echo on the DM channel,
+        // and a blind `type = excluded.type` rewrote a synced group to "dm" --
+        // observed live, and found already sitting in a real cache.
+        upsertThread({ threadId: "g1", type: "group", name: "G", lastUpdate: 100 });
+        upsertThread({ threadId: "g1", type: "dm", name: "", lastUpdate: 200 });
+        assert.equal(getRecentThreads()[0].type, "group");
+    });
+
+    it("still promotes a dm to a group, because that direction is a correction", () => {
+        upsertThread({ threadId: "g2", type: "dm", name: "G", lastUpdate: 100 });
+        upsertThread({ threadId: "g2", type: "group", name: "", lastUpdate: 200 });
+        assert.equal(getRecentThreads()[0].type, "group");
+    });
 });
 
 describe("contacts", () => {

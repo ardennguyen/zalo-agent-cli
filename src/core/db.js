@@ -240,13 +240,29 @@ export function initDb(dbPath) {
                WHEN 'chat.ecard' THEN 'card'
                WHEN 'chat.recommended' THEN 'link'
                WHEN 'chat.link' THEN 'link'
+               -- msgType 18 had no sync mapping, so the same shared location
+               -- was stored as 'location' by the listener and 'type_18' by a
+               -- mobile sync. The classifier now agrees; these are the rows
+               -- written before it did.
+               WHEN 'type_18' THEN 'location'
                ELSE type END
              WHERE type IN ('chat.undo','chat.delete','webchat','chat.photo','chat.video.msg','share.file',
                             'chat.gif','chat.sticker','chat.voice','chat.doodle','chat.ecard',
-                            'chat.recommended','chat.link')`,
+                            'chat.recommended','chat.link','type_18')`,
         ).run();
     } catch {
         /* a fresh database has nothing to normalize */
+    }
+    // Repair threads an earlier listener downgraded to "dm" (see the sticky
+    // type rule in upsertThread). A conversation carrying a group_event, or a
+    // message from someone who is not either end of a 1-1, is provably a group.
+    try {
+        db.prepare(
+            "UPDATE threads SET type = 'group' WHERE type = 'dm' AND threadId IN " +
+                "(SELECT threadId FROM messages WHERE type = 'group_event')",
+        ).run();
+    } catch {
+        /* no messages table yet, or nothing to repair */
     }
     // When the conversation stopped being ours: dispersed, deleted, or we were
     // removed. Nothing else records this, so without it a vanished group keeps
@@ -432,6 +448,22 @@ export function getRecentThreads(limit = 20, type = null) {
     return db.prepare("SELECT * FROM threads ORDER BY lastUpdate DESC LIMIT ?").all(limit);
 }
 
+/**
+ * One conversation's kind, or null when the cache has never seen it.
+ *
+ * Callers use this to answer "is this a group?" without loading the thread, so
+ * they must be able to tell "not a group" from "don't know" -- hence null
+ * rather than a default of "dm".
+ *
+ * @param {string} threadId
+ * @returns {"dm"|"group"|null}
+ */
+export function getThreadType(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    const row = db.prepare("SELECT type FROM threads WHERE threadId = ?").get(String(threadId));
+    return row?.type || null;
+}
+
 export function upsertThread(thread) {
     if (!db) throw new Error("Database not initialized");
 
@@ -439,7 +471,19 @@ export function upsertThread(thread) {
     INSERT INTO threads (threadId, type, name, lastUpdate, sync_timestamp, respondedByMe, lastGlobalId, lastClientId)
     VALUES (@threadId, @type, @name, @lastUpdate, @sync_timestamp, @respondedByMe, @lastGlobalId, @lastClientId)
     ON CONFLICT(threadId) DO UPDATE SET
-      type = excluded.type,
+      -- Group-ness is durable, so it is sticky. A live message is classified by
+      -- the socket command that carried it -- cmd 501 builds a UserMessage, cmd
+      -- 521 a GroupMessage -- and the server echoes the sender's own message
+      -- back on whichever channel matches the thread type the SEND declared.
+      -- Send to a group with the wrong type and the echo returns on the DM
+      -- channel, and a blind assignment here rewrote a synced group to "dm".
+      -- Measured: two threads holding group_event rows were stored as "dm".
+      -- A group id is never later a user id, so promoting dm -> group is a
+      -- correction worth taking and the reverse is always wrong.
+      type = CASE
+        WHEN threads.type = 'group' THEN 'group'
+        WHEN excluded.type IS NULL OR excluded.type = '' THEN threads.type
+        ELSE excluded.type END,
       -- Never overwrite a known name with a blank one: the sync upserts threads
       -- per message and only some of those carry a display name.
       --

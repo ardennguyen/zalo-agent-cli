@@ -31,6 +31,7 @@ import { registerMCPCommands } from "./commands/mcp.js";
 import { registerSyncCommands } from "./commands/sync.js";
 import { autoLogin } from "./core/zalo-client.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
+import { applyCachedThreadType } from "./utils/thread-type.js";
 import { success, error, warning } from "./utils/output.js";
 
 const DISCLAIMER =
@@ -43,7 +44,7 @@ program
     .description("CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments")
     .version(pkg.version)
     .option("--json", "Output results as JSON (machine-readable)")
-    .hook("preAction", async (thisCommand) => {
+    .hook("preAction", async (thisCommand, actionCommand) => {
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
         // Suppress zca-js internal logs in JSON mode to keep stdout clean for piping
         if (program.opts().json || cmdName === "mcp") {
@@ -63,6 +64,9 @@ program
         if (cmdName !== "update") {
             checkForUpdates(pkg.version, program.opts().json);
         }
+        // Every command taking `--type` defaults it to 0 (1-1), which is wrong
+        // for every group and silently so. The cache knows which is which.
+        applyCachedThreadType(actionCommand);
     });
 
 // Self-update command

@@ -11,6 +11,7 @@ import { extractMessageText } from "../utils/extract-message-text.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getMessages, insertMessage } from "../core/db.js";
+import { sendViaDaemon } from "../core/daemon-channel.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 
 /**
@@ -153,16 +154,45 @@ function allInlineImages(paths) {
  * `send-file doc.pdf`. So the listener decision is made from the actual
  * paths, not from the command name.
  *
+ * Opening that socket is only safe when nothing else holds one. A running
+ * `listen` or `mcp` daemon does, and Zalo answers a second session by killing
+ * the first, so this asks the daemon to do the upload when one is up and only
+ * opens its own session when none is. See src/core/daemon-channel.js.
+ *
  * @param {object} api
  * @param {string[]} absPaths
  * @param {string} threadId
  * @param {number} type
  * @param {object} opts - {caption, uploadTimeout}
- * @returns {Promise<{result?: object, error?: string}>}
+ * @returns {Promise<{result?: object, error?: string, listenerStarted?: boolean, viaDaemon?: boolean}>}
  */
 async function sendAttachments(api, absPaths, threadId, type, opts) {
     const needsListener = !allInlineImages(absPaths);
     let listenerStarted = false;
+
+    // A running `listen`/`mcp` daemon already holds the account's one permitted
+    // socket. Opening a second one here makes Zalo evict the daemon (cmd 3000),
+    // which loses every message that arrives during its ~6s reconnect -- a real
+    // message was lost this way, and the gap it recorded has no working repair
+    // path. So hand the upload to the daemon when there is one.
+    if (needsListener) {
+        const acc = getActive();
+        if (acc) {
+            const viaDaemon = await sendViaDaemon(join(CONFIG_DIR, "accounts", acc.ownId), {
+                paths: absPaths,
+                threadId,
+                type,
+                caption: opts.caption,
+                timeoutMs: Number(opts.uploadTimeout),
+            });
+            // null means no daemon answered; fall through and open our own.
+            if (viaDaemon) {
+                return viaDaemon.ok
+                    ? { result: viaDaemon.result, viaDaemon: true }
+                    : { error: viaDaemon.error, viaDaemon: true };
+            }
+        }
+    }
 
     if (needsListener) {
         try {
@@ -349,69 +379,27 @@ export function registerMsgCommands(program) {
         .option("-m, --caption <text>", "Caption text", "")
         .option("--upload-timeout <ms>", "Max wait for the upload-complete event", "120000")
         .action(async (threadId, paths, opts) => {
-            // Non-image attachments need the WebSocket listener running.
-            //
-            // zca-js's uploadAttachment() branches on file extension: for
-            // "image" it resolves its internal promise synchronously, but
-            // for "video" and "others" it registers an entry in
-            // ctx.uploadCallbacks and awaits a promise that ONLY
-            // apis/listen.js resolves, when the upload-complete control
-            // frame arrives over the socket. With no listener running there
-            // is no timeout and no fallback — the await simply never
-            // settles, so `msg send-file` used to hang forever with no
-            // output at all. (`send-image` above is unaffected, which is
-            // why it works.)
-            //
-            // So: bring the listener up, send, then tear it down. The
-            // listener is stopped in `finally` so a failure can't leave the
-            // socket open and the process hanging on an active handle.
-            const api = getApi();
-            let listenerStarted = false;
-            let ok = false;
-            try {
-                await new Promise((res, rej) => {
-                    const timer = setTimeout(() => rej(new Error("Listener connection timeout")), 15000);
-                    api.listener.once("connected", () => {
-                        clearTimeout(timer);
-                        listenerStarted = true;
-                        res();
-                    });
-                    api.listener.once("error", (err) => {
-                        clearTimeout(timer);
-                        rej(err);
-                    });
-                    api.listener.start({ retryOnClose: false });
-                });
-            } catch (e) {
-                error(`Could not open the upload channel: ${e.message}`);
-                return;
-            }
+            // Shares sendAttachments() with `send-image`. It used to carry its
+            // own copy of the bring-the-listener-up dance, which meant the
+            // hand-off to a running daemon only ever applied to send-image --
+            // and send-file is the command that needs it most, since every
+            // non-inline attachment takes the socket path.
+            const absPaths = paths.map((p) => resolve(p));
+            const {
+                result,
+                error: err,
+                listenerStarted,
+            } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts);
+            if (err) error(err);
+            else output(result, program.opts().json, () => success(`File(s) sent to ${threadId}`));
 
-            try {
-                const absPaths = paths.map((p) => resolve(p));
-                const result = await withTimeout(
-                    api.sendMessage({ msg: opts.caption, attachments: absPaths }, threadId, Number(opts.type)),
-                    Number(opts.uploadTimeout),
-                    "Upload timed out waiting for Zalo's upload-complete event",
-                );
-                output(result, program.opts().json, () => success(`File(s) sent to ${threadId}`));
-                ok = true;
-            } catch (e) {
-                error(e.message);
-            } finally {
-                if (listenerStarted) {
-                    try {
-                        api.listener.stop();
-                    } catch {
-                        // Nothing useful to do — we're exiting anyway.
-                    }
-                }
-                // listener.stop() closes the socket but does not release
-                // every handle it registered, so the event loop stays alive
-                // and the command would sit there, done but not exited.
-                // `msg history` resolves the same problem the same way.
-                process.exit(ok ? 0 : 1);
-            }
+            // listener.stop() closes the socket but does not release every
+            // handle it registered, so the event loop stays alive and the
+            // command would sit there, done but not exited. `msg history`
+            // resolves the same problem the same way. Nothing to force when
+            // the daemon did the upload -- this process never opened a socket.
+            if (listenerStarted) process.exit(err ? 1 : 0);
+            else if (err) process.exitCode = 1;
         });
 
     msg.command("send-card <threadId> <userId>")

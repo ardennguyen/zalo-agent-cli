@@ -12,7 +12,7 @@ separate suites with very different risk profiles:
 opens a socket and never reads your real `~/.zalo-agent-cli/`.
 
 ```bash
-npm test                      # 988 offline tests — no Zalo session needed
+npm test                      # 1076 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -118,21 +118,23 @@ deliberate test update rather than a silent break for anyone piping to `jq`.
 
 ### What the offline suite covers
 
-| File                          | Covers                                                                                                                                                                  |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unit/credentials.test.js`    | save/load/delete, 0600 perms, corrupt-file tolerance, per-account isolation                                                                                             |
-| `unit/accounts.test.js`       | registry CRUD, the "newest login wins" active-flag rule, `wipeAccountDir`, `removeAccount`, lock refusal, **no credential residue after purge**                         |
-| `unit/lock.test.js`           | `daemon.lock` in every state: absent, live, stale, corrupt, foreign-owned                                                                                               |
-| `unit/db.test.js`             | schema + WAL, the "not initialized" guard on all 11 exports, upsert/COALESCE semantics, ordering, paging, `sync_state`, `sync_gaps`                                     |
-| `unit/mcp-config.test.js`     | defaults, the nested deep-merge for `notify`/`limits`/`media`, `parseDuration` (never returns NaN)                                                                      |
-| `unit/oa-client.test.js`      | OA storage is a _separate_ directory from personal creds, multi-OA namespacing, OAuth URL building, message-type path-injection guard                                   |
-| `unit/image-metadata.test.js` | `readImageMetadata()` across PNG/JPEG/GIF/WebP/BMP/TIFF, all 8 EXIF orientations, descriptive-throw contract, plus fixture SHA-256 integrity                            |
-| `unit/pure-helpers.test.js`   | every bank alias round-trips, `maskProxy` never leaks, `extractMessageText` priority + circular safety, fingerprint internal consistency, `isNewerVersion` semver edges |
-| `unit/sync-backfill.test.js`  | `backfillOverSocket()` against a fake listener: batch accumulation, per-thread-type routing, timeout/`request-failed` exits, gap resolution                             |
-| `unit/sync-freshness.test.js` | `checkSyncFreshness()` — the one-hour debounce, the `--force` override, and the pending-gap escape hatch that defeats the debounce                                      |
-| `unit/sync-v2-decode.test.js` | transfer-sync-v2 pure decode path: `splitChunks()` length-framing (including a declared length that overruns the buffer), `decodeFrame()` across `encrypt` 0/1/2/3      |
-| `cli/surface.test.js`         | **the full command manifest** — every group, subcommand and behavior-changing flag                                                                                      |
-| `cli/validation.test.js`      | every guard that fires before a network call                                                                                                                            |
+| File                          | Covers                                                                                                                                                                   |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `unit/credentials.test.js`    | save/load/delete, 0600 perms, corrupt-file tolerance, per-account isolation                                                                                              |
+| `unit/accounts.test.js`       | registry CRUD, the "newest login wins" active-flag rule, `wipeAccountDir`, `removeAccount`, lock refusal, **no credential residue after purge**                          |
+| `unit/daemon-channel.test.js` | The loopback upload channel: descriptor lifecycle, token rejection, stale-pid cleanup, dead-port fallback, and that the daemon's _current_ api is used after a reconnect |
+| `unit/thread-type.test.js`    | Filling `--type` from the cache: promotion, explicit-flag precedence, threadId found by argument name                                                                    |
+| `unit/lock.test.js`           | `daemon.lock` in every state: absent, live, stale, corrupt, foreign-owned                                                                                                |
+| `unit/db.test.js`             | schema + WAL, the "not initialized" guard on all 11 exports, upsert/COALESCE semantics, ordering, paging, `sync_state`, `sync_gaps`                                      |
+| `unit/mcp-config.test.js`     | defaults, the nested deep-merge for `notify`/`limits`/`media`, `parseDuration` (never returns NaN)                                                                       |
+| `unit/oa-client.test.js`      | OA storage is a _separate_ directory from personal creds, multi-OA namespacing, OAuth URL building, message-type path-injection guard                                    |
+| `unit/image-metadata.test.js` | `readImageMetadata()` across PNG/JPEG/GIF/WebP/BMP/TIFF, all 8 EXIF orientations, descriptive-throw contract, plus fixture SHA-256 integrity                             |
+| `unit/pure-helpers.test.js`   | every bank alias round-trips, `maskProxy` never leaks, `extractMessageText` priority + circular safety, fingerprint internal consistency, `isNewerVersion` semver edges  |
+| `unit/sync-backfill.test.js`  | `backfillOverSocket()` against a fake listener: batch accumulation, per-thread-type routing, timeout/`request-failed` exits, gap resolution                              |
+| `unit/sync-freshness.test.js` | `checkSyncFreshness()` — the one-hour debounce, the `--force` override, and the pending-gap escape hatch that defeats the debounce                                       |
+| `unit/sync-v2-decode.test.js` | transfer-sync-v2 pure decode path: `splitChunks()` length-framing (including a declared length that overruns the buffer), `decodeFrame()` across `encrypt` 0/1/2/3       |
+| `cli/surface.test.js`         | **the full command manifest** — every group, subcommand and behavior-changing flag                                                                                       |
+| `cli/validation.test.js`      | every guard that fires before a network call                                                                                                                             |
 
 `cli/surface.test.js` is the machine-checkable twin of
 `skill/references/command-reference.md`. When a subcommand is added, renamed

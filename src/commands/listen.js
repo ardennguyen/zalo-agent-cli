@@ -10,6 +10,7 @@ import { success, error, info, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { startDaemonChannel } from "../core/daemon-channel.js";
 import { initDb } from "../core/db.js";
 import {
     storeLiveMessage,
@@ -498,9 +499,27 @@ export function registerListenCommand(program) {
                 process.exit(1);
             }
 
+            // This daemon owns the account's one permitted WebSocket, so it
+            // also does the uploads: a `msg send-file` in another terminal
+            // would otherwise open a second session, and Zalo would evict this
+            // one mid-conversation. Failing to open the channel is not fatal --
+            // senders just fall back to their own socket, as before.
+            let channel = null;
+            try {
+                channel = await startDaemonChannel({
+                    getApi,
+                    accountDir,
+                    onLog: (m) => info(m),
+                });
+                info(`Upload channel ready on 127.0.0.1:${channel.port} — attachment sends will reuse this socket.`);
+            } catch (e) {
+                warning(`Upload channel unavailable (${e.message}). Attachment sends will open their own session.`);
+            }
+
             // Keep alive until Ctrl+C
             await new Promise((resolve) => {
                 process.on("SIGINT", () => {
+                    channel?.stop();
                     try {
                         getApi().listener.stop();
                     } catch (e) {

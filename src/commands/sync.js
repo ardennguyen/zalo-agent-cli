@@ -1094,12 +1094,12 @@ function printPlan(plan, win, jsonMode) {
  * exit code at the end. The five commands remain for targeted re-runs.
  *
  * Order, and why:
- *   1. open the socket once, with one live-store tap for the whole window, so
- *      nothing that arrives during the run is lost;
- *   2. start the reaction drain at once, as Zalo Web does on every connect,
- *      concurrently with 3 -- the backlog is an ordered action log, and
- *      replaying it early keeps a later removal from being undone;
- *   3. restore messages (the only phone prompt, at most once);
+ *   1. open the socket once, with a live-store tap throughout, so nothing
+ *      that arrives during the run is lost;
+ *   2. restore messages (the only phone prompt, at most once), alone and
+ *      exactly as `sync-mobile --transfer` does -- running the reaction drain
+ *      beside it cost the restore its socket on every live attempt;
+ *   3. drain the reaction backlog on the same socket;
  *   4. retry reactions whose message was not stored when they arrived;
  *   5. close the socket, wait for it, release the lock;
  *   6. REST stages: pinned/unread, boards, cloud, then media last.
@@ -1166,16 +1166,16 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                 for (const n of ["messages", "reactions"]) if (runs(n)) record(n, "failed", why);
             } else {
                 syncManager.markConnected();
-                // One tap for the whole window; the restore is told not to add
-                // its own, so no live event is stored twice.
-                detachLive = attachLiveStore(api.listener);
 
-                const drainP = runs("reactions")
-                    ? drainPass(api, { waitMs: 15000, pages: 20, removals: opts.removals }).catch((e) => ({
-                          error: e,
-                      }))
-                    : null;
-
+                // The restore runs FIRST and ALONE, exactly as `sync-mobile
+                // --transfer` runs it -- its own live-store tap included. The
+                // first version drained the reaction backlog concurrently, as
+                // Zalo Web does on connect, and the restore then lost its socket
+                // (close 1006) at batch 0 of 5 on both live attempts, right after
+                // the phone confirmed. The same window on the same account
+                // restored 11,324 messages through the old command minutes later.
+                // Each half is proven alone, so they now run one after the other
+                // on the same socket.
                 if (runs("messages")) {
                     info(`Restoring ${win.label}.`);
                     if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
@@ -1187,7 +1187,6 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                             days: opts.days,
                             from: opts.from,
                             waitMs: Math.max(180, Number(opts.wait) || 0) * 1000,
-                            liveStore: false,
                             onStatus: ({ phase, detail }) => {
                                 if (phase === "confirm") warning(detail);
                                 else if (detail) info(`  ${detail}`);
@@ -1204,8 +1203,13 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                     }
                 }
 
-                if (drainP) {
-                    const rx = await drainP;
+                if (runs("reactions")) {
+                    // The restore detached its own tap; keep live traffic
+                    // captured for the rest of the socket window.
+                    detachLive = attachLiveStore(api.listener);
+                    const rx = await drainPass(api, { waitMs: 15000, pages: 20, removals: opts.removals }).catch(
+                        (e) => ({ error: e }),
+                    );
                     if (rx.error) {
                         warning(`Reaction backlog failed: ${rx.error.message}`);
                         record("reactions", "failed", rx.error.message);
@@ -1215,9 +1219,9 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                         warning("Reaction backlog: the socket closed before it answered.");
                         record("reactions", "failed", "socket closed before the backlog answered");
                     } else {
-                        // The drain ran beside the restore, so a reaction naming
-                        // only a client id may have arrived before its message
-                        // was stored. The messages are here now.
+                        // A reaction naming only a client id is unresolvable until
+                        // its message is stored. The restore has run by now, but
+                        // the backlog reaches further back than a windowed one.
                         let placed = 0;
                         for (const r of rx.unresolved || []) {
                             if (storeLiveReaction(r, { source: "backlog" }).stored) placed++;

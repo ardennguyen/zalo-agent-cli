@@ -217,7 +217,16 @@ function parseContent(content) {
  * @param {object} reaction - the zca-js reaction event
  * @returns {{stored: boolean, reason?: string}}
  */
-export function storeLiveReaction(reaction) {
+/**
+ * Store one reaction event against the message it names.
+ *
+ * @param {object} reaction - a zca-js reaction (live, cmd 612) or a retrieved one (cmd 610/611)
+ * @param {{source?: string}} [opts] - where it came from, recorded on the row;
+ *   the backlog drain passes "backlog" so a retrieved reaction is not
+ *   indistinguishable from one seen live
+ * @returns {{stored: boolean, reason?: string, count?: number, changed?: number}}
+ */
+export function storeLiveReaction(reaction, opts = {}) {
     const d = reaction?.data || {};
     // zca-js parses `content` for a LIVE reaction (cmd 612) but hands it over
     // as a raw JSON string for a retrieved one (cmd 610/611 -> old_reactions).
@@ -274,6 +283,7 @@ export function storeLiveReaction(reaction) {
                 icon,
                 rType,
                 timestamp: ts,
+                source: opts.source,
             });
             stored++;
             changed += res?.changes ?? 0;

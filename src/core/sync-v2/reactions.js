@@ -58,7 +58,12 @@ export const DEFAULT_MAX_PAGES = 20;
  *   app showed one; replaying in order reproduced the one.
  * @param {(p: object) => void} [opts.onProgress]
  * @returns {Promise<{pages: number, received: number, stored: number, changed: number,
- *   skippedRemovals: number, byType: object, truncated: boolean}>}
+ *   skippedRemovals: number, byType: object, truncated: boolean, unresolved: object[]}>}
+ *   `unresolved` holds the reactions whose target message was not in the cache
+ *   when they arrived. The backlog reaches further back than a windowed
+ *   restore, and when the drain runs beside a restore its target may simply
+ *   not be written yet -- so a caller that has since stored more messages can
+ *   pass these back through storeLiveReaction once more.
  */
 export async function drainReactions(opts = {}) {
     const {
@@ -78,6 +83,7 @@ export async function drainReactions(opts = {}) {
         skippedRemovals: 0,
         byType: { dm: 0, group: 0 },
         truncated: false,
+        unresolved: [],
     };
 
     // The raw tap is the only place `more` and `lastActionId` exist. Without it
@@ -152,11 +158,13 @@ export async function drainReactions(opts = {}) {
                         stats.skippedRemovals++;
                         continue;
                     }
-                    const res = storeLiveReaction(r);
+                    const res = storeLiveReaction(r, { source: "backlog" });
                     if (res.stored) {
                         stats.stored++;
                         stats.changed += res.changed || 0;
                         stats.byType[label]++;
+                    } else if (res.reason === "reaction target not resolvable") {
+                        stats.unresolved.push(r);
                     }
                 }
                 onProgress({

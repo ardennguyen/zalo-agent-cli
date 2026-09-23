@@ -118,6 +118,14 @@ const CASES = [
         },
     },
     {
+        // Measured: the same doodle arrives live as chat.doodle and from a sync
+        // as msgType 2 with a photo-CDN jpg -- stored as type_2 before 2 mapped.
+        name: "doodle",
+        expect: "doodle",
+        live: { msgType: "chat.doodle", content: { href: "https://photo-stal-10.zdn.vn/d.jpg" } },
+        sync: { msgType: 2, content: "", meta: { attachsList: [{ href: "https://photo-stal-10.zdn.vn/d.jpg" }] } },
+    },
+    {
         // Measured from a phone-sent voice note: msgType 6, href on the voice
         // CDN (.aac), params m4a/duration/waveformSamples. Unmapped, sync stored
         // it as type_6 with has_attachment 0 -- the audio was never fetched.

@@ -18,6 +18,7 @@ import {
     storeLiveReaction,
     storeLiveUndo,
     storeGroupEvent,
+    storeGroupEventRow,
     noteBoardChange,
     storeReceipts,
     isRemovalMessage,
@@ -348,6 +349,12 @@ export function registerListenCommand(program) {
                     // longer ours. Flag it so it surfaces as an orphan;
                     // deleting the local copy stays an explicit decision.
                     const gone = storeGroupEvent(event);
+                    // The system line itself, as the row a sync would restore.
+                    // Stored whatever --events says: output flags never gate storage.
+                    const row = storeGroupEventRow(event);
+                    if (!row.stored && row.reason && row.reason !== "not a system-line event") {
+                        console.error(`[listen] group event not stored: ${row.reason}`);
+                    }
                     if (!enabledEvents.has("group")) return;
                     emitEvent(
                         {

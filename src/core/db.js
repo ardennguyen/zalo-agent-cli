@@ -706,6 +706,68 @@ export function getOrphanThreads(liveThreadIds = null) {
 }
 
 /** Record that a conversation is no longer ours (dispersed, deleted, removed). */
+/**
+ * Id prefix of a group-event row the LISTENER wrote.
+ *
+ * A group system line (a rename, a member joining, a pin) reaches the socket
+ * only as a cmd 601 control, and that control carries no message id: its
+ * actionId/controlId are queue sequence numbers. The row a mobile sync
+ * restores for the same event is keyed by the PHONE's own clientId -- a local
+ * timestamp taken when the phone processed the event, 0.3-5.7 s after it
+ * happened (measured). No shared key exists, so the listener writes under this
+ * prefix and a sync replaces it.
+ */
+export const LIVE_GROUP_EVENT_PREFIX = "ge:";
+
+/**
+ * Delete the listener's placeholder for a group event a sync just restored.
+ *
+ * Matches on thread and time only, because nothing else is shared: the synced
+ * row's timestamp landed 1 and 4 ms from the live event's time on the two
+ * events measured. Only the single closest placeholder is removed, so two
+ * events a few seconds apart each keep their own row.
+ *
+ * @param {string} threadId
+ * @param {number} timestamp - the synced row's timestamp
+ * @param {number} [windowMs=2000]
+ * @returns {number} rows deleted (0 or 1)
+ */
+export function replaceLiveGroupEventPlaceholder(threadId, timestamp, windowMs = 2000) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare(
+            "DELETE FROM messages WHERE msgId = (SELECT msgId FROM messages WHERE threadId = @threadId " +
+                "AND type = 'group_event' AND msgId LIKE @prefix AND abs(timestamp - @ts) <= @win " +
+                "ORDER BY abs(timestamp - @ts) LIMIT 1)",
+        )
+        .run({
+            threadId: String(threadId),
+            ts: Number(timestamp),
+            win: windowMs,
+            prefix: `${LIVE_GROUP_EVENT_PREFIX}%`,
+        }).changes;
+}
+
+/**
+ * Whether a sync has already stored the system line for an event at this time.
+ *
+ * @param {string} threadId
+ * @param {number} timestamp
+ * @param {number} [windowMs=2000]
+ * @returns {boolean}
+ */
+export function hasSyncedGroupEventNear(threadId, timestamp, windowMs = 2000) {
+    if (!db) throw new Error("Database not initialized");
+    return Boolean(
+        db
+            .prepare(
+                "SELECT 1 FROM messages WHERE threadId = ? AND type = 'group_event' AND msgId NOT LIKE ? " +
+                    "AND abs(timestamp - ?) <= ? LIMIT 1",
+            )
+            .get(String(threadId), `${LIVE_GROUP_EVENT_PREFIX}%`, Number(timestamp), windowMs),
+    );
+}
+
 export function markThreadGone(threadId, at = Date.now()) {
     if (!db) throw new Error("Database not initialized");
     return db.prepare("UPDATE threads SET leftAt = ? WHERE threadId = ?").run(Number(at), String(threadId));

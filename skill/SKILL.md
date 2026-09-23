@@ -97,6 +97,10 @@ Production-ready with pm2. Details: `references/listen-mode-guide.md`
 
 ### Local Cache & Sync
 ```bash
+zalo-agent sync                              # EVERYTHING in one run: messages (one phone prompt), reactions, pinned/unread, boards, cloud, media
+zalo-agent sync --plan                       # ...show which stages would run and why; sends nothing
+zalo-agent sync --no-messages                # ...everything except the phone prompt
+zalo-agent sync-reactions                    # Reaction backlog only (cmd 610/611) — no phone needed
 zalo-agent msg history <ID> -n 50      # Reads from ~/.zalo-agent-cli/accounts/<ownId>/zalo.db
 zalo-agent sync-mobile --transfer            # REAL restore: pulls your history from the phone into zalo.db (one confirm on the phone)
 zalo-agent sync-mobile --transfer --days 30  # ...only the last 30 days (default is ALL history, no date floor)

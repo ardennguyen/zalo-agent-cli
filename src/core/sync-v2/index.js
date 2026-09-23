@@ -22,7 +22,15 @@
 import zlib from "node:zlib";
 import crypto from "node:crypto";
 import { resolve } from "node:path";
-import { initDb, insertMessage, upsertThread, setSyncState, runInTransaction } from "../db.js";
+import {
+    initDb,
+    insertMessage,
+    upsertThread,
+    setSyncState,
+    runInTransaction,
+    getPendingSyncGaps,
+    resolveSyncGap,
+} from "../db.js";
 import { ensureAssets, loadCodecs } from "./assets.js";
 import { classifySyncMessage } from "./message-types.js";
 import { resolveNonFriendDms } from "./gid.js";
@@ -73,6 +81,46 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * @param {number} [now=Date.now()] - injectable for tests.
  * @returns {{days: number|null, from: number, to: number, clamped: boolean, label: string}}
  */
+/**
+ * Record that a restore settled the window it asked about.
+ *
+ * Two things made the freshness debounce -- the guard that stops a run from
+ * re-pinging the phone -- effectively disabled:
+ *
+ *  - a CONFIRMED empty window (the phone answered: nothing in this range was
+ *    missed) returned before the success markers were written, so it never
+ *    counted. That is the common case over any window a listener was
+ *    connected for: the phone hands a sync only what a web session missed.
+ *  - checkSyncFreshness never skips while any gap is pending, and nothing
+ *    resolved gaps (resolveSyncGap had only test callers), so after the first
+ *    listener reconnect every later run pinged the phone forever.
+ *
+ * Only a gap lying wholly inside the window is resolved: a --days 1 run says
+ * nothing about a gap from last week. A partial run resolves none.
+ *
+ * @param {{from: number}} win - the window the restore asked for
+ * @param {{resolveGaps?: boolean, now?: number}} [opts]
+ * @returns {{resolvedGaps: number}}
+ */
+export function recordRestoreSuccess(win, opts = {}) {
+    const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+    setSyncState("lastSyncOkAt", now);
+    setSyncState("lastSyncOkKind", "transfer");
+    // How far back this run actually covered, so a later, WIDER sync is not
+    // silently skipped by the freshness debounce.
+    setSyncState("lastSyncOkFrom", String(win.from));
+    let resolvedGaps = 0;
+    if (opts.resolveGaps) {
+        for (const g of getPendingSyncGaps()) {
+            if (Number(g.fromTs) >= Number(win.from) && Number(g.toTs) <= now) {
+                resolveSyncGap(g.id);
+                resolvedGaps++;
+            }
+        }
+    }
+    return { resolvedGaps };
+}
+
 export function resolveSyncWindow(days, now = Date.now(), fromTs = undefined) {
     const since = (ts) => (ts > 0 ? new Date(ts).toISOString().slice(0, 10) : "the beginning");
 
@@ -315,8 +363,9 @@ export class SyncV2 {
     }
 
     /**
-     * Run the full restore. Assumes the caller holds the account lock. Manages
-     * its own listener lifecycle.
+     * Run the full restore. Assumes the caller holds the account lock AND has
+     * already started the listener: this adds and removes its own socket taps,
+     * it never starts or stops the listener itself.
      *
      * @param {object} [opts]
      * @param {number|null} [opts.days=null] only sync the last N days; falsy = full history.
@@ -325,6 +374,7 @@ export class SyncV2 {
      * @param {number} [opts.waveSize=4] message sessions open at once (Zalo Web uses 4).
      * @param {number} [opts.waitMs=120000] per-phase wait budget.
      * @param {(s: {phase: string, detail?: string}) => void} [opts.onStatus]
+     * @param {boolean} [opts.liveStore=true] false when the caller already taps live traffic
      * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string, days:number|null, from:number, confirmed:boolean}>}
      */
     async restore(opts = {}) {
@@ -396,12 +446,18 @@ export class SyncV2 {
         // on the same socket and keep being stored. A full-history run holds this
         // socket for many minutes, so without this everything that landed during
         // it was dropped -- a hole precisely where the sync promises completeness.
-        const detachLive = attachLiveStore(L, (what, detail) =>
-            onStatus({
-                phase: "live",
-                detail: `stored a live ${what}${detail?.threadId ? ` in ${detail.threadId}` : ""}`,
-            }),
-        );
+        // A caller holding the socket across several stages (`zalo-agent sync`)
+        // attaches one tap for its whole window and passes liveStore:false, so
+        // no live event is stored twice.
+        const detachLive =
+            opts.liveStore === false
+                ? () => {}
+                : attachLiveStore(L, (what, detail) =>
+                      onStatus({
+                          phase: "live",
+                          detail: `stored a live ${what}${detail?.threadId ? ` in ${detail.threadId}` : ""}`,
+                      }),
+                  );
 
         // Why the socket went away matters: Zalo's 3000 means "another session
         // took the account", anything else points elsewhere. Without this the
@@ -605,6 +661,9 @@ export class SyncV2 {
                 // in the window, so separate that from a prompt that was never
                 // confirmed — the two need opposite advice from the caller.
                 reason = confirmed ? "empty-window" : "no-conversations";
+                // The phone answered and had nothing for this window: that IS
+                // the window settled. Only an unconfirmed prompt is a non-result.
+                if (confirmed) recordRestoreSuccess(win, { resolveGaps: true });
                 return done(reason);
             }
 
@@ -811,11 +870,9 @@ export class SyncV2 {
             }
             if (socketDied && !messagesSaved) throw new Error("connection dropped before any messages arrived");
             if (finished < shards.length) reason = "partial";
-            setSyncState("lastSyncOkAt", Date.now());
-            setSyncState("lastSyncOkKind", "transfer");
-            // How far back this run actually covered, so a later, WIDER sync is
-            // not silently skipped by the freshness debounce.
-            setSyncState("lastSyncOkFrom", String(win.from));
+            // A partial run still records success (unchanged), so the next run
+            // within the hour is skipped unless --force -- but it settles no gap.
+            recordRestoreSuccess(win, { resolveGaps: reason === "complete" });
         } finally {
             for (const id of sessions.keys()) {
                 try {

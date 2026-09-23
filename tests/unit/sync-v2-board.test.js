@@ -12,7 +12,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb, getBoardItems, getReminders } from "../../src/core/db.js";
-import { syncBoards, normalizeBoardItem, normalizeReminder, BOARD_TYPES } from "../../src/core/sync-v2/board.js";
+import {
+    syncBoards,
+    normalizeBoardItem,
+    normalizeReminder,
+    BOARD_TYPES,
+    describeZaloError,
+} from "../../src/core/sync-v2/board.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-board-test-"));
 const opened = [];
@@ -411,5 +417,22 @@ describe("syncBoards per-thread outcome", () => {
                 ["g3", true],
             ],
         );
+    });
+});
+
+describe("describeZaloError", () => {
+    // Measured: zca-js hands over the literal string "null" as the message when
+    // the server's error_message is null, and the numeric code is the only
+    // signal. A live board pass printed 165 failures, every one as "null".
+    it("falls back to the code when the message is the string null", () => {
+        assert.equal(describeZaloError({ message: "null", code: -1 }), "code -1");
+    });
+
+    it("keeps a real message and adds its code", () => {
+        assert.equal(describeZaloError({ message: "Lỗi không xác định", code: 112 }), "Lỗi không xác định (code 112)");
+    });
+
+    it("still describes a plain error with no code", () => {
+        assert.equal(describeZaloError(new Error("socket hang up")), "socket hang up");
     });
 });

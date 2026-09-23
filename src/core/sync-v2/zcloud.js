@@ -185,7 +185,9 @@ function nextCursor(resp, items) {
  */
 export async function syncCloudIndex(opts = {}) {
     const { api, pageSize = 300, maxPages = 50, onProgress = () => {} } = opts;
-    const stats = { items: 0, pages: 0, lastNoiseId: null, failed: 0, failures: [] };
+    // `complete`: the server said it had nothing further. False means the
+    // walk stopped on --pages and lastNoiseId is where to resume.
+    const stats = { items: 0, pages: 0, lastNoiseId: null, failed: 0, failures: [], complete: false };
     const verify = opts.verify || (api ? makePost(api, `${domain(api, "zcloud")}/cloudmedia/queue/pc/verify`) : null);
     if (!verify) return stats;
 
@@ -219,6 +221,7 @@ export async function syncCloudIndex(opts = {}) {
         // — any of those means the server has nothing further to give.
         if (!items.length || items.length < pageSize || !next || next === cursor) {
             stats.lastNoiseId = next || cursor || null;
+            stats.complete = true;
             break;
         }
         cursor = String(next);

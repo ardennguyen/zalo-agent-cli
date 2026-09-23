@@ -2,8 +2,8 @@ import { join } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { acquireLock, releaseLock } from "../core/lock.js";
-import { error, info, success, warning } from "../utils/output.js";
+import { acquireLock, releaseLock, checkLock } from "../core/lock.js";
+import { error, info, success, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
@@ -11,12 +11,16 @@ import { downloadSyncedMedia, pruneDownloadedMedia, DOWNLOADABLE_KINDS } from ".
 import { syncBoards } from "../core/sync-v2/board.js";
 import { drainReactions } from "../core/sync-v2/reactions.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
+import { syncConvState } from "../core/sync-v2/conv-state.js";
+import { planSyncRun } from "../core/sync-v2/plan.js";
+import { attachLiveStore, storeLiveReaction } from "../core/live-store.js";
 import {
     initDb,
     getRecentThreads,
     getThreadNames,
     countPendingAttachments,
     getSyncState,
+    setSyncState,
     clearSyncState,
     getOrphanThreads,
 } from "../core/db.js";
@@ -43,6 +47,47 @@ function formatAge(ms) {
 }
 
 export function registerSyncCommands(program) {
+    program
+        .command("sync")
+        .description(
+            "Pull ALL message state in one run: message history (one phone prompt), the reaction backlog, " +
+                "pinned and unread conversations, notes/pins/polls/reminders, the zCloud index, and media. " +
+                "One lock and one socket window for the socket stages, then the REST stages. The sync-* " +
+                "commands remain for re-running a single stage",
+        )
+        .option(
+            "-F, --force",
+            "Restore messages even if a successful sync completed within the last hour (re-pings the phone)",
+        )
+        .option("-d, --days <n>", "Restore only the last N days of messages", parseIntAtLeast(1))
+        .option("--from <date>", "Restore messages from this date onward (YYYY-MM-DD); overrides --days")
+        .option(
+            "-w, --wait <seconds>",
+            "How long to wait for the phone confirmation (floored at 180)",
+            parseIntOption,
+            180,
+        )
+        .option("--no-messages", "Skip the message restore (no phone prompt)")
+        .option("--no-reactions", "Skip the reaction backlog")
+        .option("--no-conv-state", "Skip pinned and unread conversations")
+        .option("--no-boards", "Skip notes, pinned messages, polls and reminders")
+        .option("--no-cloud", "Skip the zCloud index")
+        .option("--no-media", "Skip downloading attachments")
+        .option(
+            "--no-removals",
+            "Do not apply un-react entries from the reaction backlog (see sync-reactions --no-removals)",
+        )
+        .option("--plan", "Print which stages would run, in what order and why, then exit. Sends nothing")
+        .action(async (opts) => {
+            // Only the message restore carries a window; accepting one with the
+            // restore switched off would silently mean nothing.
+            if ((opts.days !== undefined || opts.from !== undefined) && opts.messages === false) {
+                error("--days/--from apply to the message restore, which --no-messages switches off.");
+                process.exit(1);
+            }
+            await runUnifiedSync(requireAccount(), opts, Boolean(program.opts().json));
+        });
+
     program
         .command("sync-mobile")
         .description(
@@ -451,6 +496,23 @@ async function runBoardSync(activeAcc, opts) {
         process.exit(1);
     }
 
+    const r = await boardPass(api, opts);
+    if (r.status === "skipped") {
+        warning(opts.thread ? `Thread ${opts.thread} is not in the local cache.` : "No threads in the local cache.");
+        info("Run `zalo-agent sync-mobile --transfer` first.");
+    }
+    process.exit(0);
+}
+
+/**
+ * One board pass over the cached threads. Exit-free, so `sync` can run it as a
+ * stage and `sync-boards` as a command.
+ *
+ * @param {object} api
+ * @param {{limit?: number, thread?: string, boards?: boolean, reminders?: boolean, concurrency?: number}} opts
+ * @returns {Promise<{status: "ok"|"skipped", reason?: string, stats?: object}>}
+ */
+async function boardPass(api, opts) {
     const all = getRecentThreads(opts.limit);
     const threads = (opts.thread ? all.filter((t) => String(t.threadId) === String(opts.thread)) : all).map((t) => ({
         threadId: String(t.threadId),
@@ -458,9 +520,10 @@ async function runBoardSync(activeAcc, opts) {
         name: t.name,
     }));
     if (!threads.length) {
-        warning(opts.thread ? `Thread ${opts.thread} is not in the local cache.` : "No threads in the local cache.");
-        info("Run `zalo-agent sync-mobile --transfer` first.");
-        process.exit(0);
+        return {
+            status: "skipped",
+            reason: opts.thread ? `thread ${opts.thread} is not in the local cache` : "no threads in the local cache",
+        };
     }
 
     // A live board event flags its thread; those go first so a quick run after
@@ -500,7 +563,7 @@ async function runBoardSync(activeAcc, opts) {
         warning(`${stats.failed} request(s) failed (left groups and blocked peers are expected here).`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.threadId} (${f.what}): ${f.reason}`);
     }
-    process.exit(0);
+    return { status: "ok", stats };
 }
 
 /**
@@ -540,28 +603,7 @@ async function runReactionSync(activeAcc, opts) {
 
     try {
         info("Connecting…");
-        const connected = await new Promise((res) => {
-            let settled = false;
-            const done = (v) => {
-                if (settled) return;
-                settled = true;
-                res(v);
-            };
-            const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), waitMs);
-            api.listener.on("connected", () => {
-                clearTimeout(timer);
-                done({ ok: true });
-            });
-            api.listener.on("closed", (code) => {
-                clearTimeout(timer);
-                done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
-            });
-            api.listener.on("error", (e) => {
-                clearTimeout(timer);
-                done({ ok: false, reason: e && e.message ? e.message : "socket error" });
-            });
-            api.listener.start({ retryOnClose: false });
-        });
+        const connected = await connectListener(api, waitMs);
 
         if (!connected.ok) {
             if (connected.reason === "duplicate") {
@@ -571,44 +613,8 @@ async function runReactionSync(activeAcc, opts) {
                 error(`Could not open a connection: ${connected.reason}`);
             }
         } else {
-            info("Requesting the reaction backlog (cmd 610 for 1-1, 611 for groups)…");
-            const stats = await drainReactions({
-                listener: api.listener,
-                timeoutMs: waitMs,
-                maxPages: opts.pages,
-                applyRemovals: opts.removals !== false,
-                onProgress: (p) => {
-                    if (p.phase === "page") {
-                        info(`  ${p.type} page ${p.page}: ${p.received} reaction(s)${p.more ? " (more)" : ""}`);
-                    } else if (p.phase === "timeout") {
-                        warning(`  ${p.type}: ${p.detail}`);
-                    } else if (p.phase === "warn") {
-                        warning(`  ${p.detail}`);
-                    }
-                },
-            });
-
-            if (stats.received === 0) {
-                warning("The server returned no reactions.");
-                info(
-                    "That is a caught-up queue, not a missing feature: this channel is what Zalo Web itself " +
-                        "asks on every connect. Reactions arriving from now on are captured by `zalo-agent listen`.",
-                );
-            } else {
-                success(
-                    `Stored ${stats.stored} of ${stats.received} reaction(s) ` +
-                        `(${stats.byType.dm} direct, ${stats.byType.group} group; ${stats.changed} row(s) changed).`,
-                );
-                if (stats.skippedRemovals) {
-                    warning(
-                        `Skipped ${stats.skippedRemovals} un-react entr(y/ies) because of --no-removals, so the ` +
-                            "cache now holds reactions that were later taken off.",
-                    );
-                }
-                if (stats.truncated) {
-                    warning(`Stopped at the ${opts.pages}-page cap; re-run with a higher --pages for the rest.`);
-                }
-            }
+            const stats = await drainPass(api, { waitMs, pages: opts.pages, removals: opts.removals });
+            reportReactionDrain(stats, opts);
             exitCode = 0;
         }
     } catch (err) {
@@ -625,6 +631,62 @@ async function runReactionSync(activeAcc, opts) {
     process.exit(exitCode);
 }
 
+/**
+ * Drain the reaction backlog on an already-open socket. Exit-free.
+ *
+ * @param {object} api - with a started listener
+ * @param {{waitMs: number, pages?: number, removals?: boolean}} opts
+ * @returns {Promise<object>} drainReactions stats
+ */
+function drainPass(api, opts) {
+    info("Requesting the reaction backlog (cmd 610 for 1-1, 611 for groups)…");
+    return drainReactions({
+        listener: api.listener,
+        timeoutMs: opts.waitMs,
+        maxPages: opts.pages,
+        applyRemovals: opts.removals !== false,
+        onProgress: (p) => {
+            if (p.phase === "page") {
+                info(`  ${p.type} page ${p.page}: ${p.received} reaction(s)${p.more ? " (more)" : ""}`);
+            } else if (p.phase === "timeout") {
+                warning(`  ${p.type}: ${p.detail}`);
+            } else if (p.phase === "warn") {
+                warning(`  ${p.detail}`);
+            }
+        },
+    });
+}
+
+/**
+ * Report a finished drain in the words `sync-reactions` has always used.
+ *
+ * @param {object} stats - drainReactions stats
+ * @param {{pages?: number}} opts
+ */
+function reportReactionDrain(stats, opts) {
+    if (stats.received === 0) {
+        warning("The server returned no reactions.");
+        info(
+            "That is a caught-up queue, not a missing feature: this channel is what Zalo Web itself " +
+                "asks on every connect. Reactions arriving from now on are captured by `zalo-agent listen`.",
+        );
+        return;
+    }
+    success(
+        `Stored ${stats.stored} of ${stats.received} reaction(s) ` +
+            `(${stats.byType.dm} direct, ${stats.byType.group} group; ${stats.changed} row(s) changed).`,
+    );
+    if (stats.skippedRemovals) {
+        warning(
+            `Skipped ${stats.skippedRemovals} un-react entr(y/ies) because of --no-removals, so the ` +
+                "cache now holds reactions that were later taken off.",
+        );
+    }
+    if (stats.truncated) {
+        warning(`Stopped at the ${opts.pages}-page cap; re-run with a higher --pages for the rest.`);
+    }
+}
+
 /** Walk the zCloud index. No phone, no socket. */
 async function runCloudSync(activeAcc, opts) {
     const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
@@ -638,25 +700,47 @@ async function runCloudSync(activeAcc, opts) {
         process.exit(1);
     }
 
+    const r = await cloudPass(api, opts);
+    if (r.status === "unavailable") {
+        error("Could not read the cloud index.");
+        for (const f of r.stats.failures.slice(0, 3)) info(`  ${f.reason}`);
+        info("This account may not have zCloud enabled, or the endpoint may have changed.");
+        process.exit(1);
+    }
+    if (r.stats.lastNoiseId && !r.stats.complete) info(`Resume cursor: ${r.stats.lastNoiseId}`);
+    info("Cloud blobs are stored encrypted; this pass records where they live, it does not download them.");
+    process.exit(0);
+}
+
+/**
+ * One walk of the zCloud index. Exit-free.
+ *
+ * The cursor used to be printed and thrown away, so a walk capped by --pages
+ * could only be continued by hand-copying it into --resume. It is now kept:
+ * saved when the walk stops on the cap, cleared when the server says it has
+ * nothing further, and an explicit --resume still wins.
+ *
+ * @param {object} api
+ * @param {{resume?: string, pageSize?: number, pages?: number}} opts
+ * @returns {Promise<{status: "ok"|"unavailable", stats: object}>}
+ */
+async function cloudPass(api, opts) {
+    const saved = getSyncState("cloudCursor");
+    const resume = opts.resume || saved || "";
+    if (!opts.resume && saved) info("Continuing the cloud walk from where the last capped run stopped.");
     info("Walking the zCloud media index…");
     const stats = await syncCloudIndex({
         api,
-        lastNoiseId: opts.resume || "",
+        lastNoiseId: resume,
         pageSize: opts.pageSize,
         maxPages: opts.pages,
         onProgress: (p) => info(`  page ${p.page}: ${p.items} item(s) so far`),
     });
-
-    if (stats.failed && !stats.items) {
-        error("Could not read the cloud index.");
-        for (const f of stats.failures.slice(0, 3)) info(`  ${f.reason}`);
-        info("This account may not have zCloud enabled, or the endpoint may have changed.");
-        process.exit(1);
-    }
+    if (stats.failed && !stats.items) return { status: "unavailable", stats };
+    if (stats.complete) clearSyncState("cloudCursor");
+    else if (stats.lastNoiseId) setSyncState("cloudCursor", String(stats.lastNoiseId));
     success(`Recorded ${stats.items} cloud item(s) across ${stats.pages} page(s).`);
-    if (stats.lastNoiseId) info(`Resume cursor: ${stats.lastNoiseId}`);
-    info("Cloud blobs are stored encrypted; this pass records where they live, it does not download them.");
-    process.exit(0);
+    return { status: "ok", stats };
 }
 
 /** Human-readable byte count for the download summary. */
@@ -776,56 +860,8 @@ async function runTransferSync(activeAcc, opts) {
                     else if (detail) info(`  ${detail}`);
                 },
             });
-            if (res.conversations === 0 && res.reason === "empty-window") {
-                // The phone answered; the window is just empty. Different
-                // problem, different advice.
-                success(`Nothing to restore — no conversation activity in ${win.label}.`);
-                if (win.days) info("Pass a larger --days, or drop --days for full history.");
-                exitCode = 0;
-            } else if (res.reason === "partial") {
-                warning(
-                    `Partial restore: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) before the run was cut short.`,
-                );
-                info("What arrived is stored. Re-run with --force to fetch the rest.");
-                exitCode = 0;
-            } else if (res.conversations === 0) {
-                warning("No conversations returned — the phone prompt may not have been confirmed in time. Try again.");
-                exitCode = 0;
-            } else {
-                success(
-                    `Restored ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) (${win.label}) into the local cache.`,
-                );
-                info(
-                    `Threads resolved to real ids/names: ${res.threadsMapped}; unresolved (non-friend or OA): ${res.threadsUnmapped}.`,
-                );
-                const breakdown = Object.entries(res.typeCounts || {})
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 8)
-                    .map(([t, c]) => `${t} ${c}`)
-                    .join(", ");
-                if (breakdown) info(`By type: ${breakdown}.`);
-                if (res.attachmentsSaved) {
-                    info(`${res.attachmentsSaved} message(s) carry media.`);
-                }
-                // The conversation round is the only authoritative list of what
-                // the account still has. Anything cached outside it is orphaned
-                // and nothing else would ever notice.
-                try {
-                    const orphans = getOrphanThreads(res.liveThreadIds || null);
-                    const withData = orphans.filter((t) => (t.messages || 0) + (t.files || 0) > 0);
-                    if (withData.length) {
-                        const files = withData.reduce((n, t) => n + (t.files || 0), 0);
-                        warning(
-                            `${withData.length} conversation(s) are no longer on your account but still cached here (${files} downloaded file(s)).`,
-                        );
-                        info("Reclaim the space with `zalo-agent sync-media --prune-orphans`,");
-                        info("or remove them entirely with `zalo-agent conv forget --orphans`.");
-                    }
-                } catch {
-                    /* orphan reporting must never fail a successful restore */
-                }
-                exitCode = 0;
-            }
+            reportRestore(res, win);
+            exitCode = 0;
         }
     } catch (err) {
         error(`Failed: ${err.message}`);
@@ -858,6 +894,66 @@ async function runTransferSync(activeAcc, opts) {
 }
 
 /**
+ * Report a finished restore, in the words `sync-mobile --transfer` has always
+ * used. Exit-free, and says what happened so `sync` can summarize it.
+ *
+ * @param {object} res - SyncV2.restore() result
+ * @param {{label: string, days: number|null}} win
+ * @returns {{status: "ok"|"partial"|"unconfirmed", reason: string}}
+ */
+function reportRestore(res, win) {
+    if (res.conversations === 0 && res.reason === "empty-window") {
+        // The phone answered; the window is just empty. Different problem,
+        // different advice.
+        success(`Nothing to restore — no conversation activity in ${win.label}.`);
+        if (win.days) info("Pass a larger --days, or drop --days for full history.");
+        return { status: "ok", reason: "phone confirmed: nothing missed in this window" };
+    }
+    if (res.reason === "partial") {
+        warning(
+            `Partial restore: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) before the run was cut short.`,
+        );
+        info("What arrived is stored. Re-run with --force to fetch the rest.");
+        return { status: "partial", reason: `${res.messagesSaved} message(s) before the run was cut short` };
+    }
+    if (res.conversations === 0) {
+        warning("No conversations returned — the phone prompt may not have been confirmed in time. Try again.");
+        return { status: "unconfirmed", reason: "the phone prompt was not confirmed in time" };
+    }
+    success(
+        `Restored ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) (${win.label}) into the local cache.`,
+    );
+    info(
+        `Threads resolved to real ids/names: ${res.threadsMapped}; unresolved (non-friend or OA): ${res.threadsUnmapped}.`,
+    );
+    const breakdown = Object.entries(res.typeCounts || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([t, c]) => `${t} ${c}`)
+        .join(", ");
+    if (breakdown) info(`By type: ${breakdown}.`);
+    if (res.attachmentsSaved) info(`${res.attachmentsSaved} message(s) carry media.`);
+    // The conversation round is the only authoritative list of what the account
+    // still has. Anything cached outside it is orphaned and nothing else would
+    // ever notice.
+    try {
+        const orphans = getOrphanThreads(res.liveThreadIds || null);
+        const withData = orphans.filter((t) => (t.messages || 0) + (t.files || 0) > 0);
+        if (withData.length) {
+            const files = withData.reduce((n, t) => n + (t.files || 0), 0);
+            warning(
+                `${withData.length} conversation(s) are no longer on your account but still cached here (${files} downloaded file(s)).`,
+            );
+            info("Reclaim the space with `zalo-agent sync-media --prune-orphans`,");
+            info("or remove them entirely with `zalo-agent conv forget --orphans`.");
+        }
+    } catch {
+        /* orphan reporting must never fail a successful restore */
+    }
+    return { status: "ok", reason: `${res.messagesSaved} message(s) from ${res.conversations} conversation(s)` };
+}
+
+/**
  * Download everything the restore just recorded.
  *
  * Scoped to the window just synced and never to pruned media, but otherwise
@@ -871,7 +967,7 @@ async function runTransferSync(activeAcc, opts) {
  */
 async function fetchMediaAfterRestore(accountDir, api, since) {
     const pending = countPendingAttachments();
-    if (!pending) return;
+    if (!pending) return null;
 
     info(`Downloading ${pending} attachment(s) — no phone confirmation needed. Ctrl-C is safe; it resumes.`);
     let last = 0;
@@ -910,6 +1006,352 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
         info("Re-run `zalo-agent sync-media` later to pick them up; a lower --concurrency helps.");
     }
     if (stats.abortedEarly) warning("Media stopped early under sustained throttling; nothing is lost.");
+    return stats;
+}
+
+/**
+ * Stop the listener and wait for its socket to actually close.
+ *
+ * stop() returns at once, but the socket's own onclose runs later and resets
+ * the listener a second time. Releasing daemon.lock before that lands would let
+ * a `listen` started in the gap be nulled by our late reset. Bounded, so a
+ * socket that already died cannot hang the run.
+ *
+ * @param {object} api
+ * @param {number} [ms=3000]
+ * @returns {Promise<void>}
+ */
+function closeListener(api, ms = 3000) {
+    return new Promise((res) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            res();
+        };
+        const timer = setTimeout(finish, ms);
+        try {
+            api.listener.once("closed", finish);
+            api.listener.once("disconnected", finish);
+            api.listener.stop();
+        } catch {
+            finish();
+        }
+    });
+}
+
+/** True while the listener's socket is connecting or open. */
+function socketAlive(api) {
+    const ws = api?.listener?.ws;
+    return Boolean(ws) && ws.readyState <= 1;
+}
+
+/** One line per stage, for the human summary. */
+const STATUS_MARK = { ok: "✓", partial: "◐", skipped: "–", unavailable: "○", unconfirmed: "?", failed: "✗" };
+
+/**
+ * Print a plan without running it.
+ *
+ * @param {object} plan - planSyncRun() result
+ * @param {object} win - resolveSyncWindow() result
+ * @param {boolean} jsonMode
+ */
+function printPlan(plan, win, jsonMode) {
+    output(
+        {
+            window: win.label,
+            openSocket: plan.openSocket,
+            stages: plan.stages.map((s) => ({
+                stage: s.name,
+                transport: s.transport,
+                run: s.run,
+                wakesPhone: s.phone && s.run,
+                why: s.why,
+            })),
+        },
+        jsonMode,
+        () => {
+            info(`Plan for \`zalo-agent sync\` — ${win.label}. Nothing has been sent.`);
+            info(plan.openSocket ? "Opens the WebSocket once, for the socket stages." : "Opens no WebSocket.");
+            for (const s of plan.stages) {
+                const tag = s.run ? (s.phone ? "RUN  (wakes your phone)" : "RUN") : "skip";
+                console.log(`    ${tag.padEnd(24)} ${s.name.padEnd(10)} ${s.transport.padEnd(7)} ${s.why || s.label}`);
+            }
+        },
+    );
+}
+
+/**
+ * One run that pulls every kind of message state the account has.
+ *
+ * Reactions, pinned conversations, notes, polls and reminders are all state
+ * of the messages and conversations, and they were split across five
+ * commands -- two of which each opened their own socket and took their own
+ * lock, so a full refresh meant running five things in the right order and
+ * evicting Zalo Web twice. This runs them as stages of one process: one lock,
+ * one socket window shared by the socket stages, then the REST stages, and one
+ * exit code at the end. The five commands remain for targeted re-runs.
+ *
+ * Order, and why:
+ *   1. open the socket once, with one live-store tap for the whole window, so
+ *      nothing that arrives during the run is lost;
+ *   2. start the reaction drain at once, as Zalo Web does on every connect,
+ *      concurrently with 3 -- the backlog is an ordered action log, and
+ *      replaying it early keeps a later removal from being undone;
+ *   3. restore messages (the only phone prompt, at most once);
+ *   4. retry reactions whose message was not stored when they arrived;
+ *   5. close the socket, wait for it, release the lock;
+ *   6. REST stages: pinned/unread, boards, cloud, then media last.
+ *
+ * Never calls a run* function: those end the process. Only exit-free helpers.
+ *
+ * @param {{ownId: string}} activeAcc
+ * @param {object} opts - command options
+ * @param {boolean} jsonMode
+ */
+async function runUnifiedSync(activeAcc, opts, jsonMode) {
+    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    initDb(join(accountDir, "zalo.db"));
+
+    let api;
+    let syncManager;
+    try {
+        api = getApi();
+        syncManager = new SyncManager(api, activeAcc.ownId);
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
+
+    const win = resolveSyncWindow(opts.days, Date.now(), opts.from);
+    const freshness = syncManager.checkSyncFreshness({ force: opts.force, coversFrom: win.from });
+    const want = {
+        messages: opts.messages !== false,
+        reactions: opts.reactions !== false,
+        convState: opts.convState !== false,
+        boards: opts.boards !== false,
+        cloud: opts.cloud !== false,
+        media: opts.media !== false,
+    };
+
+    if (opts.plan) {
+        printPlan(planSyncRun({ want, freshness, lockOk: !checkLock(accountDir).locked }), win, jsonMode);
+        process.exit(0);
+    }
+
+    // Take the lock only if a socket stage could run: REST stages need neither
+    // the socket nor exclusivity, exactly as sync-boards and sync-media never did.
+    const mightUseSocket = (want.messages && !freshness.skip) || want.reactions;
+    const lockHeld = mightUseSocket ? acquireLock(accountDir) : false;
+    const plan = planSyncRun({ want, freshness, lockOk: mightUseSocket ? lockHeld : true });
+    const runs = (name) => plan.stages.find((s) => s.name === name)?.run;
+
+    const results = [];
+    const record = (stage, status, reason = "", stats = undefined) => results.push({ stage, status, reason, stats });
+    for (const s of plan.stages) if (!s.run) record(s.name, "skipped", s.why);
+
+    // ---- socket window
+    if (plan.openSocket) {
+        let detachLive = () => {};
+        try {
+            info("Connecting…");
+            const connected = await connectListener(api, 30000);
+            if (!connected.ok) {
+                const why =
+                    connected.reason === "duplicate"
+                        ? "another web session is open on this account (sign out of Zalo Web)"
+                        : `could not open a connection: ${connected.reason}`;
+                warning(`Socket stages skipped — ${why}.`);
+                for (const n of ["messages", "reactions"]) if (runs(n)) record(n, "failed", why);
+            } else {
+                syncManager.markConnected();
+                // One tap for the whole window; the restore is told not to add
+                // its own, so no live event is stored twice.
+                detachLive = attachLiveStore(api.listener);
+
+                const drainP = runs("reactions")
+                    ? drainPass(api, { waitMs: 15000, pages: 20, removals: opts.removals }).catch((e) => ({
+                          error: e,
+                      }))
+                    : null;
+
+                if (runs("messages")) {
+                    info(`Restoring ${win.label}.`);
+                    if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
+                    warning(
+                        "This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.",
+                    );
+                    try {
+                        const res = await new SyncV2(api, activeAcc.ownId).restore({
+                            days: opts.days,
+                            from: opts.from,
+                            waitMs: Math.max(180, Number(opts.wait) || 0) * 1000,
+                            liveStore: false,
+                            onStatus: ({ phase, detail }) => {
+                                if (phase === "confirm") warning(detail);
+                                else if (detail) info(`  ${detail}`);
+                            },
+                        });
+                        const r = reportRestore(res, win);
+                        record("messages", r.status, r.reason, {
+                            conversations: res.conversations,
+                            messagesSaved: res.messagesSaved,
+                        });
+                    } catch (err) {
+                        warning(`Message restore failed: ${err.message}`);
+                        record("messages", "failed", err.message);
+                    }
+                }
+
+                if (drainP) {
+                    const rx = await drainP;
+                    if (rx.error) {
+                        warning(`Reaction backlog failed: ${rx.error.message}`);
+                        record("reactions", "failed", rx.error.message);
+                    } else if (!rx.received && !socketAlive(api)) {
+                        // An empty drain on a dead socket is a lost connection,
+                        // not the "caught-up queue" an empty drain normally is.
+                        warning("Reaction backlog: the socket closed before it answered.");
+                        record("reactions", "failed", "socket closed before the backlog answered");
+                    } else {
+                        // The drain ran beside the restore, so a reaction naming
+                        // only a client id may have arrived before its message
+                        // was stored. The messages are here now.
+                        let placed = 0;
+                        for (const r of rx.unresolved || []) {
+                            if (storeLiveReaction(r, { source: "backlog" }).stored) placed++;
+                        }
+                        reportReactionDrain(rx, { pages: 20 });
+                        if (placed) info(`Placed ${placed} reaction(s) whose message arrived with the restore.`);
+                        record("reactions", rx.truncated ? "partial" : "ok", `${rx.stored + placed} stored`, {
+                            received: rx.received,
+                            stored: rx.stored + placed,
+                            unresolved: (rx.unresolved?.length || 0) - placed,
+                        });
+                    }
+                }
+            }
+        } catch (err) {
+            warning(`Socket stages stopped: ${err.message}`);
+            for (const n of ["messages", "reactions"]) {
+                if (runs(n) && !results.some((r) => r.stage === n)) record(n, "failed", err.message);
+            }
+        } finally {
+            try {
+                detachLive();
+            } catch {
+                /* already detached */
+            }
+            await closeListener(api);
+            if (lockHeld) releaseLock(accountDir);
+        }
+    } else if (lockHeld) {
+        releaseLock(accountDir);
+    }
+
+    // ---- REST stages, after the socket is closed and the lock released
+    if (runs("convState")) {
+        try {
+            info("Reading pinned and unread-marked conversations…");
+            const st = await syncConvState({ api });
+            success(
+                `Pinned: ${st.pinned}${st.unpinned ? ` (${st.unpinned} unpinned elsewhere)` : ""}; ` +
+                    `unread-marked: ${st.unread}${st.unmarked ? ` (${st.unmarked} cleared elsewhere)` : ""}.`,
+            );
+            if (st.unresolved || st.ambiguous) {
+                info(
+                    `${st.unresolved} conversation(s) not in the local cache` +
+                        (st.ambiguous ? `, ${st.ambiguous} unread mark(s) matching more than one thread` : "") +
+                        " — left alone rather than guessed.",
+                );
+            }
+            record(
+                "convState",
+                st.failures.length ? (st.failures.length === 2 ? "failed" : "partial") : "ok",
+                st.failures.map((f) => `${f.what}: ${f.reason}`).join("; "),
+                { pinned: st.pinned, unread: st.unread, unresolved: st.unresolved, ambiguous: st.ambiguous },
+            );
+        } catch (err) {
+            warning(`Conversation state failed: ${err.message}`);
+            record("convState", "failed", err.message);
+        }
+    }
+
+    if (runs("boards")) {
+        try {
+            const r = await boardPass(api, { limit: 200, concurrency: 3, boards: true, reminders: true });
+            if (r.status === "skipped") record("boards", "skipped", r.reason);
+            else {
+                record("boards", r.stats.failed ? "partial" : "ok", `${r.stats.failed} request(s) failed`, {
+                    boardItems: r.stats.boardItems,
+                    reminders: r.stats.reminders,
+                    threads: r.stats.threads,
+                });
+            }
+        } catch (err) {
+            warning(`Boards failed: ${err.message}`);
+            record("boards", "failed", err.message);
+        }
+    }
+
+    if (runs("cloud")) {
+        try {
+            const r = await cloudPass(api, { pages: 50, pageSize: 300 });
+            if (r.status === "unavailable") {
+                // Not a failure: an account without zCloud answers exactly like
+                // this, and `sync` must not exit 1 on every such account.
+                info("zCloud index unavailable (zCloud off, or the endpoint changed).");
+                record("cloud", "unavailable", r.stats.failures[0]?.reason || "no items readable");
+            } else {
+                record(
+                    "cloud",
+                    r.stats.complete ? "ok" : "partial",
+                    r.stats.complete ? "" : "stopped at the page cap",
+                    {
+                        items: r.stats.items,
+                    },
+                );
+            }
+        } catch (err) {
+            warning(`Cloud index failed: ${err.message}`);
+            record("cloud", "failed", err.message);
+        }
+    }
+
+    if (runs("media")) {
+        try {
+            const since = Number(getSyncState("lastSyncOkFrom"));
+            const m = await fetchMediaAfterRestore(accountDir, api, since);
+            if (!m) record("media", "ok", "nothing waiting to download");
+            else {
+                record("media", m.expired || m.throttled || m.abortedEarly ? "partial" : "ok", "", {
+                    downloaded: m.downloaded,
+                    considered: m.considered,
+                    expired: m.expired,
+                    throttled: m.throttled,
+                });
+            }
+        } catch (err) {
+            warning(`Media download stopped: ${err.message}`);
+            info("The messages are stored. Run `zalo-agent sync-media` to retry the files.");
+            record("media", "failed", err.message);
+        }
+    }
+
+    // ---- one summary, one exit code
+    const order = plan.stages.map((s) => s.name);
+    results.sort((a, b) => order.indexOf(a.stage) - order.indexOf(b.stage));
+    const exitCode = results.some((r) => r.status === "failed") ? 1 : 0;
+    output({ window: win.label, stages: results, exitCode }, jsonMode, () => {
+        info("Summary:");
+        for (const r of results) {
+            console.log(
+                `    ${STATUS_MARK[r.status] || "·"} ${r.stage.padEnd(10)} ${r.status.padEnd(12)} ${r.reason || ""}`,
+            );
+        }
+    });
+    process.exit(exitCode);
 }
 
 /**
@@ -978,28 +1420,7 @@ async function runSocketBackfill(activeAcc, opts) {
 
     try {
         info("Connecting…");
-        const connected = await new Promise((res) => {
-            let settled = false;
-            const done = (v) => {
-                if (settled) return;
-                settled = true;
-                res(v);
-            };
-            const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), waitMs);
-            api.listener.on("connected", () => {
-                clearTimeout(timer);
-                done({ ok: true });
-            });
-            api.listener.on("closed", (code) => {
-                clearTimeout(timer);
-                done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
-            });
-            api.listener.on("error", (e) => {
-                clearTimeout(timer);
-                done({ ok: false, reason: e && e.message ? e.message : "socket error" });
-            });
-            api.listener.start({ retryOnClose: false });
-        });
+        const connected = await connectListener(api, waitMs);
 
         if (!connected.ok) {
             if (connected.reason === "duplicate") {
@@ -1023,10 +1444,10 @@ async function runSocketBackfill(activeAcc, opts) {
                 info(
                     "A real Zalo sync notifies your phone, because the phone is the data source: Zalo Web sends " +
                         "socket cmd 590, the server wakes the phone, the phone encrypts and uploads, and the payload " +
-                        "comes back as cmd 601. That handshake (transfer-sync-v2) is NOT implemented here, so the " +
-                        "absence of a notification on your phone means no real sync took place.",
+                        "comes back as cmd 601. That handshake (transfer-sync-v2) is what `--transfer` runs; this " +
+                        "default path does not, so the absence of a notification on your phone means no real sync took place.",
                 );
-                info("To capture messages from now on, run: zalo-agent listen");
+                info("For the real restore run: zalo-agent sync  (or sync-mobile --transfer for messages alone)");
                 exitCode = 0;
             } else {
                 success(`Backfilled ${res.saved}/${res.total} message(s) into the local cache.`);

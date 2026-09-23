@@ -209,6 +209,25 @@ function asList(resp) {
  *   check it.
  * @returns {Promise<{threads:number, boardItems:number, reminders:number, failed:number, failures:Array<object>}>}
  */
+/**
+ * A failure reason someone can act on.
+ *
+ * zca-js builds its error from the server's error_message, which for these
+ * endpoints is often null -- so the message arrives as the literal string
+ * "null" and the only signal is the numeric code. A live board pass reported
+ * 165 failures, every one of them printed as "null".
+ *
+ * @param {unknown} e
+ * @returns {string}
+ */
+export function describeZaloError(e) {
+    const msg = e?.message;
+    const text = msg && msg !== "null" && msg !== "undefined" ? String(msg) : "";
+    const code = e?.code;
+    if (code !== undefined && code !== null) return text ? `${text} (code ${code})` : `code ${code}`;
+    return text || String(e);
+}
+
 export async function syncBoards(opts = {}) {
     const {
         api,
@@ -227,7 +246,7 @@ export async function syncBoards(opts = {}) {
 
     const note = (threadId, what, e) => {
         stats.failed++;
-        if (stats.failures.length < 20) stats.failures.push({ threadId, what, reason: e?.message || String(e) });
+        if (stats.failures.length < 20) stats.failures.push({ threadId, what, reason: describeZaloError(e) });
     };
 
     let cursor = 0;

@@ -245,10 +245,13 @@ export function initDb(dbPath) {
                -- mobile sync. The classifier now agrees; these are the rows
                -- written before it did.
                WHEN 'type_18' THEN 'location'
+               -- zinstant content (a bank card): msgType 24 from a sync, stored
+               -- under its raw live spelling until the live map learned it.
+               WHEN 'chat.webcontent' THEN 'event'
                ELSE type END
              WHERE type IN ('chat.undo','chat.delete','webchat','chat.photo','chat.video.msg','share.file',
                             'chat.gif','chat.sticker','chat.voice','chat.doodle','chat.ecard',
-                            'chat.recommended','chat.link','type_18')`,
+                            'chat.recommended','chat.link','type_18','chat.webcontent')`,
         ).run();
     } catch {
         /* a fresh database has nothing to normalize */
@@ -365,12 +368,18 @@ export function insertMessage(msg) {
     INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
     VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
     ON CONFLICT(msgId) DO UPDATE SET
-      text = excluded.text,
+      -- A removal is terminal. Once a row is a tombstone, a later write of the
+      -- same msgId -- a re-sync, a history replay, a backfill -- must not bring
+      -- the message back or replace the tombstone's record of HOW it was
+      -- removed (raw_data.removedAs: recall vs delete-for-me, originalType).
+      -- The phone keeps its own tombstone, so a sync arriving after a live
+      -- recall used to overwrite ours with a poorer one.
+      text = CASE WHEN messages.type = 'deleted' THEN messages.text ELSE excluded.text END,
       timestamp = excluded.timestamp,
-      type = excluded.type,
-      raw_data = excluded.raw_data,
+      type = CASE WHEN messages.type = 'deleted' THEN messages.type ELSE excluded.type END,
+      raw_data = CASE WHEN messages.type = 'deleted' THEN messages.raw_data ELSE excluded.raw_data END,
       localPath = COALESCE(excluded.localPath, messages.localPath),
-      has_attachment = excluded.has_attachment,
+      has_attachment = CASE WHEN messages.type = 'deleted' THEN messages.has_attachment ELSE excluded.has_attachment END,
       -- Never regress delivery state: a re-sync of an older snapshot must not
       -- turn a seen message back into merely received. NULL is preserved as
       -- NULL, because "we were never told" is not the same as status 0, and

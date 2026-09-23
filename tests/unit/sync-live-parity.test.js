@@ -118,6 +118,22 @@ const CASES = [
         },
     },
     {
+        // Measured: the same action zinstant.bankcard arrived as chat.webcontent
+        // live and as msgType 24 from a sync. chat.webcontent was missing from
+        // the live map, so it was stored under its raw spelling.
+        name: "zinstant content (bank card)",
+        expect: "event",
+        live: {
+            msgType: "chat.webcontent",
+            content: { action: "zinstant.bankcard", params: J({ customMsg: { title: "Bank card" } }) },
+        },
+        sync: {
+            msgType: 24,
+            content: "",
+            meta: { attachsList: [{ action: "zinstant.bankcard", params: J({ customMsg: { title: "Bank card" } }) }] },
+        },
+    },
+    {
         name: "poll event",
         expect: "poll_event",
         live: { msgType: "group.poll", content: { params: J({ customMsg: { title: "Poll closed" } }) } },

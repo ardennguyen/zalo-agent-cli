@@ -194,14 +194,24 @@ export function registerListenCommand(program) {
             /** Attach ALL handlers (data + lifecycle) to current API listener */
             function attachAllHandlers(api) {
                 // --- Message events ---
-                if (enabledEvents.has("message")) {
+                // Registered unconditionally. --events, --filter and --no-self
+                // decide what is PRINTED, forwarded and saved as JSONL -- never
+                // what is stored. They used to gate the handler itself, so
+                // `listen --filter group` silently kept every DM out of the
+                // cache and `listen --events group` stored no messages at all,
+                // while the docs promised the flags only shaped the output.
+                // A message missed live has no reliable way back: the phone
+                // hands a transfer sync only what a web session was NOT
+                // connected for.
+                {
                     api.listener.on("message", async (msg) => {
-                        if (opts.filter === "user" && msg.type !== THREAD_USER) return;
-                        if (opts.filter === "group" && msg.type !== THREAD_GROUP) return;
+                        const filteredOut =
+                            (opts.filter === "user" && msg.type !== THREAD_USER) ||
+                            (opts.filter === "group" && msg.type !== THREAD_GROUP);
                         // --no-self hides our own messages from stdout, the
                         // webhook and the JSONL -- it does not delete them from
                         // the cache. They are half of every conversation.
-                        const mute = !opts.self && msg.isSelf;
+                        const mute = !enabledEvents.has("message") || filteredOut || (!opts.self && msg.isSelf);
 
                         // A "delete for me" frame rides the message channel but
                         // removes a message rather than adding one, so it is

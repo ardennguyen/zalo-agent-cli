@@ -308,6 +308,10 @@ export const LIVE_MSG_TYPES = {
     "chat.zalo.me": "link",
     "chat.location.new": "location",
     "chat.todo": "event",
+    // Zalo's "zinstant" rich content -- a bank card is one. Measured: the same
+    // action zinstant.bankcard arrives as chat.webcontent live and as msgType 24
+    // from a sync, so unmapped it was stored under the raw spelling live.
+    "chat.webcontent": "event",
     "group.poll": "poll_event",
     "chat.undo": "deleted",
     "chat.delete": "deleted",

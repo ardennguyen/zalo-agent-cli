@@ -914,3 +914,46 @@ describe("a retrieved reaction (cmd 610/611) reaches the same writer", () => {
         assert.match(r.reason, /names no message/);
     });
 });
+
+describe("a removal is terminal", () => {
+    it("a later write of the same msgId cannot bring a recalled message back", () => {
+        // The phone keeps its own tombstone, and a history replay or re-sync
+        // writes the same msgId again. Neither may resurrect the message or
+        // erase how it was removed.
+        storeLiveMessage(liveMsg({}, { msgId: "r1", content: "hello" }));
+        markMessageRecalled("r1", 1_750_000_000_500, { removedAs: "recall" });
+
+        insertMessage({
+            msgId: "r1",
+            threadId: "t1",
+            senderId: "u9",
+            senderName: "",
+            text: "hello",
+            timestamp: 1_750_000_000_000,
+            type: "text",
+            raw_data: { src: "sync-v2", content: "hello" },
+            has_attachment: 0,
+        });
+
+        const [row] = getMessages("t1", 10).filter((m) => m.msgId === "r1");
+        assert.equal(row.type, "deleted");
+        const raw = JSON.parse(row.raw_data);
+        assert.equal(raw.removedAs, "recall", "the kind of removal must survive");
+        assert.equal(raw.originalType, "text");
+    });
+
+    it("still lets an ordinary row be updated", () => {
+        storeLiveMessage(liveMsg({}, { msgId: "u1", content: "first" }));
+        insertMessage({
+            msgId: "u1",
+            threadId: "t1",
+            senderId: "u9",
+            senderName: "",
+            text: "second",
+            timestamp: 1_750_000_000_000,
+            type: "text",
+            raw_data: {},
+        });
+        assert.equal(getMessages("t1", 10).find((m) => m.msgId === "u1").text, "second");
+    });
+});

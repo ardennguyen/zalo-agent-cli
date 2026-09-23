@@ -7,11 +7,12 @@ import { resolve, join } from "path";
 import { getApi, getOwnId } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
-import { extractMessageText } from "../utils/extract-message-text.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getMessages, insertMessage } from "../core/db.js";
+import { initDb, getMessages } from "../core/db.js";
 import { sendViaDaemon } from "../core/daemon-channel.js";
+import { storeLiveMessage } from "../core/live-store.js";
+import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 
 /**
@@ -49,6 +50,36 @@ function cachedMessageById(threadId, msgId) {
     } catch {
         return null;
     }
+}
+
+/**
+ * A history row built with the classifier every other capture path uses.
+ *
+ * `msg history` is a third way into the cache, beside the listener and the
+ * mobile sync, and it used to carry its own mapping: the raw live msgType
+ * (chat.photo) as the row type -- the very spelling a one-off migration had to
+ * clean out -- and no has_attachment, so replaying a synced photo overwrote it
+ * to 0 and sync-media never fetched it again. It also won the merge below over
+ * the correctly classified cached row, so even the printed history showed the
+ * raw spelling.
+ *
+ * @param {object} data - a live-encoded message payload (msgType string + content)
+ * @param {string} threadId
+ * @returns {object} the row as printed; `raw_data` is dropped before output
+ */
+function historyRow(data, threadId) {
+    const info = classifyLiveMessage(data || {});
+    return {
+        msgId: data?.msgId,
+        threadId,
+        senderId: data?.uidFrom || null,
+        senderName: data?.dName || null,
+        text: info.text,
+        timestamp: data?.ts ? Number(data.ts) : null,
+        type: info.type,
+        has_attachment: info.hasAttachment ? 1 : 0,
+        raw_data: info.raw,
+    };
 }
 
 /**
@@ -877,25 +908,19 @@ export function registerMsgCommands(program) {
                 }
 
                 let fetchedMessages = [];
+                // The original frames, kept for the cache write: it goes through
+                // the listener's own writer, not through the printed rows.
+                const fetchedFrames = [];
                 let usedRestApi = false;
 
                 if (threadType === 1) {
                     // Group: Try REST API first
                     try {
                         const history = await api.getGroupChatHistory(threadId, limit);
-                        fetchedMessages = (history || []).map((msg) => ({
-                            msgId: msg.msgId,
-                            threadId: threadId,
-                            senderId: msg.uidFrom || null,
-                            senderName: msg.dName || null,
-                            text:
-                                typeof msg.content === "string"
-                                    ? msg.content
-                                    : extractMessageText(msg.content, msg.msgType),
-                            timestamp: msg.ts ? Number(msg.ts) : null,
-                            type: typeof msg.content === "string" ? "text" : msg.msgType || "attachment",
-                            raw_data: JSON.stringify(msg),
-                        }));
+                        for (const data of history || []) {
+                            fetchedMessages.push(historyRow(data, threadId));
+                            fetchedFrames.push({ threadId, type: threadType, data });
+                        }
                         usedRestApi = true;
                         if (!jsonMode) info("Fetched group history via REST API.");
                     } catch (restErr) {
@@ -948,20 +973,8 @@ export function registerMsgCommands(program) {
 
                         for (const msg of page) {
                             if (String(msg.threadId || "") !== String(threadId)) continue;
-                            allMessages.push({
-                                msgId: msg.data?.msgId,
-                                threadId: msg.threadId,
-                                senderId: msg.data?.uidFrom || null,
-                                senderName: msg.data?.dName || null,
-                                text:
-                                    typeof msg.data?.content === "string"
-                                        ? msg.data.content
-                                        : extractMessageText(msg.data?.content, msg.data?.msgType),
-                                timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
-                                type:
-                                    typeof msg.data?.content === "string" ? "text" : msg.data?.msgType || "attachment",
-                                raw_data: JSON.stringify(msg.data),
-                            });
+                            allMessages.push(historyRow(msg.data, msg.threadId));
+                            fetchedFrames.push({ threadId: msg.threadId, type: threadType, data: msg.data });
 
                             if (allMessages.length >= limit) {
                                 done = true;
@@ -986,12 +999,15 @@ export function registerMsgCommands(program) {
                 }
 
                 // Amend DB with live fetched messages
-                if (dbActive && fetchedMessages.length > 0) {
-                    for (const m of fetchedMessages) {
+                if (dbActive && fetchedFrames.length > 0) {
+                    for (const frame of fetchedFrames) {
                         try {
-                            insertMessage(m);
-                        } catch (e) {
-                            // ignore insert errors (e.g. duplicate constraint)
+                            // Same writer as `listen`: shared vocabulary,
+                            // has_attachment, removals applied, and a thread
+                            // name that a message's sender cannot overwrite.
+                            storeLiveMessage(frame);
+                        } catch {
+                            // one bad frame must not stop the rest
                         }
                     }
                     if (!jsonMode) info("Amended local database with live fetched messages.");

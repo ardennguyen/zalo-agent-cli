@@ -170,3 +170,46 @@ describe("SyncManager.backfillOverSocket", () => {
         assert.equal(res.total, 1, "a late batch must not mutate a settled result");
     });
 });
+
+describe("SyncManager.backfillOverSocket writes the rows the listener writes", () => {
+    // It used to carry its own copy of the listener's mapping, documented as
+    // "the exact same field mapping", which stopped being true when listen
+    // moved to live-store. The copy stored chat.photo as the row type, never
+    // set has_attachment, and renamed a group after whoever posted in it.
+    let manager;
+    let listener;
+
+    beforeEach(() => {
+        manager = new SyncManager({}, nextAccount());
+        listener = new FakeListener();
+    });
+
+    it("classifies a photo into the shared vocabulary, with its attachment flagged", async () => {
+        const done = manager.backfillOverSocket(listener, { timeoutMs: 2000 });
+        listener.deliver(
+            [
+                msg("p1", "t1", {
+                    msgType: "chat.photo",
+                    content: { href: "https://photo-stal-3.zdn.vn/a.jpg", title: "a.jpg" },
+                }),
+            ],
+            THREAD_USER,
+        );
+        listener.deliver([], THREAD_GROUP);
+        await done;
+
+        const [row] = getMessages("t1", 10);
+        assert.equal(row.type, "photo", "not the raw live spelling chat.photo");
+        assert.equal(row.has_attachment, 1, "sync-media must be able to find it");
+    });
+
+    it("does not name a group after the person who posted in it", async () => {
+        const done = manager.backfillOverSocket(listener, { timeoutMs: 2000 });
+        listener.deliver([], THREAD_USER);
+        listener.deliver([msg("g1", "g100", { dName: "Some Member" })], THREAD_GROUP);
+        await done;
+
+        const t = getRecentThreads().find((x) => String(x.threadId) === "g100");
+        assert.notEqual(t.name, "Some Member");
+    });
+});

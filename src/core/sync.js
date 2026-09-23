@@ -12,7 +12,7 @@ import {
     getPendingSyncGaps,
     resolveAllPendingSyncGaps,
 } from "./db.js";
-import { extractMessageText } from "../utils/extract-message-text.js";
+import { storeLiveMessage } from "./live-store.js";
 
 /** zca-js ThreadType values, mirrored so this module doesn't import the enum. */
 const THREAD_TYPE_USER = 0;
@@ -445,42 +445,33 @@ export class SyncManager {
     }
 
     /**
-     * Persist one `old_messages` entry using the exact same field mapping the
-     * `listen` daemon applies to live messages, so a row written by a backfill
-     * is indistinguishable from one written live.
+     * Persist one `old_messages` entry through the listener's own writer.
      *
-     * @returns {boolean} true when a row was written.
+     * An `old_messages` entry is a live-encoded frame, so it goes through
+     * storeLiveMessage exactly as a live one does. This used to carry its own
+     * copy of the mapping -- documented as "the exact same field mapping the
+     * listen daemon applies", which stopped being true when listen moved to
+     * live-store. The copy stored the raw msgType (chat.photo) as the row type,
+     * never set has_attachment (so a restored photo was overwritten to 0 and
+     * sync-media never fetched it again), and named the conversation after the
+     * message's SENDER.
+     *
+     * @returns {boolean} true when a row was written or a removal applied.
      */
     _persistSocketMessage(msg, threadType) {
-        const raw = msg && msg.data;
-        if (!raw || !raw.msgId || !msg.threadId) return false;
-
-        const content = raw.content;
-        const isText = typeof content === "string";
-        const msgType = raw.msgType || null;
-        const timestamp = raw.ts ? Number(raw.ts) : Date.now();
-
+        if (!msg?.data?.msgId || !msg.threadId) return false;
         try {
-            upsertThread({
-                threadId: String(msg.threadId),
-                type: threadType === THREAD_TYPE_USER ? "dm" : "group",
-                name: String(raw.dName || ""),
-                lastUpdate: timestamp,
-                sync_timestamp: Date.now(),
+            const r = storeLiveMessage({
+                threadId: msg.threadId,
+                type: threadType,
+                data: msg.data,
+                isSelf: msg.isSelf,
             });
-            insertMessage({
-                msgId: String(raw.msgId),
-                threadId: String(msg.threadId),
-                senderId: String(raw.uidFrom || ""),
-                senderName: String(raw.dName || ""),
-                text: (isText ? content : extractMessageText(content, msgType)) || "",
-                timestamp,
-                type: isText ? "text" : msgType || "attachment",
-                raw_data: content,
-            });
-            return true;
+            if (!r.stored && r.reason)
+                console.error(`[Sync] backfilled message ${msg.data.msgId} not stored: ${r.reason}`);
+            return Boolean(r.stored);
         } catch (e) {
-            console.error(`[Sync] Failed to save backfilled message ${raw.msgId}: ${e.message}`);
+            console.error(`[Sync] Failed to save backfilled message ${msg.data.msgId}: ${e.message}`);
             return false;
         }
     }

@@ -22,6 +22,10 @@
 /** Numeric sync msgType -> stable CLI type name. */
 export const SYNC_MSG_TYPES = {
     0: "text",
+    // A doodle (hand drawing). Measured: the same doodle arrives live as
+    // chat.doodle and from a sync as msgType 2 with a photo-CDN .jpg, which
+    // unmapped was stored as type_2.
+    2: "doodle",
     3: "photo", // MSG_PHOTO
     4: "photo", // MSG_PHOTO_2 (jxl-capable variant)
     // A voice note. Measured: attach href on f2-voice-aac-dl.zdn.vn (.aac),

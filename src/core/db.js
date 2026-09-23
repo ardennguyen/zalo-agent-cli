@@ -248,10 +248,12 @@ export function initDb(dbPath) {
                -- zinstant content (a bank card): msgType 24 from a sync, stored
                -- under its raw live spelling until the live map learned it.
                WHEN 'chat.webcontent' THEN 'event'
+               -- msgType 2 is a doodle: live says chat.doodle for the same message.
+               WHEN 'type_2' THEN 'doodle'
                ELSE type END
              WHERE type IN ('chat.undo','chat.delete','webchat','chat.photo','chat.video.msg','share.file',
                             'chat.gif','chat.sticker','chat.voice','chat.doodle','chat.ecard',
-                            'chat.recommended','chat.link','type_18','chat.webcontent')`,
+                            'chat.recommended','chat.link','type_18','chat.webcontent','type_2')`,
         ).run();
     } catch {
         /* a fresh database has nothing to normalize */

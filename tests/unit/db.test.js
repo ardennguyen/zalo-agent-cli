@@ -454,3 +454,32 @@ describe("thread ordering after a sync", () => {
         assert.equal(t.lastUpdate, 3, "but the newer timestamp still applies");
     });
 });
+
+describe("migration: voice notes stored as type_6", () => {
+    it("becomes a downloadable voice row, attachment kind included", () => {
+        // The downloader keys on the kind stored INSIDE each attachment, so
+        // fixing only the row type would leave the audio unfetchable.
+        const path = join(ROOT, `voice-${Math.random().toString(36).slice(2)}.db`);
+        open(path);
+        insertMessage({
+            msgId: "v1",
+            threadId: "g1",
+            senderId: "u1",
+            senderName: "",
+            text: "[type_6]",
+            timestamp: 1,
+            type: "type_6",
+            raw_data: {
+                src: "sync-v2",
+                msgType: 6,
+                attachments: [{ kind: "type_6", url: "https://f2-voice-aac-dl.zdn.vn/x.aac" }],
+            },
+            has_attachment: 0,
+        });
+        open(path); // initDb again runs the migration over the existing row
+        const [row] = getMessages("g1", 10);
+        assert.equal(row.type, "voice");
+        assert.equal(row.has_attachment, 1);
+        assert.equal(JSON.parse(row.raw_data).attachments[0].kind, "voice");
+    });
+});

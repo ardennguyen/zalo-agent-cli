@@ -256,6 +256,21 @@ export function initDb(dbPath) {
     } catch {
         /* a fresh database has nothing to normalize */
     }
+    // Voice notes a mobile sync stored before msgType 6 was mapped. The row
+    // type alone is not enough: the downloader keys on the kind stored INSIDE
+    // each attachment, and that also read type_6 -- so without rewriting it
+    // (and has_attachment) the audio would stay unfetchable forever.
+    try {
+        db.prepare(
+            "UPDATE messages SET type = 'voice', " +
+                "raw_data = json_set(raw_data, '$.attachments[0].kind', 'voice'), " +
+                "has_attachment = CASE WHEN json_extract(raw_data, '$.attachments[0].url') IS NOT NULL " +
+                "THEN 1 ELSE has_attachment END " +
+                "WHERE type = 'type_6' AND json_valid(raw_data)",
+        ).run();
+    } catch {
+        /* nothing to repair */
+    }
     // Repair threads an earlier listener downgraded to "dm" (see the sticky
     // type rule in upsertThread). A conversation carrying a group_event, or a
     // message from someone who is not either end of a 1-1, is provably a group.

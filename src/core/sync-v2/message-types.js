@@ -24,6 +24,11 @@ export const SYNC_MSG_TYPES = {
     0: "text",
     3: "photo", // MSG_PHOTO
     4: "photo", // MSG_PHOTO_2 (jxl-capable variant)
+    // A voice note. Measured: attach href on f2-voice-aac-dl.zdn.vn (.aac),
+    // params m4a/duration/waveformSamples. Unmapped, it was stored as type_6
+    // with a non-media kind, so has_attachment stayed 0 and the audio was
+    // silently never downloaded.
+    6: "voice",
     10: "sticker",
     12: "link", // link/media preview, action "recommened.link"
     15: "card", // OA / system rich card, attach.type "l.a.*"

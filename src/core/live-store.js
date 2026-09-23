@@ -22,6 +22,8 @@ import {
     setSyncState,
     setMessageStatus,
     findMessageByClientId,
+    hasSyncedGroupEventNear,
+    LIVE_GROUP_EVENT_PREFIX,
 } from "./db.js";
 import { classifyLiveMessage } from "./sync-v2/message-types.js";
 
@@ -423,6 +425,80 @@ export function storeGroupEvent(event) {
         return { gone: false };
     }
     return { gone: true, threadId: String(threadId) };
+}
+
+/**
+ * Group events that appear as a system line in the conversation.
+ *
+ * A mobile sync restores each of these as a `group_event` row (msgType 20),
+ * while the listener used to keep nothing but a board-stale flag or a leftAt
+ * marker -- so a live cache was poorer than a synced one by every rename,
+ * join, leave and pin. Measured live: a rename arrives as `update`; the sync
+ * side of the same events was confirmed for renames and for unpinned notes.
+ *
+ * Polls and reminders are deliberately absent: those arrive live as their own
+ * message frames (group.poll, chat.ecard), so a row here would write them twice.
+ */
+const SYSTEM_LINE_EVENTS = new Set([
+    "join",
+    "leave",
+    "remove_member",
+    "block_member",
+    "add_admin",
+    "remove_admin",
+    "update",
+    "update_setting",
+    "update_avatar",
+    "new_link",
+    "new_pin_topic",
+    "update_pin_topic",
+    "unpin_topic",
+]);
+
+/**
+ * Store a live group event as the `group_event` row a sync would store.
+ *
+ * Written under a `ge:` id, because the event carries no message id (see
+ * LIVE_GROUP_EVENT_PREFIX); a later sync of the same event replaces this row
+ * with its own. The whole event payload is kept in raw_data, so nothing the
+ * socket delivered is thrown away.
+ *
+ * @param {object} event - the zca-js group event
+ * @returns {{stored: boolean, msgId?: string, reason?: string}}
+ */
+export function storeGroupEventRow(event) {
+    const type = String(event?.type || "").toLowerCase();
+    if (!SYSTEM_LINE_EVENTS.has(type)) return { stored: false, reason: "not a system-line event" };
+    const threadId = event?.threadId;
+    if (threadId === undefined || threadId === null) return { stored: false, reason: "no thread" };
+    const d = event?.data || {};
+    const ts = Number(d.time) || Number(d.ts) || Date.now();
+    try {
+        // A sync that ran after the event already holds the richer row.
+        if (hasSyncedGroupEventNear(String(threadId), ts)) return { stored: false, reason: "already synced" };
+        const msgId = `${LIVE_GROUP_EVENT_PREFIX}${threadId}:${ts}:${type}`;
+        upsertThread({ threadId: String(threadId), type: "group", name: "", lastUpdate: ts, nameHint: true });
+        insertMessage({
+            msgId,
+            threadId: String(threadId),
+            senderId: String(d.sourceId || d.actorId || d.creatorId || ""),
+            senderName: "",
+            // The sync's text is the phone's localized sentence, which the event
+            // does not carry. Say what happened rather than invent the wording.
+            text: type === "update" && d.groupName ? `[group_event update: ${d.groupName}]` : `[group_event ${type}]`,
+            timestamp: ts,
+            type: "group_event",
+            raw_data: {
+                src: "listen",
+                msgType: `group.${type}`,
+                groupEvent: { type, isSelf: Boolean(event.isSelf), data: d },
+            },
+            has_attachment: false,
+        });
+        return { stored: true, msgId };
+    } catch (e) {
+        return { stored: false, reason: e.message };
+    }
 }
 
 /**

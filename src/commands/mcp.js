@@ -17,6 +17,7 @@ import {
     storeLiveReaction,
     storeLiveUndo,
     storeGroupEvent,
+    storeGroupEventRow,
     noteBoardChange,
     storeReceipts,
 } from "../core/live-store.js";
@@ -277,6 +278,7 @@ export function registerMCPCommands(program) {
 
                 api.listener.on("group_event", (event) => {
                     noteBoardChange(event);
+                    storeGroupEventRow(event);
                     const gone = storeGroupEvent(event);
                     if (gone.gone) console.error(`[mcp] no longer in ${gone.threadId} — local history orphaned`);
                 });

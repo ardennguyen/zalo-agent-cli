@@ -30,6 +30,7 @@ import {
     runInTransaction,
     getPendingSyncGaps,
     resolveSyncGap,
+    replaceLiveGroupEventPlaceholder,
 } from "../db.js";
 import { ensureAssets, loadCodecs } from "./assets.js";
 import { classifySyncMessage } from "./message-types.js";
@@ -818,6 +819,12 @@ export class SyncV2 {
                                             lastGlobalId: cm.lastGlobalId,
                                             lastClientId: cm.lastClientId,
                                         });
+                                        // The listener stored this system line under a
+                                        // placeholder id (a group event carries no
+                                        // message id); the phone's row replaces it.
+                                        if (info.type === "group_event") {
+                                            replaceLiveGroupEventPlaceholder(threadId, Number(msg.timestamp) || 0);
+                                        }
                                         insertMessage({
                                             // jspb renders an unset uint64 as
                                             // the STRING "0", which is truthy,

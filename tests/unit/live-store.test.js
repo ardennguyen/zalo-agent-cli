@@ -28,6 +28,7 @@ import {
     getBoardItems,
     getRecentThreads,
     getThreadNames,
+    replaceLiveGroupEventPlaceholder,
 } from "../../src/core/db.js";
 import {
     storeLiveMessage,
@@ -39,6 +40,7 @@ import {
     storeGroupEvent,
     noteBoardChange,
     storeReceipts,
+    storeGroupEventRow,
 } from "../../src/core/live-store.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-live-test-"));
@@ -955,5 +957,83 @@ describe("a removal is terminal", () => {
             raw_data: {},
         });
         assert.equal(getMessages("t1", 10).find((m) => m.msgId === "u1").text, "second");
+    });
+});
+
+describe("group events become the system line a sync would restore", () => {
+    // Measured: a live rename reaches the socket only as a cmd 601 control
+    // with no message id (actionId/controlId are queue sequence numbers). The
+    // synced row for the same event is keyed by the phone's own clientId and
+    // landed 1-4 ms from the event's time. So live writes a placeholder and a
+    // sync replaces it, matched on thread and time.
+    const G = "g1";
+    const rename = (time, name = "Renamed") => ({
+        type: "update",
+        threadId: G,
+        isSelf: true,
+        data: {
+            subType: 1,
+            groupId: G,
+            sourceId: "me",
+            groupName: name,
+            time: String(time),
+            version: String(time - 1),
+        },
+    });
+    const syncedRow = (msgId, ts) => ({
+        msgId,
+        threadId: G,
+        senderId: "me",
+        senderName: "",
+        text: "renamed the group",
+        timestamp: ts,
+        type: "group_event",
+        raw_data: { src: "sync-v2", msgType: 20 },
+    });
+    const groupRows = () => getMessages(G, 50).filter((m) => m.type === "group_event");
+
+    it("writes a live rename as a group_event row, keeping the whole event", () => {
+        const r = storeGroupEventRow(rename(1_790_198_411_011));
+        assert.equal(r.stored, true);
+        const [row] = groupRows();
+        assert.equal(row.timestamp, 1_790_198_411_011);
+        assert.match(row.msgId, /^ge:/);
+        assert.equal(JSON.parse(row.raw_data).groupEvent.data.groupName, "Renamed");
+    });
+
+    it("lets the synced row replace the placeholder, one for one", () => {
+        storeGroupEventRow(rename(1_790_198_411_011, "A"));
+        storeGroupEventRow(rename(1_790_198_421_632, "B"));
+        // The measured offsets: +4 ms and -1 ms.
+        assert.equal(replaceLiveGroupEventPlaceholder(G, 1_790_198_411_015), 1);
+        insertMessage(syncedRow("1790198416722", 1_790_198_411_015));
+        assert.equal(replaceLiveGroupEventPlaceholder(G, 1_790_198_421_631), 1);
+        insertMessage(syncedRow("1790198421895", 1_790_198_421_631));
+        const rows = groupRows();
+        assert.equal(rows.length, 2, "one row per event, not four");
+        assert.ok(
+            rows.every((r) => !r.msgId.startsWith("ge:")),
+            "both placeholders replaced",
+        );
+    });
+
+    it("does not replace a placeholder outside the window", () => {
+        storeGroupEventRow(rename(1_000_000));
+        assert.equal(replaceLiveGroupEventPlaceholder(G, 1_000_000 + 10_000), 0);
+        assert.equal(groupRows().length, 1);
+    });
+
+    it("writes nothing when a sync already holds the event", () => {
+        insertMessage(syncedRow("1790198416722", 1_790_198_411_015));
+        assert.deepEqual(storeGroupEventRow(rename(1_790_198_411_011)), { stored: false, reason: "already synced" });
+        assert.equal(groupRows().length, 1);
+    });
+
+    it("leaves polls and reminders to their own message frames", () => {
+        // They arrive live as group.poll / chat.ecard messages; a row here
+        // would record each one twice.
+        assert.equal(storeGroupEventRow({ type: "remind_topic", threadId: G, data: { time: "1" } }).stored, false);
+        assert.equal(storeGroupEventRow({ type: "update_board", threadId: G, data: { time: "1" } }).stored, false);
+        assert.equal(groupRows().length, 0);
     });
 });

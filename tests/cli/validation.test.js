@@ -75,10 +75,17 @@ describe("VietQR content-length guard", () => {
 });
 
 describe("msg undo requires a cliMsgId", () => {
-    it("refuses without --cli-msg-id and says where to get one", async () => {
+    it("refuses without --cli-msg-id when the cache cannot supply one, and says where to get one", async () => {
+        // The sandboxed cache is empty, so the lookup `msg undo` now shares
+        // with `msg delete` finds nothing and the guard still fires.
         const { all } = await runCli(["msg", "undo", "9999", TID], opts);
-        assert.match(all, /cliMsgId is required for undo/);
-        assert.match(all, /listen --json or send --json/);
+        assert.match(all, /cliMsgId is required to recall a message/);
+        assert.match(all, /not in the local cache/);
+        assert.match(all, /listen --json/);
+        // `send --json` is no longer offered: zca-js never returns the
+        // clientId it stamped, so the value send printed was a second
+        // Date.now() that matched only by luck.
+        assert.doesNotMatch(all, /send --json/);
     });
 
     it("gets past the guard when --cli-msg-id is supplied", async () => {

@@ -118,6 +118,26 @@ const CASES = [
         },
     },
     {
+        // Measured from a phone-sent voice note: msgType 6, href on the voice
+        // CDN (.aac), params m4a/duration/waveformSamples. Unmapped, sync stored
+        // it as type_6 with has_attachment 0 -- the audio was never fetched.
+        name: "voice note",
+        expect: "voice",
+        live: {
+            msgType: "chat.voice",
+            content: { href: "https://f2-voice-aac-dl.zdn.vn/x.aac", params: J({ m4a: "x", duration: 3000 }) },
+        },
+        sync: {
+            msgType: 6,
+            content: "",
+            meta: {
+                attachsList: [
+                    { href: "https://f2-voice-aac-dl.zdn.vn/x.aac", params: J({ m4a: "x", duration: 3000 }) },
+                ],
+            },
+        },
+    },
+    {
         // Measured: the same action zinstant.bankcard arrived as chat.webcontent
         // live and as msgType 24 from a sync. chat.webcontent was missing from
         // the live map, so it was stored under its raw spelling.

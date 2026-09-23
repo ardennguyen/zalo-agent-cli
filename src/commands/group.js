@@ -337,7 +337,10 @@ export function registerGroupCommands(program) {
         .description("Join a group via invite link")
         .action(async (link) => {
             try {
-                const result = await getApi().joinGroup(link);
+                // zca-js calls this joinGroupLink. There is no joinGroup, so
+                // the command failed on "is not a function" before any network
+                // call -- found by tests/unit/zca-api-surface.test.js.
+                const result = await getApi().joinGroupLink(link);
                 output(result, program.opts().json, () => success("Joined group"));
             } catch (e) {
                 error(e.message);

@@ -312,7 +312,12 @@ export function registerConvCommands(program) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
             try {
-                const result = await getApi().markAsUnread(threadId, Number(opts.type));
+                // zca-js names this addUnreadMark (paired with removeUnreadMark
+                // and getUnreadMark). There has never been a markAsUnread, so
+                // every invocation died on "is not a function" before reaching
+                // the network -- which no test caught, because reaching the
+                // network is exactly what the offline suite cannot do.
+                const result = await getApi().addUnreadMark(threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Marked as unread"));
             } catch (e) {
                 error(e.message);

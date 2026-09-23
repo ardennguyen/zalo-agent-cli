@@ -656,7 +656,7 @@ export function registerMsgCommands(program) {
     msg.command("delete <msgId> <threadId>")
         .description("Delete a message from your own view only (use `msg undo` to recall it for everyone)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
-        .option("-c, --cli-msg-id <id>", "Message's cliMsgId (get from `msg send --json` or `listen --json`)")
+        .option("-c, --cli-msg-id <id>", "Message's cliMsgId. Looked up in the local cache when omitted")
         .option("--uid-from <id>", "Message sender's id (defaults to your own id)")
         .option(
             "--everyone",
@@ -691,7 +691,7 @@ export function registerMsgCommands(program) {
                 if (!cliMsgId) {
                     error(
                         "cliMsgId is required to delete a message and is not in the local cache. " +
-                            "Pass --cli-msg-id (from `msg send --json` or `listen --json`).",
+                            "Pass --cli-msg-id (from `listen --json`).",
                     );
                     return;
                 }
@@ -715,14 +715,27 @@ export function registerMsgCommands(program) {
     msg.command("undo <msgId> <threadId>")
         .description("Recall/undo a message for both sides (like Zalo app recall). Requires cliMsgId.")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
-        .option("-c, --cli-msg-id <id>", "Client message ID (required, get from listen --json or send --json)")
+        .option("-c, --cli-msg-id <id>", "Message's cliMsgId. Looked up in the local cache when omitted")
         .action(async (msgId, threadId, opts) => {
             try {
-                if (!opts.cliMsgId) {
-                    error("cliMsgId is required for undo. Get it from: listen --json or send --json output.");
+                // Same lookup `msg delete` does. cliMsgId is client-generated
+                // and not derivable from msgId, but anything `listen`, `mcp` or
+                // a sync captured has it -- so asking the caller for it was
+                // only ever necessary for a message this machine never saw.
+                //
+                // Note the old advice ("get it from send --json") could not be
+                // relied on: zca-js stamps its own clientId with Date.now()
+                // internally and never returns it, so the value `msg send`
+                // printed was a second Date.now() that matched only by luck.
+                const cliMsgId = opts.cliMsgId || cachedMessageById(threadId, msgId)?.cliMsgId;
+                if (!cliMsgId) {
+                    error(
+                        "cliMsgId is required to recall a message and is not in the local cache. " +
+                            "Pass --cli-msg-id (from `listen --json`).",
+                    );
                     return;
                 }
-                const payload = { msgId, cliMsgId: opts.cliMsgId };
+                const payload = { msgId, cliMsgId: String(cliMsgId) };
                 const result = await getApi().undo(payload, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Message recalled (undone)"));
             } catch (e) {

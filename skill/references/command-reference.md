@@ -50,8 +50,8 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `sticker-detail <stickerIds...>` | Get full details for one or more sticker IDs. |
 | `sticker-category <categoryId>` | Get details for a sticker category. |
 | `react <msgId> <threadId> <reaction> [-t 0\|1] [-c, --cli-msg-id <id>]` | React to a message. Reaction codes: `:>` (haha), `/-heart` (heart), `/-strong` (like), `:o` (wow), `:-((` (cry), `:-h` (angry) — plus `:-*` (kiss), `:')` (tears of joy), `/-weak` (dislike), `/-shit` (poop). **`-c/--cli-msg-id` is needed for the reaction to actually appear** — without it the API is called with `cliMsgId` defaulted to `msgId`, which often doesn't register visibly. Get the real cliMsgId from `listen --json` or `send --json` output. |
-| `delete <msgId> <threadId> [-t 0\|1] [-c, --cli-msg-id <id>] [--uid-from <id>] [--everyone]` | Delete a message from **your own view only** — the other side still sees it. Needs the message's `cliMsgId`, which is client-generated and cannot be derived from the `msgId`; it is auto-detected from the local cache when the message is there (anything `listen`, `sync` or a prior `msg history` wrote), otherwise pass `-c` from `msg send --json` / `listen --json`. `--uid-from` defaults to your own id. `--everyone` switches to a moderator delete, which Zalo accepts **only** for someone else's message in a group — it rejects your own message (use `undo`) and any private chat. |
-| `undo <msgId> <threadId> [-t 0\|1] -c, --cli-msg-id <id>` | Recall/undo a message for **both sides** (like the Zalo app's "Thu hồi"). `-c/--cli-msg-id` is a hard requirement — the command errors out immediately if omitted, no silent fallback. |
+| `delete <msgId> <threadId> [-t 0\|1] [-c, --cli-msg-id <id>] [--uid-from <id>] [--everyone]` | Delete a message from **your own view only** — the other side still sees it. Needs the message's `cliMsgId`, which is client-generated and cannot be derived from the `msgId`; it is auto-detected from the local cache when the message is there (anything `listen`, `sync` or a prior `msg history` wrote), otherwise pass `-c` from `listen --json`. (Not from `msg send --json`: zca-js stamps its own clientId with `Date.now()` internally and never returns it, so the value `msg send` prints is a second `Date.now()` that matches only by luck — measured one-off in a run of three.) `--uid-from` defaults to your own id. `--everyone` switches to a moderator delete, which Zalo accepts **only** for someone else's message in a group — it rejects your own message (use `undo`) and any private chat. |
+| `undo <msgId> <threadId> [-t 0\|1] [-c, --cli-msg-id <id>]` | Recall/undo a message for **both sides** (like the Zalo app's "Thu hồi"). Needs the message's `cliMsgId`, looked up in the local cache exactly as `delete` does — so any message `listen`, `mcp` or a sync captured can be recalled by `msgId` alone. With no cached row and no `-c`, it errors out before any network call. |
 | `forward <msgId> <threadId> [-t 0\|1]` | Forward a message to another thread. |
 | `history <threadId> [-t 0\|1] [-n, --limit <n>] [--scan <n>] [--from-msg-id <id>] [--timeout <ms>] [--no-cache]` | Fetch message history. **Groups**: tries the REST API first (`getGroupChatHistory`), falls back to the WebSocket global-stream scan if that fails. **DMs**: always uses the WebSocket scan (`requestOldMessages`, paginated via `--scan`/raw messages scanned per page, capped by `--timeout` per page wait). By default reads from the local SQLite cache (`zalo.db`) first and only falls back to a live fetch if the cache has fewer than `--limit` messages; **`--no-cache` forces a live fetch even when the cache already has enough**, and amends the DB with whatever it fetches. `--from-msg-id` anchors the WebSocket scan to start from an older message ID (pagination). Default `--limit` 50, `--scan` 2000, `--timeout` 15000ms. |
 
@@ -112,7 +112,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `unblock-member <groupId> <userIds...>` | Unblock previously blocked member(s). |
 | `upgrade-community <groupId>` | Upgrade a group to a Zalo Community (requires a verified 18+ account). |
 | `leave <groupId>` | Leave a group. |
-| `join <link>` | Join a group via an invite link. |
+| `join <link>` | Join a group via an invite link (zca-js `joinGroupLink`; this previously called a nonexistent `joinGroup` and failed before reaching the network). |
 | `members-info <userIds...>` | Get detailed profile info for a list of member IDs. |
 | `settings <groupId> [flags]` | Update group settings — see flags table below. |
 | `pending <groupId>` | List pending join requests (admin only). |
@@ -144,7 +144,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `mute <threadId> [-t 0\|1] [-d, --duration <secs>]` | Mute a conversation. `-d -1` = forever (default). |
 | `unmute <threadId> [-t 0\|1]` | Unmute. |
 | `read <threadId> [-t 0\|1]` | Mark as read (sends a seen event). |
-| `unread <threadId> [-t 0\|1]` | Mark as unread. |
+| `unread <threadId> [-t 0\|1]` | Mark as unread (zca-js `addUnreadMark`; this previously called a nonexistent `markAsUnread` and failed before reaching the network). |
 | `hidden` | List hidden conversations. |
 | `hide <threadIds...> [-t 0\|1]` | Hide one or more conversations. |
 | `unhide <threadIds...> [-t 0\|1]` | Unhide one or more conversations. |

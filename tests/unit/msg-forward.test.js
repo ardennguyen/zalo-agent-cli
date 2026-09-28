@@ -53,15 +53,45 @@ describe("msg forward calls zca-js the way zca-js is declared", () => {
         assert.ok(/import\s*\{[^}]*getMessageById[^}]*\}\s*from\s*"\.\.\/core\/db\.js"/.test(MSG_CODE));
     });
 
-    it("gates on the row's classified type, not on typeof text", () => {
+    it("dispatches on the row's classified type, not on typeof text", () => {
         const block = forwardBlock(MSG_CODE);
-        assert.ok(/row\.type\s*!==\s*"text"/.test(block), "only text can ride in a string payload");
+        // Only text rides the mforward API; every other kind is re-sent as a
+        // message of its own type, the way the app does it.
+        assert.ok(/kind\s*!==\s*"text"/.test(block), "non-text kinds take the re-send path, not mforward");
+        assert.ok(/forwarders\s*\[/.test(block) || /const forwarders/.test(block), "there is a per-kind dispatch");
         // A synced photo/file/sticker stores a human placeholder ("[Hình ảnh]",
         // "[File] x.pdf") in the text column. A typeof check passes that
         // straight through and forwards the placeholder as if it were the media.
         assert.ok(
             !/typeof\s+(row\.text|text)\s*===\s*"string"/.test(block),
             "a typeof-string check would forward a placeholder and call it a photo",
+        );
+    });
+
+    it("covers the kinds that have a re-send path, and refuses the rest", () => {
+        const block = forwardBlock(MSG_CODE);
+        // Verified live 2026-09-28, one message per kind into a disposable group.
+        for (const kind of ["card", "sticker", "link", "video", "voice", "photo", "file", "gif", "doodle"]) {
+            assert.ok(new RegExp(`\\b${kind}\\s*:`).test(block), `no forwarder for "${kind}"`);
+        }
+        // A shared contact arrives classified as a link; only its action says
+        // otherwise, so the dispatch has to read the action.
+        assert.ok(/recommened\.user/.test(block), "a shared contact must route to sendCard, not sendLink");
+        // Location has no send API in zca-js, so it must refuse rather than
+        // pretend. The generic "no send path" branch covers it.
+        assert.ok(/no send path reproduces it/.test(MSG_SRC), "unsupported kinds must say so");
+    });
+
+    it("uploads through the daemon rather than its own socket", () => {
+        const block = forwardBlock(MSG_CODE);
+        // api.sendMessage with attachments parks the send in ctx.uploadCallbacks
+        // and only a listener settles it. With a daemon holding the account's one
+        // socket, a direct call hangs forever — measured at four minutes, no
+        // result, no error. sendAttachments hands it to the daemon first.
+        assert.ok(/sendAttachments\s*\(/.test(block), "attachment re-sends go through sendAttachments");
+        assert.ok(
+            !/api\.sendMessage\(\s*\{\s*msg:\s*""\s*,\s*attachments/.test(block),
+            "a direct sendMessage upload hangs when a daemon holds the socket",
         );
     });
 

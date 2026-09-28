@@ -11,7 +11,7 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { startDaemonChannel } from "../core/daemon-channel.js";
-import { initDb } from "../core/db.js";
+import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
     storeLiveMessage,
     storeLiveDelete,
@@ -25,6 +25,7 @@ import {
 } from "../core/live-store.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
+import { describeGap } from "../core/sync-v2/gap-advice.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -82,11 +83,12 @@ export function registerListenCommand(program) {
                 process.exit(1);
             }
 
-            // Gap tracking / auto-backfill (task #4): a small per-account
-            // SyncManager shares zalo.db with this listener so a crash,
-            // manual close, or brief WS drop gets its window recorded and
-            // automatically retried via mobile sync, instead of silently
-            // losing whatever arrived while we weren't connected.
+            // Gap tracking: a small per-account SyncManager shares zalo.db with
+            // this listener so a crash, manual close, or WS drop gets its window
+            // recorded, and the owner is told which `sync` run closes it —
+            // instead of silently losing whatever arrived while we weren't
+            // connected. See reportGap() for why the daemon reports rather than
+            // backfilling on its own.
             const syncManager = new SyncManager(getApi(), activeAcc.ownId);
             const HEARTBEAT_MS = 60 * 1000;
             let lastHeartbeatAt = 0;
@@ -97,37 +99,87 @@ export function registerListenCommand(program) {
                 syncManager.markConnected();
             }
 
-            function attemptBackfill(fromTs, reason) {
+            /**
+             * Record a window we were not connected for, and tell the owner how
+             * to close it.
+             *
+             * Why the daemon does not self-heal
+             * --------------------------------
+             * This used to call `syncManager.pollSync(0, 0, {force: true})`,
+             * i.e. `pullMobileMsg` + `getCrossDB`. Zalo retired both (MEASURED
+             * 2026-09-20: present in Zalo Web's bundle, ZERO call sites across
+             * its 4,642 modules), so that call returns no session token and
+             * `pollSync` answers `{status: "legacy-retired"}` — a status this
+             * handler never matched. The daemon announced an attempt and then
+             * said nothing at all, and the gap stayed pending forever.
+             *
+             * The restore that does work is `transfer-sync-v2`, which
+             * `zalo-agent sync` runs. The daemon still must not run it itself:
+             *
+             *  - It needs the account's ONE permitted WebSocket, which this
+             *    daemon is holding. `SyncV2.restore()` expects its caller to own
+             *    the socket lifecycle — `runTransferSync()` connects, restores,
+             *    then `listener.stop()`s in its `finally`. Doing that from here
+             *    means tearing down live listening to recover history, which
+             *    opens a fresh gap while closing an old one.
+             *  - Sharing a live socket with the restore is measured to break it:
+             *    per the note in src/commands/sync.js, running the restore
+             *    alongside the reaction drain lost the socket (close 1006) at
+             *    batch 0 of 5 on both live attempts. A daemon's socket carries
+             *    live traffic continuously, which is strictly worse.
+             *  - It needs a physical tap on "ĐỒNG BỘ NGAY" on the owner's phone.
+             *    A daemon restarts for all sorts of reasons; none of them should
+             *    buzz a real person's phone unprompted. That is the same harm
+             *    the "One attempt, then stop" guard in src/core/sync.js exists
+             *    for.
+             *
+             * So: record it, say exactly what was missed, and name the command
+             * that fixes it. A successful `sync` resolves the gap itself, via
+             * `recordRestoreSuccess(win, {resolveGaps: true})`.
+             */
+            function reportGap(fromTs, reason) {
                 if (!fromTs) return;
-                const gapId = syncManager.recordGap(fromTs, Date.now(), reason);
+                const toTs = Date.now();
+                const gapId = syncManager.recordGap(fromTs, toTs, reason);
                 if (!gapId) return; // gap too small to bother with
-                const mins = Math.round((Date.now() - fromTs) / 60000);
-                info(`Coverage gap detected (${reason}, ~${mins}m). Attempting mobile-sync backfill...`);
-                syncManager
-                    .pollSync(0, 0, { force: true })
-                    .then((result) => {
-                        if (result.status === "saved") {
-                            success(`Backfilled ${result.saved} message(s) from the missed window.`);
-                        } else if (result.status === "crossdb-error" || result.status === "no-token") {
-                            warning(
-                                `Could not confirm the missed window (${reason}) was backfilled (${result.status}). ` +
-                                    `It stays pending and will be retried on next launch or "zalo-agent sync-mobile".`,
-                            );
-                        }
-                    })
-                    .catch((e) => {
-                        warning(`Backfill attempt failed (non-fatal): ${e.message}`);
-                    });
+                let pendingGaps = [];
+                try {
+                    pendingGaps = getPendingSyncGaps();
+                } catch {
+                    // Advice degrades to this gap alone — never worth crashing a listener.
+                }
+                // recordGap() clamps to MAX_GAP_MS, so re-read the stored row
+                // rather than trusting fromTs: a 30-day-old lastConnectedAt is
+                // filed as a 14-day gap, and `--from` must match what was filed.
+                const stored = pendingGaps.find((g) => String(g.id) === String(gapId));
+                const advice = describeGap({
+                    fromTs: stored ? Number(stored.fromTs) : fromTs,
+                    toTs: stored ? Number(stored.toTs) : toTs,
+                    reason,
+                    pendingGaps,
+                });
+
+                warning(`Coverage gap (${advice.reason}, ${advice.span}): ${advice.from} → ${advice.to}`);
+                info("  Messages that arrived in that window are not in the local cache.");
+                info(`  To restore them:  ${advice.command}`);
+                info("  That needs this daemon stopped (one WebSocket per account) and a tap on");
+                info('  "ĐỒNG BỘ NGAY" on your phone. The gap stays pending until such a run completes.');
+                if (advice.allCommand) {
+                    info(
+                        `  ${advice.olderPending} older gap(s) are also pending — ` +
+                            `${advice.allCommand} covers all ${advice.pendingCount}.`,
+                    );
+                }
             }
 
             // On startup, check how long it's been since we were last known
             // connected. A short gap (e.g. a quick restart) isn't worth
-            // bothering the phone about; anything longer than ~30s (crash,
-            // reboot, listener closed for a while) gets a real backfill
-            // attempt, clamped to MAX_GAP_MS inside recordGap().
+            // reporting; anything longer than ~30s (crash, reboot, listener
+            // closed for a while) is recorded and reported, clamped to
+            // MAX_GAP_MS inside recordGap().
             const lastConnectedAt = syncManager.getLastConnectedAt();
             if (lastConnectedAt && Date.now() - lastConnectedAt > 30 * 1000) {
-                attemptBackfill(lastConnectedAt, "startup-gap");
+                reportGap(lastConnectedAt, "startup-gap");
             } else {
                 syncManager.markConnected();
             }
@@ -441,11 +493,11 @@ export function registerListenCommand(program) {
                 api.listener.on("connected", () => {
                     if (reconnectCount > 0) {
                         info(`Reconnected (#${reconnectCount}, uptime: ${uptime()}, events: ${eventCount})`);
-                        // The socket was down for some window (task #4) — try
-                        // to backfill whatever arrived while we were dropped,
-                        // same as the startup-gap check above.
+                        // The socket was down for some window — record what we
+                        // missed while dropped and name the run that restores
+                        // it, same as the startup-gap check above.
                         const disconnectedAt = syncManager.getLastDisconnectedAt();
-                        attemptBackfill(disconnectedAt, "reconnect-gap");
+                        reportGap(disconnectedAt, "reconnect-gap");
                     }
                     syncManager.markConnected();
                 });
@@ -469,8 +521,8 @@ export function registerListenCommand(program) {
                         await autoLogin(jsonMode);
                         info("Re-login successful. Restarting listener...");
                         // Attach ALL handlers to the NEW api (including lifecycle),
-                        // and repoint the SyncManager at it so pollSync() calls
-                        // during the next gap use a live, authenticated client.
+                        // and repoint the SyncManager at it so its bookkeeping
+                        // runs against a live, authenticated client.
                         const newApi = getApi();
                         syncManager.api = newApi;
                         attachAllHandlers(newApi);

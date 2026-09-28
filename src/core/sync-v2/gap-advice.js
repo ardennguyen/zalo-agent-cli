@@ -72,7 +72,7 @@ export function formatSpan(ms) {
  * @returns {{
  *   reason: string, span: string, from: string, to: string,
  *   command: string, sinceDate: string,
- *   pendingCount: number, olderPending: number,
+ *   pendingCount: number, olderPending: number, otherPending: number,
  *   allCommand: string|null, allSinceDate: string|null
  * }} `command` closes this gap; `allCommand` is non-null only when an older gap
  *   is still pending, and closes every pending gap in one run.
@@ -97,6 +97,12 @@ export function describeGap({ fromTs, toTs, reason = "unknown", pendingGaps = []
         command: `zalo-agent sync --from ${sinceDate}`,
         pendingCount: starts.length,
         olderPending: starts.filter((n) => syncFromDate(n) < sinceDate).length,
+        // What the report actually counts. `olderPending` uses a different
+        // denominator -- gaps needing an EARLIER window -- so pairing it with
+        // `pendingCount` in one sentence prints arithmetic that cannot be made
+        // to add up ("1 older gap(s) ... covers all 3", observed live when an
+        // older pending gap sat on the same UTC day as this one).
+        otherPending: Math.max(0, starts.length - 1),
         allCommand: hasOlder ? `zalo-agent sync --from ${allSinceDate}` : null,
         allSinceDate: hasOlder ? allSinceDate : null,
     };

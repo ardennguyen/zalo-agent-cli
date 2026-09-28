@@ -131,6 +131,35 @@ describe("describeGap", () => {
         assert.equal(a.allCommand, null, "--from 2026-09-25 already covers both");
     });
 
+    // Observed live 2026-09-28: pending gaps on 09-23, 09-28 08:10 and 09-28
+    // 08:39 printed "1 older gap(s) are also pending — … covers all 3". Both
+    // numbers were right under their own definition and the sentence was still
+    // nonsense, because only the 09-23 gap counts as "older" while all three
+    // count toward "all". The report needs one denominator.
+    it("counts every other pending gap, including one on this gap's own UTC day", () => {
+        const from = Date.UTC(2026, 8, 28, 8, 39, 0);
+        const a = describeGap({
+            fromTs: from,
+            toTs: Date.UTC(2026, 8, 28, 8, 40, 0),
+            reason: "startup-gap",
+            pendingGaps: [
+                { fromTs: Date.UTC(2026, 8, 23, 21, 31, 0) },
+                { fromTs: Date.UTC(2026, 8, 28, 8, 10, 0) },
+                { fromTs: from },
+            ],
+        });
+
+        assert.equal(a.pendingCount, 3);
+        assert.equal(a.olderPending, 1, "only the 09-23 gap needs an earlier window");
+        assert.equal(a.otherPending, 2, "but two other gaps are pending");
+        assert.equal(
+            a.otherPending + 1,
+            a.pendingCount,
+            "the report says `N other … covers all M` — those must reconcile",
+        );
+        assert.equal(a.allCommand, "zalo-agent sync --from 2026-09-23");
+    });
+
     it("survives being called with nothing", () => {
         const a = describeGap();
         assert.equal(a.command, "zalo-agent sync --from 1970-01-01");

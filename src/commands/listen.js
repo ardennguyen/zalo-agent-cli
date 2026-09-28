@@ -166,7 +166,7 @@ export function registerListenCommand(program) {
                 info('  "ĐỒNG BỘ NGAY" on your phone. The gap stays pending until such a run completes.');
                 if (advice.allCommand) {
                     info(
-                        `  ${advice.olderPending} older gap(s) are also pending — ` +
+                        `  ${advice.otherPending} other gap(s) are also pending — ` +
                             `${advice.allCommand} covers all ${advice.pendingCount}.`,
                     );
                 }

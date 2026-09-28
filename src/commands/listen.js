@@ -137,11 +137,12 @@ export function registerListenCommand(program) {
              * that fixes it. A successful `sync` resolves the gap itself, via
              * `recordRestoreSuccess(win, {resolveGaps: true})`.
              */
+            /** @returns {number|null} the recorded gap's id, or null when none was filed. */
             function reportGap(fromTs, reason) {
-                if (!fromTs) return;
+                if (!fromTs) return null;
                 const toTs = Date.now();
                 const gapId = syncManager.recordGap(fromTs, toTs, reason);
-                if (!gapId) return; // gap too small to bother with
+                if (!gapId) return null; // under recordGap's 1-second floor
                 let pendingGaps = [];
                 try {
                     pendingGaps = getPendingSyncGaps();
@@ -170,17 +171,29 @@ export function registerListenCommand(program) {
                             `${advice.allCommand} covers all ${advice.pendingCount}.`,
                     );
                 }
+                return gapId;
             }
 
-            // On startup, check how long it's been since we were last known
-            // connected. A short gap (e.g. a quick restart) isn't worth
-            // reporting; anything longer than ~30s (crash, reboot, listener
-            // closed for a while) is recorded and reported, clamped to
-            // MAX_GAP_MS inside recordGap().
+            // On startup, report whatever window we were not connected for.
+            //
+            // This used to fire only when the process had been down longer than
+            // ~30s, on the theory that a quick restart is not worth reporting.
+            // That theory is wrong in the one case that matters: a crash under a
+            // supervisor restarts in seconds, lands inside the old threshold,
+            // and the listener then called markConnected() -- asserting it was
+            // caught up over a window it never saw. Messages lost to a 5-second
+            // restart are just as lost as messages lost to a 5-minute one, and
+            // nothing else would ever have flagged them.
+            //
+            // The reconnect path never had this gate. recordGap's own 1-second
+            // floor is the only threshold worth keeping, so use it here too.
+            // Deliberate restarts stay quiet on their own merits: SIGINT stamps
+            // markConnected() on the way out, so a clean stop/start reports the
+            // true downtime rather than a heartbeat-rounded guess.
             const lastConnectedAt = syncManager.getLastConnectedAt();
-            if (lastConnectedAt && Date.now() - lastConnectedAt > 30 * 1000) {
-                reportGap(lastConnectedAt, "startup-gap");
-            } else {
+            if (!reportGap(lastConnectedAt, "startup-gap")) {
+                // Nothing filed -- no prior connection on record, or a gap under
+                // the floor. Either way we are caught up as of now.
                 syncManager.markConnected();
             }
             const heartbeatTimer = setInterval(heartbeat, HEARTBEAT_MS);

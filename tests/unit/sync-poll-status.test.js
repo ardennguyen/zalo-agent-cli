@@ -224,4 +224,35 @@ describe("no pollSync status can fall through silently", () => {
             "that retry promise pointed at a path that can never succeed",
         );
     });
+
+    it("startup reports any downtime, with no threshold of its own", () => {
+        // A crash under a supervisor restarts in seconds. The old
+        // `Date.now() - lastConnectedAt > 30 * 1000` gate put exactly that case
+        // on the markConnected() branch, so the daemon claimed it was caught up
+        // over a window it never saw and nothing else would ever flag. The only
+        // threshold that belongs here is recordGap's 1-second floor.
+        // Bound the slice to the startup block itself. Reading to end-of-file
+        // sweeps in every other timeout in listen.js and the 30s assertion below
+        // fires on an unrelated one.
+        const begin = LISTEN_CODE.indexOf("getLastConnectedAt");
+        const end = LISTEN_CODE.indexOf("heartbeatTimer", begin);
+        assert.ok(begin !== -1 && end > begin, "startup block not found — this guard has drifted from the source");
+        const startup = LISTEN_CODE.slice(begin, end);
+        assert.ok(
+            !/lastConnectedAt\s*[<>]|[<>]\s*lastConnectedAt/.test(startup),
+            "no comparison on lastConnectedAt — the floor lives in recordGap()",
+        );
+        assert.ok(
+            !/30\s*\*\s*1000|30000/.test(startup),
+            "a re-added 30s gate would silently drop fast-restart gaps again",
+        );
+        // markConnected() must stay reachable: when nothing was filed we really
+        // are caught up, and leaving lastConnectedAt stale would inflate the
+        // next startup's gap.
+        assert.ok(
+            /reportGap\s*\(\s*lastConnectedAt\s*,\s*["']startup-gap["']\s*\)/.test(startup),
+            "startup must run the gap report unconditionally",
+        );
+        assert.ok(/markConnected\s*\(\s*\)/.test(startup), "the no-gap branch must still stamp connected");
+    });
 });

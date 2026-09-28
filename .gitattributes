@@ -1,0 +1,30 @@
+# Line-ending policy — keeps this repo's bytes identical on every platform.
+#
+# Git's system config on Windows commonly sets core.autocrlf=true, which
+# rewrites LF to CRLF on checkout. Without the rules below that bit us twice:
+#
+#   1. tests/fixtures/notes.txt and data.csv are pinned by size and SHA-256 in
+#      tests/fixtures/index.js. A CRLF checkout grew them from 358 to 367 and
+#      from 149 to 152 bytes, so verifyFixtures() reported "the file changed on
+#      disk" and tests/unit/image-metadata.test.js failed on every Windows
+#      clone — while `git status` stayed clean, hiding the cause.
+#   2. `npm run format` rewrote every file to LF (prettier's endOfLine default),
+#      leaving ~115 files listed as modified by `git status` with zero content
+#      change.
+
+# Normalize text to LF in the index and check it out as LF on every platform.
+# This matches .prettierrc and the Linux CI runner, so `npm run format` no
+# longer touches line endings.
+* text=auto eol=lf
+
+# Fixtures are compared byte-for-byte against recorded SHA-256 hashes, so Git
+# must never rewrite them. Later patterns win, which is why this follows the
+# blanket rule above rather than preceding it.
+tests/fixtures/** -text
+
+# ...except this directory's own tooling and docs. Prettier formats these, so
+# they stay normalized like any other source file. Listed by exact name, not
+# as a glob, so a future byte-pinned fixture cannot accidentally match.
+tests/fixtures/index.js     text eol=lf
+tests/fixtures/checksums.js text eol=lf
+tests/fixtures/README.md    text eol=lf

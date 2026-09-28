@@ -9,7 +9,7 @@ import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getMessages } from "../core/db.js";
+import { initDb, getMessages, getMessageById } from "../core/db.js";
 import { sendViaDaemon } from "../core/daemon-channel.js";
 import { storeLiveMessage } from "../core/live-store.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
@@ -775,12 +775,75 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("forward <msgId> <threadId>")
-        .description("Forward a message to another thread")
+        .description("Forward a text message to another conversation (text only — see below)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (msgId, threadId, opts) => {
+            // This command could never have worked. zca-js takes
+            // `forwardMessage(payload, threadIds, type)` where payload is
+            // `{ message: string }` and threadIds is an ARRAY; the old call
+            // passed the msgId string as the payload and a bare string as the
+            // thread list. `if (!payload.message) throw` fires on the first
+            // line of the API, so every invocation died with "Missing message
+            // content" before touching the network -- identically for -t 0 and
+            // -t 1, for every message type. The zca-api-surface test did not
+            // catch it because the method does exist; only its arity was wrong.
+            const jsonMode = program.opts().json;
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                process.exit(1);
+            }
+
+            let row;
             try {
-                const result = await getApi().forwardMessage(msgId, threadId, Number(opts.type));
-                output(result, program.opts().json, () => success("Message forwarded"));
+                initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+                row = getMessageById(msgId);
+            } catch (e) {
+                error(
+                    `Local cache unavailable (${e.message}). Run \`zalo-agent listen\` or \`zalo-agent sync\` first.`,
+                );
+                process.exit(1);
+            }
+            if (!row) {
+                error(`Message ${msgId} is not in the local cache.`);
+                info("Fetch the conversation first:  zalo-agent msg history <threadId> -t <0|1>");
+                process.exit(1);
+            }
+
+            // The payload carries a string and nothing else, so only text can
+            // travel. Guard on the row's classified `type`, NOT on
+            // `typeof text === "string"`: a synced photo/file/sticker stores a
+            // human placeholder ("[Hình ảnh]", "[File] x.pdf") in that column,
+            // so a type-of check would happily forward the placeholder text and
+            // call it a forwarded photo.
+            if (row.type !== "text") {
+                error(`Only text messages can be forwarded — ${msgId} is "${row.type}".`);
+                info(
+                    "Zalo's forward payload carries a string; media must be re-sent with `msg send-image`/`send-file`.",
+                );
+                process.exit(1);
+            }
+            if (!row.text) {
+                error(`Message ${msgId} has no text to forward.`);
+                process.exit(1);
+            }
+
+            try {
+                // `reference` (the "forwarded from" decoration) is deliberately
+                // omitted. Real forwards carry an opaque 32-hex id there -- e.g.
+                // 1751af19dac61f3e039457dc53dcd348 -- alongside logSrcType 1 and
+                // fwLvl 1. That id is not the numeric msgId and nothing in the
+                // local cache holds it (no row carries `realMsgId`), so passing
+                // the numeric id would send a reference pointing at nothing.
+                // Without it the text still arrives; it just is not badged as a
+                // forward.
+                const result = await getApi().forwardMessage({ message: row.text }, [threadId], Number(opts.type));
+                const failed = result?.fail?.length ?? 0;
+                if (failed > 0) {
+                    error(`Forward rejected for ${failed} target(s): ${JSON.stringify(result.fail)}`);
+                    process.exit(1);
+                }
+                output(result, jsonMode, () => success(`Forwarded to ${threadId}`));
             } catch (e) {
                 error(e.message);
             }

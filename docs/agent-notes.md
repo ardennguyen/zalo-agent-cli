@@ -588,3 +588,22 @@ content with anchored edits. Final diff: 10 lines and 2.
 It ended there only because those two files happened to be clean that minute. With four sessions
 writing to one tree, a 675-line reformat landing on someone's uncommitted work is not recoverable
 by noticing. Hence the §4 rule: edit anything outside `src/` and `tests/` by hand.
+
+## Lint warnings fail the gate (§4)
+
+Until 2026-09-30 `npm run lint` was plain `eslint src/ tests/`, and `eqeqeq` and
+`no-unused-vars` are set to `warn`. A warning prints but exits 0, so the gate passed with eight
+of them standing in `src/core/db.js`, `src/core/lock.js` and `src/commands/sync.js`. Every
+session saw them in its lint output and walked past, because nothing told it to stop — the
+controller included, while noting them as "pre-existing". Arden asked why they had been left so
+long; the honest answer was that no check ever failed on them.
+
+That is the same shape as the commands that had never worked: a green check hiding a problem.
+The script now runs `eslint --max-warnings 0`, verified by planting one unused variable and
+watching lint exit 1 ("ESLint found too many warnings (maximum: 0)").
+
+The eight fixes were behavior-neutral: six unused `catch (e)` bindings became `catch {`;
+`ms == null ||` in `formatAge` was redundant with the `!Number.isFinite(ms)` right after it;
+and `r.threadId != null`, a deliberate null-or-undefined test, was spelled out rather than
+changed. `== null` is a common idiom, which is exactly why each one wants reading before
+"fixing" — `=== null` alone would have let `undefined` through.

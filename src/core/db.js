@@ -185,15 +185,15 @@ export function initDb(dbPath) {
     // Migration for existing DBs
     try {
         db.exec("ALTER TABLE messages ADD COLUMN localPath TEXT");
-    } catch (e) {
+    } catch {
         // column probably already exists
     }
     try {
         db.exec("ALTER TABLE messages ADD COLUMN has_attachment INTEGER DEFAULT 0");
-    } catch (e) {}
+    } catch {}
     try {
         db.exec("ALTER TABLE threads ADD COLUMN sync_timestamp INTEGER DEFAULT 0");
-    } catch (e) {}
+    } catch {}
     // Conversation-round fields from the mobile sync. Nullable: the listener
     // never learns them, so only a transfer sync fills them in.
     try {
@@ -1054,7 +1054,7 @@ export function upsertReaction(r) {
         .run({
             id,
             msgId: String(r.msgId),
-            threadId: r.threadId != null ? String(r.threadId) : null,
+            threadId: r.threadId === null || r.threadId === undefined ? null : String(r.threadId),
             userId: String(r.userId),
             icon: r.icon,
             // 0 is a real reaction type (HAHA), and a missing one is not 0.

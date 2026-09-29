@@ -20,7 +20,7 @@ function isProcessAlive(pid) {
         // It does not actually kill the process.
         process.kill(pid, 0);
         return true;
-    } catch (e) {
+    } catch {
         return false;
     }
 }
@@ -50,7 +50,7 @@ export function checkLock(accountDir) {
         } else {
             return { locked: false, stale: true, pid };
         }
-    } catch (error) {
+    } catch {
         // Handle unexpected read errors
         return { locked: false };
     }
@@ -85,7 +85,7 @@ export function acquireLock(accountDir) {
             } else {
                 return false; // Replaced by a different, likely alive process
             }
-        } catch (e) {
+        } catch {
             // Ignore ENOENT if already deleted by another process trying to acquire lock
         }
     }

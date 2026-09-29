@@ -52,7 +52,7 @@ const DRAIN_WAIT_MS = 15000;
  * @returns {string}
  */
 function formatAge(ms) {
-    if (ms == null || !Number.isFinite(ms) || ms < 1000) return "moments";
+    if (!Number.isFinite(ms) || ms < 1000) return "moments";
     const sec = Math.round(ms / 1000);
     if (sec < 60) return `${sec} seconds`;
     const min = Math.round(sec / 60);

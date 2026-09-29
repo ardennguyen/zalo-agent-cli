@@ -15,7 +15,7 @@
     ],
     "scripts": {
         "test": "node --test src/*.test.js src/**/*.test.js tests/unit/*.test.js tests/cli/*.test.js",
-        "lint": "eslint src/ tests/",
+        "lint": "eslint --max-warnings 0 src/ tests/",
         "lint:fix": "eslint src/ tests/ --fix",
         "format": "prettier --write src/ tests/",
         "format:check": "prettier --check src/ tests/",

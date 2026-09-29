@@ -95,6 +95,7 @@ Enforced by Prettier + ESLint — do not hand-format.
 | Quotes / semicolons | Double quotes, semicolons on, trailing commas everywhere |
 | Lint | `no-var`, `no-debugger`, `no-duplicate-imports` = error; `prefer-const`, `eqeqeq`, `no-unused-vars` (ignore `^_`) = warn |
 
+- **A lint warning fails the gate like an error** (`--max-warnings 0`). Fix it; never raise the limit.
 - JSDoc every exported function.
 - All output goes through `src/utils/output.js` so `--json` stays clean.
 - **In MCP mode stdout is the JSON-RPC transport.** Every diagnostic uses `console.error()`. `src/commands/mcp.js` reassigns `console.log` to `console.error` as a safety net — do not undo it.

@@ -83,7 +83,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **16** | `src/index.js` | the `register*Commands` calls |
 | MCP tools | **7** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **1381** as of 2026-09-29 (1377 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **1388** as of 2026-09-29 (1384 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -141,6 +141,55 @@ git checkout main
 A GitHub Release created from the tag triggers `.github/workflows/publish.yml`, which publishes
 `@ardennguyen/zalo-agent-cli` with `--provenance`. `NPM_TOKEN` is a repository secret. Never run
 `npm publish` manually.
+
+---
+
+## Why the patched zca-js is bundled, not patched on install (§13)
+
+We patch zca-js to add `logoutV2`, `pullMobileMsg`, `getCrossDB` and `deleteSnapshotMobileMsg`, and
+to modify `loginQR` and `sendMessage`. Without them `logout` and `account remove` die on
+"is not a function". Getting that patched copy into a consumer's tree took two goes, both found on
+2026-09-29 against npm 11.17.0 / Node 24.19.0.
+
+**First defect — the tarball would not install at all.** `postinstall: patch-package` with
+patch-package in `devDependencies` and `patches/` missing from `files`: the install ran a binary
+that was not there, against patches that were not shipped, and aborted with
+`'patch-package' is not recognized`, exit 1, before `node_modules/zca-js` existed. Fixed in
+1b182da by moving patch-package to `dependencies` and adding `patches/` to `files`.
+
+**Second defect — the fix only worked for `npm i -g`.** patch-package resolves `node_modules/zca-js`
+relative to its own cwd, which is the installed package directory.
+
+- Global install: npm nests dependencies under the package, so `zca-js` is right where
+  patch-package looks. It printed `zca-js@2.2.0 ✔` and the patch applied.
+- Installed as a *dependency*: npm **hoists** `zca-js` to the consumer's root. patch-package cannot
+  see it and fails with `Patch file found for package zca-js which is not present at
+  node_modules/zca-js` — but the install still exits 0, so the patch silently did nothing and the
+  four methods were simply absent at runtime.
+
+That second case is not hypothetical: `zalo-mcp` takes this package as a plain dependency and its
+`zalo-mcp.ps1` / `.sh` update path runs `npm install @ardennguyen/zalo-agent-cli@latest`.
+
+**The arrangement now.** Stop patching in the consumer's tree at all:
+
+- `prepare: patch-package` — runs on a dev `npm install`, on a `github:` install, and before
+  `npm pack`/`publish`, so `node_modules/zca-js` is always patched before the tarball is built.
+  It does **not** run for a consumer installing the published tarball.
+- `bundleDependencies: ["zca-js"]` — `npm pack` copies that patched tree into the tarball, and npm
+  unpacks it nested under our package where hoisting cannot reach it. npm still resolves and
+  installs zca-js's own 8 dependencies, placing them beside it.
+- patch-package is back in `devDependencies`: consumers never run it, and the `github:` path gets
+  devDependencies anyway (verified — npm installs them so `prepare` can run).
+
+This is why `bundleDependencies` must never be dropped and `zca-js` must stay pinned to the exact
+version its patch filename names. `tests/unit/packaging.test.js` fails the build on either.
+
+Verified on all three install paths — local dependency, global, and `git+file://` standing in for
+`github:` — with the resolved zca-js carrying `dist/apis/logoutV2.js` in each. Re-run that check by
+packing and installing into an empty directory; the tarball is ~2 MB because it carries zca-js.
+
+Note the CJS build (`dist/cjs/`) is **not** patched — only the ESM `dist/`. This package is ESM, so
+it never loads the CJS bundle; anything that `require()`s zca-js would get unpatched code.
 
 ---
 

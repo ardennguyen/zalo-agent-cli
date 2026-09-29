@@ -12,7 +12,7 @@ separate suites with very different risk profiles:
 opens a socket and never reads your real `~/.zalo-agent-cli/`.
 
 ```bash
-npm test                      # 1381 offline tests — no Zalo session needed
+npm test                      # 1388 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -50,21 +50,21 @@ tests/
 │   ├── cli.js                   # subprocess harness (runCli / runJson)
 │   ├── targets.js               # disposable-target registry + blast-radius guard
 │   └── live.js                  # session probe, tier gates, write helpers
-├── unit/                        # offline, pure logic + filesystem (40 files)
+├── unit/                        # offline, pure logic + filesystem (42 files)
 │   ├── accounts.test.js              credentials.test.js           daemon-channel.test.js
-│   ├── db.test.js                    image-metadata.test.js        live-store.test.js
-│   ├── lock.test.js                  mcp-config.test.js            mcp-normalize.test.js
-│   ├── mcp-tools.test.js             mentions.test.js              msg-forward.test.js
-│   ├── oa-client.test.js             output-latch.test.js          parse-options.test.js
-│   ├── pure-helpers.test.js          qr-display.test.js            quote-sender.test.js
-│   ├── security-surfaces.test.js     send-client-id.test.js        sync-backfill.test.js
-│   ├── sync-freshness.test.js        sync-gap-advice.test.js       sync-live-parity.test.js
-│   ├── sync-poll-status.test.js      sync-socket-rules.test.js     sync-v2-board.test.js
-│   ├── sync-v2-conv-state.test.js    sync-v2-decode.test.js        sync-v2-keepalive.test.js
-│   ├── sync-v2-media.test.js         sync-v2-message-types.test.js  sync-v2-plan.test.js
-│   ├── sync-v2-reactions.test.js     sync-v2-restore-success.test.js  sync-v2-resume.test.js
-│   ├── sync-v2-window.test.js        sync-v2-zcloud.test.js        thread-type.test.js
-│   └── zca-api-surface.test.js
+│   ├── db.test.js                    image-metadata.test.js        listener-lifecycle-rules.test.js
+│   ├── live-store.test.js            lock.test.js                  mcp-config.test.js
+│   ├── mcp-normalize.test.js         mcp-tools.test.js             mentions.test.js
+│   ├── msg-forward.test.js           oa-client.test.js             output-latch.test.js
+│   ├── packaging.test.js             parse-options.test.js         pure-helpers.test.js
+│   ├── qr-display.test.js            quote-sender.test.js          security-surfaces.test.js
+│   ├── send-client-id.test.js        sync-backfill.test.js         sync-freshness.test.js
+│   ├── sync-gap-advice.test.js       sync-live-parity.test.js      sync-poll-status.test.js
+│   ├── sync-socket-rules.test.js     sync-v2-board.test.js         sync-v2-conv-state.test.js
+│   ├── sync-v2-decode.test.js        sync-v2-keepalive.test.js     sync-v2-media.test.js
+│   ├── sync-v2-message-types.test.js  sync-v2-plan.test.js          sync-v2-reactions.test.js
+│   ├── sync-v2-restore-success.test.js  sync-v2-resume.test.js        sync-v2-window.test.js
+│   └── sync-v2-zcloud.test.js        thread-type.test.js           zca-api-surface.test.js
 ├── cli/                         # offline, drives the real binary
 │   ├── surface.test.js          # every command/subcommand/flag is registered
 │   ├── validation.test.js       # every guard that fires before a network call
@@ -164,6 +164,7 @@ bare `ETIMEDOUT`, and keeps the original error as its `cause`.
 | `unit/sync-v2-conv-state.test.js`                                                                                                                     | Pinned/unread state with the live-measured shapes: `g`/`u`-prefixed pin ids, unread ids rounded past 2^53 and matched only when unique                                                                                                                                                                                                                                                                                                             |
 | `unit/sync-v2-restore-success.test.js`                                                                                                                | A confirmed restore records success and resolves only the gaps its window covered, so the debounce stops re-pinging the phone                                                                                                                                                                                                                                                                                                                      |
 | `unit/sync-socket-rules.test.js`                                                                                                                      | Static: `sync.js` starts a listener only in `connectListener`, the unified run never calls an exiting `run*` body, and no `run*` command opens a socket without first asking whether a daemon already holds one                                                                                                                                                                                                                                    |
+| `unit/packaging.test.js`                                                                                                                              | The published tarball must carry a _patched_ zca-js on every install path: zca-js pinned to the exact version its patch file names, that patch bundled via `bundleDependencies`, applied by `prepare`, and no install script that would need a devDependency in a consumer's tree                                                                                                                                                                  |
 | `unit/zca-api-surface.test.js`                                                                                                                        | Every `getApi().<method>()` in `src/` names a method zca-js actually exposes (parsed from `dist/apis.js`) — catches typo'd or renamed calls the offline suite otherwise cannot reach                                                                                                                                                                                                                                                               |
 | `unit/thread-type.test.js`                                                                                                                            | Filling `--type` from the cache: promotion, explicit-flag precedence, threadId found by argument name                                                                                                                                                                                                                                                                                                                                              |
 | `unit/lock.test.js`                                                                                                                                   | `daemon.lock` in every state: absent, live, stale, corrupt, foreign-owned                                                                                                                                                                                                                                                                                                                                                                          |

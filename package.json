@@ -21,7 +21,7 @@
         "format:check": "prettier --check src/ tests/",
         "release": "npm version patch -m 'release: v%s' && git push origin main --tags",
         "prepublishOnly": "npm run lint && npm test",
-        "postinstall": "patch-package",
+        "prepare": "patch-package",
         "test:unit": "node --test tests/unit/*.test.js",
         "test:cli": "node --test tests/cli/*.test.js",
         "test:e2e": "node tests/run-e2e.js",
@@ -62,13 +62,16 @@
         "https-proxy-agent": "^9.1.0",
         "image-size": "^2.0.4",
         "node-fetch": "^3.3.2",
-        "patch-package": "^8.0.1",
         "undici": "^8.5.0",
         "zca-js": "2.2.0",
         "zod": "^4.4.3"
     },
+    "bundleDependencies": [
+        "zca-js"
+    ],
     "devDependencies": {
         "eslint": "^10.0.3",
+        "patch-package": "^8.0.1",
         "prettier": "^3.8.1"
     },
     "allowScripts": {

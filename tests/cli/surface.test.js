@@ -109,7 +109,11 @@ const COMMAND_SURFACE = {
         "forget",
         "recent",
         "pinned",
+        "pin",
+        "unpin",
         "archived",
+        "archive",
+        "unarchive",
         "mute",
         "unmute",
         "read",
@@ -271,6 +275,13 @@ const FLAG_CONTRACT = {
     "msg history": ["--limit", "--scan", "--from-msg-id", "--timeout", "--no-cache", "--type"],
     "conv mute": ["--duration", "--type"],
     "conv recent": ["--limit", "--friends-only", "--groups-only"],
+    // --type picks the payload: seenv2 and the conversation ids differ for a
+    // group ("g<id>", type 1) and a DM ("u<id>", type 0).
+    "conv read": ["--type"],
+    "conv pin": ["--type"],
+    "conv unpin": ["--type"],
+    "conv archive": ["--type"],
+    "conv unarchive": ["--type"],
     "group list": ["--query"],
     "group settings": [
         "--block-name",

@@ -1,5 +1,6 @@
 /**
- * Conversation commands — pinned, archived, mute, unmute, read, unread, delete.
+ * Conversation commands — pinned, pin, unpin, archived, archive, unarchive,
+ * mute, unmute, read, unread, delete.
  */
 
 import { join } from "path";
@@ -10,6 +11,7 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getRecentThreads, getMessages, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
 import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
+import { markConversationRead, zaloPost } from "../core/receipts.js";
 
 /**
  * Find the newest message in a thread and return the anchor triple
@@ -98,7 +100,100 @@ function toAnchor(ownerId, cliMsgId, globalMsgId) {
     return { ownerId: String(ownerId), cliMsgId: String(cliMsgId), globalMsgId: String(globalMsgId) };
 }
 
-export function registerConvCommands(program) {
+/** `-t` as 0 (user) or 1 (group), or null for anything else. */
+function threadTypeOf(value) {
+    const t = Number(value);
+    return t === 0 || t === 1 ? t : null;
+}
+
+/**
+ * Pin or unpin one conversation, exactly as Zalo Web does.
+ *
+ * `POST {conversation}/api/pinconvers/updatev2` with
+ * `{actionType: 1 pin | 2 unpin, conversations: ["g<id>" | "u<id>"], tab: 0}`
+ * -- captured for a group and a DM, both directions. zca-js's
+ * setPinnedConversations sends the same minus `tab`, so it is not used.
+ *
+ * @param {object} api - logged-in zca-js api
+ * @param {{threadId: string, type: 0|1, pinned: boolean}} opts
+ * @returns {Promise<object>}
+ */
+async function setConversationPinned(api, { threadId, type, pinned }) {
+    const conversation = `${type === 1 ? "g" : "u"}${threadId}`;
+    const response = await zaloPost(api, {
+        url: `${api.zpwServiceMap.conversation[0]}/api/pinconvers/updatev2`,
+        params: () => ({ actionType: pinned ? 1 : 2, conversations: [conversation], tab: 0 }),
+    });
+    return { threadId: String(threadId), type, pinned, conversation, response };
+}
+
+/**
+ * Move one conversation to Zalo's "Other" tab (archive) or back to Focused.
+ *
+ * `POST {label}/api/archivedchat/update` with
+ * `{ids: [{id, type: 1 group | 0 user}], version, actionType: 0 to Other | 1 back, imei}`.
+ *
+ * `version` is the one decision here. zca-js's updateArchivedChatList sends
+ * `Date.now()`. Zalo Web sends the SERVER's version: each captured update
+ * carried exactly the `version` the previous response returned, and the first
+ * carried the one the web had stored from the server -- 25 days older than the
+ * clock. Its archived-chat manager (module FEfs in the web API bundle) keeps
+ * that value, refreshes it from `archivedchat/list` at start-up and from every
+ * update response, and refetches the list when an answer flags it stale. A CLI
+ * run is a fresh client every time, so it does what the web does at start-up:
+ * read the list (zca-js's getArchivedChatList, the same GET a fresh web
+ * session makes) and send the version found there. With no version, nothing
+ * is sent.
+ *
+ * @param {object} api - logged-in zca-js api
+ * @param {{threadId: string, type: 0|1, archived: boolean}} opts
+ * @returns {Promise<object>}
+ */
+async function setConversationArchived(api, { threadId, type, archived }) {
+    let listed;
+    try {
+        listed = await api.getArchivedChatList();
+    } catch (e) {
+        throw new Error(`Could not read Zalo's archived-chat version, so nothing was sent: ${e.message}`);
+    }
+    const v = listed?.version;
+    const version = typeof v === "number" ? v : /^\d+$/.test(String(v ?? "")) ? Number(v) : NaN;
+    if (!Number.isFinite(version)) {
+        throw new Error(
+            `Zalo's archived-chat list carried no usable version (${JSON.stringify(v)}), so nothing was sent.`,
+        );
+    }
+    const response = await zaloPost(api, {
+        url: `${api.zpwServiceMap.label[0]}/api/archivedchat/update`,
+        params: (ctx) => ({
+            ids: [{ id: String(threadId), type: type === 1 ? 1 : 0 }],
+            version,
+            actionType: archived ? 0 : 1,
+            imei: ctx.imei,
+        }),
+    });
+    return {
+        threadId: String(threadId),
+        type,
+        archived,
+        previousVersion: version,
+        version: response?.version ?? null,
+        needResync: Boolean(response?.needResync),
+        response,
+    };
+}
+
+/**
+ * Register the `conv` command group.
+ *
+ * @param {import("commander").Command} program
+ * @param {{getApi?: () => object}} [deps] - test seam: the commands that talk to
+ *   Zalo through src/core/receipts.js resolve their api here, so a unit test
+ *   can hand them a stub transport and assert the request that goes out.
+ *   Production passes nothing.
+ */
+export function registerConvCommands(program, deps = {}) {
+    const zaloApi = () => (deps.getApi || getApi)();
     const conv = program.command("conv").description("Manage conversations");
 
     conv.command("recent")
@@ -263,6 +358,33 @@ export function registerConvCommands(program) {
             }
         });
 
+    /** `conv pin` / `conv unpin`. */
+    async function pinAction(threadId, opts, pinned) {
+        const type = threadTypeOf(opts.type);
+        if (type === null) {
+            error(`Invalid --type "${opts.type}": use 0 (user) or 1 (group).`);
+            return;
+        }
+        try {
+            const result = await setConversationPinned(zaloApi(), { threadId, type, pinned });
+            output(result, program.opts().json, () =>
+                success(pinned ? `Pinned conversation ${threadId}` : `Unpinned conversation ${threadId}`),
+            );
+        } catch (e) {
+            error(`${pinned ? "Pin" : "Unpin"} failed: ${e.message}`);
+        }
+    }
+
+    conv.command("pin <threadId>")
+        .description("Pin a conversation to the top of the conversation list")
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action((threadId, opts) => pinAction(threadId, opts, true));
+
+    conv.command("unpin <threadId>")
+        .description("Unpin a conversation")
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action((threadId, opts) => pinAction(threadId, opts, false));
+
     conv.command("archived")
         .description("List archived conversations")
         .action(async () => {
@@ -273,6 +395,43 @@ export function registerConvCommands(program) {
                 error(e.message);
             }
         });
+
+    /** `conv archive` / `conv unarchive`. */
+    async function archiveAction(threadId, opts, archived) {
+        const type = threadTypeOf(opts.type);
+        if (type === null) {
+            error(`Invalid --type "${opts.type}": use 0 (user) or 1 (group).`);
+            return;
+        }
+        try {
+            const result = await setConversationArchived(zaloApi(), { threadId, type, archived });
+            output(result, program.opts().json, () => {
+                success(
+                    archived
+                        ? `Moved conversation ${threadId} to Other (archived)`
+                        : `Moved conversation ${threadId} back to Focused`,
+                );
+                if (result.needResync) {
+                    warning(
+                        "Zalo answered needResync: its archived list had moved on since it was read. " +
+                            "Check the result with `zalo-agent conv archived`.",
+                    );
+                }
+            });
+        } catch (e) {
+            error(`${archived ? "Archive" : "Unarchive"} failed: ${e.message}`);
+        }
+    }
+
+    conv.command("archive <threadId>")
+        .description("Move a conversation to the Other tab, Zalo's archive (list them with `conv archived`)")
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action((threadId, opts) => archiveAction(threadId, opts, true));
+
+    conv.command("unarchive <threadId>")
+        .description("Move a conversation from the Other tab back to Focused")
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action((threadId, opts) => archiveAction(threadId, opts, false));
 
     conv.command("mute <threadId>")
         .description("Mute a conversation")
@@ -315,71 +474,73 @@ export function registerConvCommands(program) {
 
     conv.command("read <threadId>")
         .description(
-            "Mark a conversation as read. Needs the newest incoming message in the local cache — " +
+            "Mark a conversation as read, both ways Zalo Web does: clear its manual unread mark (undoing " +
+                "`conv unread`), and send a seen receipt for the newest incoming message in the local cache — " +
                 "Zalo marks a MESSAGE seen, not a thread.",
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
-            try {
-                // `sendSeenEvent(messages, type)` takes a message DESCRIPTOR, or an
-                // array of them -- not a thread id. This used to pass the bare
-                // threadId string, which is truthy, so zca-js wrapped it in an
-                // array, read `.uidFrom` off a string (undefined), compared
-                // `undefined !== undefined` and so did NOT throw, and dropped every
-                // id field in JSON.stringify. The request went to Zalo as
-                // {"data":[{"st":-1,"at":0,"cmd":-1,"ts":-1}]} -- with the thread id
-                // nowhere in it. `conv read` has never marked anything as read, and
-                // reported success while doing it.
-                const isGroup = Number(opts.type) === 1;
-                const activeAcc = getActive();
-                if (!activeAcc) {
-                    error("No active account. Please login first.");
-                    process.exit(1);
-                }
-                initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+            // History, so it is not repeated: this used to hand zca-js's
+            // sendSeenEvent the bare threadId -- the request reached Zalo with no
+            // thread id in it -- and, once that was fixed, still went out with
+            // st/at/cmd/ts all -1 (zca-js cannot send real values), no imei on a
+            // DM, and no removeUnreadMark at all, so it could not undo
+            // `conv unread`. Both requests are now built in src/core/receipts.js
+            // to match a capture of the real Zalo Web client.
+            //
+            // process.exit stays outside the try blocks: inside one, a throwing
+            // exit would be caught and reported as an API error.
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                process.exit(1);
+            }
+            const type = threadTypeOf(opts.type);
+            if (type === null) {
+                error(`Invalid --type "${opts.type}": use 0 (user) or 1 (group).`);
+                return;
+            }
 
-                // Zalo identifies the thread from the message itself: uidFrom for a
-                // DM, idTo for a group. So the anchor must be an INCOMING message --
-                // anchoring on one of ours would address the seen event at the wrong
-                // thread for a DM.
-                const anchor = getMessages(threadId, SEEN_ANCHOR_SCAN_DEPTH).find(
-                    (m) => String(m.senderId) !== String(activeAcc.ownId),
-                );
-                if (!anchor) {
-                    error("No incoming message for this conversation is in the local cache.");
+            let result;
+            try {
+                initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+                const rows = getMessages(String(threadId), SEEN_ANCHOR_SCAN_DEPTH);
+                result = await markConversationRead(zaloApi(), { threadId, type, ownId: activeAcc.ownId, rows });
+            } catch (e) {
+                error(e.message);
+                return;
+            }
+
+            output(result, program.opts().json, () => {
+                if (result.unreadMark.ok) success("Cleared the manual unread mark");
+                else error(`Could not clear the manual unread mark: ${result.unreadMark.error}`);
+
+                const seen = result.seen;
+                if (seen.ok) {
+                    success(`Sent a seen receipt for message ${seen.msgId}`);
+                    if (seen.guessed.length) {
+                        warning(
+                            `${seen.guessed.join(", ")} came from a fallback, not the message's own frame: the ` +
+                                "listener cached it before it kept those fields (cmd follows the thread type; " +
+                                "st=3 and at=5 are a guess).",
+                        );
+                    }
+                } else if (seen.refused === "no-anchor") {
+                    error(seen.error);
                     info("Zalo marks a MESSAGE as seen, not a thread, so there is nothing to anchor the event to.");
                     info("The cache is written by `listen` and by `sync` only. Run one of them first:");
                     info(`  zalo-agent sync --from ${new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10)}`);
-                    process.exit(1);
+                } else if (seen.refused === "noised-sender") {
+                    error(seen.error);
+                    info("A message the listener receives carries its real sender id. Keep `listen` or `mcp start`");
+                    info("running, and run `conv read` again once a new message has arrived in this conversation.");
+                } else {
+                    error(`Seen receipt for message ${seen.msgId} failed: ${seen.error}`);
                 }
-
-                let raw = {};
-                try {
-                    raw = JSON.parse(anchor.raw_data || "{}");
-                } catch {
-                    /* a row without usable raw_data still carries msgId and senderId */
-                }
-                if (!raw.cliMsgId) {
-                    error("The newest cached message for this conversation has no cliMsgId.");
-                    info("Zalo needs it to identify the message; it exists only on rows the listener or a sync wrote.");
-                    process.exit(1);
-                }
-
-                const result = await getApi().sendSeenEvent(
-                    {
-                        msgId: String(anchor.msgId),
-                        cliMsgId: String(raw.cliMsgId),
-                        // DM: uidFrom IS the thread id. Group: idTo is.
-                        uidFrom: String(anchor.senderId),
-                        idTo: isGroup ? String(threadId) : String(activeAcc.ownId),
-                        msgType: raw.msgType || "webchat",
-                    },
-                    Number(opts.type),
-                );
-                output(result, program.opts().json, () => success(`Marked as read up to message ${anchor.msgId}`));
-            } catch (e) {
-                error(e.message);
-            }
+            });
+            // A refused seen receipt is the command not doing what it says, so it
+            // keeps the exit code the cold-cache refusal always had.
+            if (result.seen.refused) process.exit(1);
         });
 
     conv.command("unread <threadId>")

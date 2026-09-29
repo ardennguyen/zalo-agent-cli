@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb, getReactions, insertMessage, upsertThread } from "../../src/core/db.js";
-import { drainReactions } from "../../src/core/sync-v2/reactions.js";
+import { drainReactions, placeUnresolvedReactions } from "../../src/core/sync-v2/reactions.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-react-drain-"));
 const opened = [];
@@ -253,5 +253,86 @@ describe("drainReactions", () => {
         const stats = await drainReactions({ listener: l, timeoutMs: 400, maxPages: 3 });
         assert.equal(stats.truncated, true);
         assert.ok(stats.pages <= 4);
+    });
+});
+
+/**
+ * The retry pass for reactions the drain could not place.
+ *
+ * A backlog entry naming only a CLIENT id is unplaceable until the message
+ * carrying that id is in the cache — and the backlog reaches further back than
+ * a windowed restore, so during `zalo-agent sync` the message often lands
+ * after the drain has already seen the reaction. `zalo-agent sync` therefore
+ * replays them once the restore has run.
+ *
+ * Extracted so the two callers cannot drift: the CLI runs it when it holds the
+ * socket itself, and the daemon runs it when the stage came in over the
+ * channel — because whichever process owns the db has to do the writing.
+ */
+describe("placeUnresolvedReactions", () => {
+    /** A backlog entry that names its target only by client id. */
+    const byClientId = (cMsgID, icon = "/-strong") => ({
+        threadId: "t1",
+        data: {
+            msgId: "notif",
+            uidFrom: "u2",
+            ts: 1,
+            content: JSON.stringify({ rMsg: [{ cMsgID }], rIcon: icon, rType: 3 }),
+        },
+    });
+
+    it("hands back what it could not place, and places it once the message lands", async () => {
+        const pages = { 0: [{ objs: [byClientId("c99")], more: 0 }], 1: [{ objs: [], more: 0 }] };
+        const l = fakeListener(pages);
+        tapPages(l, pages);
+        const stats = await drainReactions({ listener: l, timeoutMs: 400 });
+
+        assert.equal(stats.stored, 0, "nothing to attach it to yet");
+        assert.equal(stats.unresolved.length, 1, "and it is kept rather than dropped");
+
+        // The restore stores the message the reaction was waiting on.
+        insertMessage({
+            msgId: "m99",
+            threadId: "t1",
+            senderId: "u1",
+            senderName: "",
+            text: "later",
+            timestamp: 2,
+            type: "text",
+            raw_data: JSON.stringify({ cliMsgId: "c99" }),
+        });
+
+        assert.equal(placeUnresolvedReactions(stats.unresolved), 1);
+        assert.equal(getReactions({ msgId: "m99" }).length, 1);
+    });
+
+    it("counts only what it actually placed, so a caller cannot over-report", async () => {
+        const pages = {
+            0: [{ objs: [byClientId("c99"), byClientId("never-arrives")], more: 0 }],
+            1: [{ objs: [], more: 0 }],
+        };
+        const l = fakeListener(pages);
+        tapPages(l, pages);
+        const stats = await drainReactions({ listener: l, timeoutMs: 400 });
+        assert.equal(stats.unresolved.length, 2);
+
+        insertMessage({
+            msgId: "m99",
+            threadId: "t1",
+            senderId: "u1",
+            senderName: "",
+            text: "later",
+            timestamp: 2,
+            type: "text",
+            raw_data: JSON.stringify({ cliMsgId: "c99" }),
+        });
+
+        assert.equal(placeUnresolvedReactions(stats.unresolved), 1, "one placed, one still has no target");
+    });
+
+    it("tolerates being handed nothing", () => {
+        assert.equal(placeUnresolvedReactions(), 0);
+        assert.equal(placeUnresolvedReactions([]), 0);
+        assert.equal(placeUnresolvedReactions(undefined), 0);
     });
 });

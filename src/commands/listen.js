@@ -11,6 +11,7 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { startDaemonChannel } from "../core/daemon-channel.js";
+import { createSyncRunners } from "../core/daemon-sync.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
     storeLiveMessage,
@@ -163,8 +164,18 @@ export function registerListenCommand(program) {
                 warning(`Coverage gap (${advice.reason}, ${advice.span}): ${advice.from} → ${advice.to}`);
                 info("  Messages that arrived in that window are not in the local cache.");
                 info(`  To restore them:  ${advice.command}`);
-                info("  That needs this daemon stopped (one WebSocket per account) and a tap on");
-                info('  "ĐỒNG BỘ NGAY" on your phone. The gap stays pending until such a run completes.');
+                // No longer "stop this daemon first". That run asks this daemon
+                // to perform the restore on the socket it already holds, so
+                // nothing is torn down -- which matters here more than anywhere,
+                // because the stop/start recipe opened a fresh gap of its own
+                // while closing this one. The phone tap is NOT removed by that;
+                // only the second WebSocket is.
+                info("  That run uses this daemon's own socket while it keeps listening, so nothing");
+                info('  needs stopping. It does need a tap on "ĐỒNG BỘ NGAY" on your phone.');
+                // Load-bearing: recordRestoreSuccess() only clears a gap lying
+                // wholly inside the restored window, so a run started from a
+                // later date succeeds and leaves this gap pending anyway.
+                info("  The gap stays pending until such a run completes.");
                 if (advice.allCommand) {
                     info(
                         `  ${advice.otherPending} other gap(s) are also pending — ` +
@@ -582,20 +593,32 @@ export function registerListenCommand(program) {
             }
 
             // This daemon owns the account's one permitted WebSocket, so it
-            // also does the uploads: a `msg send-file` in another terminal
-            // would otherwise open a second session, and Zalo would evict this
-            // one mid-conversation. Failing to open the channel is not fatal --
-            // senders just fall back to their own socket, as before.
+            // also does the work that needs one: a `msg send-file` in another
+            // terminal, or the socket stages of `zalo-agent sync`, would
+            // otherwise open a second session and Zalo would evict this one
+            // mid-conversation. The sync stages are the reason the gap advice
+            // above no longer says "stop this daemon first".
+            //
+            // Failing to open the channel is not fatal, but it is not free
+            // either: senders fall back to their own socket as before, and a
+            // sync goes back to refusing to run while this daemon is up.
+            //
+            // `createSyncRunners` is handed `getApi`, not an api: this daemon
+            // rebuilds one on a duplicate-session close, and a stage bound to
+            // the old object would tap a socket zca-js has already nulled.
             let channel = null;
             try {
                 channel = await startDaemonChannel({
                     getApi,
                     accountDir,
                     onLog: (m) => info(m),
+                    runners: createSyncRunners({ getApi, accountName: activeAcc.ownId }),
                 });
-                info(`Upload channel ready on 127.0.0.1:${channel.port} — attachment sends will reuse this socket.`);
+                info(`Sync & upload channel ready on 127.0.0.1:${channel.port} — this socket is reused for both.`);
+                info("`zalo-agent sync` will run its socket stages here; it still needs your phone tap.");
             } catch (e) {
-                warning(`Upload channel unavailable (${e.message}). Attachment sends will open their own session.`);
+                warning(`Daemon channel unavailable (${e.message}).`);
+                warning("Attachment sends will open their own session, and `zalo-agent sync` will refuse to run.");
             }
 
             // Keep alive until Ctrl+C

@@ -11,6 +11,7 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { startDaemonChannel } from "../core/daemon-channel.js";
+import { createSyncRunners } from "../core/daemon-sync.js";
 import { initDb } from "../core/db.js";
 import {
     storeLiveMessage,
@@ -341,18 +342,24 @@ export function registerMCPCommands(program) {
                 api.listener.start({ retryOnClose: true });
                 console.error("[mcp] Zalo listener started. MCP server ready.");
                 // This process holds the account's one permitted socket, so it
-                // performs attachment uploads for any CLI send too -- otherwise
-                // `msg send-file` opens a second session and Zalo kills this
-                // one. Best-effort: a failed channel only costs the fallback.
+                // performs the work that needs one on behalf of the CLI:
+                // attachment uploads, and the socket stages of `zalo-agent
+                // sync`. Otherwise `msg send-file` opens a second session and
+                // Zalo kills this one, and a sync cannot run at all while this
+                // server is up. Best-effort: a failed channel only costs the
+                // fallback. `getApi` rather than an api, because a
+                // duplicate-session close rebuilds it under us.
                 try {
                     channel = await startDaemonChannel({
                         getApi,
                         accountDir,
                         onLog: (m) => console.error(`[mcp] ${m}`),
+                        runners: createSyncRunners({ getApi, accountName: activeAcc.ownId }),
                     });
-                    console.error(`[mcp] Upload channel ready on 127.0.0.1:${channel.port}`);
+                    console.error(`[mcp] Sync & upload channel ready on 127.0.0.1:${channel.port}`);
                 } catch (e) {
-                    console.error(`[mcp] Upload channel unavailable: ${e.message}`);
+                    console.error(`[mcp] Daemon channel unavailable: ${e.message}`);
+                    console.error("[mcp] Attachment sends open their own session, and `zalo-agent sync` will refuse.");
                 }
             } catch (e) {
                 dropLock();

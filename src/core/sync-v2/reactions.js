@@ -194,6 +194,30 @@ export async function drainReactions(opts = {}) {
 }
 
 /**
+ * Replay reactions the drain could not place when they arrived.
+ *
+ * `drainReactions` hands these back rather than dropping them: the backlog
+ * reaches further back than a windowed restore, so a reaction's target message
+ * may only be written after the drain saw it. A caller that has since stored
+ * more messages — `zalo-agent sync`, which restores before it drains — replays
+ * them through here.
+ *
+ * This WRITES, so it belongs in whichever process owns the db: the CLI when it
+ * holds the socket itself, the daemon when the stage runs through its channel.
+ * Shared so the two paths cannot drift.
+ *
+ * @param {object[]} [unresolved] - `drainReactions()` stats.unresolved
+ * @returns {number} how many were placed this time
+ */
+export function placeUnresolvedReactions(unresolved = []) {
+    let placed = 0;
+    for (const r of unresolved || []) {
+        if (storeLiveReaction(r, { source: "backlog" }).stored) placed++;
+    }
+    return placed;
+}
+
+/**
  * The icon on a reaction object, whichever form its content arrived in.
  *
  * @param {object} reaction

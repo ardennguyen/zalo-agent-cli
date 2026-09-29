@@ -116,7 +116,7 @@ zalo-agent msg send <ID> "reply"
 ## Reliability
 - **Auto-reconnect:** Reconnects on WebSocket drop
 - **Auto re-login:** Re-authenticates on session expiry
-- **1 WebSocket/account:** Cannot coexist with browser Zalo, or with `mcp start`, on the same account
+- **1 WebSocket/account:** Cannot coexist with browser Zalo, or with `mcp start`, on the same account. `msg send-file`/`send-image` and `zalo-agent sync` do not need a second one — a running daemon does that work on this socket and keeps listening
 - **Event dedup:** in the cache only — `messages.msgId` is the primary key, so a redelivered message updates its row instead of duplicating it. The stdout/JSONL/webhook sinks have no dedup, so a webhook receiver must tolerate seeing the same `msgId` twice
 - **Gap recording:** Connection gaps are recorded in `sync_gaps` and **reported, never auto-filled**. The daemon prints the missed window and the `zalo-agent sync --from <date>` run that closes it; closing it means running that command by hand (see Side Effects above). Don't tell a user their gap was filled automatically — it never is. A gap stays `pending` until a completed `sync` covering it resolves it
 

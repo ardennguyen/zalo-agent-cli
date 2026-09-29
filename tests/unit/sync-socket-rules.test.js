@@ -48,6 +48,29 @@ describe("sync.js socket rules", () => {
         assert.deepEqual(calls, [], `runUnifiedSync calls: ${calls.join(", ")}`);
     });
 
+    it("every function that opens a socket first asks whether a daemon holds one", () => {
+        // Zalo permits ONE web session. A `listen`/`mcp` daemon holding it can
+        // now run the socket stages itself, so a path that connects without
+        // looking evicts a daemon that would have done the work — the failure
+        // this whole hand-off exists to remove. A new socket path is exactly
+        // where that gets forgotten, so the rule is checked rather than
+        // documented.
+        const opens = new Set(
+            lines.map((l, i) => (/\bconnectListener\(/.test(l) ? enclosingFunction(i, lines) : null)).filter(Boolean),
+        );
+        const checks = new Set(
+            lines
+                .map((l, i) => (/\bget(?:Daemon|Sync)Channel\(/.test(l) ? enclosingFunction(i, lines) : null))
+                .filter(Boolean),
+        );
+        // Only a command body decides whether to take the account's session at
+        // all. `connectListener` is the primitive, and `reconnectListener`
+        // re-opens one this process already legitimately owned mid-run --
+        // neither is a place to ask the question.
+        const blind = [...opens].filter((fn) => /^run[A-Z]/.test(fn) && !checks.has(fn));
+        assert.deepEqual(blind, [], `opens a socket without checking for a daemon: ${blind.join(", ")}`);
+    });
+
     it("the unified run stops the socket once, through closeListener", () => {
         const start = lines.findIndex((l) => /^async function runUnifiedSync\b/.test(l));
         let end = lines.findIndex((l, i) => i > start && /^(?:async\s+)?function\s+\w+/.test(l));

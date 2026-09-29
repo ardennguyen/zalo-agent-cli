@@ -16,6 +16,7 @@ import {
 } from "../core/zalo-client.js";
 import { saveCredentials, loadCredentials } from "../core/credentials.js";
 import { listAccounts, getActive, setActive, addAccount, removeAccount, getAccount } from "../core/accounts.js";
+import { serverLogout, reportLogout } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { startQrServer } from "../utils/qr-http-server.js";
@@ -134,24 +135,16 @@ export function registerAccountCommands(program) {
                 return;
             }
 
-            // Best-effort remote session invalidation, mirroring what
-            // `logout` does — same reverse-engineered logoutV2() call. Only
-            // attempted when the account being removed is the currently
-            // active one, since that's the only case where autoLogin() can
-            // give us a live API session to invalidate through; a
-            // non-active account's server-side session (if any) is left
+            // End the server-side session too, exactly as `logout` does
+            // (src/core/logout.js). Only attempted when the account being
+            // removed is the currently active one, since that's the only
+            // case where autoLogin() can give us a live API session to end;
+            // a non-active account's server-side session (if any) is left
             // alone, same as this command always did.
             if (getActive()?.ownId === ownerId) {
                 await autoLogin(program.opts().json);
                 if (isLoggedIn()) {
-                    try {
-                        await getApi().logoutV2();
-                        info(`Server session invalidated for ${ownerId}`);
-                    } catch (e) {
-                        warning(
-                            `Could not confirm server-side logout for ${ownerId} (continuing with local removal): ${e.message}`,
-                        );
-                    }
+                    reportLogout(await serverLogout(getApi()), { success, warning, info });
                 } else {
                     warning(
                         `Could not establish a session to invalidate remotely for ${ownerId} (continuing with local removal)`,

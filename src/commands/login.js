@@ -16,6 +16,7 @@ import {
 } from "../core/zalo-client.js";
 import { saveCredentials, CONFIG_DIR } from "../core/credentials.js";
 import { addAccount, getActive, removeAccount } from "../core/accounts.js";
+import { serverLogout, reportLogout } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { startQrServer } from "../utils/qr-http-server.js";
@@ -223,25 +224,14 @@ export function registerLoginCommands(program) {
         .action(async (opts) => {
             const active = getActive();
 
-            // Real server-side session invalidation. This actually ends the
-            // session at Zalo's servers — confirmed live via
-            // `https://wpa.chat.zalo.me/api/v2/login/logOut`, which returns
-            // {error_code:0, error_message:"Successful.", data:1} on
-            // success, and a follow-up authenticated call right after fails
-            // with error_code 600 "zpw_sek bị thiếu hoặc không đúng" —
-            // proof the session is genuinely dead, not a no-op. Unlike the
-            // old clearSession()-only logout, which just forgot the
-            // in-memory handle and left the exported credentials/cookie
-            // valid indefinitely. Best-effort: if it fails (network error,
-            // Zalo changes the endpoint), don't block the local logout on it.
+            // End the session at Zalo's servers the way Zalo Web does, and
+            // say whether it actually ended — src/core/logout.js. The comment
+            // that stood here claimed a live confirmation against
+            // wpa.chat.zalo.me while the call went to the staging host, and
+            // the success line printed whenever the call did not throw.
+            // serverLogout never throws, so the local logout below always runs.
             if (opts.remote !== false && isLoggedIn()) {
-                try {
-                    const ctx = getApi().getContext();
-                    await getApi().logoutV2();
-                    info(`Server session invalidated for imei ${ctx.imei.slice(0, 8)}…`);
-                } catch (e) {
-                    warning(`Could not confirm server-side logout (continuing with local logout): ${e.message}`);
-                }
+                reportLogout(await serverLogout(getApi()), { success, warning, info });
             }
 
             clearSession();

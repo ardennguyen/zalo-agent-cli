@@ -132,19 +132,48 @@ function rememberSent(thread, r, what) {
 }
 
 /**
- * Pull a thread's recent history so just-sent messages land in zalo.db with
- * their cliMsgId, giving tier 4's `msg undo` something to resolve against.
+ * The newest plain-text message of OUR OWN that is genuinely in the cache.
  *
- * Only worth doing for the DM: the group is disposable, but an unrecalled
- * DM attachment stays in a real person's view forever — `conv delete` is
- * one-sided, so recall is the only thing that removes it for them.
+ * `--quote` and `msg forward` both rebuild their payload from a zalo.db row,
+ * and nothing in this tier can put a JUST-SENT message there. `msg send` does
+ * not write to the cache — only the listener's live capture does — and
+ * `msg history --no-cache`, which the `--quote` help text points at, provably
+ * cannot stand in for it: Zalo's group history endpoint did not return a
+ * message sent 60 seconds earlier, polled every 10s, and returned nothing
+ * from the same day at all. Measured 2026-09-29.
+ *
+ * So these tests quote and forward an OLDER message of ours. That still
+ * exercises every part that matters — buildQuote, the per-type service URL,
+ * qmsgAttach, the sender resolve — and drops only the requirement that the
+ * target came from this run, which was never what was under test.
+ *
+ * Our own messages only: quoting whatever the other person last said would
+ * put their words back in front of them for no reason.
+ *
+ * @param {object} thread - targets.group or targets.dm
+ * @returns {Promise<object|null>} the history row, or null when there is none
  */
-async function cacheThreadHistory(thread) {
-    await runJson(
-        ["msg", "history", "-t", String(thread.type), "-n", "20", "--no-cache", thread.threadId],
+async function cachedSelfMessage(thread) {
+    const r = await runJson(
+        ["msg", "history", "-t", String(thread.type), "-n", "30", "--no-cache", thread.threadId],
         live(T, { timeout: 180_000 }),
     );
+    const rows = r.ok && Array.isArray(r.data?.messages) ? r.data.messages : [];
+    // type "text" is the classifier's own label, so it excludes an
+    // already-recalled row (those come back as type "deleted", text
+    // "[deleted]") as well as every attachment and system event. Quoting a
+    // recalled message is the one way this helper could hand back an id that
+    // looks fine and fails on the wire.
+    return (
+        rows.find((m) => m.msgId && m.type === "text" && m.text && String(m.senderId) === String(T.accountOwnId)) ||
+        null
+    );
 }
+
+/** The skip reason when a thread has no quotable history of ours yet. */
+const NO_CACHED_SOURCE =
+    "no cached message of our own in this thread — a freshly recreated group has none, " +
+    "and a just-sent one cannot be cached without a running listener (see cachedSelfMessage)";
 
 // Media comes from tests/fixtures/ — real encoder output, committed, so
 // these tests upload the same bytes every run and a failure means Zalo
@@ -212,15 +241,9 @@ describe("tier 2 · group text messages", { skip }, () => {
 // qmsgAttach is group-only and the service URL differs by thread type, so
 // testing one proves nothing about the other.
 describe("tier 2 · quote-reply", { skip }, () => {
-    it("quotes a message in the group", async () => {
-        const target = remember(T.group, await send(T, T.group, mark("quote target")), "quote-target");
-        await sleep(600);
-        // --quote rebuilds the quoted payload from zalo.db, and `msg send`
-        // does not write there, so a just-sent message is not quotable until
-        // something caches it. The CLI says so explicitly rather than
-        // failing obscurely ("not in the local cache … Fetch the thread
-        // first"). Same dependency the attachment recall has.
-        await cacheThreadHistory(T.group);
+    it("quotes a message in the group", async (t) => {
+        const target = await cachedSelfMessage(T.group);
+        if (!target) return t.skip(NO_CACHED_SOURCE);
         assertDisposable(T.group.threadId, "msg send --quote");
         const r = await runJson(
             ["msg", "send", "-t", "1", T.group.threadId, mark("group quote reply"), "--quote", target.msgId],
@@ -233,10 +256,9 @@ describe("tier 2 · quote-reply", { skip }, () => {
     it(
         "quotes a message in the DM — a different service URL, and no qmsgAttach",
         { skip: skip || (T?.dm ? false : "no DM target configured") },
-        async () => {
-            const target = remember(T.dm, await send(T, T.dm, mark("dm quote target")), "dm-quote-target");
-            await sleep(600);
-            await cacheThreadHistory(T.dm);
+        async (t) => {
+            const target = await cachedSelfMessage(T.dm);
+            if (!target) return t.skip(NO_CACHED_SOURCE);
             assertDisposable(T.dm.threadId, "msg send --quote");
             const r = await runJson(
                 ["msg", "send", "-t", "0", T.dm.threadId, mark("dm quote reply"), "--quote", target.msgId],
@@ -314,7 +336,6 @@ describe("tier 2 · image attachments", { skip }, () => {
             rememberSent(T.dm, r, "dm-image") > 0,
             `DM image not recorded for recall: ${JSON.stringify(r.data).slice(0, 200)}`,
         );
-        await cacheThreadHistory(T.dm);
     });
 
     it("reports a missing image path instead of failing silently", async () => {
@@ -431,7 +452,6 @@ describe("tier 2 · file attachments", { skip }, () => {
             rememberSent(T.dm, r, "dm-file") > 0,
             `DM file not recorded for recall: ${JSON.stringify(r.data).slice(0, 200)}`,
         );
-        await cacheThreadHistory(T.dm);
     });
 
     it("exits cleanly instead of leaving the listener holding the event loop", async () => {
@@ -570,12 +590,11 @@ describe("tier 2 · DM messages", { skip: skip || (T?.dm ? false : "no DM target
         assert.ok(hasSuccess(r.stdout) || /Reacted/.test(r.stdout), r.stdout.slice(0, 300));
     });
 
-    it("forwards a message into the disposable group", async () => {
-        const sent = remember(T.dm, await send(T, T.dm, mark("forward source")), "dm-forward-source");
-        await sleep(500);
-        // Forward resolves the source from zalo.db too, so the source
-        // thread has to be cached before the just-sent message is findable.
-        await cacheThreadHistory(T.dm);
+    it("forwards a message into the disposable group", async (t) => {
+        // Forward resolves its source from zalo.db too, so it takes the same
+        // already-cached message the quote tests do.
+        const sent = await cachedSelfMessage(T.dm);
+        if (!sent) return t.skip(NO_CACHED_SOURCE);
         assertDisposable(T.group.threadId, "msg forward");
         // Demand success. The old assertion here was crash-only, with a
         // comment excusing "a clean error" as acceptable — and `msg forward`

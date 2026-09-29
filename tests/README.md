@@ -467,6 +467,21 @@ A fresh `npm i` whose `prepare` script did not run gets an unpatched zca-js and
 silently loses this. `tests/unit/send-client-id.test.js` fails in that state
 rather than letting the next live run discover it.
 
+### Cleanup has exactly one chance
+
+Zalo's recall window closes. Four `[e2e]` artifacts left in the DM target on
+2026-09-21 — two PDFs, a photo and a reminder card — could not be recalled on
+2026-09-29: every one answered `Lỗi không xác định`, while a message sent
+minutes earlier in the same thread recalled cleanly. Their `cliMsgId` was
+present in the cache the whole time, so this is a server-side time limit, not
+a missing id.
+
+The consequence is that **tier 4 cannot be deferred**. A run that sends to the
+DM and does not reach tier 4 leaves debris in a real person's chat
+permanently; `msg delete` would only hide it from our side, which is worse.
+`tests/run-e2e.js` prints `MANUAL CLEANUP REQUIRED` when the ledger survives a
+run that skipped tier 4 — treat it as urgent, not advisory.
+
 ### What a passing `undo` does and does not prove
 
 Zalo's **group** recall endpoint keys on `msgId`: a wrong-but-plausible

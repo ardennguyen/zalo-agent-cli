@@ -27,6 +27,7 @@ import {
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
 import { describeGap } from "../core/sync-v2/gap-advice.js";
+import { createDeliveredReceipts } from "../core/receipts.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -64,6 +65,10 @@ export function registerListenCommand(program) {
         .option("--no-self", "Exclude self-sent messages")
         .option("--auto-accept", "Auto-accept incoming friend requests")
         .option("--save <dir>", "Save messages locally as JSONL files (one file per thread, e.g. --save ./zalo-logs)")
+        .option(
+            "--no-delivered-receipts",
+            "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
+        )
         .action(async (opts) => {
             const activeAcc = getActive();
             if (!activeAcc) {
@@ -235,6 +240,17 @@ export function registerListenCommand(program) {
             let eventCount = 0;
             const enabledEvents = new Set(opts.events.split(",").map((e) => e.trim()));
 
+            // Delivered receipts (deliveredv2): what every Zalo client sends when a
+            // message arrives -- Zalo Web included, for our own echoes too. Built
+            // once and shared with `mcp start` through src/core/receipts.js, so the
+            // two listeners cannot drift apart (AGENTS.md §13). `getApi`, not an
+            // api: a re-login replaces it. Seen receipts are never sent from here.
+            const deliveredReceipts = createDeliveredReceipts({
+                getApi,
+                enabled: opts.deliveredReceipts !== false,
+                log: (line) => console.error(`[listen] ${line}`),
+            });
+
             function uptime() {
                 const s = Math.floor((Date.now() - startTime) / 1000);
                 const h = Math.floor(s / 3600);
@@ -401,6 +417,13 @@ export function registerListenCommand(program) {
                         }
                     });
                 }
+
+                // Subscribed AFTER the storing handler above, so the write has
+                // always happened first; the receipt handler only queues, and
+                // can neither throw into the socket loop nor hold the write up.
+                // Here rather than at start-up because re-login calls this
+                // function again with a new listener.
+                deliveredReceipts.attach(api.listener);
 
                 // --- Friend events ---
                 if (enabledEvents.has("friend")) {
@@ -625,6 +648,11 @@ export function registerListenCommand(program) {
                 if (opts.webhook) info(`Webhook: ${opts.webhook}`);
                 if (saveDir) info(`Save dir: ${saveDir} (JSONL per thread)`);
                 if (opts.autoAccept) info("Auto-accept friend requests: ON");
+                info(
+                    opts.deliveredReceipts !== false
+                        ? "Delivered receipts: ON (opt out with --no-delivered-receipts). Seen receipts: never sent."
+                        : "Delivered receipts: OFF. Seen receipts: never sent.",
+                );
             } catch (e) {
                 error(`Listen failed: ${e.message}`);
                 process.exit(1);
@@ -665,6 +693,7 @@ export function registerListenCommand(program) {
                     // First, before anything can emit a close event.
                     stopping = true;
                     channel?.stop();
+                    deliveredReceipts.stop();
                     try {
                         getApi().listener.stop();
                     } catch (e) {
@@ -682,6 +711,10 @@ export function registerListenCommand(program) {
                     }
                     releaseLock(accountDir);
                     info(`Stopped. Uptime: ${uptime()}, events: ${eventCount}, reconnects: ${reconnectCount}`);
+                    const receipts = deliveredReceipts.stats();
+                    if (receipts.calls) {
+                        info(`Delivered receipts: ${receipts.sent} acknowledged, ${receipts.failed} failed`);
+                    }
                     if (saveDir) info(`Messages saved to: ${saveDir}`);
                     resolve();
                     // Resolving the keep-alive promise is not enough: an async

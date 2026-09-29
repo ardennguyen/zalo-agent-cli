@@ -26,6 +26,7 @@ import {
 } from "../core/live-store.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
+import { createDeliveredReceipts } from "../core/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
 import { loadMCPConfig, parseDuration } from "../mcp/mcp-config.js";
@@ -93,6 +94,10 @@ export function registerMCPCommands(program) {
         .option("--http <port>", "Use HTTP transport on specified port (default: stdio)")
         .option("--auth <token>", "Bearer token for HTTP auth (only with --http)")
         .option("--host <address>", "HTTP bind address (default: 127.0.0.1, only with --http)")
+        .option(
+            "--no-delivered-receipts",
+            "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
+        )
         .action(async (opts) => {
             // Safety net: redirect ALL console.log to stderr for the entire MCP process.
             // Stdout is the MCP JSON-RPC transport — any non-JSON output corrupts the stream.
@@ -200,6 +205,21 @@ export function registerMCPCommands(program) {
             // Setup notifier (sends to Zalo group when agent is offline)
             const notifier = new ZaloNotifier(getApi(), config);
 
+            // Delivered receipts: the same shared implementation `listen` uses
+            // (AGENTS.md §13 -- the two listeners must not differ). Diagnostics
+            // go to stderr only; stdout is the JSON-RPC stream. Seen receipts
+            // are never sent from here: zalo_mark_read moves a local cursor only.
+            const deliveredReceipts = createDeliveredReceipts({
+                getApi,
+                enabled: opts.deliveredReceipts !== false,
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            console.error(
+                opts.deliveredReceipts !== false
+                    ? "[mcp] Delivered receipts: ON (opt out with --no-delivered-receipts). Seen receipts: never sent."
+                    : "[mcp] Delivered receipts: OFF. Seen receipts: never sent.",
+            );
+
             let reconnectCount = 0;
 
             // `listen` and `mcp start` are two entry points to the SAME socket,
@@ -297,6 +317,11 @@ export function registerMCPCommands(program) {
                     notifier.onMessage(normalized);
                     console.error(`[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`);
                 });
+
+                // After the storing handler, exactly as in `listen`: the write
+                // always runs first, and the receipt handler only queues. Here
+                // because re-login calls this function again with a new listener.
+                deliveredReceipts.attach(api.listener);
 
                 // Everything below is durable state that exists only on this
                 // socket, so it is stored regardless of the watch filter — the
@@ -416,6 +441,11 @@ export function registerMCPCommands(program) {
                 // for a window nothing was missed in.
                 lifecycle.setStopping();
                 clearInterval(mcpHeartbeatTimer);
+                deliveredReceipts.stop();
+                const receipts = deliveredReceipts.stats();
+                if (receipts.calls) {
+                    console.error(`[mcp] Delivered receipts: ${receipts.sent} acknowledged, ${receipts.failed} failed`);
+                }
                 try {
                     syncManager.markConnected();
                 } catch (e) {

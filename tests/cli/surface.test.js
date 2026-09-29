@@ -302,8 +302,10 @@ const FLAG_CONTRACT = {
     "poll create": ["--multi", "--add-options", "--anonymous", "--hide-preview", "--expire"],
     "reminder create": ["--type", "--time", "--emoji", "--repeat"],
     "auto-reply create": ["--enable", "--no-enable", "--start", "--end", "--scope", "--uids"],
-    listen: ["--filter", "--webhook", "--no-self", "--auto-accept", "--save"],
-    "mcp start": ["--config", "--http", "--auth", "--host"],
+    // --no-delivered-receipts is the opt-out for the automatic deliveredv2
+    // acks both listeners send; it must exist on both or they diverge.
+    listen: ["--filter", "--webhook", "--no-self", "--auto-accept", "--save", "--no-delivered-receipts"],
+    "mcp start": ["--config", "--http", "--auth", "--host", "--no-delivered-receipts"],
     "catalog add-product": ["--photos"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],

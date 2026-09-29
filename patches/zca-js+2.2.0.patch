@@ -49,6 +49,40 @@ index 0000000..ec513e6
 +        return utils.resolve(response);
 +    };
 +});
+diff --git a/node_modules/zca-js/dist/apis/forwardMessage.js b/node_modules/zca-js/dist/apis/forwardMessage.js
+index ff4f6c6..499fbcf 100644
+--- a/node_modules/zca-js/dist/apis/forwardMessage.js
++++ b/node_modules/zca-js/dist/apis/forwardMessage.js
+@@ -1,6 +1,19 @@
+ import { ZaloApiError } from "../Errors/ZaloApiError.js";
+ import { ThreadType } from "../models/index.js";
+ import { apiFactory } from "../utils.js";
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * A forward produces a real message that `undo` and `deleteMessage` both
++ * need a cliMsgId to remove, and upstream returns only {msgId}. One
++ * clientId covers every target thread in a call, so the single resolved
++ * response is the right place to put it.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ export const forwardMessageFactory = apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/mforward`),
+@@ -94,6 +107,8 @@ export const forwardMessageFactory = apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
 diff --git a/node_modules/zca-js/dist/apis/getCrossDB.js b/node_modules/zca-js/dist/apis/getCrossDB.js
 new file mode 100644
 index 0000000..3bf97b9

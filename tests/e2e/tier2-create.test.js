@@ -132,58 +132,71 @@ function rememberSent(thread, r, what) {
 }
 
 /**
- * The newest plain-text message of OUR OWN that is genuinely in the cache.
+ * Cached messages of ours that MIGHT be quotable, newest first.
  *
- * `--quote` and `msg forward` both rebuild their payload from a zalo.db row,
- * and nothing in this tier can put a JUST-SENT message there. `msg send` does
- * not write to the cache — only the listener's live capture does — and
- * `msg history --no-cache`, which the `--quote` help text points at, provably
- * cannot stand in for it: Zalo's group history endpoint did not return a
- * message sent 60 seconds earlier, polled every 10s, and returned nothing
- * from the same day at all. Measured 2026-09-29.
+ * `--quote` and `msg forward` rebuild their payload from a zalo.db row, and
+ * nothing in this tier can put a JUST-SENT message there: `msg send` does not
+ * write to the cache -- only the listener's live capture does -- and
+ * `msg history --no-cache` cannot stand in for it. Measured 2026-09-29
+ * against the group: a message sent and polled every 10s for a minute never
+ * appeared, and the endpoint returned nothing from the same day at all.
  *
- * So these tests quote and forward an OLDER message of ours. That still
- * exercises every part that matters — buildQuote, the per-type service URL,
- * qmsgAttach, the sender resolve — and drops only the requirement that the
- * target came from this run, which was never what was under test.
+ * So these tests use an OLDER message of ours. That still exercises
+ * buildQuote, the per-type service URL, qmsgAttach and the sender resolve --
+ * it only drops the requirement that the target came from this run, which
+ * was never what was under test.
+ *
+ * This returns CANDIDATES rather than one pick, because the type reported
+ * here cannot be trusted. `msg history` merges the live fetch over the
+ * cached row and the live classification wins the merge, so a row it prints
+ * as "text" can be "deleted" in zalo.db -- which is the view getMessageById()
+ * hands to the thing being tested. Two runs picked a row that looked fine
+ * here and was refused as deleted. Guessing harder does not fix that; asking
+ * the CLI does, so the caller tries these in order until one is accepted.
  *
  * Our own messages only: quoting whatever the other person last said would
  * put their words back in front of them for no reason.
  *
  * @param {object} thread - targets.group or targets.dm
- * @returns {Promise<object|null>} the history row, or null when there is none
+ * @returns {Promise<object[]>} candidate history rows, newest first
  */
-async function cachedSelfMessage(thread) {
+async function cachedSelfMessages(thread) {
     const args = (extra) => ["msg", "history", "-t", String(thread.type), "-n", "50", ...extra, thread.threadId];
-
-    // Refresh first, so a thread tier 5a recreated empty can still fill up,
-    // then read back the MERGED view.
+    // Refresh first, so a thread tier 5a recreated empty can still fill up.
     await runJson(args(["--no-cache"]), live(T, { timeout: 180_000 }));
     const r = await runJson(args([]), live(T, { timeout: 180_000 }));
     const rows = r.ok && Array.isArray(r.data?.messages) ? r.data.messages : [];
+    return rows
+        .filter((m) => m.msgId && m.type === "text" && m.text && String(m.senderId) === String(T.accountOwnId))
+        .slice(0, 8);
+}
 
-    // Filter on the CACHED type, not the live one. They disagree, and the
-    // cache is the view that matters: `--quote` and `msg forward` both
-    // resolve their source through getMessageById(). Picking from the live
-    // fetch chose msgId 8288319556160, which the live endpoint reports as
-    // "text" and zalo.db has as "deleted" -- so both commands refused it
-    // ("Zalo only supports quote-replies to text messages (this one is a
-    // deleted)"). The CLI was right and the helper was asking the wrong
-    // source.
-    //
-    // type "text" also excludes every attachment and system event, and a
-    // recalled row, which is the one thing here that could hand back an id
-    // that looks fine and fails on the wire.
-    return (
-        rows.find((m) => m.msgId && m.type === "text" && m.text && String(m.senderId) === String(T.accountOwnId)) ||
-        null
-    );
+/**
+ * Run `attempt` against each candidate until the CLI accepts one.
+ *
+ * A rejected candidate costs nothing: buildQuote and `msg forward` both
+ * refuse locally, before any network call, so no message is sent. Only the
+ * accepted one reaches the thread.
+ *
+ * @param {object} thread
+ * @param {(row: object) => Promise<object>} attempt - runs the command
+ * @returns {Promise<{ok: boolean, row?: object, r?: object, refusals: string[]}>}
+ */
+async function firstAccepted(thread, attempt) {
+    const candidates = await cachedSelfMessages(thread);
+    const refusals = [];
+    for (const row of candidates) {
+        const r = await attempt(row);
+        if (r.ok) return { ok: true, row, r, refusals };
+        refusals.push(`${row.msgId}: ${r.error}`);
+    }
+    return { ok: false, refusals };
 }
 
 /** The skip reason when a thread has no quotable history of ours yet. */
 const NO_CACHED_SOURCE =
     "no cached message of our own in this thread — a freshly recreated group has none, " +
-    "and a just-sent one cannot be cached without a running listener (see cachedSelfMessage)";
+    "and a just-sent one cannot be cached without a running listener (see cachedSelfMessages)";
 
 // Media comes from tests/fixtures/ — real encoder output, committed, so
 // these tests upload the same bytes every run and a failure means Zalo
@@ -252,30 +265,32 @@ describe("tier 2 · group text messages", { skip }, () => {
 // testing one proves nothing about the other.
 describe("tier 2 · quote-reply", { skip }, () => {
     it("quotes a message in the group", async (t) => {
-        const target = await cachedSelfMessage(T.group);
-        if (!target) return t.skip(NO_CACHED_SOURCE);
         assertDisposable(T.group.threadId, "msg send --quote");
-        const r = await runJson(
-            ["msg", "send", "-t", "1", T.group.threadId, mark("group quote reply"), "--quote", target.msgId],
-            live(T, { timeout: 120_000 }),
+        const got = await firstAccepted(T.group, (row) =>
+            runJson(
+                ["msg", "send", "-t", "1", T.group.threadId, mark("group quote reply"), "--quote", row.msgId],
+                live(T, { timeout: 120_000 }),
+            ),
         );
-        assert.equal(r.ok, true, `group quote-reply failed: ${r.error}`);
-        rememberSent(T.group, r, "group-quote-reply");
+        if (!got.refusals.length && !got.ok) return t.skip(NO_CACHED_SOURCE);
+        assert.equal(got.ok, true, `no cached message could be quoted in the group:\n  ${got.refusals.join("\n  ")}`);
+        rememberSent(T.group, got.r, "group-quote-reply");
     });
 
     it(
         "quotes a message in the DM — a different service URL, and no qmsgAttach",
         { skip: skip || (T?.dm ? false : "no DM target configured") },
         async (t) => {
-            const target = await cachedSelfMessage(T.dm);
-            if (!target) return t.skip(NO_CACHED_SOURCE);
             assertDisposable(T.dm.threadId, "msg send --quote");
-            const r = await runJson(
-                ["msg", "send", "-t", "0", T.dm.threadId, mark("dm quote reply"), "--quote", target.msgId],
-                live(T, { timeout: 120_000 }),
+            const got = await firstAccepted(T.dm, (row) =>
+                runJson(
+                    ["msg", "send", "-t", "0", T.dm.threadId, mark("dm quote reply"), "--quote", row.msgId],
+                    live(T, { timeout: 120_000 }),
+                ),
             );
-            assert.equal(r.ok, true, `DM quote-reply failed: ${r.error}`);
-            rememberSent(T.dm, r, "dm-quote-reply");
+            if (!got.refusals.length && !got.ok) return t.skip(NO_CACHED_SOURCE);
+            assert.equal(got.ok, true, `no cached message could be quoted in the DM:\n  ${got.refusals.join("\n  ")}`);
+            rememberSent(T.dm, got.r, "dm-quote-reply");
         },
     );
 
@@ -603,8 +618,6 @@ describe("tier 2 · DM messages", { skip: skip || (T?.dm ? false : "no DM target
     it("forwards a message into the disposable group", async (t) => {
         // Forward resolves its source from zalo.db too, so it takes the same
         // already-cached message the quote tests do.
-        const sent = await cachedSelfMessage(T.dm);
-        if (!sent) return t.skip(NO_CACHED_SOURCE);
         assertDisposable(T.group.threadId, "msg forward");
         // Demand success. The old assertion here was crash-only, with a
         // comment excusing "a clean error" as acceptable — and `msg forward`
@@ -613,12 +626,12 @@ describe("tier 2 · DM messages", { skip: skip || (T?.dm ? false : "no DM target
         // for every message type). The CLI catches that and prints a ✗ line,
         // never a stack trace, so the regex could not match and the test
         // passed green the whole time. Fixed upstream in 24ea016.
-        const r = await runJson(
-            ["msg", "forward", "-t", "1", sent.msgId, T.group.threadId],
-            live(T, { timeout: 120_000 }),
+        const got = await firstAccepted(T.dm, (row) =>
+            runJson(["msg", "forward", "-t", "1", row.msgId, T.group.threadId], live(T, { timeout: 120_000 })),
         );
-        assert.equal(r.ok, true, `msg forward failed: ${r.error}`);
-        rememberSent(T.group, r, "forwarded");
+        if (!got.refusals.length && !got.ok) return t.skip(NO_CACHED_SOURCE);
+        assert.equal(got.ok, true, `no cached DM message could be forwarded:\n  ${got.refusals.join("\n  ")}`);
+        rememberSent(T.group, got.r, "forwarded");
     });
 });
 

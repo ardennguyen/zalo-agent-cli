@@ -759,7 +759,9 @@ export function registerConvCommands(program, deps = {}) {
 
             if (opts.dryRun) {
                 info(`Would forget ${targets.length} conversation(s):`);
-                for (const t of targets.slice(0, 20)) {
+                // Every one of them: a preview that stops at a page does not
+                // show what the real run is about to remove.
+                for (const t of targets) {
                     info(
                         `  ${t.threadId}${t.name ? ` (${t.name})` : ""}${t.messages ? ` — ${t.messages} message(s), ${t.files || 0} file(s)` : ""}`,
                     );

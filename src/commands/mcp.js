@@ -342,7 +342,9 @@ export function registerMCPCommands(program) {
                 api.listener.on("group_event", (event) => {
                     noteBoardChange(event);
                     storeGroupEventRow(event);
-                    const gone = storeGroupEvent(event);
+                    // Same call as `listen`: our uid tells being removed from
+                    // removing someone else, and a later event clears the flag.
+                    const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
                     if (gone.gone) console.error(`[mcp] no longer in ${gone.threadId} — local history orphaned`);
                 });
 

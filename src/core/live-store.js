@@ -16,12 +16,13 @@ import fs from "node:fs";
 import {
     insertMessage,
     insertMessageIfAbsent,
-    getThreadLeftAt,
+    getThreadDeleteMarker,
     runInTransaction,
     upsertThread,
     upsertReaction,
     markMessageRecalled,
     markThreadGone,
+    markThreadBack,
     setSyncState,
     setMessageStatus,
     findMessageByClientId,
@@ -164,21 +165,23 @@ export function storeLiveMessage(msg, opts = {}) {
 
     const info = classifyLiveMessage(data);
     const authoritative = typeof opts.threadName === "string" && opts.threadName !== "";
+    const threadId = String(msg.threadId);
+    const timestamp = data.ts ? Number(data.ts) : Date.now();
     try {
         upsertThread({
-            threadId: String(msg.threadId),
+            threadId,
             type: msg.type === THREAD_USER ? "dm" : "group",
             name: authoritative ? opts.threadName : nameFromLiveMessage(msg),
-            lastUpdate: data.ts ? Number(data.ts) : Date.now(),
+            lastUpdate: timestamp,
             nameHint: !authoritative,
         });
         insertMessage({
             msgId: String(data.msgId),
-            threadId: String(msg.threadId),
+            threadId,
             senderId: String(data.uidFrom || ""),
             senderName: String(data.dName || ""),
             text: info.text || "",
-            timestamp: data.ts ? Number(data.ts) : Date.now(),
+            timestamp,
             type: info.type,
             raw_data: info.raw,
             has_attachment: info.hasAttachment,
@@ -191,6 +194,16 @@ export function storeLiveMessage(msg, opts = {}) {
         });
     } catch (e) {
         return { stored: false, reason: e.message };
+    }
+    // A message is a sighting: the account is in this conversation. It clears
+    // a gone marker set before it -- a group rejoined, a deleted DM the contact
+    // wrote to again -- so prune-orphans stops treating the conversation as one
+    // the account no longer has. An older message (a backlog replay, a late
+    // delivery) leaves the marker alone.
+    try {
+        markThreadBack(threadId, timestamp);
+    } catch {
+        /* the row is stored; getOrphanThreads still sees it as newer than the marker */
     }
     if (typeof opts.onStored === "function") opts.onStored(info, msg);
     return { stored: true, info };
@@ -219,7 +232,10 @@ export function storeLiveMessage(msg, opts = {}) {
  *     are never written, and a removal is never APPLIED from history:
  *     tombstones come from the listener and the sync;
  *   - nothing from before the conversation's delete marker comes back
- *     (threads.leftAt, set by `conv delete` and by our own leave event).
+ *     (threads.deleteMarkerAt, set by `conv delete` and by our own leave,
+ *     removal or block -- and kept when the account comes back, unlike the
+ *     gone marker, so a deleted DM's old messages stay deleted after the
+ *     contact writes again).
  *
  * @param {object} msg - `{threadId, type, data}`, the listener's frame shape
  * @returns {{stored: boolean, info?: object, reason?: string}} `stored` is true only for a new row
@@ -238,8 +254,8 @@ export function storeHistoryMessage(msg) {
     const threadId = String(msg.threadId);
 
     try {
-        const leftAt = getThreadLeftAt(threadId);
-        if (leftAt !== null && timestamp <= leftAt) {
+        const cutoff = getThreadDeleteMarker(threadId);
+        if (cutoff !== null && timestamp <= cutoff) {
             return { stored: false, reason: "from before the conversation's delete marker" };
         }
         const info = classifyLiveMessage(data);
@@ -475,35 +491,95 @@ export function attachLiveStore(listener, onEvent = () => {}) {
 }
 
 /**
- * Group events that mean the conversation stopped being ours.
+ * Group events that can mean the conversation stopped being ours.
  *
- * Only `isSelf` matters: someone else leaving a group changes nothing about our
- * copy of it. zca-js has no distinct "dispersed" event -- a disperse surfaces as
- * the members leaving -- so LEAVE and REMOVE_MEMBER are the signals available.
+ * zca-js has no distinct "dispersed" event -- a disperse surfaces as the
+ * members leaving -- so these are the signals available. Which member one is
+ * about is the whole question; see {@link departureOf}.
  */
 const GONE_EVENTS = new Set(["leave", "remove_member", "block_member"]);
 
 /**
- * Note a group event, marking the thread gone when it says we are out.
+ * The server time a group event carries, or null.
+ *
+ * The same field storeGroupEventRow stamps the system line with, and on the
+ * clock message timestamps use -- so a message can be ordered against the
+ * departure it follows or precedes.
+ *
+ * @param {object} event
+ * @returns {number|null} epoch ms
+ */
+function groupEventTime(event) {
+    const d = event?.data || {};
+    const t = Number(d.time) || Number(d.ts);
+    return Number.isFinite(t) && t > 0 ? t : null;
+}
+
+/**
+ * Is this group event our own departure?
+ *
+ * zca-js sets `isSelf` when we are among the members the event is about OR
+ * when we are the one who did it (`sourceId`). For a leave those coincide. For
+ * a removal or block they do not: an admin removing someone else gets isSelf
+ * too, and reading that as our departure flagged the admin's own group gone,
+ * so `prune-orphans` deleted the media of a group they still run. Only
+ * `updateMembers` says who went, and reading it needs our own id.
+ *
+ * @param {object} event - the zca-js group event
+ * @param {string|undefined} ownId - the account's own uid
+ * @returns {"ours"|"not-ours"|"unknown"} unknown: a removal or block with
+ *   isSelf set and no ownId to say whether we were removed or did the removing
+ */
+function departureOf(event, ownId) {
+    const type = String(event?.type || "").toLowerCase();
+    if (!GONE_EVENTS.has(type)) return "not-ours";
+    if (!event?.isSelf) return "not-ours";
+    if (type === "leave") return "ours";
+    if (!ownId) return "unknown";
+    const members = Array.isArray(event?.data?.updateMembers) ? event.data.updateMembers : [];
+    return members.some((m) => String(m?.id ?? m) === String(ownId)) ? "ours" : "not-ours";
+}
+
+/**
+ * Note a group event: mark the thread gone when it says we are out, and clear
+ * that mark when it shows we are back.
  *
  * Nothing is deleted here. Being removed from a group is not permission to
  * destroy the local copy of it — the thread is flagged so it shows up as an
  * orphan, and removing it stays an explicit decision (`conv forget`).
  *
+ * Every other event about the group, dated after we left, is a sighting. Zalo
+ * pushes a group's events only to its members, so receiving one -- the join
+ * that re-added us, or whatever the listener sees first if it missed that --
+ * means the group is ours again, and `prune-orphans` must not delete its media.
+ * An event with no time of its own cannot be ordered against the departure
+ * and is not used.
+ *
+ * `listen` and `mcp start` must both pass `ownId`: without it a removal cannot
+ * be told from one we performed, and it is left alone rather than guessed.
+ *
  * @param {object} event - the zca-js group event
- * @returns {{gone: boolean, threadId?: string}}
+ * @param {{ownId?: string}} [opts]
+ * @returns {{gone: boolean, back: boolean, threadId?: string}}
  */
-export function storeGroupEvent(event) {
-    const type = String(event?.type || "").toLowerCase();
-    if (!event?.isSelf || !GONE_EVENTS.has(type)) return { gone: false };
+export function storeGroupEvent(event, opts = {}) {
     const threadId = event?.threadId;
-    if (threadId === undefined || threadId === null) return { gone: false };
+    if (threadId === undefined || threadId === null) return { gone: false, back: false };
+    const id = String(threadId);
+    const departure = departureOf(event, opts.ownId);
+    const at = groupEventTime(event);
     try {
-        markThreadGone(String(threadId), Date.now());
+        if (departure === "ours") {
+            markThreadGone(id, at ?? Date.now());
+            return { gone: true, back: false, threadId: id };
+        }
+        if (departure === "not-ours" && at !== null && markThreadBack(id, at).changes) {
+            return { gone: false, back: true, threadId: id };
+        }
     } catch {
-        return { gone: false };
+        return { gone: false, back: false };
     }
-    return { gone: true, threadId: String(threadId) };
+    return { gone: false, back: false };
 }
 
 /**

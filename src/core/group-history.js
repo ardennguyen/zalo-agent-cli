@@ -36,8 +36,10 @@
  * (zpw_service_map_v3, dist/context.d.ts). A session whose map lacks it gets a
  * clear error rather than a request to "undefined".
  *
- * Read-only. Nothing here writes to zalo.db: only the listener and sync write
- * message rows (AGENTS.md §13).
+ * Read-only: this module fetches and writes nothing. `msg history` caches what
+ * it returns through storeHistoryMessage (./live-store.js). The listener, sync
+ * and msg history's fetch write Zalo-reported rows; history writes
+ * insert-if-absent; msg send writes nothing (AGENTS.md §13).
  */
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";

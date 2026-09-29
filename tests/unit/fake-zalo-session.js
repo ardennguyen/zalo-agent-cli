@@ -229,6 +229,39 @@ export async function loginFake() {
     return api;
 }
 
+/**
+ * Answer `msg history`'s socket scan from canned pages instead of a socket.
+ *
+ * On a session from {@link loginFake}: `start()` announces "connected", each
+ * `requestOldMessages()` answers with the next page as an "old_messages" event
+ * (an empty page once the pages run out, which ends the scan), and `stop()`
+ * does nothing. Frames take the listener's own shape, `{threadId, type, data}`.
+ *
+ * @param {object} api - the API {@link loginFake} returned
+ * @param {Array<Array<object>>} pages
+ * @returns {{requests: Array<{threadType: number, lastId: string|null}>, restore: () => void}}
+ *   `restore()` puts back the socket refusal
+ */
+export function serveOldMessages(api, pages) {
+    const queue = [...pages];
+    const requests = [];
+    const saved = { start: api.listener.start, stop: api.listener.stop, request: api.listener.requestOldMessages };
+    api.listener.start = () => queueMicrotask(() => api.listener.emit("connected"));
+    api.listener.stop = () => {};
+    api.listener.requestOldMessages = (threadType, lastId) => {
+        requests.push({ threadType, lastId });
+        queueMicrotask(() => api.listener.emit("old_messages", queue.shift() ?? [], threadType));
+    };
+    return {
+        requests,
+        restore: () => {
+            api.listener.start = saved.start;
+            api.listener.stop = saved.stop;
+            api.listener.requestOldMessages = saved.request;
+        },
+    };
+}
+
 /** Thrown by the stubbed process.exit so execution stops where a real exit would. */
 class ExitSignal extends Error {}
 

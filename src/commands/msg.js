@@ -11,7 +11,7 @@ import { parseIntOption } from "../utils/parse-options.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getMessages, getMessageById, getDisplayName, upsertContact } from "../core/db.js";
-import { sendViaDaemon } from "../core/daemon-channel.js";
+import { sendViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { storeLiveMessage } from "../core/live-store.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
@@ -1287,67 +1287,111 @@ export function registerMsgCommands(program) {
                     let lastMsgId = opts.fromMsgId || null;
                     let done = false;
 
-                    // Start listener
-                    await new Promise((resolve, reject) => {
-                        const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 10000);
-                        api.listener.once("connected", () => {
-                            clearTimeout(timer);
-                            resolve();
+                    // A running daemon already holds the account's one permitted
+                    // web session. Opening a second one here evicted it with code
+                    // 3000; it retried and evicted this scan back, and whatever
+                    // arrived during the flap was lost with no gap recorded. Ask
+                    // the daemon to page on its own socket instead -- the same
+                    // hand-off `msg send-file` uses for uploads.
+                    let handledByDaemon = false;
+                    const daemonDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+                    if (getSyncChannel(daemonDir, "history")) {
+                        if (!jsonMode) info("A listen/mcp daemon holds this account — scanning on its socket.");
+                        const viaDaemon = await syncViaDaemon(daemonDir, {
+                            stage: "history",
+                            params: {
+                                threadId,
+                                threadType,
+                                limit,
+                                scanLimit,
+                                timeoutMs: timeout,
+                                fromMsgId: opts.fromMsgId || null,
+                            },
                         });
-                        api.listener.once("error", (err) => {
-                            clearTimeout(timer);
-                            reject(err);
-                        });
-                        api.listener.start({ retryOnClose: false });
-                    });
-
-                    let rawScanned = 0;
-
-                    while (!done && rawScanned < scanLimit) {
-                        const page = await new Promise((resolve) => {
-                            const handler = (messages) => {
-                                clearTimeout(timeoutId);
-                                api.listener.removeListener("old_messages", handler);
-                                resolve(messages);
-                            };
-                            const timeoutId = setTimeout(() => {
-                                api.listener.removeListener("old_messages", handler);
-                                resolve([]);
-                            }, timeout);
-
-                            api.listener.on("old_messages", handler);
-                            api.listener.requestOldMessages(threadType, lastMsgId);
-                        });
-
-                        if (!page || page.length === 0) break;
-
-                        rawScanned += page.length;
-
-                        for (const msg of page) {
-                            if (String(msg.threadId || "") !== String(threadId)) continue;
-                            allMessages.push(historyRow(msg.data, msg.threadId));
-                            fetchedFrames.push({ threadId: msg.threadId, type: threadType, data: msg.data });
-
-                            if (allMessages.length >= limit) {
-                                done = true;
-                                break;
+                        if (viaDaemon?.frames) {
+                            for (const f of viaDaemon.frames) {
+                                allMessages.push(historyRow(f.data, f.threadId));
+                                fetchedFrames.push(f);
                             }
+                            if (!jsonMode)
+                                info(
+                                    `Scanned ${viaDaemon.rawScanned} raw WS messages to find ${allMessages.length} target messages.`,
+                                );
+                            fetchedMessages = allMessages;
+                            handledByDaemon = true;
                         }
-
-                        // Advance cursor using the global actionId of the last raw message
-                        const lastMsg = page[page.length - 1];
-                        const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
-                        if (!nextId || nextId === lastMsgId) done = true;
-                        lastMsgId = nextId;
+                        // else: daemon up but the stage did not answer -- fall
+                        // through and open our own socket rather than returning
+                        // an empty history.
+                        if (!handledByDaemon)
+                            warning("The daemon did not answer the history scan; falling back to a direct socket.");
                     }
 
-                    try {
-                        api.listener.stop();
-                    } catch {}
+                    if (!handledByDaemon) {
+                        // Start listener
+                        await new Promise((resolve, reject) => {
+                            const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 10000);
+                            api.listener.once("connected", () => {
+                                clearTimeout(timer);
+                                resolve();
+                            });
+                            api.listener.once("error", (err) => {
+                                clearTimeout(timer);
+                                reject(err);
+                            });
+                            api.listener.start({ retryOnClose: false });
+                        });
 
-                    if (!jsonMode)
-                        info(`Scanned ${rawScanned} raw WS messages to find ${allMessages.length} target messages.`);
-                    fetchedMessages = allMessages;
+                        let rawScanned = 0;
+
+                        while (!done && rawScanned < scanLimit) {
+                            const page = await new Promise((resolve) => {
+                                const handler = (messages) => {
+                                    clearTimeout(timeoutId);
+                                    api.listener.removeListener("old_messages", handler);
+                                    resolve(messages);
+                                };
+                                const timeoutId = setTimeout(() => {
+                                    api.listener.removeListener("old_messages", handler);
+                                    resolve([]);
+                                }, timeout);
+
+                                api.listener.on("old_messages", handler);
+                                api.listener.requestOldMessages(threadType, lastMsgId);
+                            });
+
+                            if (!page || page.length === 0) break;
+
+                            rawScanned += page.length;
+
+                            for (const msg of page) {
+                                if (String(msg.threadId || "") !== String(threadId)) continue;
+                                allMessages.push(historyRow(msg.data, msg.threadId));
+                                fetchedFrames.push({ threadId: msg.threadId, type: threadType, data: msg.data });
+
+                                if (allMessages.length >= limit) {
+                                    done = true;
+                                    break;
+                                }
+                            }
+
+                            // Advance cursor using the global actionId of the last raw message
+                            const lastMsg = page[page.length - 1];
+                            const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
+                            if (!nextId || nextId === lastMsgId) done = true;
+                            lastMsgId = nextId;
+                        }
+
+                        try {
+                            api.listener.stop();
+                        } catch {}
+
+                        if (!jsonMode)
+                            info(
+                                `Scanned ${rawScanned} raw WS messages to find ${allMessages.length} target messages.`,
+                            );
+                        fetchedMessages = allMessages;
+                    }
                 }
 
                 // Amend DB with live fetched messages

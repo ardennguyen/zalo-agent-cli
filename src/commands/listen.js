@@ -93,10 +93,30 @@ export function registerListenCommand(program) {
             const syncManager = new SyncManager(getApi(), activeAcc.ownId);
             const HEARTBEAT_MS = 60 * 1000;
             let lastHeartbeatAt = 0;
+            // The one place that knows whether the socket is actually up. The
+            // `connected`/`disconnected` handlers below own it; everything else
+            // reads it. Starts null: nothing is claimed before the first connect.
+            let downSince = null;
+            // Set by SIGINT before anything is torn down. listener.stop() emits
+            // closed(1000), which is indistinguishable from a real drop, so
+            // without this the shutdown path runs the RECOVERY path: five
+            // seconds after the user sees "Stopped", the process re-logged in
+            // and opened a fresh socket -- with daemon.lock already released and
+            // daemon-channel.json already deleted. The next listen/mcp/sync then
+            // took the free lock and the two sessions flapped over code 3000.
+            let stopping = false;
             function heartbeat() {
                 const now = Date.now();
                 if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
                 lastHeartbeatAt = now;
+                // markConnected() means "coverage is good up to now". Stamping
+                // that on a timer with no liveness check kept advancing
+                // lastConnectedAt while the socket was down -- through zca-js's
+                // internal retry, the 5s re-login wait and the 30s retry wait --
+                // so a crash mid-outage made the NEXT launch compute its
+                // startup-gap from a moment we were not actually connected, and
+                // the outage vanished.
+                if (downSince !== null) return;
                 syncManager.markConnected();
             }
 
@@ -517,26 +537,44 @@ export function registerListenCommand(program) {
                 api.listener.on("connected", () => {
                     if (reconnectCount > 0) {
                         info(`Reconnected (#${reconnectCount}, uptime: ${uptime()}, events: ${eventCount})`);
-                        // The socket was down for some window — record what we
-                        // missed while dropped and name the run that restores
-                        // it, same as the startup-gap check above.
-                        const disconnectedAt = syncManager.getLastDisconnectedAt();
-                        reportGap(disconnectedAt, "reconnect-gap");
+                    }
+                    // Driven by observed socket state, NOT by reconnectCount.
+                    // reconnectCount is incremented only in the `closed` handler,
+                    // and `closed` never fires for a code on the server's
+                    // close_and_retry_codes list -- zca-js emits `disconnected`,
+                    // retries internally, then emits `connected`. Those codes ARE
+                    // the recoverable ones, so on the common drop path the old
+                    // guard was always false: no gap was filed, and markConnected()
+                    // below then asserted coverage over the whole outage. Messages
+                    // lost to an ordinary reconnect were lost silently and for
+                    // good, because `sync` is driven off exactly this advice.
+                    if (downSince !== null) {
+                        reportGap(downSince, "reconnect-gap");
+                        downSince = null;
                     }
                     syncManager.markConnected();
                 });
 
                 api.listener.on("disconnected", (code, _reason) => {
+                    if (stopping) return;
                     warning(`Disconnected (code: ${code}). Auto-retrying...`);
+                    // First drop wins: a flapping socket that emits several
+                    // `disconnected` before one `connected` is ONE outage, and the
+                    // gap must span from the start of it.
+                    if (downSince === null) downSince = Date.now();
                     syncManager.markDisconnected();
                 });
 
                 api.listener.on("closed", async (code, _reason) => {
+                    // A deliberate stop closes with 1000 and must not be treated
+                    // as a failure to recover from.
+                    if (stopping) return;
                     if (code === CLOSE_DUPLICATE) {
                         error("Another Zalo Web session opened. Listener stopped.");
                         process.exit(1);
                     }
                     reconnectCount++;
+                    if (downSince === null) downSince = Date.now();
                     syncManager.markDisconnected();
                     warning(`Connection closed (code: ${code}). Re-login in 5s... (uptime: ${uptime()})`);
                     await new Promise((r) => setTimeout(r, 5000));
@@ -624,6 +662,8 @@ export function registerListenCommand(program) {
             // Keep alive until Ctrl+C
             await new Promise((resolve) => {
                 process.on("SIGINT", () => {
+                    // First, before anything can emit a close event.
+                    stopping = true;
                     channel?.stop();
                     try {
                         getApi().listener.stop();
@@ -644,6 +684,11 @@ export function registerListenCommand(program) {
                     info(`Stopped. Uptime: ${uptime()}, events: ${eventCount}, reconnects: ${reconnectCount}`);
                     if (saveDir) info(`Messages saved to: ${saveDir}`);
                     resolve();
+                    // Resolving the keep-alive promise is not enough: an async
+                    // `closed` handler already in flight resumes after the action
+                    // function has returned and keeps the process alive. mcp.js
+                    // already exits explicitly here for the same reason.
+                    process.exit(0);
                 });
             });
         });

@@ -102,6 +102,74 @@ export function createSyncRunners({ getApi, accountName }) {
         },
 
         /**
+         * Page the global old-message stream on the daemon's OWN socket.
+         *
+         * `msg history` used to open its own WebSocket for this (DM, or any
+         * group whose REST call threw). Zalo permits one web session per
+         * account, so that evicted the running daemon with code 3000, the
+         * daemon silently retried and evicted `msg history` back, and messages
+         * arriving in the flap were lost with no gap recorded. It is the same
+         * failure the `/send-attachments` hand-off was built to remove; the
+         * read path just never got the same guard.
+         *
+         * Frames cross the wire rather than being written here, because unlike
+         * the reaction drain the caller genuinely needs them: it maps, prints
+         * and may store them under its own rules.
+         *
+         * @param {{threadId: string, threadType: number, limit?: number,
+         *   scanLimit?: number, timeoutMs?: number, fromMsgId?: string|null}} params
+         * @param {(p: object) => void} onEvent
+         * @returns {Promise<{frames: Array<object>, rawScanned: number}>}
+         */
+        async history(params = {}, onEvent = () => {}) {
+            const api = liveApi("history scan");
+            const threadId = String(params.threadId || "");
+            const threadType = Number(params.threadType) || 0;
+            const limit = Number(params.limit) || 50;
+            const scanLimit = Number(params.scanLimit) || 2000;
+            const timeoutMs = Number(params.timeoutMs) || 10_000;
+
+            const frames = [];
+            let lastMsgId = params.fromMsgId || null;
+            let rawScanned = 0;
+            let done = false;
+
+            while (!done && rawScanned < scanLimit) {
+                const page = await new Promise((resolve) => {
+                    const handler = (messages) => {
+                        clearTimeout(timer);
+                        api.listener.removeListener("old_messages", handler);
+                        resolve(messages);
+                    };
+                    const timer = setTimeout(() => {
+                        api.listener.removeListener("old_messages", handler);
+                        resolve([]);
+                    }, timeoutMs);
+                    api.listener.on("old_messages", handler);
+                    api.listener.requestOldMessages(threadType, lastMsgId);
+                });
+                if (!page || page.length === 0) break;
+                rawScanned += page.length;
+                onEvent({ phase: "history", detail: `scanned ${rawScanned}` });
+
+                for (const msg of page) {
+                    if (String(msg.threadId || "") !== threadId) continue;
+                    frames.push({ threadId: msg.threadId, type: threadType, data: msg.data });
+                    if (frames.length >= limit) {
+                        done = true;
+                        break;
+                    }
+                }
+
+                const last = page[page.length - 1];
+                const nextId = last?.data?.actionId || last?.data?.msgId;
+                if (!nextId || nextId === lastMsgId) done = true;
+                lastMsgId = nextId;
+            }
+            return { frames, rawScanned };
+        },
+
+        /**
          * Reaction backlog drain (socket cmd 610/611), plus the retry pass.
          *
          * The retry has to happen HERE rather than in the invoking CLI.

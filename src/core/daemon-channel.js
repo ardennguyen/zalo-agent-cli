@@ -82,7 +82,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 const CHANNEL_FILE = "daemon-channel.json";
 
 /** Sync stages a daemon will run on its own socket, as `POST /sync/<stage>`. */
-const SYNC_ROUTE = /^\/sync\/(messages|reactions)$/;
+const SYNC_ROUTE = /^\/sync\/(messages|reactions|history)$/;
 
 /**
  * Keepalive cadence on a running stage.

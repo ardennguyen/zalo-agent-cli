@@ -116,13 +116,17 @@ export function registerSyncCommands(program) {
         .command("sync-mobile")
         .description(
             "Restore message history from your phone into the local cache (zalo.db). " +
-                "Use --transfer for the real phone-backed restore (transfer-sync-v2): it sends one " +
+                "This IS the real phone-backed restore (transfer-sync-v2) by default: it sends one " +
                 "sync request your phone confirms, then decrypts and stores your history. " +
-                "The default path is a best-effort server socket backfill (usually empty); --legacy is retired.",
+                "--socket asks for the old server backfill instead (measured empty); --legacy is retired.",
         )
         .option(
             "-t, --transfer",
-            "Real mobile restore over transfer-sync-v2: enumerate conversations, request message history, decrypt (libzproto) and write it to zalo.db. Sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears",
+            "Accepted and ignored — the phone-backed restore is the default now. Kept so the scripts, docs and muscle memory that pass it keep working",
+        )
+        .option(
+            "--socket",
+            "Ask for the old best-effort server socket backfill (cmd 510/511) instead of the phone-backed restore. Measured to answer empty, so this is a cheap probe, not a data path",
         )
         .option(
             "-F, --force",
@@ -130,14 +134,14 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-d, --days <n>",
-            "Restore only the last N days of history instead of everything (--transfer only). " +
+            "Restore only the last N days of history instead of everything. " +
                 "A narrower window asks the phone for fewer conversations, so the run is much shorter. " +
                 "Default: full history",
             parseIntAtLeast(1),
         )
         .option(
             "--from <date>",
-            "Restore everything from this date onward (YYYY-MM-DD), --transfer only. Overrides --days. " +
+            "Restore everything from this date onward (YYYY-MM-DD). Overrides --days. " +
                 "The default is already everything your phone still holds, so this is for deliberately " +
                 "narrowing a run, not widening it",
         )
@@ -154,7 +158,7 @@ export function registerSyncCommands(program) {
         .option("-w, --wait <seconds>", "Give up after this long", parseIntOption, 30)
         .option(
             "--shard-size <n>",
-            "Conversations per message batch (1-30, default 30), --transfer only. Fewer means more, " +
+            "Conversations per message batch (1-30, default 30). Fewer means more, " +
                 "smaller batches: the first one comes back sooner and less is lost if the connection " +
                 "drops, at the cost of more sync sessions. The server rejects a batch of more than 30",
             parseIntAtLeast(1),
@@ -163,19 +167,22 @@ export function registerSyncCommands(program) {
             // --days is a property of the cmd 590 query the phone answers, so
             // it only means anything on the transfer path. Say so instead of
             // accepting the flag and quietly ignoring it.
-            if (opts.messagesOnly && !opts.transfer) {
-                error("--messages-only only applies to the real phone-backed restore.");
-                info("Run: zalo-agent sync-mobile --transfer --messages-only");
-                process.exit(1);
-            }
-            if (opts.from !== undefined && !opts.transfer) {
-                error("--from only applies to the real phone-backed restore.");
-                info(`Run: zalo-agent sync-mobile --transfer --from ${opts.from}`);
-                process.exit(1);
-            }
-            if (opts.days !== undefined && !opts.transfer) {
-                error("--days only applies to the real phone-backed restore.");
-                info(`Run: zalo-agent sync-mobile --transfer --days ${opts.days}`);
+            // These shape the cmd 590 query the phone answers, so they mean
+            // nothing to the socket probe. They used to be an error WITHOUT
+            // --transfer; now that the restore is the default, the only way to
+            // pass one where it does not apply is to ask for --socket as well.
+            const restoreOnly = [
+                [opts.messagesOnly, "--messages-only"],
+                [opts.from !== undefined, "--from"],
+                [opts.days !== undefined, "--days"],
+                [opts.shardSize !== undefined, "--shard-size"],
+            ]
+                .filter(([passed]) => passed)
+                .map(([, flag]) => flag);
+            if (opts.socket && restoreOnly.length) {
+                const verb = restoreOnly.length === 1 ? "shapes" : "shape";
+                error(`${restoreOnly.join(", ")} ${verb} the phone-backed restore, which --socket switches off.`);
+                info("Drop --socket to use them.");
                 process.exit(1);
             }
 
@@ -185,15 +192,15 @@ export function registerSyncCommands(program) {
                 process.exit(1);
             }
 
-            if (opts.transfer) {
-                await runTransferSync(activeAcc, opts);
-                return;
-            }
             if (opts.legacy) {
                 await runLegacySync(activeAcc, opts);
                 return;
             }
-            await runSocketBackfill(activeAcc, opts);
+            if (opts.socket) {
+                await runSocketBackfill(activeAcc, opts);
+                return;
+            }
+            await runTransferSync(activeAcc, opts);
         });
 
     program

@@ -204,7 +204,7 @@ const TOP_LEVEL = [
 const FLAG_CONTRACT = {
     login: ["--proxy", "--name", "--qr-url", "--qr-port", "--credentials"],
     logout: ["--purge", "--delete-history", "--no-remote"],
-    "sync-mobile": ["--transfer", "--force", "--days", "--from", "--legacy", "--wait", "--messages-only"],
+    "sync-mobile": ["--transfer", "--socket", "--force", "--days", "--from", "--legacy", "--wait", "--messages-only"],
     // The fetch/board/cloud passes are deliberately separate commands: only
     // the message restore needs a phone confirmation, so none of these
     // should ever be reachable only via sync-mobile.

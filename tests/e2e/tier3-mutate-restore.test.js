@@ -512,8 +512,12 @@ describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
 // ---------------------------------------------------------------------------
 // sync-mobile
 //
-// The default path no longer touches the phone at all. It opens a WebSocket
-// and asks the server for recent history (cmd 510/511), which is what the real
+// --socket is what this tier exercises, and it must stay explicit. The
+// phone-backed restore became the DEFAULT for `sync-mobile`, so a bare
+// invocation here would wake the owner's phone and block on a human tapping
+// "ĐỒNG BỘ NGAY" -- in a tier that runs under plain ZALO_TEST_LIVE=1.
+// --socket opens a WebSocket and asks the server for recent history
+// (cmd 510/511), which is what the real
 // Zalo Web client does — see agent/work/transfer-sync-v2/NOTES.md § Mobile sync. It is still gated
 // as a live test for a different reason: Zalo permits ONE web session per
 // account, so running it will close a `listen` daemon or a browser Zalo Web
@@ -528,12 +532,12 @@ describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
 // offline in tests/cli/, and the backfill itself is unit-tested against a fake
 // listener in tests/unit/sync-backfill.test.js — both at zero cost.
 // ---------------------------------------------------------------------------
-describe("tier 3 · sync-mobile (socket backfill — no phone contact)", { skip }, () => {
+describe("tier 3 · sync-mobile --socket (socket backfill — no phone contact)", { skip }, () => {
     let r;
 
     before(async () => {
         if (skip) return;
-        r = await runCli(["sync-mobile", "--wait", "45"], live(T, { timeout: 120_000 }));
+        r = await runCli(["sync-mobile", "--socket", "--wait", "45"], live(T, { timeout: 120_000 }));
     });
 
     it("bounds its own wait rather than hanging", () => {

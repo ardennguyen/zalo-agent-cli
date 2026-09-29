@@ -267,16 +267,35 @@ describe("sync-mobile — offline surface", () => {
     it("registers --days and documents that the default is full history", async () => {
         const { stdout } = await runCli(["sync-mobile", "--help"], opts);
         assert.match(stdout, /-d, --days/);
-        assert.match(stdout, /full history/i, "--days must state the default window it narrows");
+        // \s+ not a space: commander hard-wraps help at the terminal width, so
+        // "full history" can straddle a line break. The assertion is about the
+        // text being present, not about where the wrap lands.
+        assert.match(stdout, /full\s+history/i, "--days must state the default window it narrows");
     });
 
-    it("refuses --days without --transfer instead of accepting and ignoring it", async () => {
-        // The window is a field of the cmd 590 query only the transfer path
-        // sends, so on any other path the flag would be a silent no-op.
+    it("--days now works without a flag, because the restore is the default", async () => {
+        // It used to exit 1 telling you to add --transfer. A default that makes
+        // a third of the command's own flags an error was the wrong default;
+        // --days reaching the restore is the whole point of the inversion.
         const r = await runCli(["sync-mobile", "--days", "7"], opts);
+        assert.doesNotMatch(r.all, /--days only applies/i, "the old refusal must be gone");
+        assert.doesNotMatch(r.all, /--transfer --days 7/, "must not hand back a corrected command");
+    });
+
+    it("refuses --days alongside --socket, which switches the restore off", async () => {
+        // The window is a field of the cmd 590 query only the restore sends, so
+        // asking for the socket probe AND a window is a contradiction. This is
+        // the same guard as before, pointed at the flag that now turns it off.
+        const r = await runCli(["sync-mobile", "--socket", "--days", "7"], opts);
         assert.equal(r.code, 1);
-        assert.match(r.all, /--days only applies/i);
-        assert.match(r.all, /--transfer --days 7/, "should hand back the corrected command");
+        assert.match(r.all, /--days shapes the phone-backed restore/i);
+        assert.match(r.all, /Drop --socket/, "should say which flag to remove");
+    });
+
+    it("keeps --transfer working as a no-op so existing scripts do not break", async () => {
+        const { stdout } = await runCli(["sync-mobile", "--help"], opts);
+        assert.match(stdout, /-t, --transfer/, "the flag must still be accepted");
+        assert.match(stdout, /Accepted and ignored/i, "and must say it is now the default");
     });
 
     it("rejects a --days value that is not a whole number of days >= 1", async () => {

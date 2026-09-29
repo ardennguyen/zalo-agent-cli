@@ -12,7 +12,7 @@ separate suites with very different risk profiles:
 opens a socket and never reads your real `~/.zalo-agent-cli/`.
 
 ```bash
-npm test                      # 1343 offline tests — no Zalo session needed
+npm test                      # 1345 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -212,8 +212,10 @@ when the phone's owner is expecting it:
 ZALO_TEST_LIVE=1 ZALO_TEST_SYNC_MOBILE=1 node --test tests/e2e/tier3-mutate-restore.test.js
 ```
 
-`sync-mobile`'s default path needs no phone at all, and runs in tier 3 under
-plain `ZALO_TEST_LIVE=1`.
+`sync-mobile --socket` needs no phone at all, and runs in tier 3 under plain
+`ZALO_TEST_LIVE=1`. It must keep the flag: the phone-backed restore is now
+`sync-mobile`'s default, so a bare invocation in that tier would wake the
+owner's phone and wait for a human to tap.
 
 **`sync-mobile --transfer` has no automated coverage at any tier**, and that is
 deliberate. It is the one command whose whole purpose is to wake the owner's

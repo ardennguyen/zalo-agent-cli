@@ -122,7 +122,8 @@ zalo-agent msg history <ID> -n 50      # Reads from ~/.zalo-agent-cli/accounts/<
 zalo-agent sync-mobile --transfer            # REAL restore: pulls your history from the phone into zalo.db (one confirm on the phone)
 zalo-agent sync-mobile --transfer --days 30  # ...only the last 30 days (default is ALL history, no date floor)
 zalo-agent sync-mobile --transfer --from 2018-01-01  # ...everything from an explicit date onward
-zalo-agent sync-mobile                       # Best-effort server socket backfill (usually empty; no phone contact)
+zalo-agent sync-mobile                       # Phone-backed history restore — prompts your phone ONCE
+zalo-agent sync-mobile --socket              # Old server probe instead (usually empty; no phone contact)
 zalo-agent sync-mobile --force               # Skip the "already synced recently" debounce
 zalo-agent sync-mobile --transfer --messages-only    # ...history only, skip the media fetch
 zalo-agent sync-media                        # Re-run/resume the media fetch on its own — no phone needed
@@ -143,7 +144,7 @@ zalo-agent sync-mobile --legacy              # Retired endpoint (pings the phone
 
 `--days <n>` narrows the restore to the last *n* days; the default is full history (everything since 2024-01-01). The window applies to the conversation round as well, so a short window means fewer conversations, fewer shards and a much shorter run. It requires `--transfer`. The debounce records how far back the last run reached, so a narrow sync never suppresses a wider one.
 
-Without `--transfer`, `sync-mobile` only does a best-effort server socket backfill (cmd 510/511) that usually returns empty. The old phone-to-PC transfer is retired — `--legacy` still tries it once and recovers nothing.
+`sync-mobile` IS the phone-backed restore now — `--transfer` is still accepted but does nothing, so older commands and docs keep working. `--socket` asks for the best-effort server backfill (cmd 510/511) that usually returns empty. The old phone-to-PC transfer is retired — see `--legacy`.
 
 ### Friends
 ```bash
@@ -271,7 +272,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - `cliMsgId` required for: react, undo, and rebuilding a `--quote` payload → get from `--json send` (the real wire id, not a guess) or `--json listen`; `msg delete`/`msg undo` also find it in the local cache on their own
 - Mentions only in groups (`-t 1`)
 - QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting out the 60s timeout
-- `sync-mobile --transfer` is the real history restore; it deliberately prompts the phone once (that is the data source). The default (no flag) and `--legacy` do not restore data
+- `sync-mobile` is the real history restore and is now the default path; it deliberately prompts the phone once (that is the data source). `--socket` and `--legacy` do not restore history and never prompt.
 - `--transfer` restores full history by default. Suggest `--days <n>` when the user only needs recent messages — on a busy account that is the difference between ~50 message rounds and a handful
 - 1 proxy per account recommended (shared proxies risk a ban)
 - Credentials: `~/.zalo-agent-cli/` (personal, 0600) and `~/.zalo-agent/` (OA, 0600) — different directories

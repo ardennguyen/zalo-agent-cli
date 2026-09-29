@@ -634,3 +634,43 @@ describe("system events render as sentences, not type markers", () => {
         assert.equal(live.text, sync.text);
     });
 });
+
+/**
+ * The template and its values must be read from the SAME object.
+ *
+ * Found by checking the cache after a restore rather than by reading the code:
+ * nine rows had stored "%1$s tạo nhắc hẹn mới %2$s – %3$s" verbatim. The phone
+ * nests both `msg` and `highLightsV2` under `customMsg`; the first fix read the
+ * template from there but looked for the values at the top of `params`, so it
+ * filled nothing and then stored the half-done template as if it were text.
+ */
+describe("system-event templates are never stored half-filled", () => {
+    const NESTED = {
+        customMsg: {
+            msg: { vi: "%1$s tạo nhắc hẹn mới %2$s – %3$s", en: "%1$s created a new time reminder %2$s – %3$s" },
+            highLightsV2: [{ dpn: "Nguyen Van A" }, { dpn: "Parity reminder" }, { dpn: "10:40" }],
+        },
+    };
+
+    it("fills from highLightsV2 nested beside the template under customMsg", () => {
+        const r = classifySyncMessage(msg(24, "", { params: JSON.stringify(NESTED) }));
+        assert.equal(r.text, "Nguyen Van A tạo nhắc hẹn mới Parity reminder – 10:40");
+    });
+
+    it("falls back to a type marker rather than leaking placeholders", () => {
+        // No highlights anywhere and no pre-rendered title: a marker is honest,
+        // "%1$s xóa nhắc hẹn %2$s." reads as a bug.
+        const r = classifySyncMessage(
+            msg(24, "", { params: JSON.stringify({ msg: { vi: "%1$s xóa nhắc hẹn %2$s." } }) }),
+        );
+        assert.doesNotMatch(r.text, /%\d+\$s/);
+        assert.equal(r.text, "[event]");
+    });
+
+    it("no fixture in this suite renders with a placeholder left in it", () => {
+        for (const params of [NESTED, { msg: { vi: "%1$s khóa bình chọn: %2$s" }, dName: "A", question: "Q" }]) {
+            const r = classifySyncMessage(msg(24, "", { params: JSON.stringify(params) }));
+            assert.doesNotMatch(r.text, /%\d+\$s/, JSON.stringify(params));
+        }
+    });
+});

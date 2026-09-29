@@ -198,7 +198,7 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers that appear across many docs — verify before you change one
 
-Counts of CLI commands (**178**), command groups (**16**), MCP tools (**7**), OA commands (**32**) and offline tests (**1314** as of 2026-09-29) are quoted in README, SKILL.md, the wiki and INSTALLATION.md. Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — the table of sources and check commands is in [`docs/agent-notes.md`](docs/agent-notes.md).
+Counts of CLI commands (**178**), command groups (**16**), MCP tools (**7**), OA commands (**32**) and offline tests (**1317** as of 2026-09-29) are quoted in README, SKILL.md, the wiki and INSTALLATION.md. Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — the table of sources and check commands is in [`docs/agent-notes.md`](docs/agent-notes.md).
 
 **The MCP tool list in every doc must match `src/mcp/mcp-tools.js`.** This has drifted before (docs claimed 4 when the code registered 7). The 7: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`.
 

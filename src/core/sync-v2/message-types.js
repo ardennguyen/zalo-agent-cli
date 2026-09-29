@@ -206,8 +206,8 @@ const POSITIONAL_ALL = /%(\d+)\$s/g;
  * actor first. Poll events carry no list at all: the actor and the poll are
  * named fields, used in that order by every poll template Zalo sends.
  */
-function systemEventArgs(params) {
-    const highlights = params?.highLightsV2 ?? params?.highLights;
+function systemEventArgs(source, params = source) {
+    const highlights = source?.highLightsV2 ?? source?.highLights ?? params?.highLightsV2 ?? params?.highLights;
     if (Array.isArray(highlights) && highlights.length) {
         return highlights.map((h) => (typeof h?.dpn === "string" ? h.dpn : ""));
     }
@@ -234,11 +234,16 @@ function fillTemplate(template, args) {
  * so returning it unfilled would store the placeholders verbatim.
  */
 function customMsgText(params) {
-    const msg = params?.msg ?? params?.customMsg?.msg;
+    // The template and the values it interpolates travel together: the phone
+    // nests BOTH under `customMsg`, the live socket puts both at the top of
+    // `params`. Taking the template from one and the highlights from the other
+    // is what left nine cached rows reading "%1$s tạo nhắc hẹn mới %2$s – %3$s".
+    const source = params?.customMsg?.msg ? params.customMsg : params;
+    const msg = source?.msg;
     if (!msg) return null;
     const template = typeof msg === "string" ? msg : msg.vi || msg.en || Object.values(msg)[0];
     if (typeof template !== "string" || !template) return null;
-    return fillTemplate(template, systemEventArgs(params));
+    return fillTemplate(template, systemEventArgs(source, params));
 }
 
 /**
@@ -293,7 +298,10 @@ export function extractSyncText(msg, type, attachments = []) {
             // reading than a sentence with "%2$s" left in it.
             const rendered = customMsgText(params);
             if (rendered && !POSITIONAL.test(rendered)) return rendered;
-            return a.title || rendered || content || `[${type}]`;
+            // A half-filled template reads as a bug to anyone scrolling history,
+            // so it is never stored: Zalo's pre-rendered title, the body, or an
+            // honest type marker all beat leaking "%2$s" into the text column.
+            return a.title || content || `[${type}]`;
         }
         default:
             return content || (a.title ? `[${type}] ${a.title}` : `[${type}]`);

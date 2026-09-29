@@ -426,6 +426,23 @@ connection. Tier 1 routes its reads through `retryRead()`, which retries up to
 every attempt, so real breakage is never masked. **Writes are never retried** —
 a retried send delivers the message twice.
 
+### Known issues
+
+Live behaviour that is wrong or unavailable for reasons outside this code.
+Each is a `todo` plus a characterization test, per **Marking a defect rather
+than a failure** below. Confirmed against the live account on 2026-09-29.
+
+| What            | Symptom                           | Why it is not a failure here                                                                                 |
+| --------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `friend online` | HTTP 404                          | zca-js calls a route Zalo retired. CLI surface is fine.                                                      |
+| `friend close`  | HTTP 404                          | Same.                                                                                                        |
+| `group history` | HTTP 404 on `getGroupChatHistory` | Same. `msg history` falls back to the socket.                                                                |
+| `sync-cloud`    | `Invalid CloudViewerKey`          | zCloud appears not to be enabled on this account. The CLI reports it cleanly and names both possible causes. |
+| `msg send-bank` | send returns an empty body        | Zalo answers with no payload, so there is no msgId or cliMsgId to record — see the bank-card section above.  |
+
+Promote an entry the moment its characterization test fails: that is the
+signal the behaviour changed.
+
 ### Response shapes vary — clean up by name, not just by id
 
 Create endpoints do not agree on where they put the new id. `catalog create`

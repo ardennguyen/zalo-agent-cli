@@ -368,7 +368,7 @@ export function registerGroupCommands(program) {
 
     group
         .command("settings <groupId>")
-        .description("Update group settings (flags: --block-name, --sign-admin, --join-appr, etc.)")
+        .description("Change group settings; every setting you don't pass a flag for keeps its current value")
         .option("--block-name", "Disallow members to change group name/avatar")
         .option("--no-block-name", "Allow members to change group name/avatar")
         .option("--sign-admin", "Highlight admin messages")
@@ -385,22 +385,40 @@ export function registerGroupCommands(program) {
         .option("--no-lock-msg", "Allow members to send messages")
         .option("--lock-view-member", "Hide full member list (community only)")
         .option("--no-lock-view-member", "Show full member list")
+        .option("--topic-only", "Only admins can pin messages, notes and polls to the top of the chat")
+        .option("--no-topic-only", "Let members pin messages, notes and polls to the top of the chat")
         .action(async (groupId, opts) => {
+            // Zalo stores the whole setting object on every update, so this
+            // reads the current one and sends back everything the user did not
+            // name, unchanged. See src/core/group-settings.js for why, and for
+            // what Zalo Web sends.
             try {
-                const settings = {
-                    blockName: opts.blockName ?? false,
-                    signAdminMsg: opts.signAdmin ?? false,
-                    enableMsgHistory: opts.msgHistory ?? false,
-                    joinAppr: opts.joinAppr ?? false,
-                    lockCreatePost: opts.lockPost ?? false,
-                    lockCreatePoll: opts.lockPoll ?? false,
-                    lockSendMsg: opts.lockMsg ?? false,
-                    lockViewMember: opts.lockViewMember ?? false,
-                };
-                const result = await getApi().updateGroupSettings(settings, groupId);
-                output(result, program.opts().json, () => success(`Group settings updated for ${groupId}`));
+                const { NOTHING_TO_CHANGE, settingChangesFromOptions, applyGroupSettingChanges } =
+                    await import("../core/group-settings.js");
+                const changes = settingChangesFromOptions(opts);
+                // Refused before the session is touched: there is nothing to send.
+                if (Object.keys(changes).length === 0) throw new Error(NOTHING_TO_CHANGE);
+                const outcome = await applyGroupSettingChanges(getApi(), groupId, changes);
+                output(outcome, program.opts().json, () => {
+                    const onOff = (v) => (Number(v) ? "on" : "off");
+                    if (!outcome.sent) {
+                        const already = Object.entries(outcome.unchanged).map(
+                            ([k, v]) => `${k} is already ${onOff(v)}`,
+                        );
+                        info(`Nothing to change for ${groupId}: ${already.join(", ")}. Nothing was sent.`);
+                        return;
+                    }
+                    success(`Group settings updated for ${groupId}`);
+                    for (const [key, { from, to }] of Object.entries(outcome.changed)) {
+                        info(`${key}: ${onOff(from)} -> ${onOff(to)}`);
+                    }
+                    for (const [key, value] of Object.entries(outcome.unchanged)) {
+                        info(`${key}: already ${onOff(value)}`);
+                    }
+                });
             } catch (e) {
                 error(`Update settings failed: ${e.message}`);
+                process.exitCode = 1;
             }
         });
 

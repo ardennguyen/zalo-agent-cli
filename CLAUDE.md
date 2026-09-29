@@ -238,6 +238,7 @@ CLI commands (**184**), command groups (**16**), MCP tools (**7**), OA commands 
 - **Never** use real credentials, user IDs, or phone numbers. Offline tests import `tests/helpers/sandbox.js` **first** and assert `assertSandboxed(CONFIG_DIR)`. Real thread ids live only in gitignored `tests/targets.json`.
 - The live suite writes only to ids blessed disposable in `targets.json`; every write helper calls `assertDisposable()`. Gated behind `ZALO_TEST_LIVE=1`, unreachable from `npm test`, destructive tiers behind additive env gates.
 - **An assertion that only checks "did not crash" is not a test.** This CLI reports API failures as a printed `✗` and exits 0, so crash-only assertions cannot tell a working command from one that fails on every invocation. Four commands were found in one day to have never worked at all, each hidden this way. Assert the success the command claims.
+- **Before trusting a new assertion, say what would have to change for it to go red — and check that is the thing you care about.** Three tests written on 2026-09-29 were decorative and all three were caught only by deliberately breaking the code, never by review. They shared a shape: **the assertion matched a string the fix itself introduces**, so it proved the fix was present, not that it worked. One matched `response.cliMsgId =`, which also appears inside the helper that does the stamping — deleting every call site still passed. If an assertion greps for its own patch, it is testing the wrong thing.
 
 ---
 

@@ -120,11 +120,22 @@ function rememberSent(thread, r, what) {
     if (top && topCli) found.push({ msgId: String(top), cliMsgId: String(topCli) });
     walk(r.data);
 
-    const seen = new Set();
-    let n = 0;
+    // Prefer the COMPLETE record when one payload reports the same msgId
+    // twice. `msg forward` does exactly that: its `success[]` entries carry
+    // the id as `clientId`, which this walk does not read as a cliMsgId,
+    // while the `sent[]` array carries the real {msgId, cliMsgId} pair.
+    // Object key order puts `success` first, so a first-wins dedupe recorded
+    // the null-id copy and threw away the usable one -- and tier 4 still
+    // could not recall a forwarded message even after the CLI began
+    // reporting the pair correctly. Keyed on msgId, so the ledger holds one
+    // row per message either way.
+    const best = new Map();
     for (const m of found) {
-        if (seen.has(m.msgId)) continue;
-        seen.add(m.msgId);
+        const prev = best.get(m.msgId);
+        if (!prev || (!prev.cliMsgId && m.cliMsgId)) best.set(m.msgId, m);
+    }
+    let n = 0;
+    for (const m of best.values()) {
         remember(thread, m, what);
         n++;
     }

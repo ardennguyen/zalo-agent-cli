@@ -132,32 +132,32 @@ export function registerListenCommand(program) {
              * Why the daemon does not self-heal
              * --------------------------------
              * This used to call `syncManager.pollSync(0, 0, {force: true})`,
-             * i.e. `pullMobileMsg` + `getCrossDB`. Zalo retired both (MEASURED
-             * 2026-09-20: present in Zalo Web's bundle, ZERO call sites across
-             * its 4,642 modules), so that call returns no session token and
-             * `pollSync` answers `{status: "legacy-retired"}` — a status this
+             * i.e. `pullMobileMsg` + `getCrossDB`. Zalo Web still ships both but
+             * never calls them (MEASURED 2026-09-20: zero call sites across its
+             * 4,642 modules), and they answer without a session token, so
+             * `pollSync` returns `{status: "legacy-retired"}` — a status this
              * handler never matched. The daemon announced an attempt and then
              * said nothing at all, and the gap stayed pending forever.
              *
-             * The restore that does work is `transfer-sync-v2`, which
-             * `zalo-agent sync` runs. The daemon still must not run it itself:
+             * The restore that does work is `transfer-sync-v2`, and the socket
+             * is NOT what stops the daemon running it. The daemon already runs
+             * that restore on this live socket whenever a `sync` is routed to
+             * it (the `messages` stage in src/core/daemon-sync.js), and the
+             * listener keeps receiving and storing everything meanwhile
+             * (src/core/daemon-channel.js) — the way Zalo Web syncs on its one
+             * live socket, where SYNC_MESSAGE 590/591/592 share the command
+             * table with the 501/521 pushes. Our one limit there is a single
+             * sync stage at a time: two of OUR stages at once (the restore
+             * beside the reaction drain) lost the socket with close 1006, which
+             * src/commands/sync.js works around by running them in sequence.
+             * Zalo Web runs those two concurrently, so that limit is ours.
              *
-             *  - It needs the account's ONE permitted WebSocket, which this
-             *    daemon is holding. `SyncV2.restore()` expects its caller to own
-             *    the socket lifecycle — `runTransferSync()` connects, restores,
-             *    then `listener.stop()`s in its `finally`. Doing that from here
-             *    means tearing down live listening to recover history, which
-             *    opens a fresh gap while closing an old one.
-             *  - Sharing a live socket with the restore is measured to break it:
-             *    per the note in src/commands/sync.js, running the restore
-             *    alongside the reaction drain lost the socket (close 1006) at
-             *    batch 0 of 5 on both live attempts. A daemon's socket carries
-             *    live traffic continuously, which is strictly worse.
-             *  - It needs a physical tap on "ĐỒNG BỘ NGAY" on the owner's phone.
-             *    A daemon restarts for all sorts of reasons; none of them should
-             *    buzz a real person's phone unprompted. That is the same harm
-             *    the "One attempt, then stop" guard in src/core/sync.js exists
-             *    for.
+             * What stops the daemon starting it on its own is the phone. The
+             * restore needs a physical tap on "ĐỒNG BỘ NGAY" on the owner's
+             * phone, and a daemon restarts for all sorts of reasons; none of
+             * them should buzz a real person's phone unprompted. That is the
+             * same harm the "One attempt, then stop" guard in src/core/sync.js
+             * exists for.
              *
              * So: record it, say exactly what was missed, and name the command
              * that fixes it. A successful `sync` resolves the gap itself, via

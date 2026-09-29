@@ -310,9 +310,19 @@ const FLAG_CONTRACT = {
     "reminder create": ["--type", "--time", "--emoji", "--repeat"],
     "auto-reply create": ["--enable", "--no-enable", "--start", "--end", "--scope", "--uids"],
     // --no-delivered-receipts is the opt-out for the automatic deliveredv2
-    // acks both listeners send; it must exist on both or they diverge.
-    listen: ["--filter", "--webhook", "--no-self", "--auto-accept", "--save", "--no-delivered-receipts"],
-    "mcp start": ["--config", "--http", "--auth", "--host", "--no-delivered-receipts"],
+    // acks both listeners send, and --no-self-heal the opt-out for the
+    // offline-queue catch-up both run on reconnect; each must exist on both
+    // or they diverge.
+    listen: [
+        "--filter",
+        "--webhook",
+        "--no-self",
+        "--auto-accept",
+        "--save",
+        "--no-delivered-receipts",
+        "--no-self-heal",
+    ],
+    "mcp start": ["--config", "--http", "--auth", "--host", "--no-delivered-receipts", "--no-self-heal"],
     "catalog add-product": ["--photos"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],

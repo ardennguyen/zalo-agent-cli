@@ -71,8 +71,10 @@
  * What does NOT change: the phone tap. Routing through the daemon removes the
  * second WebSocket, not the confirmation. A stage only ever runs because a
  * person typed `zalo-agent sync`; the daemon never starts one on its own,
- * which is the same rule the "Why the daemon does not self-heal" note in
- * src/commands/listen.js sets out.
+ * which is the same rule the "How the daemon self-heals" note in
+ * src/commands/listen.js sets out. What the daemon does start on its own is
+ * the offline-queue catch-up (src/core/self-heal.js): no phone involved, and
+ * it holds the same one-stage lock these routes do.
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -95,6 +97,52 @@ const PING_MS = 20_000;
 
 /** Client-side inactivity budget: three missed keepalives. */
 const DEFAULT_IDLE_MS = 90_000;
+
+/**
+ * One stage at a time on a daemon's socket -- the rule the sync routes enforce,
+ * as an object the daemon can share with the jobs it starts itself.
+ *
+ * Two stages sharing the socket is measured to break the restore (see the
+ * `lock` note in {@link startDaemonChannel}). The routes used to keep that rule
+ * in a variable of their own, which a job the daemon runs on its own
+ * initiative -- the offline-queue catch-up after a reconnect (./self-heal.js)
+ * -- could not see. Both now hold this one lock: a route that finds it taken
+ * answers 409 as before, while the daemon's own job waits its turn.
+ *
+ * @returns {{
+ *   tryAcquire: (stage: string) => (() => void)|null,
+ *   acquire: (stage: string) => Promise<() => void>,
+ *   current: () => {stage: string, startedAt: number}|null,
+ * }} each acquire hands back its release; releasing twice is harmless
+ */
+export function createStageLock() {
+    let held = null;
+
+    const take = (stage) => {
+        let settle;
+        const done = new Promise((resolve) => (settle = resolve));
+        const mine = { stage: String(stage), startedAt: Date.now(), done };
+        held = mine;
+        return () => {
+            if (held !== mine) return;
+            held = null;
+            settle();
+        };
+    };
+
+    return {
+        tryAcquire(stage) {
+            return held ? null : take(stage);
+        },
+        async acquire(stage) {
+            while (held) await held.done;
+            return take(stage);
+        },
+        current() {
+            return held ? { stage: held.stage, startedAt: held.startedAt } : null;
+        },
+    };
+}
 
 /** Absolute path of the channel descriptor for an account. */
 function channelPath(accountDir) {
@@ -234,19 +282,22 @@ function readJsonBody(req, reply) {
  *   before. Injected rather than imported because `msg send` imports this
  *   module for sendViaDaemon and must not drag SyncV2's decrypt stack, its
  *   asset fetcher and its db writes into every message send.
+ * @param {ReturnType<typeof createStageLock>} [args.lock] - the daemon's stage
+ *   lock, shared with the jobs it runs on its own socket (its offline-queue
+ *   catch-up). Omitted, the channel keeps one of its own.
  * @returns {Promise<{port: number, stop: () => void}>}
  */
-export function startDaemonChannel({ getApi, accountDir, onLog, runners = {} }) {
+export function startDaemonChannel({ getApi, accountDir, onLog, runners = {}, lock = createStageLock() }) {
     const token = randomBytes(24).toString("hex");
 
-    // One sync at a time on this socket. Two stages sharing it is measured to
+    // One stage at a time on this socket. Two stages sharing it is measured to
     // break the restore: running the reaction drain beside it lost the socket
     // (close 1006) at batch 0 of 5 on both live attempts -- see the ordering
     // note in src/commands/sync.js. Live capture is deliberately NOT part of
     // this exclusion: the listener is never stopped, so the daemon keeps
     // storing everything that arrives while a stage runs, which is the entire
-    // reason for routing the sync here rather than stopping the daemon.
-    let inFlight = null;
+    // reason for routing the sync here rather than stopping the daemon. The
+    // daemon's own catch-up after a reconnect holds the same `lock`.
 
     /** Hand an attachment upload to this daemon's api. */
     const serveAttachments = async (body, reply) => {
@@ -279,14 +330,15 @@ export function startDaemonChannel({ getApi, accountDir, onLog, runners = {} }) 
         if (typeof run !== "function") {
             return reply(503, { error: `this daemon does not run the ${stage} stage` });
         }
-        if (inFlight) {
+        const release = lock.tryAcquire(stage);
+        if (!release) {
+            const busy = lock.current() || {};
             return reply(409, {
-                error: `a ${inFlight.stage} sync is already running on this daemon`,
-                stage: inFlight.stage,
-                startedAt: inFlight.startedAt,
+                error: `a ${busy.stage} sync is already running on this daemon`,
+                stage: busy.stage,
+                startedAt: busy.startedAt,
             });
         }
-        inFlight = { stage, startedAt: Date.now() };
 
         // Committed from here. The head goes out before the stage starts, so a
         // later failure can only be reported as an `error` LINE -- the same
@@ -325,7 +377,7 @@ export function startDaemonChannel({ getApi, accountDir, onLog, runners = {} }) 
             onLog?.(`the ${stage} sync stage failed: ${e?.message || String(e)}`);
         } finally {
             clearInterval(ping);
-            inFlight = null;
+            release();
             try {
                 res.end();
             } catch {

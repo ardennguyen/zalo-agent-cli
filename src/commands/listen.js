@@ -10,8 +10,10 @@ import { success, error, info, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
-import { startDaemonChannel } from "../core/daemon-channel.js";
+import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
+import { createSocketTap } from "../core/socket-tap.js";
+import { createSelfHeal } from "../core/self-heal.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
     storeLiveMessage,
@@ -68,6 +70,10 @@ export function registerListenCommand(program) {
         .option(
             "--no-delivered-receipts",
             "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
+        )
+        .option(
+            "--no-self-heal",
+            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
         .action(async (opts) => {
             const activeAcc = getActive();
@@ -129,38 +135,41 @@ export function registerListenCommand(program) {
              * Record a window we were not connected for, and tell the owner how
              * to close it.
              *
-             * Why the daemon does not self-heal
-             * --------------------------------
-             * This used to call `syncManager.pollSync(0, 0, {force: true})`,
-             * i.e. `pullMobileMsg` + `getCrossDB`. Zalo Web still ships both but
-             * never calls them (MEASURED 2026-09-20: zero call sites across its
-             * 4,642 modules), and they answer without a session token, so
-             * `pollSync` returns `{status: "legacy-retired"}` — a status this
-             * handler never matched. The daemon announced an attempt and then
-             * said nothing at all, and the gap stayed pending forever.
+             * How the daemon self-heals
+             * -------------------------
+             * A window the socket was down for is first RECORDED here, then
+             * closed from Zalo's offline queue -- the way Zalo Web closes it on
+             * every connect. After each handshake the daemon asks each message
+             * queue (510_1, 511_1) for everything after the last message it
+             * stored, pages until the server says there is no more, and writes
+             * what comes back insert-if-absent (src/core/self-heal.js). The gap
+             * is resolved only for the window that pull covered; whatever it
+             * could not reach stays pending, named with the `sync` command that
+             * closes it.
              *
-             * The restore that does work is `transfer-sync-v2`, and the socket
-             * is NOT what stops the daemon running it. The daemon already runs
-             * that restore on this live socket whenever a `sync` is routed to
-             * it (the `messages` stage in src/core/daemon-sync.js), and the
-             * listener keeps receiving and storing everything meanwhile
-             * (src/core/daemon-channel.js) — the way Zalo Web syncs on its one
-             * live socket, where SYNC_MESSAGE 590/591/592 share the command
-             * table with the 501/521 pushes. Our one limit there is a single
-             * sync stage at a time: two of OUR stages at once (the restore
-             * beside the reaction drain) lost the socket with close 1006, which
-             * src/commands/sync.js works around by running them in sequence.
-             * Zalo Web runs those two concurrently, so that limit is ours.
+             * Three facts shape it:
              *
-             * What stops the daemon starting it on its own is the phone. The
-             * restore needs a physical tap on "ĐỒNG BỘ NGAY" on the owner's
-             * phone, and a daemon restarts for all sorts of reasons; none of
-             * them should buzz a real person's phone unprompted. That is the
-             * same harm the "One attempt, then stop" guard in src/core/sync.js
-             * exists for.
+             *  - The socket is shared fine. The catch-up runs on this daemon's
+             *    own socket while live traffic keeps arriving and being stored;
+             *    nothing is stopped or reopened.
+             *  - One of OUR stages at a time. It holds the daemon channel's
+             *    stage lock, so it waits behind a running `zalo-agent sync`
+             *    stage or `msg history` fetch, and a stage arriving meanwhile is
+             *    refused (409) rather than run beside it. Two stages sharing the
+             *    socket is what is measured to break the restore (the ordering
+             *    note in src/commands/sync.js).
+             *  - The phone tap is only for the full restore. The offline queue
+             *    is served by Zalo's servers; `transfer-sync-v2` (cmd 590) is
+             *    the one step that needs "ĐỒNG BỘ NGAY" on the owner's phone,
+             *    and the daemon never starts it on its own -- only a
+             *    `zalo-agent sync` someone typed does. (The self-heal this
+             *    replaces called the retired pullMobileMsg/getCrossDB pair,
+             *    MEASURED 2026-09-20 to have zero call sites in Zalo Web: it
+             *    announced an attempt, said nothing more, and the gap stayed
+             *    pending forever.)
              *
-             * So: record it, say exactly what was missed, and name the command
-             * that fixes it. A successful `sync` resolves the gap itself, via
+             * With `--no-self-heal` a gap is recorded and reported as before,
+             * and closes only when a `sync` run does, via
              * `recordRestoreSuccess(win, {resolveGaps: true})`.
              */
             /** @returns {number|null} the recorded gap's id, or null when none was filed. */
@@ -187,6 +196,13 @@ export function registerListenCommand(program) {
                 });
 
                 warning(`Coverage gap (${advice.reason}, ${advice.span}): ${advice.from} → ${advice.to}`);
+                if (opts.selfHeal !== false) {
+                    // The self-heal runs on the next handshake and reports what
+                    // it recovered, and what it could not, on its own.
+                    info("  Recovering it now from Zalo's offline queue on this socket (no phone tap needed).");
+                    info(`  Whatever that cannot reach stays pending for:  ${advice.command}`);
+                    return gapId;
+                }
                 info("  Messages that arrived in that window are not in the local cache.");
                 info(`  To restore them:  ${advice.command}`);
                 // No longer "stop this daemon first". That run asks this daemon
@@ -304,6 +320,85 @@ export function registerListenCommand(program) {
                 postWebhook(data);
             }
 
+            /** Whether --events, --filter or --no-self keep a message off stdout, the webhook and the JSONL. */
+            function isMuted(msg) {
+                const filteredOut =
+                    (opts.filter === "user" && msg.type !== THREAD_USER) ||
+                    (opts.filter === "group" && msg.type !== THREAD_GROUP);
+                // --no-self hides our own messages from stdout, the
+                // webhook and the JSONL -- it does not delete them from
+                // the cache. They are half of every conversation.
+                return !enabledEvents.has("message") || filteredOut || (!opts.self && msg.isSelf);
+            }
+
+            /**
+             * A message as `listen` reports it: the event object, and its one-line human form.
+             *
+             * @param {object} msg - the zca-js message event
+             * @param {object} [extra] - fields to add, e.g. `{catchUp: true}`
+             * @returns {{data: object, human: string}}
+             */
+            function messageEvent(msg, extra = {}) {
+                const rawContent = msg.data.content;
+                const isText = typeof rawContent === "string";
+                const msgType = msg.data.msgType || null;
+                // Build readable display: show type + title/href for non-text
+                let displayContent;
+                if (isText) {
+                    displayContent = rawContent;
+                } else if (rawContent && typeof rawContent === "object") {
+                    const parts = [msgType || "attachment"];
+                    if (rawContent.title) parts.push(`"${rawContent.title}"`);
+                    if (rawContent.href) parts.push(rawContent.href);
+                    displayContent = `[${parts.join(" | ")}]`;
+                } else {
+                    displayContent = `[${msgType || "non-text"}]`;
+                }
+                const data = {
+                    event: "message",
+                    msgId: msg.data.msgId,
+                    cliMsgId: msg.data.cliMsgId,
+                    threadId: msg.threadId,
+                    type: msg.type,
+                    isSelf: msg.isSelf,
+                    uidFrom: msg.data.uidFrom || null,
+                    dName: msg.data.dName || null,
+                    msgType,
+                    content: rawContent,
+                    ...extra,
+                };
+                const dir = msg.isSelf ? "→" : "←";
+                const typeLabel = msg.type === THREAD_USER ? "DM" : "GR";
+                const tag = extra.catchUp ? " [catch-up]" : "";
+                return {
+                    data,
+                    human: `${dir} [${typeLabel}]${tag} [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
+                };
+            }
+
+            // One stage at a time on this socket -- the lock the daemon
+            // channel's routes hold, shared with this daemon's own catch-up --
+            // and one raw reader on the socket for the fields zca-js drops.
+            // Built once, like the receipter: they outlive every re-login.
+            const stageLock = createStageLock();
+            const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
+            const selfHeal = createSelfHeal({
+                getApi,
+                tap: socketTap,
+                lock: stageLock,
+                enabled: opts.selfHeal !== false,
+                log: (line) => console.error(`[listen] ${line}`),
+                // A message recovered after a drop reaches stdout, the JSONL and
+                // the webhook as a live one would, marked so a consumer can tell.
+                onRecovered: (items) => {
+                    for (const { msg } of items) {
+                        if (isMuted(msg)) continue;
+                        const { data, human } = messageEvent(msg, { catchUp: true });
+                        emitEvent(data, human);
+                    }
+                },
+            });
+
             /** Attach ALL handlers (data + lifecycle) to current API listener */
             function attachAllHandlers(api) {
                 // --- Message events ---
@@ -318,13 +413,7 @@ export function registerListenCommand(program) {
                 // connected for.
                 {
                     api.listener.on("message", async (msg) => {
-                        const filteredOut =
-                            (opts.filter === "user" && msg.type !== THREAD_USER) ||
-                            (opts.filter === "group" && msg.type !== THREAD_GROUP);
-                        // --no-self hides our own messages from stdout, the
-                        // webhook and the JSONL -- it does not delete them from
-                        // the cache. They are half of every conversation.
-                        const mute = !enabledEvents.has("message") || filteredOut || (!opts.self && msg.isSelf);
+                        const mute = isMuted(msg);
 
                         // A "delete for me" frame rides the message channel but
                         // removes a message rather than adding one, so it is
@@ -352,40 +441,9 @@ export function registerListenCommand(program) {
                             return;
                         }
 
-                        const rawContent = msg.data.content;
-                        const isText = typeof rawContent === "string";
-                        const msgType = msg.data.msgType || null;
-                        // Build readable display: show type + title/href for non-text
-                        let displayContent;
-                        if (isText) {
-                            displayContent = rawContent;
-                        } else if (rawContent && typeof rawContent === "object") {
-                            const parts = [msgType || "attachment"];
-                            if (rawContent.title) parts.push(`"${rawContent.title}"`);
-                            if (rawContent.href) parts.push(rawContent.href);
-                            displayContent = `[${parts.join(" | ")}]`;
-                        } else {
-                            displayContent = `[${msgType || "non-text"}]`;
-                        }
-                        const data = {
-                            event: "message",
-                            msgId: msg.data.msgId,
-                            cliMsgId: msg.data.cliMsgId,
-                            threadId: msg.threadId,
-                            type: msg.type,
-                            isSelf: msg.isSelf,
-                            uidFrom: msg.data.uidFrom || null,
-                            dName: msg.data.dName || null,
-                            msgType,
-                            content: rawContent,
-                        };
-                        const dir = msg.isSelf ? "→" : "←";
-                        const typeLabel = msg.type === THREAD_USER ? "DM" : "GR";
                         if (!mute) {
-                            emitEvent(
-                                data,
-                                `${dir} [${typeLabel}] [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
-                            );
+                            const { data, human } = messageEvent(msg);
+                            emitEvent(data, human);
                         }
                         heartbeat();
 
@@ -424,6 +482,13 @@ export function registerListenCommand(program) {
                 // Here rather than at start-up because re-login calls this
                 // function again with a new listener.
                 deliveredReceipts.attach(api.listener);
+
+                // Also after the storing handler, and here for the same reason:
+                // the tap reads the envelope fields zca-js drops, and the
+                // self-heal moves its cursor only past a row already written,
+                // then catches up on every handshake this listener makes.
+                socketTap.attach(api.listener);
+                selfHeal.attach(api.listener);
 
                 // --- Friend events ---
                 if (enabledEvents.has("friend")) {
@@ -656,6 +721,11 @@ export function registerListenCommand(program) {
                         ? "Delivered receipts: ON (opt out with --no-delivered-receipts). Seen receipts: never sent."
                         : "Delivered receipts: OFF. Seen receipts: never sent.",
                 );
+                info(
+                    opts.selfHeal !== false
+                        ? "Self-heal: ON — after a drop or restart, missed messages come back from Zalo's offline queue on this socket, no phone tap (opt out with --no-self-heal)."
+                        : "Self-heal: OFF — a coverage gap stays pending until `zalo-agent sync` closes it.",
+                );
             } catch (e) {
                 error(`Listen failed: ${e.message}`);
                 process.exit(1);
@@ -682,6 +752,8 @@ export function registerListenCommand(program) {
                     accountDir,
                     onLog: (m) => info(m),
                     runners: createSyncRunners({ getApi, accountName: activeAcc.ownId }),
+                    // The self-heal's lock: a stage and a catch-up never share the socket.
+                    lock: stageLock,
                 });
                 info(`Sync & upload channel ready on 127.0.0.1:${channel.port} — this socket is reused for both.`);
                 info("`zalo-agent sync` will run its socket stages here; it still needs your phone tap.");

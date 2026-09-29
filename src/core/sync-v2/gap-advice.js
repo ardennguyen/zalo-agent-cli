@@ -10,9 +10,10 @@
  *
  * The working restore is `transfer-sync-v2` (socket cmd 590/591), which the
  * `zalo-agent sync` command runs. The daemon deliberately does NOT run it
- * itself — see the "Why the daemon does not self-heal" note in
- * src/commands/listen.js. It reports instead, and this module builds that
- * report.
+ * itself — see the "How the daemon self-heals" note in
+ * src/commands/listen.js. It closes what Zalo's offline queue still holds on
+ * its own (src/core/self-heal.js), and reports the rest; this module builds
+ * that report.
  *
  * Kept pure — timestamps in, strings out, no db and no clock of its own — so
  * the one thing that actually has to be right is checkable offline: the `--from`

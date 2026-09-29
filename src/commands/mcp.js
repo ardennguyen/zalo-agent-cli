@@ -10,8 +10,10 @@ import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
-import { startDaemonChannel } from "../core/daemon-channel.js";
+import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
+import { createSocketTap } from "../core/socket-tap.js";
+import { createSelfHeal } from "../core/self-heal.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
@@ -97,6 +99,10 @@ export function registerMCPCommands(program) {
         .option(
             "--no-delivered-receipts",
             "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
+        )
+        .option(
+            "--no-self-heal",
+            "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
         .action(async (opts) => {
             // Safety net: redirect ALL console.log to stderr for the entire MCP process.
@@ -234,11 +240,14 @@ export function registerMCPCommands(program) {
                 // returns null under it, which is not a gap worth announcing.
                 const gapId = syncManager.recordGap(fromTs, Date.now(), reason);
                 if (!gapId) return false;
+                const since = new Date(fromTs).toISOString();
                 console.error(
-                    `[mcp] Coverage gap (${reason}): messages between ` +
-                        `${new Date(fromTs).toISOString()} and now are not in the local cache. ` +
-                        "Close it with: zalo-agent sync --from " +
-                        new Date(fromTs).toISOString().slice(0, 10),
+                    opts.selfHeal !== false
+                        ? `[mcp] Coverage gap (${reason}) since ${since}: recovering it now from Zalo's offline ` +
+                              "queue on this socket (no phone tap); whatever that cannot reach stays pending for: " +
+                              `zalo-agent sync --from ${since.slice(0, 10)}`
+                        : `[mcp] Coverage gap (${reason}): messages between ${since} and now are not in the local ` +
+                              `cache. Close it with: zalo-agent sync --from ${since.slice(0, 10)}`,
                 );
                 return true;
             };
@@ -252,10 +261,44 @@ export function registerMCPCommands(program) {
             const pending = getPendingSyncGaps();
             if (pending.length > 0) {
                 console.error(
-                    `[mcp] ${pending.length} coverage gap(s) pending — run \`zalo-agent sync\` to close them.`,
+                    opts.selfHeal !== false
+                        ? `[mcp] ${pending.length} coverage gap(s) pending — the self-heal closes what Zalo's offline ` +
+                              "queue still holds once connected; `zalo-agent sync` closes the rest."
+                        : `[mcp] ${pending.length} coverage gap(s) pending — run \`zalo-agent sync\` to close them.`,
                 );
             }
             const mcpHeartbeatTimer = setInterval(() => lifecycle.heartbeat(), HEARTBEAT_MS);
+
+            // The same catch-up `listen` runs (AGENTS.md §13): one stage at a
+            // time on this socket, a raw reader for the fields zca-js drops, and
+            // the offline-queue pull on every handshake (src/core/self-heal.js).
+            const stageLock = createStageLock();
+            const socketTap = createSocketTap({ log: (line) => console.error(`[mcp] ${line}`) });
+            const selfHeal = createSelfHeal({
+                getApi,
+                tap: socketTap,
+                lock: stageLock,
+                enabled: opts.selfHeal !== false,
+                log: (line) => console.error(`[mcp] ${line}`),
+                // A bot must see what arrived while the socket was down, as it
+                // would have seen it live -- same filters, flagged as catch-up.
+                onRecovered: (items) => {
+                    for (const { msg, info } of items) {
+                        if (info?.hasAttachment) fetchMedia(String(msg.threadId));
+                        if (msg.isSelf) continue;
+                        const normalized = { ...normalizeMessage(msg, info), catchUp: true };
+                        if (!filter.shouldWatch(normalized.threadId, normalized.threadType)) continue;
+                        if (!filter.shouldKeep(normalized)) continue;
+                        buffer.push(normalized.threadId, normalized);
+                        notifier.onMessage(normalized);
+                    }
+                },
+            });
+            console.error(
+                opts.selfHeal !== false
+                    ? "[mcp] Self-heal: ON — after a drop or restart, missed messages come back from Zalo's offline queue on this socket, no phone tap (opt out with --no-self-heal)."
+                    : "[mcp] Self-heal: OFF — a coverage gap stays pending until `zalo-agent sync` closes it.",
+            );
 
             /**
              * Fetch a message's attachments into the same per-conversation
@@ -322,6 +365,12 @@ export function registerMCPCommands(program) {
                 // always runs first, and the receipt handler only queues. Here
                 // because re-login calls this function again with a new listener.
                 deliveredReceipts.attach(api.listener);
+
+                // Likewise, and for the same two reasons: the self-heal moves its
+                // cursor only past a row already written, and a tap left on the
+                // old listener after a re-login would go deaf.
+                socketTap.attach(api.listener);
+                selfHeal.attach(api.listener);
 
                 // Everything below is durable state that exists only on this
                 // socket, so it is stored regardless of the watch filter — the
@@ -424,6 +473,8 @@ export function registerMCPCommands(program) {
                         accountDir,
                         onLog: (m) => console.error(`[mcp] ${m}`),
                         runners: createSyncRunners({ getApi, accountName: activeAcc.ownId }),
+                        // The self-heal's lock: a stage and a catch-up never share the socket.
+                        lock: stageLock,
                     });
                     console.error(`[mcp] Sync & upload channel ready on 127.0.0.1:${channel.port}`);
                 } catch (e) {

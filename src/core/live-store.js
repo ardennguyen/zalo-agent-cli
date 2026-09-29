@@ -238,9 +238,13 @@ export function storeLiveMessage(msg, opts = {}) {
  *     contact writes again).
  *
  * @param {object} msg - `{threadId, type, data}`, the listener's frame shape
+ * @param {object} [opts]
+ * @param {string} [opts.src="history"] - the provenance written to `raw_data.src`:
+ *   "history" for `msg history`'s fetch, "offline" for the daemon's catch-up
+ *   from Zalo's offline queue (./self-heal.js). The rule is the same for both.
  * @returns {{stored: boolean, info?: object, reason?: string}} `stored` is true only for a new row
  */
-export function storeHistoryMessage(msg) {
+export function storeHistoryMessage(msg, opts = {}) {
     const data = msg?.data;
     if (!data || data.msgId === undefined || data.msgId === null || data.msgId === "") {
         return { stored: false, reason: "no msgId" };
@@ -268,7 +272,7 @@ export function storeHistoryMessage(msg) {
                 text: info.text || "",
                 timestamp,
                 type: info.type,
-                raw_data: { ...info.raw, src: "history" },
+                raw_data: { ...info.raw, src: opts.src || "history" },
                 has_attachment: info.hasAttachment,
             });
             if (!res.changes) return false;

@@ -55,6 +55,25 @@ describe("getDefaultConfig", () => {
 });
 
 describe("loadMCPConfig", () => {
+    it("reads an explicit path when one is given", () => {
+        // `mcp start --config <path>` declared this flag, parsed it, and then
+        // dropped it: loadMCPConfig took no argument at all, so a second config
+        // silently resolved to the default one.
+        const custom = join(CONFIG_DIR, "elsewhere.json");
+        mkdirSync(CONFIG_DIR, { recursive: true });
+        writeFileSync(custom, JSON.stringify({ watchThreads: ["group:FromCustomPath"] }));
+        assert.deepEqual(loadMCPConfig(custom).watchThreads, ["group:FromCustomPath"]);
+    });
+
+    it("still falls back to the default file when given nothing", () => {
+        saveMCPConfig({ ...getDefaultConfig(), watchThreads: ["group:FromDefaultPath"] });
+        assert.deepEqual(loadMCPConfig().watchThreads, ["group:FromDefaultPath"]);
+    });
+
+    it("falls back to defaults when the explicit path does not exist", () => {
+        assert.deepEqual(loadMCPConfig(join(CONFIG_DIR, "no-such-file.json")), getDefaultConfig());
+    });
+
     beforeEach(() => rmSync(CONFIG_FILE, { force: true }));
 
     it("returns defaults when no config file exists", () => {

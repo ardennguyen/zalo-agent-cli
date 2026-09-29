@@ -27,7 +27,7 @@ export function getDefaultConfig() {
             bufferMaxSize: 500,
         },
         media: {
-            downloadDir: null, // default: ~/.zalo-agent-cli/media/
+            downloadDir: null, // unset -> the same per-account dir every other command uses
             autoOpen: true,
         },
     };
@@ -35,12 +35,19 @@ export function getDefaultConfig() {
 
 /**
  * Load MCP config from disk, merged with defaults.
+ *
+ * `configPath` exists because `mcp start --config <path>` has always accepted a
+ * path and this function has always ignored it: the flag was declared, parsed,
+ * and then dropped, so anyone pointing at a second config got the default one
+ * and no warning. Callers that pass nothing keep the old behaviour exactly.
+ *
+ * @param {string} [configPath] - explicit config file; defaults to CONFIG_DIR/mcp-config.json
  * @returns {object} MCP config
  */
-export function loadMCPConfig() {
+export function loadMCPConfig(configPath) {
     const defaults = getDefaultConfig();
     try {
-        const raw = readFileSync(MCP_CONFIG_FILE, "utf-8");
+        const raw = readFileSync(configPath || MCP_CONFIG_FILE, "utf-8");
         const saved = JSON.parse(raw);
         // Shallow merge: saved values override defaults
         return {

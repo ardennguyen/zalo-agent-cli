@@ -8,9 +8,10 @@
     },
     "main": "./src/index.js",
     "files": [
-        "src/",
+        "DISCLAIMER.md",
         "LICENSE",
-        "DISCLAIMER.md"
+        "patches/",
+        "src/"
     ],
     "scripts": {
         "test": "node --test src/*.test.js src/**/*.test.js tests/unit/*.test.js tests/cli/*.test.js",
@@ -61,13 +62,13 @@
         "https-proxy-agent": "^9.1.0",
         "image-size": "^2.0.4",
         "node-fetch": "^3.3.2",
+        "patch-package": "^8.0.1",
         "undici": "^8.5.0",
-        "zca-js": "^2.2.0",
+        "zca-js": "2.2.0",
         "zod": "^4.4.3"
     },
     "devDependencies": {
         "eslint": "^10.0.3",
-        "patch-package": "^8.0.1",
         "prettier": "^3.8.1"
     },
     "allowScripts": {

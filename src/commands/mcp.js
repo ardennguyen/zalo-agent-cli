@@ -155,7 +155,7 @@ export function registerMCPCommands(program) {
             }
 
             // Load MCP config (config path option reserved for future use)
-            const config = loadMCPConfig();
+            const config = loadMCPConfig(opts.config);
             console.error("[mcp] Config loaded:", JSON.stringify(config.limits));
 
             // Build buffer + filter from config

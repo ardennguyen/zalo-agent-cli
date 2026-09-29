@@ -42,8 +42,8 @@ function parseRaw(rawData) {
  * Turn a cached `messages` row into the `quote` object zca-js expects.
  *
  * Returns `{ error }` rather than throwing so the caller can report a
- * reason the user can act on — "not cached, run msg history" is a very
- * different problem from "stickers can't be quoted".
+ * reason the user can act on — "nothing has cached this message yet" is a
+ * very different problem from "stickers can't be quoted".
  *
  * @param {object|null} row - a row from the `messages` table, or null when the
  *   msgId is not cached
@@ -59,7 +59,9 @@ export function buildQuote(row, { msgId = row?.msgId, threadId = null } = {}) {
         return {
             error:
                 `Message ${id} is not in the local cache, so its quote cannot be rebuilt. ` +
-                `Fetch the thread first: \`msg history <threadId> -t <0|1>\`.`,
+                `A running \`listen\`/\`mcp\` daemon is what caches messages as they arrive; ` +
+                `\`msg history <threadId> -t <0|1>\` backfills older ones. Neither can seed a ` +
+                `message just sent from this CLI — \`msg send\` does not write to the cache.`,
         };
     }
 

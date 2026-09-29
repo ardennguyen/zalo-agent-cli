@@ -278,11 +278,27 @@ describe("buildQuote", () => {
 });
 
 describe("buildQuote — refusals", () => {
-    it("explains an uncached msgId and names the fix", () => {
+    it("explains an uncached msgId and names what actually caches one", () => {
         const { error, quote } = buildQuote(null, { msgId: "123" });
         assert.equal(quote, undefined);
         assert.match(error, /123 is not in the local cache/);
-        assert.match(error, /msg history/);
+        assert.match(error, /listen/, "a running daemon is the only thing that caches a live message");
+        assert.match(error, /msg history/, "backfill is still the answer for older messages");
+    });
+
+    it("does not send the user to a command that cannot seed a just-sent message", () => {
+        // Measured: `msg send` never writes to zalo.db, and a group's history
+        // endpoint returned nothing from the same day. So `send` then
+        // `send --quote <that msgId>` cannot be repaired by `msg history`, and
+        // the refusal must not imply otherwise — three live tier-2 tests were
+        // built on that wrong assumption and failed.
+        const { error } = buildQuote(null, { msgId: "123" });
+        assert.match(error, /just sent|does not write to the cache/i);
+        assert.doesNotMatch(
+            error,
+            /Fetch the thread first/,
+            "the old wording promised msg history would fix any uncached id",
+        );
     });
 
     for (const kind of ["photo", "sticker", "file", "video", "link"]) {

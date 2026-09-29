@@ -97,8 +97,14 @@ zalo-agent msg send <gID> "đã nhận ạ" -t 1 --quote <msgId>
 ```
 Text messages only — Zalo has no native quote for a sticker/photo/file, and the
 command says so rather than failing inside the API. The quoted message must be in
-the local cache (`listen`, `sync`, or `msg history <threadId> -t <0|1>` puts it
-there): its `cliMsgId` and bubble properties exist nowhere else.
+the local cache: its `cliMsgId` and bubble properties exist nowhere else. A running
+`listen`/`mcp` daemon caches messages as they arrive; `sync` and
+`msg history <threadId> -t <0|1>` backfill older ones.
+
+**You cannot quote a message you just sent unless a daemon is running.** `msg send`
+does not write to `zalo.db`, and a group's history endpoint has been measured
+returning nothing from the same day — so `send` then `send --quote <that msgId>`
+fails with no daemon up.
 
 ### Listen (WebSocket, auto-reconnect)
 ```bash

@@ -9,10 +9,17 @@
         "",
         "`denylist` is a hard stop: if an id ever appears in both lists, or a",
         "destructive helper is handed a denylisted id, the suite throws before",
-        "the call is made."
+        "the call is made.",
+        "",
+        "`home` is the THROWAWAY config dir the suite drives — it becomes",
+        "USERPROFILE/HOME for every CLI subprocess, so it decides which",
+        "~/.zalo-agent-cli the destructive tiers act on. It is validated: a",
+        "missing key, a path that does not exist, or your real home directory",
+        "each refuse the run. Log in once against it with",
+        "  USERPROFILE=<that dir> HOME=<that dir> node src/index.js login"
     ],
 
-    "home": "F:/Coding/zalo-mcp/.zalo-test-home",
+    "home": "PUT_TEST_HOME_DIR_HERE",
     "accountOwnId": "PUT_YOUR_OWN_ID_HERE",
 
     "disposable": {

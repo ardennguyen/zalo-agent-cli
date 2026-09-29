@@ -299,6 +299,8 @@ const FLAG_CONTRACT = {
         "--lock-poll",
         "--lock-msg",
         "--lock-view-member",
+        "--topic-only",
+        "--no-topic-only",
     ],
     "group note-create": ["--pin"],
     "group delete-invite": ["--block"],

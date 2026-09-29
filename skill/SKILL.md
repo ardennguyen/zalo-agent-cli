@@ -268,7 +268,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 ## Key Constraints
 - **1 WebSocket per account** — `listen`, `mcp start`, and browser Zalo cannot coexist on the same account. A duplicate session closes the connection (code 3000) and is fatal by design. `msg send-file`/`send-image` and the `zalo-agent sync` socket stages therefore run **on a live daemon's socket** when one is up, rather than opening a second session or refusing
 - **1 db writer per account** — `daemon.lock` enforces it; `account remove` and `logout --purge` refuse while a `listen` daemon holds it
-- `cliMsgId` required for: react, undo → get from `--json send` or `--json listen`
+- `cliMsgId` required for: react, undo, and rebuilding a `--quote` payload → get from `--json send` (the real wire id, not a guess) or `--json listen`; `msg delete`/`msg undo` also find it in the local cache on their own
 - Mentions only in groups (`-t 1`)
 - QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting out the 60s timeout
 - `sync-mobile --transfer` is the real history restore; it deliberately prompts the phone once (that is the data source). The default (no flag) and `--legacy` do not restore data

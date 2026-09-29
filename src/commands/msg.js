@@ -487,15 +487,49 @@ export function registerMsgCommands(program) {
                       }
                     : finalMsg;
 
-                const cliMsgId = String(Date.now());
                 const result = await getApi().sendMessage(msgContent, threadId, Number(opts.type));
-                result.cliMsgId = cliMsgId;
+
+                // The cliMsgId comes back from zca-js, which hands over the
+                // clientId it actually put on the wire (patches/zca-js+2.2.0.patch
+                // — upstream stamps `params.clientId = Date.now()` inside
+                // handleMessage() and returns only {msgId}).
+                //
+                // This used to be a second `Date.now()` read here, taken before
+                // the call. That is a different number from the one zca-js sent,
+                // by however long the AES encrypt and the POST took — usually
+                // 0-2ms, never guaranteed equal. So every id `send --json`
+                // printed was a near-miss, and all three things that key on it
+                // (`msg react`, `msg undo`, and `--quote`, which rebuilds the
+                // payload from a cached row's cliMsgId) failed silently on it.
+                //
+                // Report only an id Zalo really holds. When there is none, say
+                // so — a fabricated one is worse than an absent one.
+                const cliMsgId = result.message?.cliMsgId ? String(result.message.cliMsgId) : null;
+                if (cliMsgId) result.cliMsgId = cliMsgId;
                 output(result, program.opts().json, () => success("Message sent"));
+
+                if (result.message && !cliMsgId) {
+                    warning(
+                        "Zalo returned no cliMsgId for this send, so none is reported — the zca-js patch " +
+                            "is missing (run `npx patch-package`). `msg react`/`msg undo`/`msg send --quote` " +
+                            "need one; the local cache gets the real value once `listen` or `sync` sees " +
+                            "Zalo echo the message back.",
+                    );
+                }
 
                 // Auto-react if --react flag provided
                 if (opts.react && result.message?.msgId) {
+                    // addReaction needs the message's real cliMsgId — with the
+                    // wrong one Zalo accepts the call and the reaction never
+                    // shows up. Falling back to the msgId keeps the flag from
+                    // hard-failing on an unpatched install; it is the same
+                    // fallback `msg react` takes when nobody passes -c.
+                    if (!cliMsgId) warning("Reacting without a cliMsgId — the reaction may not appear.");
                     const dest = {
-                        data: { msgId: String(result.message.msgId), cliMsgId },
+                        data: {
+                            msgId: String(result.message.msgId),
+                            cliMsgId: cliMsgId || String(result.message.msgId),
+                        },
                         threadId,
                         type: Number(opts.type),
                     };
@@ -892,10 +926,12 @@ export function registerMsgCommands(program) {
                 // a sync captured has it -- so asking the caller for it was
                 // only ever necessary for a message this machine never saw.
                 //
-                // Note the old advice ("get it from send --json") could not be
-                // relied on: zca-js stamps its own clientId with Date.now()
-                // internally and never returns it, so the value `msg send`
-                // printed was a second Date.now() that matched only by luck.
+                // `send --json` is a valid source again. It used to print a
+                // second Date.now() of its own -- zca-js stamps the real
+                // clientId inside handleMessage() and upstream returns only
+                // {msgId} -- so the id it gave matched only by luck. The zca-js
+                // patch now hands that clientId back, and `msg send` reports
+                // that value or none at all.
                 const cliMsgId = opts.cliMsgId || cachedMessageById(threadId, msgId)?.cliMsgId;
                 if (!cliMsgId) {
                     error(

@@ -511,3 +511,94 @@ index 0000000..d459340
 +        return utils.resolve(response);
 +    };
 +});
+diff --git a/node_modules/zca-js/dist/apis/sendMessage.d.ts b/node_modules/zca-js/dist/apis/sendMessage.d.ts
+index 8031f4e..c085286 100644
+--- a/node_modules/zca-js/dist/apis/sendMessage.d.ts
++++ b/node_modules/zca-js/dist/apis/sendMessage.d.ts
+@@ -1,6 +1,12 @@
+ import { ThreadType, type TMessage, type AttachmentSource } from "../models/index.js";
+ export type SendMessageResult = {
+     msgId: number;
++    /**
++     * The clientId this library put on the wire for the message, which Zalo
++     * echoes back as its cliMsgId. Present for text messages sent through
++     * `handleMessage`; absent for attachments.
++     */
++    cliMsgId?: string;
+ };
+ export type SendMessageResponse = {
+     message: SendMessageResult | null;
+diff --git a/node_modules/zca-js/dist/apis/sendMessage.js b/node_modules/zca-js/dist/apis/sendMessage.js
+index 5bda5bc..be58bbb 100644
+--- a/node_modules/zca-js/dist/apis/sendMessage.js
++++ b/node_modules/zca-js/dist/apis/sendMessage.js
+@@ -9,6 +9,18 @@ const attachmentUrlType = {
+     video: "asyncfile/msg?",
+     others: "asyncfile/msg?",
+ };
++/**
++ * Record on the send response the clientId that was actually sent.
++ *
++ * The send endpoint returns only `{msgId}`, so without this the caller has
++ * no way to learn the cliMsgId Zalo now holds for the message -- guessing it
++ * with a second Date.now() is off by however long the encrypt + POST took.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ function prepareQMSGAttach(quote) {
+     const quoteData = quote;
+     if (typeof quoteData.content == "string")
+@@ -177,12 +189,16 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+             }
+         }
+         const isMentionsValid = mentionsFinal.length > 0 && isGroupMessage;
++        // Hoisted so the caller can learn which clientId went on the wire.
++        // Zalo echoes this back as the message's cliMsgId, and `msg react`,
++        // `msg undo` and quote-replies all need that exact value.
++        const clientId = Date.now();
+         const params = quote
+             ? {
+                 toid: isGroupMessage ? undefined : threadId,
+                 grid: isGroupMessage ? threadId : undefined,
+                 message: msg,
+-                clientId: Date.now(),
++                clientId,
+                 mentionInfo: isMentionsValid ? JSON.stringify(mentionsFinal) : undefined,
+                 qmsgOwner: quote.uidFrom,
+                 qmsgId: quote.msgId,
+@@ -198,7 +214,7 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+             }
+             : {
+                 message: msg,
+-                clientId: Date.now(),
++                clientId,
+                 mentionInfo: isMentionsValid ? JSON.stringify(mentionsFinal) : undefined,
+                 imei: isGroupMessage ? undefined : ctx.imei,
+                 ttl: ttl !== null && ttl !== void 0 ? ttl : 0,
+@@ -225,6 +241,7 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+         return {
+             url: finalServiceUrl.toString(),
+             body: new URLSearchParams({ params: encryptedParams }),
++            clientId: String(clientId),
+         };
+     }
+     async function handleAttachment({ msg, attachments, mentions, quote, ttl, urgency }, threadId, type) {
+@@ -435,6 +452,7 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+                 // send message and attachment separately
+                 await handleMessage(message, threadId, type).then(async (data) => {
+                     responses.message = (await send(data))[0];
++                    stampClientId(responses.message, data.clientId);
+                 });
+                 msg = "";
+                 mentions = undefined;
+@@ -446,6 +464,7 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+         if (msg.length > 0) {
+             const handledData = await handleMessage(message, threadId, type);
+             responses.message = (await send(handledData))[0];
++            stampClientId(responses.message, handledData.clientId);
+         }
+         return responses;
+     };

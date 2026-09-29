@@ -22,9 +22,11 @@ const ROOT = mkdtempSync(join(tmpdir(), "zalo-convstate-"));
 const opened = [];
 let n = 0;
 
-// Fictional ids of the real length -- long enough to lose precision.
+// Fake ids by the convention in no-real-ids.test.js. All three have the real
+// length, 19 digits, so each loses precision as a number; no two round to the
+// same double, which the unread-mark and cross-kind tests below rely on.
 const G1 = "4123456789012345678";
-const G2 = "3000000000000000001";
+const G2 = "3000000000000000002";
 const U1 = "7000000000000000003";
 
 beforeEach(() => {

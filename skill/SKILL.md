@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **184 CLI commands** across 16 groups + **7 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **190 CLI commands** across 21 command containers (14 top-level groups + 7 OA subgroups) + **7 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 - **Requires**: `zalo-agent` CLI pre-installed by user (`zalo-agent --version` to verify)
@@ -66,15 +66,19 @@ zalo-agent msg send-voice <ID> <url>                    # Voice
 zalo-agent msg send-video <ID> <url>                    # Video
 zalo-agent msg send-link <ID> <url>                     # Link preview
 zalo-agent msg sticker <ID> "keyword"                   # Sticker
-zalo-agent msg react <msgId> <ID> ":>" -c <cliMsgId>   # React (cliMsgId REQUIRED)
-zalo-agent msg undo <msgId> <ID> -c <cliMsgId>         # Recall both sides
-zalo-agent msg delete <msgId> <ID>                      # Delete self only
-zalo-agent msg forward <msgId> <targetId>               # Forward
+zalo-agent msg react <msgId> <ID> ":>"                  # React (cliMsgId from cache; refused if absent)
+zalo-agent msg undo <msgId> <ID>                        # Recall both sides (cliMsgId from cache)
+zalo-agent msg delete <msgId> <ID>                      # Delete self only (--everyone for a group member's)
+zalo-agent msg forward <msgId> <targetId>               # Forward (cached messages only)
+zalo-agent msg pin <msgId> [threadId]                   # Pin a cached text message
+zalo-agent msg unpin <msgId> [threadId]                 # Unpin
 zalo-agent msg history <ID> -n 50                       # History (from local cache)
-zalo-agent msg history <ID> -n 50 --no-cache            # Force live fetch + amend cache
+zalo-agent msg history <ID> -n 50 --no-cache            # Force live fetch; caches only what it lacked
 ```
 Reactions: `:>` haha · `/-heart` heart · `/-strong` like · `:o` wow · `:-((` cry · `:-h` angry
 Also on `send`: `--md` (markdown formatting), `--style start:len:style`, `--react <icon>` (auto-react to the message just sent), `--quote <msgId>` (quote-reply), and `@[userId]` mention tokens in the message body.
+
+**`--urgency important|urgent`** marks a message the way the apps' Important/Urgent option does. **`me`** works as a threadId on any `msg` subcommand (My Documents); `me` with `-t 1` is refused. `msg send` writes nothing to `zalo.db` — a message you just sent is not quotable, forwardable or recallable until the listener sees its echo or a `msg history` fetch returns it.
 
 ### Mentions (groups only, -t 1)
 ```bash
@@ -141,6 +145,11 @@ zalo-agent sync-media --prune 90 --dry-run   # Delete downloaded media older tha
 zalo-agent sync-media --prune all            # ...every downloaded file, regardless of age
 zalo-agent sync-media --prune-orphans        # ...media of conversations the account no longer has
 zalo-agent sync-media --include-pruned       # Re-fetch media you previously pruned
+zalo-agent conv pin <threadId>               # Pin to the top of the list
+zalo-agent conv unpin <threadId>             # Unpin
+zalo-agent conv archive <threadId>           # Move to Zalo's Other tab
+zalo-agent conv unarchive <threadId>         # Move back to Focused
+zalo-agent conv read <threadId>              # Clear unread + send a seen receipt
 zalo-agent conv forget <threadId>            # Remove ALL local data for one conversation
 zalo-agent conv forget --orphans             # ...for every conversation the account no longer has
 zalo-agent sync-mobile --legacy              # Legacy endpoint: one attempt, pings the phone, recovers nothing

@@ -12,8 +12,8 @@ import { parseIntOption } from "../utils/parse-options.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
-import { sendViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
-import { storeHistoryMessage } from "../core/live-store.js";
+import { sendViaDaemon, getDaemonChannel, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
+import { fetchAndCacheHistory } from "../core/history-fetch.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
@@ -301,6 +301,40 @@ function historyRow(data, threadId) {
         has_attachment: info.hasAttachment ? 1 : 0,
         raw_data: info.raw,
     };
+}
+
+/**
+ * Why a running daemon did not hand back `msg history`'s fetch.
+ *
+ * Every case ends the command with nothing fetched or written in this process:
+ * the daemon holds the account's one web session and is its one db writer, so
+ * doing either beside it is exactly what the hand-off exists to prevent. The
+ * only way past a daemon is for it to be gone, which a re-run finds out.
+ *
+ * @param {{status?: number, error?: string, disconnected?: boolean, busyStage?: string,
+ *   busySince?: number}} r - syncViaDaemon's refusal
+ * @param {number} pid - the daemon's
+ * @returns {string} the reason, to follow "History fetch failed: "
+ */
+function daemonHistoryFailure(r, pid) {
+    const who = `the listen/mcp daemon (pid ${pid})`;
+    if (r.status === 409) {
+        const since = r.busySince ? `, started ${Math.round((Date.now() - Number(r.busySince)) / 1000)}s ago` : "";
+        return (
+            `${who} is running a ${r.busyStage || "sync"} stage${since} — run this again when it finishes. ` +
+            "This command wrote nothing."
+        );
+    }
+    if (r.status === 404 || r.status === 503) {
+        return `${who} does not run the history fetch — restart it, then run this again.`;
+    }
+    if (r.disconnected) {
+        return (
+            `lost ${who} mid-fetch (${r.error}). This command wrote nothing. Run it again: a daemon that is ` +
+            "still up fetches it, and once the daemon has stopped this command fetches on its own."
+        );
+    }
+    return `${who} could not fetch it: ${r.error || "no reason given"}. This command wrote nothing.`;
 }
 
 /**
@@ -1608,177 +1642,92 @@ export function registerMsgCommands(program) {
                     info(`Warning: fetching up to ${limit} messages.`);
                 }
 
-                let fetchedMessages = [];
-                // The original frames, for the one cache write-back below
-                // (storeHistoryMessage: insert-if-absent, the listener's
-                // normalization) -- never the printed rows.
-                const fetchedFrames = [];
-                let usedRestApi = false;
+                /** One progress line from the fetch, whichever process runs it. */
+                const report = (e) => {
+                    if (jsonMode || !e?.detail) return;
+                    if (e.level === "warn") warning(e.detail);
+                    else info(e.detail);
+                };
+                const fetchOpts = { limit, scanLimit, timeoutMs: timeout, fromMsgId: opts.fromMsgId || null };
 
-                if (threadType === 1) {
-                    // Group: Zalo's cloud-message store first -- what Zalo Web
-                    // reads when a group is opened -- and the socket scan only
-                    // when that fails or comes back empty. zca-js's
-                    // getGroupChatHistory asked /api/group/history, which 404s,
-                    // and returned an object this loop could not iterate.
-                    try {
-                        // Loaded on demand: only the group path needs it.
-                        const { getGroupHistory } = await import("../core/group-history.js");
-                        const history = await getGroupHistory(api, threadId, limit);
-                        for (const m of history.groupMsgs) {
-                            fetchedMessages.push(historyRow(m.data, threadId));
-                            // Cached by the same write-back as the socket scan's
-                            // frames: only what zalo.db does not have yet.
-                            fetchedFrames.push({ threadId, type: threadType, data: m.data });
-                        }
-                        usedRestApi = fetchedMessages.length > 0;
-                        if (!jsonMode) {
-                            info(
-                                usedRestApi
-                                    ? "Fetched group history from Zalo's message store."
-                                    : "Zalo's message store had no messages. Falling back to WebSocket stream...",
-                            );
-                        }
-                    } catch (restErr) {
-                        if (!jsonMode)
-                            warning(`REST API failed (${restErr.message}). Falling back to WebSocket stream...`);
-                    }
-                }
-
-                if (!usedRestApi) {
-                    // WebSocket global stream scanning (DM or fallback for Group)
-                    const allMessages = [];
-                    let lastMsgId = opts.fromMsgId || null;
-                    let done = false;
-
-                    // A running daemon already holds the account's one permitted
-                    // web session. Opening a second one here evicted it with code
-                    // 3000; it retried and evicted this scan back, and whatever
-                    // arrived during the flap was lost with no gap recorded. Ask
-                    // the daemon to page on its own socket instead -- the same
-                    // hand-off `msg send-file` uses for uploads.
-                    let handledByDaemon = false;
-                    const daemonDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
-                    if (getSyncChannel(daemonDir, "history")) {
-                        if (!jsonMode) info("A listen/mcp daemon holds this account — scanning on its socket.");
-                        const viaDaemon = await syncViaDaemon(daemonDir, {
-                            stage: "history",
-                            params: {
-                                threadId,
-                                threadType,
-                                limit,
-                                scanLimit,
-                                timeoutMs: timeout,
-                                fromMsgId: opts.fromMsgId || null,
-                            },
-                        });
-                        if (viaDaemon?.frames) {
-                            for (const f of viaDaemon.frames) {
-                                allMessages.push(historyRow(f.data, f.threadId));
-                                fetchedFrames.push(f);
-                            }
-                            if (!jsonMode)
-                                info(
-                                    `Scanned ${viaDaemon.rawScanned} raw WS messages to find ${allMessages.length} target messages.`,
-                                );
-                            fetchedMessages = allMessages;
-                            handledByDaemon = true;
-                        }
-                        // else: daemon up but the stage did not answer -- fall
-                        // through and open our own socket rather than returning
-                        // an empty history.
-                        if (!handledByDaemon)
-                            warning("The daemon did not answer the history scan; falling back to a direct socket.");
-                    }
-
-                    if (!handledByDaemon) {
-                        // Start listener
-                        await new Promise((resolve, reject) => {
-                            const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 10000);
-                            api.listener.once("connected", () => {
-                                clearTimeout(timer);
-                                resolve();
-                            });
-                            api.listener.once("error", (err) => {
-                                clearTimeout(timer);
-                                reject(err);
-                            });
-                            api.listener.start({ retryOnClose: false });
-                        });
-
-                        let rawScanned = 0;
-
-                        while (!done && rawScanned < scanLimit) {
-                            const page = await new Promise((resolve) => {
-                                const handler = (messages) => {
-                                    clearTimeout(timeoutId);
-                                    api.listener.removeListener("old_messages", handler);
-                                    resolve(messages);
-                                };
-                                const timeoutId = setTimeout(() => {
-                                    api.listener.removeListener("old_messages", handler);
-                                    resolve([]);
-                                }, timeout);
-
-                                api.listener.on("old_messages", handler);
-                                api.listener.requestOldMessages(threadType, lastMsgId);
-                            });
-
-                            if (!page || page.length === 0) break;
-
-                            rawScanned += page.length;
-
-                            for (const msg of page) {
-                                if (String(msg.threadId || "") !== String(threadId)) continue;
-                                allMessages.push(historyRow(msg.data, msg.threadId));
-                                fetchedFrames.push({ threadId: msg.threadId, type: threadType, data: msg.data });
-
-                                if (allMessages.length >= limit) {
-                                    done = true;
-                                    break;
-                                }
-                            }
-
-                            // Advance cursor using the global actionId of the last raw message
-                            const lastMsg = page[page.length - 1];
-                            const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
-                            if (!nextId || nextId === lastMsgId) done = true;
-                            lastMsgId = nextId;
-                        }
-
-                        try {
-                            api.listener.stop();
-                        } catch {}
-
-                        if (!jsonMode)
-                            info(
-                                `Scanned ${rawScanned} raw WS messages to find ${allMessages.length} target messages.`,
-                            );
-                        fetchedMessages = allMessages;
-                    }
-                }
-
-                // Write back what either fetch found -- one path for the
-                // cloud-message store and the socket scan alike. The listener,
-                // sync and msg history's fetch write Zalo-reported rows;
-                // history writes insert-if-absent, as Zalo Web does with the
-                // history it fetches (replace:false); msg send writes nothing.
-                // So a message already in zalo.db is left exactly as it is,
-                // whatever the fetch says: its localPath, receipt status,
-                // st/at/cmd and tombstone all stay. Removals are never applied
-                // from here, and nothing older than a conversation's delete
-                // marker comes back (see storeHistoryMessage).
-                if (dbActive && fetchedFrames.length > 0) {
-                    let added = 0;
-                    for (const frame of fetchedFrames) {
-                        if (storeHistoryMessage(frame).stored) added++;
-                    }
-                    if (!jsonMode) {
-                        info(
-                            `Cached ${added} message(s) the local database did not have; ` +
-                                `${fetchedFrames.length - added} already there or not storable were left untouched.`,
+                // The group store, the WebSocket global stream scanning and the
+                // cache write after them are one function, fetchAndCacheHistory,
+                // run by whichever process holds the account: it owns the one web
+                // session the scan needs and is the one db writer (AGENTS.md
+                // §13). With a daemon up that is the daemon, and this command
+                // only displays what it returns.
+                const daemonDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+                const daemon = getDaemonChannel(daemonDir);
+                let fetched = null;
+                let handledByDaemon = false;
+                if (daemon) {
+                    // Nothing below fetches, writes or opens a socket in this
+                    // process beside a live daemon: when it cannot answer, the
+                    // command fails and says why.
+                    if (!getSyncChannel(daemonDir, "history")) {
+                        throw new Error(
+                            `a listen/mcp daemon (pid ${daemon.pid}) holds this account but predates the ` +
+                                "history hand-off — restart it, then run this again.",
                         );
                     }
+                    report({
+                        detail: `A listen/mcp daemon (pid ${daemon.pid}) holds this account — it fetches and caches; this command only displays.`,
+                    });
+                    const viaDaemon = await syncViaDaemon(daemonDir, {
+                        stage: "history",
+                        params: { threadId, threadType, ...fetchOpts },
+                        onEvent: report,
+                    });
+                    if (viaDaemon && !viaDaemon.ok) throw new Error(daemonHistoryFailure(viaDaemon, daemon.pid));
+                    // null: gone before the request reached it. Confirmed gone,
+                    // so the session is this process's again.
+                    handledByDaemon = viaDaemon !== null;
+                    fetched = viaDaemon?.result ?? null;
+                }
+
+                if (!handledByDaemon) {
+                    fetched = await fetchAndCacheHistory(api, threadId, threadType, {
+                        ...fetchOpts,
+                        cache: dbActive,
+                        onProgress: report,
+                        // No daemon: the session is this process's, and so is
+                        // opening the socket for the scan and closing it after.
+                        connect: async () => {
+                            await new Promise((resolve, reject) => {
+                                const timer = setTimeout(() => reject(new Error("Listener connection timeout")), 10000);
+                                api.listener.once("connected", () => {
+                                    clearTimeout(timer);
+                                    resolve();
+                                });
+                                api.listener.once("error", (err) => {
+                                    clearTimeout(timer);
+                                    reject(err);
+                                });
+                                api.listener.start({ retryOnClose: false });
+                            });
+                            return () => {
+                                try {
+                                    api.listener.stop();
+                                } catch {}
+                            };
+                        },
+                    });
+                }
+
+                const frames = Array.isArray(fetched?.frames) ? fetched.frames : [];
+                const fetchedMessages = frames.map((f) => historyRow(f.data, f.threadId));
+                if (handledByDaemon && typeof fetched?.added !== "number") {
+                    // Its history stage from before this version returned frames
+                    // for the CLI to write, and nothing here writes them.
+                    warning(
+                        `The listen/mcp daemon (pid ${daemon.pid}) predates cached history: it fetched this ` +
+                            "but cached none of it. Restart it so what msg history fetches is cached.",
+                    );
+                } else if (!jsonMode && fetched?.cached && frames.length > 0) {
+                    info(
+                        `${handledByDaemon ? "The daemon cached" : "Cached"} ${fetched.added} message(s) the local ` +
+                            `database did not have; ${fetched.untouched} already there or not storable were left untouched.`,
+                    );
                 }
 
                 // Merge and sort

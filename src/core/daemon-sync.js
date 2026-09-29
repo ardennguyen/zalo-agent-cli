@@ -1,11 +1,13 @@
 /**
- * The `zalo-agent sync` socket stages, as a running daemon performs them.
+ * The `zalo-agent sync` socket stages, and `msg history`'s fetch, as a running
+ * daemon performs them.
  *
- * `listen` and `mcp start` hold the account's one permitted WebSocket. These
- * are the bodies they expose over the loopback channel so `sync` can use that
- * socket instead of opening a second one and evicting them. See the "same
- * hand-off, for `zalo-agent sync`" section of src/core/daemon-channel.js for
- * why, and for the streaming protocol these `onEvent` calls travel over.
+ * `listen` and `mcp start` hold the account's one permitted WebSocket, and are
+ * its one db writer while they run. These are the bodies they expose over the
+ * loopback channel so `sync` and `msg history` can use that socket instead of
+ * opening a second one and evicting them. See the "same hand-off, for
+ * `zalo-agent sync`" section of src/core/daemon-channel.js for why, and for the
+ * streaming protocol these `onEvent` calls travel over.
  *
  * Kept out of daemon-channel.js on purpose. That module is the transport, and
  * `msg send` imports it for `sendViaDaemon` -- pulling SyncV2's decrypt stack,
@@ -27,6 +29,7 @@
  */
 import { SyncV2 } from "./sync-v2/index.js";
 import { drainReactions, placeUnresolvedReactions } from "./sync-v2/reactions.js";
+import { fetchAndCacheHistory } from "./history-fetch.js";
 
 /**
  * True while the listener's socket is connecting or open.
@@ -102,71 +105,41 @@ export function createSyncRunners({ getApi, accountName }) {
         },
 
         /**
-         * Page the global old-message stream on the daemon's OWN socket.
+         * `msg history`'s fetch AND its cache write, on this daemon.
          *
-         * `msg history` used to open its own WebSocket for this (DM, or any
-         * group whose REST call threw). Zalo permits one web session per
-         * account, so that evicted the running daemon with code 3000, the
-         * daemon silently retried and evicted `msg history` back, and messages
-         * arriving in the flap were lost with no gap recorded. It is the same
-         * failure the `/send-attachments` hand-off was built to remove; the
-         * read path just never got the same guard.
+         * `msg history` used to open its own WebSocket for the socket scan,
+         * which evicted the running daemon with code 3000; the daemon retried
+         * and evicted it back, and messages arriving in the flap were lost with
+         * no gap recorded. Then this stage paged the stream on the daemon's
+         * socket but wrote nothing: the CLI wrote the frames it returned, and a
+         * group's cloud-message store fetch never came here at all, so with a
+         * daemon up the account had two db writers.
          *
-         * Frames cross the wire rather than being written here, because unlike
-         * the reaction drain the caller genuinely needs them: it maps, prints
-         * and may store them under its own rules.
+         * Now the daemon does the whole job, through the same
+         * fetchAndCacheHistory the CLI runs when no daemon is up: a group's
+         * cloud-message store first, then the old-message stream on THIS
+         * listener, then the insert-if-absent write through this process's
+         * connection -- the account's one writer, under daemon.lock. The frames
+         * still cross the wire, because the CLI prints them; it writes none.
+         *
+         * No `connect`: the listener is already running, and a stage never
+         * opens or closes it.
          *
          * @param {{threadId: string, threadType: number, limit?: number,
          *   scanLimit?: number, timeoutMs?: number, fromMsgId?: string|null}} params
-         * @param {(p: object) => void} onEvent
-         * @returns {Promise<{frames: Array<object>, rawScanned: number}>}
+         * @param {(p: object) => void} onEvent - fetchAndCacheHistory's progress lines
+         * @returns {Promise<{frames: Array<object>, source: string, rawScanned: number,
+         *   cached: boolean, added: number, untouched: number}>}
          */
         async history(params = {}, onEvent = () => {}) {
-            const api = liveApi("history scan");
-            const threadId = String(params.threadId || "");
-            const threadType = Number(params.threadType) || 0;
-            const limit = Number(params.limit) || 50;
-            const scanLimit = Number(params.scanLimit) || 2000;
-            const timeoutMs = Number(params.timeoutMs) || 10_000;
-
-            const frames = [];
-            let lastMsgId = params.fromMsgId || null;
-            let rawScanned = 0;
-            let done = false;
-
-            while (!done && rawScanned < scanLimit) {
-                const page = await new Promise((resolve) => {
-                    const handler = (messages) => {
-                        clearTimeout(timer);
-                        api.listener.removeListener("old_messages", handler);
-                        resolve(messages);
-                    };
-                    const timer = setTimeout(() => {
-                        api.listener.removeListener("old_messages", handler);
-                        resolve([]);
-                    }, timeoutMs);
-                    api.listener.on("old_messages", handler);
-                    api.listener.requestOldMessages(threadType, lastMsgId);
-                });
-                if (!page || page.length === 0) break;
-                rawScanned += page.length;
-                onEvent({ phase: "history", detail: `scanned ${rawScanned}` });
-
-                for (const msg of page) {
-                    if (String(msg.threadId || "") !== threadId) continue;
-                    frames.push({ threadId: msg.threadId, type: threadType, data: msg.data });
-                    if (frames.length >= limit) {
-                        done = true;
-                        break;
-                    }
-                }
-
-                const last = page[page.length - 1];
-                const nextId = last?.data?.actionId || last?.data?.msgId;
-                if (!nextId || nextId === lastMsgId) done = true;
-                lastMsgId = nextId;
-            }
-            return { frames, rawScanned };
+            const api = liveApi("history fetch");
+            return fetchAndCacheHistory(api, params.threadId, params.threadType, {
+                limit: params.limit,
+                scanLimit: params.scanLimit,
+                timeoutMs: params.timeoutMs,
+                fromMsgId: params.fromMsgId || null,
+                onProgress: onEvent,
+            });
         },
 
         /**

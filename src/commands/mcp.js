@@ -12,7 +12,9 @@ import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { startDaemonChannel } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
-import { initDb } from "../core/db.js";
+import { initDb, getPendingSyncGaps } from "../core/db.js";
+import { SyncManager } from "../core/sync.js";
+import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
 import {
     storeLiveMessage,
     storeLiveReaction,
@@ -200,6 +202,41 @@ export function registerMCPCommands(program) {
 
             let reconnectCount = 0;
 
+            // `listen` and `mcp start` are two entry points to the SAME socket,
+            // so `mcp start` gets the same coverage bookkeeping. Without it an
+            // agent-driven install that only ever runs this command had zero
+            // loss detection, and because it never wrote lastConnectedAt a later
+            // `listen` filed a bogus 14-day gap over a covered window.
+            const syncManager = new SyncManager(getApi(), activeAcc.ownId);
+            const reportGap = (fromTs, reason) => {
+                if (!fromTs) return false;
+                // recordGap(from, to, reason) -- it has a 1-second floor and
+                // returns null under it, which is not a gap worth announcing.
+                const gapId = syncManager.recordGap(fromTs, Date.now(), reason);
+                if (!gapId) return false;
+                console.error(
+                    `[mcp] Coverage gap (${reason}): messages between ` +
+                        `${new Date(fromTs).toISOString()} and now are not in the local cache. ` +
+                        "Close it with: zalo-agent sync --from " +
+                        new Date(fromTs).toISOString().slice(0, 10),
+                );
+                return true;
+            };
+            const lifecycle = createGapTracker({ syncManager, reportGap });
+
+            // Same startup check `listen` does: a window between the last
+            // recorded connection and now is unobserved until something says so.
+            if (!reportGap(syncManager.getLastConnectedAt(), "startup-gap")) {
+                syncManager.markConnected();
+            }
+            const pending = getPendingSyncGaps();
+            if (pending.length > 0) {
+                console.error(
+                    `[mcp] ${pending.length} coverage gap(s) pending — run \`zalo-agent sync\` to close them.`,
+                );
+            }
+            const mcpHeartbeatTimer = setInterval(() => lifecycle.heartbeat(), HEARTBEAT_MS);
+
             /**
              * Fetch a message's attachments into the same per-conversation
              * folders every other command uses. Fire-and-forget.
@@ -288,13 +325,18 @@ export function registerMCPCommands(program) {
                     if (reconnectCount > 0) {
                         console.error(`[mcp] Reconnected (#${reconnectCount})`);
                     }
+                    lifecycle.noteUp();
                 });
 
                 api.listener.on("disconnected", (code) => {
+                    if (lifecycle.isStopping()) return;
                     console.error(`[mcp] Disconnected (code: ${code}). Auto-retrying...`);
+                    lifecycle.noteDown();
                 });
 
                 api.listener.on("closed", async (code) => {
+                    if (lifecycle.isStopping()) return;
+                    lifecycle.noteDown();
                     if (code === CLOSE_DUPLICATE) {
                         dropLock();
                         console.error("[mcp] Duplicate Zalo Web session detected. Exiting.");
@@ -369,6 +411,16 @@ export function registerMCPCommands(program) {
 
             // Graceful shutdown on SIGINT
             process.on("SIGINT", () => {
+                // First, before listener.stop() emits closed(1000) -- otherwise
+                // the shutdown is indistinguishable from a drop and files a gap
+                // for a window nothing was missed in.
+                lifecycle.setStopping();
+                clearInterval(mcpHeartbeatTimer);
+                try {
+                    syncManager.markConnected();
+                } catch (e) {
+                    console.error(`[mcp] Failed to stamp shutdown state: ${e.message}`);
+                }
                 try {
                     getApi().listener.stop();
                 } catch {

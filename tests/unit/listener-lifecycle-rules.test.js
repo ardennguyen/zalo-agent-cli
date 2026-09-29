@@ -130,3 +130,44 @@ describe("msg history must not open a second web session", () => {
         );
     });
 });
+
+describe("listen and mcp start must track coverage the same way", () => {
+    const mcp = readFileSync(join(SRC, "commands", "mcp.js"), "utf8");
+
+    it("both construct a SyncManager", () => {
+        // They are two entry points to the SAME socket, so an asymmetry is a
+        // defect, not a difference. `mcp start` had none of this: no gap
+        // tracking, no markConnected. An agent-driven install that only ran
+        // `mcp start` had zero loss detection, and since it never wrote
+        // lastConnectedAt, a later `listen` filed a bogus 14-day gap over a
+        // window that was fully covered.
+        for (const [name, src] of [
+            ["listen.js", listen],
+            ["mcp.js", mcp],
+        ]) {
+            assert.match(src, /new SyncManager\(/, `${name} must own a SyncManager`);
+        }
+    });
+
+    it("both file a startup gap rather than assuming they are caught up", () => {
+        for (const [name, src] of [
+            ["listen.js", listen],
+            ["mcp.js", mcp],
+        ]) {
+            assert.match(src, /"startup-gap"/, `${name} must check for a startup gap`);
+        }
+    });
+
+    it("mcp start bails out of its lifecycle handlers when stopping", () => {
+        // listener.stop() closes with 1000; without this the shutdown files a
+        // gap for a window in which nothing was missed.
+        for (const handler of ["disconnected", "closed"]) {
+            const body = mcp.slice(mcp.indexOf(`listener.on("${handler}"`));
+            assert.match(
+                body.slice(0, 400),
+                /isStopping\(\)\) return;/,
+                `mcp.js ${handler} must bail out when stopping`,
+            );
+        }
+    });
+});

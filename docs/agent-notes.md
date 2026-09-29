@@ -438,3 +438,125 @@ Its `package.json` pins `@ardennguyen/zalo-agent-cli` as a real npm dependency �
 while this repo is at `2.0.0`. Whatever the pin says is what a deployed wrapper actually serves, so
 an MCP tool added here is not reachable through `zalo-mcp` until that pin is bumped and released.
 When the MCP tool list changes here, `zalo-mcp`'s pin and README must be updated too.
+
+
+---
+
+## Four commands that had never once worked (2026-09-29)
+
+Found in a single day, all by the same mechanism, none by reading code:
+
+| Command | Defect |
+|---|---|
+| `msg forward` | zca-js is `forwardMessage(payload, threadIds, type)` with `payload = {message}` and `threadIds` an **array**. The CLI passed the msgId string as the payload and a bare string as the thread list, so the API threw "Missing message content" on its first line — every type, both `-t 0` and `-t 1`. |
+| `msg delete` | The same shape. |
+| `conv mute` | zca-js is `setMute(params, threadID, type)` with the **options object first**. The CLI passed `(threadId, type, duration)` positionally, so `params` got the thread id string and the request went out with `toid: 0`. |
+| `conv unmute` | The same call. |
+
+A fifth, different defect sat alongside them: **attachment sends always delivered**, but the
+response carried no `cliMsgId`, and `msg undo` / `msg delete` refuse without one. So every image
+and file the CLI had ever sent was permanently unrecallable. That is a missing return value, not a
+broken command — worth keeping distinct when describing it.
+
+### Why the suite could not see any of them
+
+This CLI catches API failures and prints a clean `✗ <message>` line, then exits 0. An assertion
+shaped like
+
+```js
+assert.doesNotMatch(r.all, /at Command\.|Unhandled/, "should not crash");
+```
+
+therefore passes whether the command worked or failed on every invocation in its history. The
+forward assertion carried a comment rationalising it — "a clean error is an acceptable outcome" —
+which is how it survived review. `msg delete`'s was `hasSuccess(...) || errorLineOf(...)`, true for
+literally every possible outcome.
+
+**An assertion that only checks "did not crash" is not a test.** Assert the success the command
+claims. This is now a rule in AGENTS.md §12.
+
+---
+
+## The listener lifecycle, and five ways it lost messages (2026-09-29)
+
+All five were invisible in normal operation, which is why none had a test. Fixed in `6e8584f` and
+`db84dab`; guarded by `tests/unit/listener-lifecycle-rules.test.js`.
+
+**A1 — the reconnect that actually happens recorded nothing, then claimed it had.** Gap filing sat
+behind `if (reconnectCount > 0)`, and `reconnectCount` is incremented only in the `closed` handler.
+Measured against a local `ws` server: **`closed` never fires for any code on zca-js's
+`close_and_retry_codes` list** — it emits `disconnected`, retries internally, then emits
+`connected`. Those codes are precisely the *recoverable* ones, so on the ordinary drop path no
+`sync_gaps` row was written, nothing was printed, and `markConnected()` then asserted coverage over
+the outage. Since `sync` is driven off exactly that advice, messages lost to a routine reconnect
+were lost permanently and silently. It self-healed only after the first non-retryable close, which
+set the counter to 1 for the rest of the process's life.
+
+**A2 — the heartbeat stamped "connected" while the socket was down.** `markConnected()` means
+"coverage is good up to now", and a 60s timer called it with no liveness check — through the
+internal retry, the 5s re-login wait and the 30s retry wait. A crash mid-outage then left the next
+launch computing its startup gap from a moment nothing was connected, and the outage disappeared.
+
+**A3 — `mcp start` had no `SyncManager` at all.** No gap tracking, no `markConnected`, no startup
+check. An agent-driven install that only ever ran `mcp start` — the deployment shape, since it is
+the mode with the MCP tools and `/health` — had zero loss detection. And because it never wrote
+`lastConnectedAt`, a later `listen` read whenever *listen* had last run and filed a bogus gap
+clamped to the 14-day maximum over a window that was fully covered.
+
+**A4 — Ctrl-C left a zombie holding the account's session.** `listener.stop()` emits `closed(1000)`,
+indistinguishable from a real drop, so SIGINT ran the *recovery* path. Measured: ~5s after the user
+sees "Stopped", the process re-logs in and opens a fresh socket — with `daemon.lock` already
+released and `daemon-channel.json` already deleted. The next `listen`/`mcp`/`sync` then took the
+free lock and the two sessions flapped over code 3000.
+
+**C1 — `msg history` opened a second web session.** The DM path, and any group whose REST call
+threw, called `listener.start()` with no daemon check and no lock, evicting the daemon with 3000.
+Fixed by adding a `history` runner to `daemon-sync.js` and `/sync/history` to the channel route
+table, so the scan pages on the daemon's own socket.
+
+The shared bookkeeping now lives in `src/core/listener-lifecycle.js`: down-ness is observed rather
+than inferred from a counter, the first drop of a flap wins, the heartbeat may not claim coverage
+while down, and a deliberate stop is not a drop.
+
+---
+
+## The cache has exactly two writers, by decision
+
+Arden ruled on 2026-09-29, in response to a proposal that `msg send` write its own row:
+
+> "truth write and cache coming from listener and sync only, no auto write. Even if you're sure you
+> can handle all write the way live socket and sync write to db, still no."
+
+So `zalo.db` message rows come from the listener and from sync. Nothing else writes them — not even
+a command that could do it correctly.
+
+The consequence to state honestly rather than paper over: **a message you just sent is not
+quotable, forwardable or recallable until the listener observes its echo.** With a daemon running
+that is near-instant; with no daemon it never happens. `msg history` cannot substitute — it was
+measured returning nothing for a same-day group message, so help text pointing users there was
+wrong and was corrected.
+
+The tempting fix had a real cost behind it: Zalo's send response is `{msgId, cliMsgId}` with no
+timestamp, so a self-written row's `ts` would be an approximation (`Number(cliMsgId)`, the clock
+reading zca-js actually posted) that only self-corrects once the listener catches up. And AGENTS.md
+§13 already says one db writer per account, while an audit found `msg.js` and `conv.js` writing
+without taking the lock — so "just write it" would have been a decision about an existing invariant
+violation, not a fresh one.
+
+---
+
+## `npm run format` covers `src/` and `tests/` only
+
+A session ran `npx prettier --write` on `skill/SKILL.md` and
+`skill/references/command-reference.md` alongside its source edits. Neither has ever been
+prettier-formatted, so instead of formatting the hunk it imposed prettier's markdown style on both
+whole files: **115 changed lines in SKILL.md and 560 in command-reference.md**, from a one-sentence
+correction.
+
+They caught it in `git diff --stat`, confirmed both files had been clean at HEAD moments earlier,
+backed them up, ran a path-scoped `git checkout --` on exactly those two paths, and re-applied the
+content with anchored edits. Final diff: 10 lines and 2.
+
+It ended there only because those two files happened to be clean that minute. With four sessions
+writing to one tree, a 675-line reformat landing on someone's uncommitted work is not recoverable
+by noticing. Hence the §4 rule: edit anything outside `src/` and `tests/` by hand.

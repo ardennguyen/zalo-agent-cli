@@ -8,6 +8,14 @@
  * Verified live 2026-09-28 after the fix: text to a group and text to a DM
  * both returned a msgId with an empty `fail` array; photo, file, sticker and
  * link were each refused locally with no network call.
+ *
+ * Text no longer goes through zca-js's forwardMessage at all: it now carries
+ * the reference Zalo Web sends, which forwardMessage cannot serialize
+ * correctly (it hardcodes the decorLog's `st`), so it is a custom call in
+ * src/core/forward.js. The guards that pinned forwardMessage's call shape --
+ * and the one that insisted the reference be omitted -- are replaced by
+ * tests/unit/msg-forward-reference.test.js, which asserts the decrypted
+ * request itself: the message, the target list, the reference and decorLog.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -29,24 +37,7 @@ function forwardBlock(src) {
     return src.slice(begin, next === -1 ? src.length : next);
 }
 
-describe("msg forward calls zca-js the way zca-js is declared", () => {
-    it("passes a payload object, not the bare msgId", () => {
-        const block = forwardBlock(MSG_CODE);
-        assert.ok(
-            /forwardMessage\(\s*\{\s*message:/.test(block),
-            "first argument must be `{ message: ... }` — a bare msgId trips `if (!payload.message) throw`",
-        );
-        assert.ok(!/forwardMessage\(\s*msgId\b/.test(block), "passing msgId as the payload is the original defect");
-    });
-
-    it("passes the thread list as an array", () => {
-        const block = forwardBlock(MSG_CODE);
-        assert.ok(
-            /forwardMessage\([^)]*,\s*\[\s*threadId\s*\]/.test(block),
-            "second argument is `threadIds: string[]`; a bare string breaks `threadIds.map`",
-        );
-    });
-
+describe("msg forward reads the cache and dispatches by kind", () => {
     it("reads the message out of the local cache", () => {
         const block = forwardBlock(MSG_CODE);
         assert.ok(/getMessageById\s*\(/.test(block), "the text to forward has to come from somewhere");
@@ -93,14 +84,6 @@ describe("msg forward calls zca-js the way zca-js is declared", () => {
             !/api\.sendMessage\(\s*\{\s*msg:\s*""\s*,\s*attachments/.test(block),
             "a direct sendMessage upload hangs when a daemon holds the socket",
         );
-    });
-
-    it("does not fabricate the forwarded-from reference", () => {
-        const block = forwardBlock(MSG_CODE);
-        // Real forwards carry an opaque 32-hex id plus logSrcType/fwLvl. That id
-        // is not the numeric msgId and nothing in the cache holds it, so a
-        // reference built from what we have would point at nothing.
-        assert.ok(!/reference\s*:/.test(block), "omit `reference` rather than send a wrong one");
     });
 
     it("surfaces per-target rejections instead of reporting success", () => {

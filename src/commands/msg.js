@@ -1,21 +1,27 @@
 /**
  * Message commands — send text, images, files, cards, bank cards, QR transfers,
- * stickers, reactions, delete, forward.
+ * stickers, reactions, delete, forward, pin.
  */
 
 import { existsSync } from "node:fs";
 import { resolve, join } from "path";
+import { InvalidArgumentError } from "commander";
 import { getApi, getOwnId } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getMessages, getMessageById, getDisplayName, upsertContact } from "../core/db.js";
+import { initDb, getMessages, getMessageById, getDisplayName, getThreadType, upsertContact } from "../core/db.js";
 import { sendViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { storeLiveMessage } from "../core/live-store.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { describeZaloError } from "../core/sync-v2/board.js";
+import { cachedCliMsgId, cachedText, parseRawData, resolveSenderUid } from "../core/cached-message.js";
+import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
+import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
 import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
+import { applySelfThreadAlias } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 
 /**
@@ -105,12 +111,16 @@ async function fetchMentionNames(uids, cacheOpen) {
 /**
  * Look one message up in the local SQLite cache by its global msgId.
  *
- * `deleteMessage` needs the message's `cliMsgId` and `uidFrom`, neither of
- * which can be derived from the msgId — cliMsgId is client-generated and
- * only the sender ever saw it. Anything `listen`, `sync` or a prior
- * `msg history` wrote is here, so a message the CLI has seen before does
- * not need the ids passed by hand. Returns null when the message is not
- * cached (a just-sent one will not be — `msg send` does not write to the db).
+ * `deleteMessage`, `undo` and `addReaction` need the message's `cliMsgId`
+ * (and delete its `uidFrom`), neither of which can be derived from the msgId
+ * — cliMsgId is client-generated and only the sender ever saw it. Anything
+ * `listen`, `sync` or a prior `msg history` wrote is here, so a message the
+ * CLI has seen before does not need the ids passed by hand. Returns null when
+ * the message is not cached (a just-sent one will not be — `msg send` does not
+ * write to the db) or is cached under a different conversation.
+ *
+ * A direct lookup by msgId, checked against the thread. This used to scan the
+ * thread's newest 200 rows, so anything older was reported as uncached.
  *
  * @param {string} threadId
  * @param {string} msgId
@@ -119,22 +129,154 @@ async function fetchMentionNames(uids, cacheOpen) {
 function cachedMessageById(threadId, msgId) {
     try {
         if (!openAccountDb()) return null;
-        const row = getMessages(threadId, 200).find((m) => String(m.msgId) === String(msgId));
-        if (!row) return null;
+        const row = getMessageById(msgId);
+        // msgIds are account-wide: a row from another conversation must not
+        // lend its ids to an action aimed at this one.
+        if (!row || (row.threadId && String(row.threadId) !== String(threadId))) return null;
 
-        let raw = {};
-        try {
-            raw = JSON.parse(row.raw_data || "{}");
-        } catch {
-            /* raw_data is optional */
-        }
-        const data = raw.data ?? raw;
-        const cliMsgId = data.cliMsgId;
+        const data = parseRawData(row.raw_data);
+        const cliMsgId = cachedCliMsgId(row);
         const uidFrom = row.senderId ?? data.uidFrom;
-        return cliMsgId ? { cliMsgId: String(cliMsgId), uidFrom: uidFrom ? String(uidFrom) : null } : null;
+        return cliMsgId ? { cliMsgId, uidFrom: uidFrom ? String(uidFrom) : null } : null;
     } catch {
         return null;
     }
+}
+
+/**
+ * The cliMsgId a reaction must carry, or why there is none.
+ *
+ * Zalo keys a reaction on the target's cliMsgId as well as its msgId. Given
+ * the msgId in its place, it answers "Successful." and the reaction never
+ * appears for anyone, so a guess is worse than a refusal: `-c` first, then
+ * the cache, then stop.
+ *
+ * @param {{msgId: string, threadId: string, cliMsgId?: string|null}} target
+ * @returns {{cliMsgId: string}|{error: string}}
+ */
+function reactionCliMsgId({ msgId, threadId, cliMsgId }) {
+    if (cliMsgId) return { cliMsgId: String(cliMsgId) };
+    const cached = cachedMessageById(threadId, msgId)?.cliMsgId;
+    if (cached) return { cliMsgId: cached };
+    return {
+        error:
+            `Message ${msgId} is not in the local cache for ${threadId}, so its cliMsgId is unknown — and a ` +
+            `reaction keyed on the msgId is accepted by Zalo but never shown, so none was sent. ` +
+            `\`listen\` caches messages as they arrive and \`sync\` restores older ones; ` +
+            `or pass the id yourself with -c <cliMsgId>.`,
+    };
+}
+
+/**
+ * Whether a conversation is a group, for commands that can act on either.
+ *
+ * `-t` wins whenever something set it: the user, or the preAction hook that
+ * fills it in from the cache for a `threadId` argument. When it is still at
+ * its default -- e.g. `msg pin <msgId>`, where the conversation comes from the
+ * cached message rather than an argument -- the cache decides, and the
+ * default (0) applies only to a conversation the cache has never seen.
+ *
+ * @param {string} threadId
+ * @param {object} opts - the command's options
+ * @param {import("commander").Command} cmd
+ * @returns {boolean}
+ */
+function threadIsGroup(threadId, opts, cmd) {
+    if (cmd?.getOptionValueSource?.("type") === "default") {
+        try {
+            const kind = openAccountDb() ? getThreadType(threadId) : null;
+            if (kind) return kind === "group";
+        } catch {
+            /* fall back to the flag */
+        }
+    }
+    return Number(opts.type) === 1;
+}
+
+/**
+ * This session's My Documents thread id (`loginInfo.send2me_id`), or null.
+ *
+ * @param {object} api
+ * @returns {string|null}
+ */
+function send2meIdOf(api) {
+    try {
+        const id = api.getContext().loginInfo?.send2me_id;
+        return id ? String(id) : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * What a forward reference needs to know about its source message.
+ *
+ * @param {object} api - a logged-in zca-js API
+ * @param {object} row - the cached source message
+ * @returns {Promise<object>} the input for buildForwardReference, or `{error}`
+ */
+async function forwardSource(api, row) {
+    const cliMsgId = cachedCliMsgId(row);
+    if (!cliMsgId) {
+        return {
+            error:
+                "its cliMsgId was never cached, and the forward reference is derived from it " +
+                "(`listen` caches messages as they arrive, `sync` restores older ones)",
+        };
+    }
+    const threadId = String(row.threadId || "");
+    const isMyDocuments = Boolean(threadId) && threadId === send2meIdOf(api);
+    let kind = null;
+    try {
+        kind = threadId ? getThreadType(threadId) : null;
+    } catch {
+        /* reported below */
+    }
+    if (!kind && !isMyDocuments) {
+        return {
+            error:
+                `the local cache does not say whether its conversation (${threadId || "unknown"}) is a group ` +
+                `or a 1-1, and the forward reference depends on it`,
+        };
+    }
+    const sender = await resolveSenderUid(api, row.senderId, getOwnId());
+    if (sender.error) return { error: sender.error };
+    return {
+        cliMsgId,
+        senderUid: sender.uid,
+        threadId,
+        isGroup: kind === "group" && !isMyDocuments,
+        // The web's sendDttm: the server timestamp for any message it did not
+        // send itself. The cliMsgId is the fallback for a row that lost it.
+        ts: Number(row.timestamp) || Number(cliMsgId),
+        ...(isMyDocuments && { logSrcType: LOG_SRC_TYPE.MY_CLOUD }),
+    };
+}
+
+/** Zalo's message urgency levels, as the apps offer them. */
+const URGENCY_LEVELS = { important: 1, urgent: 2 };
+
+/**
+ * Commander parser for `--urgency`: `important` → 1, `urgent` → 2.
+ *
+ * @param {string} value
+ * @returns {number}
+ * @throws {InvalidArgumentError} for anything else
+ */
+function parseUrgency(value) {
+    const level = URGENCY_LEVELS[String(value).trim().toLowerCase()];
+    if (!level) throw new InvalidArgumentError("Expected one of: important, urgent.");
+    return level;
+}
+
+/**
+ * Report a refusal: the error line, and a non-zero exit.
+ *
+ * @param {string} message
+ */
+function refuse(message) {
+    error(message);
+    process.exitCode = 1;
 }
 
 /**
@@ -419,8 +561,24 @@ function parseStyleSpecs(specs) {
 export function registerMsgCommands(program) {
     const msg = program.command("msg").description("Send and manage messages");
 
+    // `me` (or the own uid) as a thread argument means My Documents, a 1-1
+    // thread of its own -- see src/utils/my-documents.js. Resolved once, here,
+    // for every msg subcommand that takes a threadId. Runs after the program's
+    // hook, so the session is already logged in.
+    msg.hook("preAction", (_msgCommand, actionCommand) => {
+        const out = applySelfThreadAlias(actionCommand, {
+            ownId: getOwnId(),
+            send2meId: () => getApi().getContext().loginInfo?.send2me_id,
+        });
+        if (out?.error) {
+            error(out.error);
+            process.exit(1);
+        }
+        if (out?.notice) info(out.notice);
+    });
+
     msg.command("send <threadId> <message>")
-        .description("Send a text message with optional formatting")
+        .description("Send a text message with optional formatting. <threadId> may be `me` for My Documents")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option(
             "--mention <specs...>",
@@ -435,6 +593,11 @@ export function registerMsgCommands(program) {
         .option(
             "--react <icon>",
             "Auto-react to sent message. Codes: :> (haha), /-heart (heart), /-strong (like), :o (wow), :-(( (cry), :-h (angry)",
+        )
+        .option(
+            "--urgency <level>",
+            "Mark the message the way the apps' Important/Urgent option does: important | urgent",
+            parseUrgency,
         )
         .action(async (threadId, message, opts) => {
             try {
@@ -516,14 +679,18 @@ export function registerMsgCommands(program) {
                     }
                 }
 
-                // Build message content
-                const hasExtras = mentions.length > 0 || styles.length > 0 || Boolean(quote);
+                // Build message content. `urgency` is 1 (important) or 2
+                // (urgent); zca-js turns it into the `metaData: {urgency}`
+                // object Zalo Web sends, on every text endpoint.
+                const urgency = opts.urgency;
+                const hasExtras = mentions.length > 0 || styles.length > 0 || Boolean(quote) || Boolean(urgency);
                 const msgContent = hasExtras
                     ? {
                           msg: finalMsg,
                           ...(mentions.length > 0 && { mentions }),
                           ...(styles.length > 0 && { styles }),
                           ...(quote && { quote }),
+                          ...(urgency && { urgency }),
                       }
                     : finalMsg;
 
@@ -560,21 +727,31 @@ export function registerMsgCommands(program) {
                 // Auto-react if --react flag provided
                 if (opts.react && result.message?.msgId) {
                     // addReaction needs the message's real cliMsgId — with the
-                    // wrong one Zalo accepts the call and the reaction never
-                    // shows up. Falling back to the msgId keeps the flag from
-                    // hard-failing on an unpatched install; it is the same
-                    // fallback `msg react` takes when nobody passes -c.
-                    if (!cliMsgId) warning("Reacting without a cliMsgId — the reaction may not appear.");
-                    const dest = {
-                        data: {
-                            msgId: String(result.message.msgId),
-                            cliMsgId: cliMsgId || String(result.message.msgId),
-                        },
-                        threadId,
-                        type: Number(opts.type),
-                    };
-                    await getApi().addReaction(opts.react, dest);
-                    success(`Auto-reacted with '${opts.react}'`);
+                    // msgId in its place Zalo accepts the call and the
+                    // reaction never shows up. It used to fall back to exactly
+                    // that on an install whose zca-js patch had not applied;
+                    // now the reaction is skipped and the way to add it later
+                    // is named. The message itself has already gone out.
+                    //
+                    // Exit status stays 0: the send succeeded, and a caller
+                    // that read a failure here would send the message twice.
+                    const sentMsgId = String(result.message.msgId);
+                    const target = reactionCliMsgId({ msgId: sentMsgId, threadId, cliMsgId });
+                    if (target.error) {
+                        warning(
+                            `--react skipped: Zalo returned no cliMsgId for this send, and a reaction keyed on ` +
+                                `the msgId is accepted but never shown. Once \`listen\` has cached the message, ` +
+                                `run: msg react ${sentMsgId} ${threadId} <icon> (or pass -c <cliMsgId>).`,
+                        );
+                    } else {
+                        const dest = {
+                            data: { msgId: sentMsgId, cliMsgId: target.cliMsgId },
+                            threadId,
+                            type: Number(opts.type),
+                        };
+                        await getApi().addReaction(opts.react, dest);
+                        success(`Auto-reacted with '${opts.react}'`);
+                    }
                 }
             } catch (e) {
                 error(e.message);
@@ -897,12 +1074,23 @@ export function registerMsgCommands(program) {
             "React to a message. Reaction codes: :> (haha), /-heart (heart), /-strong (like), :o (wow), :-(( (cry), :-h (angry)",
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
-        .option("-c, --cli-msg-id <id>", "Client message ID (required for reaction to appear, get from listen --json)")
+        .option(
+            "-c, --cli-msg-id <id>",
+            "Message's cliMsgId. Looked up in the local cache when omitted; the reaction is refused when neither has it",
+        )
         .action(async (msgId, threadId, reaction, opts) => {
             try {
-                // zca-js addReaction(icon, dest) — dest needs msgId + cliMsgId
+                // zca-js addReaction(icon, dest) — dest needs msgId + cliMsgId.
+                // The cliMsgId used to fall back to the msgId, which Zalo
+                // accepts and never displays. Resolved before getApi(), so an
+                // uncached message is refused without touching the network.
+                const target = reactionCliMsgId({ msgId, threadId, cliMsgId: opts.cliMsgId });
+                if (target.error) {
+                    refuse(target.error);
+                    return;
+                }
                 const dest = {
-                    data: { msgId, cliMsgId: opts.cliMsgId || msgId },
+                    data: { msgId, cliMsgId: target.cliMsgId },
                     threadId,
                     type: Number(opts.type),
                 };
@@ -1006,7 +1194,10 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("forward <msgId> <threadId>")
-        .description("Forward a text message to another conversation (text only — see below)")
+        .description(
+            "Forward a cached message to another conversation. Text goes out as a real forward, badged the way " +
+                "the apps badge it; other kinds are re-sent as a message of their own type",
+        )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (msgId, threadId, opts) => {
             // This command could never have worked. zca-js takes
@@ -1144,21 +1335,34 @@ export function registerMsgCommands(program) {
                 }
                 return;
             }
-            if (!row.text) {
+            const text = cachedText(row);
+            if (!text) {
                 error(`Message ${msgId} has no text to forward.`);
                 process.exit(1);
             }
 
+            // A forward is the text plus a `reference` naming the source
+            // message. Without it the copy arrives as plain text with no
+            // "forwarded" badge, which is all this command used to send. The
+            // reference id is md5(cliMsgId + senderUid + conversationKey),
+            // derived the way Zalo Web derives it -- src/core/forward.js has
+            // the derivation and the capture it reproduces. Refuse rather than
+            // send a reference built from a guess.
+            const source = await forwardSource(api, row);
+            if (source.error) {
+                error(`Cannot forward message ${msgId}: ${source.error}.`);
+                info("To send the words without the forward, use:  zalo-agent msg send <threadId> <text>");
+                process.exit(1);
+            }
+
             try {
-                // `reference` (the "forwarded from" decoration) is deliberately
-                // omitted. Real forwards carry an opaque 32-hex id there -- e.g.
-                // 1751af19dac61f3e039457dc53dcd348 -- alongside logSrcType 1 and
-                // fwLvl 1. That id is not the numeric msgId and nothing in the
-                // local cache holds it (no row carries `realMsgId`), so passing
-                // the numeric id would send a reference pointing at nothing.
-                // Without it the text still arrives; it just is not badged as a
-                // forward.
-                const result = await getApi().forwardMessage({ message: row.text }, [threadId], Number(opts.type));
+                const { reference, decorLog } = buildForwardReference(source);
+                const result = await sendForward(
+                    api,
+                    { message: text, reference, decorLog },
+                    [threadId],
+                    Number(opts.type),
+                );
 
                 // Zalo answers {success: [...], failed: [...]}. This read
                 // `result.fail`, which is never a key on that response, so
@@ -1172,10 +1376,11 @@ export function registerMsgCommands(program) {
                 }
 
                 // Pair each target's msgId with the cliMsgId, the same
-                // `sent` shape send-image and send-file report. zca-js mints
-                // ONE clientId for the whole call and echoes it per target as
-                // `clientId`, while patches/zca-js+2.2.0.patch puts it at the
-                // top level as `cliMsgId` -- so neither spot alone gives a
+                // `sent` shape send-image and send-file report. The forward
+                // call mints ONE clientId for the whole call; Zalo echoes it
+                // per target as `clientId`, and sendForward reports it at the
+                // top level as `cliMsgId` (as patches/zca-js+2.2.0.patch does
+                // for zca-js's forwardMessage) -- neither spot alone gives a
                 // caller the {msgId, cliMsgId} pair that `msg undo` needs.
                 // Tier 4 hit exactly that: it recorded the forwarded msgId
                 // with a null id and could not recall the message.
@@ -1190,6 +1395,101 @@ export function registerMsgCommands(program) {
                 output({ ...result, sent }, jsonMode, () => success(`Forwarded to ${threadId}`));
             } catch (e) {
                 error(e.message);
+            }
+        });
+
+    msg.command("pin <msgId> [threadId]")
+        .description(
+            "Pin a text message to the top of its conversation, as the apps do. The message must be in the local " +
+                "cache; [threadId] defaults to the one it was cached under",
+        )
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group (default: the cached conversation's kind)", "0")
+        .action(async (msgId, threadId, opts, cmd) => {
+            try {
+                // Everything the pin carries -- cliMsgId, sender, text -- comes
+                // from the cached row, so every refusal below happens before
+                // any request.
+                const row = openAccountDb() ? getMessageById(msgId) : null;
+                if (!row) {
+                    refuse(
+                        `Message ${msgId} is not in the local cache, so it cannot be pinned: a pin carries the ` +
+                            `message's cliMsgId, sender and text. \`listen\` caches messages as they arrive and ` +
+                            `\`sync\` restores older ones.`,
+                    );
+                    return;
+                }
+                if (threadId && row.threadId && String(row.threadId) !== String(threadId)) {
+                    refuse(`Message ${msgId} belongs to thread ${row.threadId}, not ${threadId}.`);
+                    return;
+                }
+                if (row.type !== "text") {
+                    refuse(
+                        `Only text messages can be pinned from the CLI; message ${msgId} is a ` +
+                            `${row.type || "message of unknown kind"}. Pin it from the app.`,
+                    );
+                    return;
+                }
+                const cliMsgId = cachedCliMsgId(row);
+                if (!cliMsgId) {
+                    refuse(`Message ${msgId}'s cliMsgId was never cached, and a pin must name it.`);
+                    return;
+                }
+                const conversation = String(threadId || row.threadId);
+                const isGroup = threadIsGroup(conversation, opts, cmd);
+
+                const api = getApi();
+                const sender = await resolveSenderUid(api, row.senderId, getOwnId());
+                if (sender.error) {
+                    refuse(`Cannot pin message ${msgId}: ${sender.error}.`);
+                    return;
+                }
+                const params = textPinParams({
+                    cliMsgId,
+                    msgId,
+                    senderUid: sender.uid,
+                    senderName: row.senderName,
+                    text: cachedText(row),
+                });
+                const result = await pinMessage(api, { threadId: conversation, isGroup, params });
+                output(result, program.opts().json, () => success(`Pinned message ${msgId} in ${conversation}`));
+            } catch (e) {
+                refuse(`Pin failed: ${describeZaloError(e)}`);
+            }
+        });
+
+    msg.command("unpin <msgId> [threadId]")
+        .description(
+            "Unpin a message. [threadId] defaults to the conversation the message is cached under, and is " +
+                "required when it is not cached",
+        )
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group (default: the cached conversation's kind)", "0")
+        .action(async (msgId, threadId, opts, cmd) => {
+            try {
+                // Unpinning takes the pin's topic id, which comes from the
+                // conversation's live pin list -- so only the conversation has
+                // to be known, not the message.
+                const row = openAccountDb() ? getMessageById(msgId) : null;
+                if (threadId && row?.threadId && String(row.threadId) !== String(threadId)) {
+                    refuse(`Message ${msgId} belongs to thread ${row.threadId}, not ${threadId}.`);
+                    return;
+                }
+                const conversation = threadId || row?.threadId;
+                if (!conversation) {
+                    refuse(
+                        `Message ${msgId} is not in the local cache, so its thread is unknown. ` +
+                            `Name it:  zalo-agent msg unpin ${msgId} <threadId> -t <0|1>`,
+                    );
+                    return;
+                }
+                const isGroup = threadIsGroup(String(conversation), opts, cmd);
+                const result = await unpinMessage(getApi(), { threadId: String(conversation), isGroup, msgId });
+                if (result.notPinned) {
+                    refuse(`Message ${msgId} is not pinned in ${conversation}.`);
+                    return;
+                }
+                output(result, program.opts().json, () => success(`Unpinned message ${msgId} in ${conversation}`));
+            } catch (e) {
+                refuse(`Unpin failed: ${describeZaloError(e)}`);
             }
         });
 

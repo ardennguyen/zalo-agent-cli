@@ -11,7 +11,7 @@ import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getMessages, getMessageById, getDisplayName, getThreadType, upsertContact } from "../core/db.js";
+import { initDb, getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
 import { sendViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { storeLiveMessage } from "../core/live-store.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
@@ -73,17 +73,18 @@ function mentionName(uid, cacheOpen) {
  * in one call, and only runs when there is something missing, so the common
  * case still costs no network at all.
  *
- * Whatever comes back is written to `contacts`, so the next send skips the
- * call entirely.
+ * Nothing is written back. `msg send` writes nothing to zalo.db (Arden,
+ * 2026-09-30: "the msg send should not write anything, the data will come
+ * from live listener or sync"), so a member the cache cannot name costs this
+ * one lookup on every send until the listener or a sync learns their name.
  *
  * Never throws: no session, not a member of that group, or an API hiccup all
  * leave the uid in place, which is still a valid mention.
  *
  * @param {string[]} uids - uids the cache had no name for
- * @param {boolean} cacheOpen - whether openAccountDb() succeeded
  * @returns {Promise<Map<string, string>>} uid → display name, for those found
  */
-async function fetchMentionNames(uids, cacheOpen) {
+async function fetchMentionNames(uids) {
     const found = new Map();
     if (uids.length === 0) return found;
     try {
@@ -94,13 +95,6 @@ async function fetchMentionNames(uids, cacheOpen) {
             const name = profile?.displayName || profile?.zaloName;
             if (!name) continue;
             found.set(uid, name);
-            if (cacheOpen) {
-                try {
-                    upsertContact({ userId: uid, name, phone: profile?.phoneNumber || null });
-                } catch {
-                    /* caching the name is a nicety, not a reason to fail the send */
-                }
-            }
         }
     } catch {
         /* fall back to the uid — see the doc comment */
@@ -638,7 +632,7 @@ export function registerMsgCommands(program) {
                     return name;
                 });
                 if (missing.size > 0 && Number(opts.type) === 1) {
-                    const fetched = await fetchMentionNames([...missing], cached);
+                    const fetched = await fetchMentionNames([...missing]);
                     if (fetched.size > 0) {
                         expanded = expandMentions(finalMsg, (uid) => fetched.get(uid) || mentionName(uid, cached));
                     }

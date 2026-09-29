@@ -114,7 +114,15 @@ describe("MCP input schemas", () => {
         const s = schemaOf("zalo_send_message");
         assert.throws(() => s.parse({ threadId: "t1", text: "" }));
         assert.throws(() => s.parse({ text: "hi" }));
-        assert.equal(s.parse({ threadId: "t1", text: "hi" }).threadType, 0, "defaults to DM");
+        // Deliberately NOT defaulted. A zod .default(0) is indistinguishable
+        // from the caller choosing DM, so the handler could never tell "not
+        // given" from "explicitly a DM" -- which is how group sends went out
+        // as type 0. Absent here means the handler resolves it from the cache.
+        assert.equal(
+            s.parse({ threadId: "t1", text: "hi" }).threadType,
+            undefined,
+            "omitted threadType must stay undefined so the handler can infer it",
+        );
     });
 
     it("zalo_send_message rejects a threadType outside 0..1", () => {
@@ -150,11 +158,29 @@ describe("MCP input schemas", () => {
 });
 
 describe("MCP handlers", () => {
-    it("zalo_send_message returns {success, messageId} on the happy path", async () => {
+    it("zalo_send_message returns {success, messageId, threadType} on the happy path", async () => {
         const { server } = register();
         const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 0 });
         assert.equal(r.isError, undefined);
-        assert.deepEqual(payloadOf(r), { success: true, messageId: "m1" });
+        assert.deepEqual(payloadOf(r), { success: true, messageId: "m1", threadType: 0 });
+    });
+
+    it("an explicit threadType is obeyed, not second-guessed by the cache", async () => {
+        const { server } = register();
+        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 1 });
+        assert.equal(payloadOf(r).threadType, 1);
+    });
+
+    it("omitting threadType no longer silently means DM", async () => {
+        // The zod schema used to carry .default(0), which is indistinguishable
+        // from the caller choosing DM. A group send then went out as type 0:
+        // success is reported, the self-echo returns on cmd 501 instead of 521,
+        // mentions are dropped, and the MCP server -- which is the db writer --
+        // corrupts the cache that quoting and history read back.
+        const { server } = register();
+        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi" });
+        assert.equal(r.isError, undefined);
+        assert.ok("threadType" in payloadOf(r), "the resolved type must be visible to the caller");
     });
 
     it("zalo_send_message coerces threadType to a number before calling the API", async () => {
@@ -487,7 +513,10 @@ describe("zalo_send_message composes mentions and quotes", () => {
         const api = recordingApi();
         const r = await send({ threadId: "g1", text: "chào cả nhà" }, api);
         assert.strictEqual(api.calls[0].content, "chào cả nhà", "wrapping a plain send would change the wire format");
-        assert.deepEqual(payloadOf(r), { success: true, messageId: "sent1" });
+        // threadType is echoed back because it is now INFERRED from the cache
+        // when the caller omits it; without it in the reply there is no way to
+        // see what the server decided.
+        assert.deepEqual(payloadOf(r), { success: true, messageId: "sent1", threadType: THREAD_GROUP });
     });
 
     it("expands `@[uid]` from a contact and puts the mention on the wire", async () => {

@@ -83,7 +83,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **16** | `src/index.js` | the `register*Commands` calls |
 | MCP tools | **7** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **1371** as of 2026-09-29 (1367 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **1373** as of 2026-09-29 (1369 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that

@@ -5,11 +5,39 @@
 
 import { z } from "zod";
 import { openFile } from "../utils/open-file.js";
-import { getMessages, getMessageById, getDisplayName } from "../core/db.js";
+import { getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
+
+/**
+ * Resolve a thread's type the way the CLI does.
+ *
+ * The CLI rewrites a defaulted `--type` to 1 when the cache knows the id is a
+ * group (`applyCachedThreadType`, wired in src/index.js). The MCP tools had no
+ * equivalent: `threadType` carried a zod `.default(0)`, which is
+ * indistinguishable from the caller explicitly choosing DM, so a group send
+ * through MCP went out as type 0. It reports success, but the self-echo comes
+ * back on cmd 501 instead of 521, the listener re-types the conversation, and
+ * mentions are dropped silently. The MCP server IS the db writer, so the
+ * agent's own mistake corrupts the cache that quoting and history then read.
+ *
+ * Omitted means "work it out"; an explicit 0 or 1 is always obeyed.
+ *
+ * @param {string} threadId
+ * @param {number} [explicit] - the caller's threadType, if they gave one
+ * @returns {number} THREAD_USER or THREAD_GROUP
+ */
+function resolveThreadType(threadId, explicit) {
+    if (explicit !== undefined && explicit !== null) return Number(explicit);
+    try {
+        return getThreadType(String(threadId)) === "group" ? THREAD_GROUP : THREAD_USER;
+    } catch {
+        // No cache yet: fall back to the old assumption rather than failing.
+        return THREAD_USER;
+    }
+}
 
 /** Thread type constants matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -191,8 +219,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .int()
                     .min(0)
                     .max(1)
-                    .default(THREAD_USER)
-                    .describe("Thread type: 0=DM(User), 1=Group"),
+                    .optional()
+                    .describe(
+                        "Thread type: 0=DM(User), 1=Group. Omit it and the cached thread type is " +
+                            "used, which is what the CLI does — pass a value only to override that.",
+                    ),
                 quoteMsgId: z
                     .string()
                     .optional()
@@ -202,7 +233,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     ),
             }),
         },
-        async ({ threadId, text, threadType, quoteMsgId }) => {
+        async ({ threadId, text, threadType: threadTypeIn, quoteMsgId }) => {
+            const threadType = resolveThreadType(threadId, threadTypeIn);
             try {
                 const warnings = [];
 
@@ -280,9 +312,15 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
                 const result = await api.sendMessage(content, threadId, Number(threadType));
                 const messageId = result?.message?.msgId ?? result?.msgId ?? null;
+                // `msg react`, `msg undo` and a later quote all key off cliMsgId,
+                // and it appears in no other output. Without it an agent cannot
+                // act on the message it just sent -- not even by shelling out.
+                const cliMsgId = result?.message?.cliMsgId ?? result?.cliMsgId ?? null;
                 return ok({
                     success: true,
                     messageId,
+                    ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                    threadType,
                     // Only when it differs, so the common send keeps its shape:
                     // the agent wrote `@[123]` and needs to know what was sent.
                     ...(expanded.text !== text && { text: expanded.text }),
@@ -408,8 +446,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .int()
                     .min(0)
                     .max(1)
-                    .default(THREAD_USER)
-                    .describe("Thread type: 0=DM(User), 1=Group"),
+                    .optional()
+                    .describe(
+                        "Thread type: 0=DM(User), 1=Group. Omit it and the cached thread type is " +
+                            "used, which is what the CLI does — pass a value only to override that.",
+                    ),
                 limit: z.number().int().min(1).max(200).default(50).describe("Max messages to fetch"),
                 lastMsgId: z
                     .string()
@@ -424,7 +465,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .describe("Cursor: return cached messages older than this epoch-ms timestamp"),
             }),
         },
-        async ({ threadId, threadType, limit, lastMsgId, before }) => {
+        async ({ threadId, threadType: threadTypeIn, limit, lastMsgId, before }) => {
+            const threadType = resolveThreadType(threadId, threadTypeIn);
             try {
                 // The cache is the better source and usually the only one that
                 // answers: Zalo returns an empty set for the socket history

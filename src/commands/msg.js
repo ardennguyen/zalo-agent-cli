@@ -3,6 +3,7 @@
  * stickers, reactions, delete, forward.
  */
 
+import { existsSync } from "node:fs";
 import { resolve, join } from "path";
 import { getApi, getOwnId } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
@@ -960,12 +961,165 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("forward <msgId> <threadId>")
-        .description("Forward a message to another thread")
+        .description("Forward a text message to another conversation (text only — see below)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (msgId, threadId, opts) => {
+            // This command could never have worked. zca-js takes
+            // `forwardMessage(payload, threadIds, type)` where payload is
+            // `{ message: string }` and threadIds is an ARRAY; the old call
+            // passed the msgId string as the payload and a bare string as the
+            // thread list. `if (!payload.message) throw` fires on the first
+            // line of the API, so every invocation died with "Missing message
+            // content" before touching the network -- identically for -t 0 and
+            // -t 1, for every message type. The zca-api-surface test did not
+            // catch it because the method does exist; only its arity was wrong.
+            const jsonMode = program.opts().json;
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                process.exit(1);
+            }
+
+            let row;
             try {
-                const result = await getApi().forwardMessage(msgId, threadId, Number(opts.type));
-                output(result, program.opts().json, () => success("Message forwarded"));
+                initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+                row = getMessageById(msgId);
+            } catch (e) {
+                error(
+                    `Local cache unavailable (${e.message}). Run \`zalo-agent listen\` or \`zalo-agent sync\` first.`,
+                );
+                process.exit(1);
+            }
+            if (!row) {
+                error(`Message ${msgId} is not in the local cache.`);
+                info("Fetch the conversation first:  zalo-agent msg history <threadId> -t <0|1>");
+                process.exit(1);
+            }
+
+            // "Forward" is not one operation in Zalo. Only TEXT rides the
+            // mforward API and gets the "forwarded" badge. Everything else the
+            // app re-sends as a fresh message of its own kind -- measured
+            // 2026-09-28 by forwarding a contact card by hand: the copy that
+            // arrived carried no `reference` and no `fwLvl` at all, where a
+            // forwarded text carries both. So dispatch on the row's classified
+            // type and reproduce what the app does.
+            //
+            // Guard on `type`, never on `typeof text === "string"`: a synced
+            // photo/file/sticker stores a human placeholder ("[Hình ảnh]",
+            // "[File] x.pdf") in the text column, and a type-of check would
+            // forward that placeholder and call it a forwarded photo.
+            const api = getApi();
+            const threadType = Number(opts.type);
+            let raw = {};
+            try {
+                raw = JSON.parse(row.raw_data || "{}");
+            } catch {
+                /* a row with unreadable raw_data can still forward as text */
+            }
+            const c = raw.content && typeof raw.content === "object" ? raw.content : null;
+
+            /**
+             * Re-send a downloaded file as its own attachment.
+             *
+             * Goes through sendAttachments, not api.sendMessage: a non-inline
+             * upload needs a socket to settle its upload-complete frame, and a
+             * running daemon holds the account's only one. Calling sendMessage
+             * directly parks the send in ctx.uploadCallbacks with nothing left
+             * to settle it -- measured, a file forward simply hung for four
+             * minutes and returned nothing at all. sendAttachments hands the
+             * upload to the daemon and falls back to its own socket when none
+             * is running.
+             */
+            const resendLocal = async () => {
+                if (!row.localPath || !existsSync(row.localPath)) {
+                    error(`Message ${msgId} is "${row.type}" but its media is not downloaded locally.`);
+                    info("Fetch it first:  zalo-agent sync-media -T <threadId>");
+                    process.exit(1);
+                }
+                const out = await sendAttachments(api, [resolve(row.localPath)], threadId, threadType, {
+                    caption: "",
+                    uploadTimeout: 120000,
+                });
+                if (out.error) throw new Error(out.error);
+                return out.result;
+            };
+
+            const forwarders = {
+                // action "recommened.user" carries the shared person's uid in
+                // `params`; sendCard reproduces the card exactly as the app does.
+                card: async () => api.sendCard({ userId: String(c?.params ?? "").trim() }, threadId, threadType),
+                sticker: async () =>
+                    api.sendSticker({ id: c?.id, cateId: c?.catId, type: c?.type ?? 3 }, threadId, threadType),
+                link: async () => api.sendLink({ link: c?.href }, threadId, threadType),
+                // sendVideo wants the geometry too; Zalo rejects the call with
+                // code 114 when duration/width/height are missing. They live in
+                // the payload's `params` blob, not as top-level fields.
+                video: async () => {
+                    let p = {};
+                    try {
+                        p = typeof c?.params === "string" ? JSON.parse(c.params) : (c?.params ?? {});
+                    } catch {
+                        /* geometry falls back to the defaults below */
+                    }
+                    return api.sendVideo(
+                        {
+                            videoUrl: c?.href,
+                            thumbnailUrl: c?.thumb || "",
+                            duration: Number(p.duration) || 0,
+                            width: Number(p.video_width || p.video_original_width) || 1280,
+                            height: Number(p.video_height || p.video_original_height) || 720,
+                        },
+                        threadId,
+                        threadType,
+                    );
+                },
+                voice: async () => api.sendVoice({ voiceUrl: c?.href }, threadId, threadType),
+                photo: resendLocal,
+                file: resendLocal,
+                gif: resendLocal,
+                doodle: resendLocal,
+            };
+
+            // A shared contact arrives as a link whose action says otherwise.
+            const kind = c?.action === "recommened.user" ? "card" : row.type;
+
+            if (kind !== "text") {
+                const send = forwarders[kind];
+                if (!send) {
+                    error(`Cannot forward a "${row.type}" message — no send path reproduces it.`);
+                    info("Text uses the forward API; other kinds are re-sent as a new message of their own type.");
+                    process.exit(1);
+                }
+                try {
+                    const res = await send();
+                    output(res, jsonMode, () => success(`Forwarded ${kind} to ${threadId}`));
+                } catch (e) {
+                    error(`Forward failed (${kind}): ${e.message}`);
+                    process.exit(1);
+                }
+                return;
+            }
+            if (!row.text) {
+                error(`Message ${msgId} has no text to forward.`);
+                process.exit(1);
+            }
+
+            try {
+                // `reference` (the "forwarded from" decoration) is deliberately
+                // omitted. Real forwards carry an opaque 32-hex id there -- e.g.
+                // 1751af19dac61f3e039457dc53dcd348 -- alongside logSrcType 1 and
+                // fwLvl 1. That id is not the numeric msgId and nothing in the
+                // local cache holds it (no row carries `realMsgId`), so passing
+                // the numeric id would send a reference pointing at nothing.
+                // Without it the text still arrives; it just is not badged as a
+                // forward.
+                const result = await getApi().forwardMessage({ message: row.text }, [threadId], Number(opts.type));
+                const failed = result?.fail?.length ?? 0;
+                if (failed > 0) {
+                    error(`Forward rejected for ${failed} target(s): ${JSON.stringify(result.fail)}`);
+                    process.exit(1);
+                }
+                output(result, jsonMode, () => success(`Forwarded to ${threadId}`));
             } catch (e) {
                 error(e.message);
             }

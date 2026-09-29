@@ -255,6 +255,34 @@ function allInlineImages(paths) {
 }
 
 /**
+ * Pull the {msgId, cliMsgId} pairs out of an attachment send response.
+ *
+ * `msg send` reports `result.cliMsgId` off `result.message`, but an
+ * attachment send usually has no `result.message` at all: for a single
+ * jpg/jpeg/png/webp zca-js folds the caption into the attachment and leaves
+ * `message` null. The ids live in `result.attachment` instead -- an array,
+ * one entry per file.
+ *
+ * Until this existed an attachment's cliMsgId was unreachable from the CLI,
+ * so `msg undo` could not recall an image or a file at all unless a listener
+ * happened to be running and cached Zalo's echo of it. That is how tier 4
+ * ended up unable to clean up 24 attachments it had sent itself.
+ *
+ * @param {object} result - sendMessage() response
+ * @returns {Array<{msgId: string, cliMsgId: string|null}>}
+ */
+function sentAttachmentIds(result) {
+    const raw = result?.attachment;
+    const rows = Array.isArray(raw) ? raw : [raw];
+    return rows
+        .filter((r) => (r?.msgId ?? null) !== null)
+        .map((r) => ({
+            msgId: String(r.msgId),
+            cliMsgId: (r.cliMsgId ?? null) === null ? null : String(r.cliMsgId),
+        }));
+}
+
+/**
  * Send attachments, bringing the WebSocket listener up first when any of
  * them needs it.
  *
@@ -586,8 +614,10 @@ export function registerMsgCommands(program) {
             // second socket evicts the running daemon with cmd 3000 was
             // invisible from the outside, and untestable.
             else
-                output({ ...result, viaDaemon: Boolean(viaDaemon) }, program.opts().json, () =>
-                    success(`Image(s) sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
+                output(
+                    { ...result, sent: sentAttachmentIds(result), viaDaemon: Boolean(viaDaemon) },
+                    program.opts().json,
+                    () => success(`Image(s) sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
                 );
 
             // Only force-exit when the listener ran; it leaves handles behind
@@ -617,8 +647,10 @@ export function registerMsgCommands(program) {
             } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts);
             if (err) error(err);
             else
-                output({ ...result, viaDaemon: Boolean(viaDaemon) }, program.opts().json, () =>
-                    success(`File(s) sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
+                output(
+                    { ...result, sent: sentAttachmentIds(result), viaDaemon: Boolean(viaDaemon) },
+                    program.opts().json,
+                    () => success(`File(s) sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
                 );
 
             // listener.stop() closes the socket but does not release every

@@ -446,6 +446,45 @@ keeping when you add a new artifact type:
 Anything unique-per-account — quick-message keywords especially — gets a
 per-run unique value (`e2e<base36 timestamp>`) rather than a fixed string.
 
+### Recalling an attachment needs a patched zca-js
+
+`msg undo` and `msg delete` both refuse to run without a `cliMsgId`, and
+`cliMsgId` is client-generated — nothing derives it from a `msgId`. For a
+plain text send the CLI reports it; for an **attachment** it did not, so tier 4
+once finished a run with 24 images and files it had sent itself and could not
+clean up.
+
+Two things fixed that, and both have to hold:
+
+- `patches/zca-js+2.2.0.patch` stamps every attachment response, not just
+  `responses.message`. Upstream stamps only the latter, and for a single
+  jpg/jpeg/png/webp the caption folds into the attachment so `responses.message`
+  is `null` — leaving the send with no id anywhere.
+- `msg send-image` / `msg send-file --json` surface them as `sent: [{msgId,
+cliMsgId}]`, which is what `rememberSent()` in tier 2 writes to the ledger.
+
+A fresh `npm i` whose `prepare` script did not run gets an unpatched zca-js and
+silently loses this. `tests/unit/send-client-id.test.js` fails in that state
+rather than letting the next live run discover it.
+
+### What a passing `undo` does and does not prove
+
+Zalo's **group** recall endpoint keys on `msgId`: a wrong-but-plausible
+`cliMsgIdUndo` still recalls the message, and still answers `{"status": 0}`.
+An id shaped like a `msgId` rather than a timestamp is rejected outright. So
+`status: 0` alone is not evidence that the right message went away — it was
+returned for a deliberately wrong id in testing.
+
+Ground truth is the server's own push: with `listen` running, a real recall
+emits `{"event":"undo", "msgId": …, "applied":true}`, and a one-sided delete
+emits `deleted_for_me`. Prefer that over the REST history, which lagged by a
+full day when this was measured and did not show messages sent minutes
+earlier.
+
+The DM recall endpoint is a different URL (`/api/message/undo`) and may well
+validate the id. It is deliberately **untested** — the only DM target is a real
+person's chat, and attachments are never sent there.
+
 ---
 
 ## Writing tests — contributor guide

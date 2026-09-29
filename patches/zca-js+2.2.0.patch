@@ -529,7 +529,7 @@ index 8031f4e..c085286 100644
  export type SendMessageResponse = {
      message: SendMessageResult | null;
 diff --git a/node_modules/zca-js/dist/apis/sendMessage.js b/node_modules/zca-js/dist/apis/sendMessage.js
-index 5bda5bc..be58bbb 100644
+index 5bda5bc..5982d78 100644
 --- a/node_modules/zca-js/dist/apis/sendMessage.js
 +++ b/node_modules/zca-js/dist/apis/sendMessage.js
 @@ -9,6 +9,18 @@ const attachmentUrlType = {
@@ -586,7 +586,27 @@ index 5bda5bc..be58bbb 100644
          };
      }
      async function handleAttachment({ msg, attachments, mentions, quote, ttl, urgency }, threadId, type) {
-@@ -435,6 +452,7 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+@@ -383,6 +400,9 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+                 body: formData.getBuffer(),
+                 headers: formData.getHeaders(),
+                 fileType: "gif",
++                // Retained so the caller can learn which clientId went on the
++                // wire; the params object itself is encrypted past this point.
++                clientId: params.clientId,
+             });
+         }
+         const responses = [];
+@@ -393,6 +413,9 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+                 }, data.query || {})),
+                 body: data.body,
+                 headers: data.fileType == "gif" ? data.headers : {},
++                // send() reads url/body/headers only, so this rides along
++                // untouched and lets sendMessage() stamp the response.
++                clientId: data.clientId != undefined ? data.clientId : data.params && data.params.clientId,
+             });
+         }
+         return responses;
+@@ -435,17 +458,28 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
                  // send message and attachment separately
                  await handleMessage(message, threadId, type).then(async (data) => {
                      responses.message = (await send(data))[0];
@@ -594,7 +614,21 @@ index 5bda5bc..be58bbb 100644
                  });
                  msg = "";
                  mentions = undefined;
-@@ -446,6 +464,7 @@ export const sendMessageFactory = apiFactory()((api, ctx, utils) => {
+             }
+             const handledData = await handleAttachment({ msg, mentions, attachments, quote, ttl, styles, urgency }, threadId, type);
+-            responses.attachment = await send(handledData);
++            // Stamp the attachment responses too. Upstream stamps only
++            // responses.message, and for a single jpg/jpeg/png/webp canBeDesc
++            // is true so the caption folds into the attachment and
++            // responses.message stays null -- leaving an attachment send with
++            // NO cliMsgId anywhere, which makes `msg undo` unable to recall it
++            // at all. send() is Promise.all over the input array, so the
++            // results are index-aligned with handledData.
++            const sentAttachments = await send(handledData);
++            sentAttachments.forEach((r, i) => stampClientId(r, handledData[i] && handledData[i].clientId));
++            responses.attachment = sentAttachments;
+             msg = "";
+         }
          if (msg.length > 0) {
              const handledData = await handleMessage(message, threadId, type);
              responses.message = (await send(handledData))[0];

@@ -90,22 +90,26 @@ function rememberSent(thread, r, what) {
         }
         const msgId = node.msgId ?? node.message?.msgId;
         const cliMsgId = node.cliMsgId ?? node.message?.cliMsgId;
-        // Record on msgId ALONE. Requiring both was the bug: this helper was
-        // added to close the attachment-cleanup gap and closed nothing,
-        // because an attachment response never carries a cliMsgId.
-        // zca-js calls stampClientId() on `responses.message` only
-        // (sendMessage.js:455,467) and never on `responses.attachment`, and
-        // for a single jpg/jpeg/png/webp `canBeDesc` is true (:450) so the
-        // caption folds into the attachment and `responses.message` stays
-        // null. Every image and file send therefore recorded ZERO entries,
-        // including the two that go to a real person's DM. The stale
-        // tests/.artifacts.json told the story — 10 entries, all plain text.
+        // Record on msgId ALONE — requiring both was the bug. Upstream zca-js
+        // stamps `responses.message` only, and for a single jpg/jpeg/png/webp
+        // `canBeDesc` is true so the caption folds into the attachment and
+        // `responses.message` stays null. Every image and file send therefore
+        // recorded ZERO entries, and tier 4 could not clean up 24 attachments
+        // it had sent itself. The stale tests/.artifacts.json told the story —
+        // 10 entries, all plain text.
         //
-        // cliMsgId is not derivable here, but it is not required either:
-        // `msg undo` falls back to cachedMessageById() when -c is omitted
-        // (src/commands/msg.js), so tier 4 can still recall these as long as
-        // the row has reached zalo.db — which is why the DM attachment tests
-        // below force a history fetch.
+        // patches/zca-js+2.2.0.patch now stamps each attachment response too,
+        // and `msg send-image`/`send-file --json` surface them as `sent[]`, so
+        // the cliMsgId normally IS here. Verified live against the group on
+        // 2026-09-29: the id the CLI reported matched the one Zalo echoed back
+        // over the socket, byte for byte, on both the direct-socket and the
+        // via-daemon route.
+        //
+        // Still keyed on msgId alone, because an unpatched install (a fresh
+        // `npm i` whose postinstall did not run) gets none — and does not need
+        // one: `msg undo` falls back to cachedMessageById() when -c is omitted,
+        // so tier 4 can still recall these as long as the row reached zalo.db,
+        // which is why the DM attachment tests below force a history fetch.
         if (msgId) found.push({ msgId: String(msgId), cliMsgId: cliMsgId ? String(cliMsgId) : null });
         for (const v of Object.values(node)) if (v && typeof v === "object") walk(v);
     };
@@ -211,6 +215,12 @@ describe("tier 2 · quote-reply", { skip }, () => {
     it("quotes a message in the group", async () => {
         const target = remember(T.group, await send(T, T.group, mark("quote target")), "quote-target");
         await sleep(600);
+        // --quote rebuilds the quoted payload from zalo.db, and `msg send`
+        // does not write there, so a just-sent message is not quotable until
+        // something caches it. The CLI says so explicitly rather than
+        // failing obscurely ("not in the local cache … Fetch the thread
+        // first"). Same dependency the attachment recall has.
+        await cacheThreadHistory(T.group);
         assertDisposable(T.group.threadId, "msg send --quote");
         const r = await runJson(
             ["msg", "send", "-t", "1", T.group.threadId, mark("group quote reply"), "--quote", target.msgId],
@@ -226,6 +236,7 @@ describe("tier 2 · quote-reply", { skip }, () => {
         async () => {
             const target = remember(T.dm, await send(T, T.dm, mark("dm quote target")), "dm-quote-target");
             await sleep(600);
+            await cacheThreadHistory(T.dm);
             assertDisposable(T.dm.threadId, "msg send --quote");
             const r = await runJson(
                 ["msg", "send", "-t", "0", T.dm.threadId, mark("dm quote reply"), "--quote", target.msgId],
@@ -562,6 +573,9 @@ describe("tier 2 · DM messages", { skip: skip || (T?.dm ? false : "no DM target
     it("forwards a message into the disposable group", async () => {
         const sent = remember(T.dm, await send(T, T.dm, mark("forward source")), "dm-forward-source");
         await sleep(500);
+        // Forward resolves the source from zalo.db too, so the source
+        // thread has to be cached before the just-sent message is findable.
+        await cacheThreadHistory(T.dm);
         assertDisposable(T.group.threadId, "msg forward");
         // Demand success. The old assertion here was crash-only, with a
         // comment excusing "a clean error" as acceptable — and `msg forward`

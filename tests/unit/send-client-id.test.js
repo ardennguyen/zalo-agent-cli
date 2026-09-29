@@ -15,6 +15,8 @@
  *   · `msg send --react` auto-reacts with whatever `send` believes it sent.
  *   · `msg send --quote` rebuilds the quote payload from a cached row's
  *     cliMsgId, so a row whose id came from the guess cannot be quoted.
+ *   · `msg undo` / `msg delete` refuse outright without one, which is how an
+ *     image or a file could be sent and then not be cleanable.
  *
  * `patches/zca-js+2.2.0.patch` now hands the clientId back on the response, and
  * these tests hold that patch to its claim by decrypting the request body and
@@ -195,15 +197,47 @@ describe("sendMessage reports the clientId it put on the wire", () => {
         assert.equal(result.message.cliMsgId, String(textRequest(sent).params.clientId));
     });
 
-    it("leaves the attachment responses alone", async () => {
-        // The patch covers the text path only. Saying so here keeps a future
-        // reader from assuming an attachment carries a cliMsgId it does not.
-        const { send } = harness({ uploadAttachment: async () => [UPLOADED_FILE] });
+    it("stamps the attachment responses too", async () => {
+        // The case that made this necessary: a lone image or file. `canBeDesc`
+        // folds the caption into the attachment, so `responses.message` is
+        // null and — before the patch reached this path — the send returned no
+        // cliMsgId anywhere. `msg undo` and `msg delete` both refuse without
+        // one, so tier 4 could not clean up the attachments it had just sent.
+        const { send, sent } = harness({ uploadAttachment: async () => [UPLOADED_FILE] });
         const result = await send({ msg: "", attachments: ["ghi-chu.txt"] }, THREAD_USER, ThreadType.User);
 
-        assert.equal(result.message, null);
+        assert.equal(result.message, null, "sanity: the caption folded into the attachment");
         assert.equal(result.attachment.length, 1);
-        assert.equal(result.attachment[0].cliMsgId, undefined);
+
+        const wire = sent.find((r) => r.params && "clientId" in r.params && !("message" in r.params));
+        assert.ok(wire, "the attachment request must carry a clientId");
+        assert.equal(
+            result.attachment[0].cliMsgId,
+            String(wire.params.clientId),
+            "the reported cliMsgId must be the clientId Zalo received",
+        );
+    });
+
+    it("pairs each attachment with its own clientId, not the first one", async () => {
+        // The stamping zips `send()`'s results against its inputs by index.
+        // That is only sound because `send()` is a Promise.all over the array
+        // it was handed. Two files with distinct ids catch a regression that
+        // reorders or flattens them — and catch an off-by-one that would
+        // silently label file 2 with file 1's id, which recalls the wrong
+        // message.
+        const uploads = [
+            { ...UPLOADED_FILE, fileName: "mot.txt", clientFileId: "111" },
+            { ...UPLOADED_FILE, fileName: "hai.txt", clientFileId: "222" },
+        ];
+        const { send } = harness({ uploadAttachment: async () => uploads });
+        const result = await send({ msg: "", attachments: ["mot.txt", "hai.txt"] }, THREAD_USER, ThreadType.User);
+
+        assert.equal(result.attachment.length, 2);
+        assert.deepEqual(
+            result.attachment.map((a) => a.cliMsgId),
+            ["111", "222"],
+            "each response carries the clientId of its own upload, in order",
+        );
     });
 });
 
@@ -235,6 +269,16 @@ describe("msg send never fabricates a cliMsgId", () => {
             /Date\.now\(\)/,
             "reading the clock here is the defect: it is a different number from the one zca-js sent",
         );
+    });
+
+    it("surfaces the attachment ids that `msg undo` and `msg delete` need", () => {
+        // `msg send` reads result.message; an attachment send has none. Both
+        // attachment commands go through sentAttachmentIds(), and both must
+        // put it in the JSON — dropping it from either one is the regression
+        // that leaves a sent file unrecallable.
+        const uses = SRC.match(/sent: sentAttachmentIds\(result\)/g) || [];
+        assert.equal(uses.length, 2, "both `send-image` and `send-file` must report it");
+        assert.match(SRC, /function sentAttachmentIds\(result\)/);
     });
 
     it("gives --react only an id the send actually returned", () => {

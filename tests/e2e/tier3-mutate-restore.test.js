@@ -325,7 +325,7 @@ describe("tier 3 · group rename", { skip }, () => {
         const temp = `${T.group.name} (e2e)`;
 
         const r = await runCli(["group", "rename", T.group.threadId, temp], live(T, { timeout: 120_000 }));
-        assert.equal(errorLineOf(r.stdout), null, `rename failed: ${r.all.slice(0, 300)}`);
+        assert.equal(errorLineOf(r.stdout), null, `rename failed: ${errorLineOf(r.stdout)}`);
         assert.ok(hasSuccess(r.stdout), "rename should report success");
         renamed = true;
         await sleep(2000);
@@ -377,7 +377,7 @@ describe("tier 3 · group settings", { skip }, () => {
             ],
             live(T, { timeout: 120_000 }),
         );
-        assert.equal(errorLineOf(r.stdout), null, `group settings not restored: ${r.all.slice(0, 300)}`);
+        assert.equal(errorLineOf(r.stdout), null, `group settings not restored: ${errorLineOf(r.stdout)}`);
     });
 
     it("toggles a setting on and back off", async () => {
@@ -822,7 +822,7 @@ describe("tier 3 · the read-only sync passes", { skip }, () => {
     it("sync --plan reports a plan without touching the socket or the lock", async () => {
         const r = await runCli(["sync", "--plan"], live(T, { timeout: 120_000 }));
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-        assert.equal(errorLineOf(r.stdout), null, `sync --plan failed: ${r.all.slice(0, 300)}`);
+        assert.equal(errorLineOf(r.stdout), null, `sync --plan failed: ${errorLineOf(r.stdout)}`);
         // --plan must not be able to reach the phone-confirm path.
         assert.doesNotMatch(r.all, /ĐỒNG BỘ NGAY|confirm .*phone/i, "--plan must never prompt the phone");
     });
@@ -830,19 +830,24 @@ describe("tier 3 · the read-only sync passes", { skip }, () => {
     it("sync-media --dry-run reports without downloading", async () => {
         const r = await runCli(["sync-media", "--dry-run", "-n", "5"], live(T, { timeout: 180_000 }));
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-        assert.equal(errorLineOf(r.stdout), null, `sync-media --dry-run failed: ${r.all.slice(0, 300)}`);
+        assert.equal(errorLineOf(r.stdout), null, `sync-media --dry-run failed: ${errorLineOf(r.stdout)}`);
     });
 
     it("sync-boards reads one thread's board items", async () => {
         const r = await runCli(["sync-boards", "-T", T.group.threadId], live(T, { timeout: 180_000 }));
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-        assert.equal(errorLineOf(r.stdout), null, `sync-boards failed: ${r.all.slice(0, 300)}`);
+        assert.equal(errorLineOf(r.stdout), null, `sync-boards failed: ${errorLineOf(r.stdout)}`);
     });
 
     it("sync-cloud indexes one page", async () => {
         const r = await runCli(["sync-cloud", "-p", "1"], live(T, { timeout: 180_000 }));
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-        assert.equal(errorLineOf(r.stdout), null, `sync-cloud failed: ${r.all.slice(0, 300)}`);
+        // Report the error LINE, not the first 300 chars of everything. The
+        // disclaimer goes to stdout ahead of any command output, so
+        // `r.all.slice(0, 300)` is all disclaimer and the real failure was
+        // invisible -- a live run reported "sync-cloud failed: <disclaimer>",
+        // which reads like the disclaimer was the error.
+        assert.equal(errorLineOf(r.stdout), null, `sync-cloud failed: ${errorLineOf(r.stdout)}`);
     });
 
     it("sync-reactions drains one page within its own wait bound", async () => {

@@ -87,7 +87,7 @@ describe("tier 4 · message deletion", { skip }, () => {
             live(T),
         );
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-        assert.equal(errorLineOf(r.stdout), null, `msg delete failed: ${r.all.slice(0, 300)}`);
+        assert.equal(errorLineOf(r.stdout), null, `msg delete failed: ${errorLineOf(r.stdout)}`);
         assert.ok(hasSuccess(r.stdout), `msg delete did not report success: ${r.all.slice(0, 300)}`);
     });
 
@@ -128,7 +128,7 @@ describe("tier 4 · message deletion", { skip }, () => {
                 live(T),
             );
             assert.doesNotMatch(r.all, /Cannot read properties|at Command\.|Unhandled/, r.all.slice(0, 300));
-            assert.equal(errorLineOf(r.stdout), null, `DM msg delete failed: ${r.all.slice(0, 300)}`);
+            assert.equal(errorLineOf(r.stdout), null, `DM msg delete failed: ${errorLineOf(r.stdout)}`);
             assert.ok(hasSuccess(r.stdout), `DM msg delete did not report success: ${r.all.slice(0, 300)}`);
         },
     );
@@ -226,7 +226,7 @@ describe("tier 4 · message deletion", { skip }, () => {
             await sleep(800);
             assertDisposable(T.dm.threadId, "msg undo");
             const r = await runCli(["msg", "undo", "-t", "0", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId], live(T));
-            assert.equal(errorLineOf(r.stdout), null, `DM undo failed: ${r.all.slice(0, 300)}`);
+            assert.equal(errorLineOf(r.stdout), null, `DM undo failed: ${errorLineOf(r.stdout)}`);
             assert.ok(hasSuccess(r.stdout), `DM undo did not report success: ${r.all.slice(0, 300)}`);
         },
     );

@@ -3,6 +3,7 @@
  */
 
 import { join } from "path";
+import { MuteAction } from "zca-js";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
@@ -276,7 +277,18 @@ export function registerConvCommands(program) {
         .option("-d, --duration <secs>", "Duration in seconds (-1 = forever)", "-1")
         .action(async (threadId, opts) => {
             try {
-                const result = await getApi().setMute(threadId, Number(opts.type), Number(opts.duration));
+                // zca-js is setMute(params, threadID, type) -- the options
+                // object comes FIRST. This used to pass (threadId, type,
+                // duration) positionally, so `params` got the thread id
+                // string, `threadID` got 0 or 1, and the request went out
+                // with `toid: 0`. Zalo answered "Tham so khong hop le" every
+                // time: `conv mute` had never once worked. Same defect, and
+                // the same shape, as the `msg delete` arity bug.
+                const result = await getApi().setMute(
+                    { duration: Number(opts.duration), action: MuteAction.MUTE },
+                    threadId,
+                    Number(opts.type),
+                );
                 output(result, program.opts().json, () => success("Conversation muted"));
             } catch (e) {
                 error(e.message);
@@ -288,7 +300,10 @@ export function registerConvCommands(program) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
             try {
-                const result = await getApi().setMute(threadId, Number(opts.type), 0);
+                // Same arity bug as `mute` above. Unmute is an ACTION, not a
+                // duration of 0 -- zca-js derives the duration itself once
+                // action is UNMUTE.
+                const result = await getApi().setMute({ action: MuteAction.UNMUTE }, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Conversation unmuted"));
             } catch (e) {
                 error(e.message);

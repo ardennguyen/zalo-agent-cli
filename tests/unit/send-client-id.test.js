@@ -289,3 +289,38 @@ describe("msg send never fabricates a cliMsgId", () => {
         assert.match(body, /cliMsgId: cliMsgId \|\| String\(result\.message\.msgId\)/);
     });
 });
+
+describe("msg forward reports ids its own undo can use", () => {
+    const SRC = readFileSync(join(import.meta.dirname, "..", "..", "src", "commands", "msg.js"), "utf8");
+
+    /** The `msg forward` action body, comments stripped. */
+    function forwardAction() {
+        const start = SRC.indexOf('msg.command("forward <msgId> <threadId>")');
+        assert.ok(start > 0, "could not find `msg forward`");
+        const end = SRC.indexOf("msg.command(", start + 20);
+        assert.ok(end > start, "could not find the end of `msg forward`");
+        return SRC.slice(start, end)
+            .split("\n")
+            .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+            .join("\n");
+    }
+
+    it("pairs each forwarded msgId with a cliMsgId", () => {
+        // zca-js mints ONE clientId for the whole call and echoes it per
+        // target as `clientId`, while the patch reports it at the top level
+        // as `cliMsgId`. Neither spot alone gives a caller the pair that
+        // `msg undo` needs, so tier 4 recorded the forwarded message with a
+        // null id and could not recall it.
+        const body = forwardAction();
+        assert.match(body, /const sent = /, "forward must build a `sent` array");
+        assert.match(body, /x\.clientId \?\? shared/, "each target falls back to the shared id");
+        assert.match(body, /output\(\{ \.\.\.result, sent }/, "and must actually report it");
+    });
+
+    it("reads the failure key Zalo actually sends", () => {
+        // The response is {success, failed}. This checked `result.fail`,
+        // which is never a key on it, so the count was always 0 and a
+        // rejected target was reported as a success.
+        assert.match(forwardAction(), /result\?\.failed/, "must read `failed`");
+    });
+});

@@ -428,7 +428,7 @@ export function registerMsgCommands(program) {
         )
         .option(
             "--quote <msgId>",
-            "Send as a quote-reply to this message. Text messages only, and it must be in the local cache — run `msg history <threadId>` first if not.",
+            "Send as a quote-reply to this message. Text messages only, and it must already be in the local cache. A running `listen`/`mcp` daemon is what puts messages there as they arrive; `msg history`/`sync` backfill older ones, but neither can seed a message you just sent.",
         )
         .option("--style <specs...>", "Text styles. Format: start:len:style (e.g. 0:5:bold 6:5:italic)")
         .option("--md", "Parse markdown-like formatting: **bold** *italic* __underline__ ~~strike~~ {red:text}")
@@ -1159,12 +1159,35 @@ export function registerMsgCommands(program) {
                 // Without it the text still arrives; it just is not badged as a
                 // forward.
                 const result = await getApi().forwardMessage({ message: row.text }, [threadId], Number(opts.type));
-                const failed = result?.fail?.length ?? 0;
-                if (failed > 0) {
-                    error(`Forward rejected for ${failed} target(s): ${JSON.stringify(result.fail)}`);
+
+                // Zalo answers {success: [...], failed: [...]}. This read
+                // `result.fail`, which is never a key on that response, so
+                // the count was always 0 and a rejected target was reported
+                // as a success. Accept both spellings rather than betting on
+                // one.
+                const rejected = result?.failed ?? result?.fail ?? [];
+                if (rejected.length > 0) {
+                    error(`Forward rejected for ${rejected.length} target(s): ${JSON.stringify(rejected)}`);
                     process.exit(1);
                 }
-                output(result, jsonMode, () => success(`Forwarded to ${threadId}`));
+
+                // Pair each target's msgId with the cliMsgId, the same
+                // `sent` shape send-image and send-file report. zca-js mints
+                // ONE clientId for the whole call and echoes it per target as
+                // `clientId`, while patches/zca-js+2.2.0.patch puts it at the
+                // top level as `cliMsgId` -- so neither spot alone gives a
+                // caller the {msgId, cliMsgId} pair that `msg undo` needs.
+                // Tier 4 hit exactly that: it recorded the forwarded msgId
+                // with a null id and could not recall the message.
+                const shared = (result?.cliMsgId ?? null) === null ? null : String(result.cliMsgId);
+                const sent = (Array.isArray(result?.success) ? result.success : [])
+                    .filter((x) => (x?.msgId ?? null) !== null)
+                    .map((x) => ({
+                        msgId: String(x.msgId),
+                        cliMsgId: (x.clientId ?? shared ?? null) === null ? null : String(x.clientId ?? shared),
+                    }));
+
+                output({ ...result, sent }, jsonMode, () => success(`Forwarded to ${threadId}`));
             } catch (e) {
                 error(e.message);
             }

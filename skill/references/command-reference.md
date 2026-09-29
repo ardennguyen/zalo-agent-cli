@@ -135,16 +135,20 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 
 ---
 
-## Conversations — `conv` (15 commands)
+## Conversations — `conv` (20 commands)
 
 | Command | Description |
 |---------|-------------|
 | `recent [-n, --limit <n>] [--friends-only] [--groups-only]` | List recent conversations with `threadId`. Reads the **local SQLite cache first** (fast, works offline) and only falls back to a live network fetch (friends by `lastActionTime` + groups batch-fetched) if the cache is empty or errors. Default limit 20. |
 | `pinned` | List pinned conversations. |
+| `pin <threadId> [-t 0\|1]` | Pin a conversation to the top of the list. Sends Zalo Web's own `POST {conversation}/api/pinconvers/updatev2` with `{actionType: 1, conversations: ["g<id>"｜"u<id>"], tab: 0}` — zca-js's `setPinnedConversations` omits `tab`, which is why this does not use it. Check the result with `conv pinned`. |
+| `unpin <threadId> [-t 0\|1]` | Unpin (`actionType: 2`, same endpoint). |
 | `archived` | List archived conversations. |
+| `archive <threadId> [-t 0\|1]` | Move a conversation to Zalo's **Other** tab ("Khác" — the API's archived list, which `conv archived` shows). `POST {label}/api/archivedchat/update` with `{ids: [{id, type}], version, actionType: 0}`. Reads the archived list first and sends back **the server's own `version`**, as Zalo Web does (zca-js sends `Date.now()` instead); if no usable version can be read it sends **nothing** and fails. `--json` carries `previousVersion` (what was sent) and `version` (what Zalo returned). A `needResync` in the reply is warned about in human output and reported as the boolean `needResync` in `--json`. |
+| `unarchive <threadId> [-t 0\|1]` | Move it back to Focused ("Ưu tiên") — `actionType: 1`. Note the inversion: archive is 0 and unarchive is 1, the opposite way round from `pin`/`unpin`'s 1/2. |
 | `mute <threadId> [-t 0\|1] [-d, --duration <secs>]` | Mute a conversation. `-d -1` = forever (default). |
 | `unmute <threadId> [-t 0\|1]` | Unmute. |
-| `read <threadId> [-t 0\|1]` | Mark as read (sends a seen event). |
+| `read <threadId> [-t 0\|1]` | Mark as read the two ways Zalo Web does. **(1)** `conv/removeUnreadMark` clears the manual unread flag (undoing `conv unread`) and is always sent, even with nothing cached. **(2)** `seenv2` names the newest cached **incoming** message Zalo can identify — skipping your own messages, system-line placeholders and recalled rows — and sends that message's own `st`/`at`/`cmd`. For rows cached before the listener kept those fields, `cmd` is derived from the thread type (deterministic, not a guess) and `st=3, at=5` are guesses; the guessed field names are listed in `seen.guessed` in `--json` (never `cmd`) and named in a warning in human output. The seen receipt is **refused, exit 1**, when no identifiable incoming message exists in the newest 50 cached rows, or when the anchor is a sync-restored row whose sender id is noised; `removeUnreadMark` has already been sent by then. A seenv2 that Zalo itself rejects does not change the exit code. `--json` reports `unreadMark` and `seen` separately. **Seen receipts are sent by this command only, never automatically.** |
 | `unread <threadId> [-t 0\|1]` | Mark as unread (zca-js `addUnreadMark`; this previously called a nonexistent `markAsUnread` and failed before reaching the network). |
 | `hidden` | List hidden conversations. |
 | `hide <threadIds...> [-t 0\|1]` | Hide one or more conversations. |
@@ -154,6 +158,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `auto-delete-status` | View current auto-delete-chat settings. |
 | `auto-delete <threadId> <ttl> [-t 0\|1]` | Set auto-delete TTL for a conversation. Valid `ttl`: `off`, `1d`, `7d`, `14d` (validated client-side against a fixed map — anything else errors out). |
 | `delete <threadId> [-t 0\|1]` | Delete conversation history. |
+| `forget [threadId] [--orphans] [--dry-run]` | Delete **this machine's** local copy of a conversation: its messages, reactions, board items, reminders, cloud index and downloaded media. **Zalo is never contacted** — nothing is deleted on the server or on any other device. `--orphans` forgets every conversation the account no longer has instead of a named one; `--dry-run` reports what would go without removing it. Requires a `threadId` or `--orphans`, and exits 1 with a pointer if given neither. |
 
 ---
 

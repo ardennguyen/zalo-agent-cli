@@ -282,11 +282,14 @@ describe("msg send never fabricates a cliMsgId", () => {
     });
 
     it("gives --react only an id the send actually returned", () => {
-        // The fallback is the msgId, which is what `msg react` uses when nobody
-        // passes -c. It may not register, and the command says so — but it is
-        // never a made-up timestamp.
+        // Never a made-up timestamp, and no longer the msgId either: keyed on
+        // the msgId, Zalo accepts a reaction and never shows it, so a send
+        // that came back without a cliMsgId now skips --react and says how to
+        // react later. What the reaction really carries is asserted on the
+        // decrypted request in tests/unit/msg-react-cache.test.js; this only
+        // keeps the old fallback from coming back.
         const body = sendAction();
-        assert.match(body, /cliMsgId: cliMsgId \|\| String\(result\.message\.msgId\)/);
+        assert.doesNotMatch(body, /cliMsgId:\s*cliMsgId\s*\|\|\s*String\(result\.message\.msgId\)/);
     });
 });
 

@@ -35,6 +35,7 @@ import {
 import { ensureAssets, loadCodecs } from "./assets.js";
 import { classifySyncMessage } from "./message-types.js";
 import { resolveNonFriendDms } from "./gid.js";
+import { startKeepAlive } from "./keepalive.js";
 import { attachLiveStore } from "../live-store.js";
 
 /**
@@ -66,6 +67,16 @@ const PER_SHARD_BUDGET_MS = 30000;
  * opens four; fifty at once got the socket dropped with no error frame.
  */
 const DEFAULT_WAVE_SIZE = 4;
+/**
+ * How many times a dropped socket may be reconnected inside one restore.
+ *
+ * One, deliberately. A reconnect is cheap for us and potentially expensive for
+ * the account owner -- if the server does not carry the phone's confirmation
+ * across it, the resumed request prompts their phone again -- so this retries
+ * once and then reports honestly rather than looping on a wire that keeps
+ * dying.
+ */
+const MAX_RESUMES = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -261,6 +272,115 @@ export function resolveWaitBudget(budgetMs, fallbackMs) {
     return 30000;
 }
 
+/**
+ * Which shards still have to go out, and whether a dropped socket is worth one
+ * more reconnect.
+ *
+ * Pulled out of the wave loop because this is the part that has to stay right
+ * across a disconnect: a shard the phone already served must never be asked for
+ * again (it would re-fetch, and in the worst case re-prompt), and a shard that
+ * was in flight when the wire died must go out again or its messages are simply
+ * lost. Mixing that bookkeeping in with the decrypt/decode/store body is how it
+ * gets broken quietly.
+ *
+ * @param {number} shardCount - how many message rounds the run needs
+ * @param {object} [opts]
+ * @param {number} [opts.waveSize=DEFAULT_WAVE_SIZE] sessions in flight at once
+ * @param {number} [opts.maxResumes=0] reconnects allowed; 0 disables resuming
+ * @returns {{remaining: () => number, resumes: () => number, done: () => boolean,
+ *   pending: () => number[], nextWave: () => number[], settle: (i: number) => boolean,
+ *   useResume: () => boolean}}
+ */
+export function createShardSchedule(shardCount, opts = {}) {
+    const waveSize = Math.max(1, opts.waveSize || DEFAULT_WAVE_SIZE);
+    let resumesLeft = Number.isFinite(opts.maxResumes) && opts.maxResumes > 0 ? opts.maxResumes : 0;
+    let resumes = 0;
+    const pending = [];
+    for (let i = 0; i < Math.max(0, shardCount); i++) pending.push(i);
+
+    return {
+        remaining: () => pending.length,
+        resumes: () => resumes,
+        done: () => pending.length === 0,
+        pending: () => pending.slice(),
+        /** The shard indexes to send next -- never more than one wave at a time. */
+        nextWave: () => pending.slice(0, waveSize),
+        /**
+         * Mark a shard settled: served, or refused by the phone. Either way it
+         * is finished with, and a resume must not send it again.
+         *
+         * @param {number} idx - shard index
+         * @returns {boolean} true when it was still pending
+         */
+        settle(idx) {
+            const at = pending.indexOf(idx);
+            if (at >= 0) pending.splice(at, 1);
+            return at >= 0;
+        },
+        /**
+         * Spend one reconnect allowance.
+         *
+         * @returns {boolean} true when a reconnect may be attempted
+         */
+        useResume() {
+            if (resumesLeft <= 0) return false;
+            resumesLeft--;
+            resumes++;
+            return true;
+        },
+    };
+}
+
+/**
+ * Turn the end state of a restore into a `reason` and, when it failed outright,
+ * the message to throw.
+ *
+ * These two failures need opposite advice and used to read identically:
+ *
+ * - **the socket died** -- nothing is wrong with the phone, and if it had
+ *   already confirmed, that tap is spent; the user needs to know a re-run costs
+ *   them another one.
+ * - **the phone never answered** -- the connection was fine the whole time, so
+ *   the only thing to do differently is confirm the prompt.
+ *
+ * @param {object} st
+ * @param {boolean} st.socketDied - the wire dropped and could not be resumed
+ * @param {boolean} st.timedOut - the wait budget ran out with the socket up
+ * @param {boolean} st.confirmed - the phone answered (transfer_status >= 4)
+ * @param {number} st.messagesSaved
+ * @param {number} st.finished - shards served
+ * @param {number} st.total - shards requested
+ * @param {number} [st.resumes=0] - reconnects used
+ * @param {number} [st.waitMs] - the budget, for the timeout wording
+ * @returns {{reason: string, error: string|null}}
+ */
+export function describeRestoreOutcome(st) {
+    const resumes = st.resumes || 0;
+    const secs = Number.isFinite(st.waitMs) ? Math.round(st.waitMs / 1000) : null;
+
+    if (st.socketDied && !st.messagesSaved) {
+        return {
+            reason: "socket-lost",
+            error:
+                (resumes ? `the connection dropped again after ${resumes} reconnect(s)` : "the connection dropped") +
+                " before any messages arrived" +
+                (st.confirmed
+                    ? " — your phone had already confirmed, so re-running will prompt it again"
+                    : " — your phone was never prompted, so nothing was spent"),
+        };
+    }
+    if (st.timedOut && !st.messagesSaved) {
+        return {
+            reason: "timeout",
+            error: st.confirmed
+                ? `your phone confirmed but served no messages within ${secs ?? "the"}${secs ? "s" : " budget"} — the connection stayed up the whole time`
+                : `your phone did not answer the sync prompt${secs ? ` within ${secs}s` : ""} — the connection stayed up, so nothing was lost; re-run and confirm it`,
+        };
+    }
+    if (st.finished < st.total) return { reason: st.socketDied ? "socket-lost" : "partial", error: null };
+    return { reason: "complete", error: null };
+}
+
 export function isSessionComplete(state) {
     if (!state) return false;
     if (state.sawLast) return true;
@@ -376,7 +496,12 @@ export class SyncV2 {
      * @param {number} [opts.waitMs=120000] per-phase wait budget.
      * @param {(s: {phase: string, detail?: string}) => void} [opts.onStatus]
      * @param {boolean} [opts.liveStore=true] false when the caller already taps live traffic
-     * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string, days:number|null, from:number, confirmed:boolean}>}
+     * @param {number|false} [opts.keepAlive] heartbeat interval in ms, or false when the
+     *   caller already pings this socket for the whole window it owns.
+     * @param {() => Promise<boolean>} [opts.reconnect] re-open the listener socket after a
+     *   drop and resolve true once it is live. Supplied by the caller because this class
+     *   never starts or stops the listener itself. Without it a dropped socket ends the run.
+     * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string, days:number|null, from:number, confirmed:boolean, resumes:number, rePrompted:boolean}>}
      */
     async restore(opts = {}) {
         const shardSize = Math.min(30, Math.max(1, opts.shardSize || 30));
@@ -441,7 +566,6 @@ export class SyncV2 {
                 }
             }
         };
-        L.ws.on("message", onMsg);
 
         // Zalo Web does not freeze while a sync runs: new messages keep arriving
         // on the same socket and keep being stored. A full-history run holds this
@@ -465,23 +589,94 @@ export class SyncV2 {
         // only symptom is a silent stall, which is what made the first two
         // runs so hard to diagnose.
         let closeInfo = null;
+        // Declared before the close handler that reads it: the handler reports
+        // how long the heartbeat had gone unanswered when the wire died.
+        let keeper = null;
         const onClose = (code, reason) => {
             closeInfo = { code, reason: String(reason || "") };
+            // A 1006 carries no close frame, so the only thing that can say
+            // whether the wire had already gone quiet is our own heartbeat.
+            // Zalo echoes every cmd 2/1 straight back, so a ping count well
+            // ahead of the echo count is a half-open socket we noticed late --
+            // the one piece of evidence a bare 1006 otherwise never leaves.
+            const hb = keeper?.stats();
+            closeInfo.heartbeat = hb?.sent
+                ? `${hb.echoed}/${hb.sent} echoed, last ${Math.round(hb.silentMs / 1000)}s ago`
+                : "";
             onStatus({
                 phase: "warn",
-                detail: `socket closed (code ${code}${closeInfo.reason ? ": " + closeInfo.reason : ""})`,
+                detail:
+                    `socket closed (code ${code}${closeInfo.reason ? ": " + closeInfo.reason : ""})` +
+                    (closeInfo.heartbeat ? ` — heartbeat ${closeInfo.heartbeat}` : ""),
             });
         };
         const onSockErr = (e) => {
             closeInfo = closeInfo || { code: "error", reason: e?.message || String(e) };
             onStatus({ phase: "warn", detail: `socket error: ${closeInfo.reason}` });
         };
-        try {
-            L.ws.on("close", onClose);
-            L.ws.on("error", onSockErr);
-        } catch {
-            /* an older ws shape without these events is not fatal */
-        }
+
+        // Everything below is attached to the RAW socket, so all of it has to be
+        // re-attached after a reconnect -- `L.ws` is a different object then, and
+        // zca-js nulls the old one. (`attachLiveStore` taps the Listener, which
+        // outlives the socket, so it is deliberately not in here.)
+        const attachSocketTaps = () => {
+            try {
+                L.ws.on("message", onMsg);
+                L.ws.on("close", onClose);
+                L.ws.on("error", onSockErr);
+            } catch {
+                /* an older ws shape without these events is not fatal */
+            }
+            if (opts.keepAlive !== false) {
+                keeper = startKeepAlive(L, {
+                    intervalMs: typeof opts.keepAlive === "number" ? opts.keepAlive : undefined,
+                });
+            }
+        };
+        const detachSocketTaps = () => {
+            try {
+                keeper?.stop();
+            } catch {
+                /* already stopped */
+            }
+            keeper = null;
+            for (const [ev, fn] of [
+                ["message", onMsg],
+                ["close", onClose],
+                ["error", onSockErr],
+            ]) {
+                try {
+                    L.ws?.removeListener?.(ev, fn);
+                } catch {
+                    /* the socket may already be gone */
+                }
+            }
+        };
+        attachSocketTaps();
+
+        /**
+         * One reconnect attempt, then re-arm every raw-socket tap on the new
+         * wire. The caller owns starting the listener (this class never does),
+         * so it supplies `opts.reconnect`; without one a dropped socket stays
+         * dropped, exactly as before.
+         *
+         * @returns {Promise<boolean>} true when a live socket is back
+         */
+        const reconnect = async () => {
+            if (typeof opts.reconnect !== "function") return false;
+            detachSocketTaps();
+            let ok = false;
+            try {
+                ok = Boolean(await opts.reconnect());
+            } catch (e) {
+                onStatus({ phase: "warn", detail: `reconnect failed: ${e?.message || e}` });
+                return false;
+            }
+            if (!ok || !L.ws || L.ws.readyState > 1) return false;
+            closeInfo = null;
+            attachSocketTaps();
+            return true;
+        };
 
         const newSession = (kind, wantPartitions = []) => {
             const id = randId();
@@ -555,11 +750,14 @@ export class SyncV2 {
         // Did the phone actually answer? transfer_status 4 = Confirmed,
         // 5 = Authorized. Needed to tell "empty window" from "never tapped".
         let confirmed = false;
+        // Set by the message rounds; read by done(), which can run before them.
+        let resumeInfo = { resumes: 0, rePrompted: false };
         const done = (r) =>
             this._result(conversations, messagesSaved, mappedThreads, unmappedThreads, r, {
                 days: win.days,
                 from: win.from,
                 confirmed,
+                ...resumeInfo,
                 attachmentsSaved,
                 typeCounts: { ...typeCounts },
                 // Every threadId the conversation round accounted for. Anything
@@ -620,8 +818,11 @@ export class SyncV2 {
             await new Promise((r) => setTimeout(r, 1200));
 
             // ---- conversation round ----
-            const ekConv = zproto.generateKeyPair();
-            const convId = newSession("conv");
+            // `ek` is fresh per session and `ik` is stable across them (see
+            // FINDINGS.md § cmd 590 request envelope), so a retried round needs
+            // its OWN ek -- and the decrypt then has to use that one.
+            let ekConv = zproto.generateKeyPair();
+            let convId = newSession("conv");
             onStatus({ phase: "conversation", detail: "requesting your conversation list" });
             this._send590(L, "conv", convId, ekConv, ik, {
                 type: "conversation",
@@ -629,11 +830,50 @@ export class SyncV2 {
                 batchSize: 2000,
                 queries: [{ partition: "", from: win.from, to: win.to, limit: 2147483647 }],
             });
-            const convWhy = await waitDone(convId, waitMs);
-            const convSession = sessions.get(convId);
-            if (convSession.err) throw new Error(`conversation round failed: ${JSON.stringify(convSession.err)}`);
-            if (convWhy === "socket-closed") throw new Error("connection dropped while waiting for the phone");
+            let convWhy = await waitDone(convId, waitMs);
+            let convSession = sessions.get(convId);
             confirmed = convSession.statuses.some((st) => Number(st) >= 4);
+
+            // A socket that dies here loses the conversation list outright --
+            // it only ever arrives on the socket that asked for it. Reconnect
+            // and ask again rather than ending the run: if the phone already
+            // confirmed, the server carries that authorization and the resent
+            // round goes straight through; if it had not, the prompt the user
+            // sees is the one a manual re-run would have shown them anyway.
+            if (convWhy === "socket-closed" && (await reconnect())) {
+                onStatus({
+                    phase: "reconnect",
+                    detail: confirmed
+                        ? "reconnected — asking for your conversation list again (your phone already confirmed)"
+                        : "reconnected — asking for your conversation list again; your phone may prompt once more",
+                });
+                const retryId = newSession("conv");
+                ekConv = zproto.generateKeyPair();
+                this._send590(L, "conv", retryId, ekConv, ik, {
+                    type: "conversation",
+                    priority: 0,
+                    batchSize: 2000,
+                    queries: [{ partition: "", from: win.from, to: win.to, limit: 2147483647 }],
+                });
+                convWhy = await waitDone(retryId, waitMs);
+                convSession = sessions.get(retryId);
+                convId = retryId;
+                confirmed = confirmed || convSession.statuses.some((st) => Number(st) >= 4);
+            }
+
+            if (convSession.err) throw new Error(`conversation round failed: ${JSON.stringify(convSession.err)}`);
+            if (convWhy === "socket-closed") {
+                throw new Error(
+                    confirmed
+                        ? "the connection dropped after your phone confirmed, before the conversation list arrived"
+                        : "the connection dropped while waiting for your phone to confirm — re-run and you will be prompted again",
+                );
+            }
+            if (convWhy === "timeout" && !confirmed) {
+                throw new Error(
+                    `your phone did not answer the sync prompt within ${Math.round(waitMs / 1000)}s — the connection stayed up, so nothing was lost; re-run and confirm the prompt`,
+                );
+            }
 
             const convs = [];
             await eachChunkObj(convSession, ekConv, C.SyncChunk, (obj) => {
@@ -715,8 +955,6 @@ export class SyncV2 {
             // dropped with no error frame, so the in-flight count is capped.
             // Within a wave the requests still go out together, which is what
             // makes them inherit the single confirmation.
-            const waves = [];
-            for (let i = 0; i < shards.length; i += waveSize) waves.push(shards.slice(i, i + waveSize));
             const sendWave = async (wave) => {
                 const meta = [];
                 for (const shard of wave) {
@@ -744,47 +982,55 @@ export class SyncV2 {
             // is 50 shards and genuinely needs longer than a one-shard run --
             // and a dropped socket aborts immediately regardless, so a long
             // budget costs nothing when something actually breaks.
-            const runBudget = Math.max(waitMs, shards.length * PER_SHARD_BUDGET_MS);
-            const runDeadline = Date.now() + runBudget;
+            const shardBudget = (n) => Math.max(waitMs, n * PER_SHARD_BUDGET_MS);
+            let runDeadline = Date.now() + shardBudget(shards.length);
             onStatus({
                 phase: "messages",
-                detail: `waiting up to ${Math.round(runBudget / 60000)} min for the phone to serve ${shards.length} batch(es)`,
+                detail: `waiting up to ${Math.round(shardBudget(shards.length) / 60000)} min for the phone to serve ${shards.length} batch(es)`,
             });
             let finished = 0;
             let socketDied = false;
+            let timedOut = false;
             let stop = false;
-            const shardMeta = [];
+            let rePrompted = false;
+            // A reconnect is only on the table when the caller handed us a way
+            // to reconnect -- this class never starts the listener itself.
+            const schedule = createShardSchedule(shards.length, {
+                waveSize,
+                maxResumes: typeof opts.reconnect === "function" ? MAX_RESUMES : 0,
+            });
 
             // ---- wave by wave: send, wait, decrypt, decode, store ----
             // Storing per shard rather than after all of them means an
             // interrupted run keeps what it already pulled.
-            for (const wave of waves) {
-                if (stop) break;
-                const waveMeta = await sendWave(wave);
-                shardMeta.push(...waveMeta);
-                for (const m of waveMeta) {
+            while (!schedule.done() && !stop) {
+                const wave = schedule.nextWave();
+                const waveMeta = await sendWave(wave.map((i) => shards[i]));
+                let lostSocket = false;
+                for (let k = 0; k < waveMeta.length; k++) {
+                    const m = waveMeta[k];
                     const left = runDeadline - Date.now();
                     const why = left > 0 ? await waitDone(m.sid, left) : "timeout";
                     if (why === "socket-closed") {
-                        socketDied = true;
-                        stop = true;
-                        onStatus({
-                            phase: "warn",
-                            detail:
-                                `connection lost after ${finished}/${shards.length} batch(es) — keeping what arrived` +
-                                (closeInfo
-                                    ? ` [close ${closeInfo.code}${closeInfo.reason ? ": " + closeInfo.reason : ""}]`
-                                    : " [no close event seen]"),
-                        });
+                        lostSocket = true;
                         break;
                     }
                     if (why === "timeout") {
                         stop = true;
+                        timedOut = true;
                         onStatus({
                             phase: "warn",
                             detail: `timed out after ${finished}/${shards.length} batch(es) — keeping what arrived`,
                         });
                         break;
+                    }
+                    // Served or refused, this shard is settled: a resume must
+                    // not ask the phone for it again.
+                    schedule.settle(wave[k]);
+                    // A message session that was prompted (status 3) rather than
+                    // authorized outright (5) cost the user a second tap.
+                    if (schedule.resumes() && sessions.get(m.sid).statuses.some((st) => Number(st) === 3)) {
+                        rePrompted = true;
                     }
                     if (why === "error") {
                         onStatus({ phase: "warn", detail: `batch failed: ${JSON.stringify(sessions.get(m.sid).err)}` });
@@ -874,9 +1120,57 @@ export class SyncV2 {
                         detail: `batch ${finished}/${shards.length} — ${messagesSaved - before} new message(s), ${messagesSaved} total`,
                     });
                 }
+
+                if (!lostSocket) continue;
+                socketDied = true;
+                onStatus({
+                    phase: "warn",
+                    detail:
+                        `connection lost after ${finished}/${shards.length} batch(es) — keeping what arrived` +
+                        (closeInfo
+                            ? ` [close ${closeInfo.code}${closeInfo.reason ? ": " + closeInfo.reason : ""}]`
+                            : " [no close event seen]"),
+                });
+                // Re-tapping the phone is the expensive part of this command, so
+                // a dropped wire is worth one reconnect before giving the tap
+                // up. The shards already served stay served; only what is still
+                // pending goes out again. Worst case the phone prompts once more
+                // -- which is exactly what a manual re-run would have cost, and
+                // that run would have had to re-fetch everything as well.
+                if (schedule.useResume() && (await reconnect())) {
+                    socketDied = false;
+                    // The remaining shards still need their own time; the
+                    // reconnect must not eat the budget they were owed.
+                    runDeadline = Date.now() + shardBudget(schedule.remaining());
+                    onStatus({
+                        phase: "reconnect",
+                        detail: `reconnected — re-requesting the ${schedule.remaining()} batch(es) that never arrived (attempt ${schedule.resumes()} of ${MAX_RESUMES})`,
+                    });
+                    continue;
+                }
+                stop = true;
             }
-            if (socketDied && !messagesSaved) throw new Error("connection dropped before any messages arrived");
-            if (finished < shards.length) reason = "partial";
+            if (rePrompted) {
+                onStatus({
+                    phase: "warn",
+                    detail:
+                        "the resumed request needed a fresh confirmation — " +
+                        "the reconnect did not inherit the first one",
+                });
+            }
+            resumeInfo = { resumes: schedule.resumes(), rePrompted };
+            const outcome = describeRestoreOutcome({
+                socketDied,
+                timedOut,
+                confirmed,
+                messagesSaved,
+                finished,
+                total: shards.length,
+                resumes: schedule.resumes(),
+                waitMs,
+            });
+            if (outcome.error) throw new Error(outcome.error);
+            reason = outcome.reason;
             // A partial run still records success (unchanged), so the next run
             // within the hour is skipped unless --force -- but it settles no gap.
             recordRestoreSuccess(win, { resolveGaps: reason === "complete" });
@@ -887,9 +1181,7 @@ export class SyncV2 {
                 } catch {}
             }
             await new Promise((r) => setTimeout(r, 1500));
-            try {
-                L.ws.removeListener("message", onMsg);
-            } catch {}
+            detachSocketTaps();
             try {
                 detachLive();
             } catch {}

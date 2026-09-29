@@ -109,7 +109,11 @@ const COMMAND_SURFACE = {
         "forget",
         "recent",
         "pinned",
+        "pin",
+        "unpin",
         "archived",
+        "archive",
+        "unarchive",
         "mute",
         "unmute",
         "read",
@@ -271,6 +275,13 @@ const FLAG_CONTRACT = {
     "msg history": ["--limit", "--scan", "--from-msg-id", "--timeout", "--no-cache", "--type"],
     "conv mute": ["--duration", "--type"],
     "conv recent": ["--limit", "--friends-only", "--groups-only"],
+    // --type picks the payload: seenv2 and the conversation ids differ for a
+    // group ("g<id>", type 1) and a DM ("u<id>", type 0).
+    "conv read": ["--type"],
+    "conv pin": ["--type"],
+    "conv unpin": ["--type"],
+    "conv archive": ["--type"],
+    "conv unarchive": ["--type"],
     "group list": ["--query"],
     "group settings": [
         "--block-name",
@@ -291,8 +302,10 @@ const FLAG_CONTRACT = {
     "poll create": ["--multi", "--add-options", "--anonymous", "--hide-preview", "--expire"],
     "reminder create": ["--type", "--time", "--emoji", "--repeat"],
     "auto-reply create": ["--enable", "--no-enable", "--start", "--end", "--scope", "--uids"],
-    listen: ["--filter", "--webhook", "--no-self", "--auto-accept", "--save"],
-    "mcp start": ["--config", "--http", "--auth", "--host"],
+    // --no-delivered-receipts is the opt-out for the automatic deliveredv2
+    // acks both listeners send; it must exist on both or they diverge.
+    listen: ["--filter", "--webhook", "--no-self", "--auto-accept", "--save", "--no-delivered-receipts"],
+    "mcp start": ["--config", "--http", "--auth", "--host", "--no-delivered-receipts"],
     "catalog add-product": ["--photos"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],

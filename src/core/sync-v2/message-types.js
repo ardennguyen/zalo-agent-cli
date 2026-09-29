@@ -496,6 +496,27 @@ export function classifyLiveMessage(data) {
             mentions: data?.mentions?.length ? data.mentions : undefined,
             ttl: data?.ttl ? Number(data.ttl) : undefined,
             property: data?.propertyExt || undefined,
+            // A seen or delivered receipt names its message by these three, and
+            // they exist nowhere but on the socket frame: Zalo Web echoes them
+            // back verbatim (captured `"st":3,"at":9,"cmd":501`), and `at`
+            // differs per message, so they cannot be rebuilt later -- only kept.
+            // 0 is a real value (card receipts carry "at":0), so only an absent
+            // field is left out. See src/core/receipts.js.
+            st: frameNumber(data?.st),
+            at: frameNumber(data?.at),
+            cmd: frameNumber(data?.cmd),
         },
     };
+}
+
+/**
+ * A numeric socket-frame field, or undefined when the frame did not carry one.
+ *
+ * @param {unknown} v
+ * @returns {number|undefined}
+ */
+function frameNumber(v) {
+    if (v === undefined || v === null || v === "") return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
 }

@@ -22,24 +22,44 @@ import { markConversationRead, zaloPost } from "../core/receipts.js";
  * APIs lag live traffic, so the "newest" message found may not be the true
  * newest (see agent/work/transfer-sync-v2/NOTES.md § Ordering).
  *
+ * Opens the account's zalo.db whichever source answers, because the caller
+ * writes to it next.
+ *
  * @param {object} api
  * @param {string} threadId
  * @param {number} type - 0=User, 1=Group
  * @returns {Promise<{ownerId: string, cliMsgId: string, globalMsgId: string}|null>}
  */
 async function newestMessageAnchor(api, threadId, type) {
-    // Source 1: the REST group-history endpoint. Kept because it is the
-    // cheapest when it works, but note that Zalo currently answers
-    // getGroupChatHistory with HTTP 404 — it appears retired, which is also
-    // why `msg history` silently falls back to the WebSocket backfill.
+    // Open the cache before either source runs. Source 2 reads it, and
+    // `conv delete` flags the thread in it (markThreadGone) straight after --
+    // which only ever worked because source 1 always failed and source 2
+    // opened the cache on the way.
+    let cacheOpen = false;
+    try {
+        const activeAcc = getActive();
+        if (activeAcc) {
+            initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+            cacheOpen = true;
+        }
+    } catch {
+        // No cache on this machine; source 1 can still answer.
+    }
+
+    // Source 1: Zalo's cloud-message store, the group history Zalo Web reads
+    // (src/core/group-history.js). zca-js's getGroupChatHistory asked
+    // /api/group/history, which Zalo answers with 404 -- and this used to read
+    // its answer as an array, a shape it never had.
     if (type === 1) {
         try {
-            const history = await api.getGroupChatHistory(threadId, 1);
-            const last = Array.isArray(history) ? history[0] : null;
+            // Loaded on demand: only the group path needs it.
+            const { getGroupHistory } = await import("../core/group-history.js");
+            const history = await getGroupHistory(api, threadId, 1);
+            const last = history.groupMsgs[0]?.data;
             const anchor = toAnchor(last?.uidFrom ?? last?.ownerId, last?.cliMsgId, last?.msgId ?? last?.globalMsgId);
             if (anchor) return anchor;
         } catch {
-            // 404 or transient — fall through to the local cache.
+            // Store unreachable, or no group_cloud_message host — fall through to the local cache.
         }
     }
 
@@ -62,11 +82,8 @@ async function newestMessageAnchor(api, threadId, type) {
     // messages in place, which is the same staleness `msg history` already
     // has (see agent/work/transfer-sync-v2/NOTES.md § Ordering) and is far
     // better than refusing outright.
+    if (!cacheOpen) return null;
     try {
-        const activeAcc = getActive();
-        if (!activeAcc) return null;
-        initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
-
         for (const row of getMessages(threadId, ANCHOR_SCAN_DEPTH)) {
             let raw = {};
             try {

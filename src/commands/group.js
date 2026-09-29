@@ -5,8 +5,9 @@
 
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
+import { getGroupHistory } from "../core/group-history.js";
 import { success, error, info, output } from "../utils/output.js";
-import { parseIntOption } from "../utils/parse-options.js";
+import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
 
 export function registerGroupCommands(program) {
     const group = program.command("group").description("Manage groups");
@@ -117,13 +118,18 @@ export function registerGroupCommands(program) {
         .option("-n, --count <n>", "Number of messages to fetch", "20")
         .action(async (groupId, opts) => {
             try {
-                const result = await getApi().getGroupChatHistory(groupId, Number(opts.count));
+                const count = parseIntAtLeast(1)(opts.count);
+                // Zalo's cloud-message store (/api/cm/getrecentv2), which is
+                // what Zalo Web reads. zca-js's getGroupChatHistory asks
+                // /api/group/history, which Zalo answers with 404.
+                const result = await getGroupHistory(getApi(), groupId, count);
                 const msgs = result?.groupMsgs || [];
 
                 // Normalize messages into clean, storage-friendly JSON
                 const normalized = msgs.map((m) => {
                     const d = m.data || m;
                     const content = typeof d.content === "string" ? d.content : d.content;
+                    const ts = Number(d.ts);
                     return {
                         msgId: d.msgId,
                         cliMsgId: d.cliMsgId,
@@ -131,8 +137,9 @@ export function registerGroupCommands(program) {
                         groupId: d.idTo,
                         msgType: d.msgType,
                         content: typeof content === "string" ? content : content,
-                        timestamp: Number(d.ts),
-                        isoTime: new Date(Number(d.ts)).toISOString(),
+                        timestamp: Number.isFinite(ts) ? ts : null,
+                        // A row without a timestamp must not abort the whole listing.
+                        isoTime: Number.isFinite(ts) ? new Date(ts).toISOString() : null,
                         isSelf: m.isSelf ?? false,
                         ...(d.mentions && { mentions: d.mentions }),
                         ...(d.quote && {
@@ -157,7 +164,7 @@ export function registerGroupCommands(program) {
                     if (result?.more === 1) info("(more messages available)");
                     console.log();
                     for (const m of normalized) {
-                        const time = new Date(m.timestamp).toLocaleTimeString();
+                        const time = m.timestamp === null ? "?" : new Date(m.timestamp).toLocaleTimeString();
                         const dir = m.isSelf ? "→" : "←";
                         const text =
                             typeof m.content === "string" ? m.content.slice(0, 80) : `[${m.msgType || "attachment"}]`;

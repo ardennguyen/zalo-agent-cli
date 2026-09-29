@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
-import { initDb, insertMessage, upsertThread } from "../../src/core/db.js";
+import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
 
 /** The exact tool surface. Changing this list is a deliberate act — see AGENTS.md §10. */
 const EXPECTED_TOOLS = [
@@ -407,5 +407,245 @@ describe("MCP tools read the local cache", () => {
         const out = await server.call("zalo_view_media", { messageId: "gone", open: false });
         assert.equal(out.isError, true);
         assert.match(out.content[0].text, /not found/i);
+    });
+});
+/**
+ * `zalo_send_message`'s composed sends — @-mentions and quote-replies.
+ *
+ * The CLI's `msg send` gained both while the MCP tool could still only put a
+ * bare string on the wire, so an agent — which is the primary way this tool
+ * is driven — could not tag anyone or reply to a specific message. Both are
+ * built from `src/utils/mentions.js` and `src/utils/quote.js`, the same pure
+ * helpers the CLI uses and which have their own unit tests; what is covered
+ * here is the *wiring*: what reaches `api.sendMessage`, and what a failure
+ * reports back instead of throwing.
+ */
+describe("zalo_send_message composes mentions and quotes", () => {
+    const THREAD_USER = 0;
+    const THREAD_GROUP = 1;
+
+    const ROOT = mkdtempSync(join(tmpdir(), "zalo-mcp-send-"));
+    const handles = [];
+    let n = 0;
+
+    beforeEach(() => {
+        handles.push(initDb(join(ROOT, `send${n++}.sqlite`)));
+        upsertThread({ threadId: "g1", type: "group", name: "Việc riêng", lastUpdate: 9 });
+    });
+
+    after(() => {
+        for (const h of handles) {
+            try {
+                h.close();
+            } catch {
+                /* already closed */
+            }
+        }
+        try {
+            rmSync(ROOT, { recursive: true, force: true });
+        } catch {
+            /* a lingering WAL handle is not worth failing the run over */
+        }
+    });
+
+    /** Cache one message row, defaulting the fields a quote needs. */
+    const cacheMsg = (r) =>
+        insertMessage({
+            msgId: r.msgId,
+            threadId: r.threadId ?? "g1",
+            senderId: r.senderId ?? "789",
+            senderName: r.senderName ?? null,
+            text: r.text ?? "hi",
+            timestamp: r.ts ?? 1_750_000_000_000,
+            type: r.type ?? "text",
+            raw_data: r.raw ?? JSON.stringify({ content: r.text ?? "hi", cliMsgId: "c1", property: { a: 1 } }),
+            has_attachment: 0,
+        });
+
+    /** An api that records what it was asked to send. */
+    function recordingApi() {
+        const calls = [];
+        return {
+            calls,
+            sendMessage: async (content, threadId, type) => {
+                calls.push({ content, threadId, type });
+                return { message: { msgId: "sent1" } };
+            },
+            // Present but never expected to fire — see the no-network test.
+            getGroupMembersInfo: async () => {
+                throw new Error("zalo_send_message must not hit the network to name a mention");
+            },
+        };
+    }
+
+    const send = async (args, api) => {
+        const { server } = register({ api });
+        return server.call("zalo_send_message", { threadType: THREAD_GROUP, ...args });
+    };
+
+    it("leaves a plain send as a bare string, not an object", async () => {
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "chào cả nhà" }, api);
+        assert.strictEqual(api.calls[0].content, "chào cả nhà", "wrapping a plain send would change the wire format");
+        assert.deepEqual(payloadOf(r), { success: true, messageId: "sent1" });
+    });
+
+    it("expands `@[uid]` from a contact and puts the mention on the wire", async () => {
+        upsertContact({ userId: "789", name: "Bích Ngọc", phone: null });
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "@[789] xem giúp nhé" }, api);
+
+        const { msg, mentions } = api.calls[0].content;
+        assert.equal(msg, "@Bích Ngọc xem giúp nhé");
+        assert.deepEqual(mentions, [{ pos: 0, uid: "789", len: 10 }]);
+        assert.equal(payloadOf(r).text, "@Bích Ngọc xem giúp nhé", "the agent wrote a token and needs the result");
+    });
+
+    it("names a uid from a past message when contacts has nothing", async () => {
+        cacheMsg({ msgId: "m1", senderId: "456", senderName: "Chi Lan" });
+        const api = recordingApi();
+        await send({ threadId: "g1", text: "hỏi @[456] xem" }, api);
+        assert.equal(api.calls[0].content.msg, "hỏi @Chi Lan xem");
+    });
+
+    it("measures mention offsets in UTF-16 units, so accents do not shift the tag", async () => {
+        upsertContact({ userId: "789", name: "Trần Bích Ngọc", phone: null });
+        const api = recordingApi();
+        await send({ threadId: "g1", text: "Em ko biết mở ch ạ @[789]" }, api);
+
+        const { msg, mentions } = api.calls[0].content;
+        const { pos, len } = mentions[0];
+        assert.equal(
+            msg.slice(pos, pos + len),
+            "@Trần Bích Ngọc",
+            "a byte-counted offset paints the highlight over the wrong span",
+        );
+    });
+
+    it("turns `@[-1]` into @All without reporting it unresolved", async () => {
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "@[-1] họp lúc 3h" }, api);
+        assert.equal(api.calls[0].content.msg, "@All họp lúc 3h");
+        assert.deepEqual(api.calls[0].content.mentions, [{ pos: 0, uid: "-1", len: 4 }]);
+        assert.equal(payloadOf(r).unresolvedMentions, undefined, "@All has no name to look up");
+    });
+
+    it("falls back to the bare uid for an unknown mention and says so", async () => {
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "@[999] ping" }, api);
+
+        assert.equal(api.calls[0].content.msg, "@999 ping", "the uid is what Zalo notifies on");
+        assert.deepEqual(api.calls[0].content.mentions, [{ pos: 0, uid: "999", len: 4 }]);
+        assert.deepEqual(payloadOf(r).unresolvedMentions, ["999"], "silently sending @999 would look like a bug");
+    });
+
+    it("never calls the network to resolve a name — the MCP send stays local", async () => {
+        const api = recordingApi();
+        // recordingApi().getGroupMembersInfo throws; the send must still succeed,
+        // which it only can if nothing reached for it. The CLI's batched
+        // getGroupMembersInfo fallback is deliberately not wired up here.
+        const r = await send({ threadId: "g1", text: "@[999] ping" }, api);
+        assert.equal(r.isError, undefined);
+        assert.equal(api.calls.length, 1);
+    });
+
+    it("warns when mentions are used in a DM, where Zalo drops them", async () => {
+        upsertContact({ userId: "789", name: "Bích Ngọc", phone: null });
+        const api = recordingApi();
+        const r = await send({ threadId: "u1", text: "@[789] hi", threadType: THREAD_USER }, api);
+
+        const out = payloadOf(r);
+        assert.equal(out.success, true, "a DM mention is a warning, not a failure");
+        assert.equal(out.warnings.length, 1);
+        assert.match(out.warnings[0], /only apply to group messages/i);
+    });
+
+    it("leaves brackets that are not a uid alone", async () => {
+        const api = recordingApi();
+        await send({ threadId: "g1", text: "@[TODO] chốt sau" }, api);
+        assert.strictEqual(api.calls[0].content, "@[TODO] chốt sau", "no uid, no mention, no object wrapper");
+    });
+
+    it("builds a quote payload from the cached row", async () => {
+        cacheMsg({ msgId: "m1", text: "bao giờ giao?", senderId: "456" });
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "chiều mai nhé", quoteMsgId: "m1" }, api);
+
+        const { msg, quote } = api.calls[0].content;
+        assert.equal(msg, "chiều mai nhé");
+        assert.equal(quote.content, "bao giờ giao?");
+        assert.equal(quote.msgId, "m1");
+        assert.equal(quote.cliMsgId, "c1", "client-generated; it exists nowhere but raw_data");
+        assert.equal(quote.uidFrom, "456");
+        assert.equal(quote.msgType, "webchat");
+        assert.deepEqual(quote.propertyExt, { a: 1 });
+        assert.equal(payloadOf(r).success, true);
+    });
+
+    it("quotes and mentions compose in one send", async () => {
+        cacheMsg({ msgId: "m1", text: "ai làm việc này?", senderId: "456" });
+        upsertContact({ userId: "789", name: "Bích Ngọc", phone: null });
+        const api = recordingApi();
+        await send({ threadId: "g1", text: "@[789] nhé", quoteMsgId: "m1" }, api);
+
+        const { msg, mentions, quote } = api.calls[0].content;
+        assert.equal(msg, "@Bích Ngọc nhé");
+        assert.equal(mentions.length, 1);
+        assert.equal(quote.msgId, "m1");
+    });
+
+    it("reports an uncached quote target as an MCP error and sends nothing", async () => {
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "ok", quoteMsgId: "gone" }, api);
+
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /not in the local cache/i);
+        assert.match(r.content[0].text, /msg history/, "the error names the fix");
+        assert.equal(api.calls.length, 0, "a half-built quote must not go out as a plain message");
+    });
+
+    it("refuses to quote a non-text message instead of raising a ZaloApiError", async () => {
+        // A sync-restored photo caches the placeholder "[Hình ảnh]" as its text,
+        // so the guard has to be the row's type, not the shape of its content.
+        cacheMsg({ msgId: "m1", type: "photo", text: "[Hình ảnh]" });
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "đẹp quá", quoteMsgId: "m1" }, api);
+
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /only supports quote-replies to text messages/i);
+        assert.equal(api.calls.length, 0);
+    });
+
+    it("refuses a quote target from a different thread", async () => {
+        cacheMsg({ msgId: "m1", threadId: "g2" });
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "ok", quoteMsgId: "m1" }, api);
+
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /belongs to thread g2/);
+        assert.equal(api.calls.length, 0);
+    });
+
+    it("surfaces buildQuote's opaque-sender warning but still sends", async () => {
+        // transfer-sync-v2 restores rows with an opaque sender id rather than
+        // the numeric uid the live listener records.
+        cacheMsg({ msgId: "m1", senderId: "VNOISED0000000000000000000000091" });
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "ok", quoteMsgId: "m1" }, api);
+
+        const out = payloadOf(r);
+        assert.equal(out.success, true);
+        assert.match(out.warnings[0], /opaque sender id/i);
+        assert.equal(api.calls.length, 1);
+    });
+
+    it("reports a missing cliMsgId rather than sending a quote Zalo will reject", async () => {
+        cacheMsg({ msgId: "m1", raw: JSON.stringify({ content: "hi" }) });
+        const api = recordingApi();
+        const r = await send({ threadId: "g1", text: "ok", quoteMsgId: "m1" }, api);
+
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /cliMsgId was never cached/i);
+        assert.equal(api.calls.length, 0);
     });
 });

@@ -5,12 +5,54 @@
 
 import { z } from "zod";
 import { openFile } from "../utils/open-file.js";
-import { getMessages, getMessageById } from "../core/db.js";
+import { getMessages, getMessageById, getDisplayName } from "../core/db.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
+import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
+import { buildQuote } from "../utils/quote.js";
 
 /** Thread type constants matching zca-js ThreadType enum */
 const THREAD_USER = 0;
+
+/** Thread type for groups — the only kind Zalo delivers mentions in. */
+const THREAD_GROUP = 1;
+
+/**
+ * Display name for a `@[uid]` mention token, read from the local cache only.
+ *
+ * **This deliberately does not do what the CLI does.** `msg send` falls back
+ * to a batched `getGroupMembersInfo` call for uids the cache cannot name
+ * (`fetchMentionNames` in `src/commands/msg.js`); the MCP tool does not, and
+ * stays purely local:
+ *
+ * - The CLI's fallback exists for a human typing a uid for someone who has
+ *   never posted in the group. An MCP client has no such uid to type — the
+ *   only place it learns one is `zalo_get_messages` / `zalo_get_history`,
+ *   whose rows carry `senderName` alongside `senderId`, so the cache can
+ *   already name anyone the agent could plausibly tag.
+ * - `mcp start` opens the db before it serves a request and exits if it
+ *   cannot, so unlike the CLI the cache is never merely absent here.
+ * - A network lookup in the hot path of every send would add an unofficial-API
+ *   round trip, its latency, and its failure modes to a tool agents call in
+ *   loops. The unofficial API is what gets accounts banned.
+ *
+ * The cost of staying local is a bare uid as the visible label when the cache
+ * has no name. The mention still tags the right person — `uid` is what Zalo
+ * notifies on — and `zalo_send_message` reports the fallback back to the
+ * caller as `unresolvedMentions` rather than hiding it.
+ *
+ * Never throws: a cache miss must not fail a send.
+ *
+ * @param {string} uid
+ * @returns {string|null}
+ */
+function mentionName(uid) {
+    try {
+        return getDisplayName(uid);
+    } catch {
+        return null; // no db in this process
+    }
+}
 
 /**
  * Wrap a result object into MCP tool content format.
@@ -129,10 +171,21 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         "zalo_send_message",
         {
             title: "Send Zalo Message",
-            description: "Send a text message to a Zalo thread (DM or group). threadType: 0=DM(User), 1=Group.",
+            description:
+                "Send a text message to a Zalo thread (DM or group). threadType: 0=DM(User), 1=Group. " +
+                "To @-mention someone in a group, put `@[uid]` in the text where the tag belongs — " +
+                "`@[123456]` becomes `@Their Name` and notifies them, and `@[-1]` is @All. " +
+                "Use the `senderId` from zalo_get_messages or zalo_get_history as the uid; the display name " +
+                "is read from the local cache, and a uid it cannot name is tagged as the bare uid " +
+                "(reported back as `unresolvedMentions`). Mentions only deliver in groups (threadType 1). " +
+                "To reply to a specific message, pass its msgId as `quoteMsgId` — Zalo supports quote-replies " +
+                "to text messages only, and the quoted message must already be in the local cache.",
             inputSchema: z.object({
                 threadId: z.string().describe("Thread ID to send message to"),
-                text: z.string().min(1).describe("Message text to send"),
+                text: z
+                    .string()
+                    .min(1)
+                    .describe("Message text to send. `@[uid]` tokens expand to @-mentions; `@[-1]` is @All."),
                 threadType: z
                     .number()
                     .int()
@@ -140,13 +193,91 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .max(1)
                     .default(THREAD_USER)
                     .describe("Thread type: 0=DM(User), 1=Group"),
+                quoteMsgId: z
+                    .string()
+                    .optional()
+                    .describe(
+                        "msgId of a cached TEXT message in this thread to quote-reply to. " +
+                            "Get it from zalo_get_messages or zalo_get_history.",
+                    ),
             }),
         },
-        async ({ threadId, text, threadType }) => {
+        async ({ threadId, text, threadType, quoteMsgId }) => {
             try {
-                const result = await api.sendMessage(text, threadId, Number(threadType));
+                const warnings = [];
+
+                // `@[uid]` -> `@Display Name`, with the mention offsets measured
+                // on the string that comes out. The CLI runs this last, after
+                // markdown, because a display name may itself contain `*` or `_`;
+                // there is no markdown or style pass here, so there is nothing to
+                // order against and nothing to move — if styles are ever added to
+                // this tool, they must be run through `shiftStyles(styles,
+                // expanded.edits)` the way `msg send` does.
+                const unresolved = [];
+                const expanded = expandMentions(text, (uid) => {
+                    const name = mentionName(uid);
+                    if (!name && uid !== ALL_MENTION_UID) unresolved.push(uid);
+                    return name;
+                });
+                const mentions = expanded.mentions;
+
+                // zca-js drops mentions outside a group, so a DM send would
+                // quietly arrive with the names as plain text and nobody tagged.
+                if (mentions.length > 0 && Number(threadType) !== THREAD_GROUP) {
+                    warnings.push(
+                        "Mentions only apply to group messages. This was sent with threadType " +
+                            `${Number(threadType)}, so the names went out as plain text and nobody was tagged.`,
+                    );
+                }
+
+                let quote;
+                if (quoteMsgId) {
+                    // buildQuote needs `cliMsgId` and the `property` blob, which
+                    // live only in the cached row's raw_data. A db that is not
+                    // open reads as "not cached", whose message names the fix.
+                    let row = null;
+                    try {
+                        row = getMessageById(quoteMsgId);
+                    } catch (e) {
+                        console.error("[mcp-tools] cache unavailable for quote:", e.message);
+                    }
+                    const built = buildQuote(row, { msgId: quoteMsgId, threadId });
+                    // Reported through err() rather than letting zca-js raise a
+                    // raw ZaloApiError: "stickers can't be quoted" and "not
+                    // cached, fetch the thread" are different problems and the
+                    // agent can act on both.
+                    if (built.error) {
+                        console.error("[mcp-tools] zalo_send_message quote error:", built.error);
+                        return err(built.error);
+                    }
+                    if (built.warning) warnings.push(built.warning);
+                    quote = built.quote;
+                }
+
+                // A plain send stays a plain string: the object form is only
+                // built when there is something to put in it.
+                const hasExtras = mentions.length > 0 || Boolean(quote);
+                const content = hasExtras
+                    ? {
+                          msg: expanded.text,
+                          ...(mentions.length > 0 && { mentions }),
+                          ...(quote && { quote }),
+                      }
+                    : expanded.text;
+
+                for (const w of warnings) console.error("[mcp-tools] zalo_send_message warning:", w);
+
+                const result = await api.sendMessage(content, threadId, Number(threadType));
                 const messageId = result?.message?.msgId ?? result?.msgId ?? null;
-                return ok({ success: true, messageId });
+                return ok({
+                    success: true,
+                    messageId,
+                    // Only when it differs, so the common send keeps its shape:
+                    // the agent wrote `@[123]` and needs to know what was sent.
+                    ...(expanded.text !== text && { text: expanded.text }),
+                    ...(unresolved.length > 0 && { unresolvedMentions: unresolved }),
+                    ...(warnings.length > 0 && { warnings }),
+                });
             } catch (e) {
                 console.error("[mcp-tools] zalo_send_message error:", e.message);
                 return err(e.message);

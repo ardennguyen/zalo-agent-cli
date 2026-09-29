@@ -83,7 +83,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **16** | `src/index.js` | the `register*Commands` calls |
 | MCP tools | **7** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **1317** as of 2026-09-29 (1313 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **1343** as of 2026-09-29 (1339 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -246,6 +246,41 @@ so default media is purged along with the account. Attachments written outside t
 configured `media.downloadDir` survive `logout --purge`, `logout --delete-history` and
 `account remove`. That gap is documented as a warning in `Security.md` / `Bảo-Mật.md` and
 `INSTALLATION.md`, and is **not** fixed in code.
+
+### Every text attachment was downloaded and thrown away (2026-09-29)
+
+`classifyResponse()` in `src/core/sync-v2/media.js` decided whether a 200 carried the file or one of
+Zalo's error envelopes. A lapsed CDN signature answers **200 with a JSON body**
+(`{"err_code":"1","message":"Invalid signature"}`), so the body has to be read — but the sniff was
+entered for `application/json` **and any `text/…`**, and its final branch was a bare
+`return "throttled"`. An ordinary CSV matches neither error regex, so it reached that branch. Every
+`.csv`/`.txt`/`.md`/`.log` attachment was fetched in full, discarded, and reported as rate limiting.
+
+Measured: two healthy 149-byte `data.csv` rows stuck across four runs — `sync` at concurrency 4,
+`sync-media` at 2, then at 1, then a fresh `sync --from`. Plain unauthenticated `curl` on one of the
+stuck URLs returned `200`, `content-type: text/csv`, `content-disposition: attachment`, and the
+full 149 bytes. Nothing was wrong with the link, and nothing the user could do would have helped.
+
+Two rules came out of it:
+
+- **A 200 is the file unless the body says otherwise about itself.** The sniff now runs only when a
+  response has no `content-disposition` naming a file, and only classifies a body as an error when
+  it parses as a JSON object carrying an error key, or is a sub-1 KB blob matching a known error
+  phrase. `looksLikeErrorBody()` holds that test.
+- **The summary may only report what was observed.** 403 was the catch-all's biggest occupant, and
+  the code's own comment already said Zalo returns it "both for a lapsed signature and under load" —
+  yet `sync-media` printed "almost certainly rate limiting, not expiry" and advised waiting. The
+  verdicts are now four: `expired` (404/410 or a lapsed-signature body), `throttled` (429/5xx or a
+  server-busy body), `unknown` (403, an unrecognized body, no response), and `failed`. `unknown`
+  retries exactly like `throttled` — the split changed the reporting, not the policy — and
+  `stats.reasons` carries the observed codes so the summary prints `HTTP 403 ×3` instead of a guess.
+  A lapsed signature is renewable only by a fresh mobile sync, and not always even then: the
+  `urlToRenew`/`thumbUrlToRenew` hints are mobile-only (see `message-types.js`), and a re-sync was
+  measured returning the same URLs for two files and a video while refreshing one photo.
+
+`tests/unit/sync-v2-media.test.js` covers both: a `text/csv` attachment must land on disk, and a 403
+must not be reported as rate limiting — the latter partly as a source guard on `src/commands/sync.js`,
+since the counters can be right while the sentence built from them is still wrong.
 
 ### Six agent sessions in one working tree (2026-09-28/29)
 

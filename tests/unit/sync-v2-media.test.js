@@ -24,6 +24,8 @@ import {
 import {
     downloadSyncedMedia,
     DOWNLOADABLE_KINDS,
+    DOWNLOAD_REASONS,
+    describeDownloadReasons,
     sanitize,
     DEFAULT_REQUEST_TIMEOUT_MS,
     THROTTLE_GIVE_UP,
@@ -39,6 +41,14 @@ let base;
 let hits;
 
 const PHOTO_BYTES = Buffer.from("\xff\xd8\xff\xe0JFIF-pretend-jpeg", "binary");
+/**
+ * A 149-byte CSV, the size and shape of the two `data.csv` attachments that
+ * were stuck in a live cache across four runs on 2026-09-29 while the CLI
+ * called them rate limiting.
+ */
+const CSV_BYTES = Buffer.from(
+    "thread_id,kind,label,sent_at\n2000000000000000001,group,Sample group - tests,2026-09-19T08:00:00Z\n",
+);
 
 before(async () => {
     server = createServer((req, res) => {
@@ -100,6 +110,35 @@ before(async () => {
         if (path === "/doc.pdf") {
             res.writeHead(200, { "content-type": "application/pdf" });
             return res.end(Buffer.from("%PDF-1.4 pretend"));
+        }
+        // A real text attachment, served exactly as Zalo's CDN serves one.
+        // This is the shape that used to be discarded as "throttled".
+        if (path === "/data.csv") {
+            res.writeHead(200, {
+                "content-type": "text/csv",
+                "content-disposition": 'attachment; filename="data.csv"',
+            });
+            return res.end(CSV_BYTES);
+        }
+        // The same file with no content-disposition to lean on: the body alone
+        // has to be enough to tell a document from an error envelope.
+        if (path === "/bare.csv") {
+            res.writeHead(200, { "content-type": "text/csv" });
+            return res.end(CSV_BYTES);
+        }
+        if (path === "/notes.txt") {
+            res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+            return res.end(Buffer.from("Meeting notes\nNothing here is an error envelope.\n"));
+        }
+        // A .json attachment is a payload, not a verdict about the request.
+        if (path === "/payload.json") {
+            res.writeHead(200, { "content-type": "application/json" });
+            return res.end(JSON.stringify({ rows: [{ id: 1, label: "ok" }] }));
+        }
+        // A gateway that answers 200 and explains itself in HTML. Still an error.
+        if (path === "/htmlbusy.jpg") {
+            res.writeHead(200, { "content-type": "text/html" });
+            return res.end("<html><body>429 Too Many Requests</body></html>");
         }
         res.writeHead(500);
         res.end("boom");
@@ -633,7 +672,7 @@ describe("expiry vs throttling — the difference is not cosmetic", () => {
     it("403 is NOT treated as gone — Zalo returns it under load too", async () => {
         const s = await only("/forbidden.jpg");
         assert.equal(s.expired, 0, "403 must not be called expiry");
-        assert.equal(s.throttled, 1);
+        assert.equal(s.unknown, 1);
     });
 
     it("429 is throttling", async () => {
@@ -656,13 +695,19 @@ describe("expiry vs throttling — the difference is not cosmetic", () => {
     it("a bare err_code is too vague to call expiry", async () => {
         const s = await only("/vagueerr.jpg");
         assert.equal(s.expired, 0, "err_code alone could be a rate-limit notice");
-        assert.equal(s.throttled, 1);
+        assert.equal(s.unknown, 1, "and it does not say rate limiting either");
+    });
+
+    it("a 200 that explains itself in HTML is still throttling", async () => {
+        const s = await only("/htmlbusy.jpg");
+        assert.equal(s.expired, 0);
+        assert.equal(s.throttled, 1, "a short body saying 'Too Many Requests' is an error page");
     });
 
     it("a dropped connection is never expiry", async () => {
         const s = await only("/truncated.jpg");
         assert.equal(s.expired, 0);
-        assert.equal(s.throttled, 1);
+        assert.equal(s.unknown, 1, "no response is not evidence of rate limiting");
     });
 
     it("gives up once throttling is sustained, instead of burning the queue", async () => {
@@ -685,6 +730,181 @@ describe("expiry vs throttling — the difference is not cosmetic", () => {
         const s = await downloadSyncedMedia({ accountDir: dir, limit: 50, concurrency: 1, backoffBaseMs: 0 });
         assert.equal(s.abortedEarly, false);
         assert.equal(s.downloaded, 5);
+    });
+});
+
+describe("a text attachment is a file, not an error", () => {
+    // The body sniff exists to catch Zalo's 200-plus-JSON expiry envelope, but
+    // it was entered for any `text/…` response and ended in a catch-all called
+    // "throttled". So every .csv/.txt/.md/.log ever fetched was downloaded in
+    // full and then thrown away, and the run blamed rate limiting -- which no
+    // amount of waiting, and no --concurrency, could ever fix. Measured on a
+    // live cache 2026-09-29: two 149-byte data.csv rows stuck across four runs.
+    const fileAt = (url, extra = {}) => ({ kind: "file", url: `${base}${url}`, ...extra });
+
+    it("saves a text/csv attachment instead of discarding it", async () => {
+        const id = row({ type: "file" }, [fileAt("/data.csv", { fileName: "data.csv", size: CSV_BYTES.length })]);
+        const s = await downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0 });
+        assert.equal(s.downloaded, 1, "a healthy CSV must not be treated as a failure");
+        assert.equal(s.throttled, 0, "and above all must not be reported as rate limiting");
+        assert.equal(s.unknown, 0);
+        assert.equal(s.bytes, CSV_BYTES.length);
+
+        const saved = getMessages("t1").find((m) => m.msgId === id);
+        assert.ok(saved.localPath, "localPath was not recorded");
+        assert.deepEqual(readFileSync(saved.localPath), CSV_BYTES, "the bytes on disk must be the CSV");
+    });
+
+    it("saves it even with no content-disposition to lean on", async () => {
+        row({ type: "file" }, [fileAt("/bare.csv", { fileName: "bare.csv" })]);
+        const s = await downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0 });
+        assert.equal(s.downloaded, 1, "the body itself is plainly not an error envelope");
+        assert.equal(s.throttled + s.unknown, 0);
+    });
+
+    it("saves a text/plain attachment", async () => {
+        row({ type: "file" }, [fileAt("/notes.txt", { fileName: "notes.txt" })]);
+        const s = await downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0 });
+        assert.equal(s.downloaded, 1);
+        assert.equal(s.throttled + s.unknown, 0);
+    });
+
+    it("saves a .json attachment — a payload is not a verdict", async () => {
+        row({ type: "file" }, [fileAt("/payload.json", { fileName: "payload.json" })]);
+        const s = await downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0 });
+        assert.equal(s.downloaded, 1, "JSON without an error field is the file");
+        assert.equal(s.expired, 0);
+    });
+
+    it("still catches the expiry envelope it was written for", async () => {
+        // The whole point of narrowing the sniff is that it must not widen it.
+        row({}, [photo("/expired.jpg")]);
+        const s = await downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0 });
+        assert.equal(s.expired, 1, "a lapsed-signature body must still be expiry");
+        assert.equal(s.downloaded, 0, "and must never be written to disk as media");
+    });
+});
+
+describe("the summary reports what was observed, not what it assumes", () => {
+    // A 403 was counted as throttling and then announced as "almost certainly
+    // rate limiting, not expiry" -- advice to wait and retry forever, when a
+    // lapsed signature is renewable only by a fresh mobile sync. The classifier
+    // never knew which it was; the summary must not claim to either.
+    const only = async (route) => {
+        row({}, [photo(route)]);
+        return downloadSyncedMedia({ accountDir: dir, backoffBaseMs: 0 });
+    };
+
+    it("a 403 is not reported as rate limiting", async () => {
+        const s = await only("/forbidden.jpg");
+        assert.equal(s.throttled, 0, "nothing in a 403 says the request was rate limited");
+        assert.equal(s.unknown, 1);
+        assert.equal(describeDownloadReasons(s.reasons, "throttled"), "", "the throttled line must not print");
+        assert.equal(describeDownloadReasons(s.reasons, "unknown"), "HTTP 403 ×1");
+    });
+
+    it("a 429 still is, and says so by status", async () => {
+        const s = await only("/ratelimit.jpg");
+        assert.equal(s.throttled, 1);
+        assert.equal(s.unknown, 0);
+        assert.equal(describeDownloadReasons(s.reasons, "throttled"), "HTTP 429 ×1");
+    });
+
+    it("carries the observed status out on each failure", async () => {
+        const s = await only("/forbidden.jpg");
+        assert.equal(s.failures[0].status, 403, "the summary should not have to infer the status");
+        assert.equal(s.failures[0].code, "forbidden");
+    });
+
+    it("tallies mixed causes separately instead of merging them", async () => {
+        for (let i = 0; i < 3; i++) row({}, [photo("/forbidden.jpg")]);
+        for (let i = 0; i < 2; i++) row({}, [photo("/ratelimit.jpg")]);
+        const s = await downloadSyncedMedia({ accountDir: dir, limit: 50, concurrency: 1, backoffBaseMs: 0 });
+        assert.equal(s.throttled, 2);
+        assert.equal(s.unknown, 3);
+        assert.equal(describeDownloadReasons(s.reasons, "throttled"), "HTTP 429 ×2");
+        assert.equal(describeDownloadReasons(s.reasons, "unknown"), "HTTP 403 ×3");
+    });
+
+    it("lists the commonest cause first", async () => {
+        for (let i = 0; i < 2; i++) row({}, [photo("/forbidden.jpg")]);
+        for (let i = 0; i < 4; i++) row({}, [photo("/truncated.jpg")]);
+        const s = await downloadSyncedMedia({ accountDir: dir, limit: 50, concurrency: 1, backoffBaseMs: 0 });
+        assert.equal(describeDownloadReasons(s.reasons, "unknown"), "no response at all ×4, HTTP 403 ×2");
+    });
+
+    it("every reason code has a verdict and a label", () => {
+        for (const [code, spec] of Object.entries(DOWNLOAD_REASONS)) {
+            assert.ok(spec.label, `${code} has no label`);
+            assert.ok(
+                ["expired", "throttled", "unknown", "failed"].includes(spec.verdict),
+                `${code} has verdict ${spec.verdict}`,
+            );
+        }
+    });
+
+    it("keeps the retry policy it had — unknown backs off and gives up too", async () => {
+        // The split is a reporting change. A 403 storm must still stop the run
+        // rather than burn the whole queue against a server that is refusing.
+        for (let i = 0; i < THROTTLE_GIVE_UP + 20; i++) row({}, [photo("/forbidden.jpg")]);
+        const s = await downloadSyncedMedia({ accountDir: dir, limit: 200, concurrency: 1, backoffBaseMs: 0 });
+        assert.equal(s.abortedEarly, true, "an unexplained streak must stop the run, as a throttled one does");
+        assert.ok(s.unknown <= THROTTLE_GIVE_UP + 5, `stopped after ${s.unknown}, expected ~${THROTTLE_GIVE_UP}`);
+        assert.ok(s.considered > s.unknown, "it should not have attempted the whole queue");
+    });
+});
+
+describe("what sync.js actually prints about a failed download", () => {
+    // The counters above can be right while the sentence built from them is
+    // still wrong -- that was the whole bug. Same technique as
+    // tests/unit/sync-socket-rules.test.js: read the source and fail the build
+    // on a claim the offline suite cannot otherwise reach.
+    const SYNC_SRC = readFileSync(join(import.meta.dirname, "..", "..", "src", "commands", "sync.js"), "utf8");
+    /** The `warning(...)`/`info(...)` lines inside one `if (stats.<bucket>)` block. */
+    const linesFor = (bucket) => {
+        const lines = SYNC_SRC.split("\n");
+        const out = [];
+        for (let i = 0; i < lines.length; i++) {
+            if (!new RegExp(`if \\(stats\\.${bucket}\\)`).test(lines[i])) continue;
+            for (let j = i; j < lines.length && !/^\s{4}\}/.test(lines[j]); j++) out.push(lines[j]);
+        }
+        return out.join("\n");
+    };
+
+    it("never claims a refusal is 'almost certainly rate limiting'", () => {
+        assert.ok(
+            !/almost certainly rate limiting/i.test(SYNC_SRC),
+            "403 falls in this bucket and the response never says which cause it was",
+        );
+    });
+
+    it("says nothing about rate limiting in the unexplained bucket", () => {
+        const block = linesFor("unknown");
+        assert.ok(block, "expected an `if (stats.unknown)` summary block");
+        assert.ok(
+            !/rate limited|rate limiting/i.test(block.replace(/not necessarily rate limiting/gi, "")),
+            `the unknown bucket must not assert rate limiting:\n${block}`,
+        );
+    });
+
+    it("points the unexplained bucket at a fresh sync, not at waiting", () => {
+        const block = linesFor("unknown");
+        assert.match(block, /sync --from/, "a lapsed signature is renewable only by a fresh mobile sync");
+        assert.match(block, /403/, "the message should name what was actually observed");
+    });
+
+    it("keeps the wait-and-lower-concurrency advice for genuine throttling", () => {
+        const block = linesFor("throttled");
+        assert.match(block, /rate limited/, "429/5xx is the one case where that claim is earned");
+        assert.match(block, /--concurrency/);
+    });
+
+    it("both buckets are reported, and both are subtracted from 'other reasons'", () => {
+        assert.match(
+            SYNC_SRC,
+            /stats\.failed - stats\.expired - stats\.throttled - stats\.unknown/,
+            "an unexplained failure must not also be counted as failing for another reason",
+        );
     });
 });
 

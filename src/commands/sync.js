@@ -7,7 +7,12 @@ import { error, info, success, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
-import { downloadSyncedMedia, pruneDownloadedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
+import {
+    downloadSyncedMedia,
+    pruneDownloadedMedia,
+    describeDownloadReasons,
+    DOWNLOADABLE_KINDS,
+} from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
 import { drainReactions, placeUnresolvedReactions } from "../core/sync-v2/reactions.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
@@ -416,14 +421,30 @@ async function runMediaDownload(activeAcc, opts) {
         info("Zalo only keeps media for a limited time; past that the file exists only on the sending device.");
     }
     if (stats.throttled) {
-        warning(`${stats.throttled} request(s) were refused or dropped — almost certainly rate limiting, not expiry.`);
+        warning(
+            `${stats.throttled} request(s) were rate limited (${describeDownloadReasons(stats.reasons, "throttled")}).`,
+        );
         info("Those attachments are still marked pending, so re-running picks them up. Wait a while first.");
         info("A lower --concurrency makes a long run far less likely to trip it.");
     }
-    if (stats.abortedEarly) {
-        warning("Stopped early: Zalo kept refusing requests. Nothing is lost — re-run later to continue.");
+    // Deliberately not called rate limiting. Zalo answers 403 for a lapsed
+    // signature and under load alike, and nothing in the response says which.
+    // This bucket used to be merged into the one above and announced as near-
+    // certain throttling, which sent people off to wait and retry a link that
+    // no amount of waiting would bring back.
+    if (stats.unknown) {
+        warning(
+            `${stats.unknown} request(s) failed without saying why (${describeDownloadReasons(stats.reasons, "unknown")}).`,
+        );
+        info("A 403 from Zalo means either a lapsed signature or load — the response does not distinguish them.");
+        info("They stay pending, so a re-run retries them; if the same ones keep failing, waiting will not help.");
+        info("Only a fresh mobile sync can hand back a new link: `zalo-agent sync --from <YYYY-MM-DD>`.");
+        info("(It does not always issue one — the renewal hints Zalo sends are mobile-only.)");
     }
-    const other = stats.failed - stats.expired - stats.throttled;
+    if (stats.abortedEarly) {
+        warning("Stopped early: too many requests in a row came back unusable. Nothing is lost — re-run to continue.");
+    }
+    const other = stats.failed - stats.expired - stats.throttled - stats.unknown;
     if (other > 0) {
         warning(`${other} attachment(s) failed for other reasons.`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
@@ -1196,10 +1217,19 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
         info("Zalo keeps media for a limited time; past that the file exists only on the sending device.");
     }
     if (stats.throttled) {
-        warning(`${stats.throttled} request(s) were refused or dropped — rate limiting, not expiry.`);
+        warning(
+            `${stats.throttled} request(s) were rate limited (${describeDownloadReasons(stats.reasons, "throttled")}).`,
+        );
         info("Re-run `zalo-agent sync-media` later to pick them up; a lower --concurrency helps.");
     }
-    if (stats.abortedEarly) warning("Media stopped early under sustained throttling; nothing is lost.");
+    if (stats.unknown) {
+        warning(
+            `${stats.unknown} request(s) failed without saying why (${describeDownloadReasons(stats.reasons, "unknown")}).`,
+        );
+        info("403 is ambiguous — a lapsed signature and load look identical. Re-run `zalo-agent sync-media` first;");
+        info("if they keep failing, only a fresh `zalo-agent sync --from <YYYY-MM-DD>` can hand back a new link.");
+    }
+    if (stats.abortedEarly) warning("Media stopped early after too many unusable responses; nothing is lost.");
     return stats;
 }
 
@@ -1642,11 +1672,14 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
             const m = await fetchMediaAfterRestore(accountDir, api, since);
             if (!m) record("media", "ok", "nothing waiting to download");
             else {
-                record("media", m.expired || m.throttled || m.abortedEarly ? "partial" : "ok", "", {
+                const short = m.expired || m.throttled || m.unknown || m.abortedEarly;
+                record("media", short ? "partial" : "ok", "", {
                     downloaded: m.downloaded,
                     considered: m.considered,
                     expired: m.expired,
                     throttled: m.throttled,
+                    unknown: m.unknown,
+                    reasons: m.reasons,
                 });
             }
         } catch (err) {

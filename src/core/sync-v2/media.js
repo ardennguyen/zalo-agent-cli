@@ -13,6 +13,13 @@
  * When a URL has lapsed we retry once through renewlink (cmd 12094), which
  * works only while Zalo still holds the file. Past that the bytes exist solely
  * on the sending device or in zCloud.
+ *
+ * That body sniff has to stay narrow, though. Reading a text response as
+ * guilty until proven innocent silently discarded every `.csv`/`.txt`/`.md`
+ * attachment this tool ever fetched, and reported the loss as rate limiting —
+ * so the rule is: a 200 is the file unless the body says otherwise about
+ * itself, and what the summary tells the user is what the response actually
+ * showed, never what the catch-all branch happened to be called.
  */
 import fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -78,8 +85,108 @@ function guessExt(att, url, contentType) {
 }
 
 /**
- * Classify a non-file response: is the media gone, or are we just being told
- * to slow down?
+ * Every reason a download can end in, the verdict it belongs to, and how to
+ * name it to a human.
+ *
+ * The verdicts are deliberately four, not three. `throttled` used to be the
+ * catch-all, so a summary built on it claimed "almost certainly rate limiting"
+ * about a 403 the code had explicitly documented as ambiguous — advice that
+ * sends someone off to wait and retry forever when the signature has in fact
+ * lapsed. `unknown` is that catch-all, named honestly: retried exactly like
+ * `throttled`, reported as what it is.
+ *
+ * - `expired`   the object is gone; only 404/410 or a lapsed-signature body
+ * - `throttled` the server said, in so many words, to slow down
+ * - `unknown`   the response did not say, or there was no response
+ * - `failed`    something on our side went wrong after the fetch
+ */
+export const DOWNLOAD_REASONS = {
+    "not-found": { verdict: "expired", label: "HTTP 404/410" },
+    "lapsed-signature": { verdict: "expired", label: "a lapsed-signature body" },
+    "rate-limited": { verdict: "throttled", label: "HTTP 429" },
+    "server-error": { verdict: "throttled", label: "HTTP 5xx" },
+    "server-busy": { verdict: "throttled", label: "a server-busy body" },
+    forbidden: { verdict: "unknown", label: "HTTP 403" },
+    "unexpected-status": { verdict: "unknown", label: "an unexpected HTTP status" },
+    "unreadable-body": { verdict: "unknown", label: "an unrecognized body" },
+    "empty-body": { verdict: "unknown", label: "an empty body" },
+    network: { verdict: "unknown", label: "no response at all" },
+    "renew-failed": { verdict: "failed", label: "link renewal failed" },
+};
+
+/**
+ * Render a run's reason tally for one verdict, commonest first.
+ *
+ * This is what lets a summary say what actually happened — "HTTP 403 ×3" —
+ * instead of inferring a cause the classifier never established.
+ *
+ * @param {Record<string, number>} [reasons] - `stats.reasons` from a download run
+ * @param {"expired"|"throttled"|"unknown"|"failed"} verdict
+ * @returns {string} e.g. `HTTP 403 ×3, no response at all ×2`; empty when nothing matched
+ */
+export function describeDownloadReasons(reasons, verdict) {
+    return Object.entries(reasons || {})
+        .filter(([code]) => DOWNLOAD_REASONS[code]?.verdict === verdict)
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([code, n]) => `${DOWNLOAD_REASONS[code].label} ×${n}`)
+        .join(", ");
+}
+
+/**
+ * Fields that mark a JSON body as an error envelope rather than a payload.
+ * Compared lower-cased, so `errCode` and `err_code` are one entry.
+ */
+const ERROR_KEYS = new Set(["err_code", "errcode", "error_code", "errorcode", "err", "error", "err_msg", "errmsg"]);
+
+/** Phrases a CDN or gateway error page says about itself. */
+const ERROR_PHRASES = /invalid\s*signature|expired|too\s*many|rate\s*limit|busy|try\s*again/i;
+
+/**
+ * Longest body still credible as a bare status page. Past this it is a
+ * document, and a document that merely contains the word "busy" is not an
+ * error — which is the whole reason the phrase test is bounded.
+ */
+const MAX_ERROR_PAGE_BYTES = 1024;
+
+/**
+ * Does a 200 body identify *itself* as an error, or is it simply the file?
+ *
+ * The default has to be "it is the file". Inverting it is what made this
+ * module throw away every text attachment it ever downloaded: the sniff below
+ * exists to catch Zalo's 200-plus-JSON expiry envelope, but it was reached for
+ * any `text/…` response, and an ordinary CSV matches none of the error
+ * patterns — so it fell through to the catch-all and was discarded as
+ * throttling. Measured 2026-09-29: two healthy 149-byte `data.csv`
+ * attachments, stuck across four runs at three different concurrencies,
+ * both served 200 with `content-type: text/csv` and the full bytes present.
+ *
+ * @param {string} text - the decoded head of the body
+ * @param {number} byteLength - the body's full length
+ * @param {string} disposition - the response's content-disposition, lower-cased
+ * @returns {boolean}
+ */
+function looksLikeErrorBody(text, byteLength, disposition) {
+    // The server naming a file it is handing over settles it outright.
+    if (disposition.includes("attachment") || disposition.includes("filename")) return false;
+
+    const trimmed = text.trim();
+    if (trimmed.startsWith("{")) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                return Object.keys(parsed).some((k) => ERROR_KEYS.has(k.toLowerCase()));
+            }
+        } catch {
+            // Truncated at 400 bytes, or never JSON to begin with. Either way
+            // it is not an envelope we can read, so fall through.
+        }
+    }
+    return byteLength <= MAX_ERROR_PAGE_BYTES && ERROR_PHRASES.test(trimmed);
+}
+
+/**
+ * Classify a non-file response: is the media gone, are we being told to slow
+ * down, or does the response simply not say?
  *
  * This distinction matters more than it looks. Treating throttling as expiry
  * tells someone their photos are permanently lost when they are sitting on the
@@ -88,25 +195,44 @@ function guessExt(att, url, contentType) {
  * signal that genuinely means "this object no longer exists" may be called
  * expired; everything else is retryable.
  *
- * @returns {"ok"|"expired"|"throttled"}
+ * The converse is just as costly, which is why `unknown` exists. Zalo answers
+ * 403 both for a lapsed signature and under load, so calling it throttling
+ * sends someone to wait and retry when nothing but a fresh mobile sync can
+ * renew that link. Retrying is still the right first move — hence the same
+ * retry policy — but the summary must not claim to know which it was.
+ *
+ * @param {number} status - HTTP status as received
+ * @param {string|null} contentType
+ * @param {Buffer} head - the body, of which only the first 400 bytes are read
+ * @param {string|null} [contentDisposition] - the file the server says it is handing over
+ * @returns {{verdict: "ok"|"expired"|"throttled"|"unknown", code: string|null}}
+ *   `code` keys into {@link DOWNLOAD_REASONS}; it is null only for `ok`
  */
-function classifyResponse(status, contentType, head) {
-    // Explicit rate limiting, and the 5xx family, are always retryable.
-    if (status === 429 || status >= 500) return "throttled";
+function classifyResponse(status, contentType, head, contentDisposition) {
+    // Explicit rate limiting, and the 5xx family, are the two the server
+    // genuinely told us about.
+    if (status === 429) return { verdict: "throttled", code: "rate-limited" };
+    if (status >= 500) return { verdict: "throttled", code: "server-error" };
     // 404/410 are the only statuses that mean the object is gone. 403 is NOT:
-    // Zalo returns it both for a lapsed signature and under load.
-    if (status === 404 || status === 410) return "expired";
-    if (status === 403) return "throttled";
-    if (status !== 200) return "throttled";
+    // Zalo returns it both for a lapsed signature and under load, and nothing
+    // in the response distinguishes them — so it is neither, it is unknown.
+    if (status === 404 || status === 410) return { verdict: "expired", code: "not-found" };
+    if (status === 403) return { verdict: "unknown", code: "forbidden" };
+    if (status !== 200) return { verdict: "unknown", code: "unexpected-status" };
 
     const ct = String(contentType || "").toLowerCase();
-    if (!ct.includes("json") && !ct.includes("text/")) return "ok";
+    // A binary content-type is never one of Zalo's error envelopes, so it does
+    // not even need reading. Everything else is *read*, not condemned.
+    if (!ct.includes("json") && !ct.includes("text/")) return { verdict: "ok", code: null };
     const text = head.toString("utf8", 0, Math.min(head.length, 400));
-    // The documented lapsed-signature body. Anything vaguer (a bare err_code,
-    // a rate-limit notice) is treated as retryable rather than terminal.
-    if (/invalid\s*signature|expired/i.test(text)) return "expired";
-    if (/too\s*many|rate\s*limit|busy|try\s*again/i.test(text)) return "throttled";
-    return "throttled";
+    const disposition = String(contentDisposition || "").toLowerCase();
+    if (!looksLikeErrorBody(text, head.length, disposition)) return { verdict: "ok", code: null };
+
+    // The documented lapsed-signature body. Anything vaguer (a bare err_code)
+    // is retryable rather than terminal — and unexplained rather than throttled.
+    if (/invalid\s*signature|expired/i.test(text)) return { verdict: "expired", code: "lapsed-signature" };
+    if (/too\s*many|rate\s*limit|busy|try\s*again/i.test(text)) return { verdict: "throttled", code: "server-busy" };
+    return { verdict: "unknown", code: "unreadable-body" };
 }
 
 /** Per-attachment destination path. */
@@ -137,21 +263,32 @@ function attachmentsOf(row) {
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 
 /**
- * Consecutive throttled responses before the run stops entirely. Pushing on
+ * Consecutive retryable responses before the run stops entirely. Pushing on
  * past this point neither recovers files nor does the account any favours.
+ *
+ * Both `throttled` and `unknown` count toward it: retrying is the right first
+ * move for either, and splitting the counters changed the reporting, not the
+ * policy.
  */
 export const THROTTLE_GIVE_UP = 25;
 
 /**
- * Fetch a URL, returning the bytes or a reason it failed.
+ * Fetch a URL, returning the bytes or why it failed.
+ *
+ * `retryable` drives the backoff and the give-up streak; `verdict` and `code`
+ * exist so the caller can report what was observed rather than guess at it.
  *
  * @param {string} url
  * @param {number} timeoutMs - hard deadline covering headers AND body
+ * @returns {Promise<{ok: boolean, buf?: Buffer, contentType?: string|null,
+ *   retryable?: boolean, expired?: boolean, verdict?: string, code?: string,
+ *   status?: number, reason?: string}>}
  */
 async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
     let res;
     let buf;
     let ct;
+    let disposition;
     // One signal for the whole exchange: a server that sends headers promptly
     // and then stops writing the body is exactly the stall this guards against.
     const signal = AbortSignal.timeout(timeoutMs);
@@ -163,17 +300,41 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
         // entire ten-thousand-file run over one flaky read.
         buf = Buffer.from(await res.arrayBuffer());
         ct = res.headers.get("content-type");
+        disposition = res.headers.get("content-disposition");
     } catch (e) {
         const why =
             e?.name === "TimeoutError" || e?.name === "AbortError"
                 ? `timed out after ${timeoutMs}ms`
                 : e?.message || String(e);
-        return { ok: false, throttled: true, reason: `network: ${why}` };
+        // No response at all: nothing was observed, so nothing is claimed.
+        return {
+            ok: false,
+            retryable: true,
+            verdict: "unknown",
+            code: "network",
+            status: 0,
+            reason: `network: ${why}`,
+        };
     }
-    const verdict = classifyResponse(res.status, ct, buf);
-    if (verdict === "expired") return { ok: false, expired: true, reason: `gone (HTTP ${res.status})` };
-    if (verdict === "throttled") return { ok: false, throttled: true, reason: `throttled (HTTP ${res.status})` };
-    if (!buf.length) return { ok: false, throttled: true, reason: "empty body" };
+    const { verdict, code } = classifyResponse(res.status, ct, buf, disposition);
+    const status = res.status;
+    if (verdict === "expired") {
+        return { ok: false, retryable: false, expired: true, verdict, code, status, reason: `gone (HTTP ${status})` };
+    }
+    if (verdict !== "ok") {
+        return { ok: false, retryable: true, verdict, code, status, reason: `${verdict}: ${code} (HTTP ${status})` };
+    }
+    // A 200 of the right shape carrying no bytes tells us nothing either.
+    if (!buf.length) {
+        return {
+            ok: false,
+            retryable: true,
+            verdict: "unknown",
+            code: "empty-body",
+            status,
+            reason: `unknown: empty-body (HTTP ${status})`,
+        };
+    }
     return { ok: true, buf, contentType: ct };
 }
 
@@ -203,7 +364,12 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
  *   defaults to one derived from `api`. Injectable so the renewal path can be
  *   exercised without round-tripping Zalo's request crypto.
  * @param {(p: object) => void} [opts.onProgress]
- * @returns {Promise<{considered:number, downloaded:number, skipped:number, failed:number, expired:number, renewed:number, bytes:number, failures:Array<object>}>}
+ * @returns {Promise<{considered:number, downloaded:number, skipped:number, failed:number, expired:number,
+ *   throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean,
+ *   reasons:Record<string,number>, failures:Array<object>}>}
+ *   `throttled` counts only responses that said to slow down; `unknown` counts the retryable
+ *   failures that explained nothing. `reasons` tallies the observed codes — pass it to
+ *   {@link describeDownloadReasons} rather than inferring a cause from a bucket.
  */
 export async function downloadSyncedMedia(opts = {}) {
     const {
@@ -253,10 +419,17 @@ export async function downloadSyncedMedia(opts = {}) {
         skipped: 0,
         failed: 0,
         expired: 0,
+        // Only responses that said so: 429, 5xx, or a body asking us to wait.
         throttled: 0,
+        // Everything retryable that explained nothing — 403 above all, which
+        // Zalo returns for a lapsed signature and under load alike. Kept apart
+        // from `throttled` so the summary can stop guessing which it was.
+        unknown: 0,
         renewed: 0,
         bytes: 0,
         abortedEarly: false,
+        // code -> count over the jobs that ultimately failed, for the summary.
+        reasons: {},
         failures: [],
     };
     if (!jobs.length || dryRun) {
@@ -337,15 +510,22 @@ export async function downloadSyncedMedia(opts = {}) {
                         if (got.ok) stats.renewed++;
                     }
                 } catch (e) {
-                    got = { ok: false, reason: `renew failed: ${e.message}` };
+                    got = { ok: false, code: "renew-failed", reason: `renew failed: ${e.message}` };
                 }
             } else if (!got.ok && got.expired) {
                 stats.expired++;
             }
 
             if (!got.ok) {
-                if (got.throttled) {
-                    stats.throttled++;
+                // Tally what was actually observed, so the summary reports it
+                // rather than inferring a cause from the bucket it landed in.
+                if (got.code) stats.reasons[got.code] = (stats.reasons[got.code] || 0) + 1;
+                // `retryable` covers exactly what used to set `throttled`, so
+                // the backoff and give-up behave as before; only the counters
+                // below tell a genuine 429/5xx apart from an unexplained 403.
+                if (got.retryable) {
+                    if (got.verdict === "throttled") stats.throttled++;
+                    else stats.unknown++;
                     throttleStreak++;
                     if (throttleStreak >= THROTTLE_GIVE_UP) {
                         stopAll = true;
@@ -358,7 +538,13 @@ export async function downloadSyncedMedia(opts = {}) {
                 }
                 stats.failed++;
                 if (stats.failures.length < 20) {
-                    stats.failures.push({ msgId: row.msgId, kind: att.kind, reason: got.reason });
+                    stats.failures.push({
+                        msgId: row.msgId,
+                        kind: att.kind,
+                        reason: got.reason,
+                        code: got.code || null,
+                        status: got.status ?? null,
+                    });
                 }
                 onProgress({ phase: "fail", msgId: row.msgId, kind: att.kind, detail: got.reason });
                 return;

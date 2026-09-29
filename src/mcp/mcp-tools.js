@@ -566,9 +566,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     localPath = getMessageById(messageId)?.localPath || null;
                     if (!localPath) {
                         return err(
-                            `Could not fetch media for ${messageId} ` +
-                                `(${stats.expired} expired, ${stats.throttled} throttled, ${stats.failed} failed). ` +
-                                `Zalo media links expire; try zalo-agent sync-media.`,
+                            `Could not fetch media for ${messageId} (${stats.expired} expired, ` +
+                                `${stats.throttled} rate limited, ${stats.unknown} unexplained, ` +
+                                `${stats.failed} failed). Rate limiting clears on a retry; an unexplained ` +
+                                `failure is usually a 403, which Zalo returns for a lapsed signature and ` +
+                                `under load alike. Try zalo-agent sync-media, then zalo-agent sync.`,
                         );
                     }
                 }

@@ -106,18 +106,27 @@ export function buildQuote(row, { msgId = row?.msgId, threadId = null } = {}) {
     const ts = row.timestamp ?? data.ts;
     if (!ts) return { error: `Cannot quote message ${id}: its timestamp is unknown.` };
 
-    // transfer-sync-v2 restores rows with an opaque sender id
-    // ("VNOISED0000000000000000000000091") rather than the numeric uid the
-    // live listener records. Zalo puts this on the wire as `qmsgOwner`, so
-    // the quote still sends but may lose its attribution. `msg history`
-    // re-fetches the same messages with numeric uids.
+    // transfer-sync-v2 restores rows with a NOISED sender id
+    // ("VNOISED0000000000000000000000081") rather than the numeric uid the live
+    // listener records. This is not a cosmetic attribution problem: Zalo puts
+    // it on the wire as `qmsgOwner` and REJECTS the send with code 114.
+    // Measured 2026-09-28 — the same quote with a real numeric uid substituted
+    // in went through immediately.
+    //
+    // It is recoverable, so the caller should resolve rather than refuse: these
+    // ids decode through the same /api/gid/decrypt the sync path already uses
+    // for conversation ids (3/3 resolved, with display names). `buildQuote`
+    // stays synchronous and pure, so it reports the need and
+    // `resolveQuoteSender` below does the call.
     const opaqueSender = !/^-?\d+$/.test(String(uidFrom));
 
     return {
+        opaqueSender,
         ...(opaqueSender && {
             warning:
-                `Message ${id} was restored by sync and carries an opaque sender id, so the quoted ` +
-                `block may show no author. Run \`msg history <threadId> -t <0|1>\` to re-fetch it first.`,
+                `Message ${id} was restored by sync and carries a noised sender id, which Zalo rejects ` +
+                `(code 114). Resolving it; if that fails, run \`msg history <threadId> -t <0|1>\` to ` +
+                `re-fetch the message with a real uid.`,
         }),
         quote: {
             content,
@@ -136,4 +145,57 @@ export function buildQuote(row, { msgId = row?.msgId, threadId = null } = {}) {
             ttl: 0,
         },
     };
+}
+
+/**
+ * Turn a quote's noised `uidFrom` into the real numeric uid.
+ *
+ * Only needed when `buildQuote` reported `opaqueSender`. A sync-restored row's
+ * sender is a noised id and Zalo rejects it as `qmsgOwner` with code 114, so
+ * without this a restored message simply cannot be quoted — which is half the
+ * point of restoring it.
+ *
+ * The decode is the same `/api/gid/decrypt` (cmd 12054) the sync path already
+ * uses for conversation ids; `resolveNonFriendDms` accepts message sender ids
+ * unchanged. Imported lazily so the pure module keeps no network dependency and
+ * stays cheap to test.
+ *
+ * Mutates and returns `quote` on success. On failure it leaves `quote`
+ * untouched and returns an `error` describing what to do instead, rather than
+ * sending something the server will reject.
+ *
+ * @param {object} quote - the `quote` from buildQuote()
+ * @param {object} api - a logged-in zca-js api
+ * @returns {Promise<{quote?: object, error?: string, resolved?: string}>}
+ */
+export async function resolveQuoteSender(quote, api) {
+    const noised = String(quote?.uidFrom ?? "");
+    if (!noised) return { error: "Cannot resolve a quote with no sender." };
+    if (/^-?\d+$/.test(noised)) return { quote }; // already real; nothing to do
+
+    let resolveNonFriendDms;
+    try {
+        ({ resolveNonFriendDms } = await import("../core/sync-v2/gid.js"));
+    } catch (e) {
+        return { error: `Cannot resolve the quoted message's sender (${e.message}).` };
+    }
+
+    let hit;
+    try {
+        const map = await resolveNonFriendDms(api, [noised]);
+        hit = map.get(noised);
+    } catch (e) {
+        return { error: `Resolving the quoted message's sender failed (${e.message}).` };
+    }
+
+    if (!hit?.id) {
+        return {
+            error:
+                `Could not resolve the quoted message's sender. Zalo rejects a noised id with code 114, ` +
+                `so run \`msg history <threadId> -t <0|1>\` to re-fetch that message with a real uid.`,
+        };
+    }
+
+    quote.uidFrom = String(hit.id);
+    return { quote, resolved: hit.name || String(hit.id) };
 }

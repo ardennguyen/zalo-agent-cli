@@ -334,14 +334,19 @@ describe("buildQuote — refusals", () => {
 });
 
 describe("buildQuote — sync-restored rows", () => {
-    it("still builds, but flags an opaque sender id", () => {
+    it("still builds, but flags a noised sender for resolving", () => {
         // transfer-sync-v2 stores these instead of the numeric uid the live
-        // listener records; Zalo sends it as qmsgOwner and the quoted block
-        // can end up with no author.
-        const { quote, warning, error } = buildQuote(liveRow({ senderId: "VNOISED0000000000000000000000091" }));
-        assert.equal(error, undefined);
+        // listener records. Measured 2026-09-28: Zalo puts it on the wire as
+        // qmsgOwner and REJECTS the send with code 114 — this is not the
+        // cosmetic loss of attribution the first version of this test assumed.
+        // It is recoverable, so buildQuote reports it and the caller resolves.
+        const { quote, warning, error, opaqueSender } = buildQuote(
+            liveRow({ senderId: "VNOISED0000000000000000000000091" }),
+        );
+        assert.equal(error, undefined, "recoverable, so not a hard stop here");
+        assert.equal(opaqueSender, true, "the caller needs a flag, not just prose");
         assert.equal(quote.uidFrom, "VNOISED0000000000000000000000091");
-        assert.match(warning, /opaque sender id/);
+        assert.match(warning, /114/, "name the actual failure, not a vague attribution risk");
         assert.match(warning, /msg history/, "should name the command that repairs it");
     });
 

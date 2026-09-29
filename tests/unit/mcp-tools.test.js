@@ -626,17 +626,19 @@ describe("zalo_send_message composes mentions and quotes", () => {
         assert.equal(api.calls.length, 0);
     });
 
-    it("surfaces buildQuote's opaque-sender warning but still sends", async () => {
-        // transfer-sync-v2 restores rows with an opaque sender id rather than
-        // the numeric uid the live listener records.
+    it("refuses rather than sending a quote whose noised sender Zalo rejects", async () => {
+        // transfer-sync-v2 restores rows with a noised sender id rather than
+        // the numeric uid the live listener records. The first version of this
+        // test asserted the send went through with a warning; measured
+        // 2026-09-28, Zalo rejects it with code 114. So the tool now resolves
+        // the id, and when it cannot, it must not send at all.
         cacheMsg({ msgId: "m1", senderId: "VNOISED0000000000000000000000091" });
         const api = recordingApi();
         const r = await send({ threadId: "g1", text: "ok", quoteMsgId: "m1" }, api);
 
-        const out = payloadOf(r);
-        assert.equal(out.success, true);
-        assert.match(out.warnings[0], /opaque sender id/i);
-        assert.equal(api.calls.length, 1);
+        assert.equal(r.isError, true, "a send the server will reject is not a success");
+        assert.match(r.content[0].text, /msg history/i, "the error has to name the way out");
+        assert.equal(api.calls.length, 0, "nothing should reach sendMessage");
     });
 
     it("reports a missing cliMsgId rather than sending a quote Zalo will reject", async () => {

@@ -15,7 +15,7 @@ import { storeLiveMessage } from "../core/live-store.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
-import { buildQuote } from "../utils/quote.js";
+import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 
 /**
  * Open the active account's SQLite cache.
@@ -474,6 +474,17 @@ export function registerMsgCommands(program) {
                     }
                     if (built.warning) warning(built.warning);
                     quote = built.quote;
+                    // A sync-restored row's sender is a noised id that Zalo
+                    // rejects outright (code 114), so resolve it rather than
+                    // send something that cannot land.
+                    if (built.opaqueSender) {
+                        const fixed = await resolveQuoteSender(quote, getApi());
+                        if (fixed.error) {
+                            error(fixed.error);
+                            return;
+                        }
+                        if (fixed.resolved) info(`Resolved the quoted message's sender: ${fixed.resolved}`);
+                    }
                 }
 
                 // Build message content

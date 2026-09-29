@@ -9,7 +9,7 @@ import { getMessages, getMessageById, getDisplayName } from "../core/db.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
-import { buildQuote } from "../utils/quote.js";
+import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 
 /** Thread type constants matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -252,6 +252,17 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     }
                     if (built.warning) warnings.push(built.warning);
                     quote = built.quote;
+                    // A sync-restored row's sender is a noised id that Zalo
+                    // rejects with code 114, so resolve it rather than hand the
+                    // caller a send that cannot land.
+                    if (built.opaqueSender) {
+                        const fixed = await resolveQuoteSender(quote, api);
+                        if (fixed.error) {
+                            console.error("[mcp-tools] zalo_send_message quote sender:", fixed.error);
+                            return err(fixed.error);
+                        }
+                        if (fixed.resolved) warnings.push(`Resolved the quoted message's sender: ${fixed.resolved}`);
+                    }
                 }
 
                 // A plain send stays a plain string: the object form is only

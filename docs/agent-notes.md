@@ -191,6 +191,29 @@ packing and installing into an empty directory; the tarball is ~2 MB because it 
 Note the CJS build (`dist/cjs/`) is **not** patched — only the ESM `dist/`. This package is ESM, so
 it never loads the CJS bundle; anything that `require()`s zca-js would get unpatched code.
 
+### Why a stale zca-js cannot reach the tarball
+
+`bundleDependencies` packs the **working tree's** `node_modules/zca-js`, which raises the obvious
+worry: pack from a checkout whose patch was never applied and you ship unpatched bytes silently.
+
+That is not reachable through the normal path, for a reason worth writing down rather than
+rediscovering:
+
+- `npm pack` and `npm publish` both run `prepare` themselves, so `patch-package` re-applies
+  immediately before anything is packed.
+- `.github/workflows/publish.yml` is `npm ci` then `npm publish --access public --provenance` —
+  no `--ignore-scripts` anywhere — and `npm config get ignore-scripts` is false on this machine.
+
+So only an explicit scripts-disabled pack could ship a stale copy. If you ever add
+`--ignore-scripts` to the release workflow, or npm changes when `prepare` runs, that guarantee is
+gone and the patch has to be verified in the tarball instead of assumed.
+
+Re-verified at `eea5680`, after the patch gained three hunks for attachment `cliMsgId`: all three
+install paths resolve zca-js at `node_modules/@ardennguyen/zalo-agent-cli/node_modules/zca-js` —
+nested under the package where hoisting cannot reach it — each carrying the patched bytes.
+Verifying the bytes arrive is not the same as verifying runtime behaviour; that was proved
+separately over a live socket.
+
 ---
 
 ## Why the rule files are four byte-identical copies

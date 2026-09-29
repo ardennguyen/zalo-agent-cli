@@ -26,18 +26,20 @@ import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
  * @returns {Promise<{ownerId: string, cliMsgId: string, globalMsgId: string}|null>}
  */
 async function newestMessageAnchor(api, threadId, type) {
-    // Source 1: the REST group-history endpoint. Kept because it is the
-    // cheapest when it works, but note that Zalo currently answers
-    // getGroupChatHistory with HTTP 404 — it appears retired, which is also
-    // why `msg history` silently falls back to the WebSocket backfill.
+    // Source 1: Zalo's cloud-message store, the group history Zalo Web reads
+    // (src/core/group-history.js). zca-js's getGroupChatHistory asked
+    // /api/group/history, which Zalo answers with 404 -- and this used to read
+    // its answer as an array, a shape it never had.
     if (type === 1) {
         try {
-            const history = await api.getGroupChatHistory(threadId, 1);
-            const last = Array.isArray(history) ? history[0] : null;
+            // Loaded on demand: only the group path needs it.
+            const { getGroupHistory } = await import("../core/group-history.js");
+            const history = await getGroupHistory(api, threadId, 1);
+            const last = history.groupMsgs[0]?.data;
             const anchor = toAnchor(last?.uidFrom ?? last?.ownerId, last?.cliMsgId, last?.msgId ?? last?.globalMsgId);
             if (anchor) return anchor;
         } catch {
-            // 404 or transient — fall through to the local cache.
+            // Store unreachable, or no group_cloud_message host — fall through to the local cache.
         }
     }
 

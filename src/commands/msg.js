@@ -1321,15 +1321,27 @@ export function registerMsgCommands(program) {
                 let usedRestApi = false;
 
                 if (threadType === 1) {
-                    // Group: Try REST API first
+                    // Group: Zalo's cloud-message store first -- what Zalo Web
+                    // reads when a group is opened -- and the socket scan only
+                    // when that fails or comes back empty. zca-js's
+                    // getGroupChatHistory asked /api/group/history, which 404s,
+                    // and returned an object this loop could not iterate.
                     try {
-                        const history = await api.getGroupChatHistory(threadId, limit);
-                        for (const data of history || []) {
-                            fetchedMessages.push(historyRow(data, threadId));
-                            fetchedFrames.push({ threadId, type: threadType, data });
+                        // Loaded on demand: only the group path needs it.
+                        const { getGroupHistory } = await import("../core/group-history.js");
+                        const history = await getGroupHistory(api, threadId, limit);
+                        for (const m of history.groupMsgs) fetchedMessages.push(historyRow(m.data, threadId));
+                        // Shown, never cached: only the listener and sync write
+                        // message rows (AGENTS.md §13), so none of these go into
+                        // fetchedFrames for the amend step below.
+                        usedRestApi = fetchedMessages.length > 0;
+                        if (!jsonMode) {
+                            info(
+                                usedRestApi
+                                    ? "Fetched group history from Zalo's message store."
+                                    : "Zalo's message store had no messages. Falling back to WebSocket stream...",
+                            );
                         }
-                        usedRestApi = true;
-                        if (!jsonMode) info("Fetched group history via REST API.");
                     } catch (restErr) {
                         if (!jsonMode)
                             warning(`REST API failed (${restErr.message}). Falling back to WebSocket stream...`);

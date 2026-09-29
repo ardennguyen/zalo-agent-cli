@@ -2,9 +2,9 @@
 
 ## ⚠️ Cảnh báo quan trọng / Important Warning
 
-**Tool này sử dụng [zca-js](https://github.com/AKAspanion/zca-js) — một thư viện gọi API Zalo không chính thức. Zalo không hỗ trợ và tài khoản của bạn có thể bị khóa (ban) khi sử dụng.**
+**Tool này sử dụng [zca-js](https://github.com/RFS-ADRENO/zca-js) — một thư viện gọi API Zalo không chính thức. Zalo không hỗ trợ và tài khoản của bạn có thể bị khóa (ban) khi sử dụng.**
 
-**This tool uses [zca-js](https://github.com/AKAspanion/zca-js) — an unofficial Zalo API library. Zalo does not support this and your account may be banned.**
+**This tool uses [zca-js](https://github.com/RFS-ADRENO/zca-js) — an unofficial Zalo API library. Zalo does not support this and your account may be banned.**
 
 ---
 

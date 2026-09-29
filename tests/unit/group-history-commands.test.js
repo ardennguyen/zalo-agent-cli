@@ -132,7 +132,7 @@ describe("group history commands read Zalo's cloud-message store", () => {
         assert.equal(out.hasMore, true, "a third message exists beyond -n 2");
     });
 
-    it("msg history -t 1 lists the store's messages and writes nothing to zalo.db", async () => {
+    it("msg history -t 1 lists the store's messages and caches the ones it printed", async () => {
         fake.route("/api/cm/getrecentv2", () =>
             cloudPage([row("8300000000001"), row("8300000000003"), row("8300000000002")]),
         );
@@ -163,9 +163,14 @@ describe("group history commands read Zalo's cloud-message store", () => {
         assert.equal(out.messages[0].text, "text 8300000000003");
         assert.equal(out.messages[0].senderId, MEMBER);
 
-        // Only the listener and sync write message rows (AGENTS.md §13).
+        // msg history's fetch writes what it fetched, insert-if-absent
+        // (AGENTS.md §13); tests/unit/history-write-back.test.js covers the rule.
         initDb(join(CONFIG_DIR, "accounts", FAKE.ownId, "zalo.db"));
-        assert.deepEqual(getMessages(GID, 100), [], "msg history wrote message rows on its own");
+        assert.deepEqual(
+            getMessages(GID, 100).map((m) => m.msgId),
+            ["8300000000003", "8300000000002"],
+            "the printed messages were not cached",
+        );
     });
 
     it("msg history -t 1 still scans the socket when the store has nothing", async () => {

@@ -15,6 +15,9 @@
 import fs from "node:fs";
 import {
     insertMessage,
+    insertMessageIfAbsent,
+    getThreadLeftAt,
+    runInTransaction,
     upsertThread,
     upsertReaction,
     markMessageRecalled,
@@ -191,6 +194,82 @@ export function storeLiveMessage(msg, opts = {}) {
     }
     if (typeof opts.onStored === "function") opts.onStored(info, msg);
     return { stored: true, info };
+}
+
+/**
+ * Store one message a history fetch returned -- only if it is not stored yet.
+ *
+ * `msg history` reads Zalo's cloud-message store (groups) or scans the
+ * socket's old-message queue, and writes what it found through here. Zalo Web
+ * writes the history it fetches too -- into the same table as live messages,
+ * through the same writer -- but only rows it does not already hold, and
+ * never replacing one (findMsgsAddDb, then ZStorage.setMessage with
+ * replace:false). So a msgId already in zalo.db is left exactly as it is, and
+ * whatever the listener, the media downloader, a receipt or a recall put on
+ * it stays. That is the whole difference from {@link storeLiveMessage}, whose
+ * upsert replaces the text, type, raw_data (st/at/cmd included), timestamp
+ * and has_attachment.
+ *
+ * A new row gets the listener's normalization -- same classifier, same
+ * columns, same thread update -- with `raw_data.src` "history" where the
+ * listener writes "listen", as the phone restore writes "sync-v2". Zalo Web's
+ * other two guards are mirrored:
+ *
+ *   - removal frames ("chat.delete", "chat.undo") and rows without content
+ *     are never written, and a removal is never APPLIED from history:
+ *     tombstones come from the listener and the sync;
+ *   - nothing from before the conversation's delete marker comes back
+ *     (threads.leftAt, set by `conv delete` and by our own leave event).
+ *
+ * @param {object} msg - `{threadId, type, data}`, the listener's frame shape
+ * @returns {{stored: boolean, info?: object, reason?: string}} `stored` is true only for a new row
+ */
+export function storeHistoryMessage(msg) {
+    const data = msg?.data;
+    if (!data || data.msgId === undefined || data.msgId === null || data.msgId === "") {
+        return { stored: false, reason: "no msgId" };
+    }
+    if (REMOVAL_MSG_TYPES.has(data.msgType)) return { stored: false, reason: "a removal; history never applies one" };
+    if (!data.content) return { stored: false, reason: "no content" };
+    // A history row with no time would land at "now", the one place it
+    // certainly does not belong.
+    const timestamp = Number(data.ts);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return { stored: false, reason: "no timestamp" };
+    const threadId = String(msg.threadId);
+
+    try {
+        const leftAt = getThreadLeftAt(threadId);
+        if (leftAt !== null && timestamp <= leftAt) {
+            return { stored: false, reason: "from before the conversation's delete marker" };
+        }
+        const info = classifyLiveMessage(data);
+        const inserted = runInTransaction(() => {
+            const res = insertMessageIfAbsent({
+                msgId: String(data.msgId),
+                threadId,
+                senderId: String(data.uidFrom || ""),
+                senderName: String(data.dName || ""),
+                text: info.text || "",
+                timestamp,
+                type: info.type,
+                raw_data: { ...info.raw, src: "history" },
+                has_attachment: info.hasAttachment,
+            });
+            if (!res.changes) return false;
+            // Only for a row actually written: a skipped one touches nothing.
+            upsertThread({
+                threadId,
+                type: msg.type === THREAD_USER ? "dm" : "group",
+                name: nameFromLiveMessage(msg),
+                lastUpdate: timestamp,
+                nameHint: true,
+            });
+            return true;
+        });
+        return inserted ? { stored: true, info } : { stored: false, reason: "already stored" };
+    } catch (e) {
+        return { stored: false, reason: e.message };
+    }
 }
 
 /**

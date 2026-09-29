@@ -13,7 +13,7 @@ import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { initDb, getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
 import { sendViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
-import { storeLiveMessage } from "../core/live-store.js";
+import { storeHistoryMessage } from "../core/live-store.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
@@ -1609,8 +1609,9 @@ export function registerMsgCommands(program) {
                 }
 
                 let fetchedMessages = [];
-                // The original frames, kept for the cache write: it goes through
-                // the listener's own writer, not through the printed rows.
+                // The original frames, for the one cache write-back below
+                // (storeHistoryMessage: insert-if-absent, the listener's
+                // normalization) -- never the printed rows.
                 const fetchedFrames = [];
                 let usedRestApi = false;
 
@@ -1624,10 +1625,12 @@ export function registerMsgCommands(program) {
                         // Loaded on demand: only the group path needs it.
                         const { getGroupHistory } = await import("../core/group-history.js");
                         const history = await getGroupHistory(api, threadId, limit);
-                        for (const m of history.groupMsgs) fetchedMessages.push(historyRow(m.data, threadId));
-                        // Shown, never cached: only the listener and sync write
-                        // message rows (AGENTS.md §13), so none of these go into
-                        // fetchedFrames for the amend step below.
+                        for (const m of history.groupMsgs) {
+                            fetchedMessages.push(historyRow(m.data, threadId));
+                            // Cached by the same write-back as the socket scan's
+                            // frames: only what zalo.db does not have yet.
+                            fetchedFrames.push({ threadId, type: threadType, data: m.data });
+                        }
                         usedRestApi = fetchedMessages.length > 0;
                         if (!jsonMode) {
                             info(
@@ -1755,19 +1758,27 @@ export function registerMsgCommands(program) {
                     }
                 }
 
-                // Amend DB with live fetched messages
+                // Write back what either fetch found -- one path for the
+                // cloud-message store and the socket scan alike. The listener,
+                // sync and msg history's fetch write Zalo-reported rows;
+                // history writes insert-if-absent, as Zalo Web does with the
+                // history it fetches (replace:false); msg send writes nothing.
+                // So a message already in zalo.db is left exactly as it is,
+                // whatever the fetch says: its localPath, receipt status,
+                // st/at/cmd and tombstone all stay. Removals are never applied
+                // from here, and nothing older than a conversation's delete
+                // marker comes back (see storeHistoryMessage).
                 if (dbActive && fetchedFrames.length > 0) {
+                    let added = 0;
                     for (const frame of fetchedFrames) {
-                        try {
-                            // Same writer as `listen`: shared vocabulary,
-                            // has_attachment, removals applied, and a thread
-                            // name that a message's sender cannot overwrite.
-                            storeLiveMessage(frame);
-                        } catch {
-                            // one bad frame must not stop the rest
-                        }
+                        if (storeHistoryMessage(frame).stored) added++;
                     }
-                    if (!jsonMode) info("Amended local database with live fetched messages.");
+                    if (!jsonMode) {
+                        info(
+                            `Cached ${added} message(s) the local database did not have; ` +
+                                `${fetchedFrames.length - added} already there or not storable were left untouched.`,
+                        );
+                    }
                 }
 
                 // Merge and sort

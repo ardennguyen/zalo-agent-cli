@@ -424,6 +424,67 @@ export function insertMessage(msg) {
     });
 }
 
+/**
+ * Insert a message only if its msgId is not stored yet -- never update one.
+ *
+ * msg history's write-back (storeHistoryMessage in ./live-store.js). Zalo Web
+ * writes the history it fetches the same way, ZStorage.setMessage with
+ * replace:false. A stored row keeps every column, which is the point: the
+ * listener and later events put things on it that a re-fetch cannot know --
+ * the media downloader's localPath, a receipt's msgStatus, a recall's
+ * tombstone, the st/at/cmd a seen receipt echoes back. {@link insertMessage},
+ * the listener's upsert, would replace most of them.
+ *
+ * Same columns and value mapping as insertMessage.
+ *
+ * @param {object} msg - the row, as for insertMessage
+ * @returns {{changes: number}} 1 when inserted, 0 when the msgId was already stored
+ */
+export function insertMessageIfAbsent(msg) {
+    if (!db) throw new Error("Database not initialized");
+
+    const stmt = db.prepare(`
+    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
+    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
+    ON CONFLICT(msgId) DO NOTHING
+  `);
+
+    const raw_data =
+        typeof msg.raw_data === "object" && msg.raw_data !== null ? JSON.stringify(msg.raw_data) : msg.raw_data;
+
+    return stmt.run({
+        msgId: msg.msgId,
+        threadId: msg.threadId,
+        senderId: msg.senderId,
+        senderName: msg.senderName,
+        text: msg.text,
+        timestamp: msg.timestamp,
+        type: msg.type,
+        raw_data: raw_data,
+        localPath: msg.localPath || null,
+        has_attachment: msg.has_attachment ? 1 : 0,
+        msgStatus: Number.isFinite(Number(msg.msgStatus)) ? Number(msg.msgStatus) : null,
+    });
+}
+
+/**
+ * When a conversation stopped being ours, or null.
+ *
+ * `leftAt` is set by `conv delete` and by our own leave, removal or block
+ * event (markThreadGone), and nothing clears it. It is the nearest thing this
+ * cache has to Zalo Web's per-conversation delete marker, which keeps fetched
+ * history from bringing deleted messages back.
+ *
+ * @param {string} threadId
+ * @returns {number|null} epoch ms
+ */
+export function getThreadLeftAt(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    const row = db.prepare("SELECT leftAt FROM threads WHERE threadId = ?").get(String(threadId));
+    const at = Number(row?.leftAt);
+    return Number.isFinite(at) && at > 0 ? at : null;
+}
+
 export function getMessages(threadId, limit = 50, fromTimestamp = null) {
     if (!db) throw new Error("Database not initialized");
 

@@ -439,7 +439,7 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `listen` | 1 |
 | `mcp start` | 1 (exposing 7 MCP tools) |
 | `oa` (all subgroups) | ~32 |
-| **Total** | **~178 CLI commands** + 7 MCP tools |
+| **Total** | **184 CLI commands** + 7 MCP tools |
 
 ## Provenance
 

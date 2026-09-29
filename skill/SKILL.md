@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **178 CLI commands** across 16 groups + **7 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **184 CLI commands** across 16 groups + **7 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 - **Requires**: `zalo-agent` CLI pre-installed by user (`zalo-agent --version` to verify)
@@ -256,7 +256,7 @@ Full commands: `references/command-reference.md`
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 178 commands + 7 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 184 commands + 7 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

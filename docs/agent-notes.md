@@ -79,7 +79,7 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **178** | `src/commands/` | `tests/cli/surface.test.js` `COMMAND_SURFACE` + `OA_SUBGROUPS` + `TOP_LEVEL` |
+| CLI commands | **184** invokable leaves (152 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **16** | `src/index.js` | the `register*Commands` calls |
 | MCP tools | **7** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
@@ -91,6 +91,37 @@ still live next to their module (`src/utils/bank-helpers.test.js`, `src/mcp/*.te
 globs both locations.
 
 The MCP tool list has drifted before — docs claimed 4 tools while the code registered 7.
+
+### Counting the CLI surface — walk the tree, do not count strings
+
+Two sessions got this wrong on the same day, in opposite directions, and both
+answers looked reasonable:
+
+- **201** came from grepping quoted strings out of `tests/cli/surface.test.js`.
+  That sweeps up `FLAG_CONTRACT` keys and quoted text inside comments, which are
+  not commands.
+- **204** came from walking the tree but missing that `update` is registered
+  inline in `src/index.js` with `.command("update")` rather than through a
+  `register*Commands` function, so a walk of those functions cannot see it.
+
+The number to quote is **invokable leaf commands**: what a user can actually
+type. It excludes the 21 group containers (`msg`, `oa`, `oa follower`, ...),
+which is the convention `command-reference.md` already uses.
+
+To measure it, parse the import/call pairs out of `src/index.js` rather than
+hardcoding them — three exports do not follow the plural pattern
+(`registerListenCommand`, `registerOACommands`, `registerMCPCommands`), and
+guessing those names silently drops OA's 32 commands and MCP's 1. Load each into
+a fresh `Command`, walk it, count nodes with no children, and add the inline
+top-level commands found by scanning `src/index.js` for `.command("...")`.
+
+Measured at `a719c99` (2026-09-29): **184 leaves, 21 containers, 205 nodes**.
+By group: group 33, oa 32, friend 22, msg 18, conv 16, top-level 12, profile 11,
+catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, label 2,
+mcp 1. A separate audit confirmed zero drift between that live tree and the
+manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
+trustworthy as the *contract* even though counting its string literals is not
+how you get the number.
 
 ---
 

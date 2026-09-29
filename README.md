@@ -26,7 +26,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > clawhub install zalo-agent          # OpenClaw (từ ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/   # Claude Code
 > ```
-> 16 nhóm lệnh · 178 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
+> 16 nhóm lệnh · 184 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
 > Xem [skill/SKILL.md](skill/SKILL.md) · [Tham chiếu lệnh đầy đủ](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
@@ -130,7 +130,7 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 
 - Đăng nhập QR qua HTTP server tự động (browser + terminal), báo ngay khi bị **từ chối trên điện thoại** thay vì treo tới hết 60s
 - Đa tài khoản với proxy riêng biệt (1:1), device fingerprint riêng cho từng tài khoản
-- **178 lệnh** phủ hết tính năng Zalo cá nhân
+- **184 lệnh** phủ hết tính năng Zalo cá nhân
 - **Zalo Official Account (OA) API v3.0** — OAuth login, gửi tin nhắn, follower, tag, bài viết, cửa hàng, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 7 tools cho Claude Code và các MCP client
 - **Bộ nhớ đệm cục bộ (SQLite)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync-mobile --transfer` khôi phục toàn bộ lịch sử từ điện thoại vào `zalo.db` (giải mã transfer-sync-v2; xác nhận một lần trên điện thoại), mặc định lấy **toàn bộ** lịch sử (không còn mốc chặn 2024-01-01); thêm `--days <n>` hoặc `--from <YYYY-MM-DD>` nếu chỉ cần một khoảng. Dọn dẹp: `sync-media --prune <days|all>` giải phóng dung lượng nhưng giữ nguyên nội dung tin nhắn, `--prune-orphans` nhắm vào hội thoại tài khoản không còn, và `conv forget` xoá hẳn bản sao cục bộ của một hội thoại — không cái nào gửi gì tới Zalo. Luồng đồng bộ chỉ mang **liên kết** media chứ không mang file, nên sau khi lưu tin nhắn, `--transfer` **tự động tải media về** (thêm `--messages-only` nếu chỉ muốn tin nhắn); `sync-media` chạy lại/tiếp tục bước tải này, không cần xác nhận trên điện thoại. Ghi chú, tin ghim, bình chọn và nhắc hẹn nằm ngoài luồng tin nhắn — dùng `sync-boards`
@@ -178,7 +178,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > clawhub install zalo-agent                    # OpenClaw (from ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/     # Claude Code
 > ```
-> 16 command groups · 178 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
+> 16 command groups · 184 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
 > See [skill/SKILL.md](skill/SKILL.md) · [Full command reference](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
@@ -246,7 +246,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 
 - QR login over an auto-started HTTP server (browser + terminal), reporting a **decline on the phone** immediately instead of hanging until the 60s timeout
 - Multi-account with a dedicated proxy (1:1) and a per-account device fingerprint
-- **178 commands** covering the personal-account Zalo surface
+- **184 commands** covering the personal-account Zalo surface
 - **Zalo Official Account (OA) API v3.0** — OAuth login, messaging, followers, tags, articles, store, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 7 tools for Claude Code and other MCP clients
 - **Local SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync-mobile --transfer` restores full history from the phone into `zalo.db` (transfer-sync-v2 decrypt; one confirmation on the phone), defaulting to **all** history (the old 2024-01-01 floor is gone), with `--days <n>` or `--from <YYYY-MM-DD>` to narrow it. Housekeeping: `sync-media --prune <days|all>` reclaims disk while keeping message text, `--prune-orphans` targets conversations the account no longer has, and `conv forget` removes a conversation's local copy entirely — none of which contact Zalo. The sync stream carries media **links**, not files, so a `--transfer` run **downloads its attachments automatically** once the messages are stored (`--messages-only` skips it); `sync-media` re-runs or resumes that fetch on its own, with no phone confirmation. Notes, pinned messages, polls and reminders live outside the message stream — `sync-boards` fetches those

@@ -82,6 +82,13 @@ Annotated `src/` tree and the per-account runtime storage layout: [`docs/agent-n
 
 Enforced by Prettier + ESLint — do not hand-format.
 
+**`npm run format` covers `src/` and `tests/` only.** Running prettier by hand on
+anything under `skill/`, `docs/` or the wiki reformats the WHOLE file — those
+have never been prettier-formatted — instead of your hunk. Measured: 115 changed
+lines in `SKILL.md` and 560 in `command-reference.md` from a one-sentence edit.
+In this shared tree that lands on top of whatever someone else has uncommitted.
+Edit those files by hand.
+
 | Setting | Value |
 |---------|-------|
 | Module system | ESM (`"type": "module"`), `.js` extensions required in imports |
@@ -235,11 +242,9 @@ Background and diagnoses for all of these: [`docs/agent-notes.md`](docs/agent-no
 
 - **Verify a write actually stuck (re-read the file) after any edit in this tree**, especially when another agent or process may be running. When a file looks wrong, **rule out the mundane causes and ask rather than guessing** — ownership/ACLs (`Get-Acl`), an external handler rewriting it, an elevated shell — before recording anything as "cause unidentified".
 - **Never run `zalo-agent login` from an elevated shell.** Nothing here needs elevation, and it leaves credential files owned by `BUILTIN\Administrators`: an unelevated session can then read and rewrite them but not delete them, so `logout --purge` and `account remove` fail with `EPERM` while everything else looks fine.
-- **Line endings are pinned by `.gitattributes` — never work around it.** It marks `tests/fixtures/** -text` (compared byte-for-byte against the SHA-256 table in `tests/fixtures/index.js`) and normalizes everything else to LF.
-  - **Never "fix" a mangled fixture with `git add --renormalize .` or a broad `git add`** — under `-text` that *stages the corruption* and breaks CI for everyone. Restore with `rm tests/fixtures/notes.txt tests/fixtures/data.csv && git checkout -- tests/fixtures/`, confirm with `node --test tests/unit/image-metadata.test.js`.
-  - **Git reads `.gitattributes` from the working tree, not the commit you have checked out**, so a stray untracked copy on an older branch aborts `git rebase` with "You have unstaged changes" naming only those two files. Rebasing is otherwise fine — do **not** generalize this into "merge, never rebase".
+- **Line endings are pinned by `.gitattributes` — never work around it.** `tests/fixtures/** -text` (those files are byte-compared against a SHA-256 table), everything else LF. **Never "fix" a mangled fixture with `git add --renormalize .` or a broad `git add`** — under `-text` that stages the corruption and breaks CI. Git also reads `.gitattributes` from the working tree, not your checked-out commit. Recovery and the full incident: [`docs/agent-notes.md`](docs/agent-notes.md).
 - **One WebSocket per account — including uploads and `sync`.** `listen`, `mcp start`, `sync-mobile` and a browser Zalo Web session cannot coexist on one account; a duplicate closes the connection with code 3000 and is fatal by design. A running daemon publishes `daemon-channel.json` and does both extra jobs on its own socket (`POST /send-attachments`, `POST /sync/messages`, `POST /sync/reactions`); callers open their own only when **no** daemon is up. **Never add a code path that opens a second listener without checking that file** — `tests/unit/sync-socket-rules.test.js` fails the build when a `run*` command in `sync.js` calls `connectListener` before `getDaemonChannel`.
-  - **Keep `src/core/daemon-channel.js` a transport** — stage bodies belong in `src/core/daemon-sync.js`, injected as `runners`, because `src/commands/msg.js` imports the channel at the top level and importing SyncV2 there would pull the libzproto decrypt stack, the CDN fetcher and the sqlite writes into every `msg` invocation. `tests/unit/daemon-channel.test.js` enforces that the channel imports nothing but node builtins.
+  - **Keep `src/core/daemon-channel.js` a transport** — stage bodies belong in `src/core/daemon-sync.js`, injected as `runners`, or the whole SyncV2 stack — libzproto, the CDN fetcher, sqlite writes — loads on every `msg` invocation. `tests/unit/daemon-channel.test.js` enforces that the channel imports nothing but node builtins.
   - **A daemon-routed sync still taps the phone.** Routing removes the second WebSocket, not the confirmation, and the daemon must never start a stage on its own — same rule as the "Why the daemon does not self-heal" note in `src/commands/listen.js`.
 - **One db writer per account.** `daemon.lock` enforces this; `account remove` and `logout --purge` refuse while a `listen` daemon holds it.
 - **Unofficial API.** zca-js tracks a moving target. `patches/` holds patch-package patches against it, applied by `prepare` and shipped **inside the tarball** via `bundleDependencies` — never a consumer `postinstall`, which cannot reach a hoisted `zca-js`. Bumping `zca-js` means regenerating the patch *and* re-pinning the exact version; `tests/unit/packaging.test.js` enforces both.

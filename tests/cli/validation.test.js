@@ -95,6 +95,41 @@ describe("msg undo requires a cliMsgId", () => {
     });
 });
 
+describe("conv read needs a message to anchor the seen event on", () => {
+    // `sendSeenEvent(messages, type)` takes a message DESCRIPTOR. `conv read`
+    // used to pass the bare threadId string: truthy, so zca-js wrapped it in an
+    // array, read `.uidFrom` off a string (undefined), compared
+    // `undefined !== undefined` so did NOT throw, and dropped every id field in
+    // JSON.stringify. The request reached Zalo as
+    // {"data":[{"st":-1,"at":0,"cmd":-1,"ts":-1}]} with the thread id nowhere in
+    // it. The command reported success and had never marked anything as read.
+    //
+    // Zalo marks a MESSAGE seen, not a thread, so a cold cache genuinely has
+    // nothing to anchor on — and per AGENTS.md the cache is written by `listen`
+    // and `sync` only. The command must say that rather than appear to work.
+
+    it("refuses on a cold cache instead of reporting success", async () => {
+        const r = await runCli(["conv", "read", "1234567890123456789"], opts);
+        assert.notEqual(r.code, 0, "must not exit 0 when it cannot mark anything");
+        assert.doesNotMatch(r.all, /Marked as read/i, "must never claim success it did not achieve");
+    });
+
+    it("exits before any network contact", async () => {
+        const r = await runCli(["conv", "read", "1234567890123456789"], opts);
+        assert.equal(r.code, 1);
+        assert.match(r.all, /No active account/i);
+        assert.doesNotMatch(r.all, /seen|seenv2/i, "must not reach the API without an account");
+    });
+
+    // NOT COVERED OFFLINE: the cold-cache branch itself. Reaching it needs an
+    // authenticated account, so the sandbox exits one step earlier at "No active
+    // account". The message it prints there — naming `listen` and `sync` as the
+    // only cache writers, deliberately NOT `msg history`, which was measured
+    // returning nothing for a same-day group message and is not a writer — is
+    // verifiable only against a live session. Left to the live suite rather than
+    // asserted here with a fixture that would prove nothing.
+});
+
 describe("conv auto-delete TTL guard", () => {
     for (const bad of ["3d", "forever", "0", "", "1D"]) {
         it(`rejects TTL ${JSON.stringify(bad)} and lists the valid values`, async () => {

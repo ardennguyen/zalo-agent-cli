@@ -87,6 +87,9 @@ async function newestMessageAnchor(api, threadId, type) {
  * Deep enough to see past a run of sync-v2 rows, shallow enough that the
  * lookup stays a single cheap query.
  */
+/** How far back to look for an incoming message to anchor a seen event on. */
+const SEEN_ANCHOR_SCAN_DEPTH = 50;
+
 const ANCHOR_SCAN_DEPTH = 200;
 
 /** Build the deleteChat anchor triple, or null when any part is missing. */
@@ -311,12 +314,69 @@ export function registerConvCommands(program) {
         });
 
     conv.command("read <threadId>")
-        .description("Mark conversation as read")
+        .description(
+            "Mark a conversation as read. Needs the newest incoming message in the local cache — " +
+                "Zalo marks a MESSAGE seen, not a thread.",
+        )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
             try {
-                const result = await getApi().sendSeenEvent(threadId, Number(opts.type));
-                output(result, program.opts().json, () => success("Marked as read"));
+                // `sendSeenEvent(messages, type)` takes a message DESCRIPTOR, or an
+                // array of them -- not a thread id. This used to pass the bare
+                // threadId string, which is truthy, so zca-js wrapped it in an
+                // array, read `.uidFrom` off a string (undefined), compared
+                // `undefined !== undefined` and so did NOT throw, and dropped every
+                // id field in JSON.stringify. The request went to Zalo as
+                // {"data":[{"st":-1,"at":0,"cmd":-1,"ts":-1}]} -- with the thread id
+                // nowhere in it. `conv read` has never marked anything as read, and
+                // reported success while doing it.
+                const isGroup = Number(opts.type) === 1;
+                const activeAcc = getActive();
+                if (!activeAcc) {
+                    error("No active account. Please login first.");
+                    process.exit(1);
+                }
+                initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+
+                // Zalo identifies the thread from the message itself: uidFrom for a
+                // DM, idTo for a group. So the anchor must be an INCOMING message --
+                // anchoring on one of ours would address the seen event at the wrong
+                // thread for a DM.
+                const anchor = getMessages(threadId, SEEN_ANCHOR_SCAN_DEPTH).find(
+                    (m) => String(m.senderId) !== String(activeAcc.ownId),
+                );
+                if (!anchor) {
+                    error("No incoming message for this conversation is in the local cache.");
+                    info("Zalo marks a MESSAGE as seen, not a thread, so there is nothing to anchor the event to.");
+                    info("The cache is written by `listen` and by `sync` only. Run one of them first:");
+                    info(`  zalo-agent sync --from ${new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10)}`);
+                    process.exit(1);
+                }
+
+                let raw = {};
+                try {
+                    raw = JSON.parse(anchor.raw_data || "{}");
+                } catch {
+                    /* a row without usable raw_data still carries msgId and senderId */
+                }
+                if (!raw.cliMsgId) {
+                    error("The newest cached message for this conversation has no cliMsgId.");
+                    info("Zalo needs it to identify the message; it exists only on rows the listener or a sync wrote.");
+                    process.exit(1);
+                }
+
+                const result = await getApi().sendSeenEvent(
+                    {
+                        msgId: String(anchor.msgId),
+                        cliMsgId: String(raw.cliMsgId),
+                        // DM: uidFrom IS the thread id. Group: idTo is.
+                        uidFrom: String(anchor.senderId),
+                        idTo: isGroup ? String(threadId) : String(activeAcc.ownId),
+                        msgType: raw.msgType || "webchat",
+                    },
+                    Number(opts.type),
+                );
+                output(result, program.opts().json, () => success(`Marked as read up to message ${anchor.msgId}`));
             } catch (e) {
                 error(e.message);
             }

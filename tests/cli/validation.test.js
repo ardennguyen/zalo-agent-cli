@@ -313,3 +313,62 @@ describe("sync-mobile — offline surface", () => {
         assert.match(r.all, /No active account/, "both flags parsed; it stopped at the account guard");
     });
 });
+
+describe("msg send --quote guards", () => {
+    it("refuses a msgId that is not cached, before any network contact", async () => {
+        // `--quote` is a cache lookup, not an argument transform: cliMsgId and
+        // the property blob exist nowhere else. With no account there is no
+        // cache, so every id is uncached.
+        const r = await runCli(["msg", "send", TID, "hi", "--quote", "8314033169851"], opts);
+        assert.match(r.all, /8314033169851 is not in the local cache/);
+        assert.match(r.all, /msg history/, "should name the command that fills the cache");
+        assert.doesNotMatch(r.all, /Not logged in/, "must resolve before getApi()");
+    });
+
+    it("takes a value rather than swallowing the next flag", async () => {
+        const r = await runCli(["msg", "send", TID, "hi", "--quote", "123", "-t", "1"], opts);
+        assert.match(r.all, /123 is not in the local cache/);
+    });
+
+    it("errors when --quote is given no value", async () => {
+        const r = await runCli(["msg", "send", TID, "hi", "--quote"], opts);
+        assert.notEqual(r.code, 0);
+        assert.match(r.all, /argument missing/i);
+    });
+});
+
+describe("msg send mention guards", () => {
+    it("warns that mentions are dropped outside a group", async () => {
+        // zca-js filters mentions for ThreadType.User, so a `-t 0` send would
+        // otherwise arrive with the names as plain text and nobody tagged.
+        const r = await runCli(["msg", "send", TID, "hello @[-1]", "-t", "0"], opts);
+        assert.match(r.all, /Mentions only apply to group messages/);
+    });
+
+    it("does not warn when there is nothing to mention", async () => {
+        const r = await runCli(["msg", "send", TID, "hello", "-t", "0"], opts);
+        assert.doesNotMatch(r.all, /Mentions only apply/);
+    });
+
+    it("documents the @[userId] token on --mention", async () => {
+        const { stdout } = await runCli(["msg", "send", "--help"], opts);
+        assert.match(stdout, /@\[userId\]/, "the safe form must be discoverable from --help");
+    });
+});
+
+describe("msg send mention name resolution", () => {
+    it("degrades to the uid when the name lookup cannot run", async () => {
+        // An uncached uid in a group send triggers one getGroupMembersInfo
+        // call. With no session that throws — it must fall back to the uid
+        // rather than take the command down before sendMessage is reached.
+        const r = await runCli(["msg", "send", TID, "cc @[1000000000000000001]", "-t", "1"], opts);
+        assert.match(r.all, /Not logged in/, "should fail at the send, not at the name lookup");
+        assert.doesNotMatch(r.all, /getGroupMembersInfo|profiles/, "the lookup failure must stay internal");
+    });
+
+    it("needs no lookup for @All", async () => {
+        const r = await runCli(["msg", "send", TID, "@[-1] hi", "-t", "1"], opts);
+        assert.match(r.all, /Not logged in/);
+        assert.doesNotMatch(r.all, /Mentions only apply/, "-t 1 is a group; no warning");
+    });
+});

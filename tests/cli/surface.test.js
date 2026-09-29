@@ -236,7 +236,7 @@ const FLAG_CONTRACT = {
     "sync-reactions": ["--wait", "--pages", "--no-removals"],
     "sync-boards": ["--thread", "--limit", "--concurrency", "--no-reminders", "--no-boards"],
     "sync-cloud": ["--pages", "--page-size", "--resume"],
-    "msg send": ["--type", "--mention", "--style", "--md", "--react"],
+    "msg send": ["--type", "--mention", "--quote", "--style", "--md", "--react"],
     "msg send-qr-transfer": ["--bank", "--amount", "--content", "--template", "--type"],
     "msg send-bank": ["--bank", "--name", "--type"],
     "msg undo": ["--cli-msg-id", "--type"],

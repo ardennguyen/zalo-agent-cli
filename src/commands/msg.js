@@ -9,11 +9,97 @@ import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getMessages } from "../core/db.js";
+import { initDb, getMessages, getMessageById, getDisplayName, upsertContact } from "../core/db.js";
 import { sendViaDaemon } from "../core/daemon-channel.js";
 import { storeLiveMessage } from "../core/live-store.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
+import { buildQuote } from "../utils/quote.js";
+
+/**
+ * Open the active account's SQLite cache.
+ *
+ * Best-effort on purpose: every caller here has a useful fallback for "no
+ * account, no cache file, or a db that will not open", so this reports that
+ * as false rather than failing the command.
+ *
+ * @returns {boolean} true when db.js is initialized and safe to query
+ */
+function openAccountDb() {
+    try {
+        const acc = getActive();
+        if (!acc) return false;
+        initDb(join(CONFIG_DIR, "accounts", acc.ownId, "zalo.db"));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Display name for a `@[uid]` mention token, or null.
+ *
+ * Never throws. A name that cannot be looked up degrades to the uid, which
+ * still tags the right person — failing the whole send over a cache miss
+ * would be a far worse trade.
+ *
+ * @param {string} uid
+ * @param {boolean} cacheOpen - whether openAccountDb() succeeded
+ * @returns {string|null}
+ */
+function mentionName(uid, cacheOpen) {
+    if (!cacheOpen) return null;
+    try {
+        return getDisplayName(uid);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Ask Zalo for the names the local cache could not supply.
+ *
+ * The cache only knows someone who has already spoken — `senderName` comes
+ * off their messages — so a member who has never posted in the group would
+ * be tagged as a bare uid. `getGroupMembersInfo` takes the whole missing set
+ * in one call, and only runs when there is something missing, so the common
+ * case still costs no network at all.
+ *
+ * Whatever comes back is written to `contacts`, so the next send skips the
+ * call entirely.
+ *
+ * Never throws: no session, not a member of that group, or an API hiccup all
+ * leave the uid in place, which is still a valid mention.
+ *
+ * @param {string[]} uids - uids the cache had no name for
+ * @param {boolean} cacheOpen - whether openAccountDb() succeeded
+ * @returns {Promise<Map<string, string>>} uid → display name, for those found
+ */
+async function fetchMentionNames(uids, cacheOpen) {
+    const found = new Map();
+    if (uids.length === 0) return found;
+    try {
+        const profiles = (await getApi().getGroupMembersInfo(uids))?.profiles || {};
+        for (const [key, profile] of Object.entries(profiles)) {
+            // Keys come back as the uid, sometimes with zca-js's "_0" version suffix.
+            const uid = String(key).replace(/_0$/, "");
+            const name = profile?.displayName || profile?.zaloName;
+            if (!name) continue;
+            found.set(uid, name);
+            if (cacheOpen) {
+                try {
+                    upsertContact({ userId: uid, name, phone: profile?.phoneNumber || null });
+                } catch {
+                    /* caching the name is a nicety, not a reason to fail the send */
+                }
+            }
+        }
+    } catch {
+        /* fall back to the uid — see the doc comment */
+    }
+    return found;
+}
 
 /**
  * Look one message up in the local SQLite cache by its global msgId.
@@ -31,9 +117,7 @@ import { downloadSyncedMedia } from "../core/sync-v2/media.js";
  */
 function cachedMessageById(threadId, msgId) {
     try {
-        const activeAcc = getActive();
-        if (!activeAcc) return null;
-        initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+        if (!openAccountDb()) return null;
         const row = getMessages(threadId, 200).find((m) => String(m.msgId) === String(msgId));
         if (!row) return null;
 
@@ -311,7 +395,11 @@ export function registerMsgCommands(program) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option(
             "--mention <specs...>",
-            "Mention users in group message. Format: pos:userId:len (e.g. 0:USER_ID:5). Use userId=-1 for @All.",
+            "Mention users by raw offset. Format: pos:userId:len (e.g. 0:USER_ID:5). Prefer writing @[userId] in the message — offsets are then computed for you. Use userId=-1 for @All.",
+        )
+        .option(
+            "--quote <msgId>",
+            "Send as a quote-reply to this message. Text messages only, and it must be in the local cache — run `msg history <threadId>` first if not.",
         )
         .option("--style <specs...>", "Text styles. Format: start:len:style (e.g. 0:5:bold 6:5:italic)")
         .option("--md", "Parse markdown-like formatting: **bold** *italic* __underline__ ~~strike~~ {red:text}")
@@ -321,11 +409,10 @@ export function registerMsgCommands(program) {
         )
         .action(async (threadId, message, opts) => {
             try {
-                // Parse mention specs: "pos:uid:len" → { pos, uid, len }
-                const mentions = (opts.mention || []).map((spec) => {
-                    const [pos, uid, len] = spec.split(":");
-                    return { pos: Number(pos), uid, len: Number(len) };
-                });
+                // One cache open serves both the @[uid] name lookups and the
+                // --quote rebuild. Absent cache is not fatal for either: names
+                // fall back to the uid, and --quote reports why it cannot.
+                const cached = openAccountDb();
 
                 // Parse text styles
                 let styles = [];
@@ -343,10 +430,61 @@ export function registerMsgCommands(program) {
                     styles = styles.concat(parseStyleSpecs(opts.style));
                 }
 
+                // Mentions expand last, on the post-markdown text: a `@[uid]`
+                // token contains no markdown metacharacters, whereas a display
+                // name may well contain `*` or `_` and would be eaten the other
+                // way round. Styles are then moved across the substitutions,
+                // since their offsets were counted before the names went in.
+                //
+                // Expanding is pure and cheap, so it runs twice: once off the
+                // cache to learn which uids it could not name, then again with
+                // whatever one batched lookup filled in.
+                const missing = new Set();
+                let expanded = expandMentions(finalMsg, (uid) => {
+                    const name = mentionName(uid, cached);
+                    if (!name && uid !== ALL_MENTION_UID) missing.add(uid);
+                    return name;
+                });
+                if (missing.size > 0 && Number(opts.type) === 1) {
+                    const fetched = await fetchMentionNames([...missing], cached);
+                    if (fetched.size > 0) {
+                        expanded = expandMentions(finalMsg, (uid) => fetched.get(uid) || mentionName(uid, cached));
+                    }
+                }
+
+                finalMsg = expanded.text;
+                styles = shiftStyles(styles, expanded.edits);
+                const mentions = [...parseMentionSpecs(opts.mention), ...expanded.mentions];
+
+                // zca-js drops mentions outside a group, so a `-t 0` send would
+                // quietly arrive with the names as plain text and nobody tagged.
+                if (mentions.length > 0 && Number(opts.type) !== 1) {
+                    warning("Mentions only apply to group messages — pass -t 1 to tag anyone.");
+                }
+
+                let quote;
+                if (opts.quote) {
+                    const built = buildQuote(cached ? getMessageById(opts.quote) : null, {
+                        msgId: opts.quote,
+                        threadId,
+                    });
+                    if (built.error) {
+                        error(built.error);
+                        return;
+                    }
+                    if (built.warning) warning(built.warning);
+                    quote = built.quote;
+                }
+
                 // Build message content
-                const hasExtras = mentions.length > 0 || styles.length > 0;
+                const hasExtras = mentions.length > 0 || styles.length > 0 || Boolean(quote);
                 const msgContent = hasExtras
-                    ? { msg: finalMsg, ...(mentions.length > 0 && { mentions }), ...(styles.length > 0 && { styles }) }
+                    ? {
+                          msg: finalMsg,
+                          ...(mentions.length > 0 && { mentions }),
+                          ...(styles.length > 0 && { styles }),
+                          ...(quote && { quote }),
+                      }
                     : finalMsg;
 
                 const cliMsgId = String(Date.now());

@@ -1208,3 +1208,41 @@ export function upsertContact(contact) {
         phone: contact.phone,
     });
 }
+
+/**
+ * The display name this account has seen for a user id, or null.
+ *
+ * Used to turn a `@[uid]` mention token into "@Display Name". Two sources,
+ * in order:
+ *
+ *   1. `contacts` — authoritative, and the only source that can name someone
+ *      who has never posted. `msg send` fills it in: any uid it has to look
+ *      up through `getGroupMembersInfo` is written back here, so the next
+ *      send needs no call.
+ *   2. the most recent `messages.senderName` for that sender — the live
+ *      listener stores Zalo's own `dName` on every row it writes, so anyone
+ *      who has spoken is named here without a network call.
+ *
+ * Null when the uid has never been seen; the caller falls back to the uid,
+ * which still produces a valid mention.
+ *
+ * @param {string|number} userId
+ * @returns {string|null}
+ */
+export function getDisplayName(userId) {
+    if (!db) throw new Error("Database not initialized");
+    if (userId === undefined || userId === null || userId === "") return null;
+    const id = String(userId);
+
+    const contact = db.prepare("SELECT name FROM contacts WHERE userId = ?").get(id);
+    if (contact?.name) return contact.name;
+
+    const seen = db
+        .prepare(
+            `SELECT senderName FROM messages
+              WHERE senderId = ? AND senderName IS NOT NULL AND senderName <> ''
+              ORDER BY timestamp DESC LIMIT 1`,
+        )
+        .get(id);
+    return seen?.senderName || null;
+}

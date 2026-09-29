@@ -36,13 +36,20 @@
  * being past Number.MAX_SAFE_INTEGER, a twin that rounds to the same double,
  * a fixture's byte size -- as b0f267c did.
  *
+ * NOISED IDS. transfer-sync-v2 restores sender and conversation ids in a
+ * noised form: 32 characters of base32hex (0-9, A-V). /api/gid/decrypt turns
+ * one back into a uid and a display name, so a real noised id is a real
+ * identity with no digit run to catch it. Any such token (one with a digit
+ * and a letter from G to V) is a hit, and a fake must spell NOISED:
+ * VNOISED0000000000000000000000021.
+ *
  * THE ALLOWLIST (ALLOWED, below) is for runs that are not ids at all: numeric
  * boundaries, and values derived from a fake. Every entry carries its reason,
  * and an entry nothing uses any more fails the suite. A real id never goes
  * there. It gets replaced.
  *
- * A failure names the file, the line and the length, never the digits: the CI
- * log of a public repository is public too.
+ * A failure names the file, the line and the length, never the id itself:
+ * the CI log of a public repository is public too.
  */
 
 import "../helpers/sandbox.js";
@@ -77,6 +84,13 @@ function isFakeId(run) {
     }
     return false;
 }
+
+/**
+ * True when a noised-id token is a fake by the convention at the top of this file.
+ *
+ * @param {string} token - 32 or more base32hex characters
+ */
+const isFakeNoised = (token) => token.includes("NOISED");
 
 /**
  * Long digit runs that are not ids at all, each with its reason. Computed
@@ -121,6 +135,10 @@ describe("no real account id is committed to this repository", () => {
             scan.hits.some((h) => h.where === "tests/fixtures/archive.zip!data.csv" && isFakeId(h.run)),
             "the fake id inside archive.zip!data.csv was not seen",
         );
+        assert.ok(
+            scan.noised.some((h) => isFakeNoised(h.run)),
+            "not even the suite's own fake noised ids were seen",
+        );
         assert.deepEqual(
             scan.unreadable.map(mask),
             [],
@@ -141,6 +159,17 @@ describe("no real account id is committed to this repository", () => {
         );
     });
 
+    it("every noised id spells NOISED", () => {
+        const bad = scan.noised.filter((h) => !isFakeNoised(h.run));
+        assert.ok(
+            bad.length === 0,
+            `${bad.length} token(s) shaped like a noised id do not spell NOISED:\n` +
+                bad.map((h) => `  ${locate(h)}: a ${h.run.length}-character noised id`).join("\n") +
+                "\n/api/gid/decrypt turns a real one back into a uid and a name. Replace it with a fake of the " +
+                "same length, e.g. VNOISED followed by digits, as tests/unit/msg-pin.test.js does.",
+        );
+    });
+
     it("every ALLOWED entry is still in use", () => {
         const seen = new Set(scan.hits.map((h) => h.run));
         const stale = [...ALLOWED.keys()].filter((run) => !seen.has(run));
@@ -155,6 +184,13 @@ const pseudoId = (i) => {
     const n = BigInt(`0x${createHash("sha256").update(`pseudo id ${i}`).digest("hex").slice(0, 16)}`);
     return String((n % (9n * 10n ** 18n)) + 10n ** 18n);
 };
+
+/** Base32hex, in two halves: written out whole it is a noised-id-shaped token itself. */
+const BASE32HEX = "0123456789" + "ABCDEFGHIJKLMNOPQRSTUV";
+
+/** A deterministic pseudo-random noised id: what a real one looks like. */
+const pseudoNoised = (i) =>
+    [...createHash("sha256").update(`pseudo noised ${i}`).digest()].map((b) => BASE32HEX[b % 32]).join("");
 
 describe("the fake-id convention", () => {
     it("accepts every shape of fake the suite uses", () => {
@@ -173,7 +209,7 @@ describe("the fake-id convention", () => {
         for (const fake of fakes) assert.ok(isFakeId(fake), `${fake} should be a fake by convention`);
     });
 
-    it("rejects a pattern broken by a fourth free digit, at either end or in the middle", () => {
+    it("rejects a fourth free digit at an end, and any wrong digit in the middle", () => {
         // Built, not written out: a literal of any of these would fail this very file.
         const nearMisses = {
             "four free digits at the tail": `1${"0".repeat(14)}1234`,
@@ -192,6 +228,13 @@ describe("the fake-id convention", () => {
             const id = pseudoId(i);
             assert.equal(id.length, 19);
             assert.equal(isFakeId(id), false, `pseudo-random id #${i} passed as a fake`);
+        }
+    });
+
+    it("takes a noised id for a fake only when it spells NOISED", () => {
+        assert.ok(isFakeNoised("VNOISED0000000000000000000000021"));
+        for (let i = 0; i < 1000; i++) {
+            assert.equal(isFakeNoised(pseudoNoised(i)), false, `pseudo-random noised id #${i} passed as a fake`);
         }
     });
 });
@@ -261,6 +304,15 @@ describe("the guard fails on what it exists to catch", () => {
         assert.deepEqual(scan.hits, [
             { where: `planted.zip!media/${PLANTED}/photo.txt`, at: "entry name", run: PLANTED },
         ]);
+    });
+
+    it("finds a noised id, which has no digit run to catch, and does not take a hex string for one", () => {
+        const noised = pseudoNoised(0);
+        const hex = createHash("sha256").update("not an id").digest("hex").toUpperCase();
+        const scan = emptyScan();
+        scanBytes("planted.test.js", Buffer.from(`const sender = "${noised}";\nconst sha = "${hex}";\n`), scan);
+        assert.deepEqual(scan.noised, [{ where: "planted.test.js", at: "line 1", run: noised }]);
+        assert.equal(isFakeNoised(noised), false, "and the convention does not excuse it");
     });
 
     it("fails on a binary it cannot read, rather than skipping it", () => {

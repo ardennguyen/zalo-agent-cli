@@ -1,7 +1,7 @@
 /**
  * The mechanics behind tests/unit/no-real-ids.test.js: list every file this
  * checkout could commit, read each one the way an id could hide in it, and
- * report every long digit run with where it sits.
+ * report every long digit run and noised-id token with where it sits.
  *
  * Policy -- which runs are fakes and which are allowlisted -- lives in the
  * test, not here. Nothing in this file decides that a run is harmless.
@@ -23,6 +23,17 @@ export const MIN_DIGITS = 15;
 const DIGIT_RUN = new RegExp(String.raw`\d{${MIN_DIGITS},}`, "g");
 
 /**
+ * A noised id: the 32-character base32hex form (0-9, A-V) in which
+ * transfer-sync-v2 restores sender and conversation ids. /api/gid/decrypt
+ * turns one back into a uid and a display name (src/core/sync-v2/gid.js), so a
+ * real one identifies a person as surely as the digits do. A token only counts
+ * with both a digit and a letter from G to V: an uppercase hex string, or a
+ * plain digit run, is something else.
+ */
+const NOISED_TOKEN = /[0-9A-V]{32,}/g;
+const isNoisedShape = (token) => /\d/.test(token) && /[G-V]/.test(token);
+
+/**
  * Binary formats that hold pixels or page data. They are skipped rather than
  * scanned: their raw bytes can spell a digit run by chance (an uncompressed
  * BMP's pixel values are bytes like any other), so scanning them would fail
@@ -39,7 +50,7 @@ const ZIP_END = 0x06054b50;
  * @typedef {object} Hit
  * @property {string} where - repo path; `archive.zip!entry` for a file inside a zip
  * @property {string} at - "line N", or which name or comment the run sits in
- * @property {string} run - the digits themselves
+ * @property {string} run - the matched characters themselves
  */
 
 /**
@@ -50,17 +61,20 @@ const ZIP_END = 0x06054b50;
  * @property {string[]} unreadable - files that could not be read; each one is a failure
  * @property {string[]} untracked - scanned paths git does not track yet
  * @property {Hit[]} hits - every digit run of MIN_DIGITS or more
+ * @property {Hit[]} noised - every token shaped like a noised id
  */
 
 /** @returns {Scan} */
 export function emptyScan() {
-    return { files: 0, entries: [], skipped: [], unreadable: [], untracked: [], hits: [] };
+    return { files: 0, entries: [], skipped: [], unreadable: [], untracked: [], hits: [], noised: [] };
 }
 
-/** Add every long digit run in `text` to `hits`, located by line unless `at` names a name or comment. */
-function collect(hits, where, text, at) {
-    for (const m of text.matchAll(DIGIT_RUN)) {
-        hits.push({ where, at: at ?? `line ${text.slice(0, m.index).split("\n").length}`, run: m[0] });
+/** Add every long digit run and noised-id token in `text` to `scan`, located by line unless `at` says where. */
+function collect(scan, where, text, at) {
+    const locate = (index) => at ?? `line ${text.slice(0, index).split("\n").length}`;
+    for (const m of text.matchAll(DIGIT_RUN)) scan.hits.push({ where, at: locate(m.index), run: m[0] });
+    for (const m of text.matchAll(NOISED_TOKEN)) {
+        if (isNoisedShape(m[0])) scan.noised.push({ where, at: locate(m.index), run: m[0] });
     }
 }
 
@@ -166,18 +180,18 @@ export function scanBytes(where, bytes, scan) {
             scan.unreadable.push(`${where}: ${err.message}`);
             return;
         }
-        collect(scan.hits, where, zip.comment, "archive comment");
+        collect(scan, where, zip.comment, "archive comment");
         for (const entry of zip.entries) {
             const inner = `${where}!${entry.name}`;
             scan.entries.push(inner);
-            collect(scan.hits, inner, entry.name, "entry name");
-            collect(scan.hits, inner, entry.comment, "entry comment");
+            collect(scan, inner, entry.name, "entry name");
+            collect(scan, inner, entry.comment, "entry comment");
             scanBytes(inner, entry.data, scan);
         }
         return;
     }
     if (!bytes.includes(0)) {
-        collect(scan.hits, where, bytes.toString("latin1"));
+        collect(scan, where, bytes.toString("latin1"));
         return;
     }
     if (MEDIA_EXTENSIONS.has(extname(where).toLowerCase())) {
@@ -234,7 +248,7 @@ export function scanRepo(root) {
         if (!stat.isFile()) continue; // a symlink or a submodule
         scan.files++;
         if (!tracked) scan.untracked.push(path);
-        collect(scan.hits, path, path, "file path");
+        collect(scan, path, path, "file path");
         scanBytes(path, readFileSync(join(root, path)), scan);
     }
     return scan;

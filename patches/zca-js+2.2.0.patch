@@ -511,6 +511,141 @@ index 0000000..d459340
 +        return utils.resolve(response);
 +    };
 +});
+diff --git a/node_modules/zca-js/dist/apis/sendBankCard.js b/node_modules/zca-js/dist/apis/sendBankCard.js
+index f1fbae0..5841159 100644
+--- a/node_modules/zca-js/dist/apis/sendBankCard.js
++++ b/node_modules/zca-js/dist/apis/sendBankCard.js
+@@ -1,6 +1,19 @@
+ import { ZaloApiError } from "../Errors/ZaloApiError.js";
+ import { ThreadType } from "../models/index.js";
+ import { apiFactory } from "../utils.js";
++/**
++ * Hand the caller the cliMsgId that went on the wire.
++ *
++ * This endpoint names the field `cliMsgId` rather than `clientId`, but the
++ * problem is the same: it is generated here, posted, and then discarded, so
++ * `undo` and `deleteMessage` — both of which require it — had nothing to
++ * work with and a sent bank card could never be recalled.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ export const sendBankCardFactory = apiFactory()((api, _, utils) => {
+     const serviceURL = utils.makeURL(`${api.zpwServiceMap.zimsg[0]}/api/transfer/card`);
+     /**
+@@ -14,11 +27,12 @@ export const sendBankCardFactory = apiFactory()((api, _, utils) => {
+      */
+     return async function sendBankCard(payload, threadId, type = ThreadType.User) {
+         var _a;
++        const cliMsgId = Date.now().toString();
+         const params = {
+             binBank: payload.binBank,
+             numAccBank: payload.numAccBank,
+             nameAccBank: ((_a = payload.nameAccBank) === null || _a === void 0 ? void 0 : _a.toUpperCase()) || "---",
+-            cliMsgId: Date.now().toString(),
++            cliMsgId: cliMsgId,
+             tsMsg: Date.now(),
+             destUid: threadId,
+             destType: type === ThreadType.Group ? 1 : 0,
+@@ -32,6 +46,8 @@ export const sendBankCardFactory = apiFactory()((api, _, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, cliMsgId);
++        return resolved;
+     };
+ });
+diff --git a/node_modules/zca-js/dist/apis/sendCard.js b/node_modules/zca-js/dist/apis/sendCard.js
+index 6904bc9..31b3c34 100644
+--- a/node_modules/zca-js/dist/apis/sendCard.js
++++ b/node_modules/zca-js/dist/apis/sendCard.js
+@@ -1,6 +1,20 @@
+ import { ZaloApiError } from "../Errors/ZaloApiError.js";
+ import { ThreadType } from "../models/index.js";
+ import { apiFactory } from "../utils.js";
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in sendMessage.js; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ export const sendCardFactory = apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/forward`),
+@@ -54,6 +68,8 @@ export const sendCardFactory = apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+diff --git a/node_modules/zca-js/dist/apis/sendLink.js b/node_modules/zca-js/dist/apis/sendLink.js
+index b171101..4da232d 100644
+--- a/node_modules/zca-js/dist/apis/sendLink.js
++++ b/node_modules/zca-js/dist/apis/sendLink.js
+@@ -1,6 +1,20 @@
+ import { ZaloApiError } from "../Errors/ZaloApiError.js";
+ import { ThreadType } from "../models/index.js";
+ import { apiFactory } from "../utils.js";
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in sendMessage.js; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ export const sendLinkFactory = apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.chat[0]}/api/message/link`, {
+@@ -22,6 +36,7 @@ export const sendLinkFactory = apiFactory()((api, ctx, utils) => {
+     return async function sendLink(options, threadId, type = ThreadType.User) {
+         var _a;
+         const res = await api.parseLink(options.link);
++        const clientId = Date.now();
+         const params = {
+             msg: options.msg && options.msg.trim()
+                 ? options.msg.includes(options.link)
+@@ -36,7 +51,7 @@ export const sendLinkFactory = apiFactory()((api, ctx, utils) => {
+             type: 2, // 0
+             media: JSON.stringify(res.data.media),
+             ttl: (_a = options.ttl) !== null && _a !== void 0 ? _a : 0,
+-            clientId: Date.now(),
++            clientId: clientId,
+         };
+         if (type == ThreadType.Group) {
+             params.grid = threadId;
+@@ -56,6 +71,8 @@ export const sendLinkFactory = apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
 diff --git a/node_modules/zca-js/dist/apis/sendMessage.d.ts b/node_modules/zca-js/dist/apis/sendMessage.d.ts
 index 8031f4e..c085286 100644
 --- a/node_modules/zca-js/dist/apis/sendMessage.d.ts
@@ -636,3 +771,122 @@ index 5bda5bc..5982d78 100644
          }
          return responses;
      };
+diff --git a/node_modules/zca-js/dist/apis/sendSticker.js b/node_modules/zca-js/dist/apis/sendSticker.js
+index e27c04e..7aeadae 100644
+--- a/node_modules/zca-js/dist/apis/sendSticker.js
++++ b/node_modules/zca-js/dist/apis/sendSticker.js
+@@ -1,6 +1,20 @@
+ import { ZaloApiError } from "../Errors/ZaloApiError.js";
+ import { ThreadType } from "../models/index.js";
+ import { apiFactory, removeUndefinedKeys } from "../utils.js";
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in sendMessage.js; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ export const sendStickerFactory = apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.chat[0]}/api/message/sticker`, {
+@@ -32,11 +46,12 @@ export const sendStickerFactory = apiFactory()((api, ctx, utils) => {
+         if (!sticker.type)
+             throw new ZaloApiError("Missing sticker type");
+         const isGroupMessage = type === ThreadType.Group;
++        const clientId = Date.now();
+         const params = {
+             stickerId: sticker.id,
+             cateId: sticker.cateId,
+             type: sticker.type,
+-            clientId: Date.now(),
++            clientId: clientId,
+             imei: ctx.imei,
+             zsource: 101,
+             toid: isGroupMessage ? undefined : threadId,
+@@ -52,6 +67,8 @@ export const sendStickerFactory = apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+diff --git a/node_modules/zca-js/dist/apis/sendVideo.js b/node_modules/zca-js/dist/apis/sendVideo.js
+index 03c818c..ce8a096 100644
+--- a/node_modules/zca-js/dist/apis/sendVideo.js
++++ b/node_modules/zca-js/dist/apis/sendVideo.js
+@@ -1,6 +1,20 @@
+ import { ZaloApiError } from "../Errors/ZaloApiError.js";
+ import { ThreadType } from "../models/index.js";
+ import { apiFactory } from "../utils.js";
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in sendMessage.js; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ export const sendVideoFactory = apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/forward`),
+@@ -113,6 +127,8 @@ export const sendVideoFactory = apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+diff --git a/node_modules/zca-js/dist/apis/sendVoice.js b/node_modules/zca-js/dist/apis/sendVoice.js
+index f8bcc6b..806fb2e 100644
+--- a/node_modules/zca-js/dist/apis/sendVoice.js
++++ b/node_modules/zca-js/dist/apis/sendVoice.js
+@@ -1,6 +1,20 @@
+ import { ZaloApiError } from "../Errors/ZaloApiError.js";
+ import { ThreadType } from "../models/index.js";
+ import { apiFactory } from "../utils.js";
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in sendMessage.js; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ export const sendVoiceFactory = apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/forward`),
+@@ -68,6 +82,8 @@ export const sendVoiceFactory = apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });

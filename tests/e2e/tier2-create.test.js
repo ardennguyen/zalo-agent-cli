@@ -154,16 +154,26 @@ function rememberSent(thread, r, what) {
  * @returns {Promise<object|null>} the history row, or null when there is none
  */
 async function cachedSelfMessage(thread) {
-    const r = await runJson(
-        ["msg", "history", "-t", String(thread.type), "-n", "30", "--no-cache", thread.threadId],
-        live(T, { timeout: 180_000 }),
-    );
+    const args = (extra) => ["msg", "history", "-t", String(thread.type), "-n", "50", ...extra, thread.threadId];
+
+    // Refresh first, so a thread tier 5a recreated empty can still fill up,
+    // then read back the MERGED view.
+    await runJson(args(["--no-cache"]), live(T, { timeout: 180_000 }));
+    const r = await runJson(args([]), live(T, { timeout: 180_000 }));
     const rows = r.ok && Array.isArray(r.data?.messages) ? r.data.messages : [];
-    // type "text" is the classifier's own label, so it excludes an
-    // already-recalled row (those come back as type "deleted", text
-    // "[deleted]") as well as every attachment and system event. Quoting a
-    // recalled message is the one way this helper could hand back an id that
-    // looks fine and fails on the wire.
+
+    // Filter on the CACHED type, not the live one. They disagree, and the
+    // cache is the view that matters: `--quote` and `msg forward` both
+    // resolve their source through getMessageById(). Picking from the live
+    // fetch chose msgId 8288319556160, which the live endpoint reports as
+    // "text" and zalo.db has as "deleted" -- so both commands refused it
+    // ("Zalo only supports quote-replies to text messages (this one is a
+    // deleted)"). The CLI was right and the helper was asking the wrong
+    // source.
+    //
+    // type "text" also excludes every attachment and system event, and a
+    // recalled row, which is the one thing here that could hand back an id
+    // that looks fine and fails on the wire.
     return (
         rows.find((m) => m.msgId && m.type === "text" && m.text && String(m.senderId) === String(T.accountOwnId)) ||
         null

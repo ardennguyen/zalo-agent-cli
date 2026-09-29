@@ -446,7 +446,7 @@ keeping when you add a new artifact type:
 Anything unique-per-account — quick-message keywords especially — gets a
 per-run unique value (`e2e<base36 timestamp>`) rather than a fixed string.
 
-### Recalling an attachment needs a patched zca-js
+### Recalling anything you sent needs a patched zca-js
 
 `msg undo` and `msg delete` both refuse to run without a `cliMsgId`, and
 `cliMsgId` is client-generated — nothing derives it from a `msgId`. For a
@@ -481,6 +481,24 @@ DM and does not reach tier 4 leaves debris in a real person's chat
 permanently; `msg delete` would only hide it from our side, which is worse.
 `tests/run-e2e.js` prints `MANUAL CLEANUP REQUIRED` when the ledger survives a
 run that skipped tier 4 — treat it as urgent, not advisory.
+
+### One send type still cannot be tracked: bank cards
+
+`msg send-bank` is the exception. Zalo answers the bank-card endpoint with an
+empty body, so `utils.resolve()` yields `""` — there is no object to stamp and
+no `msgId` to record either. The patch is in `sendBankCard.js` anyway, for the
+day that changes, but today a bank card is invisible to the ledger and tier 4
+cannot recall it.
+
+Verified 2026-09-29: the message really is delivered, and a running `listen`
+DOES see it (`chat.webcontent`, with both ids), so the ids exist — they just
+never come back on the send. Recall works fine once you have them.
+
+This is contained on purpose: tier 2 sends bank cards to the **group only**
+(`-t 1`, `T.group.threadId`), never to the DM, so the one artifact type that
+cannot be cleaned up can never land in a real person's chat. Tier 5a disperses
+and recreates the group, which is what actually clears them. **Keep it that
+way** — a bank-card test pointed at the DM would leave permanent debris.
 
 ### What a passing `undo` does and does not prove
 

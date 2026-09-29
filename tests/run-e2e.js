@@ -106,6 +106,29 @@ console.log("═".repeat(72) + "\n");
 const results = [];
 let failed = false;
 
+/**
+ * Run one tier's test file and record the outcome.
+ *
+ * @param {object} tier - an entry of TIERS
+ * @returns {boolean} whether the tier passed
+ */
+function runTier(tier) {
+    console.log(`\n── tier ${tier.n}: ${tier.label}  [${tier.risk}] ${"─".repeat(30)}\n`);
+    const started = Date.now();
+    const r = spawnSync(process.execPath, ["--test", "--test-concurrency=1", resolve(HERE, tier.file)], {
+        stdio: "inherit",
+        env,
+    });
+    const secs = ((Date.now() - started) / 1000).toFixed(1);
+    const okTier = r.status === 0;
+    results.push({ tier: tier.n, label: tier.label, ok: okTier, secs });
+    if (!okTier) console.error(`\n  ✗ tier ${tier.n} failed after ${secs}s`);
+    return okTier;
+}
+
+const CLEANUP_TIER = 4;
+let cleanupRan = false;
+
 for (const tier of selected) {
     const file = resolve(HERE, tier.file);
     if (!existsSync(file)) {
@@ -114,21 +137,30 @@ for (const tier of selected) {
         break;
     }
 
-    console.log(`\n── tier ${tier.n}: ${tier.label}  [${tier.risk}] ${"─".repeat(30)}\n`);
-    const started = Date.now();
-    const r = spawnSync(process.execPath, ["--test", "--test-concurrency=1", file], {
-        stdio: "inherit",
-        env,
-    });
-    const secs = ((Date.now() - started) / 1000).toFixed(1);
-    const okTier = r.status === 0;
-    results.push({ tier: tier.n, label: tier.label, ok: okTier, secs });
+    const okTier = runTier(tier);
+    if (tier.n === CLEANUP_TIER) cleanupRan = true;
 
     if (!okTier) {
         failed = true;
-        console.error(`\n  ✗ tier ${tier.n} failed after ${secs}s`);
         if (!keepGoing) {
-            console.error("  Stopping before the next tier. Re-run with --keep-going to continue anyway.\n");
+            // Stop -- but NOT before cleaning up. Tier 2 sends to a real
+            // person's DM, and Zalo's recall window closes: four artifacts
+            // left there on 2026-09-21 were still unrecallable on
+            // 2026-09-29, every one answering `Lỗi không xác định`, while a
+            // message sent minutes earlier recalled cleanly. So a test bug
+            // in tier 2 or 3 used to turn into permanent debris in someone
+            // else's chat -- a far worse outcome than the failure itself.
+            //
+            // Only tier 4 is safe to run here. Tier 3 mutates and tier 5 is
+            // irreversible; neither belongs after an unexplained failure.
+            const cleanup = selected.find((t) => t.n === CLEANUP_TIER);
+            if (cleanup && !cleanupRan && existsSync(resolve(HERE, cleanup.file))) {
+                console.error(`\n  Running tier ${CLEANUP_TIER} anyway to recall what has already been sent.`);
+                console.error("  Skipping the tiers in between.\n");
+                runTier(cleanup);
+                cleanupRan = true;
+            }
+            console.error("  Stopped. Re-run with --keep-going to continue through failures.\n");
             break;
         }
     }

@@ -423,9 +423,15 @@ describe("createDeliveredReceipts — the listener's automatic receipts", () => 
     });
 
     it("sends the batch on its own after the delay, without anyone flushing", async () => {
+        // The production path: nothing ever calls flush(), only the timer.
         const { sent, listener } = setup({ delayMs: 20 });
         listener.emit("message", groupEcho());
-        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(sent.length, 0, "nothing goes out before the delay");
+        // Poll rather than sleep a fixed time: this box is shared with other
+        // sessions, and a loaded event loop must not turn into a false failure.
+        for (let waited = 0; sent.length === 0 && waited < 5000; waited += 25) {
+            await new Promise((r) => setTimeout(r, 25));
+        }
         assert.equal(sent.length, 1);
     });
 

@@ -924,3 +924,754 @@ index f8bcc6b..806fb2e 100644
 +        return resolved;
      };
  });
+diff --git a/node_modules/zca-js/dist/cjs/apis.cjs b/node_modules/zca-js/dist/cjs/apis.cjs
+index c151de0..e49f3d6 100644
+--- a/node_modules/zca-js/dist/cjs/apis.cjs
++++ b/node_modules/zca-js/dist/cjs/apis.cjs
+@@ -156,6 +156,11 @@ var uploadAttachment = require('./apis/uploadAttachment.cjs');
+ var uploadProductPhoto = require('./apis/uploadProductPhoto.cjs');
+ var votePoll = require('./apis/votePoll.cjs');
+ var custom = require('./apis/custom.cjs');
++var requestSyncMessage = require('./apis/requestSyncMessage.cjs');
++var pullMobileMsg = require('./apis/pullMobileMsg.cjs');
++var getCrossDB = require('./apis/getCrossDB.cjs');
++var deleteSnapshotMobileMsg = require('./apis/deleteSnapshotMobileMsg.cjs');
++var logoutV2 = require('./apis/logoutV2.cjs');
+ 
+ class API {
+     constructor(ctx, zpwServiceMap, wsUrls) {
+@@ -316,6 +321,11 @@ class API {
+         this.uploadProductPhoto = uploadProductPhoto.uploadProductPhotoFactory(ctx, this);
+         this.votePoll = votePoll.votePollFactory(ctx, this);
+         this.custom = custom.customFactory(ctx, this);
++        this.requestSyncMessage = requestSyncMessage.requestSyncMessageFactory(ctx, this);
++        this.pullMobileMsg = pullMobileMsg.pullMobileMsgFactory(ctx, this);
++        this.getCrossDB = getCrossDB.getCrossDBFactory(ctx, this);
++        this.deleteSnapshotMobileMsg = deleteSnapshotMobileMsg.deleteSnapshotMobileMsgFactory(ctx, this);
++        this.logoutV2 = logoutV2.logoutV2Factory(ctx, this);
+     }
+ }
+ 
+diff --git a/node_modules/zca-js/dist/cjs/apis/deleteSnapshotMobileMsg.cjs b/node_modules/zca-js/dist/cjs/apis/deleteSnapshotMobileMsg.cjs
+new file mode 100644
+index 0000000..d5b3f5c
+--- /dev/null
++++ b/node_modules/zca-js/dist/cjs/apis/deleteSnapshotMobileMsg.cjs
+@@ -0,0 +1,22 @@
++'use strict';
++
++var ZaloApiError = require('../Errors/ZaloApiError.cjs');
++var utils = require('../utils.cjs');
++
++const deleteSnapshotMobileMsgFactory = utils.apiFactory()((api, ctx, utils) => {
++    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/delete_snapshot_mobile_msg`);
++    return async function deleteSnapshotMobileMsg(publicKey) {
++        const params = {
++            public_key: publicKey,
++            imei: ctx.imei
++        };
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
++            method: "GET"
++        });
++        return utils.resolve(response);
++    };
++});
++
++exports.deleteSnapshotMobileMsgFactory = deleteSnapshotMobileMsgFactory;
+diff --git a/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs b/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs
+index f9c670b..4dfa11c 100644
+--- a/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs
+@@ -13,6 +13,20 @@ require('../models/Reminder.cjs');
+ require('../models/ZBusiness.cjs');
+ var utils = require('../utils.cjs');
+ 
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in the ESM build; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ const forwardMessageFactory = utils.apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [Enum.ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/mforward`),
+@@ -106,7 +120,9 @@ const forwardMessageFactory = utils.apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+ 
+diff --git a/node_modules/zca-js/dist/cjs/apis/getCrossDB.cjs b/node_modules/zca-js/dist/cjs/apis/getCrossDB.cjs
+new file mode 100644
+index 0000000..da5f16d
+--- /dev/null
++++ b/node_modules/zca-js/dist/cjs/apis/getCrossDB.cjs
+@@ -0,0 +1,22 @@
++'use strict';
++
++var ZaloApiError = require('../Errors/ZaloApiError.cjs');
++var utils = require('../utils.cjs');
++
++const getCrossDBFactory = utils.apiFactory()((api, _, utils) => {
++    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/get_crossdb`);
++    return async function getCrossDB(syncSession) {
++        const params = {
++            pc_name: "Web",
++            sync_session: syncSession
++        };
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
++            method: "GET"
++        });
++        return utils.resolve(response);
++    };
++});
++
++exports.getCrossDBFactory = getCrossDBFactory;
+diff --git a/node_modules/zca-js/dist/cjs/apis/loginQR.cjs b/node_modules/zca-js/dist/cjs/apis/loginQR.cjs
+index dbd08ed..8abfdab 100644
+--- a/node_modules/zca-js/dist/cjs/apis/loginQR.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/loginQR.cjs
+@@ -15,6 +15,20 @@ exports.LoginQRCallbackEventType = void 0;
+     LoginQRCallbackEventType[LoginQRCallbackEventType["QRCodeDeclined"] = 3] = "QRCodeDeclined";
+     LoginQRCallbackEventType[LoginQRCallbackEventType["GotLoginInfo"] = 4] = "GotLoginInfo";
+ })(exports.LoginQRCallbackEventType || (exports.LoginQRCallbackEventType = {}));
++/**
++ * Device-fingerprint client hints, with the original hardcoded values as the
++ * fallback. src/core/zalo-client.js puts secChUa / secChUaMobile /
++ * secChUaPlatform on ctx; without this the CJS build would ignore the
++ * fingerprint and always claim Chrome 130 on Windows. Mirrors the ESM build.
++ */
++function secChUaHeaders(ctx) {
++    var _a, _b, _c;
++    return {
++        "sec-ch-ua": (_a = ctx.secChUa) !== null && _a !== void 0 ? _a : '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
++        "sec-ch-ua-mobile": (_b = ctx.secChUaMobile) !== null && _b !== void 0 ? _b : "?0",
++        "sec-ch-ua-platform": (_c = ctx.secChUaPlatform) !== null && _c !== void 0 ? _c : '"Windows"',
++    };
++}
+ async function loadLoginPage(ctx) {
+     const response = await utils.request(ctx, "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F", {
+         headers: {
+@@ -22,9 +36,7 @@ async function loadLoginPage(ctx) {
+             "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+             "cache-control": "max-age=0",
+             priority: "u=0, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++            ...secChUaHeaders(ctx),
+             "sec-fetch-dest": "document",
+             "sec-fetch-mode": "navigate",
+             "sec-fetch-site": "same-site",
+@@ -50,9 +62,7 @@ async function getLoginInfo(ctx, version) {
+             "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+             "content-type": "application/x-www-form-urlencoded",
+             priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++            ...secChUaHeaders(ctx),
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+@@ -76,9 +86,7 @@ async function verifyClient(ctx, version) {
+             "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+             "content-type": "application/x-www-form-urlencoded",
+             priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++            ...secChUaHeaders(ctx),
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+@@ -101,9 +109,7 @@ async function generate(ctx, version) {
+             "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+             "content-type": "application/x-www-form-urlencoded",
+             priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++            ...secChUaHeaders(ctx),
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+@@ -130,9 +136,7 @@ async function waitingScan(ctx, version, code, signal) {
+             "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+             "content-type": "application/x-www-form-urlencoded",
+             priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++            ...secChUaHeaders(ctx),
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+@@ -169,9 +173,7 @@ async function waitingConfirm(ctx, version, code, signal) {
+             "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+             "content-type": "application/x-www-form-urlencoded",
+             priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++            ...secChUaHeaders(ctx),
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-origin",
+@@ -200,9 +202,7 @@ async function checkSession(ctx) {
+             accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+             "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+             priority: "u=0, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++            ...secChUaHeaders(ctx),
+             "sec-fetch-dest": "document",
+             "sec-fetch-mode": "navigate",
+             "sec-fetch-site": "same-origin",
+@@ -220,9 +220,7 @@ async function getUserInfo(ctx) {
+             accept: "*/*",
+             "accept-language": "vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+             priority: "u=1, i",
+-            "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+-            "sec-ch-ua-mobile": "?0",
+-            "sec-ch-ua-platform": '"Windows"',
++            ...secChUaHeaders(ctx),
+             "sec-fetch-dest": "empty",
+             "sec-fetch-mode": "cors",
+             "sec-fetch-site": "same-site",
+diff --git a/node_modules/zca-js/dist/cjs/apis/logoutV2.cjs b/node_modules/zca-js/dist/cjs/apis/logoutV2.cjs
+new file mode 100644
+index 0000000..53cedb4
+--- /dev/null
++++ b/node_modules/zca-js/dist/cjs/apis/logoutV2.cjs
+@@ -0,0 +1,83 @@
++'use strict';
++
++var ZaloApiError = require('../Errors/ZaloApiError.cjs');
++var utils = require('../utils.cjs');
++
++// CONFIRMED live 2026-09-19 against a real account. Mirrors Zalo Web's own
++// `ServiceURL.logoutV2(imei, compId?)` (commandId 12743, POST
++// /api/v2/login/logOut), reverse-engineered from the production webpack
++// bundle:
++//   static logoutV2(e,t=void 0){
++//     const a = _.b.getDevDomainV3() + "/api/v2/login/logOut?" + this._getCommonParams();
++//     let s = { time, imei: e, computer_name, language };
++//     if (t !== void 0) s.compId = t;
++//     return this._post(a, "params=" + encodeURIComponent(encodeAES(JSON.stringify(s))), null, 12743);
++//   }
++//
++// DOMAIN — resolved by trial (each guess live-tested against a real
++// account):
++//   1. `zpwServiceMap.aext` (aextra-wpa.chat.zalo.me) — the accessor
++//      `getListDevice` uses. DISPROVEN: real HTTP 404.
++//   2. `zpwServiceMap.zavi` (wpa.zaloapp.com) — DISPROVEN: reachable, but a
++//      real API error ({error_code:102, "session key was improperly
++//      submitted..."}) — `zaloapp.com` is a different registrable domain
++//      from `zalo.me`, so the zpw_sek session cookie (scoped to `.zalo.me`)
++//      never reached it.
++//   3. `https://wpa.chat.zalo.me` (HARDCODED, not from zpwServiceMap) —
++//      CONFIRMED CORRECT, live-tested 2026-09-19. Matches `getSettings.js`
++//      in this same package (a genuinely working, authenticated,
++//      hardcoded-domain call) and the known hardcoded PRE-login host this
++//      package's `login.js` already uses. Live response:
++//      `{"error_code":0,"error_message":"Successful.","data":1}`.
++//   4. `https://stg-wpa.chat.zalo.me` — what the real production webpack
++//      bundle's `getDevDomainV3()` singleton actually returned when called
++//      live in-browser 2026-09-18 (via webpack-jsonp module-cache capture,
++//      zero real requests made). CONFIRMED CORRECT end-to-end, live-tested
++//      2026-09-19 via a real `logout --purge`: "Server session invalidated
++//      for imei e239d3d5…", no fallback warning — a real authenticated
++//      call against this domain, not just the direct-call capture. ACTIVE
++//      BELOW. Candidate #3 above is left documented as the previously-
++//      confirmed fallback in case this domain is ever retired/changed, but
++//      is no longer needed.
++//
++// ENCRYPTION — the response body above is CONFIRMED to be plain JSON, not
++// the usual AES-encrypted `data` field most zca-js API responses use.
++// `utils.resolve()` defaults to `isEncrypted = true`, which tried to
++// AES-decrypt the literal number `1` and, because crypto-js silently
++// returns an empty string on bad ciphertext/padding rather than throwing,
++// produced "Failed to parse response data: SyntaxError: Unexpected end of
++// JSON input" (from `JSON.parse("")`) even though the call had already
++// succeeded server-side. Fixed by passing `isEncrypted = false` to
++// `utils.resolve()` here so `result.data` is used as-is.
++//
++// (Earlier iterations of this file also had a real bug where
++// `utils.resolve(response)` was called without `await` — since it wraps
++// an `async function`, that returned a pending Promise instead of the
++// actual result, which silently broke a since-removed multi-candidate
++// fallback loop. Not relevant now that the domain is confirmed and this
++// is back to a single direct call, but noted here in case this file ever
++// grows a retry/fallback again: always `await utils.resolve(...)`.)
++const logoutV2Factory = utils.apiFactory()((api, ctx, utils) => {
++    const serviceURL = utils.makeURL("https://stg-wpa.chat.zalo.me/api/v2/login/logOut");
++    return async function logoutV2(compId = undefined) {
++        const params = {
++            time: Date.now(),
++            imei: ctx.imei,
++            computer_name: "Web",
++            language: ctx.language || "vi"
++        };
++        if (compId !== undefined) params.compId = compId;
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(serviceURL, {
++            method: "POST",
++            body: new URLSearchParams({
++                params: encryptedParams,
++            }),
++        });
++        // isEncrypted = false — see the file header note above.
++        return await utils.resolve(response, undefined, false);
++    };
++});
++
++exports.logoutV2Factory = logoutV2Factory;
+diff --git a/node_modules/zca-js/dist/cjs/apis/pullMobileMsg.cjs b/node_modules/zca-js/dist/cjs/apis/pullMobileMsg.cjs
+new file mode 100644
+index 0000000..579bc2e
+--- /dev/null
++++ b/node_modules/zca-js/dist/cjs/apis/pullMobileMsg.cjs
+@@ -0,0 +1,26 @@
++'use strict';
++
++var ZaloApiError = require('../Errors/ZaloApiError.cjs');
++var utils = require('../utils.cjs');
++
++const pullMobileMsgFactory = utils.apiFactory()((api, _, utils) => {
++    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/pull_mobile_msg`);
++    return async function pullMobileMsg(publicKey, fromSeqId = 0, isRetry = 0, tempKey = "") {
++        const params = {
++            pc_name: "Web",
++            public_key: publicKey,
++            from_seq_id: fromSeqId,
++            is_retry: isRetry,
++            min_seq_id: 0,
++            temp_key: tempKey
++        };
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
++            method: "GET"
++        });
++        return utils.resolve(response);
++    };
++});
++
++exports.pullMobileMsgFactory = pullMobileMsgFactory;
+diff --git a/node_modules/zca-js/dist/cjs/apis/requestSyncMessage.cjs b/node_modules/zca-js/dist/cjs/apis/requestSyncMessage.cjs
+new file mode 100644
+index 0000000..324995e
+--- /dev/null
++++ b/node_modules/zca-js/dist/cjs/apis/requestSyncMessage.cjs
+@@ -0,0 +1,22 @@
++'use strict';
++
++var ZaloApiError = require('../Errors/ZaloApiError.cjs');
++var utils = require('../utils.cjs');
++
++const requestSyncMessageFactory = utils.apiFactory()((api, _, utils) => {
++    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/transfer-sync-v2/request-sync`);
++    return async function requestSyncMessage(reqId, data) {
++        const params = {
++            reqId: String(reqId),
++            data: JSON.stringify(data)
++        };
++        const encryptedParams = utils.encodeAES(JSON.stringify(params));
++        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
++        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
++            method: "GET"
++        });
++        return utils.resolve(response);
++    };
++});
++
++exports.requestSyncMessageFactory = requestSyncMessageFactory;
+diff --git a/node_modules/zca-js/dist/cjs/apis/sendBankCard.cjs b/node_modules/zca-js/dist/cjs/apis/sendBankCard.cjs
+index a2ad818..3726a37 100644
+--- a/node_modules/zca-js/dist/cjs/apis/sendBankCard.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/sendBankCard.cjs
+@@ -13,6 +13,20 @@ require('../models/Reminder.cjs');
+ require('../models/ZBusiness.cjs');
+ var utils = require('../utils.cjs');
+ 
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in the ESM build; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ const sendBankCardFactory = utils.apiFactory()((api, _, utils) => {
+     const serviceURL = utils.makeURL(`${api.zpwServiceMap.zimsg[0]}/api/transfer/card`);
+     /**
+@@ -26,11 +40,12 @@ const sendBankCardFactory = utils.apiFactory()((api, _, utils) => {
+      */
+     return async function sendBankCard(payload, threadId, type = Enum.ThreadType.User) {
+         var _a;
++        const cliMsgId = Date.now().toString();
+         const params = {
+             binBank: payload.binBank,
+             numAccBank: payload.numAccBank,
+             nameAccBank: ((_a = payload.nameAccBank) === null || _a === void 0 ? void 0 : _a.toUpperCase()) || "---",
+-            cliMsgId: Date.now().toString(),
++            cliMsgId: cliMsgId,
+             tsMsg: Date.now(),
+             destUid: threadId,
+             destType: type === Enum.ThreadType.Group ? 1 : 0,
+@@ -44,7 +59,9 @@ const sendBankCardFactory = utils.apiFactory()((api, _, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, cliMsgId);
++        return resolved;
+     };
+ });
+ 
+diff --git a/node_modules/zca-js/dist/cjs/apis/sendCard.cjs b/node_modules/zca-js/dist/cjs/apis/sendCard.cjs
+index b953268..0cdbbbc 100644
+--- a/node_modules/zca-js/dist/cjs/apis/sendCard.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/sendCard.cjs
+@@ -13,6 +13,20 @@ require('../models/Reminder.cjs');
+ require('../models/ZBusiness.cjs');
+ var utils = require('../utils.cjs');
+ 
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in the ESM build; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ const sendCardFactory = utils.apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [Enum.ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/forward`),
+@@ -66,7 +80,9 @@ const sendCardFactory = utils.apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+ 
+diff --git a/node_modules/zca-js/dist/cjs/apis/sendLink.cjs b/node_modules/zca-js/dist/cjs/apis/sendLink.cjs
+index 00293a9..d3b7346 100644
+--- a/node_modules/zca-js/dist/cjs/apis/sendLink.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/sendLink.cjs
+@@ -13,6 +13,20 @@ require('../models/Reminder.cjs');
+ require('../models/ZBusiness.cjs');
+ var utils = require('../utils.cjs');
+ 
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in the ESM build; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ const sendLinkFactory = utils.apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [Enum.ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.chat[0]}/api/message/link`, {
+@@ -33,6 +47,7 @@ const sendLinkFactory = utils.apiFactory()((api, ctx, utils) => {
+      */
+     return async function sendLink(options, threadId, type = Enum.ThreadType.User) {
+         var _a;
++        const clientId = Date.now();
+         const res = await api.parseLink(options.link);
+         const params = {
+             msg: options.msg && options.msg.trim()
+@@ -48,7 +63,7 @@ const sendLinkFactory = utils.apiFactory()((api, ctx, utils) => {
+             type: 2, // 0
+             media: JSON.stringify(res.data.media),
+             ttl: (_a = options.ttl) !== null && _a !== void 0 ? _a : 0,
+-            clientId: Date.now(),
++            clientId: clientId,
+         };
+         if (type == Enum.ThreadType.Group) {
+             params.grid = threadId;
+@@ -68,7 +83,9 @@ const sendLinkFactory = utils.apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+ 
+diff --git a/node_modules/zca-js/dist/cjs/apis/sendMessage.cjs b/node_modules/zca-js/dist/cjs/apis/sendMessage.cjs
+index a6f4bab..6967ff3 100644
+--- a/node_modules/zca-js/dist/cjs/apis/sendMessage.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/sendMessage.cjs
+@@ -21,6 +21,18 @@ const attachmentUrlType = {
+     video: "asyncfile/msg?",
+     others: "asyncfile/msg?",
+ };
++/**
++ * Record on the send response the clientId that was actually sent.
++ *
++ * The send endpoint returns only `{msgId}`, so without this the caller has
++ * no way to learn the cliMsgId Zalo now holds for the message -- guessing it
++ * with a second Date.now() is off by however long the encrypt + POST took.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ function prepareQMSGAttach(quote) {
+     const quoteData = quote;
+     if (typeof quoteData.content == "string")
+@@ -189,12 +201,16 @@ const sendMessageFactory = utils.apiFactory()((api, ctx, utils$1) => {
+             }
+         }
+         const isMentionsValid = mentionsFinal.length > 0 && isGroupMessage;
++        // Hoisted so the caller can learn which clientId went on the wire.
++        // Zalo echoes this back as the message's cliMsgId, and `msg react`,
++        // `msg undo` and quote-replies all need that exact value.
++        const clientId = Date.now();
+         const params = quote
+             ? {
+                 toid: isGroupMessage ? undefined : threadId,
+                 grid: isGroupMessage ? threadId : undefined,
+                 message: msg,
+-                clientId: Date.now(),
++                clientId,
+                 mentionInfo: isMentionsValid ? JSON.stringify(mentionsFinal) : undefined,
+                 qmsgOwner: quote.uidFrom,
+                 qmsgId: quote.msgId,
+@@ -210,7 +226,7 @@ const sendMessageFactory = utils.apiFactory()((api, ctx, utils$1) => {
+             }
+             : {
+                 message: msg,
+-                clientId: Date.now(),
++                clientId,
+                 mentionInfo: isMentionsValid ? JSON.stringify(mentionsFinal) : undefined,
+                 imei: isGroupMessage ? undefined : ctx.imei,
+                 ttl: ttl !== null && ttl !== void 0 ? ttl : 0,
+@@ -237,6 +253,7 @@ const sendMessageFactory = utils.apiFactory()((api, ctx, utils$1) => {
+         return {
+             url: finalServiceUrl.toString(),
+             body: new URLSearchParams({ params: encryptedParams }),
++            clientId: String(clientId),
+         };
+     }
+     async function handleAttachment({ msg, attachments, mentions, quote, ttl, urgency }, threadId, type) {
+@@ -395,6 +412,9 @@ const sendMessageFactory = utils.apiFactory()((api, ctx, utils$1) => {
+                 body: formData.getBuffer(),
+                 headers: formData.getHeaders(),
+                 fileType: "gif",
++                // Retained so the caller can learn which clientId went on the
++                // wire; the params object itself is encrypted past this point.
++                clientId: params.clientId,
+             });
+         }
+         const responses = [];
+@@ -405,6 +425,9 @@ const sendMessageFactory = utils.apiFactory()((api, ctx, utils$1) => {
+                 }, data.query || {})),
+                 body: data.body,
+                 headers: data.fileType == "gif" ? data.headers : {},
++                // send() reads url/body/headers only, so this rides along
++                // untouched and lets sendMessage() stamp the response.
++                clientId: data.clientId != undefined ? data.clientId : data.params && data.params.clientId,
+             });
+         }
+         return responses;
+@@ -447,17 +470,28 @@ const sendMessageFactory = utils.apiFactory()((api, ctx, utils$1) => {
+                 // send message and attachment separately
+                 await handleMessage(message, threadId, type).then(async (data) => {
+                     responses.message = (await send(data))[0];
++                    stampClientId(responses.message, data.clientId);
+                 });
+                 msg = "";
+                 mentions = undefined;
+             }
+             const handledData = await handleAttachment({ msg, mentions, attachments, quote, ttl, styles, urgency }, threadId, type);
+-            responses.attachment = await send(handledData);
++            // Stamp the attachment responses too. Upstream stamps only
++            // responses.message, and for a single jpg/jpeg/png/webp canBeDesc
++            // is true so the caption folds into the attachment and
++            // responses.message stays null -- leaving an attachment send with
++            // NO cliMsgId anywhere, which makes `msg undo` unable to recall it
++            // at all. send() is Promise.all over the input array, so the
++            // results are index-aligned with handledData.
++            const sentAttachments = await send(handledData);
++            sentAttachments.forEach((r, i) => stampClientId(r, handledData[i] && handledData[i].clientId));
++            responses.attachment = sentAttachments;
+             msg = "";
+         }
+         if (msg.length > 0) {
+             const handledData = await handleMessage(message, threadId, type);
+             responses.message = (await send(handledData))[0];
++            stampClientId(responses.message, handledData.clientId);
+         }
+         return responses;
+     };
+diff --git a/node_modules/zca-js/dist/cjs/apis/sendSticker.cjs b/node_modules/zca-js/dist/cjs/apis/sendSticker.cjs
+index 077ab16..b2a8ece 100644
+--- a/node_modules/zca-js/dist/cjs/apis/sendSticker.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/sendSticker.cjs
+@@ -13,6 +13,20 @@ require('../models/Reminder.cjs');
+ require('../models/ZBusiness.cjs');
+ var utils = require('../utils.cjs');
+ 
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in the ESM build; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ const sendStickerFactory = utils.apiFactory()((api, ctx, utils$1) => {
+     const serviceURL = {
+         [Enum.ThreadType.User]: utils$1.makeURL(`${api.zpwServiceMap.chat[0]}/api/message/sticker`, {
+@@ -44,11 +58,12 @@ const sendStickerFactory = utils.apiFactory()((api, ctx, utils$1) => {
+         if (!sticker.type)
+             throw new ZaloApiError.ZaloApiError("Missing sticker type");
+         const isGroupMessage = type === Enum.ThreadType.Group;
++        const clientId = Date.now();
+         const params = {
+             stickerId: sticker.id,
+             cateId: sticker.cateId,
+             type: sticker.type,
+-            clientId: Date.now(),
++            clientId: clientId,
+             imei: ctx.imei,
+             zsource: 101,
+             toid: isGroupMessage ? undefined : threadId,
+@@ -64,7 +79,9 @@ const sendStickerFactory = utils.apiFactory()((api, ctx, utils$1) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils$1.resolve(response);
++        const resolved = await utils$1.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+ 
+diff --git a/node_modules/zca-js/dist/cjs/apis/sendVideo.cjs b/node_modules/zca-js/dist/cjs/apis/sendVideo.cjs
+index d779710..e62770b 100644
+--- a/node_modules/zca-js/dist/cjs/apis/sendVideo.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/sendVideo.cjs
+@@ -13,6 +13,20 @@ require('../models/Reminder.cjs');
+ require('../models/ZBusiness.cjs');
+ var utils = require('../utils.cjs');
+ 
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in the ESM build; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ const sendVideoFactory = utils.apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [Enum.ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/forward`),
+@@ -125,7 +139,9 @@ const sendVideoFactory = utils.apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+ 
+diff --git a/node_modules/zca-js/dist/cjs/apis/sendVoice.cjs b/node_modules/zca-js/dist/cjs/apis/sendVoice.cjs
+index f371e14..134dcdf 100644
+--- a/node_modules/zca-js/dist/cjs/apis/sendVoice.cjs
++++ b/node_modules/zca-js/dist/cjs/apis/sendVoice.cjs
+@@ -13,6 +13,20 @@ require('../models/Reminder.cjs');
+ require('../models/ZBusiness.cjs');
+ var utils = require('../utils.cjs');
+ 
++/**
++ * Hand the caller the clientId that went on the wire.
++ *
++ * Zalo's send responses carry only {msgId}, but `undo` and `deleteMessage`
++ * both require the cliMsgId, which is client-generated and not derivable
++ * from a msgId. Without this a message of this kind can be sent and then
++ * never recalled. Mirrors the helper in the ESM build; kept local so a
++ * zca-js bump that breaks one file cannot break the others.
++ */
++function stampClientId(response, clientId) {
++    if (!response || typeof response != "object" || clientId == undefined)
++        return;
++    response.cliMsgId = String(clientId);
++}
+ const sendVoiceFactory = utils.apiFactory()((api, ctx, utils) => {
+     const serviceURL = {
+         [Enum.ThreadType.User]: utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/forward`),
+@@ -80,7 +94,9 @@ const sendVoiceFactory = utils.apiFactory()((api, ctx, utils) => {
+                 params: encryptedParams,
+             }),
+         });
+-        return utils.resolve(response);
++        const resolved = await utils.resolve(response);
++        stampClientId(resolved, clientId);
++        return resolved;
+     };
+ });
+ 

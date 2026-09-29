@@ -188,8 +188,36 @@ Verified on all three install paths — local dependency, global, and `git+file:
 `github:` — with the resolved zca-js carrying `dist/apis/logoutV2.js` in each. Re-run that check by
 packing and installing into an empty directory; the tarball is ~2 MB because it carries zca-js.
 
-Note the CJS build (`dist/cjs/`) is **not** patched — only the ESM `dist/`. This package is ESM, so
-it never loads the CJS bundle; anything that `require()`s zca-js would get unpatched code.
+### Both of zca-js's builds are patched, deliberately
+
+zca-js ships two trees — ESM at `dist/` and CJS at `dist/cjs/` — and its exports map wires
+`"require": "./dist/cjs/index.cjs"`. Until 2026-09-29 only the ESM half was patched, on the
+reasoning that this package is `"type": "module"` and so can never load the CJS bundle. That
+reasoning was correct and is still asserted, but it was the wrong conclusion: a library that
+ships two entry points should not have one that works and one that silently lacks `logoutV2`,
+`pullMobileMsg`, `getCrossDB`, `deleteSnapshotMobileMsg`, every client-id stamp, and the
+device-fingerprint client hints. "Correct today because nothing takes that path" is not the same
+as correct.
+
+The patch now covers both, which is why it is ~1,700 lines across 31 files rather than ~900
+across 16. Mirroring is mechanical but not free:
+
+- The CJS twins are rollup output — `var X = require('./p.cjs')` with namespaced access
+  (`Enum.ThreadType`, `ZaloApiError.ZaloApiError`) and a trailing `exports.X = X`. The function
+  bodies are otherwise byte-identical to the ESM ones, so the edits transfer directly.
+- Five of the files are **created**, not edited, so the CJS side needed five new `.cjs` files
+  plus require + constructor wiring in `dist/cjs/apis.cjs`. A patched file that is never wired
+  onto the API class is invisible to a per-file check — that is what the call-shape assertion in
+  `tests/unit/send-apis-return-client-id.test.js` exists to catch.
+- `loginQR` is functional, not cosmetic. `src/core/zalo-client.js` puts `secChUa` /
+  `secChUaMobile` / `secChUaPlatform` on ctx; without the mirror the CJS build would ignore the
+  fingerprint and always claim Chrome 130 on Windows.
+
+Three assertions pin it: the patch touches both trees, it creates the four methods in both, and
+this package stays ESM. All are mutation-tested. **Mutation-test any assertion you add here** —
+the first version of the parity check matched `response.cliMsgId =`, which also matches the
+helper's own body, so deleting a call site still looked patched. It was decorative and reading it
+did not reveal that; breaking the code and watching the test stay green did.
 
 ### Why a stale zca-js cannot reach the tarball
 

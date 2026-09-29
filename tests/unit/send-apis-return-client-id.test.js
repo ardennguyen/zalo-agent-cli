@@ -26,19 +26,18 @@
  * drops the patch, or a brand-new `sendFoo.js` that nobody thought to stamp,
  * fails here without anyone remembering to add a case.
  *
- * SCOPE: the ESM build (`dist/apis`) only, deliberately. zca-js ships a
- * parallel CJS tree at `dist/cjs/apis/*.cjs` which carries NONE of this —
- * measured at 2d6532c, `response.cliMsgId =` appears in 7 ESM files and 0
- * CJS ones — and its exports map sends `require()` there. Patching it too
- * would mean seven more files, and seven more hunks to fail on a zca-js
- * bump, for a build this package cannot load: we are `"type": "module"` and
- * import zca-js by ESM specifier everywhere, so Node resolves the
- * `"default"` condition and never the `"require"` one.
+ * SCOPE: the ESM build (`dist/apis`), which is the tree this package
+ * actually loads — we are `"type": "module"` and import zca-js by ESM
+ * specifier everywhere, so Node resolves the `"default"` condition.
  *
- * That makes the narrow scope correct rather than lazy — but only while the
- * assumption holds, so the last block below pins it. If this package ever
- * stops being ESM, or something starts `require()`-ing zca-js, this guard
- * silently stops covering the code that actually runs. It fails instead.
+ * zca-js also ships a parallel CJS tree at `dist/cjs/apis/*.cjs`, and its
+ * exports map sends `require()` there. That tree was deliberately left
+ * unpatched until 2026-09-29, on the reasoning that we can never load it.
+ * It is now patched to parity instead: a library that ships two entry
+ * points should not have one that works and one that silently lacks the
+ * four methods and every client-id stamp. The last block below pins both
+ * halves — that we still take the `default` condition, and that the CJS
+ * tree really is patched rather than assumed to be.
  */
 
 import { describe, it } from "node:test";
@@ -190,19 +189,55 @@ describe("the ESM-only scope of that guard is still justified", () => {
         assert.deepEqual(offenders, [], "these files would load the unpatched CJS build of zca-js");
     });
 
-    it("the CJS tree really is the unpatched one, so this is not hypothetical", () => {
-        // Documents the asymmetry rather than asserting it away. If a future
-        // zca-js ships a patched CJS build, or the patch grows to cover it,
-        // this flips and the scope note above needs revisiting.
-        const cjs = join(PKG_ROOT, "node_modules", "zca-js", "dist", "cjs", "apis");
-        if (!existsSync(cjs)) return; // upstream dropped the dual build
-        const stamped = readdirSync(cjs).filter(
-            (f) => /^send.*\.cjs$/.test(f) && /response\.cliMsgId\s*=/.test(readFileSync(join(cjs, f), "utf8")),
+    it("the CJS tree is patched to parity, not left behind", () => {
+        // The inverse of what this asserted until 2026-09-29, exactly as the
+        // note here anticipated. zca-js's exports map sends require() to the
+        // CJS build, so anything that reaches it must get the same stamping
+        // the ESM tree has. If a zca-js bump drops the CJS half of
+        // patches/zca-js+2.2.0.patch, the two trees diverge and this fails.
+        const esmDir = join(PKG_ROOT, "node_modules", "zca-js", "dist", "apis");
+        const cjsDir = join(esmDir, "..", "cjs", "apis");
+        if (!existsSync(cjsDir)) return; // upstream dropped the dual build
+
+        // "Patched" means the helper is DEFINED *and* CALLED. Matching only
+        // `response.cliMsgId =` would match the helper's own body, so a file
+        // whose call site was deleted would still look patched — mutation
+        // testing caught exactly that. The definition contributes one
+        // occurrence, so a real call means two or more.
+        const stamped = (dir, ext) =>
+            readdirSync(dir)
+                .filter((f) => {
+                    if (!f.endsWith(ext)) return false;
+                    const src = readFileSync(join(dir, f), "utf8");
+                    return (src.match(/stampClientId\(/g) || []).length >= 2;
+                })
+                .map((f) => f.slice(0, -ext.length))
+                .sort();
+
+        const cjsStamped = stamped(cjsDir, ".cjs");
+        const missing = stamped(esmDir, ".js").filter((n) => !cjsStamped.includes(n));
+        assert.deepEqual(missing, [], "these APIs stamp the client id in the ESM build but not the CJS one");
+    });
+    it("both builds expose the same API surface, so a require() caller is not missing methods", () => {
+        // The call-shape half. Patching the CJS files is not enough on its
+        // own: the added factories must also be wired onto the API class in
+        // the CJS barrel, or require("zca-js") returns an object that
+        // silently lacks logoutV2 and the rest while every file looks patched.
+        const dist = join(PKG_ROOT, "node_modules", "zca-js", "dist");
+        if (!existsSync(join(dist, "cjs", "apis.cjs"))) return; // upstream dropped the dual build
+        const surface = (f) => [...readFileSync(f, "utf8").matchAll(/^\s*this\.(\w+) = /gm)].map((m) => m[1]).sort();
+        const esm = surface(join(dist, "apis.js"));
+        const cjs = surface(join(dist, "cjs", "apis.cjs"));
+        assert.ok(esm.length > 100, "the ESM barrel stopped looking like an API class -- has zca-js restructured?");
+        assert.deepEqual(
+            esm.filter((n) => !cjs.includes(n)),
+            [],
+            "require('zca-js') would hand back an API object missing these methods",
         );
         assert.deepEqual(
-            stamped,
+            cjs.filter((n) => !esm.includes(n)),
             [],
-            "the CJS build is now partly patched — decide whether the scope note still holds",
+            "the CJS build exposes methods the ESM build does not -- the two have drifted",
         );
     });
 });

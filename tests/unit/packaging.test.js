@@ -55,6 +55,26 @@ function binariesInvokedBy(script) {
         .filter(Boolean);
 }
 
+/** Paths inside zca-js that the patch touches, and which of them it creates. */
+function patchedPaths() {
+    const file = join(ROOT, "patches", "zca-js+2.2.0.patch");
+    if (!existsSync(file)) return { touched: [], created: [] };
+    const touched = [];
+    const created = [];
+    // Split on the per-file headers rather than matching across lines: each
+    // block is one file, and "new file mode" inside it means the patch
+    // creates that file rather than editing it.
+    for (const block of readFileSync(file, "utf8")
+        .split(/^diff --git /m)
+        .slice(1)) {
+        const m = /^a\/node_modules\/zca-js\/(\S+) /.exec(block);
+        if (!m) continue;
+        touched.push(m[1]);
+        if (/^new file mode /m.test(block)) created.push(m[1]);
+    }
+    return { touched, created };
+}
+
 describe("packaging: the patched zca-js must reach consumers", () => {
     it("pins every patched package to an exact version", () => {
         for (const [name, version] of patchedPackages()) {
@@ -122,5 +142,51 @@ describe("packaging: the patched zca-js must reach consumers", () => {
         // `npm i github:ardennguyen/zalo-agent-cli` (zalo-mcp.ps1/.sh) packs from a clone and
         // runs prepare, which needs the patch files to be present.
         assert.ok(pkg.files.includes("patches/"), "files must include patches/");
+    });
+    // zca-js ships two builds and its exports map sends `require()` to the CJS
+    // one. We load the ESM tree, so for a long time only that half was
+    // patched -- leaving a library whose two entry points disagreed about
+    // whether `logoutV2` exists. These pin the halves back together.
+
+    it("patches both of zca-js's builds, not just the one we load", () => {
+        const { touched } = patchedPaths();
+        const esm = touched
+            .filter((p) => /^dist\/apis\/[\w$]+\.js$/.test(p))
+            .map((p) => p.replace(/^dist\/apis\/|\.js$/g, ""));
+        const cjs = new Set(
+            touched
+                .filter((p) => /^dist\/cjs\/apis\/[\w$]+\.cjs$/.test(p))
+                .map((p) => p.replace(/^dist\/cjs\/apis\/|\.cjs$/g, "")),
+        );
+        assert.ok(esm.length > 0, "the patch stopped touching dist/apis -- has zca-js restructured?");
+        assert.deepEqual(
+            esm.filter((n) => !cjs.has(n)),
+            [],
+            "these APIs are patched in zca-js's ESM build but not its CJS one, so require() gets the unpatched code",
+        );
+        assert.ok(
+            touched.includes("dist/apis.js") && touched.includes("dist/cjs/apis.cjs"),
+            "both barrels must be patched, or the added methods are never wired onto the API class",
+        );
+    });
+
+    it("adds the four extra methods to both builds", () => {
+        const { created } = patchedPaths();
+        for (const m of ["logoutV2", "pullMobileMsg", "getCrossDB", "deleteSnapshotMobileMsg"]) {
+            assert.ok(created.includes(`dist/apis/${m}.js`), `the patch no longer creates the ESM ${m}`);
+            assert.ok(
+                created.includes(`dist/cjs/apis/${m}.cjs`),
+                `the patch no longer creates the CJS ${m} -- require("zca-js") would lack it`,
+            );
+        }
+    });
+
+    it("stays ESM, so the bundled zca-js resolves through its default condition", () => {
+        assert.equal(
+            pkg.type,
+            "module",
+            'this package stopped being "type": "module" -- zca-js would now resolve through its CJS build, ' +
+                "which must therefore stay patched (see the two assertions above)",
+        );
     });
 });

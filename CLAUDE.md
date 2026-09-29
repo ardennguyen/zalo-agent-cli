@@ -234,6 +234,8 @@ The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose
 
 The same rule applies to anything else that gets published: npm READMEs, GitHub releases, issue comments. The wiki is just the surface with the shortest path from edit to public.
 
+**The check guards the working tree, which is why it runs *before* the push.** Once a term is pushed, deleting it in a later commit does not remove it — it stays in the public history and in every clone. Remediation at that point is history rewriting plus rotating whatever leaked, not a follow-up commit. Audit history with `git log --all -S'<term>'` (0 across both repos as of 2026-09-30).
+
 > Keep the script honest. A check that only ever prints "clean" is indistinguishable from a broken one — the same green-check-hiding-a-problem shape as the commands in [`docs/agent-notes.md`](docs/agent-notes.md) that had never worked while every test passed. After changing it, plant one sample per category in a scratch directory, confirm it exits 1, and delete them.
 
 ---

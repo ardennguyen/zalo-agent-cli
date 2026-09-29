@@ -307,6 +307,7 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 | Variable | Effect |
 |:---|:---|
 | `ZALO_AGENT_NO_UPDATE_CHECK` | Set to any value to disable the background update-version check |
+| `ZALO_API_VERSION` | Protocol version announced to Zalo (`zpw_ver` / `client_version`), on the HTTP calls and the WebSocket URL alike. Default `691` (the live Zalo Web value); set `685` to roll back to zca-js's default. Must be a positive whole number — `0685`, `6.91`, `1e3`, `0x2b3`, `-685` and `0` are refused before Zalo is contacted, so a bad value fails every login rather than quietly falling back. Whitespace-only counts as unset. Only logins read it. |
 | `ZALO_JSON_MODE` | Set automatically by the CLI in `--json` and `mcp` modes to suppress `zca-js` stdout logs. Don't set it by hand |
 | `ZALO_MCP_HTTP_PORT` | Read by the `zalo-mcp` wrapper as the fallback `--http` port |
 

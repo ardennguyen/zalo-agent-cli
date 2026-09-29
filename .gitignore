@@ -14,9 +14,13 @@ history_dump.json
 
 agent/
 
-# AI agent communication / configuration (local only)
-AGENTS.md
-CLAUDE.md
+# AI agent configuration
+# AGENTS.md and CLAUDE.md are the project's agent ruleset and ARE committed —
+# they call themselves canonical, and for nineteen months they were ignored, so
+# every rule and every correction written into them lived on one machine and
+# reached no clone, no CI and no reviewer.
+# `.agents/` stays ignored on purpose: it holds machine-local overrides and
+# paths, which must not follow the repo to another machine.
 .agents/
 
 # Live E2E local state (never commit real thread ids or credentials)

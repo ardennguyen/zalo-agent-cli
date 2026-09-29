@@ -234,7 +234,7 @@ The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose
 
 The same rule applies to anything else that gets published: npm READMEs, GitHub releases, issue comments. The wiki is just the surface with the shortest path from edit to public.
 
-**The check guards the working tree, which is why it runs *before* the push.** Once a term is pushed, deleting it in a later commit does not remove it — it stays in the public history and in every clone. Remediation at that point is history rewriting plus rotating whatever leaked, not a follow-up commit. Audit history with `git log --all -S'<term>'` (0 across both repos as of 2026-09-30).
+**The check guards the working tree, which is why it runs *before* the push.** Once a term is pushed, deleting it in a later commit does not remove it — it stays in the public history and in every clone. Remediation at that point is history rewriting plus rotating whatever leaked, not a follow-up commit. Audit with `git log --all -S'<term>'`: **0 on every remote ref of both repos as of 2026-09-30.** A local feature branch cut before a scrub can still carry the scrubbed value in its tree — rebase it onto the scrubbed history with the value replaced before it is ever pushed, never push or merge it as-is (see [`docs/agent-notes.md`](docs/agent-notes.md)).
 
 > Keep the script honest: after changing it, plant one sample per category in a scratch directory, confirm it exits 1, and delete them. Why that matters: [`docs/agent-notes.md`](docs/agent-notes.md).
 

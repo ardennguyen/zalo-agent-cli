@@ -661,3 +661,21 @@ rewrite (Arden approved one for `main..v2.0-dev` on 2026-09-30), plus accepting 
 the window keep them. Measured at the time: all three forks predate the leak; GitHub counted about
 212 clone events after it. Names have no automatic check. The local leak check in `.agents/`
 (§10) covers the wiki, not this repo.
+
+### A local branch can outlive a scrub (2026-09-30)
+
+The `main..v2.0-dev` history rewrite scrubbed every leaked value from every commit reachable
+on GitHub. But a feature branch cut *before* the rewrite still has the old values in its tree
+and in its own commits. On the night of the rewrite that was `fix/self-heal-backfill` (an agent
+worktree, based on the pre-scrub daemon-writer branch): `git log --all -S'<noised id>'` returned
+3 in that clone even though every remote ref returned 0. Verified local-only — no remote ref
+contained any of the three commits.
+
+So `git log --all -S` is a whole-object-store scan: it sees unmerged local branches, and it sees
+GitHub's unreferenced-commit views until they expire. "0 on every remote ref" is the guarantee
+the rewrite gives; a local non-zero from a stale branch is that branch, not a failed scrub.
+
+The fix is never to push or merge such a branch. Take its diff, apply it onto the scrubbed tip
+(where the leaked files are already fake), let `tests/unit/no-real-ids.test.js` prove the result
+is clean, and delete the old branch. Merging it instead would put every scrubbed value straight
+back on GitHub — exactly what the rewrite undid.

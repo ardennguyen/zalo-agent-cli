@@ -512,3 +512,125 @@ describe("classifyLiveMessage — one vocabulary for both capture paths", () => 
         assert.equal(typeof r.type, "string");
     });
 });
+
+/**
+ * System events: what Zalo actually sends, not what we assumed it sends.
+ *
+ * Every fixture below is copied from a real cached row. The shape that broke us
+ * is `params.msg` — a printf-positional template ("%1$s khóa bình chọn: %2$s")
+ * sitting at the top of `params`, with the values to interpolate held either in
+ * `highLightsV2[].dpn` or, for polls, in `dName`/`question`.
+ *
+ * The reader only knew the phone's nested `params.customMsg.msg` form and did
+ * no interpolation at all, so 18 rows in a 13,742-row cache stored a bare
+ * `[poll_event]` or `[text]` where a readable sentence belonged. They are
+ * invisible to search and to `msg history`.
+ */
+describe("system events render as sentences, not type markers", () => {
+    const REMINDER_PARAMS = {
+        msg: {
+            vi: "%1$s xoá nhắc hẹn %2$s.",
+            en: "%1$s deleted the time reminder %2$s.",
+        },
+        highLightsV2: [
+            { uid: 1000000000000000001, dpn: "Nguyen Van A", type: 0 },
+            { uid: 5000000000000000001, dpn: "[e2e] reminder 12:45:19", type: 1 },
+        ],
+    };
+    const POLL_PARAMS = {
+        msg: { vi: "%1$s khóa bình chọn: %2$s", en: "%1$s closed the poll: %2$s" },
+        uid: 1000000000000000001,
+        question: "[e2e] poll 12:45:10",
+        pollId: 1152503681,
+        dName: "Nguyen Van A",
+    };
+
+    it("fills a group event's placeholders from highLightsV2", () => {
+        const r = classifyLiveMessage({
+            msgType: "webchat",
+            content: {
+                title: "Nguyen Van A xoá nhắc hẹn [e2e] reminder 12:45:19.",
+                action: "msginfo.actionlist",
+                params: JSON.stringify(REMINDER_PARAMS),
+            },
+        });
+        assert.equal(r.text, "Nguyen Van A xoá nhắc hẹn [e2e] reminder 12:45:19.");
+    });
+
+    it("classifies a live msginfo.actionlist as the group_event the phone calls it", () => {
+        // webchat carries both real text and group system events. Mapping on
+        // msgType alone filed this as `text`, whose extractor sees no string
+        // body and stored the literal "[text]".
+        const r = classifyLiveMessage({
+            msgType: "webchat",
+            content: { title: "x", action: "msginfo.actionlist", params: JSON.stringify(REMINDER_PARAMS) },
+        });
+        assert.equal(r.type, "group_event");
+        assert.equal(SYNC_MSG_TYPES[20], "group_event", "sync side of the same event");
+    });
+
+    it("a plain webchat string is still text, not a group event", () => {
+        assert.equal(classifyLiveMessage({ msgType: "webchat", content: "hello" }).type, "text");
+    });
+
+    it("fills a poll event's placeholders from dName and question", () => {
+        const r = classifyLiveMessage({
+            msgType: "group.poll",
+            content: { title: "", action: "close", params: JSON.stringify(POLL_PARAMS) },
+        });
+        assert.equal(r.type, "poll_event");
+        assert.equal(r.text, "Nguyen Van A khóa bình chọn: [e2e] poll 12:45:10");
+    });
+
+    it("reads a styled (rtf) message's body out of the attachment title", () => {
+        // An rtf message IS text; Zalo moves the body to `title` so the style
+        // ranges in `params` have something to index against.
+        const r = classifyLiveMessage({
+            msgType: "webchat",
+            content: {
+                title: "DM styled bold",
+                action: "rtf",
+                params: JSON.stringify({ styles: [{ start: 10, len: 4, st: "b" }], ver: 0 }),
+            },
+        });
+        assert.equal(r.type, "text");
+        assert.equal(r.text, "DM styled bold");
+    });
+
+    it("prefers Zalo's pre-rendered title over a template it cannot fill", () => {
+        const r = classifyLiveMessage({
+            msgType: "group.poll",
+            content: {
+                title: "Someone closed the poll",
+                action: "close",
+                params: JSON.stringify({ msg: { vi: "%1$s khóa bình chọn: %2$s" } }),
+            },
+        });
+        assert.equal(r.text, "Someone closed the poll", "never store a sentence with %2$s left in it");
+    });
+
+    it("still reads the phone's nested customMsg.msg form", () => {
+        const attach = { params: JSON.stringify({ customMsg: { msg: { vi: "Đã xoá nhắc hẹn" } } }) };
+        assert.equal(classifySyncMessage(msg(24, "", attach)).text, "Đã xoá nhắc hẹn");
+    });
+
+    it("gives the same answer when asked twice", () => {
+        // The placeholder check runs on a shared regex. A /g one advances
+        // lastIndex, so the second identical call would disagree with the first.
+        const live = {
+            msgType: "group.poll",
+            content: { title: "", action: "close", params: JSON.stringify(POLL_PARAMS) },
+        };
+        assert.equal(classifyLiveMessage(live).text, classifyLiveMessage(live).text);
+    });
+
+    it("live and sync render the same poll event identically", () => {
+        const live = classifyLiveMessage({
+            msgType: "group.poll",
+            content: { title: "", action: "close", params: JSON.stringify(POLL_PARAMS) },
+        });
+        const sync = classifySyncMessage(msg(26, "", { params: JSON.stringify(POLL_PARAMS) }));
+        assert.equal(live.type, sync.type);
+        assert.equal(live.text, sync.text);
+    });
+});

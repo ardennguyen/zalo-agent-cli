@@ -193,12 +193,52 @@ export function extractSyncAttachments(msg, msgTypeName) {
     return out;
 }
 
-/** Localised system-event text, preferring Vietnamese then English. */
+// A template placeholder Zalo left for us to fill: `%1$s`, `%2$s`, …
+// Two constants on purpose: `.test()` on a /g regex advances lastIndex and so
+// answers differently on identical input depending on call order.
+const POSITIONAL = /%\d+\$s/;
+const POSITIONAL_ALL = /%(\d+)\$s/g;
+
+/**
+ * The values a system-event template interpolates, in `%1$s`, `%2$s` order.
+ *
+ * Group events carry them as a highlight list — one entry per placeholder, the
+ * actor first. Poll events carry no list at all: the actor and the poll are
+ * named fields, used in that order by every poll template Zalo sends.
+ */
+function systemEventArgs(params) {
+    const highlights = params?.highLightsV2 ?? params?.highLights;
+    if (Array.isArray(highlights) && highlights.length) {
+        return highlights.map((h) => (typeof h?.dpn === "string" ? h.dpn : ""));
+    }
+    return [params?.dName, params?.question].filter((v) => typeof v === "string");
+}
+
+/** Substitute a template's positional placeholders, leaving any it cannot fill. */
+function fillTemplate(template, args) {
+    return template.replace(POSITIONAL_ALL, (placeholder, position) => {
+        const value = args[Number(position) - 1];
+        return typeof value === "string" && value !== "" ? value : placeholder;
+    });
+}
+
+/**
+ * Localised system-event sentence, preferring Vietnamese then English.
+ *
+ * Zalo sends the template in two places. The phone nests it under
+ * `params.customMsg.msg`; the live socket puts it straight on `params.msg`, and
+ * reading only the nested form meant every reminder, poll and membership event
+ * captured live fell through to a bare `[poll_event]`.
+ *
+ * Either way the template is printf-positional — "%1$s khóa bình chọn: %2$s" —
+ * so returning it unfilled would store the placeholders verbatim.
+ */
 function customMsgText(params) {
-    const msg = params?.customMsg?.msg;
+    const msg = params?.msg ?? params?.customMsg?.msg;
     if (!msg) return null;
-    if (typeof msg === "string") return msg;
-    return msg.vi || msg.en || Object.values(msg)[0] || null;
+    const template = typeof msg === "string" ? msg : msg.vi || msg.en || Object.values(msg)[0];
+    if (typeof template !== "string" || !template) return null;
+    return fillTemplate(template, systemEventArgs(params));
 }
 
 /**
@@ -217,14 +257,17 @@ function customMsgText(params) {
  */
 export function extractSyncText(msg, type, attachments = []) {
     const content = typeof msg?.content === "string" ? msg.content.trim() : "";
-    if (type === "text") return content;
+    const a = attachments[0] || {};
+    const params = parseJson(msg?.meta?.attachsList?.[0]?.params) || {};
+
+    // A styled message (`action: "rtf"`) is ordinary text whose body Zalo moves
+    // into the attachment title so the style ranges have something to index.
+    // Returning `content` alone stored the literal string "[text]" for it.
+    if (type === "text") return content || a.title || "";
     if (content && type !== "deleted") {
         // A real caption / body — keep it verbatim.
         if (type !== "event" && type !== "group_event" && type !== "poll_event") return content;
     }
-
-    const a = attachments[0] || {};
-    const params = parseJson(msg?.meta?.attachsList?.[0]?.params) || {};
 
     switch (type) {
         case "deleted":
@@ -243,8 +286,15 @@ export function extractSyncText(msg, type, attachments = []) {
             return [a.title, a.description, a.url].filter(Boolean).join(" — ") || `[${type}]`;
         case "event":
         case "group_event":
-        case "poll_event":
-            return customMsgText(params) || content || `[${type}]`;
+        case "poll_event": {
+            // Zalo also ships the sentence pre-rendered in the attachment title
+            // for some events. Prefer our own fill, but when the payload did not
+            // carry every value the template asks for, that title is the better
+            // reading than a sentence with "%2$s" left in it.
+            const rendered = customMsgText(params);
+            if (rendered && !POSITIONAL.test(rendered)) return rendered;
+            return a.title || rendered || content || `[${type}]`;
+        }
         default:
             return content || (a.title ? `[${type}] ${a.title}` : `[${type}]`);
     }
@@ -354,8 +404,17 @@ function liveParams(content) {
  */
 export function classifyLiveMessage(data) {
     const rawType = data?.msgType || "";
-    const type = LIVE_MSG_TYPES[rawType] || (typeof data?.content === "string" ? "text" : rawType || "attachment");
     const content = data?.content;
+    let type = LIVE_MSG_TYPES[rawType] || (typeof content === "string" ? "text" : rawType || "attachment");
+    // `webchat` carries two different things: a real text message, whose content
+    // is a string, and a group system event (a member added, a reminder
+    // deleted), whose content is an object with this action. The phone reports
+    // the latter as msgType 20 -> group_event, so classifying on msgType alone
+    // filed the same event as `text` live and as `group_event` from a sync —
+    // and the text path, seeing no string body, stored the literal "[text]".
+    if (type === "text" && content && typeof content === "object" && content.action === "msginfo.actionlist") {
+        type = "group_event";
+    }
     const attachments = [];
 
     if (content && typeof content === "object") {

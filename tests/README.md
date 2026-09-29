@@ -238,7 +238,7 @@ nothing warned. An inherited value is now discarded and named on stderr.
 `run-e2e.js` sets these for you based on its flags; you rarely set them by hand.
 
 `ZALO_TEST_SYNC_MOBILE` is the exception — `run-e2e.js` never sets it. It gates
-`sync-mobile --legacy`, the retired phone-transfer path. Set it by hand, once,
+`sync-mobile --legacy`, the old phone-transfer path. Set it by hand, once,
 when the phone's owner is expecting it:
 
 ```bash
@@ -689,10 +689,10 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 - [ ] `sync-mobile --transfer` — one phone confirm, then restores history into zalo.db with real thread names
 - [ ] `sync-mobile` while `listen` is running — refuses, naming the lock
 - [ ] `sync-mobile` while Zalo Web is open — reports the one-web-session rule
-- [ ] `sync-mobile --legacy` — one attempt, then reports the retired endpoint
+- [ ] `sync-mobile --legacy` — one attempt, then reports it returned nothing
 - [ ] `sync-mobile --legacy --force` — skips the debounce
-- [ ] Kill `listen`, wait >30s, restart — a backfill is attempted for the gap
-      (currently the retired path, so it recovers nothing)
+- [ ] Kill `listen`, wait >30s, restart — the gap is reported, never auto-filled;
+      the printed `sync --from <date>` is what closes it
 
 ### MCP server
 

@@ -212,19 +212,51 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.deepEqual(readFileSync(saved.localPath), PHOTO_BYTES);
     });
 
-    it("files media under the thread's display name", async () => {
+    it("files media under the thread ID, not its display name", async () => {
         row({}, [photo("/ok.jpg")]);
         await downloadSyncedMedia({
             accountDir: dir,
             threadNames: new Map([["t1", { name: "Team Chat", type: "group" }]]),
         });
-        assert.ok(readdirSync(join(dir, "media")).includes("Team Chat"));
+        const entries = readdirSync(join(dir, "media"));
+        assert.ok(entries.includes("t1"), "expected a folder named for the thread id");
+        assert.ok(!entries.includes("Team Chat"), "must not file under the display name");
+    });
+
+    it("is unmoved by a conversation name that is hostile as a path", async () => {
+        // Every one of these is a real thing a group can be called, and each
+        // used to reach the filesystem through sanitize(): a path traversal, a
+        // separator, a reserved Windows device name, and a shell metacharacter.
+        // An id is digits, so none of it applies any more.
+        for (const hostile of ["../../escape", "a/b\c", "CON", "x&calc.exe", "  ", "‮gnp.exe"]) {
+            const acct = join(ROOT, `hostile${Math.random().toString(36).slice(2)}`);
+            row({}, [photo("/ok.jpg")]);
+            await downloadSyncedMedia({
+                accountDir: acct,
+                threadNames: new Map([["t1", { name: hostile, type: "group" }]]),
+            });
+            const entries = readdirSync(join(acct, "media")).filter((f) => f !== "_conversations.json");
+            assert.deepEqual(entries, ["t1"], `name ${JSON.stringify(hostile)} must not shape the path`);
+        }
+    });
+
+    it("writes a readable id -> name index beside the id folders", async () => {
+        // Folders are ids, which is unreadable on its own. The index is what a
+        // human (or a support engineer on the box) uses to find a conversation.
+        row({}, [photo("/ok.jpg")]);
+        await downloadSyncedMedia({
+            accountDir: dir,
+            threadNames: new Map([["t1", { name: "Team Chat", type: "group" }]]),
+        });
+        const index = JSON.parse(readFileSync(join(dir, "media", "_conversations.json"), "utf8"));
+        assert.equal(index.t1.name, "Team Chat");
+        assert.equal(index.t1.type, "group");
     });
 
     it("takes the extension from content-type when the URL has none", async () => {
         row({}, [{ kind: "file", url: `${base}/doc.pdf`, fileName: "report" }]);
         await downloadSyncedMedia({ accountDir: dir, kinds: ["file"] });
-        const [threadDir] = readdirSync(join(dir, "media"));
+        const [threadDir] = readdirSync(join(dir, "media")).filter((f) => f !== "_conversations.json");
         assert.ok(
             readdirSync(join(dir, "media", threadDir)).some((f) => f.endsWith(".pdf")),
             "expected a .pdf",

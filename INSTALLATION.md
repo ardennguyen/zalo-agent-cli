@@ -234,7 +234,6 @@ Everything the CLI persists lives under `~/.zalo-agent-cli/`:
 ├── accounts.json                  # Account registry (0600)
 ├── credentials/cred_<ownId>.json  # Per-account session credentials (0600)
 ├── mcp-config.json                # Optional MCP config
-├── media/<threadName>/            # Media downloaded by the MCP server (account-agnostic)
 ├── accounts/<ownId>/
 │   ├── zalo.db                    # SQLite message/thread cache (WAL)
 │   ├── media/                     # Media downloaded by `listen` / `msg` (per account)
@@ -244,7 +243,7 @@ Everything the CLI persists lives under `~/.zalo-agent-cli/`:
 ```
 
 > [!NOTE]
-> **There are two media directories, and they are not the same one.** `listen` and `msg` save attachments per account under `accounts/<ownId>/media/` as `<msgId>_<filename>`. The MCP server and `zalo_view_media` save to `~/.zalo-agent-cli/media/<threadName>/` as `<date>_<time>_<sender>_<msgId>.<ext>` — account-agnostic, and the default behind `mcp-config.json`'s `media.downloadDir`.
+> **One media directory, one layout.** Every command — `listen`, `msg history`, `mcp start`, `sync-media`, `sync-mobile` and the MCP tools — writes to `accounts/<ownId>/media/<threadId>/`. Folders are named by thread ID, never by conversation name, because a name can contain a path separator or change when someone renames the group; `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` can move the root for the MCP server only.
 
 > [!WARNING]
 > **The MCP media directory is not removed by `logout --purge` or `account remove`.** Those wipe `accounts/<ownId>/` and the credential file; `~/.zalo-agent-cli/media/` sits outside that path, so real message attachments survive. Delete it by hand when removing an account for privacy reasons:

@@ -83,7 +83,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **16** | `src/index.js` | the `register*Commands` calls |
 | MCP tools | **7** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **1366** as of 2026-09-29 (1362 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **1368** as of 2026-09-29 (1364 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -262,7 +262,7 @@ fetched it. `src/core/media-downloader.js` and `src/mcp/media-downloader.js` are
 `src/core/sync-v2/media.js` is the only downloader left, and everything routes through it —
 `listen`, `msg history`, `mcp start`, `sync-media`, `sync-mobile --transfer`, and the MCP tools.
 
-Destination is `<accountDir>/media/<conversation>/` with filenames
+Destination is `<accountDir>/media/<threadId>/` with filenames
 `<YYYY-MM-DD-HH-mm>_<msgIdTail>[_n]_<name>.<ext>` (`destPath()` in that module).
 `mcp-config.json`'s `media.downloadDir` is passed as `mediaRoot` and overrides the root for the MCP
 server only; when it is null, `mcp-tools.js` passes `undefined` and the module falls through to

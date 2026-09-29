@@ -415,7 +415,7 @@ Each scenario: user prompt → expected step-by-step reasoning → validation cr
 
 **Expected reasoning:**
 1. `zalo_view_media(messageId, threadId?)` downloads if needed and returns `{success, path, mediaType}`
-2. Report the `path` **as returned** — it is under `~/.zalo-agent-cli/media/<threadName>/`, named `<date>_<time>_<sender>_<msgId>.<ext>`
+2. Report the `path` **as returned** — it is under `~/.zalo-agent-cli/accounts/<ownId>/media/<threadId>/`, named `<date>-<HH-mm>_<msgIdTail>_<name>.<ext>`
 3. Do not assume it is under `accounts/<ownId>/media/` — that per-account tree belongs to `listen`/`msg`, a different downloader
 4. Set `open: false` when the user only wants it saved, not launched in a system viewer
 5. If asked to relocate it, point at `media.downloadDir` in `mcp-config.json` rather than moving files behind the server's back

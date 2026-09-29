@@ -345,6 +345,36 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
 }
 
 /**
+ * Write `<mediaRoot>/_conversations.json`: the id -> name map for the folders
+ * beside it. Best-effort by design -- a media run must never fail because an
+ * index could not be written.
+ *
+ * @param {string} mediaRoot
+ * @param {Map<string,{name:string,type:string}>} names
+ */
+function writeConversationIndex(mediaRoot, names) {
+    try {
+        fs.mkdirSync(mediaRoot, { recursive: true });
+        let existing = {};
+        try {
+            existing = JSON.parse(fs.readFileSync(join(mediaRoot, "_conversations.json"), "utf8"));
+        } catch {
+            /* first run, or an unreadable index we are about to replace */
+        }
+        // Merge rather than replace: a run scoped to one thread must not drop
+        // the names of conversations it did not look at.
+        for (const [id, meta] of names) {
+            if (meta?.name) existing[String(id)] = { name: meta.name, type: meta.type || null };
+        }
+        const tmp = join(mediaRoot, "_conversations.json.tmp");
+        fs.writeFileSync(tmp, JSON.stringify(existing, null, 2));
+        fs.renameSync(tmp, join(mediaRoot, "_conversations.json"));
+    } catch {
+        /* an index is a convenience, never a reason to fail a download run */
+    }
+}
+
+/**
  * Download the attachments recorded by a transfer sync.
  *
  * @param {object} opts
@@ -455,6 +485,10 @@ export async function downloadSyncedMedia(opts = {}) {
     // The MCP server honours a configured download dir; everything else files
     // media under the account's own data dir.
     const mediaRoot = mediaRootOpt ? resolve(mediaRootOpt) : resolve(accountDir, "media");
+
+    // Folders are ids, so without this the media tree is unreadable by a human.
+    // Written before any download, so an interrupted run still leaves an index.
+    writeConversationIndex(mediaRoot, names);
     let cursor = 0;
     // Consecutive throttled responses across all workers. Zalo starts dropping
     // connections under sustained load, and charging on through nine thousand
@@ -493,8 +527,15 @@ export async function downloadSyncedMedia(opts = {}) {
     const runJob = async (job) => {
         {
             const { row, att, url } = job;
-            const folder = names.get(String(row.threadId))?.name || row.threadId;
-            const dir = join(mediaRoot, sanitize(folder));
+            // The thread id, never the conversation name. A name is remote data:
+            // it can hold a path separator, a shell metacharacter, a reserved
+            // Windows device name, a right-to-left override, or 200 characters
+            // of emoji, and it CHANGES when someone renames the group -- which
+            // orphans every file already filed under the old spelling. An id is
+            // digits, stable for the life of the conversation, and needs no
+            // sanitising. `_conversations.json` at the media root carries the
+            // id -> name mapping a human needs to find anything.
+            const dir = join(mediaRoot, String(row.threadId));
 
             let got = await fetchBytes(url, timeoutMs);
 

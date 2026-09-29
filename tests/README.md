@@ -116,6 +116,32 @@ Both are pinned down by **characterization tests** in
 current, arguably-wrong behavior on purpose, so that changing it is a
 deliberate test update rather than a silent break for anyone piping to `jq`.
 
+### Spawn timeouts are a load symptom, not a regression
+
+`src/cli.test.js` boots a real `node` process per assertion. When something
+else is competing for the machine — parallel agent sessions, a running
+`listen` daemon, a full rebuild — a cold start can outlast the per-spawn
+limit, and `npm test` then reports a handful of `--help` tests as failed. The
+tell is that a **different** subset fails on each run and each one dies at
+almost exactly the limit.
+
+Check that before chasing a regression:
+
+```bash
+node --test src/cli.test.js        # passes alone => the suite is fine
+```
+
+The limit defaults to 30s. Override it when the default is wrong for the
+machine, in either direction:
+
+```bash
+ZALO_TEST_CLI_TIMEOUT_MS=60000 npm test   # slow or heavily loaded box
+ZALO_TEST_CLI_TIMEOUT_MS=2000 npm test    # tighten, to surface a real hang
+```
+
+A spawn that does time out now says so in those terms rather than surfacing a
+bare `ETIMEDOUT`, and keeps the original error as its `cause`.
+
 ### What the offline suite covers
 
 | File                                   | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                             |

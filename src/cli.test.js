@@ -10,18 +10,41 @@ import { resolve } from "path";
 
 const CLI = resolve(import.meta.dirname, "index.js");
 
+/**
+ * Per-spawn timeout. Every assertion here boots a real `node` process, so a
+ * cold start competing with other work on the machine can blow a tight limit
+ * and fail a *different* `--help` test on each run — a load symptom that reads
+ * exactly like a CLI regression. Generous by default; override with
+ * ZALO_TEST_CLI_TIMEOUT_MS when you are genuinely chasing a hang.
+ */
+const SPAWN_TIMEOUT_MS = Number(process.env.ZALO_TEST_CLI_TIMEOUT_MS) || 30_000;
+
 function run(...args) {
-    return execFileSync("node", [CLI, ...args], {
-        encoding: "utf-8",
-        timeout: 10000,
-        env: {
-            ...process.env,
-            HOME: "/tmp/zalo-agent-cli-test-home",
-            USERPROFILE: "/tmp/zalo-agent-cli-test-home",
-            LOCALAPPDATA: "/tmp/zalo-agent-cli-test-home",
-            APPDATA: "/tmp/zalo-agent-cli-test-home",
-        },
-    });
+    try {
+        return execFileSync("node", [CLI, ...args], {
+            encoding: "utf-8",
+            timeout: SPAWN_TIMEOUT_MS,
+            env: {
+                ...process.env,
+                HOME: "/tmp/zalo-agent-cli-test-home",
+                USERPROFILE: "/tmp/zalo-agent-cli-test-home",
+                LOCALAPPDATA: "/tmp/zalo-agent-cli-test-home",
+                APPDATA: "/tmp/zalo-agent-cli-test-home",
+            },
+        });
+    } catch (e) {
+        // Say which it is, so the next reader does not go hunting for a
+        // regression in a command that is merely slow to start.
+        if (e.code === "ETIMEDOUT") {
+            throw new Error(
+                `\`${args.join(" ")}\` did not finish within ${SPAWN_TIMEOUT_MS}ms. That is usually ` +
+                    `machine load, not a CLI regression — re-run this file on its own, or raise ` +
+                    `ZALO_TEST_CLI_TIMEOUT_MS.`,
+                { cause: e },
+            );
+        }
+        throw e;
+    }
 }
 
 describe("CLI interface", () => {

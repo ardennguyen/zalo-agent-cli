@@ -210,7 +210,7 @@ Xoá tin khỏi buffer đến cursor chỉ định — **áp dụng cho toàn b�
 ---
 
 ### `zalo_get_history`
-Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức toàn bộ những gì `mcp start`/`listen` đã lưu và những gì `zalo-agent sync-mobile --transfer` đã khôi phục từ điện thoại (có thể là toàn bộ lịch sử) — chỉ khi cache không có gì cho thread đó mới hỏi server Zalo. Phân trang cache bằng `before` (epoch ms, lấy từ `cursor` của lần trước), phân trang đường server bằng `lastMsgId`. Trường `source` trong kết quả cho biết dữ liệu đến từ `"cache"` hay `"server"`.
+Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức toàn bộ những gì `mcp start`/`listen` đã lưu và những gì `zalo-agent sync` / `sync-mobile` đã khôi phục từ điện thoại (có thể là toàn bộ lịch sử) — chỉ khi cache không có gì cho thread đó mới hỏi server Zalo. Phân trang cache bằng `before` (epoch ms, lấy từ `cursor` của lần trước), phân trang đường server bằng `lastMsgId`. Trường `source` trong kết quả cho biết dữ liệu đến từ `"cache"` hay `"server"`.
 
 > Vì sao cache trước: trên các account hiện tại, Zalo trả về **rỗng** cho yêu cầu lịch sử qua socket (cmd 510/511) — chính Zalo Web cũng vậy rồi fallback sang `transfer-sync-v2`. Bản trước chỉ hỏi server nên tool này gần như luôn trả 0 tin, trong khi `zalo-agent msg history` đọc cùng một cache và trả về đầy đủ.
 
@@ -274,7 +274,7 @@ MCP server chỉ expose **7 tool cho tài khoản cá nhân**. Mọi thứ còn 
 | Hồ sơ (11 lệnh) | — | `zalo-agent --json profile …` |
 | Khảo sát, nhắc nhở, trả lời tự động, tin nhắn nhanh, nhãn, catalog | — | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
-| Khôi phục lịch sử từ điện thoại | — | `zalo-agent sync-mobile --transfer` (ping điện thoại, cần xác nhận một lần) |
+| Khôi phục lịch sử từ điện thoại | — | `zalo-agent sync` hoặc `zalo-agent sync-mobile` (ping điện thoại, cần xác nhận một lần; không cần dừng `mcp start`) |
 | Đọc lịch sử từ cache cục bộ | `zalo_get_history` (fetch live từ server) | `zalo-agent --json msg history <id>` (đọc `zalo.db`) |
 | Official Account (32 lệnh) | — | `zalo-agent --json oa …` |
 

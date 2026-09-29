@@ -360,7 +360,7 @@ self-heal" note in `src/commands/listen.js`.
 There used to be three folder layouts for the same conversation, depending on which command
 fetched it. `src/core/media-downloader.js` and `src/mcp/media-downloader.js` are both deleted;
 `src/core/sync-v2/media.js` is the only downloader left, and everything routes through it —
-`listen`, `msg history`, `mcp start`, `sync-media`, `sync-mobile --transfer`, and the MCP tools.
+`listen`, `msg history`, `mcp start`, `sync`, `sync-media`, `sync-mobile`, and the MCP tools.
 
 Destination is `<accountDir>/media/<threadId>/` with filenames
 `<YYYY-MM-DD-HH-mm>_<msgIdTail>[_n]_<name>.<ext>` (`destPath()` in that module).

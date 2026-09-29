@@ -478,15 +478,15 @@ Each scenario: user prompt → expected step-by-step reasoning → validation cr
 
 **Expected reasoning:**
 1. Messages missed while disconnected aren't in the WebSocket stream
-2. **`zalo-agent sync-mobile --transfer` is the answer** — it restores history from the phone into `zalo.db` (transfer-sync-v2)
+2. **`zalo-agent sync --from <YYYY-MM-DD>` is the answer** — that is the exact command `listen` itself prints when it reports the gap. `sync-mobile` restores messages alone; `sync` runs that plus reactions, conversation state, boards, zCloud and media
 3. Say up front that the phone **will** show a sync request and the owner must tap **"ĐỒNG BỘ NGAY"** — that is how the command works, not a malfunction. One tap covers the whole run
-4. It needs `daemon.lock`, so stop `listen` first; Zalo's one-web-session rule also means it closes a browser Zalo Web session on the same account
+4. **Do not stop the daemon.** A running `listen`/`mcp` publishes a sync channel and the restore runs on its socket, so live capture continues throughout. Stopping it would open a fresh gap — the very thing being repaired. Zalo's one-web-session rule still means a browser Zalo Web session is evicted
 5. Afterwards read the messages with `zalo-agent msg history <threadId>` (served from the cache)
-6. `--wait <seconds>` bounds each phase (floored at 180s under `--transfer`); `--force` skips the one-hour "already synced" debounce
-7. Mention the caveats honestly: bare `sync-mobile` (no flag) is a server-side probe that usually returns empty and never contacts the phone; `--legacy` is a retired endpoint that recovers nothing; conversations with non-friends and OAs may land under an opaque id rather than a real name
+6. `--wait <seconds>` bounds each phase (default 30s, floored at 180s on the restore path); `--force` skips the one-hour "already synced" debounce
+7. Mention the caveats honestly: the phone-backed restore is the **default**, so `--transfer` is accepted but does nothing; `--socket` opts out to the old server probe that usually returns empty; `--legacy` reaches for `pull_mobile_msg`/`get_crossdb`, still shipped in Zalo Web's bundle but empty when called; conversations with non-friends and OAs may land under an opaque id rather than a real name
 
-**Must include:** `sync-mobile --transfer`, the phone confirmation prompt, stopping `listen` first, `msg history` to read the result
-**Must NOT:** Claim the gap is unrecoverable, recommend bare `sync-mobile` or `--legacy` as the fix, present the phone prompt as a bug or something to avoid, or promise `--transfer` works without the owner tapping the phone
+**Must include:** `sync --from <date>` (or `sync-mobile`), the phone confirmation prompt, that **no daemon needs stopping**, `msg history` to read the result
+**Must NOT:** Claim the gap is unrecoverable, tell the user to stop `listen` first, recommend `--socket` or `--legacy` as the fix, present the phone prompt as a bug or something to avoid, or promise the restore works without the owner tapping the phone
 
 ---
 

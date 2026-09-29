@@ -38,7 +38,7 @@ zalo-agent whoami                # Full profile of the logged-in user
 zalo-agent logout                # Invalidate the session server-side, keep credentials
 zalo-agent logout --delete-history  # ...and delete the local chat cache (zalo.db + media)
 zalo-agent logout --purge        # ...and wipe all local data + credentials + registry entry
-zalo-agent sync-mobile --transfer # Restore full history from the phone into zalo.db (one confirm)
+zalo-agent sync                  # Restore everything from the phone into zalo.db (one confirm)
 zalo-agent sync-media             # Re-run/resume the media fetch on its own (no phone confirm)
 zalo-agent sync-media --prune 90  # Free disk: delete downloaded media older than 90 days (keeps text)
 zalo-agent update                # Self-update to the latest published version
@@ -125,13 +125,12 @@ zalo-agent sync --plan                       # ...show which stages would run an
 zalo-agent sync --no-messages                # ...everything except the phone prompt
 zalo-agent sync-reactions                    # Reaction backlog only (cmd 610/611) — no phone needed
 zalo-agent msg history <ID> -n 50      # Reads from ~/.zalo-agent-cli/accounts/<ownId>/zalo.db
-zalo-agent sync-mobile --transfer            # REAL restore: pulls your history from the phone into zalo.db (one confirm on the phone)
-zalo-agent sync-mobile --transfer --days 30  # ...only the last 30 days (default is ALL history, no date floor)
-zalo-agent sync-mobile --transfer --from 2018-01-01  # ...everything from an explicit date onward
+zalo-agent sync-mobile --days 30             # ...only the last 30 days (default is ALL history, no date floor)
+zalo-agent sync-mobile --from 2018-01-01     # ...everything from an explicit date onward
 zalo-agent sync-mobile                       # Phone-backed history restore — prompts your phone ONCE
 zalo-agent sync-mobile --socket              # Old server probe instead (usually empty; no phone contact)
 zalo-agent sync-mobile --force               # Skip the "already synced recently" debounce
-zalo-agent sync-mobile --transfer --messages-only    # ...history only, skip the media fetch
+zalo-agent sync-mobile --messages-only       # ...history only, skip the media fetch
 zalo-agent sync-media                        # Re-run/resume the media fetch on its own — no phone needed
 zalo-agent sync-media --kind photo,video --dry-run   # ...plan the fetch without touching the network
 zalo-agent sync-boards                       # Notes, pinned messages, polls, reminders — NOT in the message stream
@@ -144,13 +143,13 @@ zalo-agent sync-media --prune-orphans        # ...media of conversations the acc
 zalo-agent sync-media --include-pruned       # Re-fetch media you previously pruned
 zalo-agent conv forget <threadId>            # Remove ALL local data for one conversation
 zalo-agent conv forget --orphans             # ...for every conversation the account no longer has
-zalo-agent sync-mobile --legacy              # Retired endpoint (pings the phone, one attempt, recovers nothing)
+zalo-agent sync-mobile --legacy              # Legacy endpoint: one attempt, pings the phone, recovers nothing
 ```
-**`sync-mobile --transfer` is the working full-history restore** (transfer-sync-v2, socket cmd 590/591). It sends ONE sync request the owner confirms on their phone, enumerates every conversation, requests message history in shards of ≤30, decrypts with Zalo's `libzproto` WASM (fetched+cached from Zalo's CDN on first run), decodes protobuf, maps each opaque conversation id to the real numeric threadId + name via the friend/group lists, and writes to `zalo.db`. The phone is the data source, so it **must** show a confirmation prompt — tap it. Non-friend/OA conversations may stay keyed by an opaque id. **A running `listen`/`mcp` daemon no longer has to be stopped** — the restore runs on that daemon's socket over its loopback channel, with live capture continuing throughout; with no daemon up it takes `daemon.lock` itself. Zalo's one-web-session rule applies either way, and so does the phone tap.
+**`sync-mobile` is the working full-history restore** (transfer-sync-v2, socket cmd 590/591). It sends ONE sync request the owner confirms on their phone, enumerates every conversation, requests message history in shards of ≤30, decrypts with Zalo's `libzproto` WASM (fetched+cached from Zalo's CDN on first run), decodes protobuf, maps each opaque conversation id to the real numeric threadId + name via the friend/group lists, and writes to `zalo.db`. The phone is the data source, so it **must** show a confirmation prompt — tap it. Non-friend/OA conversations may stay keyed by an opaque id. **A running `listen`/`mcp` daemon no longer has to be stopped** — the restore runs on that daemon's socket over its loopback channel, with live capture continuing throughout; with no daemon up it takes `daemon.lock` itself. Zalo's one-web-session rule applies either way, and so does the phone tap.
 
-`--days <n>` narrows the restore to the last *n* days; the default is full history (everything since 2024-01-01). The window applies to the conversation round as well, so a short window means fewer conversations, fewer shards and a much shorter run. It requires `--transfer`. The debounce records how far back the last run reached, so a narrow sync never suppresses a wider one.
+`--days <n>` narrows the restore to the last *n* days; the default is full history, with no date floor. The window applies to the conversation round as well, so a short window means fewer conversations, fewer shards and a much shorter run. The debounce records how far back the last run reached, so a narrow sync never suppresses a wider one.
 
-`sync-mobile` IS the phone-backed restore now — `--transfer` is still accepted but does nothing, so older commands and docs keep working. `--socket` asks for the best-effort server backfill (cmd 510/511) that usually returns empty. The old phone-to-PC transfer is retired — see `--legacy`.
+`sync-mobile` IS the phone-backed restore now — `--transfer` is still accepted but does nothing, so older commands and docs keep working. `--socket` asks for the best-effort server backfill (cmd 510/511) that usually returns empty. The old phone-to-PC transfer (`pull_mobile_msg`/`get_crossdb`) is still shipped in Zalo Web's own bundle, but it answers empty here — see `--legacy`.
 
 ### Friends
 ```bash
@@ -247,7 +246,7 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 | Friends, groups, conversations, profile | **none** | `zalo-agent --json friend\|group\|conv\|profile …` |
 | Polls, reminders, auto-reply, quick-msg, labels, catalog | **none** | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Multi-account, devices, export | **none** | `zalo-agent --json account …` |
-| Restore history from the phone | **none** | `zalo-agent sync-mobile --transfer` (prompts the phone; not `--json`-friendly — it streams progress) |
+| Restore history from the phone | **none** | `zalo-agent sync` or `zalo-agent sync-mobile` (prompts the phone; not `--json`-friendly — it streams progress) |
 | Read cached history | `zalo_get_history` (live server fetch) | `zalo-agent --json msg history <id>` (reads `zalo.db`) |
 | Official Account (all 32 commands) | **none** | `zalo-agent --json oa …` |
 
@@ -279,7 +278,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - Mentions only in groups (`-t 1`)
 - QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting out the 60s timeout
 - `sync-mobile` is the real history restore and is now the default path; it deliberately prompts the phone once (that is the data source). `--socket` and `--legacy` do not restore history and never prompt.
-- `--transfer` restores full history by default. Suggest `--days <n>` when the user only needs recent messages — on a busy account that is the difference between ~50 message rounds and a handful
+- `sync-mobile` restores full history by default. Suggest `--days <n>` when the user only needs recent messages — on a busy account that is the difference between ~50 message rounds and a handful
 - 1 proxy per account recommended (shared proxies risk a ban)
 - Credentials: `~/.zalo-agent-cli/` (personal, 0600) and `~/.zalo-agent/` (OA, 0600) — different directories
 - Per-account data: `~/.zalo-agent-cli/accounts/<ownId>/` (`zalo.db`, `media/`, `sync/`, `daemon.lock`)

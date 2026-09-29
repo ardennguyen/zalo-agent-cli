@@ -79,11 +79,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **184** invokable leaves (152 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **16** | `src/index.js` | the `register*Commands` calls |
+| CLI commands | **190** invokable leaves (158 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **21** containers — 14 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **7** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **1388** as of 2026-09-29 (1384 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **1672** as of 2026-09-30 (1668 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -115,13 +115,36 @@ guessing those names silently drops OA's 32 commands and MCP's 1. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured at `a719c99` (2026-09-29): **184 leaves, 21 containers, 205 nodes**.
-By group: group 33, oa 32, friend 22, msg 18, conv 16, top-level 12, profile 11,
+Measured at `99d5a97` (2026-09-30): **190 leaves, 21 containers, 211 nodes**.
+By group: group 33, oa 32, friend 22, msg 20, conv 20, top-level 12, profile 11,
 catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, label 2,
-mcp 1. A separate audit confirmed zero drift between that live tree and the
+mcp 1. (Was 184 at `a719c99`, before `conv` gained pin/unpin/archive/unarchive
+and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
 trustworthy as the *contract* even though counting its string literals is not
 how you get the number.
+
+
+### Why AGENTS.md says to plant a sample in the leak check
+
+A check that only ever prints "clean" is indistinguishable from a broken one.
+It is the same green-check-hiding-a-problem shape as the four commands that had
+never once worked while every test passed: nothing in the output distinguishes
+"looked and found nothing" from "did not look". The leak check has three
+categories and a denylist it reads from disk, so it can degrade silently in at
+least two ways — a regex that no longer matches, and a terms file that is
+missing or empty. Planting one sample per category and confirming a non-zero
+exit is what separates those. `.agents/check-wiki-leaks.sh` exits 2 rather than
+0 when the terms file is absent for the same reason.
+
+### Four commands that had never once worked
+
+The crash-only-assertion rule in AGENTS.md section 12 comes from this: four
+commands were found in a single day to have never worked at all, each hidden
+the same way. This CLI reports an API failure as a printed `✗` and exits 0, so
+an assertion that only checks the process did not crash cannot tell a working
+command from one that fails on every invocation. Assert the success the command
+claims, not the absence of a stack trace.
 
 ---
 

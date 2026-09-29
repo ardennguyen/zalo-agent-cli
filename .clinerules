@@ -30,7 +30,7 @@ If you read nothing else, read these.
 8. **Re-read a file after writing it.** Concurrent agents work in this tree. → §5, §7
 9. **`skill/references/command-reference.md` wins** when docs disagree. → §10
 10. **Bilingual docs come in pairs.** Update both sides in the same change. → §3, §10
-11. **Only the listener and sync write to `zalo.db`.** No command writes rows on its own. → §13
+11. **Three writers to `zalo.db`: the listener, sync, and `msg history`'s fetch.** Nothing else writes rows. → §13
 
 ### First commands in a new session
 
@@ -210,7 +210,7 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**184**), command groups (**16**), MCP tools (**7**), OA commands (**32**), offline tests (**1656** as of 2026-09-30). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**190**), command groups (**21** containers), MCP tools (**7**), OA commands (**32**), offline tests (**1672** as of 2026-09-30). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
 **The MCP tool list in every doc must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`.
 
@@ -236,7 +236,7 @@ The same rule applies to anything else that gets published: npm READMEs, GitHub 
 
 **The check guards the working tree, which is why it runs *before* the push.** Once a term is pushed, deleting it in a later commit does not remove it — it stays in the public history and in every clone. Remediation at that point is history rewriting plus rotating whatever leaked, not a follow-up commit. Audit history with `git log --all -S'<term>'` (0 across both repos as of 2026-09-30).
 
-> Keep the script honest. A check that only ever prints "clean" is indistinguishable from a broken one — the same green-check-hiding-a-problem shape as the commands in [`docs/agent-notes.md`](docs/agent-notes.md) that had never worked while every test passed. After changing it, plant one sample per category in a scratch directory, confirm it exits 1, and delete them.
+> Keep the script honest: after changing it, plant one sample per category in a scratch directory, confirm it exits 1, and delete them. Why that matters: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 ---
 
@@ -260,8 +260,8 @@ The same rule applies to anything else that gets published: npm READMEs, GitHub 
 - **New tests go under `tests/`**: `unit/` pure logic and filesystem, `cli/` drives the binary, `e2e/` needs a live session. Pre-existing suites next to their module stay there; `npm test` globs both, so a count from one glob is wrong.
 - **Never** use real credentials, user IDs, or phone numbers. Offline tests import `tests/helpers/sandbox.js` **first** and assert `assertSandboxed(CONFIG_DIR)`. Real thread ids live only in gitignored `tests/targets.json`.
 - The live suite writes only to ids blessed disposable in `targets.json`; every write helper calls `assertDisposable()`. Gated behind `ZALO_TEST_LIVE=1`, unreachable from `npm test`, destructive tiers behind additive env gates.
-- **An assertion that only checks "did not crash" is not a test.** This CLI reports API failures as a printed `✗` and exits 0, so crash-only assertions cannot tell a working command from one that fails on every invocation. Four commands were found in one day to have never worked at all, each hidden this way. Assert the success the command claims.
-- **Before trusting a new assertion, say what would have to change for it to go red — and check that is the thing you care about.** Three tests written on 2026-09-29 were decorative and all three were caught only by deliberately breaking the code, never by review. They shared a shape: **the assertion matched a string the fix itself introduces**, so it proved the fix was present, not that it worked. One matched `response.cliMsgId =`, which also appears inside the helper that does the stamping — deleting every call site still passed. If an assertion greps for its own patch, it is testing the wrong thing.
+- **An assertion that only checks "did not crash" is not a test.** This CLI reports API failures as a printed `✗` and exits 0, so crash-only assertions cannot tell a working command from one that fails on every invocation. Assert the success the command claims.
+- **Before trusting a new assertion, say what would have to change for it to go red — and check that is the thing you care about.** **An assertion that matches a string the fix itself introduces** proves the fix is present, not that it works. If an assertion greps for its own patch, it is testing the wrong thing. Worked example: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 ---
 
@@ -272,12 +272,12 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
 - **Verify a write actually stuck** (re-read the file) after any edit in this tree. When a file looks wrong, rule out the mundane causes — ownership/ACLs, an external handler, an elevated shell — and ask, before recording anything as "cause unidentified".
 - **Never run `zalo-agent login` from an elevated shell.** It leaves credentials owned by `BUILTIN\Administrators`, after which `logout --purge` and `account remove` fail with `EPERM` while everything else looks fine.
 - **Line endings are pinned by `.gitattributes` — never work around it.** `tests/fixtures/** -text`, everything else LF. **Never "fix" a mangled fixture with `git add --renormalize .` or a broad `git add`** — that stages the corruption and breaks CI.
-- **One WebSocket per account — including uploads, `sync` and history scans.** `listen`, `mcp start`, `sync-mobile` and a browser Zalo Web session cannot coexist; a duplicate closes with code 3000. A running daemon publishes `daemon-channel.json` and serves uploads, sync stages and history on its own socket. **Never add a code path that opens a second listener without checking that file first** — `tests/unit/sync-socket-rules.test.js` and `listener-lifecycle-rules.test.js` enforce parts of this.
+- **One WebSocket per account — including uploads, `sync` and history scans.** `listen`, `mcp start` and a browser Zalo Web session cannot coexist; a duplicate closes with code 3000. A running daemon publishes `daemon-channel.json` and serves uploads, sync stages and history on its own socket. **Never add a code path that opens a second listener without checking that file first** — `tests/unit/sync-socket-rules.test.js` and `listener-lifecycle-rules.test.js` enforce parts of this.
   - **Keep `src/core/daemon-channel.js` a transport** — stage bodies belong in `daemon-sync.js`, or the whole SyncV2 stack loads on every `msg` invocation.
   - **A daemon-routed sync still taps the phone.** Routing removes the second WebSocket, not the confirmation. The daemon must never start a stage on its own.
 - **`listen` and `mcp start` are two entry points to the same socket. Any asymmetry between them is a defect.** Both track coverage gaps through `src/core/listener-lifecycle.js`; down-ness is observed, never inferred from a counter, and a deliberate stop is not a drop.
 - **One db writer per account**, enforced by `daemon.lock`.
-- **Only the listener and sync write message rows.** No command writes to `zalo.db` on its own — not even one that could do it correctly. A message you just sent is therefore not quotable, forwardable or recallable until the listener observes its echo; say that plainly rather than pointing users at a command that cannot seed it.
+- **Message rows have exactly three writers: the listener, sync, and `msg history`'s fetch** (insert-if-absent — it never modifies or removes a row already cached). Nothing else writes to `zalo.db`; `msg send` stores nothing, not even a looked-up name. A message you just sent is therefore not quotable, forwardable or recallable until the listener observes its echo or a later `msg history` fetch returns it; say that plainly rather than pointing users at a command that cannot seed it.
 - **Unofficial API.** `patches/` holds patch-package patches against zca-js, applied by `prepare` and shipped **inside the tarball** via `bundleDependencies` — never a consumer `postinstall`, which cannot reach a hoisted `zca-js`. Bumping `zca-js` means regenerating the patch *and* re-pinning the exact version; `tests/unit/packaging.test.js` enforces both.
 - **One media downloader, one layout.** `src/core/sync-v2/media.js` is the only one; everything writes to `accounts/<ownId>/media/<threadId>/`. **Folders are thread IDs, never names** — a name can carry a path separator and changes on rename. `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` overrides the root for the MCP server only.
   - **A custom `media.downloadDir` survives a purge** — `wipeAccountDir()` removes only `CONFIG_DIR/accounts/<ownId>`. Warned about in `Security.md` / `Bảo-Mật.md` and `INSTALLATION.md`; not fixed in code.

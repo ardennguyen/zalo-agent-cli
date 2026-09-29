@@ -312,6 +312,73 @@ describe("tier 1 · misc read-only surfaces", { skip }, () => {
         assert.equal(r.ok, true, r.error);
     });
 
+    // sticker-detail and sticker-category chain straight off the list above
+    // and need nothing the suite does not already hold, yet neither had any
+    // coverage. Both are pure reads.
+    it("msg sticker-detail and sticker-category resolve a sticker from the list", async () => {
+        const list = await readJson(["msg", "sticker-list", "hello"], live(T));
+        assert.equal(list.ok, true, list.error);
+        const first = (Array.isArray(list.data) ? list.data : (list.data?.items ?? []))[0];
+        if (!first) return; // Zalo returned no stickers for the keyword
+
+        const stickerId = String(first.id ?? first.stickerId ?? "");
+        if (stickerId) {
+            const detail = await readJson(["msg", "sticker-detail", stickerId], live(T));
+            assert.equal(detail.ok, true, detail.error);
+        }
+        const catId = String(first.cateId ?? first.categoryId ?? "");
+        if (catId) {
+            const cat = await readJson(["msg", "sticker-category", catId], live(T));
+            assert.equal(cat.ok, true, cat.error);
+        }
+    });
+
+    it("group members-info and pending respond for the disposable group", async () => {
+        const info = await readJson(["group", "members-info", T.group.memberIds[0]], live(T));
+        assert.equal(info.ok, true, info.error);
+
+        const pending = await readJson(["group", "pending", T.group.threadId], live(T));
+        assert.equal(pending.ok, true, pending.error);
+    });
+
+    it(
+        "friend last-online resolves for the DM target",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            const r = await readJson(["friend", "last-online", T.dm.threadId], live(T));
+            assert.equal(r.ok, true, r.error);
+        },
+    );
+
+    it("profile full-avatar and avatar-url respond", async () => {
+        const full = await readJson(["profile", "full-avatar", T.accountOwnId], live(T));
+        assert.equal(full.ok, true, full.error);
+
+        const url = await readJson(["profile", "avatar-url", T.accountOwnId], live(T));
+        assert.equal(url.ok, true, url.error);
+    });
+
+    // `group history` is a pure read against an endpoint this repo's own
+    // notes record as 404ing, and it is the REST fast path that
+    // `msg history -t 1` tries FIRST before falling through to the socket.
+    // Tier 1 already carries exactly this characterization pattern for
+    // `friend online` and `friend close`; without it here, nothing notices
+    // whether the endpoint comes back or stays dead.
+    it(
+        "group history returns messages",
+        { todo: "Zalo answers getGroupChatHistory with HTTP 404 — retired" },
+        async () => {
+            const r = await runJson(["group", "history", T.group.threadId, "-n", "5"], live(T, { timeout: 120_000 }));
+            assert.equal(r.ok, true, r.error);
+        },
+    );
+
+    it("CHARACTERIZATION: group history currently 404s", async () => {
+        const r = await runJson(["group", "history", T.group.threadId, "-n", "5"], live(T, { timeout: 120_000 }));
+        assert.equal(r.ok, false, "group history answered — promote the todo above and tell msg history");
+        assert.match(r.error, /404/);
+    });
+
     it("reminder list responds for the disposable group", async () => {
         const r = await readJson(["reminder", "list", "-t", "1", T.group.threadId], live(T));
         assert.equal(r.ok, true, r.error);

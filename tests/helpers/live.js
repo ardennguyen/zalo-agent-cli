@@ -5,13 +5,23 @@
  * Tier gating (see tests/README.md for the full rationale):
  *
  *   ZALO_TEST_LIVE=1          tiers 1–4 may run at all
- *   ZALO_TEST_DESTRUCTIVE=1   tier 5a/5b (group disperse+recreate, history wipe)
- *   ZALO_TEST_END_SESSION=1   tier 5c/5d (real logout / purge — needs a QR re-scan)
+ *   ZALO_TEST_DESTRUCTIVE=1   tiers 5a–5d: conversation wipe, group
+ *                             disperse+recreate, `logout --delete-history`,
+ *                             and `logout --no-remote --purge` (which deletes
+ *                             the credential file and restores it in an
+ *                             after() that does not run on Ctrl-C)
+ *   ZALO_TEST_END_SESSION=1   tier 5e only (a real server-side logout —
+ *                             needs a QR re-scan)
  *
  * Each flag is strictly additive, so a bare `npm test` can never reach a
- * network call, and a bare `npm run test:e2e` can never end the session.
+ * network call. Note what that does and does not promise: a bare
+ * `npm run test:e2e` cannot end the session, but `--destructive` touches
+ * credentials well before 5e. gate() reads these from the environment, and
+ * run-e2e.js deliberately strips all three before setting them from its own
+ * flags so an ambient value cannot silently unlock a tier.
  */
 
+import assert from "node:assert/strict";
 import { runCli, runJson, hasSuccess, errorLineOf } from "./cli.js";
 import { loadTargets, assertDisposable } from "./targets.js";
 
@@ -72,6 +82,38 @@ export async function probeSession(targets) {
         };
     }
     return { ok: true, ownId: String(r.data.ownId) };
+}
+
+/**
+ * Refuse to run a writing tier until we have confirmed WHICH account is
+ * logged in.
+ *
+ * probeSession() existed but had exactly one call site — tier 1 — and the
+ * group-name tripwire was likewise tier-1 only. gate() checks env flags and
+ * the shape of targets.json and never touches the network, and run-e2e.js
+ * supports `--tier 5` directly, so
+ *
+ *     node tests/run-e2e.js --tier 5 --destructive
+ *
+ * would run `conv delete`, `group disperse` and `logout --purge` having
+ * never confirmed the session belongs to the account in targets.json.
+ * assertDisposable() does not help: it guards thread ids and is blind to
+ * identity, and 5c/5d/5e are not thread-scoped at all.
+ *
+ * Memoised, so calling it from every tier's before() costs one round trip.
+ *
+ * @param {object} targets
+ */
+let _sessionOk = null;
+export async function assertSession(targets) {
+    if (_sessionOk === true) return;
+    const probe = await probeSession(targets);
+    assert.ok(
+        probe.ok,
+        `refusing to run a writing tier: ${probe.reason}. ` +
+            `targets.json expects account ${targets.accountOwnId} in home ${targets.home}.`,
+    );
+    _sessionOk = true;
 }
 
 /**

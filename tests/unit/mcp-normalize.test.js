@@ -9,6 +9,12 @@
  * `classifyLiveMessage` with the listener and the mobile sync, so one
  * vocabulary covers every path.
  */
+// sandbox.js FIRST: it redirects HOME/USERPROFILE before
+// credentials.js freezes CONFIG_DIR at module-eval time. This file
+// reaches that module transitively, so without the redirect it binds
+// to the real ~/.zalo-agent-cli/. Enforced by
+// tests/cli/sandbox-discipline.test.js.
+import "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeMessage } from "../../src/commands/mcp.js";

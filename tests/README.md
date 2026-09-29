@@ -12,7 +12,7 @@ separate suites with very different risk profiles:
 opens a socket and never reads your real `~/.zalo-agent-cli/`.
 
 ```bash
-npm test                      # 1345 offline tests — no Zalo session needed
+npm test                      # 1366 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -50,14 +50,25 @@ tests/
 │   ├── cli.js                   # subprocess harness (runCli / runJson)
 │   ├── targets.js               # disposable-target registry + blast-radius guard
 │   └── live.js                  # session probe, tier gates, write helpers
-├── unit/                        # offline, pure logic + filesystem
-│   ├── accounts.test.js         credentials.test.js   lock.test.js
-│   ├── db.test.js               mcp-config.test.js    oa-client.test.js
-│   ├── image-metadata.test.js   pure-helpers.test.js
-│   └── sync-backfill.test.js    sync-freshness.test.js  sync-v2-decode.test.js
+├── unit/                        # offline, pure logic + filesystem (40 files)
+│   ├── accounts.test.js              credentials.test.js           daemon-channel.test.js
+│   ├── db.test.js                    image-metadata.test.js        live-store.test.js
+│   ├── lock.test.js                  mcp-config.test.js            mcp-normalize.test.js
+│   ├── mcp-tools.test.js             mentions.test.js              msg-forward.test.js
+│   ├── oa-client.test.js             output-latch.test.js          parse-options.test.js
+│   ├── pure-helpers.test.js          qr-display.test.js            quote-sender.test.js
+│   ├── security-surfaces.test.js     send-client-id.test.js        sync-backfill.test.js
+│   ├── sync-freshness.test.js        sync-gap-advice.test.js       sync-live-parity.test.js
+│   ├── sync-poll-status.test.js      sync-socket-rules.test.js     sync-v2-board.test.js
+│   ├── sync-v2-conv-state.test.js    sync-v2-decode.test.js        sync-v2-keepalive.test.js
+│   ├── sync-v2-media.test.js         sync-v2-message-types.test.js  sync-v2-plan.test.js
+│   ├── sync-v2-reactions.test.js     sync-v2-restore-success.test.js  sync-v2-resume.test.js
+│   ├── sync-v2-window.test.js        sync-v2-zcloud.test.js        thread-type.test.js
+│   └── zca-api-surface.test.js
 ├── cli/                         # offline, drives the real binary
 │   ├── surface.test.js          # every command/subcommand/flag is registered
-│   └── validation.test.js       # every guard that fires before a network call
+│   ├── validation.test.js       # every guard that fires before a network call
+│   └── sandbox-discipline.test.js  # no offline test may touch the real ~/.zalo-agent-cli/
 └── e2e/                         # live, tiered — see below
     ├── tier1-readonly.test.js         tier2-create.test.js
     ├── tier3-mutate-restore.test.js   tier4-cleanup.test.js
@@ -293,8 +304,15 @@ created or destroyed. It asserts the group's _name_ matches `targets.json`,
 which is the tripwire for a stale config pointing at someone else's group.
 
 **Tier 2 — send & create.** Adds only: messages, polls, reminders, a group
-note, a quick message, an auto-reply rule, a catalog. Every created id is
-recorded in `tests/.artifacts.json` for tier 4 to clean up. Running tier 2
+note, a quick message, an auto-reply rule, a catalog. Nearly every created
+id is recorded in `tests/.artifacts.json` for tier 4 to clean up — the
+exceptions are **polls and the pinned group note, which no command in the
+product can delete**. zca-js exposes `createPoll` / `lockPoll` / `vote` /
+`unvote` / `share` / `addOptions` / `getPollDetail` and no delete, and
+`group` has `note-create` / `note-edit` and no delete. Tier 4 therefore
+_locks_ the polls it finds (the same end state tier 3 settles for) and the
+only thing that truly removes them is tier 5b's disperse-and-recreate.
+Running tier 2
 without tier 4 deliberately leaves visible artifacts — a half-run should be
 obvious, not silent.
 

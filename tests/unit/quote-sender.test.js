@@ -68,16 +68,35 @@ describe("resolveQuoteSender turns a noised id into the real uid", () => {
     });
 
     it("reports what to do when the id cannot be decoded", async () => {
-        // getAllFriends/getAllGroups are what resolveNonFriendDms reaches for;
-        // an api that answers nothing makes the lookup come back empty.
+        // The fake must be complete enough that the lookup FAILS for the
+        // reason under test.
+        //
+        // This previously listed only getAllFriends/getAllGroups, which the
+        // comment said resolveNonFriendDms "reaches for" — it does not.
+        // gid.js calls makeGidDecrypt(api), which calls api.getContext().
+        // A fake without it threw a TypeError that gid.js's own try/catch
+        // swallowed, so the lookup came back empty for the wrong reason and
+        // every line of the batching and merge body went unexecuted while
+        // this assertion still passed. Deleting that entire body would not
+        // have failed the test.
+        let contextAsked = false;
         const api = {
             zpwServiceMap: { profile: ["https://example.invalid"] },
+            getContext: () => {
+                contextAsked = true;
+                // Enough shape for zca-js's apiFactory; the request itself
+                // still cannot succeed against an invalid host, which is the
+                // outcome this test is about.
+                return { imei: "test-imei", cookie: "", userAgent: "test", secretKey: "" };
+            },
             getAllFriends: async () => [],
             getAllGroups: async () => ({ gridVerMap: {} }),
             getUserInfo: async () => ({}),
         };
         const quote = { uidFrom: NOISED };
         const out = await resolveQuoteSender(quote, api);
+
+        assert.ok(contextAsked, "the decrypt path was never reached — the fake is too thin again");
         assert.ok(out.error, "an unresolvable sender must not be sent — the server rejects it");
         assert.match(out.error, /msg history/, "the error has to name the way out");
         assert.equal(quote.uidFrom, NOISED, "a failed resolve must leave the quote untouched");

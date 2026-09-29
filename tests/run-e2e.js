@@ -14,13 +14,19 @@
  *   node tests/run-e2e.js                 # tiers 1–4
  *   node tests/run-e2e.js --tier 1        # one tier
  *   node tests/run-e2e.js --through 3     # tiers 1–3
- *   node tests/run-e2e.js --destructive   # tiers 1–5c
- *   node tests/run-e2e.js --end-session   # tiers 1–5d  (QR re-scan needed!)
+ *   node tests/run-e2e.js --destructive   # tiers 1–5d  (see below)
+ *   node tests/run-e2e.js --end-session   # tiers 1–5e  (QR re-scan needed!)
+ *
+ * --destructive reaches further than its name suggests. It unlocks 5a-5d,
+ * which includes `logout --no-remote --delete-history` and
+ * `logout --no-remote --purge` plus a deliberate unlink of the credential
+ * file. Those are recoverable only via an after() hook that does NOT run on
+ * Ctrl-C. Only 5e (a real server-side logout) needs --end-session.
  *   node tests/run-e2e.js --keep-going    # don't stop at the first failing tier
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadTargets } from "./helpers/targets.js";
@@ -60,12 +66,29 @@ if (!configured) {
     process.exit(2);
 }
 
-const env = {
-    ...process.env,
-    ZALO_TEST_LIVE: "1",
-    ...(destructive ? { ZALO_TEST_DESTRUCTIVE: "1" } : {}),
-    ...(endSession ? { ZALO_TEST_END_SESSION: "1" } : {}),
-};
+// The gates are decided by the FLAGS on this command line and by nothing
+// else. Spreading process.env first and then conditionally adding could only
+// ever turn a gate ON: an ambient `ZALO_TEST_END_SESSION=1` left in the shell
+// passed straight through to the tier-5 child and opened the real
+// `logout` / `logout --purge` tests, while the banner below — which keys off
+// the flag variable, not the environment — printed no warning at all. Same
+// hole for ZALO_TEST_DESTRUCTIVE with `--tier 5`.
+//
+// So: strip all three, then set them from the parsed flags, and say out loud
+// when an inherited value was discarded.
+const GATE_VARS = ["ZALO_TEST_LIVE", "ZALO_TEST_DESTRUCTIVE", "ZALO_TEST_END_SESSION"];
+const inherited = GATE_VARS.filter((k) => process.env[k] !== undefined);
+
+const env = { ...process.env };
+for (const k of GATE_VARS) delete env[k];
+env.ZALO_TEST_LIVE = "1";
+if (destructive) env.ZALO_TEST_DESTRUCTIVE = "1";
+if (endSession) env.ZALO_TEST_END_SESSION = "1";
+
+const ignored = inherited.filter((k) => env[k] === undefined);
+if (ignored.length) {
+    console.log(`  ⚠  ignoring inherited ${ignored.join(", ")} — gates come from this command's flags only`);
+}
 
 console.log("\n" + "═".repeat(72));
 console.log("  zalo-agent-cli — live E2E");
@@ -120,5 +143,35 @@ for (const r of results) {
 const notRun = selected.filter((t) => !results.some((r) => r.tier === t.n));
 for (const t of notRun) console.log(`  ·  tier ${t.n} · ${t.label.padEnd(24)} not run`);
 console.log("═".repeat(72) + "\n");
+
+// Tier 4 is where the DM recall lives, and tier 3 is the flakiest tier by
+// this suite's own account. A tier-2 or tier-3 failure therefore strands
+// every message tier 2 sent — including the ones in a REAL PERSON's chat —
+// and the only trace was a quiet "not run" line in the table above, which
+// reads like a skipped step rather than abandoned debris.
+//
+// The ledger is the evidence: tier 4 deletes it in its after(), so if it
+// still exists, cleanup did not happen.
+const ledger = resolve(HERE, ".artifacts.json");
+const tier4Ran = results.some((r) => r.tier === 4);
+if (existsSync(ledger) && !tier4Ran) {
+    let pending = { messages: [] };
+    try {
+        pending = JSON.parse(readFileSync(ledger, "utf-8"));
+    } catch {
+        // A corrupt ledger still means uncleaned artifacts.
+    }
+    const msgs = pending.messages ?? [];
+    const dmCount = targets.dm ? msgs.filter((m) => String(m.threadId) === targets.dm.threadId).length : 0;
+
+    console.error("  !! MANUAL CLEANUP REQUIRED — tier 4 did not run, so nothing was recalled.");
+    console.error(`     ${msgs.length} message(s) still sent, ${dmCount} of them in the DM (${targets.dm?.name}).`);
+    console.error(
+        `     Artifacts: ${(pending.polls ?? []).length} poll(s), ${(pending.reminders ?? []).length} reminder(s), ` +
+            `${(pending.catalogs ?? []).length} catalog(s), ${(pending.quickMsgs ?? []).length} quick message(s).`,
+    );
+    console.error(`     Ledger: ${ledger}`);
+    console.error("     Recover with:  node tests/run-e2e.js --tier 4\n");
+}
 
 process.exit(failed ? 1 : 0);

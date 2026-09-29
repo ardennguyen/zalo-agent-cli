@@ -18,18 +18,57 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { runCli, runJson, hasSuccess, errorLineOf } from "../helpers/cli.js";
-import { gate, live, sleep, assertDisposable } from "../helpers/live.js";
+import { gate, live, sleep, assertDisposable, retryRead, assertSession } from "../helpers/live.js";
 
 const g = gate(3);
 const skip = g.run ? false : g.skipReason;
 const T = g.targets;
 
-/** Run a CLI command and assert it neither crashed nor printed an error. */
-async function ok(args, label, timeout = 120_000) {
+// Confirm WHICH account is logged in before this tier writes anything.
+// gate() only reads env flags and targets.json; nothing else verified the
+// session, so `--tier N` could drive a stranger's account.
+before(async () => {
+    if (!g.run) return;
+    await assertSession(T);
+});
+
+/**
+ * Run a live CLI command and assert it actually SUCCEEDED.
+ *
+ * The previous version of this helper was a provable no-op and every call
+ * site below inherited it. Both of its assertions were constants:
+ *
+ *   - `r.stdout.trim().length > 0` can never be false. `runCli` does not pass
+ *     `--json`, and src/index.js prints the unofficial-API disclaimer through
+ *     warning(), which writes to STDOUT. There is always output.
+ *   - `/at Command\.|Unhandled|at getApi/` can never match. Every action
+ *     handler is `try { … } catch (e) { error(e.message) }`, and error()
+ *     prints `  ✗ <msg>` with no stack trace.
+ *
+ * So all 19 call sites — including the *restore* halves of mute/unmute,
+ * read/unread and auto-delete — passed whether or not the command worked.
+ * A silently failing `conv auto-delete off` would leave a real person's DM
+ * on a server-side 7-day message-destruction TTL with the suite green.
+ *
+ * @param {string[]} args
+ * @param {string} label
+ * @param {object} [opts]
+ * @param {RegExp} [opts.allowError] - error text that is a legitimate refusal
+ *   rather than a failure (e.g. `conv hide` on an account with no hidden-chat
+ *   PIN). Anything else still fails.
+ * @param {number} [opts.timeout]
+ * @returns {Promise<{ok: boolean, refused: string|null, raw: object}>}
+ */
+async function ok(args, label, { allowError = null, timeout = 120_000 } = {}) {
     const r = await runCli(args, live(T, { timeout }));
     assert.doesNotMatch(r.all, /at Command\.|Unhandled|at getApi/, `${label} crashed: ${r.all.slice(0, 300)}`);
-    assert.ok(hasSuccess(r.stdout) || r.stdout.trim().length > 0, `${label} produced no output`);
-    return r;
+
+    const err = errorLineOf(r.stdout);
+    if (err && allowError && allowError.test(err)) return { ok: false, refused: err, raw: r };
+
+    assert.equal(err, null, `${label} failed: ${err}`);
+    assert.ok(hasSuccess(r.stdout), `${label} did not report success: ${r.stdout.slice(0, 300)}`);
+    return { ok: true, refused: null, raw: r };
 }
 
 describe("tier 3 · conversation mute", { skip }, () => {
@@ -57,13 +96,26 @@ describe("tier 3 · conversation mute", { skip }, () => {
 // single restoring `after()` so an abort mid-block still puts the DM back
 // — it is a real person's thread, not a disposable group.
 describe("tier 3 · DM conversation toggles", { skip: skip || (T?.dm ? false : "no DM target configured") }, () => {
+    // These restores used to be four bare runCli() calls whose results were
+    // discarded — runCli never rejects, so a restore that failed on every
+    // invocation was invisible. The auto-delete one is the sharp edge: `7d`
+    // maps to a real server-side TTL on a REAL PERSON's thread, so a silently
+    // failed "off" quietly deletes their messages a week later.
     after(async () => {
         if (!g.run || !T?.dm) return;
-        // Best-effort restore of every toggle this block touches.
-        await runCli(["conv", "unmute", "-t", "0", T.dm.threadId], live(T));
-        await runCli(["conv", "unhide", "-t", "0", T.dm.threadId], live(T));
-        await runCli(["conv", "auto-delete", "-t", "0", T.dm.threadId, "off"], live(T));
-        await runCli(["conv", "read", "-t", "0", T.dm.threadId], live(T));
+        const failures = [];
+        for (const [args, label] of [
+            [["conv", "unmute", "-t", "0", T.dm.threadId], "unmute"],
+            [["conv", "unhide", "-t", "0", T.dm.threadId], "unhide"],
+            [["conv", "auto-delete", "-t", "0", T.dm.threadId, "off"], "auto-delete off"],
+            [["conv", "read", "-t", "0", T.dm.threadId], "read"],
+        ]) {
+            const r = await runCli(args, live(T));
+            const err = errorLineOf(r.stdout);
+            // unhide on a thread that was never hidden is a no-op refusal.
+            if (err && !/not hidden|pin|chưa/i.test(err)) failures.push(`${label}: ${err}`);
+        }
+        assert.deepEqual(failures, [], `DM left mutated — these restores failed: ${failures.join(" | ")}`);
     });
 
     it("mutes and unmutes the DM", async () => {
@@ -82,9 +134,15 @@ describe("tier 3 · DM conversation toggles", { skip: skip || (T?.dm ? false : "
         await ok(["conv", "read", "-t", "0", T.dm.threadId], "dm read again");
     });
 
+    // Hiding needs the account's hidden-conversations PIN. No PIN is a clean
+    // refusal, not a failure — but it must be an EXPLICIT allowance, not the
+    // blanket "any output counts" the old ok() gave every call site.
     it("hides and unhides the DM", async () => {
         assertDisposable(T.dm.threadId, "conv hide");
-        await ok(["conv", "hide", "-t", "0", T.dm.threadId], "dm hide");
+        const hidden = await ok(["conv", "hide", "-t", "0", T.dm.threadId], "dm hide", {
+            allowError: /pin|chưa đặt|not set/i,
+        });
+        if (!hidden.ok) return; // no PIN on this account — nothing to unhide
         await sleep(400);
         await ok(["conv", "unhide", "-t", "0", T.dm.threadId], "dm unhide");
     });
@@ -197,23 +255,51 @@ describe("tier 3 · friend alias", { skip: skip || (T?.dm ? false : "no DM targe
     });
 });
 
+// This block destroyed the account owner's real bio, on every run, behind
+// the same gate that unlocks read-only tier 1.
+//
+// It captured the "current" bio by scraping human-mode stdout with
+// `match(/●\s*(.*)$/m)`. Without /g that returns the FIRST match, and the
+// first `●` line is not the bio — src/index.js runs autoLogin() for every
+// non-login command, which emits `  ● Auto-login: <display name>` before
+// `profile bio` prints its own `  ● Bio: …`. So `original` became the
+// account's own name, and after() wrote THAT back as the "restore". The
+// genuine bio was never captured by any run, so it was unrecoverable.
+//
+// Read it as JSON instead, and refuse to touch the bio at all unless the
+// prior value was read cleanly — `profile bio [text]` accepts an empty
+// argument and will blank a real bio, so defaulting to "" on a failed read
+// is itself destructive.
 describe("tier 3 · profile bio", { skip }, () => {
-    let original = "";
+    let original = null; // null = never captured; "" = genuinely empty
     let changed = false;
 
     after(async () => {
         if (!g.run || !changed) return;
-        await runCli(["profile", "bio", original], live(T));
+        if (original === null) {
+            console.error("\n!! MANUAL ACTION REQUIRED: the bio was changed but the original was never captured.\n");
+            return;
+        }
+        const back = await runJson(["profile", "bio", original], live(T));
+        // The restore is the whole point of the block, so assert it landed.
+        assert.equal(back.ok, true, `bio restore failed — bio may still read the test value: ${back.error}`);
     });
 
     it("updates the bio and restores the previous value", async () => {
-        const before = await runCli(["profile", "bio"], live(T));
-        const m = before.stdout.match(/●\s*(.*)$/m);
-        original = m ? m[1].trim() : "";
+        const before = await runJson(["profile", "bio"], live(T));
+        assert.equal(before.ok, true, `could not read the current bio, refusing to overwrite it: ${before.error}`);
 
-        const r = await runCli(["profile", "bio", "e2e temporary status"], live(T));
-        assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-        if (hasSuccess(r.stdout)) changed = true;
+        // `profile bio` with no argument renders an empty bio as the literal
+        // string "(empty)" (src/commands/profile.js:102). Writing that back
+        // would set the bio to those seven characters.
+        const raw = typeof before.data?.bio === "string" ? before.data.bio : null;
+        assert.notEqual(raw, null, `bio read returned no 'bio' field: ${JSON.stringify(before.data).slice(0, 200)}`);
+        original = raw === "(empty)" ? "" : raw;
+
+        const r = await runJson(["profile", "bio", "e2e temporary status"], live(T));
+        assert.equal(r.ok, true, r.error);
+        changed = true;
+        assert.equal(r.data?.bio ?? r.data?.requested, "e2e temporary status");
     });
 });
 
@@ -263,13 +349,35 @@ describe("tier 3 · group rename", { skip }, () => {
 });
 
 describe("tier 3 · group settings", { skip }, () => {
-    after(async () => {
+    // This used to write ASSUMED defaults — "--no-lock-poll --no-lock-post
+    // --no-sign-admin" — without ever reading what the group's settings
+    // actually were, and discarded the result. If the owner had deliberately
+    // locked posts, the suite silently unlocked them. Capture first, restore
+    // to the captured values, and assert the restore landed.
+    let priorSettings = null;
+
+    before(async () => {
         if (!g.run) return;
-        // Restore the permissive defaults.
-        await runCli(
-            ["group", "settings", T.group.threadId, "--no-lock-poll", "--no-lock-post", "--no-sign-admin"],
+        const info = await retryRead(() => runJson(["group", "info", T.group.threadId], live(T)));
+        priorSettings = info.ok ? (info.data?.gridInfoMap?.[T.group.threadId]?.setting ?? null) : null;
+    });
+
+    after(async () => {
+        if (!g.run || !priorSettings) return;
+        const flag = (on, name) => (on ? `--${name}` : `--no-${name}`);
+        const r = await runCli(
+            [
+                "group",
+                "settings",
+                T.group.threadId,
+                flag(priorSettings.lockCreatePoll, "lock-poll"),
+                flag(priorSettings.lockCreatePost, "lock-post"),
+                flag(priorSettings.signAdminMsg, "sign-admin"),
+                flag(priorSettings.blockName, "block-name"),
+            ],
             live(T, { timeout: 120_000 }),
         );
+        assert.equal(errorLineOf(r.stdout), null, `group settings not restored: ${r.all.slice(0, 300)}`);
     });
 
     it("toggles a setting on and back off", async () => {
@@ -289,18 +397,34 @@ describe("tier 3 · group settings", { skip }, () => {
     });
 });
 
+// This was the only mutating block in the tier with no after(). The
+// link-info assertion sits BETWEEN enable and disable, and link-info is on
+// the set of endpoints this suite documents as intermittently 404/5xx — so
+// one blip aborted the test with the group's PUBLIC JOIN LINK left enabled,
+// and nothing later turned it off. The restore now lives in after(), guarded
+// so it only fires if enable actually succeeded.
 describe("tier 3 · group invite link", { skip }, () => {
+    let enabled = false;
+
+    after(async () => {
+        if (!g.run || !enabled) return;
+        const off = await runCli(["group", "disable-link", T.group.threadId], live(T, { timeout: 120_000 }));
+        assert.equal(errorLineOf(off.stdout), null, `invite link left ENABLED on the group: ${off.all.slice(0, 300)}`);
+    });
+
     it("enables, inspects and disables the invite link", async () => {
         assertDisposable(T.group.threadId, "group enable-link");
-        const on = await runCli(["group", "enable-link", T.group.threadId], live(T, { timeout: 120_000 }));
-        assert.doesNotMatch(on.all, /at Command\.|Unhandled/, on.all.slice(0, 300));
+        await ok(["group", "enable-link", T.group.threadId], "enable-link");
+        enabled = true;
         await sleep(600);
 
-        const info = await runJson(["group", "link-info", T.group.threadId], live(T));
+        // Read-only, and on a flaky endpoint — retry rather than abort with
+        // the link still up.
+        const info = await retryRead(() => runJson(["group", "link-info", T.group.threadId], live(T)));
         assert.equal(info.ok, true, info.error);
 
-        const off = await runCli(["group", "disable-link", T.group.threadId], live(T, { timeout: 120_000 }));
-        assert.doesNotMatch(off.all, /at Command\.|Unhandled/, off.all.slice(0, 300));
+        await ok(["group", "disable-link", T.group.threadId], "disable-link");
+        enabled = false;
     });
 });
 
@@ -419,18 +543,42 @@ describe("tier 3 · polls (vote lifecycle)", { skip }, () => {
         const optionId =
             (info.data?.options || [])[0]?.votedMemberIds !== undefined ? String(info.data.options[0].id ?? 0) : null;
 
+        // vote / unvote / lock were crash-only asserted, so all three could
+        // fail on every invocation and stay green. Demand success.
         if (optionId !== null) {
-            const voted = await runCli(["poll", "vote", pollId, optionId], live(T));
-            assert.doesNotMatch(voted.all, /at Command\.|Unhandled/, voted.all.slice(0, 300));
+            await ok(["poll", "vote", pollId, optionId], "poll vote");
             await sleep(600);
-            const unvoted = await runCli(["poll", "unvote", pollId], live(T));
-            assert.doesNotMatch(unvoted.all, /at Command\.|Unhandled/, unvoted.all.slice(0, 300));
+            await ok(["poll", "unvote", pollId], "poll unvote");
         }
 
         // Locking is the reversible end-state for a poll — there is no
         // `poll delete`, so a locked poll is as closed as it gets.
-        const locked = await runCli(["poll", "lock", pollId], live(T));
-        assert.doesNotMatch(locked.all, /at Command\.|Unhandled/, locked.all.slice(0, 300));
+        await ok(["poll", "lock", pollId], "poll lock");
+    });
+
+    // `poll add-option` and `poll share` sit between an existing create and
+    // the lock above: zero extra blast radius, and neither had any coverage.
+    it("adds an option to a poll and shares it", async () => {
+        assertDisposable(T.group.threadId, "poll create");
+        const created = await runJson(
+            ["poll", "create", T.group.threadId, "[e2e] add-option cycle", "One", "Two", "--add-options"],
+            live(T, { timeout: 120_000 }),
+        );
+        assert.equal(created.ok, true, created.error);
+        const pollId = String(created.data?.poll_id || created.data?.pollId || created.data?.id || "");
+        assert.ok(pollId, `no poll id in ${JSON.stringify(created.data).slice(0, 200)}`);
+        await sleep(800);
+
+        await ok(["poll", "add-option", pollId, "Three"], "poll add-option");
+        await sleep(600);
+
+        const after2 = await runJson(["poll", "info", pollId], live(T));
+        assert.equal(after2.ok, true, after2.error);
+        const names = (after2.data?.options || []).map((o) => String(o.content ?? o.text ?? ""));
+        assert.ok(names.includes("Three"), `added option missing from ${JSON.stringify(names)}`);
+
+        await ok(["poll", "share", pollId], "poll share");
+        await ok(["poll", "lock", pollId], "poll lock");
     });
 });
 describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
@@ -571,6 +719,138 @@ describe("tier 3 · sync-mobile --socket (socket backfill — no phone contact)"
 
 const SYNC_MOBILE = process.env.ZALO_TEST_SYNC_MOBILE === "1";
 const syncSkip = skip || (SYNC_MOBILE ? false : "needs ZALO_TEST_SYNC_MOBILE=1 — --legacy pings a real phone");
+
+// The five newer top-level sync commands had ZERO live coverage — they
+// appeared only in the offline surface manifest. Three of them cannot write
+// anything server-side, which makes them the cheapest live tests in the
+// suite: `sync --plan` returns before it even acquires the daemon lock, and
+// the board and cloud passes only read and index. `sync-media --dry-run`
+// reports what it would fetch without fetching. None taps the phone.
+// Lifecycle leaves that sit BETWEEN an existing tier-2 create and an
+// existing tier-4 delete: zero extra blast radius, and none had coverage.
+// `reminder edit` and `catalog update-product` are the interesting two —
+// both take the argument-order shape that produced the `group rename` swap
+// bug, where the CLI passed (id, name) to an API expecting (name, id) and
+// the command could never have worked.
+describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
+    it("renames a catalog, lists its products, and updates one", async () => {
+        const created = await runJson(["catalog", "create", "[e2e] lifecycle"], live(T, { timeout: 120_000 }));
+        if (!created.ok) return; // catalogs are capped; tier 2 owns the sweep
+        const catId = String(created.data?.item?.id ?? created.data?.id ?? "");
+        assert.ok(catId, `no catalog id in ${JSON.stringify(created.data).slice(0, 200)}`);
+
+        try {
+            await ok(["catalog", "rename", catId, "[e2e] lifecycle renamed"], "catalog rename");
+
+            const prod = await runJson(
+                ["catalog", "add-product", catId, "[e2e] p1", "1000", "first"],
+                live(T, { timeout: 120_000 }),
+            );
+            assert.equal(prod.ok, true, prod.error);
+            const pid = String(prod.data?.item?.product_id ?? prod.data?.product_id ?? "");
+            assert.ok(pid, `no product id in ${JSON.stringify(prod.data).slice(0, 200)}`);
+
+            const listed = await runJson(["catalog", "products", catId], live(T, { timeout: 120_000 }));
+            assert.equal(listed.ok, true, listed.error);
+
+            await ok(
+                ["catalog", "update-product", catId, pid, "[e2e] p1 renamed", "2000", "second"],
+                "catalog update-product",
+            );
+        } finally {
+            await runCli(["catalog", "delete", catId], live(T, { timeout: 120_000 }));
+        }
+    });
+
+    it("reads, edits and removes a reminder", async () => {
+        assertDisposable(T.group.threadId, "reminder create");
+        const created = await runJson(
+            ["reminder", "create", "-t", "1", T.group.threadId, "[e2e] lifecycle reminder"],
+            live(T, { timeout: 120_000 }),
+        );
+        assert.equal(created.ok, true, created.error);
+        const id = String(created.data?.id ?? created.data?.reminderId ?? created.data?.topicId ?? "");
+        assert.ok(id, `no reminder id in ${JSON.stringify(created.data).slice(0, 200)}`);
+
+        try {
+            const info = await runJson(["reminder", "info", id], live(T));
+            assert.equal(info.ok, true, info.error);
+
+            const responses = await runJson(["reminder", "responses", id], live(T));
+            assert.equal(responses.ok, true, responses.error);
+
+            await ok(
+                ["reminder", "edit", "-t", "1", id, T.group.threadId, "[e2e] lifecycle reminder edited"],
+                "reminder edit",
+            );
+        } finally {
+            await runCli(["reminder", "remove", "-t", "1", id, T.group.threadId], live(T, { timeout: 120_000 }));
+        }
+    });
+
+    it("updates a quick message and an auto-reply rule", async () => {
+        const kw = `e2elc${T.accountOwnId.slice(-4)}`;
+        const created = await runJson(["quick-msg", "add", kw, "[e2e] lifecycle qm"], live(T));
+        if (created.ok) {
+            const id = String(created.data?.id ?? created.data?.itemId ?? created.data?.item?.id ?? "");
+            try {
+                if (id) await ok(["quick-msg", "update", id, kw, "[e2e] lifecycle qm edited"], "quick-msg update");
+            } finally {
+                if (id) await runCli(["quick-msg", "remove", id], live(T));
+            }
+        }
+
+        const rule = await runJson(
+            ["auto-reply", "create", "[e2e] lifecycle ar", "--no-enable"],
+            live(T, { timeout: 120_000 }),
+        );
+        if (!rule.ok) return; // auto-reply is hard-capped; tier 2 owns the purge
+        const rid = String(rule.data?.id ?? rule.data?.item?.id ?? "");
+        try {
+            if (rid)
+                await ok(
+                    ["auto-reply", "update", rid, "[e2e] lifecycle ar edited", "--no-enable"],
+                    "auto-reply update",
+                );
+        } finally {
+            if (rid) await runCli(["auto-reply", "delete", rid], live(T));
+        }
+    });
+});
+
+describe("tier 3 · the read-only sync passes", { skip }, () => {
+    it("sync --plan reports a plan without touching the socket or the lock", async () => {
+        const r = await runCli(["sync", "--plan"], live(T, { timeout: 120_000 }));
+        assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+        assert.equal(errorLineOf(r.stdout), null, `sync --plan failed: ${r.all.slice(0, 300)}`);
+        // --plan must not be able to reach the phone-confirm path.
+        assert.doesNotMatch(r.all, /ĐỒNG BỘ NGAY|confirm .*phone/i, "--plan must never prompt the phone");
+    });
+
+    it("sync-media --dry-run reports without downloading", async () => {
+        const r = await runCli(["sync-media", "--dry-run", "-n", "5"], live(T, { timeout: 180_000 }));
+        assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+        assert.equal(errorLineOf(r.stdout), null, `sync-media --dry-run failed: ${r.all.slice(0, 300)}`);
+    });
+
+    it("sync-boards reads one thread's board items", async () => {
+        const r = await runCli(["sync-boards", "-T", T.group.threadId], live(T, { timeout: 180_000 }));
+        assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+        assert.equal(errorLineOf(r.stdout), null, `sync-boards failed: ${r.all.slice(0, 300)}`);
+    });
+
+    it("sync-cloud indexes one page", async () => {
+        const r = await runCli(["sync-cloud", "-p", "1"], live(T, { timeout: 180_000 }));
+        assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+        assert.equal(errorLineOf(r.stdout), null, `sync-cloud failed: ${r.all.slice(0, 300)}`);
+    });
+
+    it("sync-reactions drains one page within its own wait bound", async () => {
+        const r = await runCli(["sync-reactions", "-p", "1", "-w", "15"], live(T, { timeout: 120_000 }));
+        assert.equal(r.killed, false, "sync-reactions must cap its own wait");
+        assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+    });
+});
 
 describe("tier 3 · sync-mobile --legacy (opt-in: pings a real phone)", { skip: syncSkip }, () => {
     // ONE invocation. The retired endpoint answers empty, and this now stops

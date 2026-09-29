@@ -577,9 +577,18 @@ export function registerMsgCommands(program) {
                 result,
                 error: err,
                 listenerStarted,
+                viaDaemon,
             } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts);
             if (err) error(err);
-            else output(result, program.opts().json, () => success(`Image(s) sent to ${threadId}`));
+            // Surface which socket carried this. sendAttachments() has always
+            // returned viaDaemon, and every caller dropped it on the floor —
+            // so the one branch whose entire reason for existing is that a
+            // second socket evicts the running daemon with cmd 3000 was
+            // invisible from the outside, and untestable.
+            else
+                output({ ...result, viaDaemon: Boolean(viaDaemon) }, program.opts().json, () =>
+                    success(`Image(s) sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
+                );
 
             // Only force-exit when the listener ran; it leaves handles behind
             // that keep the event loop alive. The pure-inline path needs no
@@ -604,9 +613,13 @@ export function registerMsgCommands(program) {
                 result,
                 error: err,
                 listenerStarted,
+                viaDaemon,
             } = await sendAttachments(getApi(), absPaths, threadId, Number(opts.type), opts);
             if (err) error(err);
-            else output(result, program.opts().json, () => success(`File(s) sent to ${threadId}`));
+            else
+                output({ ...result, viaDaemon: Boolean(viaDaemon) }, program.opts().json, () =>
+                    success(`File(s) sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
+                );
 
             // listener.stop() closes the socket but does not release every
             // handle it registered, so the event loop stays alive and the

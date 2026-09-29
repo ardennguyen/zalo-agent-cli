@@ -42,7 +42,13 @@ export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voi
  * literal containing one gets rewritten to raw bytes by the formatter,
  * which turns this source file into a binary blob.
  */
-const UNSAFE_CHARS = new Set(["/", "\\", ":", "*", "?", '"', "<", ">", "|"]);
+// The first nine are the characters Windows forbids in a filename. The rest
+// are the ones cmd.exe INTERPRETS: a downloaded file gets handed to
+// openFile(), whose Windows branch goes through a shell, so a Zalo-supplied
+// name like `holiday&calc.exe.jpg` used to survive sanitising and then split
+// at the & inside `start "" <path>`. None of them is meaningful in a
+// filename, so replacing them costs nothing.
+const UNSAFE_CHARS = new Set(["/", "\\", ":", "*", "?", '"', "<", ">", "|", "&", "^", "%", "`", "!", "$"]);
 
 /**
  * Make a string safe to use as a file or folder name.

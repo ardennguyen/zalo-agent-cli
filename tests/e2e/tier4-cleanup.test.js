@@ -26,11 +26,19 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { runCli, runJson, hasSuccess, errorLineOf } from "../helpers/cli.js";
-import { gate, live, mark, send, sleep, undoMsg, assertDisposable } from "../helpers/live.js";
+import { gate, live, mark, send, sleep, undoMsg, assertDisposable, assertSession } from "../helpers/live.js";
 
 const g = gate(4);
 const skip = g.run ? false : g.skipReason;
 const T = g.targets;
+
+// Confirm WHICH account is logged in before this tier writes anything.
+// gate() only reads env flags and targets.json; nothing else verified the
+// session, so `--tier N` could drive a stranger's account.
+before(async () => {
+    if (!g.run) return;
+    await assertSession(T);
+});
 
 const ARTIFACTS = resolve(import.meta.dirname, "..", ".artifacts.json");
 
@@ -159,34 +167,69 @@ describe("tier 4 · message deletion", { skip }, () => {
         );
     });
 
-    it("recalls every message tier 2 sent to the group", { skip: skip || !haveArtifacts() }, async () => {
-        const groupMsgs = artifacts.messages.filter((m) => String(m.threadId) === T.group.threadId);
-        let handled = 0;
-        for (const m of groupMsgs) {
-            assertDisposable(m.threadId, "msg undo (tier-2 cleanup)");
-            const r = await runCli(
-                ["msg", "undo", "-t", String(m.type), "-c", m.cliMsgId, m.msgId, m.threadId],
-                live(T),
-            );
+    // Recall every ledger entry for one thread and NAME whatever is still
+    // visible afterwards.
+    //
+    // Both loops used to be unfalsifiable. The only assertion was
+    // `doesNotMatch(/at Command\.|Unhandled/)`, which cannot match because
+    // msg undo's catch calls error() and prints a ✗ line with no stack; the
+    // group loop added `assert.equal(handled, groupMsgs.length)` where
+    // `handled++` is unconditional, so it counted iterations, not recalls.
+    // With an empty ledger both were vacuous (0 === 0).
+    //
+    // An entry recorded from an attachment send has no cliMsgId — zca-js
+    // never stamps one on an attachment response — so -c is omitted and
+    // `msg undo` resolves it from zalo.db instead (tier 2 forces a history
+    // fetch after each DM attachment so the row is there).
+    async function recallAllFor(thread, label) {
+        const mine = artifacts.messages.filter((m) => String(m.threadId) === thread.threadId);
+        assert.ok(
+            mine.length > 0,
+            `ledger holds no ${label} messages — tier 2 recorded nothing, so this swept nothing`,
+        );
+
+        const stillVisible = [];
+        for (const m of mine) {
+            assertDisposable(m.threadId, `msg undo (${label} cleanup)`);
+            const args = ["msg", "undo", "-t", String(m.type)];
+            if (m.cliMsgId) args.push("-c", String(m.cliMsgId));
+            args.push(m.msgId, m.threadId);
+
+            const r = await runCli(args, live(T));
             assert.doesNotMatch(r.all, /at Command\.|Unhandled/, `undo of ${m.msgId} crashed`);
-            handled++;
+            const err = errorLineOf(r.stdout);
+            if (err) stillVisible.push(`${m.what ?? m.msgId}: ${err}`);
             await sleep(300);
         }
-        assert.equal(handled, groupMsgs.length, "every tracked group message must be attempted");
+        assert.deepEqual(
+            stillVisible,
+            [],
+            `${label} messages still visible to the other side: ${stillVisible.join(" | ")}`,
+        );
+    }
+
+    it("recalls every message tier 2 sent to the group", { skip: skip || !haveArtifacts() }, async () => {
+        await recallAllFor(T.group, "group");
     });
 
     it("recalls every message tier 2 sent to the DM target", { skip: skip || !haveArtifacts() || !T?.dm }, async () => {
-        const dmMsgs = artifacts.messages.filter((m) => String(m.threadId) === T.dm.threadId);
-        for (const m of dmMsgs) {
-            assertDisposable(m.threadId, "msg undo (DM cleanup)");
-            const r = await runCli(
-                ["msg", "undo", "-t", String(m.type), "-c", m.cliMsgId, m.msgId, m.threadId],
-                live(T),
-            );
-            assert.doesNotMatch(r.all, /at Command\.|Unhandled/, `undo of ${m.msgId} crashed`);
-            await sleep(300);
-        }
+        await recallAllFor(T.dm, "DM");
     });
+
+    // The DM counterpart of the positive single-message test above. The DM
+    // path had only the bulk loop, which asserted nothing.
+    it(
+        "recalls a freshly sent DM message for both sides (undo)",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            const sent = await send(T, T.dm, mark("dm to be recalled"));
+            await sleep(800);
+            assertDisposable(T.dm.threadId, "msg undo");
+            const r = await runCli(["msg", "undo", "-t", "0", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId], live(T));
+            assert.equal(errorLineOf(r.stdout), null, `DM undo failed: ${r.all.slice(0, 300)}`);
+            assert.ok(hasSuccess(r.stdout), `DM undo did not report success: ${r.all.slice(0, 300)}`);
+        },
+    );
 });
 
 // ── 2. Account-level artifact deletes ──────────────────────────────────
@@ -203,7 +246,11 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
         const list = await runJson(["quick-msg", "list"], live(T));
         if (!list.ok) return;
         const items = list.data?.items || (Array.isArray(list.data) ? list.data : []);
-        const mine = items.filter((i) => /\[e2e\]|e2eprobe/.test(JSON.stringify(i)));
+        const mine = items.filter(
+            (i) =>
+                /\[e2e\]/.test(String(i.message?.title ?? i.title ?? "")) ||
+                /^e2e[0-9a-z]{5,}$/i.test(String(i.keyword ?? "")),
+        );
         for (const i of mine) {
             const id = i.id || i.itemId;
             if (!id) continue;
@@ -238,7 +285,10 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
     // creation with "Lỗi không xác định". Sweeping by name makes cleanup
     // independent of how any one response happens to be shaped.
     it("sweeps any [e2e]-named catalog the ledger missed", async () => {
-        const list = await runJson(["catalog", "list"], live(T, { timeout: 120_000 }));
+        // `catalog list` defaults to --limit 20 --page 0, so a single call
+        // only ever sees the first page and both the sweep and the assertion
+        // below silently ignored strays on page 1+.
+        const list = await runJson(["catalog", "list", "-l", "100"], live(T, { timeout: 120_000 }));
         assert.equal(list.ok, true, list.error);
 
         const strays = (list.data?.items || []).filter((c) => /\[e2e\]/.test(c.name || ""));
@@ -247,7 +297,7 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
             await sleep(300);
         }
 
-        const after2 = await runJson(["catalog", "list"], live(T, { timeout: 120_000 }));
+        const after2 = await runJson(["catalog", "list", "-l", "100"], live(T, { timeout: 120_000 }));
         if (after2.ok) {
             const remaining = (after2.data?.items || []).filter((c) => /\[e2e\]/.test(c.name || ""));
             assert.deepEqual(
@@ -261,8 +311,18 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
     it("sweeps any [e2e]-named auto-reply rule the ledger missed", async () => {
         const list = await runJson(["auto-reply", "list"], live(T));
         if (!list.ok) return; // nothing to sweep if the surface is unavailable
-        const items = list.data?.items || (Array.isArray(list.data) ? list.data : []);
-        for (const i of items.filter((x) => /\[e2e\]/.test(JSON.stringify(x)))) {
+        // getAutoReplyList returns { item: AutoReplyItem[] } — SINGULAR.
+        // This read `.items` only, which is always undefined, so the
+        // backstop swept nothing, ever. Auto-reply is also the one artifact
+        // type Zalo hard-caps, so a single leftover rule from an aborted run
+        // permanently pushes tier 2's creation tests into their quota-refusal
+        // branch: green, while creating nothing.
+        const items = list.data?.item || list.data?.items || (Array.isArray(list.data) ? list.data : []);
+        // Match the rule's own text, not JSON.stringify of the whole object
+        // — that would delete any rule whose id, timestamp or unrelated
+        // field happened to contain the marker, and these are account-scoped
+        // objects that assertDisposable never sees.
+        for (const i of items.filter((x) => /\[e2e\]/.test(String(x.content ?? x.title ?? x.text ?? "")))) {
             const id = i.id || i.itemId;
             if (!id) continue;
             await runCli(["auto-reply", "delete", String(id)], live(T));
@@ -278,8 +338,32 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
                 live(T, { timeout: 120_000 }),
             );
             assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+            assert.equal(errorLineOf(r.stdout), null, `reminder ${rem.id} not removed`);
             await sleep(300);
         }
+    });
+
+    // `artifacts.polls` was a write-only field: tier 2 filled it and nothing
+    // ever read it (a repo-wide grep found the declaration and nothing else),
+    // so every run added four permanent polls to the group.
+    //
+    // There is no `poll delete` — not in the CLI and not in zca-js, which
+    // exposes createPoll/lockPoll/vote/unvote/share/addOptions/getPollDetail
+    // and no delete. Locking is the only closure available, and it is the
+    // same end state tier 3 already settles for. The group's own disperse in
+    // tier 5b is the only thing that truly removes them, and that is behind
+    // ZALO_TEST_DESTRUCTIVE, which most runs never set.
+    it("locks the polls tier 2 created — there is no delete for them", { skip: skip || !haveArtifacts() }, async () => {
+        const stuck = [];
+        for (const pollId of artifacts.polls) {
+            const r = await runCli(["poll", "lock", String(pollId)], live(T, { timeout: 120_000 }));
+            assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+            const err = errorLineOf(r.stdout);
+            // Already-locked is the desired end state, not a failure.
+            if (err && !/already|locked|khóa/i.test(err)) stuck.push(`${pollId}: ${err}`);
+            await sleep(300);
+        }
+        assert.deepEqual(stuck, [], `polls left open in the group: ${stuck.join(" | ")}`);
     });
 });
 

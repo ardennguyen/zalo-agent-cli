@@ -16,6 +16,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { homedir } from "node:os";
 
 const TARGETS_PATH = resolve(import.meta.dirname, "..", "targets.json");
 const EXAMPLE_PATH = resolve(import.meta.dirname, "..", "targets.example.json");
@@ -60,6 +61,25 @@ export function loadTargets() {
     if (isPlaceholder(group.threadId)) problems.push("disposable.group.threadId is unset");
     if (isPlaceholder(group.name)) problems.push("disposable.group.name is unset");
 
+    // `home` decides which ~/.zalo-agent-cli the WHOLE live suite drives,
+    // including `logout --purge`, and it used to be unvalidated with a
+    // fallback to the developer's real home:
+    //     home: raw.home || process.env.USERPROFILE || process.env.HOME
+    // targets.example.json hardcodes a machine-specific path, so anyone
+    // copying it on another box and DELETING the line rather than editing it
+    // silently pointed the destructive tiers at their personal config. The
+    // README lists four things the file must name and `home` is not among
+    // them, so nothing prompted them to fix it either.
+    if (isPlaceholder(raw?.home)) {
+        problems.push("home is unset — it must name the throwaway config dir the live suite may write to");
+    } else {
+        const home = resolve(String(raw.home));
+        if (!existsSync(home)) problems.push(`home does not exist: ${home}`);
+        if (home === resolve(homedir())) {
+            problems.push(`home is your REAL home directory (${home}) — the live suite would drive your own account`);
+        }
+    }
+
     // An id that is both disposable and denylisted is a configuration bug
     // serious enough to refuse the whole run, not just that one target.
     const blessed = [group.threadId, dm.threadId].filter((x) => !isPlaceholder(x)).map(String);
@@ -82,7 +102,7 @@ export function loadTargets() {
         configured: true,
         targets: {
             path: TARGETS_PATH,
-            home: raw.home || process.env.USERPROFILE || process.env.HOME,
+            home: String(raw.home),
             accountOwnId: String(raw.accountOwnId),
             group: {
                 threadId: String(group.threadId),

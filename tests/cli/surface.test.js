@@ -204,10 +204,24 @@ const TOP_LEVEL = [
 const FLAG_CONTRACT = {
     login: ["--proxy", "--name", "--qr-url", "--qr-port", "--credentials"],
     logout: ["--purge", "--delete-history", "--no-remote"],
-    "sync-mobile": ["--transfer", "--socket", "--force", "--days", "--from", "--legacy", "--wait", "--messages-only"],
+    "sync-mobile": [
+        "--transfer",
+        "--socket",
+        "--force",
+        "--days",
+        "--from",
+        "--legacy",
+        "--wait",
+        "--messages-only",
+        "--shard-size",
+    ],
     // The fetch/board/cloud passes are deliberately separate commands: only
     // the message restore needs a phone confirmation, so none of these
     // should ever be reachable only via sync-mobile.
+    // The DESTRUCTIVE flags were the uncovered ones: --prune deletes
+    // downloaded media, --prune-orphans deletes it for conversations the
+    // account no longer has. --dry-run was listed; the operations it exists
+    // to preview were not.
     "sync-media": [
         "--thread",
         "--kind",
@@ -218,7 +232,15 @@ const FLAG_CONTRACT = {
         "--timeout",
         "--thumbs",
         "--dry-run",
+        "--prune",
+        "--all",
+        "--prune-orphans",
+        "--all-history",
+        "--include-pruned",
     ],
+    // `conv forget` deletes this machine's local copy of a conversation and
+    // had no entry at all.
+    "conv forget": ["--orphans", "--dry-run"],
     sync: [
         "--force",
         "--days",
@@ -232,6 +254,7 @@ const FLAG_CONTRACT = {
         "--no-media",
         "--no-removals",
         "--plan",
+        "--shard-size",
     ],
     "sync-reactions": ["--wait", "--pages", "--no-removals"],
     "sync-boards": ["--thread", "--limit", "--concurrency", "--no-reminders", "--no-boards"],
@@ -364,12 +387,36 @@ describe("flag contract", () => {
         keys.forEach((k, i) => (helps[k] = results[i].stdout));
     });
 
+    // Anchor to the option COLUMN, the way the subcommand check above
+    // already does.
+    //
+    // This used to be `helps[cmd].includes(flag)` — an unanchored substring
+    // search over the entire help text, descriptions included. Commander
+    // prose mentions other flags constantly: `sync-mobile`'s description
+    // names --transfer and --legacy, `--from`'s description says "Overrides
+    // --days". So deleting the real `-t, --transfer` registration left this
+    // contract green, which is the exact regression it exists to catch. A
+    // listed `--prune` was also satisfied by `--prune-orphans`.
+    const registered = (help, flag) => new RegExp(`^\\s+(?:-\\w, )?${flag.replace(/-/g, "\\-")}\\b`, "m").test(help);
+
     for (const [cmd, flags] of Object.entries(FLAG_CONTRACT)) {
-        it(`${cmd} accepts ${flags.length} documented flag(s)`, () => {
-            const missing = flags.filter((f) => !helps[cmd].includes(f));
+        it(`${cmd} registers ${flags.length} documented flag(s)`, () => {
+            const missing = flags.filter((f) => !registered(helps[cmd], f));
             assert.deepEqual(missing, [], `${cmd} is missing: ${missing.join(", ")}`);
         });
     }
+
+    // Guard the guard: prove the matcher can actually fail. A contract that
+    // cannot distinguish a registered flag from a mentioned one is worth
+    // nothing, and that is precisely the state this suite was in.
+    it("the matcher rejects a flag that is only MENTIONED in prose", () => {
+        const help = helps["sync-mobile"] ?? "";
+        assert.ok(registered(help, "--transfer"), "--transfer is really registered on sync-mobile");
+        assert.ok(!registered(help, "--definitely-not-a-flag"), "an absent flag must not match");
+        // --days appears inside --from's description text; make sure the
+        // matcher is keying on the option column, not that mention.
+        assert.ok(/Overrides --days|--days/.test(help), "precondition: sync-mobile help mentions --days in prose");
+    });
 });
 
 describe("disclaimer behavior", () => {

@@ -1,12 +1,33 @@
 /**
  * Tests for QR display utility — JSON mode structured output for AI agents.
+ *
+ * Lived at src/utils/qr-display.test.js until 2026-09-29, where it had no
+ * sandbox and so created, wrote and unlinked inside the DEVELOPER'S REAL
+ * ~/.zalo-agent-cli/. qr-display.js freezes QR_PATH from CONFIG_DIR at
+ * module-eval time, and CONFIG_DIR is frozen from os.homedir(), so the only
+ * way to redirect it is to set HOME/USERPROFILE before the first import --
+ * which is exactly what helpers/sandbox.js does, and why it must come first.
+ *
+ * The residue was real: an empty .zalo-agent-cli existed in the developer's
+ * home directory purely because `npm test` had run. Running the pre-commit
+ * gate while a `zalo-agent login` QR was pending would unlink qr.png out
+ * from under the login flow.
  */
 
+import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { displayQR, getQRPath } from "./qr-display.js";
+import { displayQR, getQRPath } from "../../src/utils/qr-display.js";
 import { existsSync, unlinkSync, mkdirSync } from "fs";
 import { dirname } from "path";
+
+it("operates inside the test sandbox", () => {
+    assertSandboxed(SANDBOX_CONFIG_DIR);
+    assert.ok(
+        getQRPath().startsWith(SANDBOX_CONFIG_DIR),
+        `qr.png would be written outside the sandbox: ${getQRPath()}`,
+    );
+});
 
 // Tiny valid 1x1 white PNG as base64 (for testing without real QR)
 const TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";

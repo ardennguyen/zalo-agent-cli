@@ -22,13 +22,21 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runCli, runJson, hasSuccess } from "../helpers/cli.js";
-import { gate, live, mark, send, sleep, assertDisposable } from "../helpers/live.js";
+import { runCli, runJson, hasSuccess, errorLineOf } from "../helpers/cli.js";
+import { gate, live, mark, send, sleep, assertDisposable, assertSession } from "../helpers/live.js";
 import { IMAGES, FILES, verifyFixtures } from "../fixtures/index.js";
 
 const g = gate(2);
 const skip = g.run ? false : g.skipReason;
 const T = g.targets;
+
+// Confirm WHICH account is logged in before this tier writes anything.
+// gate() only reads env flags and targets.json; nothing else verified the
+// session, so `--tier N` could drive a stranger's account.
+before(async () => {
+    if (!g.run) return;
+    await assertSession(T);
+});
 
 const ARTIFACTS = resolve(import.meta.dirname, "..", ".artifacts.json");
 
@@ -82,7 +90,23 @@ function rememberSent(thread, r, what) {
         }
         const msgId = node.msgId ?? node.message?.msgId;
         const cliMsgId = node.cliMsgId ?? node.message?.cliMsgId;
-        if (msgId && cliMsgId) found.push({ msgId: String(msgId), cliMsgId: String(cliMsgId) });
+        // Record on msgId ALONE. Requiring both was the bug: this helper was
+        // added to close the attachment-cleanup gap and closed nothing,
+        // because an attachment response never carries a cliMsgId.
+        // zca-js calls stampClientId() on `responses.message` only
+        // (sendMessage.js:455,467) and never on `responses.attachment`, and
+        // for a single jpg/jpeg/png/webp `canBeDesc` is true (:450) so the
+        // caption folds into the attachment and `responses.message` stays
+        // null. Every image and file send therefore recorded ZERO entries,
+        // including the two that go to a real person's DM. The stale
+        // tests/.artifacts.json told the story — 10 entries, all plain text.
+        //
+        // cliMsgId is not derivable here, but it is not required either:
+        // `msg undo` falls back to cachedMessageById() when -c is omitted
+        // (src/commands/msg.js), so tier 4 can still recall these as long as
+        // the row has reached zalo.db — which is why the DM attachment tests
+        // below force a history fetch.
+        if (msgId) found.push({ msgId: String(msgId), cliMsgId: cliMsgId ? String(cliMsgId) : null });
         for (const v of Object.values(node)) if (v && typeof v === "object") walk(v);
     };
     // cliMsgId usually sits beside `message`, not inside it, so seed the
@@ -101,6 +125,21 @@ function rememberSent(thread, r, what) {
         n++;
     }
     return n;
+}
+
+/**
+ * Pull a thread's recent history so just-sent messages land in zalo.db with
+ * their cliMsgId, giving tier 4's `msg undo` something to resolve against.
+ *
+ * Only worth doing for the DM: the group is disposable, but an unrecalled
+ * DM attachment stays in a real person's view forever — `conv delete` is
+ * one-sided, so recall is the only thing that removes it for them.
+ */
+async function cacheThreadHistory(thread) {
+    await runJson(
+        ["msg", "history", "-t", String(thread.type), "-n", "20", "--no-cache", thread.threadId],
+        live(T, { timeout: 180_000 }),
+    );
 }
 
 // Media comes from tests/fixtures/ — real encoder output, committed, so
@@ -162,6 +201,54 @@ describe("tier 2 · group text messages", { skip }, () => {
     });
 });
 
+// Quote-reply shipped in ccb4ae3 and was immediately followed by 2af71ed
+// fixing a Zalo code-114 rejection of a noised qmsgOwner — exactly the class
+// of defect no existing test could see, because there was no live coverage
+// of --quote on either branch. The branches genuinely differ on the wire:
+// qmsgAttach is group-only and the service URL differs by thread type, so
+// testing one proves nothing about the other.
+describe("tier 2 · quote-reply", { skip }, () => {
+    it("quotes a message in the group", async () => {
+        const target = remember(T.group, await send(T, T.group, mark("quote target")), "quote-target");
+        await sleep(600);
+        assertDisposable(T.group.threadId, "msg send --quote");
+        const r = await runJson(
+            ["msg", "send", "-t", "1", T.group.threadId, mark("group quote reply"), "--quote", target.msgId],
+            live(T, { timeout: 120_000 }),
+        );
+        assert.equal(r.ok, true, `group quote-reply failed: ${r.error}`);
+        rememberSent(T.group, r, "group-quote-reply");
+    });
+
+    it(
+        "quotes a message in the DM — a different service URL, and no qmsgAttach",
+        { skip: skip || (T?.dm ? false : "no DM target configured") },
+        async () => {
+            const target = remember(T.dm, await send(T, T.dm, mark("dm quote target")), "dm-quote-target");
+            await sleep(600);
+            assertDisposable(T.dm.threadId, "msg send --quote");
+            const r = await runJson(
+                ["msg", "send", "-t", "0", T.dm.threadId, mark("dm quote reply"), "--quote", target.msgId],
+                live(T, { timeout: 120_000 }),
+            );
+            assert.equal(r.ok, true, `DM quote-reply failed: ${r.error}`);
+            rememberSent(T.dm, r, "dm-quote-reply");
+        },
+    );
+
+    // The code-114 regression guard: a quote whose sender id cannot be
+    // resolved must be REFUSED locally, not sent for Zalo to reject.
+    it("refuses to quote a message id it cannot resolve a sender for", async () => {
+        assertDisposable(T.group.threadId, "msg send --quote");
+        const r = await runCli(
+            ["msg", "send", "-t", "1", T.group.threadId, mark("unresolvable quote"), "--quote", "9999999999999"],
+            live(T, { timeout: 120_000 }),
+        );
+        assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+        assert.ok(errorLineOf(r.stdout), "an unresolvable quote target must be refused, not sent");
+    });
+});
+
 describe("tier 2 · image attachments", { skip }, () => {
     // One test per format, because zca-js branches on extension
     // (jpg/jpeg/png/webp take the "image" upload path, everything else does
@@ -208,7 +295,15 @@ describe("tier 2 · image attachments", { skip }, () => {
             live(T, { timeout: 180_000 }),
         );
         assert.equal(r.ok, true, r.error);
-        rememberSent(T.dm, r, "dm-image");
+        // Assert the ledger actually captured it. This is the regression
+        // guard for the bug above: the previous helper recorded 0 here and
+        // the suite said nothing, so a PNG accumulated in a real person's
+        // chat on every run.
+        assert.ok(
+            rememberSent(T.dm, r, "dm-image") > 0,
+            `DM image not recorded for recall: ${JSON.stringify(r.data).slice(0, 200)}`,
+        );
+        await cacheThreadHistory(T.dm);
     });
 
     it("reports a missing image path instead of failing silently", async () => {
@@ -321,7 +416,11 @@ describe("tier 2 · file attachments", { skip }, () => {
             live(T, { timeout: 45_000 }),
         );
         assert.equal(r.ok, true, r.error);
-        rememberSent(T.dm, r, "dm-file");
+        assert.ok(
+            rememberSent(T.dm, r, "dm-file") > 0,
+            `DM file not recorded for recall: ${JSON.stringify(r.data).slice(0, 200)}`,
+        );
+        await cacheThreadHistory(T.dm);
     });
 
     it("exits cleanly instead of leaving the listener holding the event loop", async () => {
@@ -355,48 +454,58 @@ describe("tier 2 · file attachments", { skip }, () => {
 
     it("sends a link with auto-preview", async () => {
         assertDisposable(T.group.threadId, "msg send-link");
-        const r = await runCli(
+        const r = await runJson(
             ["msg", "send-link", "-t", "1", T.group.threadId, "https://zalo.me", "-m", mark("link")],
             live(T, { timeout: 180_000 }),
         );
-        assert.ok(hasSuccess(r.stdout) || /Link sent/.test(r.stdout), r.stdout.slice(0, 300));
+        assert.equal(r.ok, true, r.error);
+        rememberSent(T.group, r, "link");
     });
 
-    // NOT tracked for recall, deliberately: link / sticker / card / bank /
-    // QR all go through runCli rather than runJson, so there is no parsed
-    // payload to take a msgId from — the tests only assert a success line.
-    // That is acceptable ONLY because every one of them is group-only, and
-    // tier 5a wipes the group conversation. None of them is ever sent to
-    // the DM, where an unrecalled message would stay in a real person's
-    // view forever. If one of these is ever pointed at T.dm, switch it to
-    // runJson and rememberSent() it first.
+    // These now go through runJson so their msgIds reach the ledger and
+    // tier 4 recalls them.
+    //
+    // They used to be runCli with a comment claiming that was "acceptable
+    // ONLY because … tier 5a wipes the group conversation". Both halves of
+    // that were wrong. run-e2e.js selects tiers <= 4 unless --destructive,
+    // so a bare `npm run test:e2e` NEVER runs 5a; and a group `conv delete`
+    // is one-sided anyway, so it would not remove them for the other members
+    // even if it did run. The result was a bank card for account
+    // 0123456789 and two payable 10,000 VND VietQR images left permanently
+    // visible to the group's real members, one set per run.
     it("searches and sends a sticker", async () => {
         assertDisposable(T.group.threadId, "msg sticker");
-        const r = await runCli(["msg", "sticker", "-t", "1", T.group.threadId, "hello"], live(T, { timeout: 120_000 }));
-        assert.ok(hasSuccess(r.stdout), r.stdout.slice(0, 300));
+        const r = await runJson(
+            ["msg", "sticker", "-t", "1", T.group.threadId, "hello"],
+            live(T, { timeout: 120_000 }),
+        );
+        assert.equal(r.ok, true, r.error);
+        rememberSent(T.group, r, "sticker");
     });
 
     it("sends a contact card", async () => {
         assertDisposable(T.group.threadId, "msg send-card");
-        const r = await runCli(
+        const r = await runJson(
             ["msg", "send-card", "-t", "1", T.group.threadId, T.group.memberIds[0]],
             live(T, { timeout: 120_000 }),
         );
-        assert.ok(hasSuccess(r.stdout), r.stdout.slice(0, 300));
+        assert.equal(r.ok, true, r.error);
+        rememberSent(T.group, r, "contact-card");
     });
 
     it("sends a bank card", async () => {
         assertDisposable(T.group.threadId, "msg send-bank");
-        const r = await runCli(
+        const r = await runJson(
             ["msg", "send-bank", "-t", "1", T.group.threadId, "0123456789", "-b", "ocb", "-n", "TEST ACCOUNT"],
             live(T, { timeout: 120_000 }),
         );
-        assert.ok(hasSuccess(r.stdout), r.stdout.slice(0, 300));
+        assert.equal(r.ok, true, r.error);
+        rememberSent(T.group, r, "bank-card");
     });
 
     it("generates and sends a VietQR transfer image (compact template)", async () => {
         assertDisposable(T.group.threadId, "msg send-qr-transfer");
-        const r = await runCli(
+        const r = await runJson(
             [
                 "msg",
                 "send-qr-transfer",
@@ -413,16 +522,18 @@ describe("tier 2 · file attachments", { skip }, () => {
             ],
             live(T, { timeout: 180_000 }),
         );
-        assert.ok(hasSuccess(r.stdout), r.stdout.slice(0, 400));
+        assert.equal(r.ok, true, r.error);
+        rememberSent(T.group, r, "qr-transfer");
     });
 
     it("sends a bare QR with --template qronly", async () => {
         assertDisposable(T.group.threadId, "msg send-qr-transfer");
-        const r = await runCli(
+        const r = await runJson(
             ["msg", "send-qr-transfer", "-t", "1", T.group.threadId, "0123456789", "-b", "vcb", "--template", "qronly"],
             live(T, { timeout: 180_000 }),
         );
-        assert.ok(hasSuccess(r.stdout), r.stdout.slice(0, 400));
+        assert.equal(r.ok, true, r.error);
+        rememberSent(T.group, r, "qr-only");
     });
 });
 
@@ -452,14 +563,19 @@ describe("tier 2 · DM messages", { skip: skip || (T?.dm ? false : "no DM target
         const sent = remember(T.dm, await send(T, T.dm, mark("forward source")), "dm-forward-source");
         await sleep(500);
         assertDisposable(T.group.threadId, "msg forward");
-        const r = await runCli(
+        // Demand success. The old assertion here was crash-only, with a
+        // comment excusing "a clean error" as acceptable — and `msg forward`
+        // was in fact broken for its entire life (wrong call arity made
+        // zca-js throw "Missing message content" before any network call,
+        // for every message type). The CLI catches that and prints a ✗ line,
+        // never a stack trace, so the regex could not match and the test
+        // passed green the whole time. Fixed upstream in 24ea016.
+        const r = await runJson(
             ["msg", "forward", "-t", "1", sent.msgId, T.group.threadId],
             live(T, { timeout: 120_000 }),
         );
-        // Forward is exercised for its code path; Zalo may reject a
-        // cross-thread forward of a just-sent message, so a clean error is
-        // an acceptable outcome — a crash is not.
-        assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
+        assert.equal(r.ok, true, `msg forward failed: ${r.error}`);
+        rememberSent(T.group, r, "forwarded");
     });
 });
 
@@ -590,12 +706,17 @@ describe("tier 2 · group notes", { skip }, () => {
     // getFriendBoardList(conversationId), the DM-side board reader, but no
     // CLI command exposes it (only sync-v2/board.js touches getListBoard).
     // Until a command surfaces it there is nothing to drive from here.
-    it("CHARACTERIZATION: notes are group-only — the CLI has no DM board command", () => {
-        assert.equal(
-            typeof T.dm?.threadId === "string" || T.dm === null,
-            true,
-            "DM target shape unchanged; this test documents a missing command, not a failure",
-        );
+    // Asserts the actual product fact rather than a tautology. The previous
+    // version checked `typeof T.dm?.threadId === "string" || T.dm === null`,
+    // which is true for every value targets.js can produce and never invoked
+    // the CLI at all.
+    it("CHARACTERIZATION: notes are group-only — the CLI has no DM board command", async () => {
+        const help = await runCli(["group", "note-create", "--help"], live(T, { timeout: 30_000 }));
+        assert.match(help.stdout, /groupId/, "note-create still takes a groupId, not a threadId + type");
+        assert.doesNotMatch(help.stdout, /-t, --type/, "if note-create gained --type, a DM note test is now possible");
+
+        const conv = await runCli(["conv", "--help"], live(T, { timeout: 30_000 }));
+        assert.doesNotMatch(conv.stdout, /^\s+board/m, "a DM board command now exists — add real coverage for it");
     });
 });
 
@@ -608,6 +729,7 @@ describe("tier 2 · account-level artifacts", { skip }, () => {
         if (!g.run) return;
         await purgeStaleQuickMsgs();
         await purgeStaleCatalogs();
+        await purgeStaleAutoReplies();
     });
 
     it("adds a quick message under a run-unique keyword", async () => {
@@ -698,10 +820,16 @@ describe("tier 2 · account-level artifacts", { skip }, () => {
             ["catalog", "add-product", cat.id, TAGGED("product"), "10000", "e2e test product"],
             live(T, { timeout: 120_000 }),
         );
-        if (r.ok) {
-            const pid = r.data?.productId || r.data?.id;
-            if (pid) cat.products.push(String(pid));
-        }
+        // This test had ZERO assertions, and read the product id from two
+        // fields that do not exist. createProductCatalog returns
+        // {item: ProductCatalogItem} and the id is item.product_id, so
+        // nothing was ever recorded and tier 4's product-delete loop
+        // iterated zero times — leaving `catalog delete` to be handed a
+        // non-empty catalog.
+        assert.equal(r.ok, true, `catalog add-product failed: ${r.error}`);
+        const pid = r.data?.item?.product_id ?? r.data?.product_id ?? r.data?.productId ?? r.data?.id;
+        assert.ok(pid, `no product id in ${JSON.stringify(r.data).slice(0, 300)}`);
+        cat.products.push(String(pid));
     });
 });
 
@@ -721,8 +849,15 @@ const QUICK_KEYWORD = `e2e${Date.now().toString(36)}`;
 async function purgeStaleQuickMsgs() {
     const list = await runJson(["quick-msg", "list"], live(T));
     if (!list.ok) return;
+    // Match the SHAPE this suite generates (`e2e` + a base36 timestamp),
+    // not merely anything beginning with "e2e". These sweeps run inside
+    // tier 2's before() hook, delete account-scoped objects, and never go
+    // near assertDisposable — which only ever validates a threadId — so a
+    // user keyword like "e2eTraining" was one prefix match away from being
+    // deleted by a test run.
+    const MINE = /^e2e[0-9a-z]{5,}$/i;
     const stale = (list.data?.items || []).filter(
-        (i) => /^e2e/i.test(i.keyword || "") || /\[e2e\]/.test(i.message?.title || ""),
+        (i) => MINE.test(i.keyword || "") || /\[e2e\]/.test(i.message?.title || ""),
     );
     for (const i of stale) {
         await runCli(["quick-msg", "remove", String(i.id)], live(T));
@@ -730,13 +865,40 @@ async function purgeStaleQuickMsgs() {
     }
 }
 
-/** Delete any catalog left behind by an earlier e2e run (they count against a cap). */
+/**
+ * Delete any catalog left behind by an earlier e2e run (they count against a cap).
+ *
+ * `catalog list` defaults to --limit 20 --page 0, so asking without -l only
+ * ever saw the first page and a stray on page 1+ survived every sweep.
+ */
 async function purgeStaleCatalogs() {
-    const list = await runJson(["catalog", "list"], live(T, { timeout: 120_000 }));
+    const list = await runJson(["catalog", "list", "-l", "100"], live(T, { timeout: 120_000 }));
     if (!list.ok) return;
     const stale = (list.data?.items || []).filter((c) => /\[e2e\]/.test(c.name || ""));
     for (const c of stale) {
         await runCli(["catalog", "delete", String(c.id)], live(T, { timeout: 120_000 }));
+        await sleep(250);
+    }
+}
+
+/**
+ * Delete any auto-reply rule left behind by an earlier e2e run.
+ *
+ * Auto-reply is the one artifact type Zalo HARD-CAPS, and it had no
+ * pre-create purge at all — only quick messages and catalogs did. So a
+ * single leftover `[e2e]` rule from an aborted run permanently pushed both
+ * auto-reply tests into their quota-refusal branch: green forever, while
+ * creating and proving nothing. Tier 4's name-sweep could not rescue it
+ * either, because it read `.items` while getAutoReplyList returns `.item`.
+ */
+async function purgeStaleAutoReplies() {
+    const list = await runJson(["auto-reply", "list"], live(T));
+    if (!list.ok) return;
+    const items = list.data?.item || list.data?.items || (Array.isArray(list.data) ? list.data : []);
+    for (const i of items.filter((x) => /\[e2e\]/.test(JSON.stringify(x)))) {
+        const id = i.id || i.itemId;
+        if (!id) continue;
+        await runCli(["auto-reply", "delete", String(id)], live(T));
         await sleep(250);
     }
 }

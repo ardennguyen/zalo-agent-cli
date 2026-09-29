@@ -41,12 +41,30 @@ import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { runCli, runJson, hasSuccess, errorLineOf } from "../helpers/cli.js";
-import { gate, live, mark, send, sleep, undoMsg, assertDisposable, END_SESSION } from "../helpers/live.js";
+import {
+    gate,
+    live,
+    mark,
+    send,
+    sleep,
+    undoMsg,
+    assertDisposable,
+    END_SESSION,
+    assertSession,
+} from "../helpers/live.js";
 import { updateGroupThreadId, loadTargets } from "../helpers/targets.js";
 
 const g = gate(5);
 const skip = g.run ? false : g.skipReason;
 const T = g.targets;
+
+// Confirm WHICH account is logged in before this tier writes anything.
+// gate() only reads env flags and targets.json; nothing else verified the
+// session, so `--tier N` could drive a stranger's account.
+before(async () => {
+    if (!g.run) return;
+    await assertSession(T);
+});
 
 const configDir = () => join(T.home, ".zalo-agent-cli");
 const credPath = () => join(configDir(), "credentials", `cred_${T.accountOwnId}.json`);
@@ -182,7 +200,12 @@ describe("tier 5a · conversation history wipe", { skip }, () => {
     it("wiping is idempotent — a second delete does not error", async () => {
         assertDisposable(T.group.threadId, "conv delete");
         const again = await runCli(["conv", "delete", "-t", "1", T.group.threadId], live(T, { timeout: 120_000 }));
+        // Asserting only "no stack trace" proved nothing: this CLI catches
+        // every API failure and prints a ✗ line, so the regex could not
+        // match whatever happened. errorLineOf is what distinguishes the
+        // two outcomes, and it is already used a few lines above.
         assert.doesNotMatch(again.all, /at Command\.|Unhandled/, again.all.slice(0, 300));
+        assert.equal(errorLineOf(again.stdout), null, `second conv delete errored: ${again.all.slice(0, 300)}`);
     });
 
     // Post-destructive seed. Two jobs, and both matter:
@@ -227,6 +250,18 @@ describe("tier 5a · conversation history wipe", { skip }, () => {
             );
             assert.equal(hist.ok, true, hist.error);
             assert.ok(Array.isArray(hist.data.messages));
+
+            // Then take it back. The DM is a real person's thread, and the
+            // next test wipes the conversation again anyway — so leaving
+            // this seed in place bought nothing and deposited one permanent
+            // timestamped test message per --destructive run. We are holding
+            // the ids; use them.
+            const undone = await undoMsg(T, T.dm, sent.msgId, sent.cliMsgId);
+            assert.equal(
+                errorLineOf(undone.stdout),
+                null,
+                `DM seed left visible to the other side: ${undone.all.slice(0, 300)}`,
+            );
         },
     );
 

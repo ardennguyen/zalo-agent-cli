@@ -22,6 +22,12 @@
  * do pass formats Zalo will not render inline — bmp, tiff, heic. Those are
  * uploaded as file attachments, but the getter must still not choke on them.
  */
+// sandbox.js FIRST: it redirects HOME/USERPROFILE before
+// credentials.js freezes CONFIG_DIR at module-eval time. This file
+// reaches that module transitively, so without the redirect it binds
+// to the real ~/.zalo-agent-cli/. Enforced by
+// tests/cli/sandbox-discipline.test.js.
+import "../helpers/sandbox.js";
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

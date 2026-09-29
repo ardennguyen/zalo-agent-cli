@@ -210,11 +210,31 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**184**), command groups (**16**), MCP tools (**7**), OA commands (**32**), offline tests (**1388** as of 2026-09-29). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**184**), command groups (**16**), MCP tools (**7**), OA commands (**32**), offline tests (**1656** as of 2026-09-30). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
 **The MCP tool list in every doc must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`.
 
 `tests/cli/surface.test.js` is the **machine-checkable twin** of `command-reference.md`. For the wiki, the authoritative EN⇄VN pairing is `_Sidebar.md` in that checkout.
+
+### Leak check before every wiki push (MANDATORY)
+
+**A wiki push publishes instantly — there is no review gate in front of it.** Run the check from the wiki checkout before every `git push`, and do not push on a non-zero exit:
+
+```bash
+bash ../zalo-agent-cli/.agents/check-wiki-leaks.sh
+```
+
+It fails the push on any of:
+
+1. **Zalo ids** — any digit run of 12 or more. A real 19-digit thread id reached `command-reference.md` once and had to be scrubbed (`b0f267c`).
+2. **Phone shapes** that are not the known dummies (`0123456789`, `0901234567`).
+3. **Confidential terms** — company/product names and the personal names scrubbed in `b0f267c`.
+
+The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose**. This file is committed to a *public* repo, so the denylist cannot live in it: writing those names here is precisely the disclosure the check exists to prevent. If the list is missing the script exits 2 rather than passing — recreate it, never skip it.
+
+The same rule applies to anything else that gets published: npm READMEs, GitHub releases, issue comments. The wiki is just the surface with the shortest path from edit to public.
+
+> Keep the script honest. A check that only ever prints "clean" is indistinguishable from a broken one — the same green-check-hiding-a-problem shape as the commands in [`docs/agent-notes.md`](docs/agent-notes.md) that had never worked while every test passed. After changing it, plant one sample per category in a scratch directory, confirm it exits 1, and delete them.
 
 ---
 

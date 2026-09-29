@@ -6,7 +6,7 @@ import { acquireLock, releaseLock, checkLock } from "../core/lock.js";
 import { error, info, success, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { SyncManager } from "../core/sync.js";
-import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
+import { SyncV2, resolveSyncWindow, FULL_HISTORY_FROM } from "../core/sync-v2/index.js";
 import {
     downloadSyncedMedia,
     pruneDownloadedMedia,
@@ -30,6 +30,7 @@ import {
     setSyncState,
     clearSyncState,
     getOrphanThreads,
+    recordConversationList,
 } from "../core/db.js";
 
 /** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
@@ -464,31 +465,54 @@ async function runPruneOrphans(activeAcc, opts) {
     const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
+    // The recorded definition: the same set `sync`'s warning counts and
+    // `conv forget --orphans` removes.
     const orphans = getOrphanThreads().filter((t) => t.files > 0);
     if (!orphans.length) {
         success("No orphaned conversations are holding downloaded media.");
-        info("Orphans are found from leave/disperse events and from the conversation list a sync returns.");
+        info(
+            "Orphans come from leave/removal events, `conv delete`, and the conversation list a full-history sync returns.",
+        );
         process.exit(0);
     }
 
-    const totalFiles = orphans.reduce((n, t) => n + (t.files || 0), 0);
-    if (opts.dryRun) {
-        success(`Dry run: ${totalFiles} file(s) across ${orphans.length} orphaned conversation(s).`);
-        for (const t of orphans.slice(0, 15)) {
+    // The dry run goes through the same function, over the same rows, as the
+    // real one -- so what it lists and counts is what the real run deletes.
+    const dryRun = Boolean(opts.dryRun);
+    const total = { deleted: 0, present: 0, bytes: 0, missing: 0, failed: 0, failures: [] };
+    for (const t of orphans) {
+        const st = await pruneDownloadedMedia({ all: true, threadId: t.threadId, dryRun });
+        total.deleted += st.deleted;
+        total.present += st.considered - st.missing;
+        total.bytes += st.bytes;
+        total.missing += st.missing;
+        total.failed += st.failed;
+        total.failures.push(...st.failures);
+    }
+
+    if (dryRun) {
+        success(
+            `Dry run: ${total.present} file(s) (${formatBytes(total.bytes)}) across ${orphans.length} orphaned conversation(s).`,
+        );
+        // Every one of them. A preview that stops at a page does not show what
+        // the real run is about to remove.
+        for (const t of orphans) {
             info(`  ${t.threadId}${t.name ? ` (${t.name})` : ""} — ${t.files} file(s)`);
         }
+        if (total.missing)
+            info(`${total.missing} row(s) point at files already gone; a real run clears those pointers.`);
         info("Message text is kept. Use `conv forget --orphans` to remove that too.");
         process.exit(0);
     }
 
-    let deleted = 0;
-    let bytes = 0;
-    for (const t of orphans) {
-        const st = await pruneDownloadedMedia({ all: true, threadId: t.threadId });
-        deleted += st.deleted;
-        bytes += st.bytes;
+    success(
+        `Deleted ${total.deleted} file(s) (${formatBytes(total.bytes)}) from ${orphans.length} orphaned conversation(s).`,
+    );
+    if (total.missing) info(`${total.missing} row(s) pointed at files already gone — those pointers were cleared.`);
+    if (total.failed) {
+        warning(`${total.failed} file(s) could not be deleted.`);
+        for (const f of total.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
-    success(`Deleted ${deleted} file(s) (${formatBytes(bytes)}) from ${orphans.length} orphaned conversation(s).`);
     info("Their message text is still here — `conv forget --orphans` removes that too.");
     process.exit(0);
 }
@@ -1013,6 +1037,7 @@ async function runTransferSync(activeAcc, opts) {
         info(`Restoring ${win.label}.`);
         if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
         warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
+        const startedAt = Date.now();
         const r = await syncViaDaemon(accountDir, {
             stage: "messages",
             params: { days: opts.days ?? null, from: opts.from, shardSize: opts.shardSize, waitMs },
@@ -1024,7 +1049,7 @@ async function runTransferSync(activeAcc, opts) {
         if (!r?.ok) {
             error(`Failed: ${daemonStageError(r)}`);
         } else {
-            reportRestore(r.result, win);
+            reportRestore(r.result, win, { startedAt, keep: ownThreadIds(api, activeAcc.ownId) });
             exitCode = 0;
         }
     } else if (!acquireLock(accountDir)) {
@@ -1058,6 +1083,7 @@ async function runTransferSync(activeAcc, opts) {
                     "This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.",
                 );
                 const sv = new SyncV2(api, activeAcc.ownId);
+                const startedAt = Date.now();
                 const res = await sv.restore({
                     days: opts.days,
                     from: opts.from,
@@ -1072,7 +1098,7 @@ async function runTransferSync(activeAcc, opts) {
                         else if (detail) info(`  ${detail}`);
                     },
                 });
-                reportRestore(res, win);
+                reportRestore(res, win, { startedAt, keep: ownThreadIds(api, activeAcc.ownId) });
                 exitCode = 0;
             }
         } catch (err) {
@@ -1112,14 +1138,121 @@ async function runTransferSync(activeAcc, opts) {
 }
 
 /**
+ * How long a conversation must have been quiet before a restore started for
+ * that restore's conversation list to call it gone.
+ *
+ * The list is taken early in a run that can last many minutes, and a
+ * conversation that starts meanwhile cannot be in it. Its messages carry
+ * Zalo's clock, the run's start time carries ours, so the margin also absorbs
+ * a local clock running ahead. Sparing a recently active conversation costs
+ * nothing: the next full-history sync lists it or marks it.
+ */
+const LIST_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * What a restore's conversation list can prove gone, and for which kinds.
+ *
+ * The list may mark a cached conversation gone only when it is the phone's
+ * WHOLE list and every conversation in it was matched to a thread id:
+ *
+ *  - a --days/--from run lists only what was active in its window;
+ *  - a partial run lists only the shards that arrived;
+ *  - a listed conversation the restore could not map keeps an opaque
+ *    `oneone/…` / `group/…` id and could be ANY cached thread of that kind (a
+ *    group you left, if the phone still lists it: only current groups are in
+ *    the map);
+ *  - a listed conversation that returned no messages is in no id list at all.
+ *
+ * Marking in any of those cases would have prune-orphans delete the media of
+ * a conversation the account still has.
+ *
+ * @param {object} res - SyncV2.restore() result
+ * @param {{from: number}} win - resolveSyncWindow() result
+ * @returns {{present: string[], complete: boolean, markKinds: string[], unresolved: number, silent: number}}
+ */
+function conversationListProof(res, win) {
+    const present = Array.isArray(res?.liveThreadIds) ? res.liveThreadIds.map(String) : [];
+    const listed = Number(res?.conversations) || 0;
+    const complete = win?.from <= FULL_HISTORY_FROM && res?.reason === "complete" && listed > 0;
+    const opaque = { dm: 0, group: 0 };
+    for (const id of present) {
+        if (id.startsWith("oneone/")) opaque.dm++;
+        else if (id.startsWith("group/")) opaque.group++;
+    }
+    const silent = Math.max(0, listed - present.length);
+    const markKinds = complete && !silent ? ["dm", "group"].filter((k) => !opaque[k]) : [];
+    return { present, complete, markKinds, unresolved: opaque.dm + opaque.group, silent };
+}
+
+/**
+ * Threads a conversation list never marks gone: the account's own uid and its
+ * My Documents chat (`loginInfo.send2me_id`).
+ *
+ * The friend list never holds the self-chat, so a restore can list it under an
+ * id the cache does not use, or not map it at all -- and its media is what the
+ * owner saved to themselves.
+ *
+ * @param {object} api
+ * @param {string} ownId
+ * @returns {string[]}
+ */
+function ownThreadIds(api, ownId) {
+    let send2me = null;
+    try {
+        send2me = api?.getContext?.()?.loginInfo?.send2me_id ?? null;
+    } catch {
+        /* no session context: the own uid is still kept */
+    }
+    return [ownId, send2me].filter(Boolean).map(String);
+}
+
+/**
+ * Record a restore's conversation list in zalo.db, so every later command
+ * sees what it said -- prune-orphans and forget --orphans run long after the
+ * list is gone.
+ *
+ * @param {object} res - SyncV2.restore() result
+ * @param {{from: number}} win
+ * @param {{startedAt?: number, keep?: string[]}} ctx - when the restore was started, and
+ *   the threads never to mark ({@link ownThreadIds})
+ * @returns {object|null} the proof and what was recorded; null when nothing was
+ */
+function recordRestoreList(res, win, ctx) {
+    const startedAt = Number(ctx?.startedAt);
+    if (!Number.isFinite(startedAt)) return null;
+    const proof = conversationListProof(res, win);
+    if (!proof.present.length) return null;
+    const recorded = recordConversationList({
+        present: proof.present,
+        clearBefore: startedAt,
+        markBefore: startedAt - LIST_CLOCK_SKEW_MS,
+        markKinds: proof.markKinds,
+        keep: ctx.keep || [],
+    });
+    return { ...proof, ...recorded };
+}
+
+/**
  * Report a finished restore, in the words `sync-mobile --transfer` has always
  * used. Exit-free, and says what happened so `sync` can summarize it.
  *
+ * Also records the restore's conversation list first (see recordRestoreList),
+ * so the orphans it reports are the ones `sync-media --prune-orphans` and
+ * `conv forget --orphans` will act on.
+ *
  * @param {object} res - SyncV2.restore() result
- * @param {{label: string, days: number|null}} win
+ * @param {{label: string, days: number|null, from: number}} win
+ * @param {{startedAt?: number, keep?: string[]}} [ctx] - see recordRestoreList
  * @returns {{status: "ok"|"partial"|"unconfirmed", reason: string}}
  */
-function reportRestore(res, win) {
+function reportRestore(res, win, ctx = {}) {
+    // Before the early returns: a thread IN a partial list is still present.
+    let list = null;
+    try {
+        list = recordRestoreList(res, win, ctx);
+    } catch (e) {
+        warning(`Could not record the conversation list: ${e.message}`);
+    }
     if (res.conversations === 0 && res.reason === "empty-window") {
         // The phone answered; the window is just empty. Different problem,
         // different advice.
@@ -1155,11 +1288,11 @@ function reportRestore(res, win) {
         .join(", ");
     if (breakdown) info(`By type: ${breakdown}.`);
     if (res.attachmentsSaved) info(`${res.attachmentsSaved} message(s) carry media.`);
-    // The conversation round is the only authoritative list of what the account
-    // still has. Anything cached outside it is orphaned and nothing else would
-    // ever notice.
+    // The RECORDED orphans -- this restore's list included -- read exactly as
+    // the two commands recommended below read them. This used to pass the
+    // list straight in, which reported conversations neither command could see.
     try {
-        const orphans = getOrphanThreads(res.liveThreadIds || null);
+        const orphans = getOrphanThreads();
         const withData = orphans.filter((t) => (t.messages || 0) + (t.files || 0) > 0);
         if (withData.length) {
             const files = withData.reduce((n, t) => n + (t.files || 0), 0);
@@ -1168,6 +1301,16 @@ function reportRestore(res, win) {
             );
             info("Reclaim the space with `zalo-agent sync-media --prune-orphans`,");
             info("or remove them entirely with `zalo-agent conv forget --orphans`.");
+        }
+        if (list?.complete && list.unproven) {
+            const why = [];
+            if (list.unresolved)
+                why.push(`${list.unresolved} listed conversation(s) could not be matched to a thread id`);
+            if (list.silent) why.push(`${list.silent} listed conversation(s) returned no messages`);
+            if (!why.length) why.push("their kind (DM or group) is not recorded");
+            info(
+                `${list.unproven} other cached conversation(s) are missing from the conversation list but were not marked gone: ${why.join("; ")}.`,
+            );
         }
     } catch {
         /* orphan reporting must never fail a successful restore */
@@ -1431,6 +1574,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
             // Unchanged by the hand-off. The daemon supplies the socket; only
             // the owner's phone can supply the history.
             warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
+            const startedAt = Date.now();
             const r = await syncViaDaemon(accountDir, {
                 stage: "messages",
                 params: {
@@ -1449,7 +1593,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                 warning(`Message restore failed: ${why}`);
                 record("messages", "failed", why);
             } else {
-                const rep = reportRestore(r.result, win);
+                const rep = reportRestore(r.result, win, { startedAt, keep: ownThreadIds(api, activeAcc.ownId) });
                 record("messages", rep.status, rep.reason, {
                     conversations: r.result.conversations,
                     messagesSaved: r.result.messagesSaved,
@@ -1530,6 +1674,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                         "This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.",
                     );
                     try {
+                        const startedAt = Date.now();
                         const res = await new SyncV2(api, activeAcc.ownId).restore({
                             days: opts.days,
                             from: opts.from,
@@ -1543,7 +1688,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                                 else if (detail) info(`  ${detail}`);
                             },
                         });
-                        const r = reportRestore(res, win);
+                        const r = reportRestore(res, win, { startedAt, keep: ownThreadIds(api, activeAcc.ownId) });
                         record("messages", r.status, r.reason, {
                             conversations: res.conversations,
                             messagesSaved: res.messagesSaved,

@@ -34,7 +34,8 @@ export function initDb(dbPath) {
       respondedByMe INTEGER,
       lastGlobalId TEXT,
       lastClientId TEXT,
-      leftAt INTEGER
+      leftAt INTEGER,
+      deleteMarkerAt INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS contacts (
@@ -290,6 +291,20 @@ export function initDb(dbPath) {
     try {
         db.exec("ALTER TABLE threads ADD COLUMN leftAt INTEGER");
     } catch {}
+    // The cutoff `msg history` honors, split out of leftAt. leftAt used to be
+    // both "this conversation is not ours" and "nothing at or before this
+    // comes back from history". The first is now cleared when the account is
+    // seen in the conversation again; the second must not be -- a DM you
+    // deleted keeps its old messages deleted after the contact writes again.
+    // Copied once, in the same transaction that adds the column: from then on
+    // leftAt is also set by a conversation list, which is not a deletion and
+    // must never become a cutoff.
+    if (!db.prepare("SELECT 1 FROM pragma_table_info('threads') WHERE name = 'deleteMarkerAt'").get()) {
+        db.transaction(() => {
+            db.exec("ALTER TABLE threads ADD COLUMN deleteMarkerAt INTEGER");
+            db.exec("UPDATE threads SET deleteMarkerAt = leftAt WHERE leftAt IS NOT NULL");
+        })();
+    }
 
     return db;
 }
@@ -468,12 +483,17 @@ export function insertMessageIfAbsent(msg) {
 }
 
 /**
- * When a conversation stopped being ours, or null.
+ * When a conversation stopped being ours, or null while it is ours.
  *
- * `leftAt` is set by `conv delete` and by our own leave, removal or block
- * event (markThreadGone), and nothing clears it. It is the nearest thing this
- * cache has to Zalo Web's per-conversation delete marker, which keeps fetched
- * history from bringing deleted messages back.
+ * The gone marker. Set by `conv delete` and our own leave, removal or block
+ * event ({@link markThreadGone}) and by a full-history conversation list that
+ * no longer holds the thread ({@link recordConversationList}); cleared when
+ * the account is seen in the conversation again ({@link markThreadBack}).
+ * What `sync-media --prune-orphans` and `conv forget --orphans` act on, via
+ * {@link getOrphanThreads}.
+ *
+ * Not the history cutoff: that is {@link getThreadDeleteMarker}, which a
+ * return does not clear.
  *
  * @param {string} threadId
  * @returns {number|null} epoch ms
@@ -482,6 +502,26 @@ export function getThreadLeftAt(threadId) {
     if (!db) throw new Error("Database not initialized");
     const row = db.prepare("SELECT leftAt FROM threads WHERE threadId = ?").get(String(threadId));
     const at = Number(row?.leftAt);
+    return Number.isFinite(at) && at > 0 ? at : null;
+}
+
+/**
+ * The conversation's delete marker: nothing at or before this time may come
+ * back from fetched history. Null when there is none.
+ *
+ * The nearest thing this cache has to Zalo Web's per-conversation delete
+ * marker. Set with the gone marker by `conv delete` and by our own leave,
+ * removal or block ({@link markThreadGone}), and kept when the account comes
+ * back -- a deleted DM's old messages stay deleted after the contact writes
+ * again, while the conversation itself stops being an orphan.
+ *
+ * @param {string} threadId
+ * @returns {number|null} epoch ms
+ */
+export function getThreadDeleteMarker(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    const row = db.prepare("SELECT deleteMarkerAt FROM threads WHERE threadId = ?").get(String(threadId));
+    const at = Number(row?.deleteMarkerAt);
     return Number.isFinite(at) && at > 0 ? at : null;
 }
 
@@ -738,13 +778,30 @@ export function getDownloadedMediaBefore(before, threadId = null) {
 }
 
 /**
- * Threads that still have rows but were not seen in the most recent
- * conversation list — a dispersed group, a deleted chat, a group you were
- * removed from. Their messages and media linger with nothing ever refreshing
- * them, and no command currently reclaims that space.
+ * Conversations the account no longer has that are still cached here: a
+ * dispersed group, a deleted chat, a group you left or were removed from.
  *
- * @param {string[]} liveThreadIds - thread ids the latest sync returned
- * @returns {Array<{threadId: string, name: string, files: number}>}
+ * One definition, read alike by `sync`'s orphan warning, `sync-media
+ * --prune-orphans` and `conv forget --orphans`: a thread is an orphan when its
+ * gone marker (threads.leftAt) is set and nothing in it is newer. Every signal
+ * that a conversation is gone records that marker -- our own leave, removal or
+ * block event, `conv delete`, and a full-history conversation list that no
+ * longer holds it -- so every reader sees the same set however long after the
+ * signal it runs. `sync` used to take its warning from the list it had just
+ * restored, which nothing recorded, and then recommend a prune that could not
+ * see that list.
+ *
+ * A message newer than the marker means the account is back, whichever writer
+ * stored it. The listener clears the marker itself; a restore or a history
+ * fetch does not, and this is what keeps them from leaving a conversation you
+ * are in marked gone. System lines do not count: the phone's row for our own
+ * leave is dated after the leave itself.
+ *
+ * @param {string[]|null} [liveThreadIds] - PREVIEW ONLY: also count every
+ *   thread missing from this list, recording nothing. No command passes one --
+ *   an unrecorded list is exactly how the warning and the prune came to
+ *   disagree. Recording a list is {@link recordConversationList}.
+ * @returns {Array<{threadId: string, name: string, type: string, leftAt: number|null, messages: number, files: number, lastSeenAt: number|null}>}
  */
 export function getOrphanThreads(liveThreadIds = null) {
     if (!db) throw new Error("Database not initialized");
@@ -752,21 +809,93 @@ export function getOrphanThreads(liveThreadIds = null) {
         .prepare(
             `SELECT t.threadId, t.name, t.type, t.leftAt,
               COUNT(m.msgId) AS messages,
-              SUM(CASE WHEN m.localPath IS NOT NULL THEN 1 ELSE 0 END) AS files
+              SUM(CASE WHEN m.localPath IS NOT NULL THEN 1 ELSE 0 END) AS files,
+              MAX(CASE WHEN m.type = 'group_event' THEN NULL ELSE m.timestamp END) AS lastSeenAt
        FROM threads t LEFT JOIN messages m ON m.threadId = t.threadId
        GROUP BY t.threadId, t.name, t.type, t.leftAt`,
         )
         .all();
-    // Two independent signals. `leftAt` is what a live event or an explicit
-    // disperse/delete records. A conversation list, when one is supplied,
-    // catches the rest: anything still holding rows that the account no longer
-    // knows about.
-    if (!Array.isArray(liveThreadIds)) return rows.filter((r) => r.leftAt);
+    const gone = (r) => Boolean(r.leftAt) && !(Number(r.lastSeenAt) > Number(r.leftAt));
+    if (!Array.isArray(liveThreadIds)) return rows.filter(gone);
     const live = new Set(liveThreadIds.map(String));
-    return rows.filter((r) => r.leftAt || !live.has(String(r.threadId)));
+    return rows.filter((r) => gone(r) || !live.has(String(r.threadId)));
 }
 
-/** Record that a conversation is no longer ours (dispersed, deleted, removed). */
+/**
+ * Record what a conversation list says about which cached threads are ours.
+ *
+ * A restore's conversation round is the phone's list of the conversations the
+ * account has. Recording it, rather than holding it for one report, is what
+ * lets `sync-media --prune-orphans` and `conv forget --orphans` -- run any time
+ * later -- act on the same conversations `sync` said were gone.
+ *
+ * One transaction, two writes:
+ *
+ *  - a listed thread whose gone marker predates the list is back: a group
+ *    rejoined since we left it, a deleted DM the contact wrote to again. Any
+ *    list counts, windowed or partial -- a thread IN it is present, however
+ *    little else the list covers.
+ *  - where the caller vouches the list is complete for a kind of thread, a
+ *    cached thread of that kind missing from it is gone -- unless it was active
+ *    at or after `markBefore`, because a list cannot hold a conversation that
+ *    started while it was being taken.
+ *
+ * The delete marker is never touched. A list is evidence of absence, not a
+ * deletion, and must not stop `msg history` from filling a thread in.
+ *
+ * @param {object} list
+ * @param {string[]} list.present - every thread id the list accounted for
+ * @param {number} list.clearBefore - a present thread's marker is cleared only if older than this
+ * @param {number} list.markBefore - only threads quiet since before this are marked, and at this time
+ * @param {string[]} [list.markKinds=[]] - thread types ("dm", "group") the list is complete for
+ * @param {string[]} [list.keep=[]] - ids a list never marks: the account's own threads
+ * @returns {{cleared: string[], marked: string[], unproven: number}} `unproven` counts the cached
+ *   conversations with messages that are missing from the list and were left unmarked, because
+ *   the list is not complete for their kind
+ */
+export function recordConversationList({ present, clearBefore, markBefore, markKinds = [], keep = [] }) {
+    if (!db) throw new Error("Database not initialized");
+    const params = {
+        present: JSON.stringify((present || []).map(String)),
+        kinds: JSON.stringify(markKinds.map(String)),
+        keep: JSON.stringify(keep.filter(Boolean).map(String)),
+        clearBefore: Number(clearBefore),
+        markBefore: Number(markBefore),
+    };
+    // Not an orphan right now, by the rule getOrphanThreads reads with.
+    const notGone =
+        "(threads.leftAt IS NULL OR EXISTS (SELECT 1 FROM messages m WHERE m.threadId = threads.threadId " +
+        "AND m.timestamp > threads.leftAt AND COALESCE(m.type, '') <> 'group_event'))";
+    const missingAndQuiet =
+        "threads.threadId NOT IN (SELECT value FROM json_each(@present)) " +
+        "AND threads.threadId NOT IN (SELECT value FROM json_each(@keep)) " +
+        `AND COALESCE(threads.lastUpdate, 0) < @markBefore AND ${notGone}`;
+    return db.transaction(() => {
+        const cleared = db
+            .prepare(
+                "UPDATE threads SET leftAt = NULL WHERE leftAt IS NOT NULL AND leftAt < @clearBefore " +
+                    "AND threadId IN (SELECT value FROM json_each(@present)) RETURNING threadId",
+            )
+            .all(params)
+            .map((r) => r.threadId);
+        const marked = db
+            .prepare(
+                `UPDATE threads SET leftAt = @markBefore WHERE ${missingAndQuiet} ` +
+                    "AND threads.type IN (SELECT value FROM json_each(@kinds)) RETURNING threadId",
+            )
+            .all(params)
+            .map((r) => r.threadId);
+        const { unproven } = db
+            .prepare(
+                `SELECT COUNT(*) AS unproven FROM threads WHERE ${missingAndQuiet} ` +
+                    "AND (threads.type IS NULL OR threads.type NOT IN (SELECT value FROM json_each(@kinds))) " +
+                    "AND EXISTS (SELECT 1 FROM messages m WHERE m.threadId = threads.threadId)",
+            )
+            .get(params);
+        return { cleared, marked, unproven };
+    })();
+}
+
 /**
  * Id prefix of a group-event row the LISTENER wrote.
  *
@@ -829,9 +958,49 @@ export function hasSyncedGroupEventNear(threadId, timestamp, windowMs = 2000) {
     );
 }
 
+/**
+ * Record that a conversation is no longer ours: deleted, or we left, were
+ * removed or were blocked.
+ *
+ * Sets the gone marker and the delete marker together, because both callers
+ * -- `conv delete` and our own leave/removal/block event -- are a deletion as
+ * far as fetched history goes. A conversation list is not, and records the
+ * gone marker alone ({@link recordConversationList}).
+ *
+ * @param {string} threadId
+ * @param {number} [at=Date.now()] - epoch ms; the event's own time when it has one
+ */
 export function markThreadGone(threadId, at = Date.now()) {
     if (!db) throw new Error("Database not initialized");
-    return db.prepare("UPDATE threads SET leftAt = ? WHERE threadId = ?").run(Number(at), String(threadId));
+    return db
+        .prepare(
+            "UPDATE threads SET leftAt = @at, deleteMarkerAt = MAX(COALESCE(deleteMarkerAt, 0), @at) " +
+                "WHERE threadId = @threadId",
+        )
+        .run({ at: Number(at), threadId: String(threadId) });
+}
+
+/**
+ * Record that the account was seen in a conversation: clear its gone marker,
+ * if that marker predates the sighting.
+ *
+ * Zalo delivers a conversation's traffic only to the people in it, so a
+ * message or group event dated after we left means we are back. One dated
+ * before it proves nothing -- a backlog replay, or a late delivery of
+ * something said before we left, must not undo the departure. The delete
+ * marker stays either way ({@link getThreadDeleteMarker}).
+ *
+ * @param {string} threadId
+ * @param {number} seenAt - epoch ms of the sighting
+ * @returns {{changes: number}} 1 when a marker was cleared
+ */
+export function markThreadBack(threadId, seenAt) {
+    if (!db) throw new Error("Database not initialized");
+    const at = Number(seenAt);
+    if (!Number.isFinite(at)) return { changes: 0 };
+    return db
+        .prepare("UPDATE threads SET leftAt = NULL WHERE threadId = ? AND leftAt IS NOT NULL AND leftAt < ?")
+        .run(String(threadId), at);
 }
 
 /**

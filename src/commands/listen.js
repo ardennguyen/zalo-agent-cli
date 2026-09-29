@@ -466,8 +466,11 @@ export function registerListenCommand(program) {
                     const board = noteBoardChange(event);
                     // Leaving or being removed means this conversation is no
                     // longer ours. Flag it so it surfaces as an orphan;
-                    // deleting the local copy stays an explicit decision.
-                    const gone = storeGroupEvent(event);
+                    // deleting the local copy stays an explicit decision. Any
+                    // later event about it (a rejoin) clears the flag. Our uid
+                    // is what tells being removed from removing someone else
+                    // -- mcp.js passes it too.
+                    const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
                     // The system line itself, as the row a sync would restore.
                     // Stored whatever --events says: output flags never gate storage.
                     const row = storeGroupEventRow(event);

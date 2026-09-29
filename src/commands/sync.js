@@ -9,11 +9,13 @@ import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow } from "../core/sync-v2/index.js";
 import { downloadSyncedMedia, pruneDownloadedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
-import { drainReactions } from "../core/sync-v2/reactions.js";
+import { drainReactions, placeUnresolvedReactions } from "../core/sync-v2/reactions.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
 import { syncConvState } from "../core/sync-v2/conv-state.js";
 import { planSyncRun } from "../core/sync-v2/plan.js";
-import { attachLiveStore, storeLiveReaction } from "../core/live-store.js";
+import { startKeepAlive } from "../core/sync-v2/keepalive.js";
+import { getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
+import { attachLiveStore } from "../core/live-store.js";
 import {
     initDb,
     getRecentThreads,
@@ -27,6 +29,16 @@ import {
 
 /** Zalo close code for a duplicate web session (Zalo Web is open elsewhere). */
 const CLOSE_DUPLICATE = 3000;
+
+/**
+ * Reaction-drain budget for the unified run.
+ *
+ * Named because the daemon path has to ask for exactly the same thing: the
+ * stage runs in another process there, and a page cap that differed between
+ * the two would make the same command truncate in one setup and not the other.
+ */
+const DRAIN_PAGES = 20;
+const DRAIN_WAIT_MS = 15000;
 
 /**
  * Human-friendly relative age for the "already synced …" skip message.
@@ -76,6 +88,13 @@ export function registerSyncCommands(program) {
         .option(
             "--no-removals",
             "Do not apply un-react entries from the reaction backlog (see sync-reactions --no-removals)",
+        )
+        .option(
+            "--shard-size <n>",
+            "Conversations per message batch (1-30, default 30). Fewer means more, smaller batches: " +
+                "the first one comes back sooner and less is lost if the connection drops, at the cost of " +
+                "more sync sessions. The server rejects a batch of more than 30",
+            parseIntAtLeast(1),
         )
         .option("--plan", "Print which stages would run, in what order and why, then exit. Sends nothing")
         .action(async (opts) => {
@@ -128,6 +147,13 @@ export function registerSyncCommands(program) {
                 "restored. Use this when you want the history quickly and will run `sync-media` later",
         )
         .option("-w, --wait <seconds>", "Give up after this long", parseIntOption, 30)
+        .option(
+            "--shard-size <n>",
+            "Conversations per message batch (1-30, default 30), --transfer only. Fewer means more, " +
+                "smaller batches: the first one comes back sooner and less is lost if the connection " +
+                "drops, at the cost of more sync sessions. The server rejects a batch of more than 30",
+            parseIntAtLeast(1),
+        )
         .action(async (opts) => {
             // --days is a property of the cmd 590 query the phone answers, so
             // it only means anything on the transfer path. Say so instead of
@@ -590,15 +616,38 @@ async function runReactionSync(activeAcc, opts) {
         process.exit(1);
     }
 
+    const waitMs = Math.max(1, Number(opts.wait) || 15) * 1000;
+
+    // A daemon holding the account's session can drain on it. Nothing is
+    // stopped and nothing is evicted, so this is no longer a reason to refuse.
+    const chan = getSyncChannel(accountDir, "reactions");
+    if (chan) {
+        info("A listen/mcp daemon holds this account's session — draining on its socket.");
+        info("Requesting the reaction backlog (cmd 610 for 1-1, 611 for groups)…");
+        const r = await syncViaDaemon(accountDir, {
+            stage: "reactions",
+            params: { waitMs, maxPages: opts.pages, applyRemovals: opts.removals !== false },
+            onEvent: reactionProgress,
+        });
+        if (!r?.ok) {
+            error(`Failed: ${daemonStageError(r)}`);
+            process.exit(1);
+        }
+        reportReactionStage(r.result, r.result.placed || 0, r.result.unresolvedLeft || 0, opts.pages);
+        process.exit(0);
+    }
+
     // One socket and one db writer per account, same as every other path that
     // opens the WebSocket.
     if (!acquireLock(accountDir)) {
         error(`A listen daemon (or MCP server) is already running for account ${activeAcc.ownId}.`);
+        // It holds the lock but published no channel, so it cannot run the
+        // drain for us either. Restarting it is what makes that possible.
         info("Stop it first — Zalo permits one web session per account.");
+        info("(A daemon started with a working sync channel would have run this drain on its own socket.)");
         process.exit(1);
     }
 
-    const waitMs = Math.max(1, Number(opts.wait) || 15) * 1000;
     let exitCode = 1;
 
     try {
@@ -645,16 +694,81 @@ function drainPass(api, opts) {
         timeoutMs: opts.waitMs,
         maxPages: opts.pages,
         applyRemovals: opts.removals !== false,
-        onProgress: (p) => {
-            if (p.phase === "page") {
-                info(`  ${p.type} page ${p.page}: ${p.received} reaction(s)${p.more ? " (more)" : ""}`);
-            } else if (p.phase === "timeout") {
-                warning(`  ${p.type}: ${p.detail}`);
-            } else if (p.phase === "warn") {
-                warning(`  ${p.detail}`);
-            }
-        },
+        onProgress: reactionProgress,
     });
+}
+
+/**
+ * Print one drain progress callback.
+ *
+ * Shared with the daemon path, where the identical callbacks arrive as events
+ * off the channel rather than from a local `drainReactions` — the run must
+ * look the same to the person watching it either way.
+ *
+ * @param {{phase: string, type?: string, page?: number, received?: number,
+ *   more?: number, detail?: string}} p
+ */
+function reactionProgress(p) {
+    if (p.phase === "page") {
+        info(`  ${p.type} page ${p.page}: ${p.received} reaction(s)${p.more ? " (more)" : ""}`);
+    } else if (p.phase === "timeout") {
+        warning(`  ${p.type}: ${p.detail}`);
+    } else if (p.phase === "warn") {
+        warning(`  ${p.detail}`);
+    }
+}
+
+/**
+ * Report and classify a finished reaction stage, whichever socket it ran on.
+ *
+ * The retry pass runs in whichever process owns the db — here when this
+ * process holds the socket, inside the daemon when the stage ran there — so
+ * the two paths hand in `placed`/`left` already counted and share everything
+ * downstream of that.
+ *
+ * @param {object} stats - drainReactions stats
+ * @param {number} placed - unresolved reactions placed on the retry pass
+ * @param {number} left - still unplaceable
+ * @param {number} [pages=DRAIN_PAGES] - the cap that was asked for, so a
+ *   truncation message names the number the caller would have to raise
+ * @returns {{status: string, reason: string, stats: object}}
+ */
+function reportReactionStage(stats, placed, left, pages = DRAIN_PAGES) {
+    reportReactionDrain(stats, { pages });
+    if (placed) info(`Placed ${placed} reaction(s) whose message is now stored.`);
+    return {
+        status: stats.truncated ? "partial" : "ok",
+        reason: `${stats.stored + placed} stored`,
+        stats: { received: stats.received, stored: stats.stored + placed, unresolved: left },
+    };
+}
+
+/**
+ * Say why a stage the daemon was asked to run did not produce a result.
+ *
+ * Every one of these ends the stage. None of them may fall back to opening a
+ * socket here: a daemon that answered at all still holds the account's one web
+ * session, and a second would evict it — which is the harm this whole path
+ * exists to avoid.
+ *
+ * @param {object|null} r - syncViaDaemon() result; null means it vanished
+ * @returns {string}
+ */
+function daemonStageError(r) {
+    if (!r) return "the daemon went away before the request — re-run `zalo-agent sync`";
+    if (r.status === 409) {
+        const since = r.busySince ? ` (started ${formatAge(Date.now() - Number(r.busySince))} ago)` : "";
+        return `a ${r.busyStage || "sync"} is already running on that daemon${since} — wait for it to finish`;
+    }
+    // 404 is the daemon that predates these routes entirely; 503 is a newer
+    // one wired without that stage. `getSyncChannel()` normally keeps us out
+    // of both by reading the descriptor first, so reaching here means the
+    // daemon was replaced between the plan and the request.
+    if (r.status === 404 || r.status === 503) {
+        return "that daemon does not run sync stages — restart it to pick the capability up";
+    }
+    if (r.disconnected) return `${r.error} — the daemon may have restarted; re-run \`zalo-agent sync\``;
+    return r.error || "the daemon reported no result";
 }
 
 /**
@@ -766,26 +880,52 @@ function formatBytes(n) {
 function connectListener(api, waitMs) {
     return new Promise((res) => {
         let settled = false;
+        const onConnected = () => done({ ok: true });
+        const onClosed = (code) =>
+            done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
+        const onError = (e) => done({ ok: false, reason: e && e.message ? e.message : "socket error" });
+        // Every handler comes off again when this settles. It used to leave all
+        // three behind, which was harmless while a process connected exactly
+        // once -- a reconnect makes them accumulate, and a stale "closed"
+        // handler would resolve the NEXT connect attempt with the PREVIOUS
+        // socket's close code.
         const done = (v) => {
             if (settled) return;
             settled = true;
+            clearTimeout(timer);
+            api.listener.removeListener("connected", onConnected);
+            api.listener.removeListener("closed", onClosed);
+            api.listener.removeListener("error", onError);
             res(v);
         };
         const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), waitMs);
-        api.listener.on("connected", () => {
-            clearTimeout(timer);
-            done({ ok: true });
-        });
-        api.listener.on("closed", (code) => {
-            clearTimeout(timer);
-            done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
-        });
-        api.listener.on("error", (e) => {
-            clearTimeout(timer);
-            done({ ok: false, reason: e && e.message ? e.message : "socket error" });
-        });
+        api.listener.on("connected", onConnected);
+        api.listener.on("closed", onClosed);
+        api.listener.on("error", onError);
         api.listener.start({ retryOnClose: false });
     });
+}
+
+/**
+ * Re-open the socket after it dropped mid-stage.
+ *
+ * Handed to `SyncV2.restore()` as its `reconnect`: that class never starts or
+ * stops the listener itself, so the decision to reconnect is the caller's. A
+ * 1006 is NOT in the server's own `close_and_retry_codes`
+ * (`settings.features.socket`, measured: 5008 5007 3003 3000 5014 4002 5015
+ * 5017 5016), so zca-js will never retry one for us -- without this, a dropped
+ * wire ends the run and the phone confirmation it already spent is gone.
+ *
+ * @param {object} api
+ * @param {number} [waitMs=30000]
+ * @returns {Promise<boolean>} true once a live socket is back
+ */
+async function reconnectListener(api, waitMs = 30000) {
+    // zca-js nulls `ws` on close and throws "Already started" while it is set,
+    // so a socket still hanging around has to be put down first.
+    if (api?.listener?.ws) await closeListener(api);
+    const r = await connectListener(api, waitMs);
+    return r.ok === true;
 }
 
 /**
@@ -826,52 +966,102 @@ async function runTransferSync(activeAcc, opts) {
         info(`Last sync covered less than this — syncing ${win.label} despite the recent run.`);
     }
 
-    if (!acquireLock(accountDir)) {
-        error(`A listen daemon is already running for account ${activeAcc.ownId}.`);
-        info("Stop it first — one socket per account.");
-        process.exit(1);
-    }
-
     // Transfer sync needs time for the phone confirmation; use a generous window.
     const waitMs = Math.max(180, Number(opts.wait) || 0) * 1000;
     let exitCode = 1;
-    try {
-        info("Connecting…");
-        const connected = await connectListener(api, 30000);
-        if (!connected.ok) {
-            if (connected.reason === "duplicate") {
-                error("Zalo closed this connection: another web session is already open on this account.");
-                info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
-            } else {
-                error(`Could not open a connection: ${connected.reason}`);
-            }
+
+    // A running daemon holds the account's one web session and can run the
+    // restore on it. Stopping it to sync used to be the only option, and the
+    // stop/start opened a fresh coverage gap around the very run meant to
+    // close one. See src/core/daemon-channel.js.
+    const chan = getSyncChannel(accountDir, "messages");
+    if (chan) {
+        // SyncV2 opens the db itself on the local path; here it opens the
+        // daemon's copy in the daemon's process, so the media tail below has
+        // nothing to read from until we open ours.
+        initDb(join(accountDir, "zalo.db"));
+        info("A listen/mcp daemon holds this account's session — running the restore on its socket.");
+        info("Nothing is stopped: it keeps capturing live messages while the restore runs.");
+        info(`Restoring ${win.label}.`);
+        if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
+        warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
+        const r = await syncViaDaemon(accountDir, {
+            stage: "messages",
+            params: { days: opts.days ?? null, from: opts.from, shardSize: opts.shardSize, waitMs },
+            onEvent: ({ phase, detail }) => {
+                if (phase === "confirm") warning(detail);
+                else if (detail) info(`  ${detail}`);
+            },
+        });
+        if (!r?.ok) {
+            error(`Failed: ${daemonStageError(r)}`);
         } else {
-            syncManager.markConnected();
-            info(`Restoring ${win.label}.`);
-            if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
-            warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
-            const sv = new SyncV2(api, activeAcc.ownId);
-            const res = await sv.restore({
-                days: opts.days,
-                from: opts.from,
-                waitMs,
-                onStatus: ({ phase, detail }) => {
-                    if (phase === "confirm") warning(detail);
-                    else if (detail) info(`  ${detail}`);
-                },
-            });
-            reportRestore(res, win);
+            reportRestore(r.result, win);
             exitCode = 0;
         }
-    } catch (err) {
-        error(`Failed: ${err.message}`);
-    } finally {
+    } else if (!acquireLock(accountDir)) {
+        error(`A listen daemon is already running for account ${activeAcc.ownId}.`);
+        // It holds the lock but published no channel, so it cannot run the
+        // restore for us either. Restarting it is what makes that possible.
+        info("Stop it first — one socket per account.");
+        info("(A daemon started with a working sync channel would have run this restore on its own socket.)");
+        process.exit(1);
+    } else {
+        // One heartbeat for the whole socket window. `SyncV2.restore()` can
+        // hold this socket idle for minutes waiting on the phone, and the
+        // server-advised ping is 180000 ms -- the full width of that wait.
+        let heartbeat = null;
         try {
-            api.listener.stop();
-        } catch {
-            // already closed
+            info("Connecting…");
+            const connected = await connectListener(api, 30000);
+            if (!connected.ok) {
+                if (connected.reason === "duplicate") {
+                    error("Zalo closed this connection: another web session is already open on this account.");
+                    info("Zalo allows one web session per account. Sign out of Zalo Web, then run this again.");
+                } else {
+                    error(`Could not open a connection: ${connected.reason}`);
+                }
+            } else {
+                syncManager.markConnected();
+                heartbeat = startKeepAlive(api.listener);
+                info(`Restoring ${win.label}.`);
+                if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
+                warning(
+                    "This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.",
+                );
+                const sv = new SyncV2(api, activeAcc.ownId);
+                const res = await sv.restore({
+                    days: opts.days,
+                    from: opts.from,
+                    shardSize: opts.shardSize,
+                    waitMs,
+                    // This command owns the socket for the whole run, so it owns
+                    // the heartbeat too -- see runUnifiedSync for why.
+                    keepAlive: false,
+                    reconnect: () => reconnectListener(api),
+                    onStatus: ({ phase, detail }) => {
+                        if (phase === "confirm") warning(detail);
+                        else if (detail) info(`  ${detail}`);
+                    },
+                });
+                reportRestore(res, win);
+                exitCode = 0;
+            }
+        } catch (err) {
+            error(`Failed: ${err.message}`);
+        } finally {
+            try {
+                heartbeat?.stop();
+            } catch {
+                /* already stopped */
+            }
+            try {
+                api.listener.stop();
+            } catch {
+                // already closed
+            }
+            releaseLock(accountDir);
         }
-        releaseLock(accountDir);
     }
 
     // Media is fetched only after the socket is closed and the lock released:
@@ -909,12 +1099,16 @@ function reportRestore(res, win) {
         if (win.days) info("Pass a larger --days, or drop --days for full history.");
         return { status: "ok", reason: "phone confirmed: nothing missed in this window" };
     }
-    if (res.reason === "partial") {
+    if (res.reason === "partial" || res.reason === "socket-lost") {
+        const how = res.reason === "socket-lost" ? "the connection dropped" : "the run was cut short";
         warning(
-            `Partial restore: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) before the run was cut short.`,
+            `Partial restore: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) before ${how}.`,
         );
         info("What arrived is stored. Re-run with --force to fetch the rest.");
-        return { status: "partial", reason: `${res.messagesSaved} message(s) before the run was cut short` };
+        if (res.reason === "socket-lost" && res.resumes) {
+            info(`The connection was re-established ${res.resumes} time(s) and dropped again.`);
+        }
+        return { status: "partial", reason: `${res.messagesSaved} message(s) before ${how}` };
     }
     if (res.conversations === 0) {
         warning("No conversations returned — the phone prompt may not have been confirmed in time. Try again.");
@@ -1062,10 +1256,12 @@ function printPlan(plan, win, jsonMode) {
         {
             window: win.label,
             openSocket: plan.openSocket,
+            viaDaemon: plan.viaDaemon,
             stages: plan.stages.map((s) => ({
                 stage: s.name,
                 transport: s.transport,
                 run: s.run,
+                via: s.via,
                 wakesPhone: s.phone && s.run,
                 why: s.why,
             })),
@@ -1073,10 +1269,17 @@ function printPlan(plan, win, jsonMode) {
         jsonMode,
         () => {
             info(`Plan for \`zalo-agent sync\` — ${win.label}. Nothing has been sent.`);
-            info(plan.openSocket ? "Opens the WebSocket once, for the socket stages." : "Opens no WebSocket.");
+            if (plan.viaDaemon) {
+                info("Runs the socket stages on the running listen/mcp daemon's socket — opens no WebSocket here,");
+                info("stops nothing, and the daemon keeps capturing live messages throughout.");
+            } else {
+                info(plan.openSocket ? "Opens the WebSocket once, for the socket stages." : "Opens no WebSocket.");
+            }
             for (const s of plan.stages) {
                 const tag = s.run ? (s.phone ? "RUN  (wakes your phone)" : "RUN") : "skip";
-                console.log(`    ${tag.padEnd(24)} ${s.name.padEnd(10)} ${s.transport.padEnd(7)} ${s.why || s.label}`);
+                // The transport column says HOW; this says WHOSE socket.
+                const where = s.run && s.via === "daemon" ? `${s.transport}→daemon` : s.transport;
+                console.log(`    ${tag.padEnd(24)} ${s.name.padEnd(10)} ${where.padEnd(14)} ${s.why || s.label}`);
             }
         },
     );
@@ -1135,25 +1338,131 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
         media: opts.media !== false,
     };
 
+    // A running listen/mcp daemon holds the account's one web session — and can
+    // now run the socket stages on it. So a daemon being up no longer means
+    // these stages are skipped, and the old recipe (stop it, sync, start it
+    // again) is no longer the way to close a gap: the stop/start itself opened
+    // a fresh ~70s hole with no repair path. See src/core/daemon-channel.js.
+    const chan = getSyncChannel(accountDir);
+
     if (opts.plan) {
-        printPlan(planSyncRun({ want, freshness, lockOk: !checkLock(accountDir).locked }), win, jsonMode);
+        printPlan(
+            planSyncRun({
+                want,
+                freshness,
+                lockOk: !checkLock(accountDir).locked,
+                daemonChannel: Boolean(chan),
+            }),
+            win,
+            jsonMode,
+        );
         process.exit(0);
     }
 
-    // Take the lock only if a socket stage could run: REST stages need neither
-    // the socket nor exclusivity, exactly as sync-boards and sync-media never did.
+    // Take the lock only if a socket stage could run HERE: REST stages need
+    // neither the socket nor exclusivity, exactly as sync-boards and sync-media
+    // never did, and a stage running on the daemon runs under the daemon's own
+    // lock — taking it is neither possible nor wanted.
     const mightUseSocket = (want.messages && !freshness.skip) || want.reactions;
-    const lockHeld = mightUseSocket ? acquireLock(accountDir) : false;
-    const plan = planSyncRun({ want, freshness, lockOk: mightUseSocket ? lockHeld : true });
+    const lockHeld = mightUseSocket && !chan ? acquireLock(accountDir) : false;
+    // `lockOk` asks one thing: may THIS process open the socket? Moot when no
+    // socket stage is wanted; no when a daemon is serving one (it holds the
+    // lock, and `daemonChannel` is what turns that from a skip into a hand-off).
+    const lockOk = !mightUseSocket ? true : chan ? false : lockHeld;
+    const plan = planSyncRun({ want, freshness, lockOk, daemonChannel: Boolean(chan) });
     const runs = (name) => plan.stages.find((s) => s.name === name)?.run;
 
     const results = [];
     const record = (stage, status, reason = "", stats = undefined) => results.push({ stage, status, reason, stats });
     for (const s of plan.stages) if (!s.run) record(s.name, "skipped", s.why);
 
+    // ---- socket stages on the running daemon's socket
+    //
+    // Nothing here opens a connection, takes the lock or stops anything. The
+    // daemon runs each stage on the session it already holds and streams the
+    // same progress callbacks back, so the run reads identically -- and it
+    // keeps capturing live traffic throughout, which is the entire point:
+    // the stop/sync/start recipe this replaces lost every message that
+    // arrived in the ~70s the daemon was down.
+    if (plan.viaDaemon) {
+        info("A listen/mcp daemon holds this account's session — running the socket stages on it.");
+        info("Nothing is stopped, so live capture continues while they run.");
+
+        if (runs("messages")) {
+            info(`Restoring ${win.label}.`);
+            if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
+            // Unchanged by the hand-off. The daemon supplies the socket; only
+            // the owner's phone can supply the history.
+            warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
+            const r = await syncViaDaemon(accountDir, {
+                stage: "messages",
+                params: {
+                    days: opts.days ?? null,
+                    from: opts.from,
+                    shardSize: opts.shardSize,
+                    waitMs: Math.max(180, Number(opts.wait) || 0) * 1000,
+                },
+                onEvent: ({ phase, detail }) => {
+                    if (phase === "confirm") warning(detail);
+                    else if (detail) info(`  ${detail}`);
+                },
+            });
+            if (!r?.ok) {
+                const why = daemonStageError(r);
+                warning(`Message restore failed: ${why}`);
+                record("messages", "failed", why);
+            } else {
+                const rep = reportRestore(r.result, win);
+                record("messages", rep.status, rep.reason, {
+                    conversations: r.result.conversations,
+                    messagesSaved: r.result.messagesSaved,
+                });
+            }
+        }
+
+        if (runs("reactions")) {
+            info("Requesting the reaction backlog (cmd 610 for 1-1, 611 for groups)…");
+            const r = await syncViaDaemon(accountDir, {
+                stage: "reactions",
+                params: { waitMs: DRAIN_WAIT_MS, maxPages: DRAIN_PAGES, applyRemovals: opts.removals !== false },
+                onEvent: reactionProgress,
+            });
+            if (!r?.ok) {
+                const why = daemonStageError(r);
+                warning(`Reaction backlog failed: ${why}`);
+                record("reactions", "failed", why);
+            } else if (!r.result.received && r.result.socketAlive === false) {
+                // Same rule as the local path: an empty drain on a dead socket
+                // is a lost connection, not the caught-up queue it looks like.
+                warning("Reaction backlog: the daemon's socket closed before it answered.");
+                record("reactions", "failed", "socket closed before the backlog answered");
+            } else {
+                const rep = reportReactionStage(r.result, r.result.placed || 0, r.result.unresolvedLeft || 0);
+                record("reactions", rep.status, rep.reason, rep.stats);
+            }
+        }
+    }
+
     // ---- socket window
     if (plan.openSocket) {
         let detachLive = () => {};
+        // ONE heartbeat for the whole socket window, covering every socket
+        // stage and the gaps between them.
+        //
+        // The socket is not unpinged without this -- zca-js sends Zalo's
+        // `cmd 2/1` ping on the interval the server hands out at login, which
+        // this account's login reports as 180000 ms, the same value a captured
+        // Zalo Web session used. The problem is that 180 s is the entire width
+        // of the phone wait: the restore sends nothing and receives nothing for
+        // minutes, so the flow can sit silent right up against the server's own
+        // liveness bound with no margin, and one late ping means six minutes of
+        // silence. This pings at a third of that, and counts the echoes -- a
+        // ping count running ahead of the echo count is the only trace a bare
+        // 1006 (no close frame) ever leaves behind.
+        //
+        // It reads `listener.ws` fresh on every tick, so it keeps working
+        // across the reconnect `reconnectListener` performs mid-restore.
+        let heartbeat = null;
         try {
             info("Connecting…");
             const connected = await connectListener(api, 30000);
@@ -1166,6 +1475,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                 for (const n of ["messages", "reactions"]) if (runs(n)) record(n, "failed", why);
             } else {
                 syncManager.markConnected();
+                heartbeat = startKeepAlive(api.listener);
 
                 // The restore runs FIRST and ALONE, exactly as `sync-mobile
                 // --transfer` runs it -- its own live-store tap included. The
@@ -1186,7 +1496,11 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                         const res = await new SyncV2(api, activeAcc.ownId).restore({
                             days: opts.days,
                             from: opts.from,
+                            shardSize: opts.shardSize,
                             waitMs: Math.max(180, Number(opts.wait) || 0) * 1000,
+                            // The window-level heartbeat above covers this stage.
+                            keepAlive: false,
+                            reconnect: () => reconnectListener(api),
                             onStatus: ({ phase, detail }) => {
                                 if (phase === "confirm") warning(detail);
                                 else if (detail) info(`  ${detail}`);
@@ -1207,9 +1521,11 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                     // The restore detached its own tap; keep live traffic
                     // captured for the rest of the socket window.
                     detachLive = attachLiveStore(api.listener);
-                    const rx = await drainPass(api, { waitMs: 15000, pages: 20, removals: opts.removals }).catch(
-                        (e) => ({ error: e }),
-                    );
+                    const rx = await drainPass(api, {
+                        waitMs: DRAIN_WAIT_MS,
+                        pages: DRAIN_PAGES,
+                        removals: opts.removals,
+                    }).catch((e) => ({ error: e }));
                     if (rx.error) {
                         warning(`Reaction backlog failed: ${rx.error.message}`);
                         record("reactions", "failed", rx.error.message);
@@ -1222,17 +1538,9 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                         // A reaction naming only a client id is unresolvable until
                         // its message is stored. The restore has run by now, but
                         // the backlog reaches further back than a windowed one.
-                        let placed = 0;
-                        for (const r of rx.unresolved || []) {
-                            if (storeLiveReaction(r, { source: "backlog" }).stored) placed++;
-                        }
-                        reportReactionDrain(rx, { pages: 20 });
-                        if (placed) info(`Placed ${placed} reaction(s) whose message arrived with the restore.`);
-                        record("reactions", rx.truncated ? "partial" : "ok", `${rx.stored + placed} stored`, {
-                            received: rx.received,
-                            stored: rx.stored + placed,
-                            unresolved: (rx.unresolved?.length || 0) - placed,
-                        });
+                        const placed = placeUnresolvedReactions(rx.unresolved);
+                        const rep = reportReactionStage(rx, placed, (rx.unresolved?.length || 0) - placed);
+                        record("reactions", rep.status, rep.reason, rep.stats);
                     }
                 }
             }
@@ -1242,6 +1550,11 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                 if (runs(n) && !results.some((r) => r.stage === n)) record(n, "failed", err.message);
             }
         } finally {
+            try {
+                heartbeat?.stop();
+            } catch {
+                /* already stopped */
+            }
             try {
                 detachLive();
             } catch {
@@ -1413,9 +1726,23 @@ async function runSocketBackfill(activeAcc, opts) {
 
     // The backfill opens a WebSocket and writes to zalo.db, which is exactly
     // what the `listen` daemon does. One socket and one db writer per account.
+    //
+    // This is the ONE socket path that is not routed through a running
+    // daemon's channel, and deliberately: cmd 510/511 is measured to answer
+    // empty (see the docblock above), so a hand-off would be a socket path
+    // built for an endpoint that cannot answer -- relocating the defect, not
+    // fixing it. The real restore IS routed, so say so rather than repeating
+    // "stop the daemon", which is no longer the answer to anything.
     if (!acquireLock(accountDir)) {
         error(`A listen daemon is already running for account ${activeAcc.ownId}.`);
-        info("Stop it first, or let it keep the cache up to date on its own — it writes the same rows.");
+        if (getSyncChannel(accountDir)) {
+            info("You do not need to stop it: `zalo-agent sync` runs the socket stages on that daemon's socket.");
+            info("This default path only asks cmd 510/511, which Zalo answers empty. The real restore is:");
+            info("  zalo-agent sync");
+        } else {
+            info("Stop it first, or let it keep the cache up to date on its own — it writes the same rows.");
+            info("(A daemon started with a working sync channel would let `zalo-agent sync` run without stopping it.)");
+        }
         process.exit(1);
     }
 

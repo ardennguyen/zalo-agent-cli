@@ -25,7 +25,7 @@ If you read nothing else, read these.
 3. **Never run `npm publish` by hand.** → §8
 4. **Never ask the user to run something you can run yourself**, except a Zalo network flow your sandbox cannot reach — then hand back one copy-pasteable command. → §5
 5. **Back up gitignored files before any `git reset --hard` / `git checkout` / `git clean -fd`.** They do not survive. → §7
-6. **Never put real credentials, user IDs, or phone numbers in tests or docs.** → §12
+6. **Never commit a real person's or account's identifiers** — Zalo ids (plain or noised), names, phone numbers, credentials — in code, comments, tests, fixtures or docs. `npm test` fails on a real-looking id. → §12
 7. **In MCP mode stdout is the JSON-RPC transport.** Every diagnostic uses `console.error()`. → §4
 8. **Re-read a file after writing it.** Concurrent agents work in this tree. → §5, §7
 9. **`skill/references/command-reference.md` wins** when docs disagree. → §10
@@ -210,7 +210,7 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**190**), command groups (**21** containers), MCP tools (**7**), OA commands (**32**), offline tests (**1672** as of 2026-09-30). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**190**), command groups (**21** containers), MCP tools (**7**), OA commands (**32**), offline tests (**1720** as of 2026-09-30). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
 **The MCP tool list in every doc must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`.
 
@@ -259,6 +259,7 @@ The same rule applies to anything else that gets published: npm READMEs, GitHub 
 - Node built-in runner (`node:test` + `node:assert/strict`) — no external framework.
 - **New tests go under `tests/`**: `unit/` pure logic and filesystem, `cli/` drives the binary, `e2e/` needs a live session. Pre-existing suites next to their module stay there; `npm test` globs both, so a count from one glob is wrong.
 - **Never** use real credentials, user IDs, or phone numbers. Offline tests import `tests/helpers/sandbox.js` **first** and assert `assertSandboxed(CONFIG_DIR)`. Real thread ids live only in gitignored `tests/targets.json`.
+- **Identity protection is enforced, not trusted.** `tests/unit/no-real-ids.test.js` fails `npm test` on any 15+-digit run, or 32-character noised id not spelling `NOISED`, in a tracked or unignored file, zip entry or path that is not a fake by its convention. Never copy a value from a live capture, log, `zalo.db` or `targets.json` into a commit; choose a fake that keeps what the test needs (length, past `MAX_SAFE_INTEGER`, a colliding twin, a fixture's byte size). Names have no automatic check — review them.
 - The live suite writes only to ids blessed disposable in `targets.json`; every write helper calls `assertDisposable()`. Gated behind `ZALO_TEST_LIVE=1`, unreachable from `npm test`, destructive tiers behind additive env gates.
 - **An assertion that only checks "did not crash" is not a test.** This CLI reports API failures as a printed `✗` and exits 0, so crash-only assertions cannot tell a working command from one that fails on every invocation. Assert the success the command claims.
 - **Before trusting a new assertion, say what would have to change for it to go red — and check that is the thing you care about.** **An assertion that matches a string the fix itself introduces** proves the fix is present, not that it works. If an assertion greps for its own patch, it is testing the wrong thing. Worked example: [`docs/agent-notes.md`](docs/agent-notes.md).
@@ -276,7 +277,7 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
   - **Keep `src/core/daemon-channel.js` a transport** — stage bodies belong in `daemon-sync.js`, or the whole SyncV2 stack loads on every `msg` invocation.
   - **A daemon-routed sync still taps the phone.** Routing removes the second WebSocket, not the confirmation. The daemon must never start a stage on its own.
 - **`listen` and `mcp start` are two entry points to the same socket. Any asymmetry between them is a defect.** Both track coverage gaps through `src/core/listener-lifecycle.js`; down-ness is observed, never inferred from a counter, and a deliberate stop is not a drop.
-- **One db writer per account**, enforced by `daemon.lock`.
+- **One db writer per account**, enforced by `daemon.lock`. With a `listen`/`mcp` daemon up, `msg history`'s fetch and write run in the daemon (its `history` stage, `src/core/history-fetch.js`); the CLI only displays, and exits 1 rather than fetching beside a daemon that cannot answer.
 - **Message rows have exactly three writers: the listener, sync, and `msg history`'s fetch** (insert-if-absent — it never modifies or removes a row already cached). Nothing else writes to `zalo.db`; `msg send` stores nothing, not even a looked-up name. A message you just sent is therefore not quotable, forwardable or recallable until the listener observes its echo or a later `msg history` fetch returns it; say that plainly rather than pointing users at a command that cannot seed it.
 - **Unofficial API.** `patches/` holds patch-package patches against zca-js, applied by `prepare` and shipped **inside the tarball** via `bundleDependencies` — never a consumer `postinstall`, which cannot reach a hoisted `zca-js`. Bumping `zca-js` means regenerating the patch *and* re-pinning the exact version; `tests/unit/packaging.test.js` enforces both.
 - **One media downloader, one layout.** `src/core/sync-v2/media.js` is the only one; everything writes to `accounts/<ownId>/media/<threadId>/`. **Folders are thread IDs, never names** — a name can carry a path separator and changes on rename. `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` overrides the root for the MCP server only.

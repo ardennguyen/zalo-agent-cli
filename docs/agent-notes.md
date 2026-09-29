@@ -630,3 +630,34 @@ The eight fixes were behavior-neutral: six unused `catch (e)` bindings became `c
 and `r.threadId != null`, a deliberate null-or-undefined test, was spelled out rather than
 changed. `== null` is a common idiom, which is exactly why each one wants reading before
 "fixing" — `=== null` alone would have let `undefined` through.
+
+## Real ids in the repo, and why the rule alone did not stop them (2026-09-30)
+
+AGENTS.md §0 #6 already forbade real user ids in tests and docs. On 2026-09-30 the tree still
+held them in 24 places, found in two sweeps:
+
+- **b0f267c** (the controller, prompted by the group-history fix agent): nine files. The owner's
+  uid sat in a comment in `src/commands/group.js` (and `src/` ships in the npm tarball) and in a
+  test alongside his display name. The retired disposable group's id sat in
+  `src/core/sync-v2/conv-state.js` comments, in `command-reference.md`, and in a test under the
+  heading "Fictional ids of the real length". A DM contact's id **and name** sat in
+  `tests/fixtures/data.csv`, and again inside `archive.zip`, where no text search can see them.
+- **The guard's first run**: 10 more digit-run ids and 5 *noised* ids. Two conv-state "fictional"
+  ids matched a captured real thread id; the others were a captured sender id, a reminder topic id
+  and an OA follower id in `eval-scenarios.md`. A noised id is the 32-character form sync stores in
+  place of a uid, and `/api/gid/decrypt` turns one back into a uid and a display name, so it is an
+  identifier too. One sat in a comment in `src/utils/quote.js`.
+
+How they got in: values copied from live captures and logs into tests and comments, then called
+fakes without anyone checking. Why the rule did not stop it: nothing checked the rule.
+`tests/unit/no-real-ids.test.js` now does, in `npm test` and therefore in CI. Every 15+ digit
+run and every 32-character noised id in tracked and unignored files, zip entries and paths must
+match the fake convention documented at the top of that file. An allowlist of three entries covers
+constants that are not ids (2^63, `Number.MAX_SAFE_INTEGER`, one rounded fake). It was proven by
+planting a real-looking id in a file and inside a zip entry; both went red.
+
+What a pushed leak costs: the values stay in history and in every clone. The remedy is a history
+rewrite (Arden approved one for `main..v2.0-dev` on 2026-09-30), plus accepting that clones made in
+the window keep them. Measured at the time: all three forks predate the leak; GitHub counted about
+212 clone events after it. Names have no automatic check. The local leak check in `.agents/`
+(§10) covers the wiki, not this repo.

@@ -41,7 +41,7 @@ import {
     getCategoryList,
     createOrder,
 } from "../core/oa-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, warning, output } from "../utils/output.js";
 
 /**
  * `oa whoami`'s lines for one OA profile (the `v2.0/oa/getoa` data).

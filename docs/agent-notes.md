@@ -375,8 +375,9 @@ decrypt stack, the CDN asset fetcher and the sqlite writes into every `msg` invo
 `tests/unit/daemon-channel.test.js` enforces that the channel imports nothing but node builtins.
 
 Routing a sync through the daemon removes the second WebSocket, not the phone confirmation. The
-daemon must never start a stage on its own — the same rule as the "Why the daemon does not
-self-heal" note in `src/commands/listen.js`.
+daemon must never start a phone-backed stage on its own — see the "How the daemon self-heals"
+note in `src/commands/listen.js`: its own catch-up reads only Zalo's offline message queue, which
+needs no phone, and it never starts `transfer-sync-v2`, which does.
 
 ### One media downloader
 

@@ -12,7 +12,7 @@ separate suites with very different risk profiles:
 opens a socket and never reads your real `~/.zalo-agent-cli/`.
 
 ```bash
-npm test                      # 1803 offline tests — no Zalo session needed
+npm test                      # 1827 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -677,6 +677,7 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 
 - [ ] `listen` — messages stream live; reconnects after a network drop
 - [ ] `listen --events message,friend,group,reaction` — group/reaction events appear
+- [ ] `listen --events read`, then open a disposable thread on the phone — a `read` event names that thread, and `conv_state.lastReadMsgId` moves; mark it unread on the phone — an `unread_mark` event (the triage's probe 3; not yet measured)
 - [ ] `listen --webhook <url>` — one JSON POST per event; a dead webhook does not stall processing
 - [ ] `listen --save ./logs` — one `<threadId>.jsonl` per thread
 - [ ] A second `listen` for the same account is refused (`daemon.lock`)

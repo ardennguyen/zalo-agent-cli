@@ -14,6 +14,7 @@ import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
+import { createReadStateSync } from "../core/read-state.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
@@ -279,6 +280,10 @@ export function registerMCPCommands(program) {
             // the offline-queue pull on every handshake (src/core/self-heal.js).
             // `stageLock` is the one created before the server above.
             const socketTap = createSocketTap({ log: (line) => console.error(`[mcp] ${line}`) });
+            // The read state other devices report, stored exactly as `listen`
+            // stores it, so a thread the human read on the phone stops
+            // looking unread (src/core/read-state.js).
+            createReadStateSync({ tap: socketTap, log: (line) => console.error(`[mcp] ${line}`) });
             const selfHeal = createSelfHeal({
                 getApi,
                 tap: socketTap,

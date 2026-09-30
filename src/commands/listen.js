@@ -14,6 +14,7 @@ import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
+import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
     storeLiveMessage,
@@ -59,7 +60,7 @@ export function registerListenCommand(program) {
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction (default: message,friend)",
+            "Comma-separated event types: message,friend,group,reaction,read (default: message,friend)",
             "message,friend",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")
@@ -382,6 +383,19 @@ export function registerListenCommand(program) {
             // Built once, like the receipter: they outlive every re-login.
             const stageLock = createStageLock();
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
+            // Read state other devices report -- a conversation read on the
+            // phone, an unread mark set or cleared there -- which zca-js
+            // drops. Stored always, like reactions; printed only with
+            // `--events read`. It rides the tap, which re-arms on every socket.
+            createReadStateSync({
+                tap: socketTap,
+                log: (line) => console.error(`[listen] ${line}`),
+                onChange: (change) => {
+                    if (!enabledEvents.has("read")) return;
+                    const { data, human } = readStateEvent(change);
+                    emitEvent(data, human);
+                },
+            });
             const selfHeal = createSelfHeal({
                 getApi,
                 tap: socketTap,

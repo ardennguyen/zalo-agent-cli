@@ -7,25 +7,25 @@ WebSocket-based event listener with auto-reconnect. Production-safe for months.
 zalo-agent listen                                          # Default: messages + friends
 zalo-agent listen --filter user --no-self                  # DM only, no self
 zalo-agent listen --filter group                           # Groups only
-zalo-agent listen --events message,friend,group,reaction   # All event types
+zalo-agent listen --events message,friend,group,reaction,read   # All event types
 zalo-agent listen --auto-accept                            # Auto-accept friend requests
 ```
 
 ## Options
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-e, --events <types>` | message,friend,group,reaction | message,friend |
+| `-e, --events <types>` | message,friend,group,reaction,read | message,friend |
 | `-f, --filter <type>` | user, group, all | all |
 | `-w, --webhook <url>` | POST events as JSON to URL | — |
 | `--no-self` | Hide your own messages from the OUTPUT (they are still cached) | false |
 | `--auto-accept` | Auto-accept friend requests | false |
 | `--save <dir>` | Save as JSONL (1 file/thread) | — |
 
-> The default for `-e/--events` is `message,friend` — **`group` and `reaction` events are not printed/forwarded unless you ask for them explicitly.**
+> The default for `-e/--events` is `message,friend` — **`group`, `reaction` and `read` events are not printed/forwarded unless you ask for them explicitly.**
 >
 > **Your own messages are captured.** `zca-js` defaults `selfListen` to off, which drops every event your account authored — from your phone, from Zalo Web, from this CLI — before any handler runs. It is on now, so the cache holds both sides of a conversation instead of only what other people said. `--no-self` hides them from stdout/webhook/JSONL; it does not keep them out of `zalo.db`.
 >
-> `--events` controls what you **see** (stdout, JSONL, webhook), not what is **stored**. Reactions, recalls, delivery receipts, board changes and "you left this group" are written to `zalo.db` on every run, because none of them can be recovered afterwards — the mobile sync payload has no reaction field at all. Earlier builds gated the writes too, so a default `zalo-agent listen` silently discarded every reaction it saw.
+> `--events` controls what you **see** (stdout, JSONL, webhook), not what is **stored**. Reactions, recalls, delivery receipts, board changes, read state reported by your other devices and "you left this group" are written to `zalo.db` on every run, because none of them can be recovered afterwards — the mobile sync payload has no reaction field at all. Earlier builds gated the writes too, so a default `zalo-agent listen` silently discarded every reaction it saw.
 
 ## Side Effects (always on)
 
@@ -41,6 +41,7 @@ zalo-agent listen --auto-accept                            # Auto-accept friend 
 
   Either way the row becomes the same tombstone the phone itself keeps (`type = deleted`, `text = [deleted]`), the kind is recorded in `raw_data.removedAs`, and `originalType` records what was removed — mirroring the phone's `params.original_type`. `cliMsgId` is preserved, because `msg delete`, `msg undo` and `conv delete` all need it. **Downloaded media goes with the message**: `has_attachment` is cleared, `mediaPrunedAt` is set so no later `sync-media` re-fetches it, and the local file is deleted — the phone strips every CDN reference from a removed message, so keeping our copy would mean holding the one thing that was withdrawn.
 - **Records the state that only exists here** — a reaction (`reactions`, keyed on `(msgId, userId, icon)`: Zalo **accumulates**, so one person holding three different icons on one message is three reactions and all three are displayed. A reaction is named by `content.rMsg[].gMsgID`, not by the event's own `msgId`, which identifies the notification. Existing reactions are **retrievable** with `zalo-agent sync-reactions` (socket cmd 610/611, the same channel Zalo Web asks on every connect) — a transfer sync cannot restore them, but the socket can. Un-reacting is **all-or-nothing** — the frame is `rIcon: ""` with `rType: -1`, a sentinel rather than a type, and the app offers no way to drop one of several icons — so a removal clears that person's reactions on that message), a delivery/read receipt (`msgStatus`, forward-only: a late "delivered" cannot undo a "seen"), a board change (flags the conversation for the next `sync-boards`), and leaving or being removed from a group (`threads.leftAt`, which is what makes `conv forget --orphans` able to find it).
+- **Keeps read state in step with your other devices** — when the account reads a conversation anywhere (the phone, Zalo Web, `conv read`), Zalo reports it on the socket as a `clearUnreads` row naming the conversation and the newest message read: on cmd 504 (1-1) or 524 (group), and as a field of every chat envelope and offline-queue page. zca-js drops all of it. The listener stores it as the conversation's read watermark, `conv_state.lastReadMsgId` / `lastReadTs`, which only moves forward — the same read is reported more than once, and an offline page can arrive after a newer push. A row reporting a folder or the message-request box as seen is not a conversation read and is skipped, as Zalo Web skips it. An unread mark set or cleared on another device (the cmd 601 `mark_unread` control) updates `conv_state.unreadMarked`. `--events read` prints both, as `read` and `unread_mark` events. Not yet measured live: which cmd a read on the phone arrives on, and whether `conv read` is echoed back to the listener.
 - **Does not rename your conversations** — a live message carries the *sender's* display name, which is not the conversation's name. A group has exactly one name and no message carries it, so the listener leaves naming to `sync` / `sync-mobile` / `sync-boards` (which read it from `getGroupInfo`) and to the MCP server's thread index. It only fills a name in when the two genuinely coincide: a 1-1 message written by the contact that 1-1 is with. A deliberate alias is never overwritten.
 - **Auto-downloads media** — attachments land in `~/.zalo-agent-cli/accounts/<ownId>/media/<threadId>/<date>-<HH-mm>_<msgIdTail>_<kind>.<ext>`, fetched by the same downloader `sync-media` uses (per-request deadline, one expired-link renewal attempt, backoff on throttling) and recorded in the row's `localPath`. `listen`, `msg history`, `mcp start` and every sync command share one folder per conversation.
 - **Holds an exclusive lock** — `daemon.lock` in the account directory. A second `listen` for the same account is refused, and `account remove` / `logout --purge` refuse while the lock is held. A stale lock (dead PID) is detected and reclaimed automatically.

@@ -329,6 +329,15 @@ export function initDb(dbPath) {
             db.exec("UPDATE threads SET deleteMarkerAt = leftAt WHERE leftAt IS NOT NULL");
         })();
     }
+    // The read watermark: the newest message this account has read in the
+    // conversation, on any device, as the server reports it (./read-state.js).
+    // Nullable: nothing is known until the listener sees a report.
+    try {
+        db.exec("ALTER TABLE conv_state ADD COLUMN lastReadMsgId TEXT");
+    } catch {}
+    try {
+        db.exec("ALTER TABLE conv_state ADD COLUMN lastReadTs INTEGER");
+    } catch {}
 
     return db;
 }
@@ -1449,6 +1458,40 @@ export function getConvState(threadId = null) {
     return threadId
         ? db.prepare("SELECT * FROM conv_state WHERE threadId = ?").get(String(threadId)) || null
         : db.prepare("SELECT * FROM conv_state ORDER BY updatedAt DESC").all();
+}
+
+/**
+ * Move a conversation's read watermark: the newest message this account has
+ * read in it, on any device.
+ *
+ * It only moves forward. The same read is reported more than once -- on its
+ * own cmd and again inside the next envelope -- and an offline-queue page can
+ * arrive after a newer live push, so an older or equal id changes nothing.
+ * Message ids are global and increase with time, so a larger id is a later
+ * message; they are compared as integers, never as strings or doubles.
+ *
+ * @param {{threadId: string, msgId: string, ts?: number}} read - `ts` is when
+ *   the read was reported; now when the report carries none
+ * @returns {boolean} whether the watermark moved
+ */
+export function recordReadWatermark({ threadId, msgId, ts }) {
+    if (!db) throw new Error("Database not initialized");
+    const id = String(msgId ?? "");
+    if (!/^\d+$/.test(id) || BigInt(id) === 0n) return false;
+    const now = Date.now();
+    return db.transaction(() => {
+        const cur = db.prepare("SELECT lastReadMsgId FROM conv_state WHERE threadId = ?").get(String(threadId));
+        if (/^\d+$/.test(cur?.lastReadMsgId ?? "") && BigInt(cur.lastReadMsgId) >= BigInt(id)) return false;
+        db.prepare(
+            `INSERT INTO conv_state (threadId, lastReadMsgId, lastReadTs, updatedAt)
+       VALUES (?, ?, ?, ?)
+     ON CONFLICT(threadId) DO UPDATE SET
+       lastReadMsgId = excluded.lastReadMsgId,
+       lastReadTs = excluded.lastReadTs,
+       updatedAt = excluded.updatedAt`,
+        ).run(String(threadId), id, Number(ts) > 0 ? Number(ts) : now, now);
+        return true;
+    })();
 }
 
 export function upsertContact(contact) {

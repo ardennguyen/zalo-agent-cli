@@ -115,11 +115,11 @@ fails with no daemon up.
 zalo-agent listen                                          # Messages + friends
 zalo-agent listen --filter user --no-self                  # DM only
 zalo-agent listen --webhook http://n8n.local/webhook/zalo  # Forward to webhook
-zalo-agent listen --events message,friend,group,reaction   # All events
+zalo-agent listen --events message,friend,group,reaction,read   # All events
 zalo-agent listen --save ./logs                            # Save JSONL locally
 ```
-Default `--events` is `message,friend` — `group` and `reaction` must be requested explicitly.
-Every received message is also written to the per-account SQLite cache (`zalo.db`) and its media auto-downloaded. Reactions, recalls, delivery receipts, board changes and "you left this group" are stored too, on every run — `--events` decides what is printed, not what is kept. Only **one** live socket per account (enforced by `daemon.lock`, shared with `mcp start`), and it cannot coexist with browser Zalo on the same account.
+Default `--events` is `message,friend` — `group`, `reaction` and `read` must be requested explicitly.
+Every received message is also written to the per-account SQLite cache (`zalo.db`) and its media auto-downloaded. Reactions, recalls, delivery receipts, board changes, read state from your other devices and "you left this group" are stored too, on every run — `--events` decides what is printed, not what is kept. Only **one** live socket per account (enforced by `daemon.lock`, shared with `mcp start`), and it cannot coexist with browser Zalo on the same account.
 Production-ready with pm2. Details: `references/listen-mode-guide.md`
 
 ### Local Cache & Sync

@@ -1,8 +1,15 @@
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import Database from "better-sqlite3";
 
 let db;
 
 export function initDb(dbPath) {
+    // A fresh login has no accounts/<ownId>/ yet: only a daemon taking its
+    // lock (lock.js) used to create it, so every command that opened the
+    // cache before a listener had ever run crashed (sync-cloud, live
+    // 2026-09-30: "Cannot open database because the directory does not exist").
+    mkdirSync(dirname(dbPath), { recursive: true });
     db = new Database(dbPath);
 
     // Enable WAL mode for better performance

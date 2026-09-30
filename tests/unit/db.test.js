@@ -110,6 +110,19 @@ describe("initDb", () => {
         open(p);
         assert.equal(getMessages("t1").length, 1);
     });
+
+    // A fresh login has no accounts/<ownId>/ until something creates it.
+    // better-sqlite3 refuses a missing directory, so without this every
+    // command that opened the cache before a daemon ever ran crashed.
+    it("creates a missing parent directory — a fresh login has no account dir yet", () => {
+        const dir = join(ROOT, "fresh-login", "accounts", "OWN_ID");
+        const p = join(dir, "zalo.db");
+        assert.equal(existsSync(dir), false, "precondition: the account dir does not exist");
+        open(p);
+        assert.equal(existsSync(p), true);
+        insertMessage(msg({ msgId: "first-row" }));
+        assert.equal(getMessages("t1").length, 1);
+    });
 });
 
 describe("messages", () => {

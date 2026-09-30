@@ -1,8 +1,10 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **7 tools**.
+Model Context Protocol (MCP) cho phép Claude Code và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **12 tools**.
 
-Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video, react/undo, friend, group, conv, profile, poll, reminder, auto-reply, quick-msg, label, catalog, account, sync-mobile — **chưa có MCP tool**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
+Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video, xoá/chuyển tiếp tin, friend, phần còn lại của group và conv, profile, poll, reminder, auto-reply, quick-msg, label, catalog, account, sync-mobile — **chưa có MCP tool**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
+
+Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo` ↔ `msg undo`, `zalo_get_group_members` ↔ `group members`, `zalo_list_conversations` ↔ `conv recent`) đều gọi đúng đoạn code mà lệnh đó dùng, nên cách tra cứu và các trường hợp từ chối giống hệt nhau.
 
 ---
 
@@ -107,7 +109,7 @@ Nếu wrapper không tìm thấy `zalo-agent-cli` trong `node_modules/`, nó t�
 
 ---
 
-## Tham chiếu Tools (7 tools)
+## Tham chiếu Tools (12 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -135,19 +137,24 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 ---
 
 ### `zalo_send_message`
-Gửi tin nhắn văn bản đến một thread.
+Gửi tin nhắn văn bản đến một thread. Viết `@[uid]` trong nội dung để tag người đó trong nhóm (`@[-1]` là @All): tên hiển thị lấy từ cache cục bộ, uid nào cache chưa biết tên thì hiện nguyên uid và được liệt kê trong `unresolvedMentions`. Truyền `quoteMsgId` để trả lời trích dẫn một tin văn bản đã có trong cache.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
-| `threadId` | string | ID của người dùng hoặc nhóm |
+| `threadId` | string | ID của người dùng hoặc nhóm. `me` (hoặc uid của chính bạn) là My Documents — "Cloud của tôi" |
 | `text` | string | Nội dung tin nhắn (bắt buộc, không rỗng) |
-| `threadType` | number (mặc định 0) | 0 = DM (User), 1 = nhóm |
+| `threadType` | number (tuỳ chọn) | 0 = DM (User), 1 = nhóm. Bỏ trống thì dùng loại thread đã lưu trong cache, giống CLI |
+| `quoteMsgId` | string (tuỳ chọn) | msgId của một tin văn bản trong thread này để trả lời trích dẫn |
+| `urgency` | enum "normal"\|"important"\|"urgent" (tuỳ chọn) | Đánh dấu tin **Quan trọng** (`important`) hoặc **Khẩn cấp** (`urgent`) như tuỳ chọn trong app, ánh xạ y hệt `msg send --urgency`. Bỏ trống hoặc `normal` là tin thường |
+
+`threadId: "me"` được hiểu đúng như `msg send me`: tin đi vào My Documents, một thread 1-1 riêng có id là `send2me_id` của phiên đăng nhập (không phải uid của bạn — Zalo từ chối uid đó). Tool từ chối, không gửi gì, nếu kèm `threadType: 1` hoặc nếu phiên không báo `send2me_id`. Khi gửi vào My Documents, kết quả có thêm `threadId` thật và `notice`.
 
 **Kết quả mẫu:**
 ```json
-{ "success": true, "messageId": "msg456" }
+{ "success": true, "messageId": "msg456", "cliMsgId": "1710000000123", "threadType": 0 }
 ```
+`cliMsgId` là id phía client của tin vừa gửi — `zalo_react` và `zalo_undo` cần nó. Giữ lại nếu định thả cảm xúc hay thu hồi tin này: tin vừa gửi có thể chưa kịp vào cache.
 
 ---
 
@@ -257,24 +264,136 @@ Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định 
 
 ---
 
+### `zalo_react`
+Thả cảm xúc vào một tin nhắn, giống `msg react`. Zalo xác định tin được thả cảm xúc bằng cả `msgId` lẫn `cliMsgId`: `cliMsgId` lấy từ tham số, không có thì tra trong cache cục bộ (tin trong cache phải thuộc đúng `threadId`). Nếu cả hai đều không có, tool **từ chối và không gửi gì** — vì Zalo vẫn nhận một cảm xúc chỉ kèm `msgId`, trả lời thành công, nhưng không bao giờ hiển thị nó.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `msgId` | string | msgId của tin cần thả cảm xúc (từ `zalo_get_messages` hoặc `zalo_get_history`) |
+| `threadId` | string | Thread chứa tin đó. `me` là My Documents |
+| `reaction` | string | Mã cảm xúc, giống `msg react`: `/-strong` (thích), `/-heart` (tim), `:>` (haha), `:o` (wow), `:-((` (khóc), `:-h` (giận), `:-*` (hôn), `:')` (cười ra nước mắt), `/-weak` (không thích) |
+| `threadType` | number (tuỳ chọn) | 0 = DM, 1 = nhóm. Bỏ trống thì dùng loại thread trong cache |
+| `cliMsgId` | string (tuỳ chọn) | cliMsgId của tin. `zalo_send_message` trả về giá trị này cho tin bạn gửi; bỏ trống thì tra trong cache |
+
+**Kết quả mẫu:**
+```json
+{ "success": true, "reaction": "/-heart", "msgId": "msg123", "cliMsgId": "1710000000123", "threadId": "uid456", "threadType": 0 }
+```
+
+---
+
+### `zalo_undo`
+Thu hồi một tin nhắn **của chính bạn** ở cả hai phía, giống `msg undo` (chức năng "Thu hồi" trong app). Cùng quy tắc `cliMsgId` với `zalo_react`: lấy từ tham số, không có thì tra cache, cả hai đều không có thì từ chối và không gửi gì. Zalo chỉ cho thu hồi trong một khoảng thời gian sau khi gửi — tin đã gửi từ lâu sẽ bị server từ chối.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `msgId` | string | msgId của tin cần thu hồi |
+| `threadId` | string | Thread chứa tin đó. `me` là My Documents |
+| `threadType` | number (tuỳ chọn) | 0 = DM, 1 = nhóm. Bỏ trống thì dùng loại thread trong cache |
+| `cliMsgId` | string (tuỳ chọn) | cliMsgId của tin — thường là giá trị `zalo_send_message` đã trả về |
+
+**Kết quả mẫu:**
+```json
+{ "success": true, "msgId": "msg456", "cliMsgId": "1710000000123", "threadId": "uid456", "threadType": 0 }
+```
+
+---
+
+### `zalo_get_group_members`
+Liệt kê thành viên của một nhóm, giống `group members` (uid lấy từ `memVerList` trong kết quả `getGroupInfo`), kèm tên hiển thị của từng người: lấy từ cache cục bộ trước, ai cache chưa biết tên thì hỏi Zalo bằng `getGroupMembersInfo` — cùng cách `msg send` tra tên cho mention, mỗi lượt hỏi tối đa 50 uid, lần lượt từng lượt. Tên tra được **không** được ghi vào `zalo.db`.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `groupId` | string | ID của nhóm (từ `zalo_search_threads` hoặc `zalo_list_conversations`) |
+
+**Kết quả mẫu:**
+```json
+{
+  "groupId": "gid789",
+  "name": "Nhóm dự án",
+  "totalMember": 8,
+  "count": 8,
+  "members": [
+    { "uid": "uid456", "displayName": "Phúc" },
+    { "uid": "uid457", "displayName": null }
+  ]
+}
+```
+`totalMember` là số thành viên do Zalo báo, có thể lớn hơn số uid được liệt kê (`count`). `displayName: null` nghĩa là cả cache lẫn Zalo đều không cho biết tên; nếu Zalo lỗi khi tra tên, danh sách vẫn được trả về, kèm `warnings`. Nhóm không có trong câu trả lời của Zalo (tài khoản không ở trong nhóm, hoặc id đó không phải nhóm) thì tool báo lỗi chứ không trả danh sách rỗng. Có thể tag bất kỳ ai trong danh sách bằng `@[uid]` trong `zalo_send_message` — nhưng với người cache chưa biết tên, tin sẽ hiện uid thay cho tên.
+
+---
+
+### `zalo_list_conversations`
+Liệt kê các hội thoại có hoạt động gần nhất, mới nhất trước, đọc từ cache cục bộ — đúng những gì `conv recent` liệt kê, qua cùng một hàm. Khác với `zalo_list_threads` (chỉ gồm thread có tin trong buffer kể từ lúc server khởi động), tool này thấy mọi hội thoại mà cache từng ghi nhận.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `type` | enum "group"\|"dm"\|"all" (mặc định "all") | Lọc theo loại thread |
+| `limit` | number (mặc định 20, tối đa 200) | Số hội thoại tối đa **cho mỗi loại**, giống `conv recent -n`: với `all` là tối đa `limit` DM và `limit` nhóm |
+
+**Kết quả mẫu:**
+```json
+{
+  "conversations": [
+    { "threadId": "gid789", "type": "group", "threadType": 1, "name": "Nhóm dự án", "lastActivity": 1710000000000, "lastActivityAt": "2024-03-09T16:00:00.000Z" },
+    { "threadId": "uid456", "type": "dm", "threadType": 0, "name": "Phúc", "lastActivity": 1709990000000, "lastActivityAt": "2024-03-09T13:13:20.000Z" }
+  ],
+  "total": 2,
+  "source": "cache"
+}
+```
+`threadType` dùng thẳng được cho `zalo_send_message`. Cache trống thì kết quả là danh sách rỗng kèm `note` — tool không hỏi Zalo.
+
+---
+
+### `zalo_coverage`
+Cho biết cache cục bộ đầy đủ tới đâu. Mỗi "khoảng hở" (coverage gap) là một khoảng thời gian kết nối của tài khoản tới Zalo bị gián đoạn — `mcp start` và `listen` tự ghi lại, nên tin đến trong khoảng đó có thể chưa có trong cache. Tool liệt kê các khoảng hở còn chờ (bắt đầu, kết thúc, lý do), đếm số khoảng đã được đóng, và đưa ra đúng lệnh `zalo-agent sync --from <ngày>` để khôi phục. Chỉ đọc: không gửi gì tới Zalo.
+
+**Tham số:** không có.
+
+**Kết quả mẫu:**
+```json
+{
+  "pendingCount": 1,
+  "resolvedCount": 3,
+  "pending": [
+    { "id": 4, "reason": "reconnect-gap", "from": "2026-09-28T23:30:00.000Z", "to": "2026-09-29T01:00:00.000Z", "fromTs": 1790638200000, "toTs": 1790643600000, "span": "1h 30m", "recordedAt": "2026-09-29T01:00:02.000Z", "command": "zalo-agent sync --from 2026-09-28" }
+  ],
+  "command": "zalo-agent sync --from 2026-09-28",
+  "hint": "1 coverage gap(s) pending: …"
+}
+```
+`command` khôi phục mọi khoảng hở trong một lần chạy: ngày được tính từ khoảng hở cũ nhất (theo ngày UTC), vì một lần sync chỉ đóng những khoảng nằm trọn trong khoảng thời gian nó khôi phục — chạy từ một ngày muộn hơn thì lệnh vẫn "thành công" mà khoảng hở cũ vẫn còn đó. Lệnh này hiện yêu cầu xác nhận trên điện thoại của chủ tài khoản (bấm "ĐỒNG BỘ NGAY"), nên phải do người thật chạy — agent chỉ báo lại lệnh. Không cần dừng `mcp start`: lần sync đó chạy trên chính socket của server. Không còn khoảng hở nào thì `pendingCount` là 0 và `command` là `null`.
+
+---
+
 ## Phạm vi tool — cái gì có, cái gì phải gọi CLI
 
-MCP server chỉ expose **7 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
+MCP server chỉ expose **12 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
 
 | Nhóm chức năng | MCP tool | Cách gọi qua CLI |
 |---|---|---|
 | Đọc tin nhắn live | `zalo_get_messages` | `zalo-agent --json listen` |
 | Đọc lịch sử cũ | `zalo_get_history` | `zalo-agent --json msg history <id>` |
-| Gửi text | `zalo_send_message` | `zalo-agent --json msg send <id> "…" [-t 1]` |
+| Gửi text (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send <id> "…" [-t 1] [--urgency important\|urgent]` |
 | Tìm thread theo tên | `zalo_search_threads` | `zalo-agent --json friend search "…"` · `group list -q "…"` |
-| Liệt kê thread | `zalo_list_threads` | `zalo-agent --json conv recent` |
+| Liệt kê thread đang có trong buffer (kèm số tin chưa đọc) | `zalo_list_threads` | — |
+| Liệt kê hội thoại gần đây | `zalo_list_conversations` | `zalo-agent --json conv recent` |
 | Mở media đã nhận | `zalo_view_media` | — |
+| Thả cảm xúc | `zalo_react` | `zalo-agent --json msg react …` |
+| Thu hồi tin của mình | `zalo_undo` | `zalo-agent --json msg undo …` |
+| Thành viên nhóm | `zalo_get_group_members` | `zalo-agent --json group members <groupId>` |
+| Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
 | Gửi ảnh / file / voice / video / link / sticker | — | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|send-link\|sticker …` |
-| React / thu hồi / xoá / chuyển tiếp | — | `zalo-agent --json msg react\|undo\|delete\|forward …` |
+| Xoá / chuyển tiếp | — | `zalo-agent --json msg delete\|forward …` |
 | Thẻ ngân hàng / VietQR | — | `zalo-agent --json msg send-bank\|send-qr-transfer …` |
 | Bạn bè (22 lệnh) | — | `zalo-agent --json friend …` |
-| Nhóm (33 lệnh) | — | `zalo-agent --json group …` |
-| Hội thoại (15 lệnh) | — | `zalo-agent --json conv …` |
+| Nhóm (33 lệnh; ngoài `group members`) | — | `zalo-agent --json group …` |
+| Hội thoại (15 lệnh; ngoài `conv recent`) | — | `zalo-agent --json conv …` |
 | Hồ sơ (11 lệnh) | — | `zalo-agent --json profile …` |
 | Khảo sát, nhắc nhở, trả lời tự động, tin nhắn nhanh, nhãn, catalog | — | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
@@ -343,7 +462,7 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP) — registerTools() đăng ký cả 7 tools
+MCP Server (stdio hoặc HTTP) — registerTools() đăng ký cả 12 tools
      ↓
 Claude Code / MCP Client
 ```
@@ -366,6 +485,8 @@ Claude Code / MCP Client
 - Dùng `zalo_mark_read` sau khi xử lý xong để lần `zalo_get_messages` sau chỉ trả tin mới (áp dụng cho toàn bộ threads, không chỉ 1 thread). Tool không giải phóng buffer: buffer tự bỏ tin quá cũ hoặc khi đầy. Nhiều bot dùng chung một server thì mỗi bot truyền `consumer` riêng
 - Dùng `zalo_search_threads` khi chỉ biết tên người/nhóm, chưa biết `threadId`
 - `zalo_get_history` chỉ nên dùng khi cần tin nhắn cũ hơn những gì buffer đang giữ (buffer chỉ có tin từ lúc server start)
+- Trước khi kết luận "không có tin nào" trong một khoảng thời gian, gọi `zalo_coverage`: nếu khoảng đó rơi vào một khoảng hở còn chờ, tin có thể chỉ là chưa được khôi phục — báo cho người dùng lệnh `sync` mà tool đưa ra
+- Giữ lại `cliMsgId` mà `zalo_send_message` trả về nếu định thả cảm xúc (`zalo_react`) hoặc thu hồi (`zalo_undo`) tin đó sau này
 - Trên VPS: luôn thêm `--auth` khi dùng `--host 0.0.0.0`; `/health` là endpoint duy nhất không cần auth
 - Mọi tính năng chưa có MCP tool: gọi CLI với `--json` (xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli))
 - Không chạy `listen` và `mcp start` cùng lúc cho một tài khoản — Zalo chỉ cho 1 WebSocket/tài khoản, và `daemon.lock` cũng chỉ cho 1 process ghi db

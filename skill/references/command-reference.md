@@ -319,17 +319,22 @@ Requires a Zalo Shop / zBusiness account.
 
 **Via the `zalo-mcp` wrapper:** `node mcp-server.js` spawns exactly this command, but forwards **only** `--http` and `--auth`. `--host` and `--config` are dropped silently, and the wrapper runs whichever CLI version its `package.json` pins — so a tool added here is not reachable through the wrapper until that pin is bumped and released. Tool list identical; flag list and version are not.
 
-**7 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools" is stale):
+**12 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools" or "7 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
 | `zalo_get_messages` | Get buffered messages this consumer has not marked read (cursor-based incremental polling) | `threadId?`, `since` (cursor; default 0 = after this consumer's read cursor), `limit` (default = `limits.maxMessagesPerPoll`, max 100), `consumer?` (a bot's name when several share one server) |
-| `zalo_send_message` | Send a text message to a thread | `threadId`, `text`, `threadType` (0=DM, 1=Group, default 0) |
+| `zalo_send_message` | Send a text message to a thread. `@[uid]` in the text becomes an @-mention named from the local cache (a uid it cannot name is tagged as the bare uid and reported as `unresolvedMentions`; there is no network lookup, unlike `msg send`). `quoteMsgId` quote-replies to a cached text message. **`urgency`** `important`/`urgent` marks it the way the apps do, mapped exactly as `msg send --urgency` (1/2); `normal` or omitted is an ordinary message. **`threadId: "me"`** (or your own uid) is My Documents, resolved to the session's `send2me_id` as `msg send me` does — always a 1-1, refused with `threadType: 1` or when the session reports no `send2me_id`; the reply then carries the real `threadId` and a `notice`. Returns `cliMsgId` when Zalo does | `threadId`, `text`, `threadType?` (0=DM, 1=Group; omitted = the cached type), `quoteMsgId?`, `urgency?` |
 | `zalo_list_threads` | List threads currently in the buffer with unread counts (after this consumer's read cursor) | `type` (`dm`/`group`/`all`, default `all`), `consumer?` |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive search for a thread by name | `query`, `type` (default `all`), `limit` (default 10, max 50) |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global across all threads**, not scoped to one thread. Deletes nothing (messages leave the buffer only by age or size), so bots sharing one server each keep their own read cursor by passing a `consumer` name; `zalo_get_messages` and `zalo_list_threads` take the same name | `cursor`, `consumer` |
-| `zalo_get_history` | Older messages, **local cache first** (everything the listener stored and `sync`/`sync-mobile` restored — can be the full history), falling back to the Zalo server only when the cache has nothing for the thread. The reply says which via `source: "cache"｜"server"` | `threadId`, `threadType` (default 0), `limit` (default 50, max 200), `before?` (epoch-ms cursor for the cache path), `lastMsgId?` (cursor for the server path) |
+| `zalo_get_history` | Older messages, **local cache first** (everything the listener stored and `sync`/`sync-mobile` restored — can be the full history), falling back to the Zalo server only when the cache has nothing for the thread. The reply says which via `source: "cache"｜"server"` | `threadId`, `threadType?` (omitted = the cached type), `limit` (default 50, max 200), `before?` (epoch-ms cursor for the cache path), `lastMsgId?` (cursor for the server path) |
 | `zalo_view_media` | Open a received media file with the system viewer. The path comes from the cached row's `localPath`, so a message that arrived before this process started is still openable; anything not yet fetched is downloaded with the shared downloader first | `messageId`, `threadId?`, `open` (default = `media.autoOpen`) |
+| `zalo_react` | React to a message, as `msg react` does, with the same reaction codes (`/-strong`, `/-heart`, `:>`, `:o`, `:-((`, `:-h`, …). The cliMsgId comes from `cliMsgId`, else from the cached row — which must belong to `threadId`. **When neither has it the reaction is refused and nothing is sent**, since Zalo accepts a reaction keyed on the msgId alone and never shows it. `threadId: "me"` is My Documents | `msgId`, `threadId`, `reaction`, `threadType?` (omitted = the cached type), `cliMsgId?` |
+| `zalo_undo` | Recall one of your own messages for everyone (Thu hồi), as `msg undo` does: the cliMsgId from `cliMsgId`, else the cache, else refused with nothing sent. Zalo accepts a recall only for a while after sending. `threadId: "me"` is My Documents | `msgId`, `threadId`, `threadType?`, `cliMsgId?` |
+| `zalo_get_group_members` | A group's members, as `group members` lists them (`getGroupInfo`, uids out of `memVerList`), each with a `displayName`: the local cache's, else Zalo's (`getGroupMembersInfo`, the lookup `msg send` uses for mentions, 50 uids per request). Nothing is written to `zalo.db`. `totalMember` is Zalo's own count; a group missing from Zalo's answer is an error, not an empty list | `groupId` |
+| `zalo_list_conversations` | Recent conversations from the local cache, newest first — `conv recent`'s cache path, through the same function: `threadId`, `type` (`dm`/`group`), `threadType` (0/1), `name`, `lastActivity` (epoch ms) and `lastActivityAt` (ISO). `limit` is **per type**, as `conv recent -n` is. Cache only: an empty cache answers with an empty list and a `note`, not a network call | `type` (`dm`/`group`/`all`, default `all`), `limit` (default 20, max 200) |
+| `zalo_coverage` | Read-only coverage report from `zalo.db`'s `sync_gaps`: every pending gap (`from`, `to`, `reason`, `span`), `resolvedCount`, and `command` — the one `zalo-agent sync --from <YYYY-MM-DD>` run, dated from the oldest pending gap's UTC day, that restores them all (the same dating `listen` prints). The run needs a tap on the owner's phone; the tool only reports. Nothing is sent to Zalo | — |
 
 **MCP config** (`~/.zalo-agent-cli/mcp-config.json`, shallow-merged per top-level key over these defaults):
 
@@ -447,9 +452,9 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `label` | 2 |
 | `catalog` | 9 |
 | `listen` | 1 |
-| `mcp start` | 1 (exposing 7 MCP tools) |
+| `mcp start` | 1 (exposing 12 MCP tools) |
 | `oa` (all subgroups) | ~32 |
-| **Total** | **184 CLI commands** + 7 MCP tools |
+| **Total** | **184 CLI commands** + 12 MCP tools |
 
 ## Provenance
 

@@ -27,6 +27,7 @@ import {
     getPendingSyncGaps,
     resolveSyncGap,
     resolveAllPendingSyncGaps,
+    countSyncGaps,
 } from "../../src/core/db.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-db-test-"));
@@ -89,6 +90,7 @@ describe("guards before initDb", () => {
             () => getPendingSyncGaps(),
             () => resolveSyncGap(1),
             () => resolveAllPendingSyncGaps(),
+            () => countSyncGaps(),
         ];
         for (const fn of calls) {
             assert.throws(fn, /Database not initialized/, `${fn} should refuse before initDb()`);
@@ -429,6 +431,17 @@ describe("sync_gaps", () => {
         const id = recordSyncGap(1, 2, "a");
         resolveSyncGap(id);
         assert.doesNotThrow(() => resolveSyncGap(id));
+    });
+
+    it("countSyncGaps counts each state, and zero of each on an empty table", () => {
+        assert.deepEqual(countSyncGaps(), { pending: 0, resolved: 0 }, "SUM over no rows is NULL, not 0");
+        const a = recordSyncGap(1, 2, "a");
+        const b = recordSyncGap(3, 4, "b");
+        recordSyncGap(5, 6, "c");
+        resolveSyncGap(a);
+        resolveSyncGap(b);
+        // Red if resolved gaps are counted as pending, or either count is dropped.
+        assert.deepEqual(countSyncGaps(), { pending: 1, resolved: 2 });
     });
 });
 describe("getRecentThreads — type filtering", () => {

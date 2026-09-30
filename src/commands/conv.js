@@ -9,7 +9,8 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getRecentThreads, getMessages, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
+import { initDb, getMessages, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
+import { recentConversations } from "../core/recent-conversations.js";
 import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
 import { markConversationRead, zaloPost } from "../core/receipts.js";
 
@@ -237,19 +238,13 @@ export function registerConvCommands(program, deps = {}) {
                 // globally and only then filter by type in JS, so
                 // `--groups-only -n 5` returned the groups that happened to
                 // fall within the 5 newest threads of any kind — usually
-                // fewer than 5, often zero. Filter in SQL so the limit
-                // applies to the set actually being asked for.
-                let localThreads;
-                if (opts.friendsOnly) {
-                    localThreads = getRecentThreads(limit, "dm");
-                } else if (opts.groupsOnly) {
-                    localThreads = getRecentThreads(limit, "group");
-                } else {
-                    // Neither flag: `limit` of each, merged newest-first.
-                    localThreads = [...getRecentThreads(limit, "dm"), ...getRecentThreads(limit, "group")].sort(
-                        (a, b) => (b.lastUpdate || 0) - (a.lastUpdate || 0),
-                    );
-                }
+                // fewer than 5, often zero. recentConversations() filters in
+                // SQL -- with neither flag, `limit` of each kind, merged
+                // newest-first -- and is what zalo_list_conversations calls too.
+                const localThreads = recentConversations(
+                    limit,
+                    opts.friendsOnly ? "dm" : opts.groupsOnly ? "group" : "all",
+                );
 
                 if (localThreads && localThreads.length > 0) {
                     if (!jsonMode) info(`Found ${localThreads.length} recent conversations in local cache.`);

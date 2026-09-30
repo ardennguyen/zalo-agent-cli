@@ -192,17 +192,22 @@ curl http://localhost:3847/health
 
 ### MCP tools exposed
 
-`mcp-server.js` is a thin wrapper around `zalo-agent mcp start`, so it exposes exactly the **7 MCP tools** registered in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+`mcp-server.js` is a thin wrapper around `zalo-agent mcp start`, so it exposes exactly the **12 MCP tools** registered in `src/mcp/mcp-tools.js`, all covering the **personal account**:
 
 | Tool | Purpose |
 |:---|:---|
 | `zalo_get_messages` | Read buffered live messages with a cursor for incremental polling |
-| `zalo_send_message` | Send a text message to a DM or group |
+| `zalo_send_message` | Send a text message to a DM or group — with @-mentions, a quote-reply, Important/Urgent `urgency`, or `threadId: "me"` for My Documents |
 | `zalo_list_threads` | List buffered threads with unread counts |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread search by name |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer (global, not per-thread; deletes nothing, so several bots can share one server) |
 | `zalo_get_history` | Fetch older messages (~2 weeks) from the Zalo server, paginated |
 | `zalo_view_media` | Open a received image/audio/video attachment (downloads first if needed) |
+| `zalo_react` | React to a message (`/-strong`, `/-heart`, `:>`, …), as `msg react` does — refused, with nothing sent, when the message's cliMsgId is neither passed nor cached |
+| `zalo_undo` | Recall one of your own messages for everyone, as `msg undo` does; same cliMsgId rule |
+| `zalo_get_group_members` | List a group's members — uid and display name — as `group members` does |
+| `zalo_list_conversations` | Recent conversations from the local cache, newest first, as `conv recent` does |
+| `zalo_coverage` | Read-only: pending coverage gaps in the local cache, how many are resolved, and the `zalo-agent sync --from <date>` run that restores the rest |
 
 Official Account, catalog, poll, reminder, auto-reply, label, profile, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `npx zalo-agent <command> --json`.
 

@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **190 CLI commands** across 21 command containers (14 top-level groups + 7 OA subgroups) + **7 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **190 CLI commands** across 21 command containers (14 top-level groups + 7 OA subgroups) + **12 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 - **Requires**: `zalo-agent` CLI pre-installed by user (`zalo-agent --version` to verify)
@@ -27,7 +27,7 @@ Surface: **190 CLI commands** across 21 command containers (14 top-level groups 
 3. Execute command (Quick Reference below or `references/command-reference.md`)
 4. Append `--json` for machine-readable output
 5. For continuous monitoring → `listen --webhook` (`references/listen-mode-guide.md`)
-6. When running as an MCP server inside an AI client → use the 7 MCP tools for live messages, shell out to the CLI for everything else (`references/mcp-guide.md`)
+6. When running as an MCP server inside an AI client → use the 12 MCP tools for messages, reactions, recalls, group members, recent conversations and cache coverage; shell out to the CLI for everything else (`references/mcp-guide.md`)
 
 ## Quick Reference
 
@@ -227,17 +227,22 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 - **The wrapper forwards only `--http` and `--auth`.** `--host` and `--config` are dropped silently — `node mcp-server.js --http 3847 --host 0.0.0.0` stays on `127.0.0.1`. For those, run `zalo-agent mcp start` directly.
 - **The wrapper serves the CLI version its `package.json` pins**, not the newest one. A tool added in a newer CLI is unreachable through the wrapper until that pin is bumped. Check with `node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"` inside the install.
 
-**MCP tools exposed (7 — personal account only):**
+**MCP tools exposed (12 — personal account only):**
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
 | `zalo_get_messages` | Buffered live messages, cursor-based incremental reads | `threadId?`, `since` (default 0), `limit` (default 20, max 100) |
-| `zalo_send_message` | Send a text message to a DM or group | `threadId`, `text`, `threadType` (0=DM, 1=Group) |
+| `zalo_send_message` | Send a text message to a DM or group; `@[uid]` mentions, quote-replies, Important/Urgent, and `threadId: "me"` for My Documents | `threadId`, `text`, `threadType?` (cached type when omitted), `quoteMsgId?`, `urgency?` (`normal`/`important`/`urgent`) |
 | `zalo_list_threads` | Buffered threads with unread counts and names | `type` (`dm`/`group`/`all`) |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit` (default 10, max 50) |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global, not per-thread**; deletes nothing, so bots sharing a server keep their own cursors | `cursor`, `consumer` |
 | `zalo_get_history` | Older messages (~2 weeks) fetched from the Zalo server, paginated | `threadId`, `threadType`, `limit` (default 50, max 200), `lastMsgId?` |
 | `zalo_view_media` | Open a received image/audio/video attachment (downloads first if needed) | `messageId`, `threadId?`, `open` |
+| `zalo_react` | React to a message, as `msg react` — refused, nothing sent, when the cliMsgId is neither passed nor cached | `msgId`, `threadId`, `reaction`, `threadType?`, `cliMsgId?` |
+| `zalo_undo` | Recall one of your own messages for everyone, as `msg undo`; same cliMsgId rule | `msgId`, `threadId`, `threadType?`, `cliMsgId?` |
+| `zalo_get_group_members` | A group's members — uid and display name — as `group members` | `groupId` |
+| `zalo_list_conversations` | Recent conversations from the local cache, newest first, as `conv recent` | `type` (`dm`/`group`/`all`), `limit` (per type, default 20) |
+| `zalo_coverage` | Read-only: pending coverage gaps, resolved count, and the `sync --from <date>` run that restores them | — |
 
 **Coverage — what MCP exposes vs what needs the CLI:**
 
@@ -247,12 +252,17 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 | Read older history | `zalo_get_history` | `zalo-agent --json msg history <id>` |
 | Send text | `zalo_send_message` | `zalo-agent --json msg send <id> "…"` |
 | Find a thread by name | `zalo_search_threads` | `zalo-agent --json friend search` / `group list -q` |
-| List threads | `zalo_list_threads` | `zalo-agent --json conv recent` |
+| List buffered threads (unread counts) | `zalo_list_threads` | — |
+| List recent conversations | `zalo_list_conversations` | `zalo-agent --json conv recent` |
 | View an attachment | `zalo_view_media` | — |
+| React to a message | `zalo_react` | `zalo-agent --json msg react` |
+| Recall your own message | `zalo_undo` | `zalo-agent --json msg undo` |
+| A group's members | `zalo_get_group_members` | `zalo-agent --json group members` |
+| Is the cache complete? (coverage gaps) | `zalo_coverage` | — (`listen`/`mcp start` print each gap as it is filed) |
 | Send image / file / voice / video / link / sticker | **none** | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|send-link\|sticker` |
-| React / recall / delete / forward | **none** | `zalo-agent --json msg react\|undo\|delete\|forward` |
+| Delete / forward | **none** | `zalo-agent --json msg delete\|forward` |
 | Bank card / VietQR | **none** | `zalo-agent --json msg send-bank\|send-qr-transfer` |
-| Friends, groups, conversations, profile | **none** | `zalo-agent --json friend\|group\|conv\|profile …` |
+| Friends, the rest of groups and conversations, profile | **none** | `zalo-agent --json friend\|group\|conv\|profile …` |
 | Polls, reminders, auto-reply, quick-msg, labels, catalog | **none** | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Multi-account, devices, export | **none** | `zalo-agent --json account …` |
 | Restore history from the phone | **none** | `zalo-agent sync` or `zalo-agent sync-mobile` (prompts the phone; not `--json`-friendly — it streams progress) |
@@ -271,7 +281,7 @@ Full commands: `references/command-reference.md`
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 184 commands + 7 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 184 commands + 12 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

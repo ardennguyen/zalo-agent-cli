@@ -31,6 +31,11 @@ const EXPECTED_TOOLS = [
     "zalo_mark_read",
     "zalo_get_history",
     "zalo_view_media",
+    "zalo_react",
+    "zalo_undo",
+    "zalo_get_group_members",
+    "zalo_list_conversations",
+    "zalo_coverage",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -157,6 +162,49 @@ describe("MCP input schemas", () => {
         assert.throws(() => schemaOf("zalo_mark_read").parse({}));
         assert.throws(() => schemaOf("zalo_mark_read").parse({ cursor: -1 }));
         assert.equal(schemaOf("zalo_mark_read").parse({ cursor: 0 }).cursor, 0);
+    });
+
+    it("zalo_send_message takes urgency only as normal, important or urgent", () => {
+        const s = schemaOf("zalo_send_message");
+        assert.equal(s.parse({ threadId: "t1", text: "hi" }).urgency, undefined, "omitted means an ordinary message");
+        assert.equal(s.parse({ threadId: "t1", text: "hi", urgency: "urgent" }).urgency, "urgent");
+        assert.throws(() => s.parse({ threadId: "t1", text: "hi", urgency: "critical" }));
+        // Red if the enum is loosened to a string: an unknown name would reach
+        // the mapping, and a prototype key there is truthy.
+        assert.throws(() => s.parse({ threadId: "t1", text: "hi", urgency: "constructor" }));
+    });
+
+    it("zalo_react and zalo_undo need a msgId and a thread, and leave threadType and cliMsgId to be resolved", () => {
+        for (const [name, extra] of [
+            ["zalo_react", { reaction: "/-strong" }],
+            ["zalo_undo", {}],
+        ]) {
+            const s = schemaOf(name);
+            const parsed = s.parse({ msgId: "m1", threadId: "t1", ...extra });
+            // Omitted must stay undefined: a default would be indistinguishable
+            // from the caller choosing it, as zalo_send_message's threadType was.
+            assert.equal(parsed.threadType, undefined, `${name}: threadType is inferred from the cache`);
+            assert.equal(parsed.cliMsgId, undefined, `${name}: cliMsgId is looked up in the cache`);
+            assert.throws(() => s.parse({ threadId: "t1", ...extra }), `${name} without msgId`);
+            assert.throws(() => s.parse({ msgId: "m1", ...extra }), `${name} without threadId`);
+            assert.throws(() => s.parse({ msgId: "m1", threadId: "t1", cliMsgId: "", ...extra }));
+        }
+        assert.throws(() => schemaOf("zalo_react").parse({ msgId: "m1", threadId: "t1" }), "a reaction needs a code");
+        assert.throws(() => schemaOf("zalo_react").parse({ msgId: "m1", threadId: "t1", reaction: "" }));
+    });
+
+    it("zalo_list_conversations defaults to 20 of each type, and caps the limit", () => {
+        const s = schemaOf("zalo_list_conversations");
+        assert.deepEqual(s.parse({}), { type: "all", limit: 20 });
+        assert.throws(() => s.parse({ limit: 0 }));
+        assert.throws(() => s.parse({ limit: 201 }));
+        assert.throws(() => s.parse({ type: "channel" }));
+    });
+
+    it("zalo_get_group_members requires a group id; zalo_coverage takes nothing", () => {
+        assert.throws(() => schemaOf("zalo_get_group_members").parse({}));
+        assert.throws(() => schemaOf("zalo_get_group_members").parse({ groupId: "" }));
+        assert.deepEqual(schemaOf("zalo_coverage").parse({}), {});
     });
 });
 

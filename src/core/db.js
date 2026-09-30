@@ -410,6 +410,23 @@ export function resolveAllPendingSyncGaps() {
 }
 
 /**
+ * How many recorded coverage gaps are still pending, and how many have been
+ * resolved (by a restore that covered them, or by the self-heal). Read-only.
+ *
+ * @returns {{pending: number, resolved: number}}
+ */
+export function countSyncGaps() {
+    if (!db) throw new Error("Database not initialized");
+    const row = db
+        .prepare(
+            "SELECT SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending, " +
+                "SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) AS resolved FROM sync_gaps",
+        )
+        .get();
+    return { pending: Number(row?.pending) || 0, resolved: Number(row?.resolved) || 0 };
+}
+
+/**
  * Run `fn` inside a single SQLite transaction.
  *
  * Bulk restores insert tens of thousands of rows; without this each statement

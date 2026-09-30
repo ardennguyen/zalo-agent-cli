@@ -6,6 +6,7 @@
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { getGroupHistory } from "../core/group-history.js";
+import { groupMemberUids } from "../core/group-members.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
 
@@ -191,14 +192,9 @@ export function registerGroupCommands(program) {
         .description("List group members")
         .action(async (groupId) => {
             try {
-                // getGroupInfo requires an array, not a bare string
-                const result = await getApi().getGroupInfo([groupId]);
-                const groupData = result?.gridInfoMap?.[groupId];
-                // memberIds is always [] from the API; member UIDs are in memVerList
-                // as "uid_version" strings (e.g. "1000000000000000001_0")
-                const memVerList = groupData?.memVerList || [];
-                const memberUids = memVerList.map((mv) => mv.split("_")[0]).filter(Boolean);
-                const totalMember = groupData?.totalMember ?? memberUids.length;
+                // Shared with zalo_get_group_members (src/core/group-members.js):
+                // the uids come out of memVerList, since memberIds is always [].
+                const { uids: memberUids, totalMember } = await groupMemberUids(getApi(), groupId);
                 output(memberUids, program.opts().json, () => {
                     if (memberUids.length === 0) {
                         info(`0 members`);

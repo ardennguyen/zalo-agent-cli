@@ -307,7 +307,7 @@ zalo-agent oa whoami --oa-id shop2
 | Auto-login trước lệnh | Có | Không — `oa` tự quản lý token riêng |
 | Số lệnh | 146 | 32 |
 | Realtime | WebSocket (`listen`) | Webhook HTTP (`oa listen`) |
-| Có MCP tool? | Có — 7 tools (xem [mcp-guide](../skill/references/mcp-guide.md)) | **Chưa** — chỉ dùng được qua CLI |
+| Có MCP tool? | Có — 12 tools (xem [mcp-guide](../skill/references/mcp-guide.md)) | **Chưa** — chỉ dùng được qua CLI |
 
 > [!NOTE]
 > Các lệnh `oa` **chưa** được expose thành MCP tool. AI agent muốn dùng OA phải gọi CLI trực tiếp, ví dụ `zalo-agent --json oa msg text <uid> "..."`.

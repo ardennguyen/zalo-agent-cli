@@ -17,12 +17,21 @@ import { fetchAndCacheHistory } from "../core/history-fetch.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
-import { cachedCliMsgId, cachedText, parseRawData, resolveSenderUid } from "../core/cached-message.js";
+import {
+    cachedCliMsgId,
+    cachedText,
+    resolveSenderUid,
+    cachedMessageById,
+    reactionCliMsgId,
+    recallCliMsgId,
+} from "../core/cached-message.js";
 import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
+import { fetchMemberNames } from "../core/group-members.js";
 import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
 import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
 import { applySelfThreadAlias } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
+import { urgencyLevel } from "../utils/urgency.js";
 
 /**
  * Open the active account's SQLite cache.
@@ -79,86 +88,33 @@ function mentionName(uid, cacheOpen) {
  * one lookup on every send until the listener or a sync learns their name.
  *
  * Never throws: no session, not a member of that group, or an API hiccup all
- * leave the uid in place, which is still a valid mention.
+ * leave the uid in place, which is still a valid mention. The lookup itself is
+ * shared with `zalo_get_group_members` (src/core/group-members.js).
  *
  * @param {string[]} uids - uids the cache had no name for
  * @returns {Promise<Map<string, string>>} uid → display name, for those found
  */
 async function fetchMentionNames(uids) {
-    const found = new Map();
-    if (uids.length === 0) return found;
+    if (uids.length === 0) return new Map();
     try {
-        const profiles = (await getApi().getGroupMembersInfo(uids))?.profiles || {};
-        for (const [key, profile] of Object.entries(profiles)) {
-            // Keys come back as the uid, sometimes with zca-js's "_0" version suffix.
-            const uid = String(key).replace(/_0$/, "");
-            const name = profile?.displayName || profile?.zaloName;
-            if (!name) continue;
-            found.set(uid, name);
-        }
+        return (await fetchMemberNames(getApi(), uids)).names;
     } catch {
-        /* fall back to the uid — see the doc comment */
+        return new Map(); // no session: fall back to the uid — see the doc comment
     }
-    return found;
 }
 
 /**
- * Look one message up in the local SQLite cache by its global msgId.
+ * {@link cachedMessageById} for the active account, opening its cache first.
  *
- * `deleteMessage`, `undo` and `addReaction` need the message's `cliMsgId`
- * (and delete its `uidFrom`), neither of which can be derived from the msgId
- * — cliMsgId is client-generated and only the sender ever saw it. Anything
- * `listen`, `sync` or a prior `msg history` wrote is here, so a message the
- * CLI has seen before does not need the ids passed by hand. Returns null when
- * the message is not cached (a just-sent one will not be — `msg send` does not
- * write to the db) or is cached under a different conversation.
- *
- * A direct lookup by msgId, checked against the thread. This used to scan the
- * thread's newest 200 rows, so anything older was reported as uncached.
+ * The lookup is shared with the MCP tools (src/core/cached-message.js); only
+ * opening the db is the CLI's own. Null when there is no account or no cache.
  *
  * @param {string} threadId
  * @param {string} msgId
- * @returns {{cliMsgId: string, uidFrom: string}|null}
+ * @returns {{cliMsgId: string, uidFrom: string|null}|null}
  */
-function cachedMessageById(threadId, msgId) {
-    try {
-        if (!openAccountDb()) return null;
-        const row = getMessageById(msgId);
-        // msgIds are account-wide: a row from another conversation must not
-        // lend its ids to an action aimed at this one.
-        if (!row || (row.threadId && String(row.threadId) !== String(threadId))) return null;
-
-        const data = parseRawData(row.raw_data);
-        const cliMsgId = cachedCliMsgId(row);
-        const uidFrom = row.senderId ?? data.uidFrom;
-        return cliMsgId ? { cliMsgId, uidFrom: uidFrom ? String(uidFrom) : null } : null;
-    } catch {
-        return null;
-    }
-}
-
-/**
- * The cliMsgId a reaction must carry, or why there is none.
- *
- * Zalo keys a reaction on the target's cliMsgId as well as its msgId. Given
- * the msgId in its place, it answers "Successful." and the reaction never
- * appears for anyone, so a guess is worse than a refusal: `-c` first, then
- * the cache, then stop.
- *
- * @param {{msgId: string, threadId: string, cliMsgId?: string|null}} target
- * @returns {{cliMsgId: string}|{error: string}}
- */
-function reactionCliMsgId({ msgId, threadId, cliMsgId }) {
-    if (cliMsgId) return { cliMsgId: String(cliMsgId) };
-    const cached = cachedMessageById(threadId, msgId)?.cliMsgId;
-    if (cached) return { cliMsgId: cached };
-    return {
-        error:
-            `Message ${msgId} is not in the local cache for ${threadId}, so its cliMsgId is unknown — and a ` +
-            `reaction keyed on the msgId is accepted by Zalo but never shown, so none was sent. ` +
-            `\`listen\` caches messages as they arrive and \`sync\` restores older ones; ` +
-            `or pass the id yourself with -c <cliMsgId>.`,
-    };
+function cachedInAccount(threadId, msgId) {
+    return openAccountDb() ? cachedMessageById(threadId, msgId) : null;
 }
 
 /**
@@ -247,18 +203,16 @@ async function forwardSource(api, row) {
     };
 }
 
-/** Zalo's message urgency levels, as the apps offer them. */
-const URGENCY_LEVELS = { important: 1, urgent: 2 };
-
 /**
- * Commander parser for `--urgency`: `important` → 1, `urgent` → 2.
+ * Commander parser for `--urgency`: `important` → 1, `urgent` → 2. The
+ * mapping is src/utils/urgency.js, which `zalo_send_message` shares.
  *
  * @param {string} value
  * @returns {number}
  * @throws {InvalidArgumentError} for anything else
  */
 function parseUrgency(value) {
-    const level = URGENCY_LEVELS[String(value).trim().toLowerCase()];
+    const level = urgencyLevel(value);
     if (!level) throw new InvalidArgumentError("Expected one of: important, urgent.");
     return level;
 }
@@ -764,7 +718,10 @@ export function registerMsgCommands(program) {
                     // Exit status stays 0: the send succeeded, and a caller
                     // that read a failure here would send the message twice.
                     const sentMsgId = String(result.message.msgId);
-                    const target = reactionCliMsgId({ msgId: sentMsgId, threadId, cliMsgId });
+                    const target = reactionCliMsgId(
+                        { msgId: sentMsgId, threadId, cliMsgId },
+                        { lookup: cachedInAccount },
+                    );
                     if (target.error) {
                         warning(
                             `--react skipped: Zalo returned no cliMsgId for this send, and a reaction keyed on ` +
@@ -1112,7 +1069,10 @@ export function registerMsgCommands(program) {
                 // The cliMsgId used to fall back to the msgId, which Zalo
                 // accepts and never displays. Resolved before getApi(), so an
                 // uncached message is refused without touching the network.
-                const target = reactionCliMsgId({ msgId, threadId, cliMsgId: opts.cliMsgId });
+                const target = reactionCliMsgId(
+                    { msgId, threadId, cliMsgId: opts.cliMsgId },
+                    { lookup: cachedInAccount },
+                );
                 if (target.error) {
                     refuse(target.error);
                     return;
@@ -1158,7 +1118,7 @@ export function registerMsgCommands(program) {
                 let uidFrom = opts.uidFrom;
 
                 if (!cliMsgId || !uidFrom) {
-                    const cached = cachedMessageById(threadId, msgId);
+                    const cached = cachedInAccount(threadId, msgId);
                     cliMsgId = cliMsgId || cached?.cliMsgId;
                     uidFrom = uidFrom || cached?.uidFrom;
                 }
@@ -1205,15 +1165,19 @@ export function registerMsgCommands(program) {
                 // {msgId} -- so the id it gave matched only by luck. The zca-js
                 // patch now hands that clientId back, and `msg send` reports
                 // that value or none at all.
-                const cliMsgId = opts.cliMsgId || cachedMessageById(threadId, msgId)?.cliMsgId;
-                if (!cliMsgId) {
-                    error(
-                        "cliMsgId is required to recall a message and is not in the local cache. " +
-                            "Pass --cli-msg-id (from `listen --json`).",
-                    );
+                //
+                // The resolution is shared with `zalo_undo`
+                // (src/core/cached-message.js). The refusal exits 0 here, as
+                // it always has.
+                const target = recallCliMsgId(
+                    { msgId, threadId, cliMsgId: opts.cliMsgId },
+                    { lookup: cachedInAccount },
+                );
+                if (target.error) {
+                    error(target.error);
                     return;
                 }
-                const payload = { msgId, cliMsgId: String(cliMsgId) };
+                const payload = { msgId, cliMsgId: target.cliMsgId };
                 const result = await getApi().undo(payload, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Message recalled (undone)"));
             } catch (e) {

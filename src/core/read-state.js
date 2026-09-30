@@ -224,12 +224,19 @@ export function readStateEvent(change) {
     const { threadId, isGroup } = change;
     if (change.kind === "read") {
         return {
-            data: { event: "read", threadId, isGroup, lastReadMsgId: change.lastReadMsgId, ts: change.ts ?? null },
+            data: {
+                event: "read",
+                threadId,
+                isGroup,
+                lastReadMsgId: change.lastReadMsgId,
+                ts: change.ts ?? null,
+                cmd: change.cmd ?? null,
+            },
             human: `Read up to message ${change.lastReadMsgId} in ${threadId}`,
         };
     }
     return {
-        data: { event: "unread_mark", threadId, isGroup, marked: change.marked },
+        data: { event: "unread_mark", threadId, isGroup, marked: change.marked, cmd: change.cmd ?? null },
         human: change.marked ? `Marked unread: ${threadId}` : `Unread mark cleared: ${threadId}`,
     };
 }
@@ -242,9 +249,10 @@ export function readStateEvent(change) {
  *
  * @param {object} args
  * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap
- * @param {(change: {kind: "read", threadId: string, isGroup: boolean, lastReadMsgId: string, ts: number|null}
- *   | {kind: "unread_mark", threadId: string, isGroup: boolean, marked: boolean}) => void} [args.onChange] -
- *   each change that altered what is stored, for a listener to print
+ * @param {(change: {kind: "read", threadId: string, isGroup: boolean, lastReadMsgId: string, ts: number|null,
+ *   cmd: number} | {kind: "unread_mark", threadId: string, isGroup: boolean, marked: boolean, cmd: number}) => void}
+ *   [args.onChange] - each change that altered what is stored, for a listener to print; `cmd` is the socket
+ *   cmd that carried it, which is still to be measured live for a read on the phone
  * @param {(line: string) => void} [args.log]
  * @returns {{stop: () => void}}
  */
@@ -272,7 +280,14 @@ export function createReadStateSync({ tap, onChange = () => {}, log = (line) => 
                 say(`could not store a read of ${r.threadId}: ${e?.message || e}`);
                 continue;
             }
-            tell({ kind: "read", threadId: r.threadId, isGroup: r.isGroup, lastReadMsgId: r.lastMsgId, ts: r.ts });
+            tell({
+                kind: "read",
+                threadId: r.threadId,
+                isGroup: r.isGroup,
+                lastReadMsgId: r.lastMsgId,
+                ts: r.ts,
+                cmd: frame.cmd,
+            });
         }
     }
 
@@ -290,7 +305,7 @@ export function createReadStateSync({ tap, onChange = () => {}, log = (line) => 
                 say(`could not store the unread mark of ${m.threadId}: ${e?.message || e}`);
                 continue;
             }
-            tell({ kind: "unread_mark", threadId: m.threadId, isGroup: m.isGroup, marked: m.marked });
+            tell({ kind: "unread_mark", threadId: m.threadId, isGroup: m.isGroup, marked: m.marked, cmd: frame.cmd });
         }
     }
 

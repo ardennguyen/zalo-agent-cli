@@ -308,7 +308,8 @@ describe("createReadStateSync -- through the real socket tap", () => {
         listener.push(504, 0, { error_code: 0, data: { more: 0, clearUnreads: [row()] } });
         assert.equal(getConvState(DM).lastReadMsgId, "7000000000001");
         assert.deepEqual(changes, [
-            { kind: "read", threadId: DM, isGroup: false, lastReadMsgId: "7000000000001", ts: 1790000000000 },
+            // cmd: which socket cmd carried it, the open question for a read on the phone.
+            { kind: "read", threadId: DM, isGroup: false, lastReadMsgId: "7000000000001", ts: 1790000000000, cmd: 504 },
         ]);
     });
 
@@ -412,24 +413,27 @@ describe("createReadStateSync -- through the real socket tap", () => {
 });
 
 describe("readStateEvent -- what `listen --events read` prints", () => {
-    it("names the conversation and the message it was read up to", () => {
+    it("names the conversation, the message it was read up to, and the cmd that carried it", () => {
         const read = readStateEvent({
             kind: "read",
             threadId: DM,
             isGroup: false,
             lastReadMsgId: "7000000000001",
             ts: 3,
+            cmd: 504,
         });
+        // Red if the cmd is dropped: it is what the live probe must record.
         assert.deepEqual(read.data, {
             event: "read",
             threadId: DM,
             isGroup: false,
             lastReadMsgId: "7000000000001",
             ts: 3,
+            cmd: 504,
         });
         assert.equal(read.human, `Read up to message 7000000000001 in ${DM}`);
-        const mark = readStateEvent({ kind: "unread_mark", threadId: GROUP, isGroup: true, marked: false });
-        assert.deepEqual(mark.data, { event: "unread_mark", threadId: GROUP, isGroup: true, marked: false });
+        const mark = readStateEvent({ kind: "unread_mark", threadId: GROUP, isGroup: true, marked: false, cmd: 601 });
+        assert.deepEqual(mark.data, { event: "unread_mark", threadId: GROUP, isGroup: true, marked: false, cmd: 601 });
         assert.equal(mark.human, `Unread mark cleared: ${GROUP}`);
     });
 });

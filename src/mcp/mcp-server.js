@@ -22,15 +22,16 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8
  * @param {object} config - MCP config
  * @param {import("./thread-name-cache.js").ThreadNameCache} [nameCache] - Thread name cache
  * @param {string} [accountDir] - account data dir, for cache reads and media paths
+ * @param {object} [stageLock] - the daemon's one-stage-at-a-time lock (daemon-channel.js)
  * @returns {Promise<McpServer>}
  */
-export async function createMCPServer(api, buffer, filter, config, nameCache, accountDir) {
+export async function createMCPServer(api, buffer, filter, config, nameCache, accountDir, stageLock) {
     const server = new McpServer({
         name: "zalo-agent",
         version: pkg.version,
     });
 
-    registerTools(server, api, buffer, filter, config, nameCache, accountDir);
+    registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock);
 
     const transport = new StdioServerTransport();
     await server.connect(transport);

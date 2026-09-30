@@ -7,6 +7,7 @@ import { z } from "zod";
 import { openFile } from "../utils/open-file.js";
 import { getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { fetchAndCacheHistory } from "../core/history-fetch.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
@@ -159,8 +160,10 @@ function cacheHistory(threadId, limit, before, nameCache) {
  * @param {object} config - MCP config
  * @param {import("./thread-name-cache.js").ThreadNameCache} [nameCache] - Thread name cache
  * @param {string} [accountDir] - account data dir; media is fetched into <accountDir>/media
+ * @param {ReturnType<import("../core/daemon-channel.js").createStageLock>} [stageLock] - the
+ *   daemon's one-stage-at-a-time lock; a server-side history fetch takes it, as `listen`'s does
  */
-export function registerTools(server, api, buffer, filter, config, nameCache, accountDir) {
+export function registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock) {
     const maxPerPoll = config.limits?.maxMessagesPerPoll ?? 20;
 
     // --- zalo_get_messages ---
@@ -434,10 +437,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             title: "Get Zalo Message History",
             description:
                 "Fetch historical messages from a Zalo DM or group conversation. " +
-                "Reads the local cache first (everything the listener and `zalo-agent sync-mobile --transfer` " +
+                "Reads the local cache first (everything the listener and `zalo-agent sync` " +
                 "have stored, which can be the full history), and falls back to asking the Zalo server " +
-                "when the cache has nothing for the thread. Page the cache with 'before' (epoch ms, from the " +
-                "previous response's cursor) and the server path with 'lastMsgId'. " +
+                "when the cache has nothing for the thread: a group's cloud-message store first, then the " +
+                "socket stream, caching what comes back. Zalo serves only messages since this login that " +
+                "way; `filtered: true` means it withheld older ones, which only `zalo-agent sync` restores. " +
+                "Page the cache with 'before' (epoch ms, from the previous response's cursor) and the server " +
+                "path with 'lastMsgId'. " +
                 "WARNING: Large limits may consume significant memory/bandwidth. Start with a small limit and paginate.",
             inputSchema: z.object({
                 threadId: z.string().describe("Thread ID to fetch history from"),
@@ -475,62 +481,50 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const cached = cacheHistory(threadId, limit, before, nameCache);
                 if (cached) return ok(cached);
 
-                const allMessages = [];
-                let cursor = lastMsgId || null;
-                let done = false;
-                const maxPages = Math.ceil(limit / 20);
-                let page = 0;
-
-                while (!done && allMessages.length < limit && page < maxPages) {
-                    page++;
-                    const pageMessages = await new Promise((resolve) => {
-                        const handler = (messages) => {
-                            clearTimeout(timer);
-                            api.listener.removeListener("old_messages", handler);
-                            resolve(messages);
-                        };
-                        const timer = setTimeout(() => {
-                            api.listener.removeListener("old_messages", handler);
-                            resolve([]);
-                        }, 10000);
-
-                        api.listener.on("old_messages", handler);
-                        api.listener.requestOldMessages(threadType, cursor);
+                // Nothing cached: ask Zalo through the one shared fetch `listen`'s
+                // daemon uses for `msg history` (src/core/history-fetch.js): a
+                // group's cloud-message store first, then the socket stream, and
+                // what comes back is cached insert-if-absent — this server is the
+                // account's db writer. It used to be a hand-rolled socket loop that
+                // never asked a group's store and cached nothing (triage M6).
+                // One stage at a time on this socket: a sync stage beside a scan
+                // lost the socket once, and an AI client should hear "busy" now
+                // rather than wait minutes behind a restore.
+                const release = stageLock ? stageLock.tryAcquire("history") : () => {};
+                if (!release) {
+                    const busy = stageLock.current();
+                    return err(
+                        `A ${busy?.stage || "sync"} stage is running on this socket. Try again when it finishes.`,
+                    );
+                }
+                let fetched;
+                try {
+                    fetched = await fetchAndCacheHistory(api, threadId, threadType, {
+                        limit,
+                        fromMsgId: lastMsgId || null,
                     });
-
-                    if (!pageMessages || pageMessages.length === 0) {
-                        done = true;
-                        break;
-                    }
-
-                    for (const msg of pageMessages) {
-                        if (allMessages.length >= limit) break;
-                        // API returns messages globally — filter to requested thread
-                        const msgThread = String(msg.threadId || "");
-                        const msgSender = String(msg.data?.uidFrom || "");
-                        const target = String(threadId);
-                        if (msgThread !== target && msgSender !== target) continue;
-                        const rawContent = msg.data?.content;
-                        const isText = typeof rawContent === "string";
-                        allMessages.push({
-                            msgId: msg.data?.msgId,
-                            threadId: msg.threadId,
-                            senderId: msg.data?.uidFrom || null,
-                            senderName: msg.data?.dName || null,
-                            text: isText ? rawContent : extractMessageText(rawContent, msg.data?.msgType),
-                            timestamp: msg.data?.ts ? Number(msg.data.ts) : null,
-                            type: isText ? "text" : msg.data?.msgType || "attachment",
-                        });
-                    }
-
-                    const lastMsg = pageMessages[pageMessages.length - 1];
-                    const nextId = lastMsg?.data?.actionId || lastMsg?.data?.msgId;
-                    if (!nextId || nextId === cursor) done = true;
-                    cursor = nextId;
+                } finally {
+                    release();
                 }
 
-                // Sort oldest first
+                const allMessages = fetched.frames.map((f) => {
+                    const d = f.data || {};
+                    const rawContent = d.content;
+                    const isText = typeof rawContent === "string";
+                    return {
+                        msgId: d.msgId,
+                        threadId: f.threadId,
+                        senderId: d.uidFrom || null,
+                        senderName: d.dName || null,
+                        text: isText ? rawContent : extractMessageText(rawContent, d.msgType),
+                        timestamp: d.ts ? Number(d.ts) : null,
+                        type: isText ? "text" : d.msgType || "attachment",
+                    };
+                });
+
+                // Sort oldest first; the oldest message is where the next page starts.
                 allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                const cursor = allMessages.length ? String(allMessages[0].msgId) : lastMsgId || null;
 
                 // Enrich with thread name
                 if (nameCache) {
@@ -544,10 +538,21 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     threadId,
                     threadType: threadType === 0 ? "dm" : "group",
                     source: "server",
+                    // Which Zalo path answered: a group's cloud-message store, or the socket stream.
+                    via: fetched.source,
                     count: allMessages.length,
                     messages: allMessages,
-                    cursor: cursor,
-                    hasMore: !done,
+                    cursor,
+                    hasMore: Boolean(fetched.more) || (fetched.source === "socket" && allMessages.length >= limit),
+                    filtered: fetched.filtered === true,
+                    ...(fetched.filtered || allMessages.length === 0
+                        ? {
+                              note:
+                                  "Zalo serves a conversation's messages only since this login; older ones are " +
+                                  "withheld. `zalo-agent sync` restores them from the owner's phone (it asks for a " +
+                                  "tap), and zalo_get_history then reads them from the cache.",
+                          }
+                        : {}),
                 });
             } catch (e) {
                 console.error("[mcp-tools] zalo_get_history error:", e.message);

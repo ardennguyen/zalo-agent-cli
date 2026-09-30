@@ -119,7 +119,8 @@ async function scanOldMessages(api, threadId, threadType, { limit, scanLimit, ti
  *   filtered: boolean}>}
  *   `frames` as fetched, for display; `added` rows were new and written;
  *   `untouched` were already stored, or not storable (a removal, no content);
- *   `filtered` is true when a group's store withheld older messages
+ *   `filtered` is true when a group's store withheld older messages; `more` is 1
+ *   when the store says older messages can still be fetched
  * @throws {Error} when there is no thread id, the socket cannot be opened, or the scan fails
  */
 export async function fetchAndCacheHistory(api, threadId, threadType, opts = {}) {
@@ -132,6 +133,7 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
     let frames = [];
     let source = "socket";
     let filtered = false;
+    let more = 0;
     if (type === THREAD_GROUP) {
         try {
             // Loaded on demand: only a group needs it.
@@ -139,6 +141,7 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
             const history = await getGroupHistory(api, thread, limit);
             frames = history.groupMsgs.map((m) => ({ threadId: thread, type, data: m.data }));
             filtered = history.filtered === true;
+            more = history.more ? 1 : 0;
             onProgress({
                 phase: "store",
                 detail: frames.length
@@ -191,5 +194,15 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
     if (cache) {
         for (const f of frames) if (storeHistoryMessage(f).stored) added++;
     }
-    return { frames, source, rawScanned, cached: cache, added, untouched: frames.length - added, filtered };
+    return {
+        frames,
+        source,
+        rawScanned,
+        cached: cache,
+        added,
+        untouched: frames.length - added,
+        filtered,
+        // The store's own "older messages can be fetched"; the socket stream says nothing like it.
+        more: source === "store" ? more : 0,
+    };
 }

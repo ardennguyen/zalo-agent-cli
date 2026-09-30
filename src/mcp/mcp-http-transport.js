@@ -44,7 +44,16 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     app.post("/mcp", async (req, res) => {
         try {
             const server = new McpServer({ name: "zalo-agent", version: pkg.version });
-            registerToolsFn(server, deps.api, deps.buffer, deps.filter, deps.config, deps.nameCache, deps.accountDir);
+            registerToolsFn(
+                server,
+                deps.api,
+                deps.buffer,
+                deps.filter,
+                deps.config,
+                deps.nameCache,
+                deps.accountDir,
+                deps.stageLock,
+            );
 
             const transport = new StreamableHTTPServerTransport({
                 sessionIdGenerator: undefined, // stateless mode

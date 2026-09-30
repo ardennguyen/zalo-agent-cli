@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
+import { createStageLock } from "../../src/core/daemon-channel.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
 
 /** The exact tool surface. Changing this list is a deliberate act — see AGENTS.md §10. */
@@ -68,7 +69,7 @@ function deps(overrides = {}) {
 function register(overrides) {
     const server = fakeServer();
     const d = deps(overrides);
-    registerTools(server, d.api, d.buffer, d.filter, d.config, d.nameCache, d.accountDir);
+    registerTools(server, d.api, d.buffer, d.filter, d.config, d.nameCache, d.accountDir, d.stageLock);
     return { server, ...d };
 }
 
@@ -401,6 +402,46 @@ describe("MCP tools read the local cache", () => {
         const out = payloadOf(await server.call("zalo_get_history", { threadId: "nope", limit: 50 }));
         assert.equal(out.source, "server");
         assert.equal(out.count, 0);
+        // An empty answer says why, so an agent does not read it as "no history".
+        assert.equal(out.filtered, false);
+        assert.match(out.note, /only since this login/);
+    });
+
+    // The fallback shares `listen`'s one stage-at-a-time lock (triage M6): a
+    // scan beside a running sync stage lost the socket once.
+    it("zalo_get_history refuses, rather than scan beside a running sync stage", async () => {
+        const stageLock = createStageLock();
+        const release = stageLock.tryAcquire("messages");
+        let asked = false;
+        const api = {
+            listener: {
+                on: () => {},
+                removeListener: () => {},
+                requestOldMessages: () => (asked = true),
+            },
+        };
+        const { server } = register({ api, stageLock });
+        const res = await server.call("zalo_get_history", { threadId: "nope", limit: 50 });
+        release();
+        // Red if the lock is ignored and the socket is asked anyway.
+        assert.equal(res.isError, true);
+        assert.match(res.content[0].text, /messages stage is running/);
+        assert.equal(asked, false, "the socket was not touched");
+    });
+
+    it("zalo_get_history takes the lock for the fetch and gives it back", async () => {
+        const stageLock = createStageLock();
+        let heldDuringFetch = null;
+        const api = emptyServerApi();
+        const ask = api.listener.requestOldMessages;
+        api.listener.requestOldMessages = (...a) => {
+            heldDuringFetch = stageLock.current()?.stage ?? null;
+            return ask(...a);
+        };
+        const { server } = register({ api, stageLock });
+        await server.call("zalo_get_history", { threadId: "nope", limit: 50 });
+        assert.equal(heldDuringFetch, "history");
+        assert.equal(stageLock.current(), null, "released afterwards");
     });
 
     it("zalo_get_history takes a `before` cursor only as a positive timestamp", () => {

@@ -185,6 +185,11 @@ export function registerMCPCommands(program) {
                 console.error("[mcp] Thread name cache init failed (non-fatal):", e.message);
             }
 
+            // One stage at a time on this socket, shared by the sync routes, the
+            // self-heal catch-up and the tools' own history fetch. Created before
+            // the server so the tools can hold it too.
+            const stageLock = createStageLock();
+
             // Start MCP server — stdio (default) or HTTP
             let httpServer = null;
             try {
@@ -195,12 +200,12 @@ export function registerMCPCommands(program) {
                         console.error(`[mcp] Invalid port: ${opts.http}. Must be 1-65535.`);
                         process.exit(1);
                     }
-                    const deps = { api: getApi(), buffer, filter, config, nameCache, accountDir };
+                    const deps = { api: getApi(), buffer, filter, config, nameCache, accountDir, stageLock };
                     const authToken = opts.auth?.trim() || null;
                     httpServer = createHTTPServer(registerTools, deps, port, authToken, opts.host || "127.0.0.1");
                     console.error(`[mcp] HTTP server started on port ${port}`);
                 } else {
-                    await createMCPServer(getApi(), buffer, filter, config, nameCache, accountDir);
+                    await createMCPServer(getApi(), buffer, filter, config, nameCache, accountDir, stageLock);
                 }
             } catch (e) {
                 dropLock();
@@ -272,7 +277,7 @@ export function registerMCPCommands(program) {
             // The same catch-up `listen` runs (AGENTS.md §13): one stage at a
             // time on this socket, a raw reader for the fields zca-js drops, and
             // the offline-queue pull on every handshake (src/core/self-heal.js).
-            const stageLock = createStageLock();
+            // `stageLock` is the one created before the server above.
             const socketTap = createSocketTap({ log: (line) => console.error(`[mcp] ${line}`) });
             const selfHeal = createSelfHeal({
                 getApi,

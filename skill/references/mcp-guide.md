@@ -210,9 +210,9 @@ Xoá tin khỏi buffer đến cursor chỉ định — **áp dụng cho toàn b�
 ---
 
 ### `zalo_get_history`
-Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức toàn bộ những gì `mcp start`/`listen` đã lưu và những gì `zalo-agent sync` / `sync-mobile` đã khôi phục từ điện thoại (có thể là toàn bộ lịch sử) — chỉ khi cache không có gì cho thread đó mới hỏi server Zalo. Phân trang cache bằng `before` (epoch ms, lấy từ `cursor` của lần trước), phân trang đường server bằng `lastMsgId`. Trường `source` trong kết quả cho biết dữ liệu đến từ `"cache"` hay `"server"`.
+Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức toàn bộ những gì `mcp start`/`listen` đã lưu và những gì `zalo-agent sync` / `sync-mobile` đã khôi phục từ điện thoại (có thể là toàn bộ lịch sử) — chỉ khi cache không có gì cho thread đó mới hỏi server Zalo. Khi hỏi server, tool dùng chung một đường lấy tin với `msg history` của daemon: với nhóm thì hỏi kho tin nhắn đám mây (`cm/getrecentv2`) trước, rồi mới đến luồng socket; tin lấy được đều được lưu vào cache (chỉ thêm, không sửa tin đã có). Phân trang cache bằng `before` (epoch ms, lấy từ `cursor` của lần trước), phân trang đường server bằng `lastMsgId`. Trường `source` trong kết quả cho biết dữ liệu đến từ `"cache"` hay `"server"`, và `via` cho biết đường server nào trả lời (`"store"` hay `"socket"`).
 
-> Vì sao cache trước: trên các account hiện tại, Zalo trả về **rỗng** cho yêu cầu lịch sử qua socket (cmd 510/511) — chính Zalo Web cũng vậy rồi fallback sang `transfer-sync-v2`. Bản trước chỉ hỏi server nên tool này gần như luôn trả 0 tin, trong khi `zalo-agent msg history` đọc cùng một cache và trả về đầy đủ.
+> Giới hạn đo được ngày 2026-09-30: qua cả hai đường, Zalo chỉ trả tin nhắn **kể từ lần đăng nhập này**; tin cũ hơn bị giữ lại — khi đó kết quả có `filtered: true` kèm `note` giải thích. Muốn có lịch sử cũ hơn, chạy `zalo-agent sync` (cần bấm xác nhận trên điện thoại) để khôi phục vào cache, sau đó tool này đọc được từ cache. Tool cũng dùng chung khoá "mỗi lúc một stage" với daemon: nếu một stage sync đang chạy trên socket, tool báo lỗi ngay thay vì chạy song song.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -275,7 +275,7 @@ MCP server chỉ expose **7 tool cho tài khoản cá nhân**. Mọi thứ còn 
 | Khảo sát, nhắc nhở, trả lời tự động, tin nhắn nhanh, nhãn, catalog | — | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
 | Khôi phục lịch sử từ điện thoại | — | `zalo-agent sync` hoặc `zalo-agent sync-mobile` (ping điện thoại, cần xác nhận một lần; không cần dừng `mcp start`) |
-| Đọc lịch sử từ cache cục bộ | `zalo_get_history` (fetch live từ server) | `zalo-agent --json msg history <id>` (đọc `zalo.db`) |
+| Đọc lịch sử từ cache cục bộ | `zalo_get_history` (đọc `zalo.db` trước, rồi mới hỏi server) | `zalo-agent --json msg history <id>` (đọc `zalo.db`) |
 | Official Account (32 lệnh) | — | `zalo-agent --json oa …` |
 
 **Nguyên tắc:** có MCP tool thì dùng tool; không có thì gọi CLI. Đừng trả lời "không làm được" chỉ vì chưa có MCP tool tương ứng.

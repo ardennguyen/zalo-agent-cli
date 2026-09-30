@@ -110,14 +110,15 @@ Nếu wrapper không tìm thấy `zalo-agent-cli` trong `node_modules/`, nó t�
 ## Tham chiếu Tools (7 tools)
 
 ### `zalo_get_messages`
-Lấy tin nhắn đã buffer, hỗ trợ cursor để đọc tăng dần (incremental polling).
+Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
 | `threadId` | string (tuỳ chọn) | Lọc theo thread cụ thể. Bỏ qua để đọc tất cả thread đang watch |
-| `since` | number (mặc định 0) | Cursor từ lần gọi trước — chỉ lấy tin có cursor lớn hơn |
+| `since` | number (mặc định 0) | Cursor từ lần gọi trước — chỉ lấy tin có cursor lớn hơn. `0` nghĩa là bắt đầu sau read cursor của consumer này |
 | `limit` | number (mặc định 20, tối đa 100) | Số tin tối đa trả về |
+| `consumer` | string (tuỳ chọn) | Tên bot khi nhiều bot dùng chung một server (chữ, số và `. _ : @ -`, tối đa 64 ký tự). Mỗi tên có read cursor riêng. Bỏ qua nếu chỉ có một bot (dùng consumer `"default"`) |
 
 **Kết quả mẫu:**
 ```json
@@ -151,12 +152,13 @@ Gửi tin nhắn văn bản đến một thread.
 ---
 
 ### `zalo_list_threads`
-Liệt kê các thread đang có tin nhắn trong buffer, kèm số tin chưa đọc.
+Liệt kê các thread đang có tin nhắn trong buffer, kèm số tin chưa đọc (tính theo read cursor của consumer).
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
 | `type` | enum "group"\|"dm"\|"all" (mặc định "all") | Lọc theo loại thread |
+| `consumer` | string (tuỳ chọn) | Tên bot — `unread` được tính sau read cursor của bot này |
 
 **Kết quả mẫu:**
 ```json
@@ -195,17 +197,19 @@ Lưu ý: cache tên thread được xây dựng lúc khởi động MCP server (
 ---
 
 ### `zalo_mark_read`
-Xoá tin khỏi buffer đến cursor chỉ định — **áp dụng cho toàn bộ threads, không giới hạn theo 1 thread**.
+Đánh dấu đã đọc mọi tin đến cursor chỉ định **cho consumer này** — áp dụng cho toàn bộ threads, không giới hạn theo 1 thread. Tool **không xoá** tin nào: các consumer khác giữ read cursor riêng, nên một bot đánh dấu đã đọc không làm mất tin của bot khác (trước đây tool xoá tin khỏi buffer chung). Tin chỉ rời buffer khi quá cũ hoặc buffer đầy. Read cursor không bao giờ lùi lại.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
-| `cursor` | number | Cursor trả về từ `zalo_get_messages` — xoá mọi tin có cursor ≤ giá trị này |
+| `cursor` | number | Cursor trả về từ `zalo_get_messages` — mọi tin có cursor ≤ giá trị này được tính là đã đọc |
+| `consumer` | string (tuỳ chọn) | Cùng tên đã dùng với `zalo_get_messages` |
 
 **Kết quả mẫu:**
 ```json
-{ "success": true, "discarded": 5 }
+{ "success": true, "marked": 5, "readCursor": 42 }
 ```
+`marked` là số tin vừa được tính là đã đọc lần này; `readCursor` là read cursor hiện tại của consumer.
 
 ---
 
@@ -359,7 +363,7 @@ Claude Code / MCP Client
 
 - Dùng `watchThreads` để lọc noise — chỉ nhận thread quan trọng
 - Gọi `zalo_get_messages` định kỳ với `since` = cursor của lần trước để polling tăng dần
-- Dùng `zalo_mark_read` sau khi xử lý xong để buffer không đầy (nhớ: xoá toàn bộ threads, không chỉ 1 thread)
+- Dùng `zalo_mark_read` sau khi xử lý xong để lần `zalo_get_messages` sau chỉ trả tin mới (áp dụng cho toàn bộ threads, không chỉ 1 thread). Tool không giải phóng buffer: buffer tự bỏ tin quá cũ hoặc khi đầy. Nhiều bot dùng chung một server thì mỗi bot truyền `consumer` riêng
 - Dùng `zalo_search_threads` khi chỉ biết tên người/nhóm, chưa biết `threadId`
 - `zalo_get_history` chỉ nên dùng khi cần tin nhắn cũ hơn những gì buffer đang giữ (buffer chỉ có tin từ lúc server start)
 - Trên VPS: luôn thêm `--auth` khi dùng `--host 0.0.0.0`; `/health` là endpoint duy nhất không cần auth

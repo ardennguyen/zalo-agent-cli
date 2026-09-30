@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
+import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
 
 /** The exact tool surface. Changing this list is a deliberate act — see AGENTS.md §10. */
@@ -57,6 +58,7 @@ function deps(overrides = {}) {
             getStats: () => [],
             getThreadType: () => "dm",
             markRead: () => 0,
+            readCursor: () => 0,
         },
         filter: { isWatched: () => true },
         config: { limits: { maxMessagesPerPoll: 20 } },
@@ -222,6 +224,7 @@ describe("MCP handlers", () => {
                 getThreadType: (id) => (id.startsWith("g") ? "group" : "dm"),
                 read: () => ({}),
                 markRead: () => 0,
+                readCursor: () => 0,
             },
         });
 
@@ -240,6 +243,7 @@ describe("MCP handlers", () => {
                 getThreadType: () => "group",
                 read: () => ({}),
                 markRead: () => 0,
+                readCursor: () => 0,
             },
             nameCache: { ready: true, get: () => ({ name: "Việc riêng - AI test", memberCount: 3 }), search: () => [] },
         });
@@ -272,13 +276,21 @@ describe("MCP handlers", () => {
         assert.equal(out.total, 1);
     });
 
-    it("zalo_mark_read reports how many messages it discarded", async () => {
+    it("zalo_mark_read reports how many messages it newly marked read, and the cursor now in force", async () => {
+        // Nothing is discarded any more (triage M7), so it no longer claims to.
         const { server } = register({
-            buffer: { markRead: (c) => c * 2, getStats: () => [], getThreadType: () => "dm", read: () => ({}) },
+            buffer: {
+                markRead: (c) => c * 2,
+                readCursor: () => 3,
+                getStats: () => [],
+                getThreadType: () => "dm",
+                read: () => ({}),
+            },
         });
         assert.deepEqual(payloadOf(await server.call("zalo_mark_read", { cursor: 3 })), {
             success: true,
-            discarded: 6,
+            marked: 6,
+            readCursor: 3,
         });
     });
 
@@ -295,6 +307,61 @@ describe("MCP handlers", () => {
         });
         const r = await server.call("zalo_list_threads", { type: "all" });
         assert.equal(r.isError, true, "a throw would take the whole MCP server down");
+    });
+});
+
+// Triage M7: one bot's zalo_mark_read used to delete the messages from the
+// shared buffer, emptying every other bot's inbox. The handlers are called
+// directly (no zod parse), so each call passes since/limit explicitly.
+describe("several bots share one listener's buffer", () => {
+    const withTwoMessages = () => {
+        const buffer = new MessageBuffer();
+        buffer.push("t1", { id: "a", threadId: "t1", text: "a", timestamp: Date.now() });
+        buffer.push("t1", { id: "b", threadId: "t1", text: "b", timestamp: Date.now() });
+        return register({ buffer }).server;
+    };
+    const get = async (server, consumer) =>
+        payloadOf(await server.call("zalo_get_messages", { since: 0, limit: 20, consumer }));
+
+    it("one bot's zalo_mark_read leaves another bot's inbox intact", async () => {
+        const server = withTwoMessages();
+        const first = await get(server, "bot-1");
+        assert.equal(first.messages.length, 2);
+        await server.call("zalo_mark_read", { cursor: first.cursor, consumer: "bot-1" });
+
+        assert.equal((await get(server, "bot-1")).messages.length, 0);
+        // Red if zalo_mark_read goes back to deleting for everyone.
+        assert.equal((await get(server, "bot-2")).messages.length, 2);
+    });
+
+    it("a single bot that names no consumer works as before", async () => {
+        const server = withTwoMessages();
+        const first = await get(server, undefined);
+        assert.equal(first.messages.length, 2);
+        const marked = payloadOf(await server.call("zalo_mark_read", { cursor: first.cursor }));
+        assert.equal(marked.marked, 2);
+        assert.equal((await get(server, undefined)).messages.length, 0);
+    });
+
+    it("an explicit since is honored as given, even below the read cursor", async () => {
+        const server = withTwoMessages();
+        const first = await get(server, "bot-1");
+        await server.call("zalo_mark_read", { cursor: first.cursor, consumer: "bot-1" });
+        const again = payloadOf(await server.call("zalo_get_messages", { since: 1, limit: 20, consumer: "bot-1" }));
+        assert.deepEqual(
+            again.messages.map((m) => m.id),
+            ["b"],
+        );
+    });
+
+    it("unread counts in zalo_list_threads follow the consumer", async () => {
+        const server = withTwoMessages();
+        const first = await get(server, "bot-1");
+        await server.call("zalo_mark_read", { cursor: first.cursor, consumer: "bot-1" });
+        const unread = async (consumer) =>
+            payloadOf(await server.call("zalo_list_threads", { type: "all", consumer })).threads[0]?.unread ?? 0;
+        assert.equal(await unread("bot-1"), 0);
+        assert.equal(await unread("bot-2"), 2);
     });
 });
 

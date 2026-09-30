@@ -166,22 +166,44 @@ function cacheHistory(threadId, limit, before, nameCache) {
 export function registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock) {
     const maxPerPoll = config.limits?.maxMessagesPerPoll ?? 20;
 
+    // Several bots can share one listener, each with its own read cursor
+    // (triage M7). A bot that names none reads as "default", as before.
+    const consumerSchema = z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[A-Za-z0-9._:@-]+$/)
+        .optional()
+        .describe(
+            "Your bot's name, when several bots share this server: each name has its own read cursor, " +
+                "so one bot's zalo_mark_read does not hide messages from another. Omit it for a single bot.",
+        );
+
     // --- zalo_get_messages ---
     server.registerTool(
         "zalo_get_messages",
         {
             title: "Get Zalo Messages",
             description:
-                "Get messages from Zalo threads (DMs and groups). Returns buffered messages since last read. Use 'since' cursor from previous response for incremental polling.",
+                "Get messages from Zalo threads (DMs and groups). Returns buffered messages this consumer has " +
+                "not marked read (see zalo_mark_read). Use 'since' cursor from previous response for incremental polling.",
             inputSchema: z.object({
                 threadId: z.string().optional().describe("Thread ID to read from. Omit for all watched threads."),
-                since: z.number().int().min(0).default(0).describe("Cursor from previous read for incremental polling"),
+                since: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .default(0)
+                    .describe("Cursor from previous read for incremental polling; 0 means from your read cursor"),
                 limit: z.number().int().min(1).max(100).default(maxPerPoll).describe("Max messages to return"),
+                consumer: consumerSchema,
             }),
         },
-        async ({ threadId, since, limit }) => {
+        async ({ threadId, since, limit, consumer }) => {
             try {
-                const result = buffer.read(threadId, since, limit);
+                // An explicit cursor is honored as given; 0 starts after what this consumer marked read.
+                const from = since > 0 ? since : buffer.readCursor(consumer);
+                const result = buffer.read(threadId, from, limit);
                 // Enrich messages with thread name from cache
                 if (nameCache) {
                     for (const msg of result.messages) {
@@ -349,11 +371,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .enum(["group", "dm", "all"])
                     .default("all")
                     .describe("Filter by thread type: 'dm', 'group', or 'all'"),
+                consumer: consumerSchema,
             }),
         },
-        async ({ type }) => {
+        async ({ type, consumer }) => {
             try {
-                const stats = buffer.getStats(0);
+                // Unread is per consumer: after what this consumer marked read.
+                const stats = buffer.getStats(buffer.readCursor(consumer));
                 // Enrich each stat entry with threadType and thread name
                 const enriched = stats.map((t) => {
                     const threadType = buffer.getThreadType(t.threadId) ?? "unknown";
@@ -410,19 +434,22 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Mark Zalo Messages Read",
             description:
-                "Discard buffered messages up to and including the given cursor. Use the cursor returned by zalo_get_messages.",
+                "Mark buffered messages up to and including the given cursor as read for this consumer. Use the " +
+                "cursor returned by zalo_get_messages. Other consumers keep their own cursor, and nothing is " +
+                "deleted: messages leave the buffer only by age or size.",
             inputSchema: z.object({
                 cursor: z
                     .number()
                     .int()
                     .min(0)
                     .describe("Cursor value returned from a previous zalo_get_messages call"),
+                consumer: consumerSchema,
             }),
         },
-        async ({ cursor }) => {
+        async ({ cursor, consumer }) => {
             try {
-                const discarded = buffer.markRead(cursor);
-                return ok({ success: true, discarded });
+                const marked = buffer.markRead(cursor, consumer);
+                return ok({ success: true, marked, readCursor: buffer.readCursor(consumer) });
             } catch (e) {
                 console.error("[mcp-tools] zalo_mark_read error:", e.message);
                 return err(e.message);

@@ -200,7 +200,7 @@ curl http://localhost:3847/health
 | `zalo_send_message` | Send a text message to a DM or group |
 | `zalo_list_threads` | List buffered threads with unread counts |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread search by name |
-| `zalo_mark_read` | Discard buffered messages up to a cursor (global, not per-thread) |
+| `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer (global, not per-thread; deletes nothing, so several bots can share one server) |
 | `zalo_get_history` | Fetch older messages (~2 weeks) from the Zalo server, paginated |
 | `zalo_view_media` | Open a received image/audio/video attachment (downloads first if needed) |
 

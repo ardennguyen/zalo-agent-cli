@@ -323,11 +323,11 @@ Requires a Zalo Shop / zBusiness account.
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
-| `zalo_get_messages` | Get buffered messages (cursor-based incremental polling) | `threadId?`, `since` (cursor, default 0), `limit` (default = `limits.maxMessagesPerPoll`, max 100) |
+| `zalo_get_messages` | Get buffered messages this consumer has not marked read (cursor-based incremental polling) | `threadId?`, `since` (cursor; default 0 = after this consumer's read cursor), `limit` (default = `limits.maxMessagesPerPoll`, max 100), `consumer?` (a bot's name when several share one server) |
 | `zalo_send_message` | Send a text message to a thread | `threadId`, `text`, `threadType` (0=DM, 1=Group, default 0) |
-| `zalo_list_threads` | List threads currently in the buffer with unread counts | `type` (`dm`/`group`/`all`, default `all`) |
+| `zalo_list_threads` | List threads currently in the buffer with unread counts (after this consumer's read cursor) | `type` (`dm`/`group`/`all`, default `all`), `consumer?` |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive search for a thread by name | `query`, `type` (default `all`), `limit` (default 10, max 50) |
-| `zalo_mark_read` | Discard buffered messages up to a cursor — **global across all threads**, not scoped to one thread | `cursor` |
+| `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global across all threads**, not scoped to one thread. Deletes nothing (messages leave the buffer only by age or size), so bots sharing one server each keep their own read cursor by passing a `consumer` name; `zalo_get_messages` and `zalo_list_threads` take the same name | `cursor`, `consumer` |
 | `zalo_get_history` | Older messages, **local cache first** (everything the listener stored and `sync`/`sync-mobile` restored — can be the full history), falling back to the Zalo server only when the cache has nothing for the thread. The reply says which via `source: "cache"｜"server"` | `threadId`, `threadType` (default 0), `limit` (default 50, max 200), `before?` (epoch-ms cursor for the cache path), `lastMsgId?` (cursor for the server path) |
 | `zalo_view_media` | Open a received media file with the system viewer. The path comes from the cached row's `localPath`, so a message that arrived before this process started is still openable; anything not yet fetched is downloaded with the shared downloader first | `messageId`, `threadId?`, `open` (default = `media.autoOpen`) |
 

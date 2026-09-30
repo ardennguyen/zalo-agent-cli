@@ -235,7 +235,7 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 | `zalo_send_message` | Send a text message to a DM or group | `threadId`, `text`, `threadType` (0=DM, 1=Group) |
 | `zalo_list_threads` | Buffered threads with unread counts and names | `type` (`dm`/`group`/`all`) |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit` (default 10, max 50) |
-| `zalo_mark_read` | Discard buffered messages up to a cursor — **global, not per-thread** | `cursor` |
+| `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global, not per-thread**; deletes nothing, so bots sharing a server keep their own cursors | `cursor`, `consumer` |
 | `zalo_get_history` | Older messages (~2 weeks) fetched from the Zalo server, paginated | `threadId`, `threadType`, `limit` (default 50, max 200), `lastMsgId?` |
 | `zalo_view_media` | Open a received image/audio/video attachment (downloads first if needed) | `messageId`, `threadId?`, `open` |
 

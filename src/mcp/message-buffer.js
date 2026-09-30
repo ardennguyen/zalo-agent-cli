@@ -1,7 +1,19 @@
 /**
  * Ring buffer storing messages per thread with cursor-based incremental reads.
  * Shared by both stdio and HTTP MCP transports.
+ *
+ * Several bots can share one listener, so "read" is per consumer: each named
+ * consumer has its own read cursor, and marking messages read moves only that
+ * cursor. It used to delete the messages, so one bot's zalo_mark_read emptied
+ * every other bot's inbox (triage M7). Messages now leave only by eviction
+ * (maxSize per thread, maxAge), which bounds memory as before.
  */
+
+/** The consumer a caller that names none reads as. */
+export const DEFAULT_CONSUMER = "default";
+
+/** Consumers remembered at most; the least recently active is forgotten first. */
+const MAX_CONSUMERS = 256;
 
 export class MessageBuffer {
     /**
@@ -14,6 +26,17 @@ export class MessageBuffer {
         this._maxSize = maxSize;
         this._maxAge = maxAge;
         this._globalCursor = 0;
+        /** @type {Map<string, { cursor: number, at: number }>} */
+        this._readCursors = new Map();
+    }
+
+    /**
+     * The read cursor of one consumer: messages after it are unread for them.
+     * @param {string} [consumer="default"]
+     * @returns {number}
+     */
+    readCursor(consumer = DEFAULT_CONSUMER) {
+        return this._readCursors.get(consumer)?.cursor ?? 0;
     }
 
     /**
@@ -60,18 +83,25 @@ export class MessageBuffer {
     }
 
     /**
-     * Advance read cursor — discard messages at or before given cursor.
+     * Advance one consumer's read cursor to `cursor`. Nothing is deleted, and no
+     * other consumer's cursor moves; a cursor never moves backwards.
      * @param {number} cursor
-     * @returns {number} Count of discarded messages
+     * @param {string} [consumer="default"]
+     * @returns {number} how many buffered messages this newly marked read for that consumer
      */
-    markRead(cursor) {
-        let discarded = 0;
+    markRead(cursor, consumer = DEFAULT_CONSUMER) {
+        const from = this.readCursor(consumer);
+        const to = Math.max(from, Number(cursor) || 0);
+        let marked = 0;
         for (const [, thread] of this._threads) {
-            const before = thread.messages.length;
-            thread.messages = thread.messages.filter((m) => m._cursor > cursor);
-            discarded += before - thread.messages.length;
+            for (const m of thread.messages) if (m._cursor > from && m._cursor <= to) marked++;
         }
-        return discarded;
+        this._readCursors.delete(consumer); // re-insert: Map order is recency
+        this._readCursors.set(consumer, { cursor: to, at: Date.now() });
+        while (this._readCursors.size > MAX_CONSUMERS) {
+            this._readCursors.delete(this._readCursors.keys().next().value);
+        }
+        return marked;
     }
 
     /**

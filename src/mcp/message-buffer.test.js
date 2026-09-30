@@ -108,23 +108,22 @@ describe("MessageBuffer cursor-based incremental reads", () => {
 });
 
 describe("MessageBuffer markRead", () => {
-    it("discards messages at or before cursor and returns count", () => {
+    it("marks messages at or before cursor read and returns how many", () => {
         const buf = new MessageBuffer();
         buf.push("t1", msg("a"));
         buf.push("t1", msg("b"));
         const { cursor } = buf.read("t1");
-        const discarded = buf.markRead(cursor);
-        assert.equal(discarded, 2);
+        assert.equal(buf.markRead(cursor), 2);
     });
 
-    it("messages after cursor are kept", () => {
+    it("messages after the cursor stay unread for that consumer", () => {
         const buf = new MessageBuffer();
         buf.push("t1", msg("a"));
         const { cursor: c1 } = buf.read("t1");
         buf.push("t1", msg("b"));
 
         buf.markRead(c1);
-        const { messages } = buf.read("t1");
+        const { messages } = buf.read("t1", buf.readCursor());
         assert.equal(messages.length, 1);
         assert.equal(messages[0].text, "b");
     });
@@ -138,13 +137,56 @@ describe("MessageBuffer markRead", () => {
         assert.equal(second, 0);
     });
 
-    it("markRead across multiple threads discards from all", () => {
+    it("markRead covers every thread", () => {
         const buf = new MessageBuffer();
         buf.push("t1", msg("a"));
         buf.push("t2", msg("b"));
         const { cursor } = buf.read(); // reads all
-        const discarded = buf.markRead(cursor);
-        assert.equal(discarded, 2);
+        assert.equal(buf.markRead(cursor), 2);
+    });
+});
+
+// Triage M7: several bots share one listener. markRead used to delete, so one
+// bot marking read emptied every other bot's inbox.
+describe("MessageBuffer read cursors, per consumer", () => {
+    it("markRead deletes nothing: another consumer still sees every message", () => {
+        const buf = new MessageBuffer();
+        buf.push("t1", msg("a"));
+        buf.push("t1", msg("b"));
+        const { cursor } = buf.read("t1");
+        buf.markRead(cursor, "bot-1");
+
+        assert.equal(buf.read("t1", buf.readCursor("bot-1")).messages.length, 0);
+        // Red if markRead goes back to deleting for everyone.
+        assert.equal(buf.read("t1", buf.readCursor("bot-2")).messages.length, 2);
+    });
+
+    it("each consumer's cursor is its own, and never moves backwards", () => {
+        const buf = new MessageBuffer();
+        for (const t of ["a", "b", "c"]) buf.push("t1", msg(t));
+        buf.markRead(2, "bot-1");
+        buf.markRead(1, "bot-1");
+        assert.equal(buf.readCursor("bot-1"), 2);
+        assert.equal(buf.readCursor("bot-2"), 0);
+        assert.equal(buf.readCursor(), 0, "the default consumer is untouched");
+    });
+
+    it("unread counts follow the consumer's cursor", () => {
+        const buf = new MessageBuffer();
+        buf.push("t1", msg("a"));
+        buf.push("t1", msg("b"));
+        buf.markRead(1, "bot-1");
+        assert.equal(buf.getStats(buf.readCursor("bot-1"))[0].unread, 1);
+        assert.equal(buf.getStats(buf.readCursor("bot-2"))[0].unread, 2);
+    });
+
+    it("remembers a bounded number of consumers, forgetting the least recent", () => {
+        const buf = new MessageBuffer();
+        buf.push("t1", msg("a"));
+        for (let i = 0; i < 300; i++) buf.markRead(1, `bot-${i}`);
+        assert.ok(buf._readCursors.size <= 256);
+        assert.equal(buf.readCursor("bot-299"), 1, "the most recent is kept");
+        assert.equal(buf.readCursor("bot-0"), 0, "the oldest is forgotten");
     });
 });
 
@@ -210,7 +252,7 @@ describe("MessageBuffer multi-thread isolation", () => {
         assert.equal(r2.messages[0].text, "from-t2");
     });
 
-    it("markRead on shared cursor only keeps messages after it in each thread", () => {
+    it("markRead on the global cursor leaves unread only what came after it, in each thread", () => {
         const buf = new MessageBuffer();
         buf.push("t1", msg("t1-a"));
         const { cursor: midCursor } = buf.read();
@@ -218,8 +260,8 @@ describe("MessageBuffer multi-thread isolation", () => {
 
         buf.markRead(midCursor);
 
-        const r1 = buf.read("t1");
-        const r2 = buf.read("t2");
+        const r1 = buf.read("t1", buf.readCursor());
+        const r2 = buf.read("t2", buf.readCursor());
         assert.equal(r1.messages.length, 0);
         assert.equal(r2.messages.length, 1);
     });
@@ -255,13 +297,23 @@ describe("MessageBuffer getStats", () => {
     });
 
     it("excludes threads with no messages", () => {
-        const buf = new MessageBuffer(500, 999999);
-        buf.push("t1", msg("a"));
-        const { cursor } = buf.read("t1");
-        buf.markRead(cursor); // discards all messages
+        // markRead no longer empties a thread (it moves a consumer's cursor);
+        // eviction is what leaves one with no messages.
+        const buf = new MessageBuffer(500, 1000);
+        buf.push("t1", msg("a", Date.now() - 5000)); // already past maxAge
 
         const stats = buf.getStats(0);
         assert.equal(stats.length, 0);
+    });
+
+    it("keeps listing a thread whose messages were all marked read, with 0 unread", () => {
+        const buf = new MessageBuffer(500, 999999);
+        buf.push("t1", msg("a"));
+        const { cursor } = buf.read("t1");
+        buf.markRead(cursor);
+        const [t1] = buf.getStats(buf.readCursor());
+        assert.equal(t1.unread, 0);
+        assert.equal(t1.total, 1);
     });
 });
 

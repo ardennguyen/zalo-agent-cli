@@ -367,48 +367,19 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
     });
 });
 
-// ── 3. Local cache deletion (server state untouched) ───────────────────
+// ── 3. History fetch and the local cache (server state untouched) ─────
+//
+// There is no `logout` in this tier any more. Until 2026-09-30 it ran
+// `logout --no-remote` three times as a harmless no-op, "credentials kept —
+// will auto-login on next command". Measured that day, that was the bug:
+// Zalo's logout calls end only the session key, so a logout that kept the
+// credentials logged straight back in. `logout` now deletes them, which costs
+// a QR re-scan, so it is tested in tier 5 behind a credential backup. The
+// "stop and come back without logging out" case is a daemon restart, which
+// self-heal covers.
 
-describe("tier 4 · local chat cache", { skip }, () => {
-    it("logout --no-remote leaves the session alive (local-only, per-process)", async () => {
-        // --no-remote skips logoutV2(), so nothing is invalidated server
-        // side. Because each CLI invocation is its own process, this is
-        // effectively a no-op — which is exactly why it is safe here and
-        // the real logout is not.
-        const r = await runCli(["logout", "--no-remote"], live(T));
-        assert.match(r.all, /Logged out \(credentials kept/);
-
-        const still = await runJson(["status"], live(T));
-        assert.equal(still.ok, true, still.error);
-        assert.equal(still.data.loggedIn, true, "a --no-remote logout must not end the session");
-    });
-});
-
-describe("tier 4 · local logout, traffic, then re-sync", { skip }, () => {
-    // The scenario the cache exists for: the CLI is "logged out" locally,
-    // messages happen, and later commands must still work. `--no-remote`
-    // keeps the server session alive, so this costs no QR re-scan.
-
-    it("logout --no-remote leaves the session usable", async () => {
-        const out = await runCli(["logout", "--no-remote"], live(T));
-        assert.match(out.all, /Logged out \(credentials kept/);
-
-        const status = await runJson(["status"], live(T));
-        assert.equal(status.ok, true, status.error);
-        assert.equal(status.data.loggedIn, true, "a --no-remote logout must not end the session");
-    });
-
-    it("sending still works immediately after a local logout", async () => {
-        await runCli(["logout", "--no-remote"], live(T));
-
-        // Auto-login should transparently re-establish the session.
-        const sent = await send(T, T.group, mark("post-logout traffic"));
-        assert.match(sent.msgId, /^\d+$/, "a send after local logout should succeed via auto-login");
-        await undoMsg(T, T.group, sent.msgId, sent.cliMsgId);
-    });
-
-    it("a live history fetch after logout still answers and keeps the cache db", async () => {
-        await runCli(["logout", "--no-remote"], live(T));
+describe("tier 4 · history fetch and the cache", { skip }, () => {
+    it("a live history fetch answers and keeps the cache db", async () => {
         const r = await runJson(
             ["msg", "history", "-t", "1", "-n", "5", "--no-cache", T.group.threadId],
             live(T, { timeout: 180_000 }),

@@ -12,7 +12,7 @@ separate suites with very different risk profiles:
 opens a socket and never reads your real `~/.zalo-agent-cli/`.
 
 ```bash
-npm test                      # 1765 offline tests — no Zalo session needed
+npm test                      # 1768 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -400,23 +400,26 @@ destroys history with no undo, and tier 4 runs on a bare
   members, then write the new id back into `targets.json`. The old group id
   dies forever; the group itself is restored. If disperse succeeds but
   recreation fails, the tier prints a loud `MANUAL ACTION REQUIRED` notice.
-- **5c** `logout --delete-history` — wipes `zalo.db` and `media/`; credentials
-  survive and the cache rebuilds.
+- **5c** `logout --no-remote --delete-history` — wipes `zalo.db`, `media/`
+  **and the saved credentials**, then asserts nothing auto-logs-in. Backed up
+  and restored like 5d, so no QR re-scan.
 - **5d** `logout --no-remote --purge` — exercises the **entire** purge
   filesystem path (credential deletion, account-dir wipe, registry drop) while
-  leaving the _server_ session valid, because `--no-remote` skips `logoutV2()`.
-  The suite backs the credential up first and restores it after, then asserts
-  the session is actually back. This proves the purge code works **without
-  costing a QR re-scan** — which is why it is separate from 5e.
-- **5e** real `logout` then `logout --purge` — calls `logoutV2()`, which
-  genuinely invalidates the session at Zalo's servers. **Nothing restores
-  this**; you must scan a QR code on your phone. Behind its own gate, last.
+  leaving the _server_ session valid, because `--no-remote` skips the server
+  call. The suite backs the credential up first and restores it after, then
+  asserts the session is actually back. This proves the purge code works
+  **without costing a QR re-scan** — which is why it is separate from 5e.
+- **5e** real `logout` then `logout --purge` — runs the server logout and
+  deletes the credentials. **Nothing restores this**; you must scan a QR code
+  on your phone. Behind its own gate, last.
 
-Note that `logout` _without_ `--no-remote` is as destructive as `--purge` for
-practical purposes — it kills the server session, so the stored cookie is dead
-even though the file is still on disk. `logout --no-remote` is the genuinely
-safe one, and because each CLI invocation is its own process it is nearly a
-no-op; tier 4 asserts exactly that.
+Every `logout` deletes the saved credentials since 2026-09-30, so none of them
+is safe outside tier 5's backup. What they do at Zalo was measured that day:
+the logout calls end only this device's session _key_ — with the credentials
+kept, the next command logged straight back in, and the phone kept listing the
+web session as signed in. The login ends at Zalo only when the web session is
+removed from the phone's device list. Tier 4 used to run `logout --no-remote`
+as a harmless no-op; that no-op was the bug, and tier 4 no longer logs out.
 
 ### Transient failures
 

@@ -18,7 +18,9 @@
  *       rewritten with the new id. Recoverable in substance, not in id.
  *
  *   5c  logout --delete-history          ZALO_TEST_DESTRUCTIVE=1
- *       Wipes zalo.db and media/. Credentials survive; the cache rebuilds.
+ *       Wipes zalo.db and media/ AND the saved credentials — `logout` is a
+ *       real logout since 2026-09-30. Backed up and restored like 5d, so no
+ *       QR re-scan.
  *
  *   5d  purge WITHOUT server logout      ZALO_TEST_DESTRUCTIVE=1
  *       `logout --no-remote --purge` exercises the entire purge filesystem
@@ -28,10 +30,12 @@
  *       purge code works without costing a QR re-scan.
  *
  *   5e  real logout / real purge         ZALO_TEST_END_SESSION=1
- *       Calls logoutV2(), which genuinely invalidates the session at
- *       Zalo's servers. NOTHING RESTORES THIS. The account must be
- *       re-authenticated by scanning a QR code on the phone. Runs last,
- *       behind its own flag, and every test after it would fail by design.
+ *       Runs the server logout and deletes the credentials. NOTHING
+ *       RESTORES THIS: the account needs a QR re-scan on the phone. (The
+ *       server calls end only this device's session key, measured
+ *       2026-09-30; the login itself ends at Zalo only when the web session
+ *       is removed from the phone's device list.) Runs last, behind its own
+ *       flag, and every test after it would fail by design.
  *
  * Gates: ZALO_TEST_LIVE=1 + ZALO_TEST_DESTRUCTIVE=1 (+ ZALO_TEST_END_SESSION=1 for 5e)
  */
@@ -396,18 +400,37 @@ describe("tier 5b · group disperse and recreate", { skip }, () => {
 
 // ── 5c. Local history deletion ─────────────────────────────────────────
 
-describe("tier 5c · logout --delete-history", { skip }, () => {
-    it("removes zalo.db and media/ while keeping credentials usable", async () => {
+describe("tier 5c · logout --delete-history (credentials backed up)", { skip }, () => {
+    // A real logout deletes the saved credentials (measured 2026-09-30: with
+    // them kept, the next command logged straight back in). `--no-remote`
+    // keeps the server session alive, so restoring the backup brings the
+    // account back without a QR re-scan — the same pattern as 5d.
+    before(() => {
+        if (!g.run) return;
+        backupSession();
+    });
+
+    after(async () => {
+        if (!g.run) return;
+        restoreSession();
+        rmSync(BACKUP, { recursive: true, force: true });
+        const status = await runJson(["status"], live(T));
+        assert.equal(status.ok, true, `session restore failed: ${status.error}`);
+        assert.equal(status.data.loggedIn, true, "credential restore did not bring the session back");
+    });
+
+    it("removes zalo.db, media/ and the saved credentials", async () => {
         const r = await runCli(["logout", "--no-remote", "--delete-history"], live(T));
         assert.match(r.all, /Logged out/);
 
         assert.equal(existsSync(join(accountDataDir(), "zalo.db")), false, "zalo.db should be gone");
         assert.equal(existsSync(join(accountDataDir(), "media")), false, "media/ should be gone");
-        assert.equal(existsSync(credPath()), true, "--delete-history must NOT touch credentials");
+        assert.equal(existsSync(credPath()), false, "a real logout deletes the saved credentials");
 
+        // Red if logout goes back to "credentials kept — will auto-login".
         const status = await runJson(["status"], live(T));
         assert.equal(status.ok, true, status.error);
-        assert.equal(status.data.loggedIn, true, "auto-login must still work after a history wipe");
+        assert.equal(status.data.loggedIn, false, "nothing may auto-login after a logout");
     });
 });
 

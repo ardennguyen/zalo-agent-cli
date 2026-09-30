@@ -16,7 +16,7 @@ import {
 } from "../core/zalo-client.js";
 import { saveCredentials, loadCredentials } from "../core/credentials.js";
 import { listAccounts, getActive, setActive, addAccount, removeAccount, getAccount } from "../core/accounts.js";
-import { serverLogout, reportLogout } from "../core/logout.js";
+import { serverLogout, reportLogout, lockHolder } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { startQrServer } from "../utils/qr-http-server.js";
@@ -132,6 +132,18 @@ export function registerAccountCommands(program) {
             const acc = getAccount(ownerId);
             if (!acc) {
                 error(`Account not found: ${ownerId}`);
+                return;
+            }
+
+            // Refuse before touching anything while a daemon holds the account,
+            // as `logout` does: the server logout below would end the session
+            // that daemon is using, and removeAccount() would then abort,
+            // leaving a half-logged-out account behind.
+            const holder = lockHolder(ownerId);
+            if (holder !== null) {
+                warning(
+                    `Removal aborted: a "listen"/"mcp" daemon (pid ${holder}) is still running for ${ownerId}. Stop it, then re-run — nothing was changed.`,
+                );
                 return;
             }
 

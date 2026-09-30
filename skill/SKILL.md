@@ -35,15 +35,15 @@ Surface: **190 CLI commands** across 21 command containers (14 top-level groups 
 ```bash
 zalo-agent status                # Logged in? which account?
 zalo-agent whoami                # Full profile of the logged-in user
-zalo-agent logout                # Invalidate the session server-side, keep credentials
+zalo-agent logout                # Real logout: delete the saved credentials (next use needs a QR)
 zalo-agent logout --delete-history  # ...and delete the local chat cache (zalo.db + media)
-zalo-agent logout --purge        # ...and wipe all local data + credentials + registry entry
+zalo-agent logout --purge        # ...and wipe all local data + the registry entry
 zalo-agent sync                  # Restore everything from the phone into zalo.db (one confirm)
 zalo-agent sync-media             # Re-run/resume the media fetch on its own (no phone confirm)
 zalo-agent sync-media --prune 90  # Free disk: delete downloaded media older than 90 days (keeps text)
 zalo-agent update                # Self-update to the latest published version
 ```
-`logout --purge` and `account remove` refuse while a `listen` daemon still holds the account's `daemon.lock`.
+Every `logout` and `account remove` refuse, changing nothing, while a `listen`/`mcp` daemon holds the account's `daemon.lock`. Zalo's logout calls end only this device's session key: the login ends at Zalo when the web session is removed from the phone's list of logged-in devices. Stopping a daemon is not a logout — it keeps the credentials, logs back in on the next start, and self-heals.
 
 ### Login
 ```bash

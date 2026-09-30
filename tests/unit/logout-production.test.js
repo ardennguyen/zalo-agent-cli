@@ -26,10 +26,11 @@
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { serverLogout, describeLogout } from "../../src/core/logout.js";
+import { CONFIG_DIR, loadCredentials, saveCredentials } from "../../src/core/credentials.js";
+import { acquireLock, releaseLock } from "../../src/core/lock.js";
+import { serverLogout, describeLogout, finishLocalLogout } from "../../src/core/logout.js";
 
 assertSandboxed(CONFIG_DIR);
 
@@ -122,14 +123,17 @@ describe("serverLogout sends Zalo Web's production logout", () => {
         assert.equal(q.get("zpw_type"), "30");
     });
 
-    it("still runs the staging logoutV2 first, and its failure does not stop the production call", async () => {
+    it("sends the production logout FIRST, then logoutV2 best-effort", async () => {
         const { api, calls } = harness({ v2: "fail" });
         const result = await serverLogout(api);
 
-        // Red if logoutV2 is dropped, reordered after the session is gone, or allowed to abort.
-        assert.deepEqual(calls, ["v2", "production", "probe"]);
-        assert.equal(result.v2.ok, false);
-        assert.equal(result.production.ok, true, "a staging failure must not block the real logout");
+        // Measured live 2026-09-30: with logoutV2 first, it killed the session
+        // key and the production call answered "Invalid Param"; sent first, the
+        // production call answered "Successful.". Red if logoutV2 goes back in
+        // front, is dropped, or its failure is allowed to abort the rest.
+        assert.deepEqual(calls, ["production", "v2", "probe"]);
+        assert.equal(result.production.ok, true);
+        assert.equal(result.v2.ok, false, "a staging failure is recorded, not hidden");
     });
 
     it("reports a production rejection instead of swallowing it", async () => {
@@ -179,6 +183,71 @@ describe("serverLogout claims the session ended only after seeing it end", () =>
         assert.ok((await levels("rejected")).includes("success"));
         assert.ok(!(await levels("answers")).includes("success"), "a surviving session is a warning");
         assert.ok(!(await levels("network")).includes("success"), "an unverified logout is not a success");
+    });
+});
+
+/**
+ * A logged-in account as it sits on disk: saved credentials plus a chat cache
+ * and one downloaded file, under the sandboxed CONFIG_DIR.
+ *
+ * @param {string} ownId - a fake id by the no-real-ids convention
+ * @returns {{accountDir: string, db: string, media: string}}
+ */
+function loggedInAccount(ownId) {
+    saveCredentials(ownId, { imei: "test-imei-0000", cookie: [], userAgent: "offline-test" });
+    const accountDir = join(CONFIG_DIR, "accounts", ownId);
+    mkdirSync(join(accountDir, "media", "thread"), { recursive: true });
+    const db = join(accountDir, "zalo.db");
+    const media = join(accountDir, "media", "thread", "photo.jpg");
+    writeFileSync(db, "cache");
+    writeFileSync(media, "jpeg");
+    return { accountDir, db, media };
+}
+
+// Measured live 2026-09-30: Zalo's logout calls end only the session key, and
+// with the credentials kept the next command logged straight back in. So a
+// real logout deletes them. These run on real files in the sandbox.
+describe("a real logout deletes the saved credentials", () => {
+    it("deletes the credentials and keeps the chat cache by default", () => {
+        const own = "9000000000000000011";
+        const { db, media } = loggedInAccount(own);
+        assert.ok(loadCredentials(own), "precondition: credentials saved");
+
+        const out = finishLocalLogout(own);
+
+        // Red if logout goes back to "credentials kept — will auto-login".
+        assert.equal(out.credentialsDeleted, true);
+        assert.equal(loadCredentials(own), null, "nothing left to auto-login with");
+        assert.ok(existsSync(db) && existsSync(media), "history is kept unless asked");
+    });
+
+    it("--delete-history also removes the chat cache and media", () => {
+        const own = "9000000000000000022";
+        const { db, media } = loggedInAccount(own);
+
+        const out = finishLocalLogout(own, { deleteHistory: true });
+
+        assert.equal(out.credentialsDeleted, true);
+        assert.equal(loadCredentials(own), null);
+        assert.deepEqual(out.history, { dbDeleted: true, mediaDeleted: true });
+        assert.ok(!existsSync(db) && !existsSync(media));
+    });
+
+    it("keeps everything while a daemon holds the account's lock", () => {
+        const own = "9000000000000000033";
+        const { accountDir, db } = loggedInAccount(own);
+        assert.equal(acquireLock(accountDir), true, "precondition: this process holds the lock");
+        try {
+            const out = finishLocalLogout(own, { deleteHistory: true });
+
+            // Red if the guard is dropped: a running listen/mcp daemon would lose
+            // the credentials it needs to re-auth after a drop.
+            assert.equal(out.blockedPid, process.pid);
+            assert.ok(loadCredentials(own), "credentials untouched under a held lock");
+            assert.ok(existsSync(db), "history untouched under a held lock");
+        } finally {
+            releaseLock(accountDir);
+        }
     });
 });
 

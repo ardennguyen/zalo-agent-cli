@@ -2,8 +2,7 @@
  * Login commands — QR login, credential login, logout, status, whoami.
  */
 
-import { readFileSync, unlinkSync, existsSync, rmSync } from "fs";
-import { join } from "path";
+import { readFileSync, unlinkSync } from "fs";
 import { LoginQRCallbackEventType } from "zca-js";
 import {
     loginWithQR,
@@ -14,50 +13,14 @@ import {
     getApi,
     getOwnId,
 } from "../core/zalo-client.js";
-import { saveCredentials, CONFIG_DIR } from "../core/credentials.js";
+import { saveCredentials, loadCredentials } from "../core/credentials.js";
 import { addAccount, getActive, removeAccount } from "../core/accounts.js";
-import { serverLogout, reportLogout } from "../core/logout.js";
+import { serverLogout, reportLogout, finishLocalLogout, lockHolder } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { startQrServer } from "../utils/qr-http-server.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
-
-/**
- * Delete the local chat cache (zalo.db + WAL/SHM sidecars) and downloaded
- * media for one account. Mirrors Zalo Web's "Xóa lịch sử trò chuyện khi
- * đăng xuất" (delete chat history on logout) checkbox — confirmed by
- * reverse-engineering to be a purely local operation there too (a
- * z_cleardata localStorage flag consumed by the web client's own
- * deleteAllData(), no server call involved), so this needs no network
- * round trip on the CLI side either.
- * @param {string} ownId
- * @returns {{dbDeleted: boolean, mediaDeleted: boolean}}
- */
-function deleteLocalHistory(ownId) {
-    const accountDir = join(CONFIG_DIR, "accounts", ownId);
-    let dbDeleted = false;
-    let mediaDeleted = false;
-
-    if (existsSync(accountDir)) {
-        // zalo.db plus its WAL-mode sidecar files (-wal, -shm), if present.
-        for (const suffix of ["", "-wal", "-shm", "-journal"]) {
-            const p = join(accountDir, `zalo.db${suffix}`);
-            if (existsSync(p)) {
-                rmSync(p, { force: true });
-                dbDeleted = true;
-            }
-        }
-
-        const mediaDir = join(accountDir, "media");
-        if (existsSync(mediaDir)) {
-            rmSync(mediaDir, { recursive: true, force: true });
-            mediaDeleted = true;
-        }
-    }
-
-    return { dbDeleted, mediaDeleted };
-}
 
 export function registerLoginCommands(program) {
     program
@@ -208,95 +171,107 @@ export function registerLoginCommands(program) {
 
     program
         .command("logout")
-        .description("Logout current account, matching Zalo Web's logout dialog options")
+        .description(
+            "Log out: end the session and delete this device's saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
+        )
         .option(
             "--purge",
-            "Fully remove this account from this machine: deletes saved credentials (must QR login again) plus all local data (chat cache, media, sync keys) — implies --delete-history and then some",
+            "Fully remove this account from this machine: saved credentials plus all local data (chat cache, media, sync keys) and the registry entry",
         )
         .option(
             "--delete-history",
-            'Also delete the local chat cache (zalo.db + downloaded media) for this account — mirrors the web app\'s "Delete chat history on logout" checkbox. Superseded by --purge, which wipes more than just this.',
+            'Also delete the local chat cache (zalo.db + downloaded media) for this account — mirrors the web app\'s "Delete chat history on logout" checkbox',
         )
-        .option(
-            "--no-remote",
-            "Skip real server-side session invalidation (local-only logout, previous default behavior)",
-        )
+        .option("--no-remote", "Skip the server-side logout call (still deletes the saved credentials locally)")
         .action(async (opts) => {
             const active = getActive();
 
-            // End the session at Zalo's servers the way Zalo Web does, and
-            // say whether it actually ended — src/core/logout.js. The comment
-            // that stood here claimed a live confirmation against
-            // wpa.chat.zalo.me while the call went to the staging host, and
-            // the success line printed whenever the call did not throw.
-            // serverLogout never throws, so the local logout below always runs.
+            // Refuse before touching anything while a daemon holds the account:
+            // the server logout would end the session it is using, and the
+            // credential delete would leave it unable to re-auth.
+            const holder = active ? lockHolder(active.ownId) : null;
+            if (holder !== null) {
+                warning(
+                    `A "listen"/"mcp" daemon (pid ${holder}) is running for this account. Stop it, then re-run logout — nothing was changed.`,
+                );
+                return;
+            }
+
+            // Ask Zalo to end the session (production logout first, then the
+            // optional logoutV2) and report honestly — src/core/logout.js.
+            // Measured live 2026-09-30: these calls end only this device's
+            // session KEY, never the login. The saved credentials would
+            // auto-log-in on the next command, so a real logout deletes them
+            // too (below); the web session is revoked at Zalo only from the
+            // phone's device list.
             if (opts.remote !== false && isLoggedIn()) {
                 reportLogout(await serverLogout(getApi()), { success, warning, info });
             }
 
             clearSession();
 
-            let historyMsg = "";
-            let purgeBlockedPid = null;
-            let purgeError = null;
-            if (opts.purge && active) {
-                // --purge means "remove this account from this machine" —
-                // the same shared removeAccount() logic `account remove
-                // <id>` uses (wipes the whole per-account directory: db,
-                // media, sync keys, lock file — then deletes credentials
-                // and drops the accounts.json entry), just scoped
-                // implicitly to whichever account is active instead of an
-                // explicit ID.
+            if (!active) {
+                success("Logged out.");
+                return;
+            }
+
+            // --purge: remove the whole account (creds + all local data +
+            // registry entry) via the shared removeAccount(), which aborts
+            // rather than pull credentials out from under a running daemon.
+            if (opts.purge) {
                 try {
                     const { wiped, skippedLocked } = removeAccount(active.ownId);
                     if (skippedLocked) {
-                        // Don't pull credentials out from under a daemon
-                        // that's still actively using them against an
-                        // un-wiped db — that would leave it running on an
-                        // orphaned session with no way to re-auth. The
-                        // whole purge aborts, not just the file wipe.
-                        purgeBlockedPid = skippedLocked.pid;
-                    } else {
-                        historyMsg = wiped
-                            ? " — local account data deleted"
-                            : " — no local account data found to delete";
+                        warning(
+                            `Purge aborted: a "listen"/"mcp" daemon (pid ${skippedLocked.pid}) is still running for this account. Stop it, then re-run --purge.`,
+                        );
+                        info("Credentials and account registration were left untouched.");
+                        return;
                     }
+                    try {
+                        unlinkSync(getQRPath());
+                    } catch {}
+                    success(
+                        `Logged out and purged ${active.name || active.ownId} — ${wiped ? "local account data deleted" : "no local account data found to delete"}.`,
+                    );
                 } catch (e) {
-                    // Don't let a filesystem-level failure here (locked
-                    // file, permissions, AV scanner, whatever) crash the
-                    // whole process with a raw stack trace.
-                    purgeError = e;
+                    // A filesystem-level failure (locked file, permissions, AV
+                    // scanner) must not crash the process with a raw stack trace.
+                    error(`Purge failed while removing account data/credentials: ${e.message}`);
+                    warning("State may be partially removed — check with: zalo-agent account list");
                 }
-            } else if (opts.deleteHistory && active) {
-                const { dbDeleted, mediaDeleted } = deleteLocalHistory(active.ownId);
-                if (dbDeleted || mediaDeleted) {
-                    historyMsg = " — local chat history deleted";
-                } else {
-                    historyMsg = " — no local chat history found to delete";
-                }
+                return;
             }
 
-            if (opts.purge && active && purgeBlockedPid !== null) {
+            // Default (and --delete-history): a real logout — delete the saved
+            // credentials so nothing auto-logs-in, keeping the chat cache
+            // unless --delete-history asks otherwise. Guarded by the daemon lock.
+            const outcome = finishLocalLogout(active.ownId, { deleteHistory: Boolean(opts.deleteHistory) });
+            if (outcome.blockedPid !== undefined) {
                 warning(
-                    `Purge aborted: a "listen" daemon (pid ${purgeBlockedPid}) is still running for this account. Stop it, then re-run --purge.`,
+                    `A "listen"/"mcp" daemon (pid ${outcome.blockedPid}) is still running for this account, so the credentials were kept — the next command would auto-login.`,
                 );
-                info("Credentials and account registration were left untouched.");
-            } else if (opts.purge && active && purgeError) {
-                // The local account-data wipe may have already run/reported
-                // above; report this failure the same way and let the user
-                // retry or clean up manually.
-                error(`Purge failed while removing account data/credentials: ${purgeError.message}`);
-                warning("State may be partially removed — check with: zalo-agent account list");
-            } else if (opts.purge && active) {
-                // Also remove QR image
-                try {
-                    unlinkSync(getQRPath());
-                } catch {}
-                success(`Logged out and purged credentials for ${active.name || active.ownId}${historyMsg}`);
-            } else {
-                success(`Logged out (credentials kept — will auto-login on next command)${historyMsg}`);
-                if (active) info(`To fully remove: zalo-agent account remove ${active.ownId}`);
+                info("Stop the daemon and re-run logout to delete the saved credentials.");
+                return;
             }
+
+            try {
+                unlinkSync(getQRPath());
+            } catch {}
+            const who = active.name || active.ownId;
+            const historyGone = opts.deleteHistory && (outcome.history.dbDeleted || outcome.history.mediaDeleted);
+            if (outcome.credentialsDeleted) {
+                success(
+                    `Logged out ${who} — saved credentials${historyGone ? " and local chat history" : ""} deleted; the next command needs a new QR login.`,
+                );
+            } else {
+                success(
+                    `Logged out ${who} — ${historyGone ? "local chat history deleted; " : ""}no saved credentials were found to delete.`,
+                );
+            }
+            info(
+                "This ends the session on this device only. To sign it out at Zalo, remove it from your phone's list of logged-in devices.",
+            );
         });
 
     program
@@ -317,8 +292,12 @@ export function registerLoginCommands(program) {
                     if (active) info(`Account: ${active.name || active.ownId} | Proxy: ${maskProxy(active.proxy)}`);
                 } else {
                     info("Not logged in");
-                    if (active)
+                    // After a real logout the account stays registered but its
+                    // credentials are gone, so auto-login would fail.
+                    if (active && loadCredentials(active.ownId))
                         info(`Active account: ${active.name || active.ownId} (will auto-login on next command)`);
+                    else if (active)
+                        info(`Account ${active.name || active.ownId} is logged out — run: zalo-agent login`);
                 }
             });
         });

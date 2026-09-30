@@ -20,6 +20,9 @@
  */
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { existsSync, rmSync } from "node:fs";
+import { CONFIG_DIR, deleteCredentials } from "./credentials.js";
+import { checkLock } from "./lock.js";
 
 const require = createRequire(import.meta.url);
 
@@ -84,9 +87,19 @@ async function productionLogout(api) {
 /**
  * End this session at Zalo's servers.
  *
- * Runs the staging `logoutV2` first, while the session is still valid (the web's
- * optional extra step, best-effort), then the production logout, then asks
- * `fetchAccountInfo` whether the session survived.
+ * The production logout runs FIRST, while the session key is still valid, then
+ * the optional staging `logoutV2` (best-effort), then a `fetchAccountInfo`
+ * probe. Order matters: measured live 2026-09-30, running `logoutV2` first
+ * kills the in-process session key, and the production call then answers
+ * "Invalid Param". Sent first, the production call succeeds ("Successful.").
+ *
+ * What this does NOT do, also measured 2026-09-30: end the login. Both calls
+ * end only this device's session key. The saved login (cookie) still
+ * auto-logs-in on the next command, and the web session stays listed on the
+ * phone as signed in until it is removed from the phone's device list. So the
+ * `logout` command deletes the local credentials on top of this, and points
+ * the user at the phone for a server-side revoke. This helper only reports what
+ * the server calls did; it never claims the login ended.
  *
  * @param {object} api - a logged-in zca-js API
  * @returns {Promise<{
@@ -98,6 +111,13 @@ async function productionLogout(api) {
  */
 export async function serverLogout(api) {
     const result = { v2: null, production: null, verdict: "unverified" };
+
+    try {
+        await productionLogout(api);
+        result.production = { ok: true };
+    } catch (e) {
+        result.production = { ok: false, error: e.message, code: e.code ?? null };
+    }
 
     if (typeof api.logoutV2 === "function") {
         try {
@@ -111,13 +131,6 @@ export async function serverLogout(api) {
     }
 
     try {
-        await productionLogout(api);
-        result.production = { ok: true };
-    } catch (e) {
-        result.production = { ok: false, error: e.message, code: e.code ?? null };
-    }
-
-    try {
         await api.fetchAccountInfo();
         result.verdict = "still-answers";
     } catch (e) {
@@ -126,6 +139,76 @@ export async function serverLogout(api) {
     }
 
     return result;
+}
+
+/**
+ * Delete the local chat cache (zalo.db + WAL/SHM sidecars) and downloaded media
+ * for one account. Mirrors Zalo Web's "Xóa lịch sử trò chuyện khi đăng xuất"
+ * checkbox — a purely local operation there too (a z_cleardata localStorage
+ * flag consumed by the web's own deleteAllData(), no server call), so no
+ * network round trip here either.
+ *
+ * @param {string} ownId
+ * @returns {{dbDeleted: boolean, mediaDeleted: boolean}}
+ */
+export function deleteLocalHistory(ownId) {
+    const accountDir = join(CONFIG_DIR, "accounts", ownId);
+    let dbDeleted = false;
+    let mediaDeleted = false;
+    if (existsSync(accountDir)) {
+        for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+            const p = join(accountDir, `zalo.db${suffix}`);
+            if (existsSync(p)) {
+                rmSync(p, { force: true });
+                dbDeleted = true;
+            }
+        }
+        const mediaDir = join(accountDir, "media");
+        if (existsSync(mediaDir)) {
+            rmSync(mediaDir, { recursive: true, force: true });
+            mediaDeleted = true;
+        }
+    }
+    return { dbDeleted, mediaDeleted };
+}
+
+/**
+ * The PID of the `listen`/`mcp` daemon holding this account's `daemon.lock`, or
+ * null. `logout` checks this before anything else: with a daemon up, the server
+ * logout would end the session that daemon is using, and deleting the
+ * credentials would leave it unable to re-auth.
+ *
+ * @param {string} ownId
+ * @returns {number|null}
+ */
+export function lockHolder(ownId) {
+    const lock = checkLock(join(CONFIG_DIR, "accounts", ownId));
+    return lock.locked ? lock.pid : null;
+}
+
+/**
+ * Finish a real (non-purge) logout on this machine: delete the saved
+ * credentials so nothing auto-logs-in, keeping the chat cache unless
+ * `deleteHistory` is set. This is what makes `logout` a logout rather than a
+ * pause — without it the next command logs straight back in from the saved
+ * cookie (measured 2026-09-30).
+ *
+ * Guarded by the account's `daemon.lock`, the same way `removeAccount` guards
+ * the credential delete: pulling credentials out from under a running
+ * `listen`/`mcp` daemon would leave it unable to re-auth after a drop. When a
+ * daemon holds the lock nothing is deleted and `blockedPid` names it.
+ *
+ * @param {string} ownId
+ * @param {{deleteHistory?: boolean}} [opts]
+ * @returns {{blockedPid: number} | {credentialsDeleted: boolean, history: {dbDeleted: boolean, mediaDeleted: boolean}}}
+ */
+export function finishLocalLogout(ownId, { deleteHistory = false } = {}) {
+    const holder = lockHolder(ownId);
+    if (holder !== null) return { blockedPid: holder };
+
+    const history = deleteHistory ? deleteLocalHistory(ownId) : { dbDeleted: false, mediaDeleted: false };
+    const credentialsDeleted = deleteCredentials(ownId);
+    return { credentialsDeleted, history };
 }
 
 /**
@@ -147,7 +230,7 @@ export function describeLogout(r) {
     if (r.verdict === "ended") {
         lines.push({
             level: "success",
-            text: "Server session ended — verified: Zalo rejected the next call on this session.",
+            text: "Zalo ended this session's key — the next call on it was rejected.",
         });
     } else if (r.verdict === "still-answers") {
         lines.push({
@@ -155,7 +238,7 @@ export function describeLogout(r) {
             text: "Zalo accepted the logout, but this session still answers — it may still be valid at Zalo.",
         });
     } else {
-        lines.push({ level: "info", text: `Logout sent; could not verify the session ended: ${r.probeError}` });
+        lines.push({ level: "info", text: `Logout sent; could not confirm the session key died: ${r.probeError}` });
     }
     return lines;
 }

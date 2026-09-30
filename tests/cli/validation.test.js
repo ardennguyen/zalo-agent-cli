@@ -204,9 +204,13 @@ describe("no-active-account guards", () => {
 });
 
 describe("logout on a clean machine", () => {
-    it("succeeds and explains that credentials were kept", async () => {
+    it("succeeds, and never claims credentials were kept", async () => {
         const { all } = await runCli(["logout"], opts);
-        assert.match(all, /Logged out \(credentials kept/);
+        assert.match(all, /Logged out/);
+        // `logout` deletes the saved credentials since 2026-09-30: with them
+        // kept, the next command logged straight back in (measured live).
+        // Red if it goes back to "credentials kept — will auto-login".
+        assert.doesNotMatch(all, /credentials kept|will auto-login/);
     });
 
     it("--purge with nothing to purge still reports success rather than throwing", async () => {

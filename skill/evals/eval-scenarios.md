@@ -416,12 +416,12 @@ Each scenario: user prompt → expected step-by-step reasoning → validation cr
 **Expected reasoning:**
 1. `zalo_view_media(messageId, threadId?)` downloads if needed and returns `{success, path, mediaType}`
 2. Report the `path` **as returned** — it is under `~/.zalo-agent-cli/accounts/<ownId>/media/<threadId>/`, named `<date>-<HH-mm>_<msgIdTail>_<name>.<ext>`
-3. Do not assume it is under `accounts/<ownId>/media/` — that per-account tree belongs to `listen`/`msg`, a different downloader
+3. It is the same folder every other command uses — one downloader, one layout — unless `media.downloadDir` in `mcp-config.json` moved the MCP server's root; the returned `path` already reflects that
 4. Set `open: false` when the user only wants it saved, not launched in a system viewer
 5. If asked to relocate it, point at `media.downloadDir` in `mcp-config.json` rather than moving files behind the server's back
 
-**Must include:** the returned `path` verbatim, `~/.zalo-agent-cli/media/` as the MCP location, `open: false` when only saving
-**Must NOT:** State the file is in `accounts/<ownId>/media/`, invent a path instead of using the tool's response, or claim `logout --purge` will later clean it up
+**Must include:** the returned `path` verbatim, `open: false` when only saving
+**Must NOT:** Invent a path instead of using the tool's response, say the folder is named after the conversation, or claim `logout --purge` cleans up a custom `media.downloadDir`
 
 ---
 

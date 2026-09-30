@@ -119,7 +119,7 @@ zalo-agent msg send <ID> "reply"
 - **Auto re-login:** Re-authenticates on session expiry
 - **1 WebSocket/account:** Cannot coexist with browser Zalo, or with `mcp start`, on the same account. `msg send-file`/`send-image` and `zalo-agent sync` do not need a second one — a running daemon does that work on this socket and keeps listening
 - **Event dedup:** in the cache only — `messages.msgId` is the primary key, so a redelivered message updates its row instead of duplicating it. The stdout/JSONL/webhook sinks have no dedup, so a webhook receiver must tolerate seeing the same `msgId` twice
-- **Gap recording:** Connection gaps are recorded in `sync_gaps` and **reported, never auto-filled**. The daemon prints the missed window and the `zalo-agent sync --from <date>` run that closes it; closing it means running that command by hand (see Side Effects above). Don't tell a user their gap was filled automatically — it never is. A gap stays `pending` until a completed `sync` covering it resolves it
+- **Gap recording:** Connection gaps are recorded in `sync_gaps`, and the daemon **heals what it can itself**: on every connect it pulls Zalo's offline message queues and resolves a gap for the window that catch-up actually covered (see Side Effects above). What it cannot reach — a queue Zalo dropped or reset, or anything from before this login — stays `pending`, printed with the `zalo-agent sync --from <date>` run that closes it; that run is phone-backed and is never started automatically. Don't tell a user a gap was filled unless it shows as resolved. A pending gap stays `pending` until a completed `sync` covering it resolves it
 
 ## `listen` vs `mcp start`
 

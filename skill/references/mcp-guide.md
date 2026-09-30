@@ -250,7 +250,7 @@ Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức
 ---
 
 ### `zalo_view_media`
-Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định của hệ thống. Media được tự động tải về khi nhận (auto-download) vào `accounts/<ownId>/media/<tên-hội-thoại>/`. Đường dẫn lấy từ `localPath` trong cache, nên mở được cả tin nhắn đến **trước khi** tiến trình này khởi động — không còn phụ thuộc vào buffer trong bộ nhớ. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng rồi mở.
+Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định của hệ thống. Media được tự động tải về khi nhận (auto-download) vào `accounts/<ownId>/media/<threadId>/`. Đường dẫn lấy từ `localPath` trong cache, nên mở được cả tin nhắn đến **trước khi** tiến trình này khởi động — không còn phụ thuộc vào buffer trong bộ nhớ. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng rồi mở.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -261,7 +261,7 @@ Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định 
 
 **Kết quả mẫu:**
 ```json
-{ "success": true, "path": "/home/user/.zalo-agent-cli/accounts/1234/media/Nhóm dự án/2026-09-19-14-05_8286035781_photo.jpg", "mediaType": "photo" }
+{ "success": true, "path": "/home/user/.zalo-agent-cli/accounts/1234/media/<threadId>/2026-09-19-14-05_8286035781_photo.jpg", "mediaType": "photo" }
 ```
 
 ---
@@ -459,7 +459,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `limits.autoDigestThreshold` | Ngưỡng số tin để kích hoạt digest (nếu bật) |
 | `limits.bufferMaxAge` | Tuổi tin tối đa trong buffer trước khi bị dọn (ví dụ `"2h"`) |
 | `limits.bufferMaxSize` | Số tin tối đa giữ lại mỗi thread |
-| `media.downloadDir` | Ghi đè thư mục gốc lưu media của MCP server. Mặc định (bỏ trống) dùng đúng chỗ mọi lệnh khác dùng: `accounts/<ownId>/media/<tên-hội-thoại>/`, và chỗ đó **bị** `logout --purge` / `account remove` xóa. Đặt giá trị riêng nếu muốn media nằm ngoài vùng dữ liệu account |
+| `media.downloadDir` | Ghi đè thư mục gốc lưu media của MCP server. Mặc định (bỏ trống) dùng đúng chỗ mọi lệnh khác dùng: `accounts/<ownId>/media/<threadId>/`, và chỗ đó **bị** `logout --purge` / `account remove` xóa. Đặt giá trị riêng nếu muốn media nằm ngoài vùng dữ liệu account |
 | `media.autoOpen` | Giá trị mặc định cho tham số `open` của `zalo_view_media` |
 
 ---

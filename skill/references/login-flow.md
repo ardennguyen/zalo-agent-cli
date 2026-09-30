@@ -105,7 +105,7 @@ Pick by how much you want gone. All four are distinct:
 
 After a purge, `~/.zalo-agent-cli/credentials/` is empty, `accounts.json` is `[]`, and `accounts/<ownId>/` is gone.
 
-> **What a purge does NOT remove:** `~/.zalo-agent-cli/media/` — the directory the **MCP server** downloads attachments into. It sits outside `accounts/<ownId>/`, so real message media survives every command in the table above. If a user purges for privacy reasons, tell them; the cleanup is `rm -rf ~/.zalo-agent-cli/media/`. Official Account credentials at `~/.zalo-agent/oa-credentials.json` are also untouched — a different directory entirely.
+> **What a purge does NOT remove:** a custom `media.downloadDir` set in `mcp-config.json`. By default the **MCP server** downloads attachments into `accounts/<ownId>/media/<threadId>/`, like every other command, and a purge removes that with the rest of the account directory; a custom root sits outside it, so its media survives every command in the table above. If a user purges for privacy reasons and set one, tell them, and delete that directory by hand. Official Account credentials at `~/.zalo-agent/oa-credentials.json` are also untouched — a different directory entirely.
 
 ## One web session per account
 

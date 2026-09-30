@@ -700,8 +700,9 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 - [ ] `sync-mobile` while Zalo Web is open — reports the one-web-session rule
 - [ ] `sync-mobile --legacy` — one attempt, then reports it returned nothing
 - [ ] `sync-mobile --legacy --force` — skips the debounce
-- [ ] Kill `listen`, wait >30s, restart — the gap is reported, never auto-filled;
-      the printed `sync --from <date>` is what closes it
+- [ ] Kill `listen`, wait >30s, send a message to a disposable thread, restart — the gap is recorded,
+      and the self-heal brings the message back (`[catch-up]`) and resolves it; with `--no-self-heal`
+      it stays pending, and the printed `sync --from <date>` is what closes it
 
 ### MCP server
 

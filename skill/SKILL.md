@@ -281,7 +281,7 @@ Full commands: `references/command-reference.md`
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 184 commands + 12 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 190 commands + 12 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |
@@ -302,7 +302,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - Credentials: `~/.zalo-agent-cli/` (personal, 0600) and `~/.zalo-agent/` (OA, 0600) — different directories
 - Per-account data: `~/.zalo-agent-cli/accounts/<ownId>/` (`zalo.db`, `media/`, `sync/`, `daemon.lock`)
 - **One media directory.** Everything writes to `~/.zalo-agent-cli/accounts/<ownId>/media/<threadId>/`, including the MCP server and `zalo_view_media`. Folders are thread IDs, not conversation names; `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` moves the root for the MCP server only.
-- **`logout --purge` / `account remove` do NOT delete the MCP media directory.** They wipe `accounts/<ownId>/` only, so attachments the MCP server downloaded survive. If a user asks you to remove an account for privacy, say this and point at `~/.zalo-agent-cli/media/` — do not delete it on your own initiative
+- **`logout --purge` / `account remove` do NOT delete a custom `media.downloadDir`.** They wipe `accounts/<ownId>/`, media included, and by default the MCP server downloads there too; a root moved with `media.downloadDir` sits outside it, so its attachments survive. If a user asks you to remove an account for privacy and one is set, say this and point at that directory — do not delete it on your own initiative
 - MCP buffer is in-memory only — it holds messages received since the server started; use `zalo_get_history` for anything older
 - MCP HTTP mode binds `127.0.0.1` unless `--host` says otherwise; always pair a non-loopback `--host` with `--auth`
 - OA token expires ~25h → use `oa refresh` to renew

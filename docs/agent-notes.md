@@ -391,8 +391,8 @@ Destination is `<accountDir>/media/<threadId>/` with filenames
 `mcp-config.json`'s `media.downloadDir` is passed as `mediaRoot` and overrides the root for the MCP
 server only; when it is null, `mcp-tools.js` passes `undefined` and the module falls through to
 `resolve(accountDir, "media")` — the same per-account path as everything else. The
-`// default: ~/.zalo-agent-cli/media/` comment in `mcp-config.js` is stale and describes the old
-account-agnostic MCP downloader that no longer exists.
+`// default: ~/.zalo-agent-cli/media/` comment `mcp-config.js` used to carry described the old
+account-agnostic MCP downloader that no longer exists; it now names the per-account path.
 
 Docs have repeatedly invented a second media path out of that stale comment. There is one path.
 

@@ -26,7 +26,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > clawhub install zalo-agent          # OpenClaw (từ ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/   # Claude Code
 > ```
-> 16 nhóm lệnh · 184 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
+> 16 nhóm lệnh · 190 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
 > Xem [skill/SKILL.md](skill/SKILL.md) · [Tham chiếu lệnh đầy đủ](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
@@ -106,10 +106,10 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | Nhóm lệnh | Số lệnh | Mô tả | Docs |
 |------------|:---:|--------|------|
 | *(top-level)* | 11 | `login`, `logout`, `status`, `whoami`, `update`, `sync`, `sync-mobile`, `sync-media`, `sync-reactions`, `sync-boards`, `sync-cloud` | [Đăng nhập & Đăng xuất](https://github.com/ardennguyen/zalo-agent-cli/wiki/%C4%90%C4%83ng-Nh%E1%BA%ADp-&-%C4%90%C4%83ng-Xu%E1%BA%A5t) |
-| `msg` | 18 | Gửi tin nhắn, hình, file, voice, video, sticker, link, thẻ chuyển khoản, QR, thu hồi, lịch sử | [Tin nhắn](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tin-Nh%E1%BA%AFn) |
+| `msg` | 20 | Gửi tin nhắn, hình, file, voice, video, sticker, link, thẻ chuyển khoản, QR, thu hồi, lịch sử | [Tin nhắn](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tin-Nh%E1%BA%AFn) |
 | `friend` | 22 | Danh sách, tìm, thêm, xóa, chặn, biệt danh, gợi ý | [Bạn bè](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BA%A1n-B%C3%A8) |
 | `group` | 33 | Tạo, đổi tên, thành viên, cài đặt, link, ghi chú, lời mời | [Nhóm & Cộng đồng](https://github.com/ardennguyen/zalo-agent-cli/wiki/Nh%C3%B3m) |
-| `conv` | 16 | Tắt thông báo, ghim, lưu trữ, ẩn hội thoại, tự xóa, xoá bộ nhớ đệm cục bộ (`forget`) | [Hội thoại](https://github.com/ardennguyen/zalo-agent-cli/wiki/H%E1%BB%99i-Tho%E1%BA%A1i) |
+| `conv` | 20 | Tắt thông báo, ghim, lưu trữ, ẩn hội thoại, tự xóa, xoá bộ nhớ đệm cục bộ (`forget`) | [Hội thoại](https://github.com/ardennguyen/zalo-agent-cli/wiki/H%E1%BB%99i-Tho%E1%BA%A1i) |
 | `account` | 7 | Đa tài khoản & proxy, thiết bị đã liên kết, xóa tài khoản | [Tài khoản](https://github.com/ardennguyen/zalo-agent-cli/wiki/T%C3%A0i-Kho%E1%BA%A3n) |
 | `profile` | 11 | Xem/cập nhật hồ sơ, ảnh đại diện, quyền riêng tư | [Hồ sơ](https://github.com/ardennguyen/zalo-agent-cli/wiki/H%E1%BB%93-S%C6%A1) |
 | `poll` | 7 | Tạo, bỏ phiếu, đóng khảo sát | [Khảo sát](https://github.com/ardennguyen/zalo-agent-cli/wiki/Kh%E1%BA%A3o-S%C3%A1t) |
@@ -130,11 +130,11 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 
 - Đăng nhập QR qua HTTP server tự động (browser + terminal), báo ngay khi bị **từ chối trên điện thoại** thay vì treo tới hết 60s
 - Đa tài khoản với proxy riêng biệt (1:1), device fingerprint riêng cho từng tài khoản
-- **184 lệnh** phủ hết tính năng Zalo cá nhân
+- **190 lệnh** phủ hết tính năng Zalo cá nhân
 - **Zalo Official Account (OA) API v3.0** — OAuth login, gửi tin nhắn, follower, tag, bài viết, cửa hàng, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 12 tools cho Claude Code và các MCP client: đọc, gửi (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp), thả cảm xúc, thu hồi tin, xem thành viên nhóm, liệt kê hội thoại gần đây và kiểm tra độ đầy đủ của cache
 - **Bộ nhớ đệm cục bộ (SQLite)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync` (hoặc `sync-mobile`) khôi phục toàn bộ lịch sử từ điện thoại vào `zalo.db` (giải mã transfer-sync-v2; xác nhận một lần trên điện thoại), mặc định lấy **toàn bộ** lịch sử (không còn mốc chặn 2024-01-01); thêm `--days <n>` hoặc `--from <YYYY-MM-DD>` nếu chỉ cần một khoảng. Dọn dẹp: `sync-media --prune <days|all>` giải phóng dung lượng nhưng giữ nguyên nội dung tin nhắn, `--prune-orphans` nhắm vào hội thoại tài khoản không còn, và `conv forget` xoá hẳn bản sao cục bộ của một hội thoại — không cái nào gửi gì tới Zalo. Luồng đồng bộ chỉ mang **liên kết** media chứ không mang file, nên sau khi lưu tin nhắn, `sync-mobile` **tự động tải media về** (thêm `--messages-only` nếu chỉ muốn tin nhắn); `sync-media` chạy lại/tiếp tục bước tải này, không cần xác nhận trên điện thoại. Ghi chú, tin ghim, bình chọn và nhắc hẹn nằm ngoài luồng tin nhắn — dùng `sync-boards`
-- Tự động tải media (ảnh/audio/video) — một downloader duy nhất cho `listen`, `msg history`, `mcp start` và các lệnh sync, lưu vào `~/.zalo-agent-cli/accounts/<id>/media/<tên-hội-thoại>/` (MCP server có thể ghi đè bằng `media.downloadDir`)
+- Tự động tải media (ảnh/audio/video) — một downloader duy nhất cho `listen`, `msg history`, `mcp start` và các lệnh sync, lưu vào `~/.zalo-agent-cli/accounts/<id>/media/<threadId>/` (MCP server có thể ghi đè bằng `media.downloadDir`)
 - Thẻ chuyển khoản (55+ ngân hàng VN) & QR VietQR
 - Lắng nghe real-time với webhook & lưu JSONL local
 - `logout` hủy phiên **phía server** thật sự; `logout --purge` / `account remove` xóa sạch dữ liệu cục bộ
@@ -178,7 +178,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > clawhub install zalo-agent                    # OpenClaw (from ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/     # Claude Code
 > ```
-> 16 command groups · 184 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
+> 16 command groups · 190 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
 > See [skill/SKILL.md](skill/SKILL.md) · [Full command reference](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
@@ -224,10 +224,10 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)** · [Fu
 | Group | Commands | Description | Docs |
 |-------|:---:|-------------|------|
 | *(top-level)* | 11 | `login`, `logout`, `status`, `whoami`, `update`, `sync`, `sync-mobile`, `sync-media`, `sync-reactions`, `sync-boards`, `sync-cloud` | [Login & Logout](https://github.com/ardennguyen/zalo-agent-cli/wiki/Login-&-Logout) |
-| `msg` | 18 | Text, images, files, voice, video, stickers, links, bank cards, QR, recall, history | [Messages](https://github.com/ardennguyen/zalo-agent-cli/wiki/Messages) |
+| `msg` | 20 | Text, images, files, voice, video, stickers, links, bank cards, QR, recall, history | [Messages](https://github.com/ardennguyen/zalo-agent-cli/wiki/Messages) |
 | `friend` | 22 | List, find, add, remove, block, alias, recommendations | [Friends](https://github.com/ardennguyen/zalo-agent-cli/wiki/Friends) |
 | `group` | 33 | Create, rename, members, settings, links, notes, invites | [Groups](https://github.com/ardennguyen/zalo-agent-cli/wiki/Groups) |
-| `conv` | 16 | Mute, pin, archive, hidden, auto-delete, forget local cache | [Conversations](https://github.com/ardennguyen/zalo-agent-cli/wiki/Conversations) |
+| `conv` | 20 | Mute, pin, archive, hidden, auto-delete, forget local cache | [Conversations](https://github.com/ardennguyen/zalo-agent-cli/wiki/Conversations) |
 | `account` | 7 | Multi-account & proxy, linked devices, account removal | [Accounts](https://github.com/ardennguyen/zalo-agent-cli/wiki/Accounts) |
 | `profile` | 11 | Profile, avatar gallery, privacy | [Profile](https://github.com/ardennguyen/zalo-agent-cli/wiki/Profile) |
 | `poll` | 7 | Create, vote, lock polls | [Polls](https://github.com/ardennguyen/zalo-agent-cli/wiki/Polls) |
@@ -246,7 +246,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 
 - QR login over an auto-started HTTP server (browser + terminal), reporting a **decline on the phone** immediately instead of hanging until the 60s timeout
 - Multi-account with a dedicated proxy (1:1) and a per-account device fingerprint
-- **184 commands** covering the personal-account Zalo surface
+- **190 commands** covering the personal-account Zalo surface
 - **Zalo Official Account (OA) API v3.0** — OAuth login, messaging, followers, tags, articles, store, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 12 tools for Claude Code and other MCP clients: read, send (to My Documents too, marked Important/Urgent), react, recall, list a group's members, list recent conversations, and check how complete the cache is
 - **Local SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync` (or `sync-mobile`) restores full history from the phone into `zalo.db` (transfer-sync-v2 decrypt; one confirmation on the phone), defaulting to **all** history (the old 2024-01-01 floor is gone), with `--days <n>` or `--from <YYYY-MM-DD>` to narrow it. Housekeeping: `sync-media --prune <days|all>` reclaims disk while keeping message text, `--prune-orphans` targets conversations the account no longer has, and `conv forget` removes a conversation's local copy entirely — none of which contact Zalo. The sync stream carries media **links**, not files, so a `sync-mobile` run **downloads its attachments automatically** once the messages are stored (`--messages-only` skips it); `sync-media` re-runs or resumes that fetch on its own, with no phone confirmation. Notes, pinned messages, polls and reminders live outside the message stream — `sync-boards` fetches those

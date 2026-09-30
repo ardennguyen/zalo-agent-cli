@@ -119,7 +119,8 @@ export function registerSyncCommands(program) {
             "Restore message history from your phone into the local cache (zalo.db). " +
                 "This IS the real phone-backed restore (transfer-sync-v2) by default: it sends one " +
                 "sync request your phone confirms, then decrypts and stores your history. " +
-                "--socket asks for the old server backfill instead (measured empty); --legacy is retired.",
+                "--socket asks for the old server backfill instead (measured empty); --legacy tries an old " +
+                "endpoint Zalo Web no longer calls (it answers empty).",
         )
         .option(
             "-t, --transfer",
@@ -148,7 +149,8 @@ export function registerSyncCommands(program) {
         )
         .option(
             "-L, --legacy",
-            "Try the retired pull_mobile_msg/get_crossdb phone-transfer endpoint instead. One attempt only — it pings your mobile app",
+            "Try the old pull_mobile_msg/get_crossdb phone-transfer endpoint instead, which Zalo Web no longer " +
+                "calls and which answers empty. One attempt only — it pings your mobile app",
         )
         .option(
             "-M, --messages-only",
@@ -2004,7 +2006,8 @@ async function runSocketBackfill(activeAcc, opts) {
  */
 async function runLegacySync(activeAcc, opts) {
     warning(
-        "--legacy uses an endpoint Zalo has retired. This pings your mobile app and will most likely find nothing.",
+        "--legacy uses an endpoint Zalo Web no longer calls; it answers empty. This pings your mobile app " +
+            "and will most likely find nothing.",
     );
     try {
         const syncManager = new SyncManager(getApi(), activeAcc.ownId);
@@ -2025,7 +2028,7 @@ async function runLegacySync(activeAcc, opts) {
                 process.exit(0);
                 break;
             case "legacy-retired":
-                error("The legacy mobile-sync endpoint returned nothing — Zalo no longer serves it.");
+                error("The legacy mobile-sync endpoint returned nothing, as it now always does.");
                 info("Run `zalo-agent sync-mobile` without --legacy to backfill over the WebSocket instead.");
                 process.exit(1);
                 break;

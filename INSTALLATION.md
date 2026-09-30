@@ -251,10 +251,7 @@ Everything the CLI persists lives under `~/.zalo-agent-cli/`:
 > **One media directory, one layout.** Every command — `listen`, `msg history`, `mcp start`, `sync-media`, `sync-mobile` and the MCP tools — writes to `accounts/<ownId>/media/<threadId>/`. Folders are named by thread ID, never by conversation name, because a name can contain a path separator or change when someone renames the group; `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` can move the root for the MCP server only.
 
 > [!WARNING]
-> **The MCP media directory is not removed by `logout --purge` or `account remove`.** Those wipe `accounts/<ownId>/` and the credential file; `~/.zalo-agent-cli/media/` sits outside that path, so real message attachments survive. Delete it by hand when removing an account for privacy reasons:
-> ```bash
-> rm -rf ~/.zalo-agent-cli/media/
-> ```
+> **A custom `media.downloadDir` is not removed by `logout --purge` or `account remove`.** Those wipe `accounts/<ownId>/` — media included — and the credential file. Unset, the MCP server downloads into that same per-account folder, so a purge removes its media too; a root moved with `media.downloadDir` sits outside it, and its attachments survive. Delete that directory by hand when removing an account for privacy reasons.
 
 Official Account credentials are stored separately at `~/.zalo-agent/oa-credentials.json`.
 
@@ -262,7 +259,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 184 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 190 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |
@@ -327,7 +324,7 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 | `account remove` / `logout --purge` refuses with a PID | A `listen` daemon holds `daemon.lock` for that account. Stop it first |
 | `Thread name cache not initialized yet` from `zalo_search_threads` | The cache builds at MCP startup by fetching all groups + friends. Retry after a few seconds |
 | HTTP MCP server unreachable from another machine despite `--host 0.0.0.0` | You passed `--host` to `mcp-server.js`, which doesn't forward it. Run `zalo-agent mcp start --http <port> --auth <token> --host 0.0.0.0` directly |
-| `zalo_view_media` saves somewhere other than `accounts/<ownId>/media/` | Expected — the MCP downloader writes to `~/.zalo-agent-cli/media/<threadName>/`. Override with `media.downloadDir` |
+| `zalo_view_media` saves somewhere other than `accounts/<ownId>/media/<threadId>/` | Only when `media.downloadDir` is set in `mcp-config.json`: it moves the MCP server's media root. Unset, the server uses the same per-account folder as every other command |
 | `sync-mobile` reports nothing and your phone never prompted | You passed `--socket`, which asks the server-side probe instead of your phone; it normally returns empty. Drop the flag. |
 | OA call fails with `-216` | Access token expired → `npx zalo-agent oa refresh` |
 | OA call fails with `-224` | OA tier too low → see [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing) |

@@ -76,7 +76,9 @@ describe("msg send --urgency", () => {
     });
 
     it("rejects any other value before anything is sent, and lists the valid ones", async () => {
-        for (const bad of ["high", "1", "0", ""]) {
+        // "constructor" and "__proto__" are what every object inherits: red if the
+        // lookup reaches past the table's own keys.
+        for (const bad of ["high", "1", "0", "", "constructor", "__proto__"]) {
             const r = await runOffline(["msg", "send", PEER, "offline bad urgency", "--urgency", bad]);
             assert.deepEqual(r.requests, [], `--urgency ${JSON.stringify(bad)} must not send:\n${r.all}`);
             assert.notEqual(r.code, 0);

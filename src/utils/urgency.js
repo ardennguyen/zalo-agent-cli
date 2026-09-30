@@ -16,10 +16,14 @@ export const URGENCY_LEVELS = { important: 1, urgent: 2 };
  *
  * Case and surrounding spaces are ignored, as `msg send --urgency` always has.
  * "normal" is not a level: an ordinary message carries no urgency at all.
+ * Only the table's own keys count: a plain lookup also found what every
+ * object inherits, so `--urgency constructor` came back as a function and
+ * was sent instead of refused.
  *
  * @param {string} value - `important` or `urgent`
  * @returns {number|null} 1 or 2, or null
  */
 export function urgencyLevel(value) {
-    return URGENCY_LEVELS[String(value).trim().toLowerCase()] || null;
+    const key = String(value).trim().toLowerCase();
+    return Object.hasOwn(URGENCY_LEVELS, key) ? URGENCY_LEVELS[key] : null;
 }

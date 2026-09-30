@@ -129,6 +129,43 @@ describe("getGroupHistory", () => {
         assert.equal(res.more, 1);
     });
 
+    // Measured live 2026-09-30: only messages since this device's login came
+    // back; everything older read `isFiltered: 1`, 0 rows, `hasMore: 1`.
+    it("stops at a page Zalo marks isFiltered, and reports older history withheld rather than more", async () => {
+        fake.route("/api/cm/getrecentv2", () => page([], { hasMore: 1, isFiltered: 1, lastMsgId: msgIdAt(49) }));
+
+        const res = await getGroupHistory(api, GID, 120, { delayMs: 0 });
+
+        // Red if the loop goes back to walking empty pages and claiming more.
+        assert.equal(storeCalls().length, 1, "no page past the filter is fetched");
+        assert.equal(res.groupMsgs.length, 0);
+        assert.equal(res.more, 0, "withheld is not retrievable");
+        assert.equal(res.filtered, true);
+    });
+
+    it("keeps the rows of the page where the filter starts, and stops there", async () => {
+        fake.route("/api/cm/getrecentv2", () => page(rows(0, 3), { hasMore: 1, isFiltered: 1, lastMsgId: msgIdAt(2) }));
+
+        const res = await getGroupHistory(api, GID, 50, { delayMs: 0 });
+
+        assert.equal(storeCalls().length, 1);
+        assert.deepEqual(
+            res.groupMsgs.map((m) => m.data.msgId),
+            [msgIdAt(0), msgIdAt(1), msgIdAt(2)],
+        );
+        assert.equal(res.more, 0);
+        assert.equal(res.filtered, true);
+    });
+
+    it("an unfiltered history reports filtered: false", async () => {
+        fake.route("/api/cm/getrecentv2", () => page(rows(0, 4), { hasMore: 0, isFiltered: 0 }));
+
+        const res = await getGroupHistory(api, GID, 10, { delayMs: 0 });
+
+        assert.equal(res.filtered, false);
+        assert.equal(res.groupMsgs.length, 4);
+    });
+
     it("stops when the server says there is nothing older", async () => {
         fake.route("/api/cm/getrecentv2", () => page(rows(0, 10), { hasMore: 0, lastMsgId: msgIdAt(9) }));
 

@@ -839,31 +839,15 @@ describe("tier 3 · the read-only sync passes", { skip }, () => {
         assert.equal(errorLineOf(r.stdout), null, `sync-boards failed: ${errorLineOf(r.stdout)}`);
     });
 
-    // KNOWN CONDITION -- this account answers the zCloud index with
-    // "Invalid CloudViewerKey". It is not clear from outside whether zCloud
-    // is simply not enabled here or the endpoint moved, and the CLI handles
-    // it correctly either way: a clean error line and a hint naming both
-    // possibilities, no stack trace. Kept as a todo so the day it starts
-    // working is visible, with a characterization test below that fails if
-    // the graceful handling regresses into a crash.
-    it(
-        "sync-cloud indexes one page",
-        { todo: "Invalid CloudViewerKey -- zCloud appears not to be enabled on this account" },
-        async () => {
-            const r = await runCli(["sync-cloud", "-p", "1"], live(T, { timeout: 180_000 }));
-            assert.equal(errorLineOf(r.stdout), null, `sync-cloud failed: ${errorLineOf(r.stdout)}`);
-        },
-    );
-
-    it("CHARACTERIZATION: sync-cloud reports an unreadable cloud index without crashing", async () => {
+    // "Invalid CloudViewerKey" was our request, not the account: the zCloud
+    // sign-in fix (viewer key + enk) made the index readable, and on
+    // 2026-09-30 one page recorded 374 items live. The characterization that
+    // pinned the old failure is gone with it.
+    it("sync-cloud indexes one page", async () => {
         const r = await runCli(["sync-cloud", "-p", "1"], live(T, { timeout: 180_000 }));
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-        assert.match(
-            String(errorLineOf(r.stdout)),
-            /cloud index/i,
-            `expected the clean "could not read the cloud index" line, got: ${errorLineOf(r.stdout)}`,
-        );
-        assert.match(r.all, /Invalid CloudViewerKey/, "the underlying reason must still be surfaced to the user");
+        assert.equal(errorLineOf(r.stdout), null, `sync-cloud failed: ${errorLineOf(r.stdout)}`);
+        assert.match(r.all, /Recorded \d+ cloud item\(s\)/, "the index was read and recorded");
     });
 
     it("sync-reactions drains one page within its own wait bound", async () => {

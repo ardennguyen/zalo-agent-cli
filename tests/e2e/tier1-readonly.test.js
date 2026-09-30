@@ -358,25 +358,26 @@ describe("tier 1 · misc read-only surfaces", { skip }, () => {
         assert.equal(url.ok, true, url.error);
     });
 
-    // `group history` is a pure read against an endpoint this repo's own
-    // notes record as 404ing, and it is the REST fast path that
-    // `msg history -t 1` tries FIRST before falling through to the socket.
-    // Tier 1 already carries exactly this characterization pattern for
-    // `friend online` and `friend close`; without it here, nothing notices
-    // whether the endpoint comes back or stays dead.
-    it(
-        "group history returns messages",
-        { todo: "Zalo answers getGroupChatHistory with HTTP 404 — retired" },
-        async () => {
-            const r = await runJson(["group", "history", T.group.threadId, "-n", "5"], live(T, { timeout: 120_000 }));
-            assert.equal(r.ok, true, r.error);
-        },
-    );
-
-    it("CHARACTERIZATION: group history currently 404s", async () => {
+    // `group history` reads Zalo's cloud-message store (getrecentv2), the
+    // fast path `msg history -t 1` tries first. Measured live 2026-09-30: it
+    // answers, but serves only messages since this login and withholds the
+    // rest (`isFiltered`). Tier 1 sends nothing, so on a fresh login the
+    // disposable group may have no messages of this session at all; what must
+    // hold is that the store answers, and says so when it withholds, instead
+    // of claiming more history than it will serve.
+    it("group history answers, newest first, and flags what it withholds", async () => {
         const r = await runJson(["group", "history", T.group.threadId, "-n", "5"], live(T, { timeout: 120_000 }));
-        assert.equal(r.ok, false, "group history answered — promote the todo above and tell msg history");
-        assert.match(r.error, /404/);
+        assert.equal(r.ok, true, r.error);
+        const msgs = r.data.messages;
+        assert.ok(Array.isArray(msgs), "a messages array");
+        const ids = msgs.map((m) => BigInt(String(m.msgId)));
+        assert.ok(
+            ids.every((v, i) => i === 0 || ids[i - 1] > v),
+            "newest first, no duplicates",
+        );
+        assert.equal(typeof r.data.filtered, "boolean", "the store's withholding is reported");
+        // Red if withheld history is reported as retrievable again.
+        if (r.data.filtered) assert.equal(r.data.hasMore, false, "withheld is not more");
     });
 
     it("reminder list responds for the disposable group", async () => {

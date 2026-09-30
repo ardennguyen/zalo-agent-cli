@@ -159,9 +159,11 @@ async function fetchPage(api, host, { groupId, globalMsgId, src, old }) {
  * @param {number} [count=50] - how many of the newest messages to return, a whole number >= 1
  * @param {object} [opts]
  * @param {number} [opts.delayMs=150] - pause between pages
- * @returns {Promise<{groupMsgs: Array<object>, more: 0|1, pages: number}>} `groupMsgs` newest
- *   first; `more` is 1 when older messages exist beyond those returned; `pages` is the number
- *   of requests made
+ * @returns {Promise<{groupMsgs: Array<object>, more: 0|1, pages: number, filtered: boolean}>}
+ *   `groupMsgs` newest first; `more` is 1 when older messages can be fetched beyond those
+ *   returned; `pages` is the number of requests made; `filtered` is true when Zalo withheld
+ *   older messages (the page said `isFiltered`) — they exist but this store will not serve
+ *   them, so `more` is 0
  * @throws {Error} when `count` is not a whole number >= 1, the session has no
  *   group_cloud_message host, a request fails, or the store reports an error and returns nothing
  */
@@ -188,6 +190,7 @@ export async function getGroupHistory(api, groupId, count = CM_PAGE_SIZE, { dela
     let old = false;
     let src = SRC_OPEN;
     let hasMore = false;
+    let filtered = false;
     let pages = 0;
 
     while (pages < maxPages) {
@@ -218,6 +221,16 @@ export async function getGroupHistory(api, groupId, count = CM_PAGE_SIZE, { dela
         }
 
         hasMore = Number(page.hasMore) > 0;
+        // Zalo withholds what it filters, and the filter is a point in time
+        // (measured live 2026-09-30: only messages since this device's login
+        // came back; everything older read `isFiltered: 1`, 0 rows, `hasMore:
+        // 1`, page after page). Every older page is past the same point, so
+        // walking on only fetched empty pages and then claimed "more".
+        if (Number(page.isFiltered) > 0) {
+            filtered = true;
+            hasMore = false;
+            break;
+        }
         if (kept.length >= count || !hasMore) break;
 
         // Zalo Web's loop: the next page starts at the lastMsgId the server
@@ -231,5 +244,5 @@ export async function getGroupHistory(api, groupId, count = CM_PAGE_SIZE, { dela
     }
 
     kept.sort(newestFirst);
-    return { groupMsgs: kept.slice(0, count), more: kept.length > count || hasMore ? 1 : 0, pages };
+    return { groupMsgs: kept.slice(0, count), more: kept.length > count || hasMore ? 1 : 0, pages, filtered };
 }

@@ -115,9 +115,11 @@ async function scanOldMessages(api, threadId, threadType, { limit, scanLimit, ti
  * @param {(e: {phase: string, detail: string, level?: "warn"}) => void} [opts.onProgress] -
  *   one line per step, in the words `msg history` prints
  * @returns {Promise<{frames: Array<{threadId: string, type: number, data: object}>,
- *   source: "store"|"socket", rawScanned: number, cached: boolean, added: number, untouched: number}>}
+ *   source: "store"|"socket", rawScanned: number, cached: boolean, added: number, untouched: number,
+ *   filtered: boolean}>}
  *   `frames` as fetched, for display; `added` rows were new and written;
- *   `untouched` were already stored, or not storable (a removal, no content)
+ *   `untouched` were already stored, or not storable (a removal, no content);
+ *   `filtered` is true when a group's store withheld older messages
  * @throws {Error} when there is no thread id, the socket cannot be opened, or the scan fails
  */
 export async function fetchAndCacheHistory(api, threadId, threadType, opts = {}) {
@@ -129,18 +131,30 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
 
     let frames = [];
     let source = "socket";
+    let filtered = false;
     if (type === THREAD_GROUP) {
         try {
             // Loaded on demand: only a group needs it.
             const { getGroupHistory } = await import("./group-history.js");
             const history = await getGroupHistory(api, thread, limit);
             frames = history.groupMsgs.map((m) => ({ threadId: thread, type, data: m.data }));
+            filtered = history.filtered === true;
             onProgress({
                 phase: "store",
                 detail: frames.length
                     ? "Fetched group history from Zalo's message store."
                     : "Zalo's message store had no messages. Falling back to WebSocket stream...",
             });
+            if (filtered) {
+                // Measured live 2026-09-30: the socket stream reaches no further
+                // back, so only the phone-backed restore can bring these in.
+                onProgress({
+                    phase: "store",
+                    detail:
+                        "Zalo's message store serves only messages since this login; older ones are withheld. " +
+                        "`zalo-agent sync` restores them from your phone (it asks for a tap).",
+                });
+            }
         } catch (e) {
             onProgress({
                 phase: "store",
@@ -177,5 +191,5 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
     if (cache) {
         for (const f of frames) if (storeHistoryMessage(f).stored) added++;
     }
-    return { frames, source, rawScanned, cached: cache, added, untouched: frames.length - added };
+    return { frames, source, rawScanned, cached: cache, added, untouched: frames.length - added, filtered };
 }

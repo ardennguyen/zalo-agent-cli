@@ -1755,6 +1755,8 @@ export function registerMsgCommands(program) {
                         threadType: threadType === 0 ? "dm" : "group",
                         count: cleanResult.length,
                         source: "live",
+                        // A group's store withheld older messages (since-login only).
+                        filtered: fetched?.filtered === true,
                         messages: cleanResult,
                     },
                     jsonMode,

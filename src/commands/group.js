@@ -156,12 +156,22 @@ export function registerGroupCommands(program) {
                     groupId,
                     count: normalized.length,
                     hasMore: result?.more === 1,
+                    // Older messages exist, but Zalo's store withholds them:
+                    // it serves only messages since this login.
+                    filtered: result?.filtered === true,
                     messages: normalized,
                 };
 
                 output(payload, program.opts().json, () => {
                     info(`${normalized.length} message(s) in group ${groupId}`);
                     if (result?.more === 1) info("(more messages available)");
+                    if (result?.filtered) {
+                        info(
+                            "Zalo's message store serves only messages since this login; older ones are withheld. " +
+                                "`zalo-agent sync` restores them from your phone (it asks for a tap), and " +
+                                `\`zalo-agent msg history ${groupId} -t 1\` then reads them from the local cache.`,
+                        );
+                    }
                     console.log();
                     for (const m of normalized) {
                         const time = m.timestamp === null ? "?" : new Date(m.timestamp).toLocaleTimeString();

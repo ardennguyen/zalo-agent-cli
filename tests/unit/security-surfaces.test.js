@@ -18,9 +18,12 @@ import "../helpers/sandbox.js";
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openFile, SHELL_METACHARACTERS } from "../../src/utils/open-file.js";
 import { sanitize } from "../../src/core/sync-v2/media.js";
-import { startQrServer } from "../../src/utils/qr-http-server.js";
+import { startQrServer, qrVersion } from "../../src/utils/qr-http-server.js";
 import { createHTTPServer } from "../../src/mcp/mcp-http-transport.js";
 
 // ── 1. shell injection through a downloaded filename ───────────────────
@@ -100,6 +103,29 @@ describe("startQrServer — bind host", () => {
         const s = startQrServer("nonexistent-qr.png", 0, [0], false);
         assert.equal(typeof s.close, "function");
         s.close();
+    });
+});
+
+// The page polls /status and swaps in each regenerated QR by this version.
+// Measured 2026-09-30: a page opened on the first QR kept it through two
+// regenerations, and the scan of the expired code failed.
+describe("qrVersion — which QR is current", () => {
+    it("is null before any QR exists, and changes when the QR is regenerated", () => {
+        const dir = mkdtempSync(join(tmpdir(), "zalo-qr-"));
+        const qr = join(dir, "qr.png");
+        try {
+            assert.equal(qrVersion(qr), null);
+            writeFileSync(qr, "first");
+            utimesSync(qr, new Date(1_790_000_000_000), new Date(1_790_000_000_000));
+            const first = qrVersion(qr);
+            assert.equal(typeof first, "number");
+            writeFileSync(qr, "second");
+            utimesSync(qr, new Date(1_790_000_100_000), new Date(1_790_000_100_000));
+            // Red if the page has nothing that changes when a new QR lands.
+            assert.notEqual(qrVersion(qr), first);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
 

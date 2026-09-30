@@ -6,7 +6,7 @@
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { getGroupHistory } from "../core/group-history.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
 
 export function registerGroupCommands(program) {
@@ -432,7 +432,18 @@ export function registerGroupCommands(program) {
                     for (const [key, value] of Object.entries(outcome.unchanged)) {
                         info(`${key}: already ${onOff(value)}`);
                     }
+                    // What the read-back found that the request did not ask for.
+                    for (const [key, { from, to }] of Object.entries(outcome.sideEffects ?? {})) {
+                        info(`${key}: ${onOff(from)} -> ${onOff(to)} (changed by Zalo alongside this update)`);
+                    }
+                    for (const [key, { asked, now }] of Object.entries(outcome.notApplied ?? {})) {
+                        warning(`${key}: asked for ${onOff(asked)}, but Zalo still reports ${onOff(now)}`);
+                    }
+                    if (outcome.verified === false) {
+                        info("Could not read the group back to confirm the result.");
+                    }
                 });
+                if (Object.keys(outcome.notApplied ?? {}).length) process.exitCode = 1;
             } catch (e) {
                 error(`Update settings failed: ${e.message}`);
                 process.exitCode = 1;

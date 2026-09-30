@@ -308,10 +308,11 @@ export async function autoLogin(jsonMode = false) {
         console.error(`AutoLogin failed: ${e.message}`);
         if (revoked) {
             console.error(
-                "  This session was revoked, which normally means Zalo Web or another PC\n" +
-                    "  client signed in on this account — only one such session is allowed at a\n" +
-                    "  time. Running `zalo-agent login` will restore the CLI, but it will sign\n" +
-                    "  that other session out. The phone app is unaffected either way.",
+                "  This session was revoked. Usually Zalo Web or another PC client signed in\n" +
+                    "  on this account (only one such session is allowed at a time), or the\n" +
+                    "  session was signed out from the phone's list of logged-in devices.\n" +
+                    "  Running `zalo-agent login` will restore the CLI; if another web session\n" +
+                    "  is active, it will sign that one out. The phone app is unaffected.",
             );
         }
     }

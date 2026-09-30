@@ -317,6 +317,8 @@ export function registerLoginCommands(program) {
                 });
             } catch (e) {
                 error(e.message);
+                // No profile is a failure: scripts and the live suite read the exit code.
+                process.exitCode = 1;
             }
         });
 }

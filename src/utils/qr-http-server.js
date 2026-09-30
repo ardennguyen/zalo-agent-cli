@@ -5,7 +5,7 @@
  */
 
 import http from "http";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, statSync } from "fs";
 import nodefetch from "node-fetch";
 import { info } from "./output.js";
 
@@ -24,6 +24,23 @@ import { info } from "./output.js";
  *
  * @returns {{ url: string, close: () => void }}
  */
+/**
+ * Which QR image is current: its modification time, or null before the first.
+ * The login loop regenerates the QR roughly every 100 s; the page polls this
+ * so it never shows an expired code (measured 2026-09-30: a page opened on
+ * the first QR kept showing it after two regenerations, and a scan failed).
+ *
+ * @param {string} qrImagePath
+ * @returns {number|null}
+ */
+export function qrVersion(qrImagePath) {
+    try {
+        return statSync(qrImagePath).mtimeMs;
+    } catch {
+        return null;
+    }
+}
+
 export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080, 3000, 9000], exposeOnLan = false) {
     const bindHost = exposeOnLan ? "0.0.0.0" : "127.0.0.1";
     const server = http.createServer(async (req, res) => {
@@ -84,7 +101,7 @@ h1{color:#e2e8f0;font-size:1.1rem;font-weight:600;margin:0.5rem 0}
 ${mascotImg}
 <h1>Zalo Agent CLI</h1>
 <p class="brand">QR Code Login</p>
-<img src="data:image/png;base64,${b64}" class="qr-img" alt="QR Code"/>
+<img src="data:image/png;base64,${b64}" class="qr-img" id="qr-img" alt="QR Code"/>
 <p class="hint">Open <strong>Zalo app</strong> > <strong>QR Scanner</strong> to scan</p>
 <p class="footer">Powered by <a href="https://github.com/ardennguyen/zalo-agent-cli">zalo-agent-cli</a></p>
 </div>
@@ -96,7 +113,8 @@ ${mascotImg}
 </div>
 </div>
 <script>
-// Poll /status to detect login success
+// Poll /status to detect login success, and swap in each regenerated QR
+let qrV=${JSON.stringify(qrVersion(qrImagePath))};
 setInterval(async()=>{
   try{
     const r=await fetch('/status');
@@ -104,6 +122,9 @@ setInterval(async()=>{
     if(d.loggedIn){
       document.getElementById('qr-view').classList.add('hidden');
       document.getElementById('success-view').classList.remove('hidden');
+    }else if(d.qrVersion&&d.qrVersion!==qrV){
+      qrV=d.qrVersion;
+      document.getElementById('qr-img').src='/qr.png?v='+qrV;
     }
   }catch{}
 },2000);
@@ -131,7 +152,7 @@ setInterval(async()=>{
                 loggedIn = isLoggedIn();
             } catch {}
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ loggedIn }));
+            res.end(JSON.stringify({ loggedIn, qrVersion: qrVersion(qrImagePath) }));
         } else {
             res.writeHead(404);
             res.end("Not found");

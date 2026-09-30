@@ -130,9 +130,18 @@ function zaloFail(code, message) {
  * @param {{code: number, message: string}} [opts.readError] - make the read fail
  * @returns {{api: object, reads: object[], writes: object[]}}
  */
-function harness({ setting = CURRENT, groupInfo, readError } = {}) {
+function harness({ setting = CURRENT, groupInfo, readError, afterWrite, readBackError } = {}) {
     const reads = [];
     const writes = [];
+    // After a write, Zalo reports what it now holds: by default exactly what
+    // was sent, for every key the group had; `afterWrite` models Zalo changing
+    // more (or less) than that.
+    const current = () => {
+        if (!writes.length) return setting;
+        const sent = writes[writes.length - 1].params;
+        const applied = Object.fromEntries(Object.keys(setting).map((k) => [k, k in sent ? sent[k] : setting[k]]));
+        return afterWrite ? afterWrite(applied) : applied;
+    };
     const ctx = {
         secretKey: SECRET_KEY,
         imei: IMEI,
@@ -146,11 +155,12 @@ function harness({ setting = CURRENT, groupInfo, readError } = {}) {
                 if (u.pathname === "/api/group/getmg-v2") {
                     reads.push(JSON.parse(decodeAES(SECRET_KEY, options.body.get("params"))));
                     if (readError) return zaloFail(readError.code, readError.message);
+                    if (readBackError && writes.length) return zaloFail(readBackError.code, readBackError.message);
                     return zaloOk(
                         groupInfo ?? {
                             removedsGroup: [],
                             unchangedsGroup: [],
-                            gridInfoMap: { [GROUP]: { groupId: GROUP, name: "Nhóm thử", setting: { ...setting } } },
+                            gridInfoMap: { [GROUP]: { groupId: GROUP, name: "Nhóm thử", setting: { ...current() } } },
                         },
                     );
                 }
@@ -289,11 +299,44 @@ describe("group settings changes only what was named", () => {
         assert.equal(w.url.searchParams.get("zpw_type"), "30");
     });
 
-    it("reads the group it is about to write", async () => {
+    it("reads the group it is about to write, then reads it back", async () => {
         // Red if the read is skipped, or asks about some other group.
-        const { reads } = await run(["--join-appr"]);
-        assert.equal(reads.length, 1, "exactly one read before the write");
-        assert.deepEqual(Object.keys(JSON.parse(reads[0].gridVerMap)), [GROUP]);
+        const { reads, writes } = await run(["--join-appr"]);
+        assert.equal(writes.length, 1);
+        assert.equal(reads.length, 2, "one read before the write, one to read the result back");
+        for (const r of reads) assert.deepEqual(Object.keys(JSON.parse(r.gridVerMap)), [GROUP]);
+    });
+});
+
+// Measured live 2026-09-30: `--join-appr` also set addMemberOnly on the server,
+// though the request carried it at its current 0. The read-back makes that visible.
+describe("it reports what Zalo actually did", () => {
+    it("a server that applied exactly the request shows no side effects", async () => {
+        const { outcome } = await run(["--join-appr"]);
+        assert.equal(outcome.verified, true);
+        assert.deepEqual(outcome.sideEffects, {});
+        assert.deepEqual(outcome.notApplied, {});
+    });
+
+    it("reports a field Zalo changed on its own", async () => {
+        const flipped = CURRENT.addMemberOnly ? 0 : 1;
+        const { outcome } = await run(["--join-appr"], {
+            afterWrite: (s) => ({ ...s, addMemberOnly: flipped }),
+        });
+        // Red if the command goes back to reporting only what it asked for.
+        assert.deepEqual(outcome.sideEffects, { addMemberOnly: { from: CURRENT.addMemberOnly, to: flipped } });
+        assert.deepEqual(Object.keys(outcome.changed), ["joinAppr"]);
+    });
+
+    it("flags a requested change that did not stick", async () => {
+        const { outcome } = await run(["--join-appr"], { afterWrite: (s) => ({ ...s, joinAppr: 0 }) });
+        assert.deepEqual(outcome.notApplied, { joinAppr: { asked: 1, now: 0 } });
+    });
+
+    it("a failed read-back still reports the write, as unverified", async () => {
+        const { outcome } = await run(["--join-appr"], { readBackError: { code: 114, message: "busy" } });
+        assert.equal(outcome.sent, true);
+        assert.equal(outcome.verified, false);
     });
 });
 

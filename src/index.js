@@ -30,6 +30,8 @@ import { registerOACommands } from "./commands/oa.js";
 import { registerMCPCommands } from "./commands/mcp.js";
 import { registerSyncCommands } from "./commands/sync.js";
 import { autoLogin } from "./core/zalo-client.js";
+import { getActive } from "./core/accounts.js";
+import { logoutNeedsSession } from "./core/logout.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
 import { applyCachedThreadType } from "./utils/thread-type.js";
 import { success, error, warning } from "./utils/output.js";
@@ -55,8 +57,11 @@ program
             warning(DISCLAIMER);
             console.log();
         }
-        // Auto-login before any command that needs it (skip for login/account/oa commands)
-        const skipAutoLogin = ["login", "account", "help", "version", "update", "oa", "mcp"].includes(cmdName);
+        // Auto-login before any command that needs it (skip for login/account/oa
+        // commands, and for a logout that will not call Zalo at all).
+        const skipAutoLogin =
+            ["login", "account", "help", "version", "update", "oa", "mcp"].includes(cmdName) ||
+            (cmdName === "logout" && !logoutNeedsSession(actionCommand.opts(), getActive()));
         if (!skipAutoLogin) {
             await autoLogin(program.opts().json);
         }

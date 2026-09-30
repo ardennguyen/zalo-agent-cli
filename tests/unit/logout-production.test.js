@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, loadCredentials, saveCredentials } from "../../src/core/credentials.js";
 import { acquireLock, releaseLock } from "../../src/core/lock.js";
-import { serverLogout, describeLogout, finishLocalLogout } from "../../src/core/logout.js";
+import { serverLogout, describeLogout, finishLocalLogout, logoutNeedsSession } from "../../src/core/logout.js";
 
 assertSandboxed(CONFIG_DIR);
 
@@ -87,6 +87,8 @@ function harness({
                 throw Object.assign(new Error("zpw_sek bị thiếu hoặc không đúng"), { code: 600 });
             }
             if (afterLogout === "network") throw new Error("fetch failed");
+            // What zca-js threw after every successful logout on 2026-09-30.
+            if (afterLogout === "empty") throw new Error("Failed to parse response data");
             return { profile: { userId: OWN } };
         },
     };
@@ -173,6 +175,33 @@ describe("serverLogout claims the session ended only after seeing it end", () =>
         assert.match(result.probeError, /fetch failed/);
     });
 
+    it("runs the probe with zca-js logging off, then restores it", async () => {
+        // The probe's failure is the expected outcome of a working logout, and
+        // zca-js printed it as a raw stack trace. Red if the probe logs again,
+        // or if logging stays off for the rest of the process.
+        const { api } = harness({ afterLogout: "empty" });
+        api.getContext().options.logging = true;
+        const probe = api.fetchAccountInfo;
+        let loggingDuringProbe;
+        api.fetchAccountInfo = async () => {
+            loggingDuringProbe = api.getContext().options.logging;
+            return probe();
+        };
+
+        await serverLogout(api);
+
+        assert.equal(loggingDuringProbe, false);
+        assert.equal(api.getContext().options.logging, true);
+    });
+
+    it("an empty reply after an accepted logout says so, but never as a success", async () => {
+        const { api } = harness({ afterLogout: "empty" });
+        const lines = describeLogout(await serverLogout(api));
+
+        assert.ok(!lines.some((l) => l.level === "success"), "an empty reply is not proof");
+        assert.ok(lines.some((l) => /came back empty/.test(l.text)));
+    });
+
     it("prints success only for a verified end", async () => {
         const levels = async (afterLogout) => {
             const { api } = harness({ afterLogout });
@@ -248,6 +277,34 @@ describe("a real logout deletes the saved credentials", () => {
         } finally {
             releaseLock(accountDir);
         }
+    });
+});
+
+// The entry point auto-logs in before most commands. A logout that will not
+// call Zalo must not (measured 2026-09-30: --no-remote, and a logout about to
+// refuse because a daemon runs, both logged in first).
+describe("logout decides whether it needs a session before any login", () => {
+    it("--no-remote never needs one", () => {
+        assert.equal(logoutNeedsSession({ remote: false }, { ownId: "9000000000000000044" }), false);
+    });
+
+    it("nor does a logout that will refuse because a daemon holds the account", () => {
+        const own = "9000000000000000055";
+        const accountDir = join(CONFIG_DIR, "accounts", own);
+        mkdirSync(accountDir, { recursive: true });
+        assert.equal(acquireLock(accountDir), true);
+        try {
+            assert.equal(logoutNeedsSession({}, { ownId: own }), false);
+        } finally {
+            releaseLock(accountDir);
+        }
+        // Red if the lock check is dropped: with the daemon gone, it does need one.
+        assert.equal(logoutNeedsSession({}, { ownId: own }), true);
+    });
+
+    it("a normal logout does, to end the session at Zalo", () => {
+        assert.equal(logoutNeedsSession({}, { ownId: "9000000000000000066" }), true);
+        assert.equal(logoutNeedsSession({}, null), true);
     });
 });
 

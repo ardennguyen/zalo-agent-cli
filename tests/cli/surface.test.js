@@ -481,7 +481,10 @@ describe("clean-state behavior (no credentials present)", () => {
     });
 
     it("a command needing a session fails with a pointer to `login`", async () => {
-        const { all } = await runCli(["whoami"], opts);
+        const { all, code } = await runCli(["whoami"], opts);
         assert.match(all, /Not logged in\. Run: zalo-agent login/);
+        // It used to print the ✗ and exit 0, so a script checking the exit code
+        // read "no profile" as success (seen live 2026-09-30 after a logout).
+        assert.equal(code, 1, "no profile is a failure");
     });
 });

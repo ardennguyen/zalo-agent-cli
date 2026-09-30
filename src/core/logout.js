@@ -130,16 +130,28 @@ export async function serverLogout(api) {
         result.v2 = { ok: false, error: "logoutV2 is not available (unpatched zca-js)" };
     }
 
+    // The probe is expected to fail after a working logout, and zca-js logs
+    // that failure with a raw stack trace (measured 2026-09-30: an empty reply,
+    // "Failed to parse response data", every time). Its logger reads
+    // ctx.options.logging on each call, so silence it for this call only.
+    const options = typeof api.getContext === "function" ? api.getContext()?.options : null;
+    const logging = options?.logging;
+    if (options) options.logging = false;
     try {
         await api.fetchAccountInfo();
         result.verdict = "still-answers";
     } catch (e) {
         if (SESSION_REJECTED.has(Number(e?.code))) result.verdict = "ended";
         else result.probeError = e.message;
+    } finally {
+        if (options) options.logging = logging;
     }
 
     return result;
 }
+
+/** zca-js's words for a reply with no body — what the probe got after every successful logout. */
+const EMPTY_REPLY = /Failed to parse response data/;
 
 /**
  * Delete the local chat cache (zalo.db + WAL/SHM sidecars) and downloaded media
@@ -184,6 +196,22 @@ export function deleteLocalHistory(ownId) {
 export function lockHolder(ownId) {
     const lock = checkLock(join(CONFIG_DIR, "accounts", ownId));
     return lock.locked ? lock.pid : null;
+}
+
+/**
+ * Whether `logout` needs a live session at all — decided before the entry
+ * point's auto-login. It does not with `--no-remote` (no server call), nor
+ * while a daemon holds the account (logout then refuses, changing nothing).
+ * Measured 2026-09-30: both used to log in first, contacting Zalo for nothing.
+ *
+ * @param {{remote?: boolean}} opts - the `logout` Commander options
+ * @param {{ownId: string}|null} active - the active account, if any
+ * @returns {boolean}
+ */
+export function logoutNeedsSession(opts, active) {
+    if (opts?.remote === false) return false;
+    if (active?.ownId && lockHolder(active.ownId) !== null) return false;
+    return true;
 }
 
 /**
@@ -236,6 +264,13 @@ export function describeLogout(r) {
         lines.push({
             level: "warning",
             text: "Zalo accepted the logout, but this session still answers — it may still be valid at Zalo.",
+        });
+    } else if (r.production.ok && EMPTY_REPLY.test(String(r.probeError))) {
+        // Not proof (an empty reply can have other causes), so not a success
+        // line; but it is what every successful logout produced in testing.
+        lines.push({
+            level: "info",
+            text: "Zalo accepted the logout, and the next call on this session came back empty, as it did after every successful logout in testing: this session's key is most likely gone.",
         });
     } else {
         lines.push({ level: "info", text: `Logout sent; could not confirm the session key died: ${r.probeError}` });

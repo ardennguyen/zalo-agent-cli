@@ -197,9 +197,13 @@ function sendGroupSetting(api, groupId, setting) {
  * @param {object} api - logged-in zca-js api
  * @param {string} groupId
  * @param {Record<string, 0|1>} changes - from settingChangesFromOptions()
- * @returns {Promise<{groupId: string, sent: boolean, changed: object, unchanged: object, settings: object, response?: *}>}
+ * @returns {Promise<{groupId: string, sent: boolean, changed: object, unchanged: object, settings: object,
+ *   response?: *, verified?: boolean, sideEffects?: object, notApplied?: object}>}
  *   `changed` maps key -> {from, to}; `unchanged` maps key -> the value it already had;
- *   `settings` is the full setting as sent (or as found, when nothing was sent)
+ *   `settings` is the full setting as sent (or as found, when nothing was sent). After a
+ *   send, the group is read back: `verified` says whether that worked, `sideEffects`
+ *   maps key -> {from, to} for fields Zalo changed on its own, and `notApplied` maps
+ *   key -> {asked, now} for a requested change that did not stick
  */
 export async function applyGroupSettingChanges(api, groupId, changes) {
     const requested = Object.entries(changes ?? {});
@@ -221,5 +225,26 @@ export async function applyGroupSettingChanges(api, groupId, changes) {
     const settings = { ...current };
     for (const [key, { to }] of Object.entries(changed)) settings[key] = to;
     const response = await sendGroupSetting(api, groupId, settings);
-    return { groupId, sent: true, changed, unchanged, settings, response };
+
+    // Read back what Zalo now holds. Measured live 2026-09-30: turning join
+    // approval on also set addMemberOnly, which we had sent at its current 0,
+    // and turning it off cleared both — a change the command could not report
+    // without looking. Best-effort: the write already went out.
+    const sideEffects = {};
+    const notApplied = {};
+    let verified = false;
+    try {
+        const after = await readGroupSetting(api, groupId);
+        verified = true;
+        for (const key of new Set([...Object.keys(settings), ...Object.keys(after)])) {
+            if (key in changed) {
+                if (bit(after[key]) !== changed[key].to) notApplied[key] = { asked: changed[key].to, now: after[key] };
+            } else if (JSON.stringify(after[key]) !== JSON.stringify(settings[key])) {
+                sideEffects[key] = { from: settings[key], to: after[key] };
+            }
+        }
+    } catch {
+        /* the read-back failed; `verified` stays false */
+    }
+    return { groupId, sent: true, changed, unchanged, settings, response, verified, sideEffects, notApplied };
 }

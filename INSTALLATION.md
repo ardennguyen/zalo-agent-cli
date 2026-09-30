@@ -190,6 +190,8 @@ curl http://localhost:3847/health
 
 > Binding to `0.0.0.0` without `--auth` exposes your Zalo session to anyone who can reach the port. Always set `--auth` for remote deployments.
 
+Running it unattended on a production host (systemd unit, restarts, monitoring, backup, security) is covered in [docs/deployment.md](docs/deployment.md).
+
 ### MCP tools exposed
 
 `mcp-server.js` is a thin wrapper around `zalo-agent mcp start`, so it exposes exactly the **12 MCP tools** registered in `src/mcp/mcp-tools.js`, all covering the **personal account**:

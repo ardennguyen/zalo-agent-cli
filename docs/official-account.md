@@ -54,7 +54,7 @@ Tổng cộng **32 lệnh** trong nhóm `oa`. Mọi lệnh đều nhận `--oa-i
 | `oa login ... --callback-host <url>` | OAuth login từ VPS — bind `0.0.0.0`, không tự mở browser, in URL để mở thủ công trên máy local |
 | `oa refresh` | Làm mới access token (dùng refresh token đã lưu) |
 | `oa setup <access-token>` | Set token thủ công (bỏ qua OAuth) |
-| `oa whoami` | Xem thông tin OA: tên, ID, mô tả, số follower |
+| `oa whoami` | Xem thông tin OA: tên, ID, mô tả, số follower, loại OA, gói dịch vụ (và hạn dùng), liên kết ZCA. Gói quyết định API nào dùng được: API OA, ZBS và Bài viết cần OA đã xác thực trên gói trả phí Advanced/Premium |
 
 #### Flag của `oa init`
 
@@ -158,9 +158,9 @@ done
 | `--path <path>` | `/webhook` | Đường dẫn URL của webhook |
 | `--verify-domain <code>` | — | Phục vụ file `/zalo_verifier<code>.html` để xác thực domain |
 
-**Events hỗ trợ:** `follow`, `unfollow`, `user_send_text`, `user_send_image`, `user_send_file`, `user_send_location`, `user_send_sticker`, `user_send_gif`, `user_click_button`, `user_click_link`
+**Events:** `--events` nhận mọi tên event Zalo công bố, ví dụ `follow`, `unfollow`, `user_send_text`, `user_send_image`, `user_send_file`, `user_send_audio`, `user_send_video`, `user_send_sticker`, `user_send_link`, `user_send_business_card`, `user_send_location`, `user_click_chatnow` (người dùng bấm nút "Nhắn tin" của OA), `user_seen_message`, `user_received_message`, `user_reacted_message`, các event `oa_send_*`, event nhóm GMF, gọi thoại và ZBS — danh sách đầy đủ ở `skill/references/oa-command-reference.md`. `user_send_gif`, `user_click_button` và `user_click_link` không phải event của Zalo (bản cũ liệt kê nhầm); lọc theo một tên Zalo không công bố thì listener cảnh báo ngay, vì bộ lọc đó không bao giờ khớp.
 
-Listener tự trả lời `hub.challenge` (GET) của Zalo, và giới hạn body tối đa 1MB.
+Listener tự trả lời `hub.challenge` (GET) của Zalo, và giới hạn body tối đa 1MB. Listener **trả 200 ngay khi nhận** event rồi mới in ra, vì Zalo đòi 200 trong vòng 2 giây. Khi Zalo gửi lại một event (header `num_retry`), kết quả JSON có `_num_retry` và dòng in ra ghi rõ đó là lần gửi lại, để không xử lý nhầm thành event mới.
 
 ### Menu, Bài viết, Cửa hàng
 
@@ -198,7 +198,7 @@ zalo-agent oa store order-create '{"...":"..."}'               # Tạo đơn hà
 1. **Domain verification** — Zalo cần verify domain trước khi dùng webhook
 2. **HTTPS required** — webhook URL phải là HTTPS
 3. **IP Việt Nam** — để nhận đầy đủ thông tin user (tên, avatar, SĐT)
-4. **Trả về 200 OK** — trong vòng 5 giây
+4. **Trả về 200 OK** — trong vòng 2 giây. Quá hạn thì Zalo gửi lại sau 30 giây, 5, 15, 30 phút và 1 giờ, và nếu vẫn lỗi thì **tắt webhook, huỷ đăng ký app** — khi đó phải đăng ký lại trong phần cài đặt app
 
 ### Checklist tại developers.zalo.me
 

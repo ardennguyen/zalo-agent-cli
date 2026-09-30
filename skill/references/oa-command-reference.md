@@ -34,6 +34,8 @@ zalo-agent oa setup <access-token>
 zalo-agent oa whoami
 ```
 
+`oa whoami` prints the OA's name, ID, description and followers, plus its type, package (with its valid-through date) and linked-ZCA flag when Zalo returns them. The package decides which APIs answer: the OA, ZBS and Article APIs need a Verified OA on a paid Advanced/Premium package, so a `-224` means the package is too low for that call.
+
 ### `oa init` flags
 
 The wizard switches to **agent (non-interactive) mode** as soon as `--app-id` is present.
@@ -126,9 +128,20 @@ zalo-agent --json oa listen                             # JSON pipe
 | `--path <path>` | `/webhook` | Webhook URL path |
 | `--verify-domain <code>` | — | Serve `/zalo_verifier<code>.html` for domain verification |
 
-Events: follow, unfollow, user_send_text, user_send_image, user_send_file, user_send_location, user_send_sticker, user_send_gif, user_click_button, user_click_link
+Events `--events` accepts (every name Zalo documents; `user_send_gif`, `user_click_button` and `user_click_link`, listed before 2.0.0, are not Zalo events, and filtering on a name Zalo does not document prints a warning at start, since that filter can never match):
 
-Zalo's `hub.challenge` GET verification is answered automatically. Request bodies are capped at 1MB.
+- Follow and inbound: `follow`, `unfollow`, `user_send_text`, `user_send_image`, `user_send_file`, `user_send_audio`, `user_send_video`, `user_send_sticker`, `user_send_link`, `user_send_business_card`, `user_send_location`, `user_click_chatnow` (the OA's "chat now" button)
+- Message lifecycle: `user_seen_message`, `user_received_message`, `user_reacted_message`, `oa_reacted_message`
+- Outbound echo: `oa_send_text`, `oa_send_image`, `oa_send_file`, `oa_send_sticker`, `oa_send_gif`, `oa_send_list`
+- Anonymous users: `anonymous_send_text`, `anonymous_send_image`, `anonymous_send_file`, `anonymous_send_sticker`, `oa_send_anonymous_text`
+- User management: `update_user_info`, `user_submit_info`, `add_user_to_tag`, `remove_user_from_tag`, `remove_tag`, `user_withdraw`
+- Widget: `widget_interaction_accepted`, `widget_failed_to_sync_user_external_id`
+- GMF groups: `create_group`, `delete_group`, `update_group_info`, `add_group_admin`, `remove_group_admin`, `user_join_group`, `user_out_group`, `user_request_join_group`, `accept_request_join_group`, `reject_request_join_group`, `user_send_group_text`
+- Voice call: `oa_send_consent`, `user_reply_consent`, `user_call_oa`
+- Extension: `extension_purchased`
+- ZBS: `change_template_status`, `change_template_quality`, `change_oa_daily_quota`, `user_feedback`, `user_click_response_button`, `event_journey_acknowledged`, `event_journey_time_out`
+
+Zalo's `hub.challenge` GET verification is answered automatically. Request bodies are capped at 1MB. The listener **answers 200 as soon as an event is accepted**, before printing it: Zalo wants the 200 within 2 seconds, redelivers at +30 s, +5, +15 and +30 min and +1 h, and in the end disables the webhook and unsubscribes the app. A redelivery carries Zalo's `num_retry` header; the event then has `_num_retry` in `--json` output and its printed line says it is a redelivery, so it is not processed as a new event.
 
 ## Menu, Articles, Store
 

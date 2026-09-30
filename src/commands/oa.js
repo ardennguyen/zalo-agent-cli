@@ -43,6 +43,30 @@ import {
 } from "../core/oa-client.js";
 import { success, error, info, output } from "../utils/output.js";
 
+/**
+ * `oa whoami`'s lines for one OA profile (the `v2.0/oa/getoa` data).
+ *
+ * The package tier is what decides which OA APIs work: the OA, ZBS and Article
+ * APIs need a Verified OA on a paid Advanced/Premium package. getoa returns it
+ * and this used to discard it, so "error -224" read as a mystery instead of
+ * "this call needs a higher package".
+ *
+ * @param {object} d - the profile data
+ * @returns {string[]}
+ */
+export function describeOAProfile(d = {}) {
+    const lines = [`OA: ${d.name || "N/A"} (ID: ${d.oa_id || "N/A"})`];
+    if (d.description) lines.push(`Description: ${d.description}`);
+    if (d.num_follower !== null && d.num_follower !== undefined) lines.push(`Followers: ${d.num_follower}`);
+    if (d.oa_type !== null && d.oa_type !== undefined) lines.push(`Type: ${d.oa_type}`);
+    if (d.package_name) {
+        const until = d.package_validThroughDate ? ` (valid through ${d.package_validThroughDate})` : "";
+        lines.push(`Package: ${d.package_name}${until}`);
+    }
+    if (d.linked_zca !== null && d.linked_zca !== undefined) lines.push(`Linked ZCA: ${d.linked_zca}`);
+    return lines;
+}
+
 export function registerOACommands(program) {
     const oa = program.command("oa").description("Zalo Official Account API v3.0 commands");
     const json = () => program.opts().json;
@@ -204,10 +228,7 @@ export function registerOACommands(program) {
             try {
                 const result = await getOAProfile(opts.oaId);
                 output(result, json(), () => {
-                    const d = result.data || result;
-                    info(`OA: ${d.name || "N/A"} (ID: ${d.oa_id || "N/A"})`);
-                    if (d.description) info(`Description: ${d.description}`);
-                    if (d.num_follower !== null && d.num_follower !== undefined) info(`Followers: ${d.num_follower}`);
+                    for (const line of describeOAProfile(result.data || result)) info(line);
                 });
             } catch (e) {
                 error(e.message);

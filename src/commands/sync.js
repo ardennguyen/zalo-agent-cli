@@ -559,7 +559,12 @@ async function runMediaPrune(activeAcc, opts) {
         warning(`${stats.failed} file(s) could not be deleted.`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
-    info("Message history is unchanged; these attachments are queued for download again.");
+    // mediaPrunedAt keeps them out of every automatic fetch: a prune is a
+    // decision, not a gap to refill (db.js getAttachmentMessages).
+    info(
+        "Message history is unchanged. These attachments are not fetched again on their own; " +
+            "`zalo-agent sync-media --include-pruned` re-downloads them while their links still work.",
+    );
     process.exit(0);
 }
 

@@ -171,3 +171,28 @@ describe("listen and mcp start must track coverage the same way", () => {
         }
     });
 });
+
+describe("a duplicate-session exit leaves no lock behind, in either listener", () => {
+    const mcp = read("commands/mcp.js");
+    /** The `if (code === CLOSE_DUPLICATE) { ... }` block of one file. */
+    const duplicateBranch = (src) => {
+        const at = src.indexOf("if (code === CLOSE_DUPLICATE)");
+        assert.ok(at > 0, "could not find the duplicate-session branch -- this guard has drifted");
+        return src.slice(at, src.indexOf("process.exit(1)", at));
+    };
+
+    it("listen releases the lock and stops its channel before exiting, as mcp start does", () => {
+        // Red if listen goes back to a bare process.exit(1): daemon.lock and
+        // daemon-channel.json stay behind until a stale-PID check reclaims them.
+        for (const [name, src] of [
+            ["listen", listen],
+            ["mcp start", mcp],
+        ]) {
+            assert.match(duplicateBranch(src), /dropLock\(\)/, `${name}'s duplicate branch must call dropLock()`);
+            const helper = src.slice(src.indexOf("const dropLock = () => {"));
+            const body = helper.slice(0, helper.indexOf("\n            };"));
+            assert.match(body, /releaseLock\(accountDir\)/, `${name}'s dropLock() releases the lock`);
+            assert.match(body, /channel\?\.stop\(\)/, `${name}'s dropLock() stops the channel`);
+        }
+    });
+});

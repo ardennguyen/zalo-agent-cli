@@ -87,6 +87,23 @@ export function registerListenCommand(program) {
                 error(`Another listen daemon is already running for account ${activeAcc.ownId}.`);
                 process.exit(1);
             }
+            /**
+             * Stop the daemon channel and release the lock before an exit that
+             * skips the SIGINT path, as `mcp start`'s dropLock() does -- so no
+             * channel file or lock is left for the next start to reclaim.
+             */
+            const dropLock = () => {
+                try {
+                    channel?.stop();
+                } catch {
+                    /* not started yet: the socket closed during start-up */
+                }
+                try {
+                    releaseLock(accountDir);
+                } catch (e) {
+                    console.error(`[listen] Failed to release lock: ${e.message}`);
+                }
+            };
             try {
                 initDb(join(accountDir, "zalo.db"));
                 info(`Local database initialized at ${accountDir}/zalo.db`);
@@ -676,6 +693,7 @@ export function registerListenCommand(program) {
                     if (stopping) return;
                     if (code === CLOSE_DUPLICATE) {
                         error("Another Zalo Web session opened. Listener stopped.");
+                        dropLock();
                         process.exit(1);
                     }
                     reconnectCount++;

@@ -83,7 +83,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **21** containers — 14 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **12** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **1877** as of 2026-09-30 (1873 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **1897** as of 2026-09-30 (1893 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that

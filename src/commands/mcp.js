@@ -7,6 +7,7 @@
 
 import { join } from "path";
 import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
+import { liveApi } from "../core/live-api.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
@@ -32,7 +33,7 @@ import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
-import { loadMCPConfig, parseDuration } from "../mcp/mcp-config.js";
+import { readMCPConfig, parseDuration } from "../mcp/mcp-config.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
@@ -111,6 +112,28 @@ export function registerMCPCommands(program) {
             // This catches rogue prints from dependencies (zca-js, chalk, etc.) that we can't control.
             console.log = (...args) => console.error(...args);
 
+            // An empty --auth is a token that went missing -- an unset variable
+            // in a unit file -- not a request for no auth, and it used to start
+            // the server open, saying nothing. Refused before anything logs in.
+            if (opts.http && opts.auth !== undefined && !String(opts.auth).trim()) {
+                console.error(
+                    "[mcp] --auth was given an empty token. Refusing to start: that would serve this account's " +
+                        "messages with no authentication at all.",
+                );
+                process.exit(1);
+            }
+
+            // The config, read before anything logs in. A file it cannot use is
+            // refused, not replaced by the defaults: they watch every thread, so
+            // a server meant for one group would buffer every DM for its bots.
+            const { config, problem: configProblem } = readMCPConfig(opts.config);
+            if (configProblem) {
+                console.error(
+                    `[mcp] Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`,
+                );
+                process.exit(1);
+            }
+
             // Perform login explicitly here — preAction hook skips "mcp"
             // Pass jsonMode=true to suppress info() output — stdout is the MCP transport channel
             try {
@@ -168,8 +191,6 @@ export function registerMCPCommands(program) {
                 process.exit(1);
             }
 
-            // Load MCP config (config path option reserved for future use)
-            const config = loadMCPConfig(opts.config);
             console.error("[mcp] Config loaded:", JSON.stringify(config.limits));
 
             // Build buffer + filter from config
@@ -191,6 +212,14 @@ export function registerMCPCommands(program) {
             // the server so the tools can hold it too.
             const stageLock = createStageLock();
 
+            // What the tools and the notifier call. Not getApi()'s object:
+            // a re-login after a dropped connection replaces it, and they
+            // would keep the dead one (src/core/live-api.js).
+            const sessionApi = liveApi(getApi, {
+                unavailable:
+                    "The Zalo session is logging in again after a dropped connection; try again in a few seconds.",
+            });
+
             // Start MCP server — stdio (default) or HTTP
             let httpServer = null;
             try {
@@ -201,12 +230,19 @@ export function registerMCPCommands(program) {
                         console.error(`[mcp] Invalid port: ${opts.http}. Must be 1-65535.`);
                         process.exit(1);
                     }
-                    const deps = { api: getApi(), buffer, filter, config, nameCache, accountDir, stageLock };
+                    const host = opts.host || "127.0.0.1";
+                    const deps = { api: sessionApi, buffer, filter, config, nameCache, accountDir, stageLock };
                     const authToken = opts.auth?.trim() || null;
-                    httpServer = createHTTPServer(registerTools, deps, port, authToken, opts.host || "127.0.0.1");
+                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host);
                     console.error(`[mcp] HTTP server started on port ${port}`);
+                    if (!authToken) {
+                        console.error(
+                            `[mcp] WARNING: no --auth token. Anyone who can reach ${host}:${port} can read this ` +
+                                "account's messages and send as it.",
+                        );
+                    }
                 } else {
-                    await createMCPServer(getApi(), buffer, filter, config, nameCache, accountDir, stageLock);
+                    await createMCPServer(sessionApi, buffer, filter, config, nameCache, accountDir, stageLock);
                 }
             } catch (e) {
                 dropLock();
@@ -215,7 +251,7 @@ export function registerMCPCommands(program) {
             }
 
             // Setup notifier (sends to Zalo group when agent is offline)
-            const notifier = new ZaloNotifier(getApi(), config);
+            const notifier = new ZaloNotifier(sessionApi, config);
 
             // Delivered receipts: the same shared implementation `listen` uses
             // (AGENTS.md §13 -- the two listeners must not differ). Diagnostics

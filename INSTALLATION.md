@@ -65,7 +65,7 @@ Run from inside the installed `zalo-mcp/` folder:
 ./zalo-mcp.sh clean
 ```
 
-**Never run `npm install` directly inside a deployed `zalo-mcp` folder** — always go through `update`, which pulls the latest engine from `github:ardennguyen/zalo-agent-cli` in a controlled way.
+**Never run `npm install` directly inside a deployed `zalo-mcp` folder** — always go through `update`, which refreshes the scripts and `package.json` from the published `@ardennguyen/zalo-mcp` and then installs the engine's latest npm release, `@ardennguyen/zalo-agent-cli@latest`, in a controlled way. A deployment therefore runs a published engine, never a branch.
 
 ### `.env` keys
 
@@ -94,7 +94,7 @@ All credentials are kept strictly local.
 ```bash
 npm run login   # from inside the installed zalo-mcp/ folder
 ```
-A QR code prints in the terminal, and a local HTTP server also serves it at `http://<host>:18927/qr` for headless machines. Scan it with the **Zalo app's QR Scanner** (not the phone's regular camera) and confirm on the phone. If you decline on the phone, the CLI reports it immediately instead of waiting out the 60-second QR timeout.
+A QR code prints in the terminal, and a local HTTP server also serves it at `http://127.0.0.1:18927/qr` — loopback only; `--qr-url` binds it to every interface for a headless machine, and anyone who reaches it before it expires can sign in as this account. Scan it with the **Zalo app's QR Scanner** (not the phone's regular camera) and confirm on the phone. If you decline on the phone, the CLI reports it immediately instead of waiting out the 60-second QR timeout.
 
 > **Storage:** `~/.zalo-agent-cli/` (mode `0600`).
 > **Risk:** this is an unofficial API (via `zca-js`) — heavy/automated use can get the account banned. Don't use your primary personal account.
@@ -203,7 +203,7 @@ Running it unattended on a production host (systemd unit, restarts, monitoring, 
 | `zalo_list_threads` | List buffered threads with unread counts |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread search by name |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer (global, not per-thread; deletes nothing, so several bots can share one server) |
-| `zalo_get_history` | Fetch older messages (~2 weeks) from the Zalo server, paginated |
+| `zalo_get_history` | Older messages: the local cache first, then Zalo, paginated — Zalo serves only messages since this login, and older history comes from the phone-backed `zalo-agent sync` |
 | `zalo_view_media` | Open a received image/audio/video attachment (downloads first if needed) |
 | `zalo_react` | React to a message (`/-strong`, `/-heart`, `:>`, …), as `msg react` does — refused, with nothing sent, when the message's cliMsgId is neither passed nor cached |
 | `zalo_undo` | Recall one of your own messages for everyone, as `msg undo` does; same cliMsgId rule |
@@ -244,8 +244,8 @@ Everything the CLI persists lives under `~/.zalo-agent-cli/`:
 ├── accounts/<ownId>/
 │   ├── zalo.db                    # SQLite message/thread cache (WAL)
 │   ├── media/                     # Media downloaded by `listen` / `msg` (per account)
-│   ├── sync/                      # RSA sync keys
-│   └── daemon.lock                # Held while a `listen` daemon runs
+│   ├── sync/                      # sync scratch (the --legacy path's keys, a protocol cache)
+│   └── daemon.lock                # Held while a `listen`/`mcp start` daemon runs
 └── qr.png                         # Most recent login QR
 ```
 
@@ -269,7 +269,7 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | `npx zalo-agent status` | Check login status |
 | `npx zalo-agent whoami` | Show the logged-in user's full profile |
 | `npx zalo-agent login [--qr-url] [--credentials <path>] [-p <proxy>]` | QR login, or restore from an exported credentials file |
-| `npx zalo-agent logout [--delete-history] [--purge] [--no-remote]` | Invalidate the session server-side; optionally delete the local cache or wipe the account entirely |
+| `npx zalo-agent logout [--delete-history] [--purge] [--no-remote]` | End the session and delete the saved credentials — the login ends at Zalo only when the device is signed out from the phone; optionally delete the local cache or wipe the account entirely |
 | `npx zalo-agent sync-mobile --transfer [-d <days>]` | **Restore message history from your phone** into the local cache (one confirmation on the phone). Full history by default; `-d/--days <n>` limits it to the last *n* days and finishes much sooner |
 | `npx zalo-agent sync-mobile [-F] [-w <s>]` | Restore history from your phone — prompts the phone once. Add `--socket` for the old server probe, which contacts no phone and usually returns nothing |
 | `npx zalo-agent update` | Self-update to the latest published version |
@@ -323,7 +323,7 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 |:---|:---|
 | MCP client shows no tools, or the connection drops immediately | Something printed to stdout. In stdio mode stdout is the JSON-RPC channel — check stderr logs for the real error |
 | `Duplicate Zalo Web session detected. Exiting.` | Only one WebSocket per account. Close Zalo Web in the browser, and don't run `listen` and `mcp start` for the same account at once |
-| `account remove` / `logout --purge` refuses with a PID | A `listen` daemon holds `daemon.lock` for that account. Stop it first |
+| `logout` (any form) / `account remove` refuses with a PID | A `listen` or `mcp start` daemon holds `daemon.lock` for that account. Stop it first |
 | `Thread name cache not initialized yet` from `zalo_search_threads` | The cache builds at MCP startup by fetching all groups + friends. Retry after a few seconds |
 | HTTP MCP server unreachable from another machine despite `--host 0.0.0.0` | You passed `--host` to `mcp-server.js`, which doesn't forward it. Run `zalo-agent mcp start --http <port> --auth <token> --host 0.0.0.0` directly |
 | `zalo_view_media` saves somewhere other than `accounts/<ownId>/media/<threadId>/` | Only when `media.downloadDir` is set in `mcp-config.json`: it moves the MCP server's media root. Unset, the server uses the same per-account folder as every other command |
@@ -336,11 +336,11 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 
 ## npm Registry Fail-Safe
 
-If `@ardennguyen/zalo-agent-cli` is ever unavailable from npm, `zalo-mcp`'s `package.json` dependency can be pointed straight at GitHub instead:
-```json
-"@ardennguyen/zalo-agent-cli": "github:ardennguyen/zalo-agent-cli"
+If `@ardennguyen/zalo-agent-cli` is ever unavailable from npm, `update` cannot help: both of its steps read the npm registry, and its first step overwrites `package.json` with the published wrapper's copy, so pointing the dependency at GitHub and then running `update` undoes the change. As a deliberate, one-off exception to the rule above, install the engine from source inside the deployed folder:
+```bash
+npm install github:ardennguyen/zalo-agent-cli
 ```
-Then re-run `./zalo-mcp.sh update` (or `.\zalo-mcp.ps1 update`) to pull and install the engine directly from source.
+The next `update` returns the folder to the npm release.
 
 ---
 

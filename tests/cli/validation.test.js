@@ -430,3 +430,24 @@ describe("msg send mention name resolution", () => {
         assert.doesNotMatch(r.all, /Mentions only apply/, "-t 1 is a group; no warning");
     });
 });
+
+describe("mcp start --auth", () => {
+    it("refuses an empty token before logging in, instead of serving with no authentication", async () => {
+        // An unset variable in a unit file arrives as exactly this: `--auth ""`.
+        const r = await runCli(["mcp", "start", "--http", "8765", "--auth", ""], opts);
+        assert.equal(r.code, 1);
+        // Red if the empty token is taken as "no auth" again, or checked only after the login.
+        assert.match(r.all, /--auth was given an empty token/);
+        assert.doesNotMatch(r.all, /Auto-login failed/, "refused before anything logs in");
+    });
+});
+
+describe("mcp start --config", () => {
+    it("refuses a config file it cannot read, before logging in, instead of watching every thread", async () => {
+        const r = await runCli(["mcp", "start", "--config", "no-such-dir/mcp-config.json"], opts);
+        assert.equal(r.code, 1);
+        // Red if a missing --config falls back to the defaults again.
+        assert.match(r.all, /Refusing to start: cannot read the config file/);
+        assert.doesNotMatch(r.all, /Auto-login failed/, "refused before anything logs in");
+    });
+});

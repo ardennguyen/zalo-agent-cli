@@ -200,7 +200,7 @@ setInterval(async()=>{
             if (publicIp) info(`On VPS, open: http://${publicIp}:${actualPort}/qr`);
             else info(`On VPS, open: http://<your-server-ip>:${actualPort}/qr`);
             info(`If firewall blocks, run: sudo ufw allow ${actualPort}/tcp`);
-            info(`Or copy QR file: scp user@vps:~/.zalo-agent/qr.png ./qr.png`);
+            info(`Or copy QR file: scp user@vps:~/.zalo-agent-cli/qr.png ./qr.png`);
         }
     });
 

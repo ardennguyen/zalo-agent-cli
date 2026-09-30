@@ -62,8 +62,8 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 >
 > `tests/unit/listener-lifecycle-rules.test.js` holds both to the same gap rules (each builds a `SyncManager` and files a startup gap), and `tests/unit/self-heal-wiring.test.js` runs its wiring checks against both files. Loss detection is therefore no longer a reason to pick one over the other: pick `mcp start` for MCP bots, `listen` for a webhook or JSONL consumer.
 
-> [!WARNING]
-> **`mcp start`'s tools stay bound to the session they started with.** A socket that closes for good (a `closed` event with any code except `3000`; zca-js retries some drops itself) is handled inside the process: `clearSession()`, then `autoLogin()`, which builds a new zca-js API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`. The twelve tools do not: they receive the API object once, as `deps.api` for HTTP (`mcp.js:204`) or through `createMCPServer(getApi(), …)` for stdio (`mcp.js:209`), and the notifier does the same (`mcp.js:218`). After a `Re-login successful` line, `zalo_send_message` and the other tools therefore call Zalo through the pre-drop object, and `zalo_get_history`'s server fallback pages that object's listener, whose socket has closed. Whether Zalo still honors the old object's session is not verified. The daemon channel documents the rule this breaks for itself: `getApi` is a function, never a captured api object. Until this is fixed, alert on `Re-login successful` (§4.3) and restart the unit (§4.5) if tool calls start failing after one.
+> [!NOTE]
+> **`mcp start`'s tools follow a re-login.** A socket that closes for good (a `closed` event with any code except `3000`; zca-js retries some drops itself) is handled inside the process: `clearSession()`, then `autoLogin()`, which builds a new zca-js API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the twelve tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 What `daemon-channel.js` actually is
 
@@ -397,9 +397,9 @@ Environment=NODE_ENV=production
 # The update check already skips when stdout is not a TTY; this makes it explicit.
 Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
 
-# `--auth ""` starts the server with NO auth and logs nothing about it
-# (mcp.js: `opts.auth?.trim() || null`). systemd passes an empty or unset
-# ${ZALO_MCP_TOKEN} as exactly that empty argument, so refuse to start instead.
+# systemd passes an empty or unset ${ZALO_MCP_TOKEN} as an empty --auth
+# argument. mcp start refuses that since 2.0.0 (before 2.0.0 it served with no
+# auth, silently); this check fails the unit earlier, with a clearer reason.
 ExecStartPre=/usr/bin/test -n "${ZALO_MCP_TOKEN}"
 # Adjust the path to what `command -v zalo-agent` printed.
 ExecStart=/usr/bin/zalo-agent mcp start --http ${ZALO_MCP_HTTP_PORT} --auth ${ZALO_MCP_TOKEN} --host 127.0.0.1
@@ -463,7 +463,7 @@ ZALO_MCP_TOKEN=<64 hex characters, from: openssl rand -hex 32>
 |---|---|---|
 | `[mcp] Duplicate Zalo Web session detected. Exiting.` (`listen`: `Another Zalo Web session opened. Listener stopped.`) | Someone opened Zalo Web, or another client took the session | Close the other session. Restarting alone only restarts the contest (§4.2) |
 | `[mcp] Re-login retry failed: <reason>. Exiting.` | The re-login 5 s after a close failed, and so did the retry 30 s later. An earlier `AutoLogin failed:` line followed by "This session was revoked" means the credentials are dead | Revoked: re-run `zalo-agent login` interactively. Otherwise (network), systemd's restart retries |
-| `[mcp] Re-login successful. Restarting listener...` | An in-process re-login after a dropped socket | Expect a reconnect gap and a self-heal result next. The tools still hold the pre-drop session (§1.1): watch for tool errors and restart if they appear |
+| `[mcp] Re-login successful. Restarting listener...` | An in-process re-login after a dropped socket | Expect a reconnect gap and a self-heal result next. The tools follow the new session (§1.1) |
 | `[mcp] Daemon channel unavailable: <reason>` | `startDaemonChannel` failed | Attachment sends will open their own session, which evicts this daemon, and `zalo-agent sync` will refuse. Restart |
 | `[mcp] Connection closed (code: N). Re-login in 5s... (reconnect #N)` | An ordinary drop | A reconnect gap is filed when the socket is back, and the self-heal pulls it |
 | `[mcp] Coverage gap (<reason>) since <time>: recovering it now from Zalo's offline queue …` | A startup or reconnect gap was filed | Nothing yet; read the self-heal line that follows |
@@ -579,7 +579,7 @@ curl -s http://127.0.0.1:3847/health
 >
 > 1. `systemctl is-active zalo-mcp`: catches the fatal exits.
 > 2. `uptime` resetting: catches restart loops the unit's `StartLimitBurst` has not yet failed.
-> 3. Journal matches on `Duplicate Zalo Web session`, `Re-login retry failed`, `Re-login successful` (§1.1), `Daemon channel unavailable`, `message not stored`, and the self-heal's `stays pending`, `not finished` and `dropped part of`.
+> 3. Journal matches on `Duplicate Zalo Web session`, `Re-login retry failed`, `Daemon channel unavailable`, `message not stored`, and the self-heal's `stays pending`, `not finished` and `dropped part of`.
 > 4. **`threads` stuck at a constant, or the newest `timestamp` in `zalo.db` going stale.** This is the only signal that distinguishes "connected and quiet" from "silently not receiving". A read-only query is the best liveness probe you have:
 >    ```bash
 >    sqlite3 -readonly ~/.zalo-agent-cli/accounts/<ownId>/zalo.db \
@@ -665,7 +665,7 @@ Even with a token, prefer **not** to bind publicly. Bind loopback and put remote
 >
 > To bind a non-loopback address, use a custom config, or keep the token out of a log, call the CLI directly.
 
-**`--config <path>` works on the CLI.** `loadMCPConfig(configPath)` reads the given path, else `~/.zalo-agent-cli/mcp-config.json` (`src/mcp/mcp-config.js`; the "reserved for future use" comment next to the call in `mcp.js` is out of date). Two caveats: a path that cannot be read, or JSON that does not parse, silently falls back to the built-in defaults, which watch every thread (`watchThreads: ["dm:*", "group:*"]`); and the startup line `[mcp] Config loaded: …` prints only `limits`. Validate the file (`jq . <file>`) before a restart. The merge over the defaults is shallow, per top-level key.
+**`--config <path>` works on the CLI.** `mcp start` reads the given path, else `~/.zalo-agent-cli/mcp-config.json`, through `readMCPConfig()` (`src/mcp/mcp-config.js`). A `--config` path that cannot be read, or a config that is not valid JSON, makes it **refuse to start, before logging in** — before 2.0.0 it fell back to the built-in defaults, which watch every thread (`watchThreads: ["dm:*", "group:*"]`), and said nothing. Only an absent default file means the defaults. The startup line `[mcp] Config loaded: …` prints only `limits`; validate the file (`jq . <file>`) before a restart anyway, so a typo fails your deploy step rather than the restart. The merge over the defaults is shallow, per top-level key.
 
 On a server, also set `"media": {"autoOpen": false}`: it is the default of `zalo_view_media`'s `open` parameter, and opening means spawning `xdg-open` (or `open`, or `start`) on the server itself (`src/utils/open-file.js`). The tool returns a path on the server's filesystem, not the file's bytes.
 
@@ -827,7 +827,7 @@ grep -n 'process.on("SIG' src/commands/listen.js src/commands/mcp.js       # SIG
 grep -n "createGapTracker\|createSelfHeal" src/commands/mcp.js              # mcp start tracks gaps and self-heals
 grep -n "createSelfHeal\|reportGap(" src/commands/listen.js                 # so does listen
 grep -n "markRead\|_readCursors" src/mcp/message-buffer.js                  # one read cursor per consumer
-grep -n "deps = { api: getApi()\|createMCPServer(getApi()\|new ZaloNotifier(getApi()" src/commands/mcp.js   # bound once, at startup
+grep -n "liveApi(getApi" src/commands/mcp.js   # the tools and the notifier read the current session (fixed in 2.0.0)
 grep -rn "isTrigger\|setAgentConnected\|autoDigestThreshold\|config\.mode" src/ | grep -v "\.test\.js"   # definitions only, no callers
 ```
 

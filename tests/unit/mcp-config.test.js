@@ -13,7 +13,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { getDefaultConfig, loadMCPConfig, saveMCPConfig, parseDuration } from "../../src/mcp/mcp-config.js";
+import {
+    getDefaultConfig,
+    loadMCPConfig,
+    readMCPConfig,
+    saveMCPConfig,
+    parseDuration,
+} from "../../src/mcp/mcp-config.js";
 
 const CONFIG_FILE = join(SANDBOX_CONFIG_DIR, "mcp-config.json");
 
@@ -184,5 +190,35 @@ describe("parseDuration", () => {
         for (const v of ["", "x", "2h", 500, null]) {
             assert.equal(Number.isNaN(parseDuration(v)), false);
         }
+    });
+});
+
+describe("readMCPConfig -- what mcp start refuses instead of serving the defaults", () => {
+    beforeEach(() => rmSync(CONFIG_FILE, { force: true }));
+
+    it("an --config path that does not exist is a problem, not the defaults", () => {
+        const r = readMCPConfig(join(CONFIG_DIR, "no-such-file.json"));
+        // Red if a mistyped path goes back to silently watching every thread.
+        assert.match(r.problem, /cannot read the config file .*no-such-file\.json \(ENOENT\)/);
+    });
+
+    it("a config that is not valid JSON is a problem, default path or not", () => {
+        write("{ broken");
+        assert.match(readMCPConfig().problem, /is not valid JSON/);
+        const custom = join(CONFIG_DIR, "broken.json");
+        writeFileSync(custom, "{ broken");
+        assert.match(readMCPConfig(custom).problem, /is not valid JSON/);
+    });
+
+    it("no default file at all is the normal first run: the defaults, no problem", () => {
+        assert.deepEqual(readMCPConfig(), { config: getDefaultConfig(), problem: null });
+    });
+
+    it("a good file reads exactly as loadMCPConfig reads it", () => {
+        write({ watchThreads: ["group:Only*"] });
+        const r = readMCPConfig();
+        assert.equal(r.problem, null);
+        assert.deepEqual(r.config, loadMCPConfig());
+        assert.deepEqual(r.config.watchThreads, ["group:Only*"]);
     });
 });

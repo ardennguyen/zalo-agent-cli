@@ -64,6 +64,36 @@ export function loadMCPConfig(configPath) {
 }
 
 /**
+ * Read the MCP config the way `mcp start` needs it: as loadMCPConfig does, but
+ * saying when the file it was pointed at could not be used.
+ *
+ * loadMCPConfig answers a missing `--config` file, or a config that is not
+ * valid JSON, with the defaults -- and the defaults watch every thread. A
+ * server meant to see one group then buffers every DM for its bots, and says
+ * nothing. Only the default file being absent is a normal state (nothing has
+ * been configured yet); anything else is a `problem` for the caller to refuse.
+ *
+ * @param {string} [configPath] - explicit config file; defaults to CONFIG_DIR/mcp-config.json
+ * @returns {{config: object, problem: string|null}}
+ */
+export function readMCPConfig(configPath) {
+    const file = configPath || MCP_CONFIG_FILE;
+    let raw;
+    try {
+        raw = readFileSync(file, "utf-8");
+    } catch (e) {
+        if (!configPath && e.code === "ENOENT") return { config: getDefaultConfig(), problem: null };
+        return { config: getDefaultConfig(), problem: `cannot read the config file ${file} (${e.code || e.message})` };
+    }
+    try {
+        JSON.parse(raw);
+    } catch (e) {
+        return { config: getDefaultConfig(), problem: `the config file ${file} is not valid JSON (${e.message})` };
+    }
+    return { config: loadMCPConfig(configPath), problem: null };
+}
+
+/**
  * Save MCP config to disk.
  * @param {object} config
  */

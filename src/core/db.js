@@ -282,15 +282,32 @@ export function initDb(dbPath) {
         /* nothing to repair */
     }
     // Repair threads an earlier listener downgraded to "dm" (see the sticky
-    // type rule in upsertThread). A conversation carrying a group_event, or a
-    // message from someone who is not either end of a 1-1, is provably a group.
+    // type rule in upsertThread). The evidence is a group event the LISTENER
+    // saw (a `ge:` row, written only for cmd 601 group controls). It used to be
+    // any `group_event` row, but that type is also a pin notice
+    // (msginfo.actionlist), which a 1-1 carries too: measured live 2026-09-30,
+    // pinning a message in a DM flipped the DM to "group" here on every open,
+    // and every default-typed command on it then went out as a group command.
     try {
         db.prepare(
             "UPDATE threads SET type = 'group' WHERE type = 'dm' AND threadId IN " +
-                "(SELECT threadId FROM messages WHERE type = 'group_event')",
+                "(SELECT threadId FROM messages WHERE type = 'group_event' AND msgId LIKE 'ge:%')",
         ).run();
     } catch {
         /* no messages table yet, or nothing to repair */
+    }
+    // Heal a 1-1 that rule (or anything else) wrongly made a group. In a DM the
+    // conversation id IS the other person's uid, so a real message sent by the
+    // conversation id itself proves a 1-1; a group id never sends one. System
+    // lines are excluded: their sender is whoever acted.
+    try {
+        db.prepare(
+            "UPDATE threads SET type = 'dm' WHERE type = 'group' AND threadId IN " +
+                "(SELECT threadId FROM messages WHERE senderId = threadId AND msgId NOT LIKE 'ge:%' " +
+                "AND COALESCE(type, '') NOT IN ('group_event', 'event', 'poll_event', 'deleted'))",
+        ).run();
+    } catch {
+        /* no messages table yet, or nothing to heal */
     }
     // When the conversation stopped being ours: dispersed, deleted, or we were
     // removed. Nothing else records this, so without it a vanished group keeps
@@ -613,8 +630,12 @@ export function upsertThread(thread) {
       -- channel, and a blind assignment here rewrote a synced group to "dm".
       -- Measured: two threads holding group_event rows were stored as "dm".
       -- A group id is never later a user id, so promoting dm -> group is a
-      -- correction worth taking and the reverse is always wrong.
+      -- correction worth taking and the reverse is wrong for a LIVE write.
+      -- An authoritative write is the exception: the phone sync reads the type
+      -- from its own partition (oneone/ vs group/), which no wrong-type send
+      -- can skew, so it may undo a "group" that weak evidence put on a 1-1.
       type = CASE
+        WHEN @authoritative = 1 AND excluded.type IN ('dm', 'group') THEN excluded.type
         WHEN threads.type = 'group' THEN 'group'
         WHEN excluded.type IS NULL OR excluded.type = '' THEN threads.type
         ELSE excluded.type END,
@@ -654,6 +675,8 @@ export function upsertThread(thread) {
         lastGlobalId: thread.lastGlobalId === undefined ? null : String(thread.lastGlobalId),
         lastClientId: thread.lastClientId === undefined ? null : String(thread.lastClientId),
         nameHint: thread.nameHint ? 1 : 0,
+        // Only the phone sync passes this (see the type rule above).
+        authoritative: thread.authoritative ? 1 : 0,
     });
 }
 

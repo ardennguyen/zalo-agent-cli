@@ -19,6 +19,7 @@ import {
     getMessages,
     upsertThread,
     getRecentThreads,
+    getThreadType,
     upsertContact,
     getSyncState,
     setSyncState,
@@ -276,6 +277,63 @@ describe("threads", () => {
         upsertThread({ threadId: "g2", type: "dm", name: "G", lastUpdate: 100 });
         upsertThread({ threadId: "g2", type: "group", name: "", lastUpdate: 200 });
         assert.equal(getRecentThreads()[0].type, "group");
+    });
+
+    it("lets an authoritative (sync) write undo a wrong group, but not a live one", () => {
+        upsertThread({ threadId: "x1", type: "group", name: "", lastUpdate: 100 });
+        upsertThread({ threadId: "x1", type: "dm", name: "", lastUpdate: 200 });
+        assert.equal(getThreadType("x1"), "group", "a live write keeps the sticky rule");
+        upsertThread({ threadId: "x1", type: "dm", name: "", lastUpdate: 300, authoritative: true });
+        // Red if the phone sync's partition type can no longer heal a 1-1.
+        assert.equal(getThreadType("x1"), "dm");
+    });
+});
+
+// initDb re-derives a thread's type from its rows on every open. Measured live
+// 2026-09-30: a pin notice (msginfo.actionlist, stored as `group_event`) in a
+// DM made that DM a "group" here, so every default-typed command on it went
+// out as a group command. Each test reopens the same file so the repair runs.
+describe("thread type evidence at open", () => {
+    const reopen = (name) => {
+        const p = join(ROOT, `evidence-${name}.db`);
+        open(p);
+        return () => open(p);
+    };
+
+    it("a pin notice in a DM does not turn the DM into a group", () => {
+        const again = reopen("dm-pin");
+        upsertThread({ threadId: "dm-pin", type: "dm", name: "P", lastUpdate: 1 });
+        insertMessage(msg({ msgId: "pin-1", threadId: "dm-pin", senderId: "me", type: "group_event" }));
+        again();
+        assert.equal(getThreadType("dm-pin"), "dm");
+    });
+
+    it("a group event the listener saw still repairs a downgraded group", () => {
+        const again = reopen("ge-repair");
+        upsertThread({ threadId: "grp-1", type: "dm", name: "G", lastUpdate: 1 });
+        insertMessage(msg({ msgId: "ge:grp-1:100:join", threadId: "grp-1", senderId: "u9", type: "group_event" }));
+        again();
+        assert.equal(getThreadType("grp-1"), "group");
+    });
+
+    it("a 1-1 wrongly made a group heals once the other person's own message is cached", () => {
+        const again = reopen("dm-heal");
+        upsertThread({ threadId: "peer-1", type: "group", name: "", lastUpdate: 1 });
+        insertMessage(msg({ msgId: "m-peer", threadId: "peer-1", senderId: "peer-1", type: "text" }));
+        again();
+        // In a DM the conversation id is the other person's uid; a group id never sends.
+        assert.equal(getThreadType("peer-1"), "dm");
+    });
+
+    it("a group stays a group: members' messages and system lines prove nothing", () => {
+        const again = reopen("grp-stays");
+        upsertThread({ threadId: "grp-2", type: "group", name: "G", lastUpdate: 1 });
+        insertMessage(msg({ msgId: "m-a", threadId: "grp-2", senderId: "member-a", type: "text" }));
+        // A system line whose actor field happens to hold the thread id must not heal it.
+        insertMessage(msg({ msgId: "ge:grp-2:5:update", threadId: "grp-2", senderId: "grp-2", type: "group_event" }));
+        insertMessage(msg({ msgId: "ev-1", threadId: "grp-2", senderId: "grp-2", type: "event" }));
+        again();
+        assert.equal(getThreadType("grp-2"), "group");
     });
 });
 

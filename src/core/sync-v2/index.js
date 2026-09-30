@@ -1054,10 +1054,16 @@ export class SyncV2 {
                                     // The payload's numeric msgType + meta decide the row;
                                     // `content` is always a string, so it cannot.
                                     const info = classifySyncMessage(msg);
+                                    const threadType = hit ? hit.type : isGroup ? "group" : "dm";
                                     try {
                                         upsertThread({
                                             threadId,
-                                            type: hit ? hit.type : isGroup ? "group" : "dm",
+                                            type: threadType,
+                                            // The partition prefix is the phone's own
+                                            // classification: authoritative when the
+                                            // thread map agrees, so it can heal a 1-1 a
+                                            // pin notice once turned into a "group".
+                                            authoritative: threadType === (isGroup ? "group" : "dm"),
                                             name: hit ? hit.name : "",
                                             lastUpdate: Number(msg.timestamp) || 0,
                                             sync_timestamp: Date.now(),

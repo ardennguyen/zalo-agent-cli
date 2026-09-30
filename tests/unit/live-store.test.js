@@ -32,6 +32,7 @@ import {
 } from "../../src/core/db.js";
 import {
     storeLiveMessage,
+    storeHistoryMessage,
     storeLiveReaction,
     storeLiveUndo,
     storeLiveDelete,
@@ -441,6 +442,43 @@ describe("removal — recall for everyone", () => {
         const [row] = getMessages("t1");
         assert.equal(row.type, "deleted");
         assert.equal(row.text, "[deleted]");
+    });
+
+    // Suspected live 2026-09-30 and not borne out: four recalled rows (two My
+    // Documents notes, two DM messages self-heal had recovered) lacked
+    // msgStatus 4 — but 4 means "received", a delivery receipt, not a recall,
+    // and none of those four could get one. A recall is matched by the global
+    // id alone, whatever thread the undo names or which writer stored the row.
+    it("tombstones a row self-heal stored and a My Documents note, like any other", () => {
+        storeHistoryMessage(
+            {
+                threadId: "t1",
+                type: 0,
+                data: {
+                    msgId: "m-off",
+                    cliMsgId: 51,
+                    uidFrom: "u9",
+                    ts: 1_750_000_000_000,
+                    msgType: "webchat",
+                    content: "recovered",
+                },
+            },
+            { src: "offline" },
+        );
+        storeLiveMessage(
+            liveMsg(
+                { threadId: "notes", isSelf: true },
+                { msgId: "m-note", cliMsgId: 52, uidFrom: "0", msgType: "webchat", content: "note" },
+            ),
+        );
+
+        assert.equal(storeLiveUndo(undoEvent({ globalMsgId: "m-off" })).stored, true);
+        // Red if a recall is ever scoped to the undo's own threadId.
+        const note = storeLiveUndo({ ...undoEvent({ globalMsgId: "m-note" }), threadId: "some-other-thread" });
+        assert.equal(note.stored, true);
+
+        assert.equal(getMessages("t1").find((r) => r.msgId === "m-off").type, "deleted");
+        assert.equal(getMessages("notes").find((r) => r.msgId === "m-note").type, "deleted");
     });
 
     it("does NOT tombstone the notification's own id", () => {

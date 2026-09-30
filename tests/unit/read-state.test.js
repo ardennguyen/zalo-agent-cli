@@ -16,7 +16,15 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as acorn from "acorn";
-import { initDb, getConvState, recordReadWatermark, upsertConvState, upsertThread } from "../../src/core/db.js";
+import {
+    initDb,
+    getConvState,
+    getReadStates,
+    insertMessage,
+    recordReadWatermark,
+    upsertConvState,
+    upsertThread,
+} from "../../src/core/db.js";
 import {
     CLEAR_UNREADS_CMDS,
     createReadStateSync,
@@ -230,6 +238,52 @@ describe("recordReadWatermark -- the watermark only moves forward", () => {
         const before = Date.now();
         recordReadWatermark({ threadId: DM, msgId: "7000000000001" });
         assert.ok(getConvState(DM).lastReadTs >= before);
+    });
+});
+
+describe("getReadStates -- what conv recent and the MCP show", () => {
+    const OWN = "1100000000000000011";
+    const msg = (msgId, over = {}) =>
+        insertMessage({
+            msgId,
+            threadId: GROUP,
+            senderId: "2200000000000000022",
+            senderName: "S",
+            text: "t",
+            timestamp: 1,
+            type: "text",
+            raw_data: {},
+            ...over,
+        });
+
+    beforeEach(() => freshDb());
+
+    it("counts cached messages from others after the watermark, as a floor", () => {
+        msg("7000000000001");
+        msg("7000000000002");
+        msg("7000000000003");
+        msg("7000000000004", { senderId: OWN }); // ours: never unread
+        msg("7000000000005", { type: "deleted" }); // recalled: nothing left to read
+        msg("ge:7000000000006", { type: "group_event" }); // a system line, not a message id
+        msg("10000000000000"); // later than every 13-digit id
+        recordReadWatermark({ threadId: GROUP, msgId: "7000000000002", ts: 5 });
+        const st = getReadStates([GROUP], OWN).get(GROUP);
+        // Red if ids compare as strings (the 14-digit one drops out), or own,
+        // recalled or system rows are counted.
+        assert.deepEqual(st, { lastReadMsgId: "7000000000002", lastReadTs: 5, unreadMarked: false, unreadAfter: 2 });
+    });
+
+    it("says nothing is known, not that all is read, before any report", () => {
+        upsertConvState({ threadId: GROUP, unreadMarked: true, unreadMarkedAt: 1 });
+        msg("7000000000001");
+        const st = getReadStates([GROUP, DM], OWN);
+        assert.deepEqual(st.get(GROUP), {
+            lastReadMsgId: null,
+            lastReadTs: null,
+            unreadMarked: true,
+            unreadAfter: null,
+        });
+        assert.equal(st.has(DM), false, "no state at all: no entry");
     });
 });
 

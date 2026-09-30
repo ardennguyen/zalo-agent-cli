@@ -167,6 +167,52 @@ export function unreadMarksFrom(data, threads = lazyThreads()) {
 }
 
 /**
+ * A conversation's read state as `conv recent` and the MCP report it: the
+ * account's own reading on Zalo -- what the human read on the phone or Zalo
+ * Web -- not any bot's cursor.
+ *
+ * @param {{lastReadMsgId: string|null, lastReadTs: number|null, unreadMarked: boolean,
+ *   unreadAfter: number|null}|undefined} st - one entry of db.js `getReadStates`
+ * @returns {{lastReadMsgId: string|null, lastReadAt: string|null, unreadAfter: number|null,
+ *   markedUnread: boolean}|null} null when nothing is known
+ */
+export function describeReadState(st) {
+    if (!st || (st.lastReadMsgId === null && !st.unreadMarked)) return null;
+    return {
+        lastReadMsgId: st.lastReadMsgId,
+        lastReadAt: st.lastReadTs ? new Date(st.lastReadTs).toISOString() : null,
+        unreadAfter: st.unreadAfter,
+        markedUnread: st.unreadMarked,
+    };
+}
+
+/**
+ * The READ column of `conv recent`.
+ *
+ * @param {ReturnType<typeof describeReadState>} rs
+ * @returns {string} "read", "3 unread", "marked unread", "3 unread, marked", or "-" when nothing is known
+ */
+export function readStateLabel(rs) {
+    if (!rs) return "-";
+    const n = rs.unreadAfter;
+    if (rs.markedUnread) return n > 0 ? `${n} unread, marked` : "marked unread";
+    if (n > 0) return `${n} unread`;
+    return n === 0 ? "read" : "-";
+}
+
+/**
+ * Whether the account has read one message on Zalo, on any device.
+ *
+ * @param {string} msgId
+ * @param {string|null|undefined} lastReadMsgId - the conversation's watermark
+ * @returns {boolean|null} true at or before the watermark, false after it, null when either id is unknown
+ */
+export function readOnZalo(msgId, lastReadMsgId) {
+    if (!/^\d+$/.test(String(msgId ?? "")) || !/^\d+$/.test(String(lastReadMsgId ?? ""))) return null;
+    return BigInt(msgId) <= BigInt(lastReadMsgId);
+}
+
+/**
  * A stored change as a listener event: the JSON a consumer gets, and the line
  * a human reads.
  *

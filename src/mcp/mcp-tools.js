@@ -11,13 +11,14 @@
 
 import { z } from "zod";
 import { openFile } from "../utils/open-file.js";
-import { getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
+import { getMessages, getMessageById, getDisplayName, getThreadType, getConvState, getReadStates } from "../core/db.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
 import { reactionCliMsgId, recallCliMsgId } from "../core/cached-message.js";
 import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
+import { describeReadState, readOnZalo } from "../core/read-state.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
@@ -108,6 +109,38 @@ function cachedDisplayName(uid) {
         return getDisplayName(uid);
     } catch {
         return null; // no db in this process
+    }
+}
+
+/**
+ * This account's own uid, or "" when the session cannot say.
+ *
+ * @param {object} api - zca-js API instance
+ * @returns {string}
+ */
+function ownIdOf(api) {
+    try {
+        const id = api.getOwnId?.();
+        return id === undefined || id === null ? "" : String(id);
+    } catch {
+        return "";
+    }
+}
+
+/**
+ * Each conversation's read state on Zalo -- the account's own reading, on any
+ * device -- for the tools that list conversations. Empty when the cache
+ * cannot answer, so a listing never fails for want of it.
+ *
+ * @param {object} api - zca-js API instance
+ * @param {string[]} threadIds
+ * @returns {Map<string, object>} threadId -> an entry of db.js getReadStates
+ */
+function readStatesOf(api, threadIds) {
+    try {
+        return getReadStates(threadIds, ownIdOf(api));
+    } catch {
+        return new Map();
     }
 }
 
@@ -261,7 +294,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             title: "Get Zalo Messages",
             description:
                 "Get messages from Zalo threads (DMs and groups). Returns buffered messages this consumer has " +
-                "not marked read (see zalo_mark_read). Use 'since' cursor from previous response for incremental polling.",
+                "not marked read (see zalo_mark_read). Use 'since' cursor from previous response for incremental polling. " +
+                "Each message's `readOnZalo` says whether the account itself has already read it on Zalo -- the " +
+                "human, on the phone or Zalo Web -- and is null when the listener has not heard; zalo_mark_read " +
+                "does not change it.",
             inputSchema: z.object({
                 threadId: z.string().optional().describe("Thread ID to read from. Omit for all watched threads."),
                 since: z
@@ -286,6 +322,25 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         if (info) msg.threadName = info.name;
                     }
                 }
+                // Whether the human already read each one, from its
+                // conversation's read watermark (src/core/read-state.js).
+                const watermarks = new Map();
+                const watermarkOf = (id) => {
+                    if (!watermarks.has(id)) {
+                        let st = null;
+                        try {
+                            st = getConvState(id);
+                        } catch {
+                            /* no cache: unknown */
+                        }
+                        watermarks.set(id, st?.lastReadMsgId ?? null);
+                    }
+                    return watermarks.get(id);
+                };
+                result.messages = result.messages.map((msg) => ({
+                    ...msg,
+                    readOnZalo: readOnZalo(msg.id, watermarkOf(String(msg.threadId))),
+                }));
                 return ok(result);
             } catch (e) {
                 console.error("[mcp-tools] zalo_get_messages error:", e.message);
@@ -467,7 +522,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "List Zalo Threads",
             description:
-                "List all Zalo threads currently buffered with unread message counts. Useful for discovering active conversations.",
+                "List all Zalo threads currently buffered with unread message counts. Useful for discovering active " +
+                "conversations. `unread` is this consumer's own count; `readState` is how far the account itself " +
+                "has read the conversation on Zalo (the human, on any device), null when the listener has not heard.",
             inputSchema: z.object({
                 type: z
                     .enum(["group", "dm", "all"])
@@ -480,7 +537,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             try {
                 // Unread is per consumer: after what this consumer marked read.
                 const stats = buffer.getStats(buffer.readCursor(consumer));
-                // Enrich each stat entry with threadType and thread name
+                const reads = readStatesOf(
+                    api,
+                    stats.map((t) => String(t.threadId)),
+                );
+                // Enrich each stat entry with threadType, thread name and read state
                 const enriched = stats.map((t) => {
                     const threadType = buffer.getThreadType(t.threadId) ?? "unknown";
                     const cached = nameCache?.get(t.threadId);
@@ -489,6 +550,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         threadType,
                         name: cached?.name ?? null,
                         ...(cached?.memberCount !== undefined && { memberCount: cached.memberCount }),
+                        readState: describeReadState(reads.get(String(t.threadId))),
                     };
                 });
                 const filtered = type === "all" ? enriched : enriched.filter((t) => t.threadType === type);
@@ -957,7 +1019,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "List the conversations this account was most recently active in, newest first, from the local " +
                 "cache — what `conv recent` lists: thread id, type, name and last activity. Unlike " +
                 "zalo_list_threads it is not limited to what arrived since this server started. `limit` is per " +
-                "type, as `conv recent -n` is: with type 'all' that is up to `limit` DMs and `limit` groups.",
+                "type, as `conv recent -n` is: with type 'all' that is up to `limit` DMs and `limit` groups. " +
+                "`readState` is how far the account itself has read each conversation on Zalo (the human, on any " +
+                "device): the newest message read, how many cached messages from others came after it, and whether " +
+                "it is marked unread; null when the listener has not heard.",
             inputSchema: z.object({
                 type: z
                     .enum(["group", "dm", "all"])
@@ -968,7 +1033,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         },
         async ({ type, limit }) => {
             try {
-                const conversations = recentConversations(limit, type).map((t) => {
+                const threads = recentConversations(limit, type);
+                const reads = readStatesOf(
+                    api,
+                    threads.map((t) => String(t.threadId)),
+                );
+                const conversations = threads.map((t) => {
                     const isGroup = t.type === "group";
                     const ts = Number(t.lastUpdate) || null;
                     return {
@@ -978,6 +1048,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         name: t.name || nameCache?.get(String(t.threadId))?.name || null,
                         lastActivity: ts,
                         lastActivityAt: ts ? new Date(ts).toISOString() : null,
+                        readState: describeReadState(reads.get(String(t.threadId))),
                     };
                 });
                 return ok({

@@ -216,6 +216,7 @@ describe("zalo_list_conversations", () => {
             name: "Nhóm B",
             lastActivity: 1700000003000,
             lastActivityAt: new Date(1700000003000).toISOString(),
+            readState: null,
         });
         assert.equal(out.conversations[0].threadType, 0, "a DM is threadType 0, ready for zalo_send_message");
         assert.equal(out.total, 4);

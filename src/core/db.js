@@ -1511,6 +1511,48 @@ export function recordReadWatermark({ threadId, msgId, ts }) {
     })();
 }
 
+/**
+ * Where the account stands on reading each conversation: its read watermark,
+ * its manual unread mark, and how many messages from others the cache holds
+ * after the watermark.
+ *
+ * `unreadAfter` counts cached messages only -- ids after the watermark that
+ * someone other than this account sent, not recalled or deleted -- so it is a
+ * floor, and null when no watermark is known yet ("never told", not "all
+ * read"). Own messages are told apart as everywhere else: zca-js rewrites an
+ * own message's raw sender "0" to this account's uid before it is stored.
+ *
+ * @param {string[]} threadIds
+ * @param {string} ownId
+ * @returns {Map<string, {lastReadMsgId: string|null, lastReadTs: number|null,
+ *   unreadMarked: boolean, unreadAfter: number|null}>} one entry per thread with any state
+ */
+export function getReadStates(threadIds, ownId) {
+    if (!db) throw new Error("Database not initialized");
+    const state = db.prepare(
+        "SELECT threadId, lastReadMsgId, lastReadTs, unreadMarked FROM conv_state WHERE threadId = ?",
+    );
+    const after = db.prepare(
+        `SELECT COUNT(*) AS n FROM messages
+     WHERE threadId = ? AND msgId NOT GLOB '*[^0-9]*' AND msgId != ''
+       AND CAST(msgId AS INTEGER) > CAST(? AS INTEGER)
+       AND COALESCE(senderId, '') != ? AND COALESCE(type, '') != 'deleted'`,
+    );
+    const out = new Map();
+    for (const threadId of threadIds) {
+        const row = state.get(String(threadId));
+        if (!row) continue;
+        const known = /^\d+$/.test(row.lastReadMsgId ?? "");
+        out.set(String(threadId), {
+            lastReadMsgId: known ? row.lastReadMsgId : null,
+            lastReadTs: known ? row.lastReadTs : null,
+            unreadMarked: Boolean(row.unreadMarked),
+            unreadAfter: known ? after.get(String(threadId), row.lastReadMsgId, String(ownId ?? "")).n : null,
+        });
+    }
+    return out;
+}
+
 export function upsertContact(contact) {
     if (!db) throw new Error("Database not initialized");
 

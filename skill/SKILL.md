@@ -231,9 +231,9 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
-| `zalo_get_messages` | Buffered live messages, cursor-based incremental reads | `threadId?`, `since` (default 0), `limit` (default 20, max 100) |
+| `zalo_get_messages` | Buffered live messages, cursor-based incremental reads; each says whether the human already read it on Zalo (`readOnZalo`) | `threadId?`, `since` (default 0), `limit` (default 20, max 100) |
 | `zalo_send_message` | Send a text message to a DM or group; `@[uid]` mentions, quote-replies, Important/Urgent, and `threadId: "me"` for My Documents | `threadId`, `text`, `threadType?` (cached type when omitted), `quoteMsgId?`, `urgency?` (`normal`/`important`/`urgent`) |
-| `zalo_list_threads` | Buffered threads with unread counts and names | `type` (`dm`/`group`/`all`) |
+| `zalo_list_threads` | Buffered threads with unread counts, names and the account's own read state on Zalo (`readState`) | `type` (`dm`/`group`/`all`) |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit` (default 10, max 50) |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global, not per-thread**; deletes nothing, so bots sharing a server keep their own cursors | `cursor`, `consumer` |
 | `zalo_get_history` | Older messages (~2 weeks) fetched from the Zalo server, paginated | `threadId`, `threadType`, `limit` (default 50, max 200), `lastMsgId?` |
@@ -241,7 +241,7 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 | `zalo_react` | React to a message, as `msg react` — refused, nothing sent, when the cliMsgId is neither passed nor cached | `msgId`, `threadId`, `reaction`, `threadType?`, `cliMsgId?` |
 | `zalo_undo` | Recall one of your own messages for everyone, as `msg undo`; same cliMsgId rule | `msgId`, `threadId`, `threadType?`, `cliMsgId?` |
 | `zalo_get_group_members` | A group's members — uid and display name — as `group members` | `groupId` |
-| `zalo_list_conversations` | Recent conversations from the local cache, newest first, as `conv recent` | `type` (`dm`/`group`/`all`), `limit` (per type, default 20) |
+| `zalo_list_conversations` | Recent conversations from the local cache, newest first, as `conv recent`, each with the account's own read state on Zalo (`readState`) | `type` (`dm`/`group`/`all`), `limit` (per type, default 20) |
 | `zalo_coverage` | Read-only: pending coverage gaps, resolved count, and the `sync --from <date>` run that restores them | — |
 
 **Coverage — what MCP exposes vs what needs the CLI:**

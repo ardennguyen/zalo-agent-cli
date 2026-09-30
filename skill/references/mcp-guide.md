@@ -126,13 +126,15 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 ```json
 {
   "messages": [
-    { "id": "msg123", "threadId": "uid456", "threadType": "dm", "senderId": "uid789", "senderName": "Phúc", "text": "Xin chào", "timestamp": 1710000000000, "type": "text", "threadName": "Phúc" }
+    { "id": "msg123", "threadId": "uid456", "threadType": "dm", "senderId": "uid789", "senderName": "Phúc", "text": "Xin chào", "timestamp": 1710000000000, "type": "text", "threadName": "Phúc", "readOnZalo": false }
   ],
   "cursor": 42,
   "hasMore": false
 }
 ```
 `cursor` trong kết quả là cursor của tin cuối cùng trả về — dùng lại cho lần gọi `since` tiếp theo, hoặc cho `zalo_mark_read`.
+
+`readOnZalo` cho biết chính tài khoản đã đọc tin này trên Zalo hay chưa — tức là người dùng đã xem nó trên điện thoại hoặc Zalo Web: `true` là đã đọc, `false` là chưa, `null` khi listener chưa nhận được báo cáo nào về hội thoại đó. Giá trị này khác với read cursor của consumer: `zalo_mark_read` không làm nó thay đổi. Đây là tín hiệu để bot biết người thật đã xem tin và nhường lại hội thoại cho họ.
 
 ---
 
@@ -159,7 +161,7 @@ Gửi tin nhắn văn bản đến một thread. Viết `@[uid]` trong nội dun
 ---
 
 ### `zalo_list_threads`
-Liệt kê các thread đang có tin nhắn trong buffer, kèm số tin chưa đọc (tính theo read cursor của consumer).
+Liệt kê các thread đang có tin nhắn trong buffer, kèm số tin chưa đọc (tính theo read cursor của consumer). Mỗi thread có thêm `readState`: chính tài khoản đã đọc hội thoại này đến đâu trên Zalo, trên bất kỳ thiết bị nào (xem `zalo_list_conversations`), hoặc `null` nếu chưa biết. `unread` vẫn là số đếm riêng của consumer.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -171,8 +173,8 @@ Liệt kê các thread đang có tin nhắn trong buffer, kèm số tin chưa đ
 ```json
 {
   "threads": [
-    { "threadId": "uid456", "unread": 3, "total": 5, "lastActivity": 1710000000000, "threadType": "dm", "name": "Phúc" },
-    { "threadId": "gid789", "unread": 0, "total": 12, "lastActivity": 1709999000000, "threadType": "group", "name": "Nhóm dự án", "memberCount": 8 }
+    { "threadId": "uid456", "unread": 3, "total": 5, "lastActivity": 1710000000000, "threadType": "dm", "name": "Phúc", "readState": null },
+    { "threadId": "gid789", "unread": 0, "total": 12, "lastActivity": 1709999000000, "threadType": "group", "name": "Nhóm dự án", "memberCount": 8, "readState": { "lastReadMsgId": "7000000000002", "lastReadAt": "2024-03-09T15:50:00.000Z", "unreadAfter": 0, "markedUnread": false } }
   ],
   "total": 2
 }
@@ -339,14 +341,23 @@ Liệt kê các hội thoại có hoạt động gần nhất, mới nhất trư
 ```json
 {
   "conversations": [
-    { "threadId": "gid789", "type": "group", "threadType": 1, "name": "Nhóm dự án", "lastActivity": 1710000000000, "lastActivityAt": "2024-03-09T16:00:00.000Z" },
-    { "threadId": "uid456", "type": "dm", "threadType": 0, "name": "Phúc", "lastActivity": 1709990000000, "lastActivityAt": "2024-03-09T13:13:20.000Z" }
+    { "threadId": "gid789", "type": "group", "threadType": 1, "name": "Nhóm dự án", "lastActivity": 1710000000000, "lastActivityAt": "2024-03-09T16:00:00.000Z", "readState": { "lastReadMsgId": "7000000000002", "lastReadAt": "2024-03-09T15:50:00.000Z", "unreadAfter": 2, "markedUnread": false } },
+    { "threadId": "uid456", "type": "dm", "threadType": 0, "name": "Phúc", "lastActivity": 1709990000000, "lastActivityAt": "2024-03-09T13:13:20.000Z", "readState": null }
   ],
   "total": 2,
   "source": "cache"
 }
 ```
 `threadType` dùng thẳng được cho `zalo_send_message`. Cache trống thì kết quả là danh sách rỗng kèm `note` — tool không hỏi Zalo.
+
+`readState` cho biết chính tài khoản đã đọc hội thoại đến đâu trên Zalo, trên mọi thiết bị (điện thoại, Zalo Web, `conv read`), theo báo cáo mới nhất mà listener (`mcp start` hoặc `listen`) nhận được từ server — cùng dữ liệu cột READ của `conv recent`:
+
+- `lastReadMsgId`: tin mới nhất đã đọc;
+- `lastReadAt`: thời điểm Zalo báo lần đọc đó;
+- `unreadAfter`: số tin của người khác đến sau tin đó. Chỉ đếm tin đã có trong cache, nên đây là giá trị tối thiểu;
+- `markedUnread`: hội thoại đang được đánh dấu "chưa đọc" bằng tay.
+
+`readState` là `null` khi listener chưa nhận được báo cáo nào về hội thoại đó — nghĩa là "chưa biết", không phải "đã đọc hết".
 
 ---
 

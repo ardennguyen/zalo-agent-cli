@@ -17,8 +17,8 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { upsertThread } from "../../src/core/db.js";
-import { seedAccount, runOffline, requestsTo } from "./support/offline-cli.js";
+import { insertMessage, recordReadWatermark, upsertConvState, upsertThread } from "../../src/core/db.js";
+import { seedAccount, runOffline, requestsTo, OWN_UID } from "./support/offline-cli.js";
 
 const DM_OLD = "300000000000000081";
 const DM_NEW = "300000000000000082";
@@ -46,13 +46,14 @@ before(() => {
 });
 
 /** One `conv recent --json` row, exactly as the command builds it. */
-function row(threadId, name, kind) {
+function row(threadId, name, kind, readState = null) {
     return {
         threadId,
         name,
         type: kind === "group" ? "Group" : "User",
         typeFlag: kind === "group" ? 1 : 0,
         lastActive: new Date(SEEN[threadId]).toLocaleString(),
+        readState,
     };
 }
 
@@ -87,6 +88,63 @@ describe("conv recent answers from the cache", () => {
     it("--friends-only returns DMs only", async () => {
         const r = await runOffline(["--json", "conv", "recent", "--friends-only"]);
         assert.deepEqual(jsonOf(r), [row(DM_NEW, "Anh Minh", "dm"), row(DM_OLD, "Chị Lan", "dm")]);
+    });
+});
+
+describe("conv recent shows how far the account has read each conversation on Zalo", () => {
+    // Seeded after the listing tests above ran, so their rows stay readState: null.
+    const OTHER = "600000000000000081";
+    const text = (msgId, threadId, senderId) =>
+        insertMessage({
+            msgId,
+            threadId,
+            senderId,
+            senderName: "S",
+            text: "t",
+            timestamp: 1,
+            type: "text",
+            raw_data: {},
+        });
+
+    before(() => {
+        // GROUP_NEW: read through ...002; two messages from others and one of ours after it.
+        for (const id of ["7000000000001", "7000000000002", "7000000000003", "7000000000004"]) {
+            text(id, GROUP_NEW, OTHER);
+        }
+        text("7000000000005", GROUP_NEW, OWN_UID);
+        recordReadWatermark({ threadId: GROUP_NEW, msgId: "7000000000002", ts: 1700000009000 });
+        // DM_NEW: read through its newest message, and marked unread by hand.
+        text("7000000000011", DM_NEW, OTHER);
+        recordReadWatermark({ threadId: DM_NEW, msgId: "7000000000011", ts: 1700000009500 });
+        upsertConvState({ threadId: DM_NEW, unreadMarked: true, unreadMarkedAt: 1700000009600 });
+    });
+
+    it("--json carries each conversation's read state, null where nothing is known", async () => {
+        const r = await runOffline(["--json", "conv", "recent", "-n", "1"]);
+        // Red if own messages count as unread (3), the watermark is dropped, or
+        // a conversation with no state gets an invented one.
+        assert.deepEqual(jsonOf(r), [
+            row(DM_NEW, "Anh Minh", "dm", {
+                lastReadMsgId: "7000000000011",
+                lastReadAt: new Date(1700000009500).toISOString(),
+                unreadAfter: 0,
+                markedUnread: true,
+            }),
+            row(GROUP_NEW, "Nhóm C", "group", {
+                lastReadMsgId: "7000000000002",
+                lastReadAt: new Date(1700000009000).toISOString(),
+                unreadAfter: 2,
+                markedUnread: false,
+            }),
+        ]);
+    });
+
+    it("the table has a READ column", async () => {
+        const r = await runOffline(["conv", "recent", "-n", "2"]);
+        assert.match(r.stdout, /THREAD_ID\s+TYPE\s+READ\s+NAME/, r.all);
+        assert.match(r.stdout, new RegExp(`${GROUP_NEW}\\s+Group\\s+2 unread\\s+Nhóm C`), r.all);
+        assert.match(r.stdout, new RegExp(`${DM_NEW}\\s+User\\s+marked unread\\s+Anh Minh`), r.all);
+        assert.match(r.stdout, new RegExp(`${GROUP_MID}\\s+Group\\s+-\\s+Nhóm B`), r.all);
     });
 });
 

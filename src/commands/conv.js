@@ -9,8 +9,9 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { initDb, getMessages, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
+import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
 import { recentConversations } from "../core/recent-conversations.js";
+import { describeReadState, readStateLabel } from "../core/read-state.js";
 import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
 import { markConversationRead, zaloPost } from "../core/receipts.js";
 
@@ -249,22 +250,30 @@ export function registerConvCommands(program, deps = {}) {
                 if (localThreads && localThreads.length > 0) {
                     if (!jsonMode) info(`Found ${localThreads.length} recent conversations in local cache.`);
 
+                    // How far the account has read each one on Zalo, on any
+                    // device, as the listener last heard (src/core/read-state.js).
+                    const reads = getReadStates(
+                        localThreads.map((t) => String(t.threadId)),
+                        activeAcc.ownId,
+                    );
                     const conversations = localThreads.map((t) => ({
                         threadId: t.threadId,
                         name: t.name,
                         type: t.type === "group" ? "Group" : "User",
                         typeFlag: t.type === "group" ? 1 : 0,
                         lastActive: t.lastUpdate ? new Date(t.lastUpdate).toLocaleString() : "?",
+                        readState: describeReadState(reads.get(String(t.threadId))),
                     }));
 
                     output(conversations, jsonMode, () => {
                         info(`${conversations.length} conversation(s) (Local Cache):`);
                         console.log();
-                        console.log("  THREAD_ID               TYPE    NAME");
-                        console.log("  " + "-".repeat(60));
+                        console.log(`  ${"THREAD_ID".padEnd(22)}  ${"TYPE".padEnd(12)}  ${"READ".padEnd(18)}  NAME`);
+                        console.log("  " + "-".repeat(80));
                         for (const c of conversations) {
                             const id = c.threadId.padEnd(22);
-                            console.log(`  ${id}  ${c.type.padEnd(12)}  ${c.name}`);
+                            const read = readStateLabel(c.readState).padEnd(18);
+                            console.log(`  ${id}  ${c.type.padEnd(12)}  ${read}  ${c.name}`);
                         }
                         console.log();
                         info("Use thread_id with messaging commands:");

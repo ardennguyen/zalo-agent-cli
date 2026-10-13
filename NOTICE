@@ -1,0 +1,127 @@
+zalo-agent-cli
+Copyright (c) 2026 Arden Nguyen Duc Huy
+https://github.com/ardennguyen/zalo-agent-cli
+
+Licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International License (CC BY-NC-SA 4.0). The full license text is in the
+LICENSE file and at https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+
+1. Summary (informational only -- the LICENSE text governs)
+-----------------------------------------------------------------------
+
+- Non-commercial use -- personal, academic, research, or any other use not
+  primarily intended for or directed towards commercial advantage or
+  monetary compensation -- is permitted free of charge.
+- Commercial use is not licensed. Examples include use in a commercial
+  product, to provide paid services, or in a company's business operations.
+  To request a separate commercial license, open an issue at:
+  https://github.com/ardennguyen/zalo-agent-cli/issues
+- If you share this project or any part of it -- whole files, code
+  excerpts, or modified versions, including inside another project -- you
+  must give credit (for example as shown in section 2), say whether you made
+  changes, and link to the license.
+- If you share a modified version, or other work adapted from this project,
+  you must release it under CC BY-NC-SA 4.0 (or a later version of it, or a
+  compatible license listed by Creative Commons).
+
+
+2. How to credit this project
+-----------------------------------------------------------------------
+
+When you share any part of this project -- copied as-is or adapted,
+including inside another project -- include a notice like the following
+(for example in your project's README or NOTICE, or in the header of the
+files that contain the copied code):
+
+    Based on zalo-agent-cli, Copyright (c) 2026 Arden Nguyen Duc Huy
+    (https://github.com/ardennguyen/zalo-agent-cli),
+    licensed under CC BY-NC-SA 4.0
+    (https://creativecommons.org/licenses/by-nc-sa/4.0/).
+    Modified: <yes, with a short description | no>.
+
+Also keep the third-party notices in section 5 for any material that comes
+from those projects.
+
+
+3. Contributing improvements back
+-----------------------------------------------------------------------
+
+The author asks that modifications and improvements be contributed back to
+this project, so that everyone benefits from them: open a pull request at
+https://github.com/ardennguyen/zalo-agent-cli, or open an issue
+that links to your modified source. This is a request, as permitted by the
+Creative Commons license; it is not an additional license condition. The
+license itself requires that shared modifications stay under CC BY-NC-SA
+4.0 (section 1 above).
+
+
+4. Material not covered by CC BY-NC-SA 4.0
+-----------------------------------------------------------------------
+
+- This project is derived from zalo-agent-cli by PhucMPham, released under
+  the MIT License. The MIT License continues to apply to the portions that
+  originate from that project.
+- The package ships a patched copy of zca-js, released under the MIT License
+  (its own LICENSE file is inside the package, in node_modules/zca-js). The
+  patches in patches/ are applied to it; the result stays under the MIT
+  License, not CC BY-NC-SA 4.0. The other bundled dependencies likewise carry
+  their own license files in node_modules/.
+- Versions of this project published before this license change
+  (zalo-agent-cli 2.0.0 and earlier) were released under the MIT License. Copies
+  obtained under those terms remain MIT-licensed; this license applies to
+  the current version onward.
+
+
+5. Third-party notices
+-----------------------------------------------------------------------
+
+zalo-agent-cli (upstream)
+https://github.com/PhucMPham/zalo-agent-cli
+
+    MIT License
+
+    Copyright (c) 2026
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+zca-js
+https://github.com/RFS-ADRENO/zca-js
+
+    MIT License
+
+    Copyright (c) 2024 - 2025 RFS-ADRENO, truong9c2208, JustKemForFun
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.

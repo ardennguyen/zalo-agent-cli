@@ -7,6 +7,8 @@
 Công cụ CLI tự động hóa Zalo — đa tài khoản, proxy, chuyển khoản ngân hàng, thanh toán QR, Official Account API v3.0, và MCP server cho AI agent.
 Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+
 **[Tiếng Việt](#bắt-đầu-nhanh)** | **[English](#english)**
 
 > [!WARNING]
@@ -159,6 +161,16 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 | [AGENTS.md](AGENTS.md) | Quy tắc dự án cho AI coding agent |
 | [Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki) | Tài liệu công khai, song ngữ EN + VN |
 
+## Giấy phép
+
+zalo-agent-cli © 2026 Arden Nguyen Duc Huy được cấp phép theo [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). Xem [LICENSE](LICENSE) và [NOTICE](NOTICE). Điều khoản đầy đủ và cảnh báo rủi ro nằm trong [DISCLAIMER.md](DISCLAIMER.md).
+
+- **Miễn phí cho mục đích phi thương mại**: cá nhân, học thuật, nghiên cứu. **Không cấp phép cho mục đích thương mại** — ví dụ dùng trong sản phẩm thương mại, để cung cấp dịch vụ có thu phí, hoặc trong hoạt động kinh doanh của một công ty. Muốn xin giấy phép thương mại, hãy [mở một issue](https://github.com/ardennguyen/zalo-agent-cli/issues).
+- **Ghi công**: khi chia sẻ dự án này hoặc một phần của nó (nguyên bản hay đã sửa đổi, kể cả bên trong dự án khác), hãy ghi công theo mẫu trong [NOTICE](NOTICE), nêu rõ bạn có sửa đổi hay không, và dẫn link giấy phép.
+- **Chia sẻ tương tự (ShareAlike)**: bản sửa đổi được chia sẻ phải dùng CC BY-NC-SA 4.0 (hoặc phiên bản mới hơn, hoặc giấy phép tương thích do Creative Commons liệt kê).
+- Các phần dẫn xuất từ phần mềm MIT — [zalo-agent-cli của PhucMPham](https://github.com/PhucMPham/zalo-agent-cli) và bản vá của [zca-js](https://github.com/RFS-ADRENO/zca-js) được đóng gói kèm — vẫn thuộc giấy phép MIT; xem [NOTICE](NOTICE).
+- Các phiên bản phát hành trước thay đổi này (2.0.0 trở về trước) được phát hành theo giấy phép MIT và giữ nguyên các điều khoản đó.
+
 ---
 
 ## English
@@ -279,4 +291,10 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 
 ## License
 
-[MIT](LICENSE) · See [DISCLAIMER.md](DISCLAIMER.md) for full terms.
+zalo-agent-cli © 2026 Arden Nguyen Duc Huy is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). See [LICENSE](LICENSE) and [NOTICE](NOTICE). See [DISCLAIMER.md](DISCLAIMER.md) for full terms and risk warnings.
+
+- **Free for non-commercial use** (personal, academic, research). **Commercial use is not licensed** — for example in a commercial product, to provide paid services, or in a company's business operations. To request a commercial license, [open an issue](https://github.com/ardennguyen/zalo-agent-cli/issues).
+- **Credit required:** if you share this project or any part of it, as-is or modified (including inside another project), credit it as shown in [NOTICE](NOTICE), say whether you made changes, and link to the license.
+- **ShareAlike:** shared modifications must be released under CC BY-NC-SA 4.0 (or a later version, or a compatible license listed by Creative Commons).
+- Portions derived from MIT-licensed software — [zalo-agent-cli by PhucMPham](https://github.com/PhucMPham/zalo-agent-cli) and the patched [zca-js](https://github.com/RFS-ADRENO/zca-js) shipped inside the package — remain under the MIT License; see [NOTICE](NOTICE).
+- Versions published before this change (2.0.0 and earlier) were released under the MIT License and keep those terms.

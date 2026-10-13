@@ -1,6 +1,6 @@
 {
     "name": "@ardennguyen/zalo-agent-cli",
-    "version": "2.0.0",
+    "version": "2.0.1",
     "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
     "type": "module",
     "bin": {
@@ -10,6 +10,7 @@
     "files": [
         "DISCLAIMER.md",
         "LICENSE",
+        "NOTICE",
         "patches/",
         "src/"
     ],
@@ -45,7 +46,7 @@
         "url": "https://github.com/ardennguyen/zalo-agent-cli"
     },
     "author": "ardennguyen",
-    "license": "MIT",
+    "license": "CC-BY-NC-SA-4.0",
     "publishConfig": {
         "access": "public"
     },
@@ -76,6 +77,6 @@
     },
     "allowScripts": {
         "better-sqlite3@13.0.3": true,
-        "@ardennguyen/zalo-agent-cli@2.0.0": true
+        "@ardennguyen/zalo-agent-cli@2.0.1": true
     }
 }

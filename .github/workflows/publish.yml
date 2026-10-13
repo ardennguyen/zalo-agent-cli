@@ -19,11 +19,17 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # npm trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.
+      # The tests below still run on Node 22, the engines floor.
+      - run: npm install -g npm@^11.5.1
+
       - run: npm ci
       - run: npm run lint
       - run: npm test
 
+      # No token: this workflow is the package's trusted publisher on npmjs.com
+      # (repository ardennguyen/zalo-agent-cli, workflow publish.yml, "Allow npm
+      # publish"). npm exchanges the job's OIDC identity (id-token: write above)
+      # for a short-lived publish credential, so there is no secret to expire.
       - name: Publish @ardennguyen/zalo-agent-cli
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

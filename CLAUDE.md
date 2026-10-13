@@ -178,7 +178,7 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 - All work is committed to `main` first.
 - Release branches (`v1.x.x`) and tags are always **reset to `main`'s HEAD** — never cherry-pick. Tag, branch and `main` end at the same commit; the reset-and-retag sequence is in [`docs/agent-notes.md`](docs/agent-notes.md).
-- A GitHub Release from the tag triggers `.github/workflows/publish.yml`, which publishes with `--provenance`. `NPM_TOKEN` is a repository secret.
+- A GitHub Release from the tag triggers `.github/workflows/publish.yml`, which publishes with `--provenance` via npm trusted publishing (no token).
 - **Never run `npm publish` manually.**
 
 ---

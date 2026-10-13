@@ -162,8 +162,16 @@ git checkout main
 ```
 
 A GitHub Release created from the tag triggers `.github/workflows/publish.yml`, which publishes
-`@ardennguyen/zalo-agent-cli` with `--provenance`. `NPM_TOKEN` is a repository secret. Never run
-`npm publish` manually.
+`@ardennguyen/zalo-agent-cli` with `--provenance`. Never run `npm publish` manually.
+
+It authenticates with **npm trusted publishing**, not a token: on npmjs.com the package lists this
+repository and `publish.yml` as its trusted publisher (with "Allow npm publish"), and the job's OIDC
+identity (`id-token: write`) is exchanged for a short-lived credential. That needs npm >= 11.5.1,
+which Node 22 does not ship, so the workflow upgrades npm before anything else. The repository's old
+`NPM_TOKEN` secret is unused. It replaced one that silently expired (set 2026-07-05; the publish of
+2.0.0 on 2026-10-13 got a bare `404 Not Found - PUT`, which is how npm reports a rejected
+credential). If a publish ever fails the same way now, check the trusted-publisher entry on
+npmjs.com (repository, workflow filename, environment left empty) before suspecting the code.
 
 ---
 
@@ -252,7 +260,7 @@ rediscovering:
 
 - `npm pack` and `npm publish` both run `prepare` themselves, so `patch-package` re-applies
   immediately before anything is packed.
-- `.github/workflows/publish.yml` is `npm ci` then `npm publish --access public --provenance` —
+- `.github/workflows/publish.yml` is `npm ci`, lint, test, then `npm publish --access public --provenance` —
   no `--ignore-scripts` anywhere — and `npm config get ignore-scripts` is false on this machine.
 
 So only an explicit scripts-disabled pack could ship a stale copy. If you ever add

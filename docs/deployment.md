@@ -340,7 +340,7 @@ sudo npm install -g @ardennguyen/zalo-agent-cli@<version>
 command -v zalo-agent                                     # the path ExecStart= needs
 ```
 
-Until 2.0.0 is on npm, running it means a checkout of this repository or a `github:` install, which runs `prepare` (patch-package) on the host. The wrapper adds an extra process and a flag surface that silently drops `--host` and `--config`, and it logs your bearer token (§5.4).
+Until 2.0.0 is on npm, running it means a checkout of this repository or a `github:` install, which runs `prepare` (patch-package) on the host. The wrapper adds an extra process and a flag surface that silently drops `--host` and `--config`, and, in every wrapper release published so far, it logs your bearer token (§5.4); the wrapper's `main` masks it from `c73f7ce` on, which no npm release contains yet.
 
 Login is interactive and must be done once, **as the service user, from an unelevated shell**:
 
@@ -473,7 +473,7 @@ ZALO_MCP_TOKEN=<64 hex characters, from: openssl rand -hex 32>
 | `[mcp] message not stored: <reason>` | A live message was not written to the cache | Investigate. This is data loss, and no gap is filed for it (§1.5) |
 
 > [!CAUTION]
-> **Never log the bearer token, the channel token, proxy passwords, cookies or IMEI.** `maskProxy()` exists for the proxy case. The `zalo-mcp` wrapper prints its child's full command line, `--auth <token>` included, to stderr on every start (§5.4), so a wrapper install puts the token in whatever collects its stderr. If you build log shipping, remember what the journal holds: thread and message ids from `mcp start`, and the full text of every message from `listen`, which prints each event it reports. Treat the log pipeline with the same confidentiality as the database (§5.2).
+> **Never log the bearer token, the channel token, proxy passwords, cookies or IMEI.** `maskProxy()` exists for the proxy case. Every published `zalo-mcp` wrapper release prints its child's full command line, `--auth <token>` included, to stderr on every start (§5.4), so such an install puts the token in whatever collects its stderr. The wrapper's `main` logs `--auth ***` instead (`c73f7ce`); until a release containing it is on npm, treat the token as logged. If you build log shipping, remember what the journal holds: thread and message ids from `mcp start`, and the full text of every message from `listen`, which prints each event it reports. Treat the log pipeline with the same confidentiality as the database (§5.2).
 
 ### 4.4 Scheduled maintenance
 
@@ -661,7 +661,7 @@ Even with a token, prefer **not** to bind publicly. Bind loopback and put remote
 > [!WARNING]
 > **`zalo-mcp` forwards only `--http` and `--auth`.** Its `mcp-server.js` scans `process.argv` for those two and builds `[cliEntryPoint, 'mcp', 'start', ...]` from them alone. So `--host`, `--config`, `--no-delivered-receipts` and `--no-self-heal` are **dropped silently**: `node mcp-server.js --http 3847 --host 0.0.0.0` stays on `127.0.0.1`, reads the default config, and runs receipts and self-heal whenever its engine has them. The flag is not rejected; it is ignored. The *tool surface* is the pinned engine's; the *flag surface* is not this CLI's (§4.1 for which engine that is).
 >
-> The wrapper also prints `Starting Zalo MCP Server via: node <args>` to stderr on every start, and with `--auth` those args include the bearer token.
+> The wrapper also prints `Starting Zalo MCP Server via: node <args>` to stderr on every start, and with `--auth` those args include the bearer token in every release published so far. The wrapper's `main` masks it (`--auth ***`, commit `c73f7ce`); a release containing that commit is not on npm yet, so rotate the token if a journal that held it is shared.
 >
 > To bind a non-loopback address, use a custom config, or keep the token out of a log, call the CLI directly.
 

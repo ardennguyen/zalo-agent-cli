@@ -1,9 +1,9 @@
 # Production deployment — `zalo-agent-cli` + `zalo-mcp` as a smart autobot
 
-**Status:** re-verified 2026-09-30 against `zalo-agent-cli` `2.0.0` (branch `v2.0-dev` at `9e47020`), the `zalo-mcp` wrapper's `main` branch (`1.0.16`), and the npm registry on the same day. First written 2026-09-29.
+**Status:** re-verified 2026-09-30 against the code that became `zalo-agent-cli` `2.0.0`, and updated 2026-10-13 for its publication: `2.0.0` is on npm, and the `zalo-mcp` wrapper's `1.0.16` depends on it. First written 2026-09-29.
 **Audience:** whoever runs this on a server and gets paged when it stops.
 
-Every architectural claim below is traced to a file in `src/`, or, for the command surface, to [`skill/references/command-reference.md`](../skill/references/command-reference.md), which wins whenever two docs disagree. Line numbers refer to `9e47020` and will drift; the function and handler names next to them will not. Numbers come from `package.json`, the lockfile, the code, the npm registry, or one account directory measured once (labeled where it is used). The [Appendix](#appendix--re-measure-everything-yourself) has the commands to measure your own. Where a sentence is an assessment rather than something the code shows (the sizing tables, and all of §6), it says so. On this codebase the general answer about "how messaging bots usually work" is often wrong, so this document avoids it.
+Every architectural claim below is traced to a file in `src/`, or, for the command surface, to [`skill/references/command-reference.md`](../skill/references/command-reference.md), which wins whenever two docs disagree. Line numbers refer to `9e47020` (a few commits before the `2.0.0` tag) and will drift; the function and handler names next to them will not. Numbers come from `package.json`, the lockfile, the code, the npm registry, or one account directory measured once (labeled where it is used). The [Appendix](#appendix--re-measure-everything-yourself) has the commands to measure your own. Where a sentence is an assessment rather than something the code shows (the sizing tables, and all of §6), it says so. On this codebase the general answer about "how messaging bots usually work" is often wrong, so this document avoids it.
 
 Two conventions used throughout:
 
@@ -23,7 +23,7 @@ Two conventions used throughout:
 
 **What several bots get today.** They can share one server safely for reading as well as sending: `zalo_mark_read` moves only the calling consumer's cursor and deletes nothing. What does not exist: push delivery of inbound events (bots poll), any per-bot identity or scope (one bearer token, self-declared consumer names, one thread filter per process), and any limit on outbound sends. See §1.4.
 
-**The wrapper does not run this code.** A `zalo-mcp` install runs whichever engine version npm serves it. As of 2026-09-30 npm has exactly one version of the engine, `1.0.7`, so none of the 2.0.0 behavior described here reaches a wrapper install. For a server, install the engine directly (§4.1).
+**The wrapper runs this code only at the version it pins.** A `zalo-mcp` install runs the engine version the wrapper's `package.json` names; `1.0.16` pins `2.0.0` (published 2026-10-13), and its `update` command installs `@ardennguyen/zalo-agent-cli@latest`. An older wrapper release pins an older engine and has none of the 2.0.0 behavior described here (§4.1). For a server, installing the engine directly stays the better vehicle.
 
 **LLM backend.** An assessment, not a measurement: Claude via the API, in an organization the company owns, for the customer-facing Vietnamese path. See §6 for why, and what to use instead per workload.
 
@@ -316,16 +316,16 @@ Every live message is written synchronously on the event loop (`storeLiveMessage
 
 ### 4.1 Install
 
-[`INSTALLATION.md`](../INSTALLATION.md) covers the wrapper's install commands. For a production server, the wrapper is the wrong vehicle today:
+[`INSTALLATION.md`](../INSTALLATION.md) covers the wrapper's install commands. For a production server the wrapper is still the second-best vehicle:
 
 > [!WARNING]
-> **A `zalo-mcp` install runs whichever engine npm gives it, never this repository's branch.** Checked 2026-09-30:
+> **A `zalo-mcp` install runs a published engine, never a branch of this repository.** Checked 2026-10-13:
 >
-> - The wrapper's GitHub `main` (`1.0.16`), which the one-line installer downloads, pins `@ardennguyen/zalo-agent-cli` to `1.0.8`. npm has no such version (`npm view @ardennguyen/zalo-agent-cli@1.0.8` answers 404), so the `npm install` that `init` runs cannot resolve that pin.
-> - The wrapper's latest npm release (`1.0.15`) pins `1.0.7`. Its `update` command installs `@ardennguyen/zalo-mcp@latest` from npm, copies that package's `package.json` and scripts over yours, then runs `npm install @ardennguyen/zalo-agent-cli@latest`, also from npm (`run_update` in `zalo-mcp.sh`).
-> - npm has exactly one engine version: `1.0.7`.
+> - The wrapper's `1.0.16` (GitHub `main` and npm) pins `@ardennguyen/zalo-agent-cli` to `2.0.0`. Releases before it pin `1.0.7` or older; an unreleased `1.0.16` once pinned `1.0.8`, which npm never had.
+> - Its `update` command installs `@ardennguyen/zalo-mcp@latest` from npm, copies that package's `package.json` and scripts over yours, then runs `npm install @ardennguyen/zalo-agent-cli@latest`, also from npm (`run_update` in `zalo-mcp.sh`).
+> - npm's `latest` for the engine is `2.0.0`.
 >
-> So none of what this guide describes for 2.0.0 (the 12 tools, per-consumer cursors, self-heal, `zalo_coverage`) reaches a wrapper install until 2.0.0 is published and the wrapper's pin moves to it. Check what an existing install serves, and what npm has:
+> The wrapper forwards only `--http` and `--auth`, so none of the engine flags this guide uses beyond those (`--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`) reach it. Check what an existing install serves, and what npm has:
 > ```bash
 > node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
 > npm view @ardennguyen/zalo-agent-cli versions
@@ -340,7 +340,7 @@ sudo npm install -g @ardennguyen/zalo-agent-cli@<version>
 command -v zalo-agent                                     # the path ExecStart= needs
 ```
 
-Until 2.0.0 is on npm, running it means a checkout of this repository or a `github:` install, which runs `prepare` (patch-package) on the host. The wrapper adds an extra process and a flag surface that silently drops `--host` and `--config`, and, in every wrapper release published so far, it logs your bearer token (§5.4); the wrapper's `main` masks it from `c73f7ce` on, which no npm release contains yet.
+The wrapper adds an extra process and a flag surface that silently drops `--host` and `--config`. Through `1.0.15` it also logged your bearer token (§5.4); `1.0.16` masks it as `--auth ***`.
 
 Login is interactive and must be done once, **as the service user, from an unelevated shell**:
 
@@ -473,7 +473,7 @@ ZALO_MCP_TOKEN=<64 hex characters, from: openssl rand -hex 32>
 | `[mcp] message not stored: <reason>` | A live message was not written to the cache | Investigate. This is data loss, and no gap is filed for it (§1.5) |
 
 > [!CAUTION]
-> **Never log the bearer token, the channel token, proxy passwords, cookies or IMEI.** `maskProxy()` exists for the proxy case. Every published `zalo-mcp` wrapper release prints its child's full command line, `--auth <token>` included, to stderr on every start (§5.4), so such an install puts the token in whatever collects its stderr. The wrapper's `main` logs `--auth ***` instead (`c73f7ce`); until a release containing it is on npm, treat the token as logged. If you build log shipping, remember what the journal holds: thread and message ids from `mcp start`, and the full text of every message from `listen`, which prints each event it reports. Treat the log pipeline with the same confidentiality as the database (§5.2).
+> **Never log the bearer token, the channel token, proxy passwords, cookies or IMEI.** `maskProxy()` exists for the proxy case. `zalo-mcp` wrapper releases up to `1.0.15` print their child's full command line, `--auth <token>` included, to stderr on every start (§5.4), so such an install puts the token in whatever collects its stderr. `1.0.16` logs `--auth ***` instead; treat a token that an older wrapper started with as logged. If you build log shipping, remember what the journal holds: thread and message ids from `mcp start`, and the full text of every message from `listen`, which prints each event it reports. Treat the log pipeline with the same confidentiality as the database (§5.2).
 
 ### 4.4 Scheduled maintenance
 
@@ -661,7 +661,7 @@ Even with a token, prefer **not** to bind publicly. Bind loopback and put remote
 > [!WARNING]
 > **`zalo-mcp` forwards only `--http` and `--auth`.** Its `mcp-server.js` scans `process.argv` for those two and builds `[cliEntryPoint, 'mcp', 'start', ...]` from them alone. So `--host`, `--config`, `--no-delivered-receipts` and `--no-self-heal` are **dropped silently**: `node mcp-server.js --http 3847 --host 0.0.0.0` stays on `127.0.0.1`, reads the default config, and runs receipts and self-heal whenever its engine has them. The flag is not rejected; it is ignored. The *tool surface* is the pinned engine's; the *flag surface* is not this CLI's (§4.1 for which engine that is).
 >
-> The wrapper also prints `Starting Zalo MCP Server via: node <args>` to stderr on every start, and with `--auth` those args include the bearer token in every release published so far. The wrapper's `main` masks it (`--auth ***`, commit `c73f7ce`); a release containing that commit is not on npm yet, so rotate the token if a journal that held it is shared.
+> Wrapper releases up to `1.0.15` also printed `Starting Zalo MCP Server via: node <args>` to stderr on every start, and with `--auth` those args included the bearer token. `1.0.16` prints `--auth ***` instead. Rotate the token if a journal from an older wrapper that held it is shared.
 >
 > To bind a non-loopback address, use a custom config, or keep the token out of a log, call the CLI directly.
 

@@ -511,9 +511,20 @@ describe("createDeliveredReceipts — the listener's automatic receipts", () => 
                     ? new Promise((_, reject) => rec.signal?.addEventListener("abort", () => reject(rec.signal.reason)))
                     : { status: 0 },
         });
-        listener.emit("message", groupEcho());
-        listener.emit("message", dmIncoming());
-        await receipts.flush();
+        // The module's own timers are unref'd on purpose: a receipt must never keep
+        // a daemon alive. Awaiting one here, with nothing else running, lets the
+        // event loop drain first on Linux, where node:test then cancels the test
+        // ("Promise resolution is still pending but the event loop has already
+        // resolved") -- it passed on Windows and failed Linux CI. A ref'd timer
+        // held for the length of the test stands in for the daemon's socket.
+        const keepAlive = setInterval(() => {}, 25);
+        try {
+            listener.emit("message", groupEcho());
+            listener.emit("message", dmIncoming());
+            await receipts.flush();
+        } finally {
+            clearInterval(keepAlive);
+        }
         assert.deepEqual(
             sent.map((r) => r.path),
             ["/api/group/deliveredv2", "/api/message/deliveredv2"],

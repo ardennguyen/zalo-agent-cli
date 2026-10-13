@@ -137,6 +137,53 @@ missing or empty. Planting one sample per category and confirming a non-zero
 exit is what separates those. `.agents/check-wiki-leaks.sh` exits 2 rather than
 0 when the terms file is absent for the same reason.
 
+### The copyright holder's name is the one intentional leak-check exception (2026-10-13)
+
+The 2.0.1 relicense put the author's name in `LICENSE`, `NOTICE` and the README
+license line. That string had been on the confidential-terms denylist since the
+2026-09-30 scrub, which treated it as identity data from chat fixtures. Two
+different things share one string: a name inside test data is a leak; a
+copyright holder named on the licensor's own license is the point of a license.
+
+The maintainer confirmed it is intentional. So the entry was removed from the
+gitignored `.agents/confidential-terms.txt` (one exact line, matched by
+whole-line equality rather than substring), and AGENTS.md section 10 now states
+the exception with its date instead of claiming "0 on every remote ref".
+
+The removal was verified, not assumed. A page carrying the README license line
+exits 0. A planted company term, a planted 19-digit id, and each of the six
+remaining personal-name terms still exit 1. The point of that last check is that
+editing a denylist can silently weaken it; it is cheap to prove it did not.
+
+Any other occurrence of that name outside those three files is still worth a
+second look: the exception is for the license notice, not a general permission.
+
+### Why the wiki check flags 12 digits and the test flags 15
+
+They do different jobs, so they are not meant to be equal.
+
+`tests/unit/no-real-ids.test.js` runs over code, tests and fixtures, where fake
+ids must be allowed (it has a convention for them) and where 13-digit epoch
+millisecond values are normal. Real Zalo ids are 18 or 19 digits, so a 15-digit
+floor misses nothing real and keeps the false-positive rate near zero.
+
+`.agents/check-wiki-leaks.sh` runs over prose. It has no allowlist and no fake
+convention, and wiki pages should contain no long digit run at all, so the
+stricter 12-digit floor costs nothing: the wiki currently has zero hits. If a
+wiki page ever needs an epoch-millisecond example the check will flag it, which
+is the right nudge toward a placeholder.
+
+Do not "align" them by lowering the test (its convention depends on the floor)
+or raising the script (the wiki has no review gate and no test run in front of it).
+
+### What CI actually runs
+
+AGENTS.md section 6 says CI runs "exactly these". It runs `npm run lint`,
+`npm run format:check` and `npm test` (not the auto-fixing `npm run format`),
+then `node src/index.js --version` and `--help`, and a final step that imports
+every `tests/e2e/*.test.js` file with no live session. The sentence is left as
+written because the byte budget on AGENTS.md could not afford the exact wording.
+
 ### Four commands that had never once worked
 
 The crash-only-assertion rule in AGENTS.md section 12 comes from this: four

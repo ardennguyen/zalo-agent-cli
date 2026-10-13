@@ -232,9 +232,9 @@ It fails the push on any of:
 
 The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose**. This file is committed to a *public* repo, so the denylist cannot live in it: writing those names here is precisely the disclosure the check exists to prevent. If the list is missing the script exits 2 rather than passing — recreate it, never skip it.
 
-The same rule applies to anything else that gets published: npm READMEs, GitHub releases, issue comments. The wiki is just the surface with the shortest path from edit to public.
+The same rule covers everything published: npm READMEs, GitHub releases, issue comments. The wiki is just the shortest path from edit to public.
 
-**The check guards the working tree, which is why it runs *before* the push.** Once a term is pushed, deleting it in a later commit does not remove it — it stays in the public history and in every clone. Remediation at that point is history rewriting plus rotating whatever leaked, not a follow-up commit. Audit with `git log --all -S'<term>'`: **0 on every remote ref of both repos as of 2026-09-30.** A local feature branch cut before a scrub can still carry the scrubbed value in its tree — rebase it onto the scrubbed history with the value replaced before it is ever pushed, never push or merge it as-is (see [`docs/agent-notes.md`](docs/agent-notes.md)).
+**The check guards the working tree, so it runs *before* the push.** A pushed term stays in public history and every clone; deleting it later removes nothing — remediation is a history rewrite plus rotating whatever leaked. Audit with `git log --all -S'<term>'`: **0 on every remote ref of both repos as of 2026-09-30, apart from the copyright holder's name in LICENSE, NOTICE and README since 2.0.1** (intentional, and no longer a denylist term). A local branch cut before a scrub can still carry the scrubbed value — rebase it onto the scrubbed history with the value replaced before it is ever pushed, never push or merge it as-is (see [`docs/agent-notes.md`](docs/agent-notes.md)).
 
 > Keep the script honest: after changing it, plant one sample per category in a scratch directory, confirm it exits 1, and delete them. Why that matters: [`docs/agent-notes.md`](docs/agent-notes.md).
 

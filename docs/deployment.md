@@ -1,6 +1,7 @@
 # Production deployment — `zalo-agent-cli` + `zalo-mcp` as a smart autobot
 
 **Status:** re-verified 2026-09-30 against the code that became `zalo-agent-cli` `2.0.0`, and updated 2026-10-13 for its publication: `2.0.0` is on npm, and the `zalo-mcp` wrapper's `1.0.16` depends on it. First written 2026-09-29.
+**Licensing:** from 2.0.1 this software is licensed CC BY-NC-SA 4.0; use in a company's business operations needs a separate commercial license (see [NOTICE](../NOTICE)).
 **Audience:** whoever runs this on a server and gets paged when it stops.
 
 Every architectural claim below is traced to a file in `src/`, or, for the command surface, to [`skill/references/command-reference.md`](../skill/references/command-reference.md), which wins whenever two docs disagree. Line numbers refer to `9e47020` (a few commits before the `2.0.0` tag) and will drift; the function and handler names next to them will not. Numbers come from `package.json`, the lockfile, the code, the npm registry, or one account directory measured once (labeled where it is used). The [Appendix](#appendix--re-measure-everything-yourself) has the commands to measure your own. Where a sentence is an assessment rather than something the code shows (the sizing tables, and all of §6), it says so. On this codebase the general answer about "how messaging bots usually work" is often wrong, so this document avoids it.

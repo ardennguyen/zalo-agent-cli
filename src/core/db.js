@@ -446,10 +446,25 @@ export function runInTransaction(fn) {
 export function insertMessage(msg) {
     if (!db) throw new Error("Database not initialized");
 
+    // A replay may resolve an opaque sender from an older sync. Never let an
+    // unresolved replay replace a canonical live UID, or a different numeric
+    // sender overwrite an already established identity.
+    const canResolveSender = `(
+      COALESCE(messages.senderId, '') = '' OR
+      (messages.senderId GLOB '*[^0-9]*' AND
+       excluded.senderId <> '' AND excluded.senderId <> '0' AND
+       excluded.senderId NOT GLOB '*[^0-9]*')
+    )`;
     const stmt = db.prepare(`
     INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
     VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
     ON CONFLICT(msgId) DO UPDATE SET
+      senderId = CASE WHEN ${canResolveSender} THEN excluded.senderId ELSE messages.senderId END,
+      senderName = CASE
+        WHEN COALESCE(messages.senderName, '') = '' AND
+             (messages.senderId = excluded.senderId OR ${canResolveSender})
+        THEN COALESCE(NULLIF(excluded.senderName, ''), messages.senderName)
+        ELSE messages.senderName END,
       -- A removal is terminal. Once a row is a tombstone, a later write of the
       -- same msgId -- a re-sync, a history replay, a backfill -- must not bring
       -- the message back or replace the tombstone's record of HOW it was

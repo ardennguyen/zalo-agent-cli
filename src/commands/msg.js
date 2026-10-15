@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { resolve, join } from "path";
 import { InvalidArgumentError } from "commander";
 import { getApi, getOwnId } from "../core/zalo-client.js";
+import { withCurrentSenderNames } from "../core/current-user-names.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { getActive } from "../core/accounts.js";
@@ -1556,16 +1557,20 @@ export function registerMsgCommands(program) {
                         } catch {
                             /* showing history must not fail because media did */
                         }
-                        const messages = localMsgs.map((m) => ({
-                            msgId: m.msgId,
-                            threadId: m.threadId,
-                            senderId: m.senderId,
-                            senderName: m.senderName,
-                            text: m.text,
-                            timestamp: m.timestamp,
-                            type: m.type,
-                            localPath: m.localPath,
-                        }));
+                        const messages = await withCurrentSenderNames(
+                            api,
+                            localMsgs.map((m) => ({
+                                msgId: m.msgId,
+                                threadId: m.threadId,
+                                senderId: m.senderId,
+                                senderName: m.senderName,
+                                text: m.text,
+                                timestamp: m.timestamp,
+                                type: m.type,
+                                localPath: m.localPath,
+                            })),
+                            threadType === 0 ? [threadId] : [],
+                        );
 
                         output(
                             {
@@ -1580,7 +1585,7 @@ export function registerMsgCommands(program) {
                                 success(`${messages.length} message(s) from ${threadId} (Local Cache)`);
                                 for (const m of messages) {
                                     const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
-                                    const name = m.senderName || m.senderId || "?";
+                                    const name = m.senderDisplayName || m.senderId || "?";
                                     const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
                                     console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
                                 }
@@ -1707,11 +1712,15 @@ export function registerMsgCommands(program) {
                 const result = mergedArray.slice(0, limit);
 
                 // Format final output
-                const cleanResult = result.map((m) => {
-                    const r = { ...m };
-                    delete r.raw_data;
-                    return r;
-                });
+                const cleanResult = await withCurrentSenderNames(
+                    api,
+                    result.map((m) => {
+                        const r = { ...m };
+                        delete r.raw_data;
+                        return r;
+                    }),
+                    threadType === 0 ? [threadId] : [],
+                );
 
                 output(
                     {
@@ -1728,7 +1737,7 @@ export function registerMsgCommands(program) {
                         success(`${cleanResult.length} message(s) from ${threadId}`);
                         for (const m of cleanResult) {
                             const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
-                            const name = m.senderName || m.senderId || "?";
+                            const name = m.senderDisplayName || m.senderId || "?";
                             const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
                             console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
                         }

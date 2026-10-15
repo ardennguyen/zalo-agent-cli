@@ -1,0 +1,123 @@
+# Template only. Install as .github/workflows/prepare-release.yml on the
+# upstream default branch before using Actions > Prepare release PR.
+name: Prepare release PR
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (engine: 2.1.0; wrapper: 1.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Select trusted upstream branch and validate version
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use X.Y.Z'; exit 1; }
+          case "$GITHUB_REPOSITORY" in
+            ardennguyen/zalo-agent-cli) target='v2.0-dev'; package='@ardennguyen/zalo-agent-cli' ;;
+            ardennguyen/zalo-mcp) target='v1.1.0'; package='@ardennguyen/zalo-mcp' ;;
+            *) echo 'Run only in the trusted upstream repository'; exit 1 ;;
+          esac
+          echo "branch=$target" >> "$GITHUB_OUTPUT"
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@11.6.1
+
+      - name: Validate source package and published engine prerequisite
+        env:
+          EXPECTED_PACKAGE: ${{ steps.target.outputs.package }}
+        run: |
+          set -euo pipefail
+          node -e 'if(require("./package.json").name!==process.env.EXPECTED_PACKAGE) process.exit(1);'
+          npm view "$EXPECTED_PACKAGE" versions --json > "$RUNNER_TEMP/published-versions.json"
+          node -e 'const fs=require("fs"),v=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/published-versions.json","utf8")); if([].concat(v).includes(process.env.VERSION)) throw new Error("Version already published; choose a new release version");'
+          if [[ "$EXPECTED_PACKAGE" == '@ardennguyen/zalo-mcp' ]]; then
+            npm view '@ardennguyen/zalo-agent-cli@^2.0.1' version --json
+            npm pkg set 'dependencies.@ardennguyen/zalo-agent-cli=^2.0.1'
+          fi
+
+      - name: Synchronize package version and real registry lockfile
+        run: |
+          set -euo pipefail
+          npm version "$VERSION" --no-git-tag-version --ignore-scripts --allow-same-version
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          node -e 'const p=require("./package.json"),l=require("./package-lock.json"); if(p.version!==process.env.VERSION || l.version!==p.version || l.packages[""].version!==p.version) throw new Error("Version/lock mismatch");'
+          npm ci
+
+      - name: Validate candidate without a Zalo account
+        env:
+          EXPECTED_PACKAGE: ${{ steps.target.outputs.package }}
+        run: |
+          set -euo pipefail
+          if [[ "$EXPECTED_PACKAGE" == '@ardennguyen/zalo-agent-cli' ]]; then
+            npm run format
+            npm run lint
+            npm run format:check
+            npm test
+            node src/index.js --version
+            node src/index.js mcp start --help | grep -- '--account'
+            git diff --exit-code -- src tests
+          else
+            npm run test --if-present
+            node node_modules/@ardennguyen/zalo-agent-cli/src/index.js --version
+            node node_modules/@ardennguyen/zalo-agent-cli/src/index.js mcp start --help | grep -- '--account'
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifests
+          path: |
+            package.json
+            package-lock.json
+
+      - name: Commit manifests to a new branch and open a reviewable PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          branch="chore/release-$VERSION"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo 'Release branch already exists; review its PR rather than overwriting it.'
+            exit 1
+          fi
+          git add package.json package-lock.json
+          if git diff --cached --quiet; then
+            echo 'No manifest changes; no commit or PR needed.'
+            exit 0
+          fi
+          git switch -c "$branch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          gh auth setup-git
+          git commit -m "chore: prepare release v$VERSION"
+          git push --set-upstream origin "$branch"
+          printf '%s\n' 'Synchronizes package.json and package-lock.json using published npm metadata.' '' 'Candidate installation and available offline checks passed in the preparation run. If the wrapper base has no test script yet, its launcher tests were not run: merge the feature PR and require final CI before tagging. Review resolved versions and approve bot PR workflows if GitHub requests it. This PR creates no release and runs no npm publish.' > "$RUNNER_TEMP/release-pr.md"
+          gh pr create --base "$TARGET_BRANCH" --head "$branch" --title "chore: prepare release v$VERSION" --body-file "$RUNNER_TEMP/release-pr.md"

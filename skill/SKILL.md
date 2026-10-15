@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **190 CLI commands** across 21 command containers (14 top-level groups + 7 OA subgroups) + **12 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **190 CLI commands** across 21 command containers (14 top-level groups + 7 OA subgroups) + **14 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ For `listen` or `mcp start`, use `--account <ID>` to pin an exact registered num
 3. Execute command (Quick Reference below or `references/command-reference.md`)
 4. Append `--json` for machine-readable output
 5. For continuous monitoring → `listen --webhook` (`references/listen-mode-guide.md`)
-6. When running as an MCP server inside an AI client → use the 12 MCP tools for messages, reactions, recalls, group members, recent conversations and cache coverage; shell out to the CLI for everything else (`references/mcp-guide.md`)
+6. When running as an MCP server inside an AI client → use the 14 MCP tools for messages, reactions, recalls, group members, recent conversations and cache coverage; shell out to the CLI for everything else (`references/mcp-guide.md`)
 
 ## Quick Reference
 
@@ -229,7 +229,7 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 - **The wrapper forwards only `--http` and `--auth`.** `--host` and `--config` are dropped silently — `node mcp-server.js --http 3847 --host 0.0.0.0` stays on `127.0.0.1`. For those, run `zalo-agent mcp start` directly.
 - **The wrapper serves the CLI version its `package.json` pins**, not the newest one. A tool added in a newer CLI is unreachable through the wrapper until that pin is bumped. Check with `node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"` inside the install.
 
-**MCP tools exposed (12 — personal account only):**
+**MCP tools exposed (14 — personal account only):**
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
@@ -245,6 +245,10 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 | `zalo_get_group_members` | A group's members — uid and display name — as `group members` | `groupId` |
 | `zalo_list_conversations` | Recent conversations from the local cache, newest first, as `conv recent`, each with the account's own read state on Zalo (`readState`) | `type` (`dm`/`group`/`all`), `limit` (per type, default 20) |
 | `zalo_coverage` | Read-only: pending coverage gaps, resolved count, and the `sync --from <date>` run that restores them | — |
+| `zalo_sync` | Only after an explicit owner request: start messages restore (phone confirmation) or reaction sync; returns immediately | `requestId`, `stage?`, `days?` or `from?`, `waitMs?`, `applyRemovals?` (reactions only) |
+| `zalo_sync_status` | Read progress/result, without another prompt; inspect result.reason before claiming a complete restore | `jobId?` |
+
+Sync requests share the daemon socket and lock. Reuse requestId and arguments after a timeout; keep polling the same job. Ten jobs are held in RAM, lost on restart. No safe cancellation is exposed. Never initiate restore merely because coverage reports a gap. [Details](../docs/mcp-sync.md) / [Tiếng Việt](../docs/mcp-sync.vi.md).
 
 **Coverage — what MCP exposes vs what needs the CLI:**
 
@@ -261,13 +265,14 @@ The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <
 | Recall your own message | `zalo_undo` | `zalo-agent --json msg undo` |
 | A group's members | `zalo_get_group_members` | `zalo-agent --json group members` |
 | Is the cache complete? (coverage gaps) | `zalo_coverage` | — (`listen`/`mcp start` print each gap as it is filed) |
+| Owner-requested message/reaction sync | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-reactions` |
 | Send image / file / voice / video / link / sticker | **none** | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|send-link\|sticker` |
 | Delete / forward | **none** | `zalo-agent --json msg delete\|forward` |
 | Bank card / VietQR | **none** | `zalo-agent --json msg send-bank\|send-qr-transfer` |
 | Friends, the rest of groups and conversations, profile | **none** | `zalo-agent --json friend\|group\|conv\|profile …` |
 | Polls, reminders, auto-reply, quick-msg, labels, catalog | **none** | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Multi-account, devices, export | **none** | `zalo-agent --json account …` |
-| Restore history from the phone | **none** | `zalo-agent sync` or `zalo-agent sync-mobile` (prompts the phone; not `--json`-friendly — it streams progress) |
+| Restore history from the phone | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` or `zalo-agent sync-mobile` (still needs phone confirmation) |
 | Read cached history | `zalo_get_history` (live server fetch) | `zalo-agent --json msg history <id>` (reads `zalo.db`) |
 | Official Account (all 32 commands) | **none** | `zalo-agent --json oa …` |
 
@@ -283,7 +288,7 @@ Full commands: `references/command-reference.md`
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 190 commands + 12 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 190 commands + 14 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

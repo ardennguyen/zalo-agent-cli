@@ -9,10 +9,11 @@ separate suites with very different risk profiles:
 | **Live E2E** — tiered, gated     |          yes          | yes, disposable targets only | `npm run test:e2e` |
 
 `npm test` is what CI runs and what the pre-commit gate requires. It never
-opens a socket and never reads your real `~/.zalo-agent-cli/`.
+contacts Zalo or reads your real `~/.zalo-agent-cli/`. Some tests use disposable
+loopback servers and subprocess transports.
 
 ```bash
-npm test                      # 1952 offline tests — no Zalo session needed
+npm test                      # 1983 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -21,6 +22,12 @@ npm run format:check          # Prettier verify (what CI runs)
 ```
 
 > This file is how to run and write the tests.
+
+`tests/unit/mcp-sync.test.js` covers sync jobs, retry deduplication, shared
+locking, partial/failure results, current API selection and real SDK/stdin/HTTP
+transports with fake runners. See [manual sync validation](../docs/mcp-sync.md)
+/ [Tiếng Việt](../docs/mcp-sync.vi.md). A live phone restore remains untested
+by the offline suite.
 
 ### Pre-commit gate
 

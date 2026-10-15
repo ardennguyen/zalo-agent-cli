@@ -194,7 +194,7 @@ Running it unattended on a production host (systemd unit, restarts, monitoring, 
 
 ### MCP tools exposed
 
-`mcp-server.js` is a thin wrapper around `zalo-agent mcp start`, so it exposes exactly the **12 MCP tools** registered in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+This engine source registers **14 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**. The wrapper exposes the tool surface of its pinned engine version:
 
 | Tool | Purpose |
 |:---|:---|
@@ -210,6 +210,13 @@ Running it unattended on a production host (systemd unit, restarts, monitoring, 
 | `zalo_get_group_members` | List a group's members — uid and display name — as `group members` does |
 | `zalo_list_conversations` | Recent conversations from the local cache, newest first, as `conv recent` does |
 | `zalo_coverage` | Read-only: pending coverage gaps in the local cache, how many are resolved, and the `zalo-agent sync --from <date>` run that restores the rest |
+| `zalo_sync` | Start an owner-requested message restore or reaction sync; returns immediately with a job ID. Messages still needs phone confirmation |
+| `zalo_sync_status` | Read progress and final result; completed does not mean a partial restore became complete |
+
+These counts describe this engine source. The wrapper still pins engine 2.0.0,
+so the new sync tools require a published engine containing them and a wrapper
+update. [Sync usage and release prerequisites](docs/mcp-sync.md) /
+[Tiếng Việt](docs/mcp-sync.vi.md). No local deployment is updated by a source PR.
 
 Official Account, catalog, poll, reminder, auto-reply, label, profile, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `npx zalo-agent <command> --json`.
 

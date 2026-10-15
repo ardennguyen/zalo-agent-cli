@@ -13,6 +13,7 @@ import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
+import { createSyncJobs } from "../mcp/sync-jobs.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createReadStateSync } from "../core/read-state.js";
@@ -217,6 +218,8 @@ export function registerMCPCommands(program) {
             // self-heal catch-up and the tools' own history fetch. Created before
             // the server so the tools can hold it too.
             const stageLock = createStageLock();
+            const syncRunners = createSyncRunners({ getApi, accountName: activeAcc.ownId });
+            const syncJobs = createSyncJobs({ runners: syncRunners, lock: stageLock });
 
             // What the tools and the notifier call. Not getApi()'s object:
             // a re-login after a dropped connection replaces it, and they
@@ -237,7 +240,16 @@ export function registerMCPCommands(program) {
                         process.exit(1);
                     }
                     const host = opts.host || "127.0.0.1";
-                    const deps = { api: sessionApi, buffer, filter, config, nameCache, accountDir, stageLock };
+                    const deps = {
+                        api: sessionApi,
+                        buffer,
+                        filter,
+                        config,
+                        nameCache,
+                        accountDir,
+                        stageLock,
+                        syncJobs,
+                    };
                     const authToken = opts.auth?.trim() || null;
                     httpServer = createHTTPServer(registerTools, deps, port, authToken, host);
                     console.error(`[mcp] HTTP server started on port ${port}`);
@@ -248,7 +260,16 @@ export function registerMCPCommands(program) {
                         );
                     }
                 } else {
-                    await createMCPServer(sessionApi, buffer, filter, config, nameCache, accountDir, stageLock);
+                    await createMCPServer(
+                        sessionApi,
+                        buffer,
+                        filter,
+                        config,
+                        nameCache,
+                        accountDir,
+                        stageLock,
+                        syncJobs,
+                    );
                 }
             } catch (e) {
                 dropLock();
@@ -524,7 +545,7 @@ export function registerMCPCommands(program) {
                         getApi,
                         accountDir,
                         onLog: (m) => console.error(`[mcp] ${m}`),
-                        runners: createSyncRunners({ getApi, accountName: activeAcc.ownId }),
+                        runners: syncRunners,
                         // The self-heal's lock: a stage and a catch-up never share the socket.
                         lock: stageLock,
                     });

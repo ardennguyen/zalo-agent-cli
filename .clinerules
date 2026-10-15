@@ -139,7 +139,7 @@ While iterating, narrow the loop (`npm run test:unit`, `npm run test:cli`, `node
 
 **If another session holds files under `src/` or `tests/`, do not run `npm run format`** — it rewrites their in-flight work. Run the three read-only steps and say so in the commit message.
 
-`npm test` never opens a socket and never reads the real `~/.zalo-agent-cli/`. The live suite (`npm run test:e2e`) is separate and gated.
+`npm test` never contacts Zalo or reads the real `~/.zalo-agent-cli/`. The live suite (`npm run test:e2e`) is separate and gated.
 
 ---
 
@@ -210,9 +210,9 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**190**), command groups (**21** containers), MCP tools (**12**), OA commands (**32**), offline tests (**1952** as of 2026-10-15). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**190**), command groups (**21** containers), MCP tools (**14**), OA commands (**32**), offline tests (**1983** as of 2026-10-15). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
-**The MCP tool list in every doc must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`.
+**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`.
 
 `tests/cli/surface.test.js` is the **machine-checkable twin** of `command-reference.md`. For the wiki, the authoritative EN⇄VN pairing is `_Sidebar.md` in that checkout.
 

@@ -36,6 +36,8 @@ const EXPECTED_TOOLS = [
     "zalo_get_group_members",
     "zalo_list_conversations",
     "zalo_coverage",
+    "zalo_sync",
+    "zalo_sync_status",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */

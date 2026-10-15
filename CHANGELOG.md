@@ -4,6 +4,16 @@
 
 ## Unreleased — 2026-10-15
 
+- Add current `senderDisplayName` and `senderDisplayNameSource` alongside the
+  preserved historical `senderName` in MCP/CLI message reads. Current labels
+  prefer the account owner's explicit alias, then `zaloName`, then UID.
+- Refresh DM conversation names during sync, including cached peers outside
+  the message window, and on MCP conversation/thread/search reads. Alias removal
+  and profile renames do not rewrite message snapshots or activity ordering.
+- Add regression coverage for pagination, alias removal/renames, account
+  isolation, failed lookups, reconnecting API proxies, and current versus
+  historical names. Display reads perform no database writes.
+
 - Resolve phone-restored sender IDs to user IDs and display names using known
   DM mappings and the existing batched profile resolver; keep unknown senders
   explicitly unresolved when lookup fails.

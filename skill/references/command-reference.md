@@ -4,6 +4,8 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 
 ## Global Behavior
 
+- **Current versus historical names (unreleased):** `msg history`, MCP history and buffered-message reads preserve `senderName` and add `senderDisplayName` plus `senderDisplayNameSource` (`alias`, `zalo`, `uid`). Display uses this account's explicit alias, then the fresh profile's `zaloName`, then UID; it never rewrites the message snapshot. CLI text history prints the current label. Sync refreshes cached DM titles even outside the restored message window without changing activity timestamps. See [English](../../PROJECT-CONTEXT.md) / [Tiếng Việt](../../PROJECT-CONTEXT.vi.md) for failure behavior and restoration limits.
+
 - **`--json`** (global flag, works before any command) — machine-readable JSON output for every command. Also suppresses the startup disclaimer and the "Note:"/`info()` lines that would otherwise print to stdout.
 - **`-V, --version`** — print the installed version.
 - **`-h, --help`** — help for the CLI or any subcommand (`zalo-agent <group> --help`).

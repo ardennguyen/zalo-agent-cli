@@ -31,11 +31,14 @@ import {
     getPendingSyncGaps,
     resolveSyncGap,
     replaceLiveGroupEventPlaceholder,
+    getThreadType,
+    getRecentThreads,
 } from "../db.js";
 import { ensureAssets, loadCodecs } from "./assets.js";
 import { classifySyncMessage } from "./message-types.js";
 import { resolveNonFriendDms } from "./gid.js";
 import { createSenderResolver } from "./senders.js";
+import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
 import { startKeepAlive } from "./keepalive.js";
 import { attachLiveStore } from "../live-store.js";
 
@@ -427,12 +430,19 @@ export class SyncV2 {
     /** Build opaque-globalId -> {id, name, type} from the friend + group lists. */
     async _buildThreadMap(log) {
         const map = new Map();
+        this.userAliases = await readUserAliases(this.api, log);
         try {
             const friends = await this.api.getAllFriends();
             const arr = Array.isArray(friends) ? friends : friends?.data || [];
             for (const f of arr)
                 if (f.globalId)
-                    map.set(f.globalId, { id: String(f.userId), name: f.displayName || f.zaloName || "", type: "dm" });
+                    map.set(f.globalId, {
+                        id: String(f.userId),
+                        name: currentUserName(f.userId, f, this.userAliases).name,
+                        zaloName: f.zaloName || "",
+                        snapshotName: f.zaloName || f.displayName || "",
+                        type: "dm",
+                    });
         } catch (e) {
             log(`friend list unavailable (${e.message}); DM names/ids may be missing`);
         }
@@ -450,6 +460,32 @@ export class SyncV2 {
             log(`group list unavailable (${e.message}); group names/ids may be missing`);
         }
         return map;
+    }
+
+    /** Refresh already-cached titles even if this restore window has no messages for them. */
+    _refreshThreadNames(threadMap) {
+        for (const thread of threadMap.values()) {
+            if (getThreadType(thread.id) === thread.type) {
+                upsertThread({ threadId: thread.id, type: thread.type, name: thread.name, lastUpdate: 0 });
+            }
+        }
+    }
+
+    /** Refresh existing DM peers outside the requested message window, including non-friends. */
+    async _refreshDmNames(threadMap) {
+        const profiles = new Map(
+            [...threadMap.values()]
+                .filter((t) => t.type === "dm" && t.zaloName)
+                .map((t) => [t.id, { zaloName: t.zaloName }]),
+        );
+        const names = await resolveCurrentUserNames(
+            this.api,
+            getRecentThreads(-1, "dm").map((t) => String(t.threadId)),
+            { aliases: this.userAliases, profiles },
+        );
+        for (const [id, current] of names) {
+            upsertThread({ threadId: id, type: "dm", name: current.name, lastUpdate: 0 });
+        }
     }
 
     _send590(listener, kind, syncId, ek, ik, req) {
@@ -523,6 +559,8 @@ export class SyncV2 {
         const senders = createSenderResolver(this.api, threadMap, { log });
 
         initDb(resolve(this.accountDir, "zalo.db"));
+        this._refreshThreadNames(threadMap);
+        await this._refreshDmNames(threadMap);
 
         const L = this.api.listener;
         const sessions = new Map(); // syncId -> {kind, batches:[], statuses:[], done, err}
@@ -918,7 +956,15 @@ export class SyncV2 {
                 onStatus({ phase: "resolve", detail: `resolving ${unresolved.length} non-friend conversation(s)` });
                 try {
                     const extra = await resolveNonFriendDms(this.api, unresolved, log);
-                    for (const [gid, v] of extra) threadMap.set(gid, { id: v.id, name: v.name, type: "dm" });
+                    for (const [gid, v] of extra)
+                        threadMap.set(gid, {
+                            id: v.id,
+                            name: currentUserName(v.id, { zaloName: v.zaloName }, this.userAliases).name,
+                            zaloName: v.zaloName || "",
+                            snapshotName: v.name,
+                            type: "dm",
+                        });
+                    this._refreshThreadNames(threadMap);
                     onStatus({
                         phase: "resolve",
                         detail: `resolved ${extra.size}/${unresolved.length} via gid/decrypt`,

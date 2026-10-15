@@ -19,7 +19,8 @@ export function createSenderResolver(api, threadMap, { resolveUsers = resolveNon
     const users = new Map();
     const attempted = new Set();
     for (const [gid, user] of threadMap) {
-        if (user.type === "dm") users.set(gid, { id: String(user.id), name: user.name || "" });
+        if (user.type === "dm")
+            users.set(gid, { id: String(user.id), name: user.snapshotName ?? user.zaloName ?? user.name ?? "" });
     }
 
     return {
@@ -27,7 +28,11 @@ export function createSenderResolver(api, threadMap, { resolveUsers = resolveNon
             // Conversation resolution may have added non-friend users since
             // this resolver was constructed. Do not repeat those lookups.
             for (const [gid, user] of threadMap) {
-                if (user.type === "dm") users.set(gid, { id: String(user.id), name: user.name || "" });
+                if (user.type === "dm")
+                    users.set(gid, {
+                        id: String(user.id),
+                        name: user.snapshotName ?? user.zaloName ?? user.name ?? "",
+                    });
             }
             const missing = [...new Set(messages.map((m) => String(m.senderId || "")))].filter(
                 (id) => NOISED_ID.test(id) && !users.has(id) && !attempted.has(id),

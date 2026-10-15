@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { ThreadNameCache } from "./thread-name-cache.js";
 
 /** Create a mock API that returns predictable group/friend data */
-function createMockApi(groups = {}, friends = []) {
+function createMockApi(groups = {}, friends = [], aliases = []) {
     return {
         getAllGroups: async () => ({
             gridVerMap: Object.fromEntries(Object.keys(groups).map((id) => [id, 1])),
@@ -12,6 +12,7 @@ function createMockApi(groups = {}, friends = []) {
             gridInfoMap: Object.fromEntries(ids.filter((id) => groups[id]).map((id) => [id, groups[id]])),
         }),
         getAllFriends: async () => friends,
+        getAliasList: async () => ({ items: aliases }),
     };
 }
 
@@ -39,6 +40,7 @@ describe("ThreadNameCache", () => {
                 { userId: "u1", displayName: "Viet Anh", zaloName: "VA" },
                 { userId: "u2", zaloName: "Bob" },
             ],
+            [{ userId: "u1", alias: "Viet Anh" }],
         );
 
         await cache.init(api);
@@ -77,6 +79,7 @@ describe("ThreadNameCache", () => {
                     g4: { name: "Admin Team", totalMember: 5 },
                 },
                 [{ userId: "u1", displayName: "Soạn Văn", zaloName: "SV" }],
+                [{ userId: "u1", alias: "Soạn Văn" }],
             );
             await cache.init(api);
         });

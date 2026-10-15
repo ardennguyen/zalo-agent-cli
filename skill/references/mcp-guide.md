@@ -223,6 +223,8 @@ Lưu ý: cache tên thread được xây dựng lúc khởi động MCP server (
 ---
 
 ### `zalo_get_history`
+Tên người gửi trong lịch sử khôi phục được phân giải khi chạy sync; ID chưa phân giải vẫn được giữ nguyên và `senderName` có thể là `null`. Cache từ phiên bản cũ cần khôi phục tin lại bằng engine đã sửa để bổ sung danh tính; đọc lịch sử hoặc restart MCP không tự bổ sung. Chi tiết: [Tiếng Việt](../../PROJECT-CONTEXT.vi.md) · [English](../../PROJECT-CONTEXT.md).
+
 Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức toàn bộ những gì `mcp start`/`listen` đã lưu và những gì `zalo-agent sync` / `sync-mobile` đã khôi phục từ điện thoại (có thể là toàn bộ lịch sử) — chỉ khi cache không có gì cho thread đó mới hỏi server Zalo. Khi hỏi server, tool dùng chung một đường lấy tin với `msg history` của daemon: với nhóm thì hỏi kho tin nhắn đám mây (`cm/getrecentv2`) trước, rồi mới đến luồng socket; tin lấy được đều được lưu vào cache (chỉ thêm, không sửa tin đã có). Phân trang cache bằng `before` (epoch ms, lấy từ `cursor` của lần trước), phân trang đường server bằng `lastMsgId`. Trường `source` trong kết quả cho biết dữ liệu đến từ `"cache"` hay `"server"`, và `via` cho biết đường server nào trả lời (`"store"` hay `"socket"`).
 
 > Giới hạn đo được ngày 2026-09-30: qua cả hai đường, Zalo chỉ trả tin nhắn **kể từ lần đăng nhập này**; tin cũ hơn bị giữ lại — khi đó kết quả có `filtered: true` kèm `note` giải thích. Muốn có lịch sử cũ hơn, chạy `zalo-agent sync` (cần bấm xác nhận trên điện thoại) để khôi phục vào cache, sau đó tool này đọc được từ cache. Tool cũng dùng chung khoá "mỗi lúc một stage" với daemon: nếu một stage sync đang chạy trên socket, tool báo lỗi ngay thay vì chạy song song.

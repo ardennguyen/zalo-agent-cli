@@ -35,6 +35,7 @@ import {
 import { ensureAssets, loadCodecs } from "./assets.js";
 import { classifySyncMessage } from "./message-types.js";
 import { resolveNonFriendDms } from "./gid.js";
+import { createSenderResolver } from "./senders.js";
 import { startKeepAlive } from "./keepalive.js";
 import { attachLiveStore } from "../live-store.js";
 
@@ -519,6 +520,7 @@ export class SyncV2 {
 
         onStatus({ phase: "contacts", detail: "reading friend/group lists for thread mapping" });
         const threadMap = await this._buildThreadMap(log);
+        const senders = createSenderResolver(this.api, threadMap, { log });
 
         initDb(resolve(this.accountDir, "zalo.db"));
 
@@ -806,7 +808,7 @@ export class SyncV2 {
                         } catch {
                             continue;
                         }
-                        onObj(obj);
+                        await onObj(obj);
                     } catch {
                         /* skip bad chunk */
                     }
@@ -1038,7 +1040,10 @@ export class SyncV2 {
                     }
 
                     const before = messagesSaved;
-                    await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, (obj) => {
+                    await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, async (obj) => {
+                        // Network identity lookups must finish before opening
+                        // the synchronous SQLite transaction for this chunk.
+                        await senders.prepare((obj.partitionsList || []).flatMap((p) => p.messagesList || []));
                         // One transaction per decoded chunk rather than one per
                         // row: thousands of individual WAL commits is both slow
                         // and a long block on the event loop.
@@ -1090,8 +1095,8 @@ export class SyncV2 {
                                             // gMsgID.
                                             msgId: syncMsgId(msg),
                                             threadId,
-                                            senderId: String(msg.senderId || ""),
-                                            senderName: "",
+                                            senderId: senders.get(msg.senderId).id,
+                                            senderName: senders.get(msg.senderId).name,
                                             text: info.text,
                                             timestamp: Number(msg.timestamp) || 0,
                                             type: info.type,

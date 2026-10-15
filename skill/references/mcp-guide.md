@@ -12,6 +12,7 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 
 | Flag | Mặc định | Mô tả |
 |------|----------|--------|
+| `--account <id>` | Active lúc khởi động, sau đó ghim | ID số đầy đủ của tài khoản đã đăng ký; giữ nguyên qua reconnect/retry, không đổi active chung. [Chi tiết](../../docs/account-pinning.vi.md) |
 | `--http <port>` | *(stdio)* | Dùng HTTP transport trên port này. Bỏ trống = stdio |
 | `--auth <token>` | *(không)* | Yêu cầu header `Authorization: Bearer <token>` cho mọi endpoint trừ `/health` |
 | `--host <address>` | `127.0.0.1` | Địa chỉ bind cho HTTP mode. Đặt `0.0.0.0` để nhận kết nối từ ngoài |

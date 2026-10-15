@@ -4,6 +4,10 @@
 
 ## Chưa phát hành — 2026-10-15
 
+- Thêm `listen --account <ID>` và `mcp start --account <ID>` để ghim tài khoản
+  đã đăng ký khi khởi động, reconnect và retry, không đổi tài khoản active chung.
+  Lấy khóa tài khoản trước đăng nhập và từ chối phiên có UID không khớp.
+
 - Chuyển đích sang `v2.0-dev`, mở CI cho nhánh này. Giữ changelog; chuyển tài
   liệu tính năng sang `docs/current-user-names.vi.md`, bỏ file ngữ cảnh gốc.
 

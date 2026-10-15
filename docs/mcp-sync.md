@@ -5,8 +5,9 @@
 Source feature, not a published release. The engine exposes 14 tools, including
 `zalo_sync` and `zalo_sync_status`. The deployment wrapper still pins engine
 2.0.0: it needs a future published engine and wrapper update to expose them.
-Account-ID selection is a separate change in engine PR #3; these tools operate
-only on the account already owned by this MCP process, with no account override.
+Account-ID selection from merged engine PR #3 is included: `mcp start --account <ID>`
+pins the process at startup and across reconnects. Sync tools use only that
+account's existing runners and lock, with no per-request account override.
 
 Suggested release sequence: merge engine features, publish engine **2.1.0**,
 then publish wrapper **1.1.0** with dependency **^2.0.1** as proposed in

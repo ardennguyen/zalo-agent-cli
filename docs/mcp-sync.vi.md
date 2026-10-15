@@ -4,8 +4,10 @@
 
 Tính năng trong source, chưa phát hành. Engine có 14 tool, gồm `zalo_sync` và
 `zalo_sync_status`. Wrapper deploy vẫn ghim engine 2.0.0: cần phát hành engine
-mới và cập nhật wrapper để dùng. Chọn tài khoản theo ID thuộc engine PR #3
-riêng; các tool này chỉ dùng tài khoản MCP process đang giữ, không đổi tài khoản.
+mới và cập nhật wrapper để dùng. Đã tích hợp chọn tài khoản theo ID từ engine
+PR #3 đã merge: `mcp start --account <ID>` ghim tài khoản khi khởi động và qua
+các lần reconnect. Tool sync chỉ dùng runner và khóa sẵn có của tài khoản đó,
+không nhận tham số đổi tài khoản theo từng request.
 
 Đề xuất thứ tự phát hành: merge tính năng engine, phát hành engine **2.1.0**,
 rồi wrapper **1.1.0** với dependency **^2.0.1** như

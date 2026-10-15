@@ -6,9 +6,9 @@
  */
 
 import { join } from "path";
-import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
+import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
-import { getActive } from "../core/accounts.js";
+import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
@@ -94,6 +94,11 @@ export function registerMCPCommands(program) {
     const mcp = program.command("mcp").description("MCP server for AI agent integration");
 
     mcp.command("start")
+        .option(
+            "--account <id>",
+            "Pin this server to an exact registered account ID (default: active at startup)",
+            parseAccountId,
+        )
         .description("Start MCP server (stdio or HTTP transport)")
         .option("--config <path>", "Config file path (default: ~/.zalo-agent-cli/mcp-config.json)")
         .option("--http <port>", "Use HTTP transport on specified port (default: stdio)")
@@ -135,18 +140,12 @@ export function registerMCPCommands(program) {
                 process.exit(1);
             }
 
-            // Perform login explicitly here — preAction hook skips "mcp"
-            // Pass jsonMode=true to suppress info() output — stdout is the MCP transport channel
+            // Select once; acquire the selected account's lock before authentication.
+            let activeAcc;
             try {
-                await autoLogin(true);
+                activeAcc = selectDaemonAccount(opts.account);
             } catch (e) {
-                console.error("[mcp] Auto-login failed:", e.message);
-                process.exit(1);
-            }
-
-            const activeAcc = getActive();
-            if (!activeAcc) {
-                console.error("[mcp] No active account. Run `zalo-agent login` first.");
+                console.error("[mcp] Account selection failed:", e.message);
                 process.exit(1);
             }
             const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
@@ -183,6 +182,13 @@ export function registerMCPCommands(program) {
                 }
             };
 
+            try {
+                await loginDaemonAccount(activeAcc);
+            } catch (e) {
+                dropLock();
+                console.error("[mcp] Pinned account login failed:", e.message);
+                process.exit(1);
+            }
             try {
                 initDb(join(accountDir, "zalo.db"));
                 console.error(`[mcp] Local cache: ${join(accountDir, "zalo.db")}`);
@@ -492,7 +498,7 @@ export function registerMCPCommands(program) {
                     await new Promise((r) => setTimeout(r, 5000));
                     try {
                         clearSession();
-                        await autoLogin(true);
+                        await loginDaemonAccount(activeAcc);
                         console.error("[mcp] Re-login successful. Restarting listener...");
                         const newApi = getApi();
                         attachListenerHandlers(newApi);
@@ -502,7 +508,7 @@ export function registerMCPCommands(program) {
                         await new Promise((r) => setTimeout(r, 30000));
                         try {
                             clearSession();
-                            await autoLogin(true);
+                            await loginDaemonAccount(activeAcc);
                             const retryApi = getApi();
                             attachListenerHandlers(retryApi);
                             retryApi.listener.start({ retryOnClose: true });

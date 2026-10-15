@@ -1,8 +1,8 @@
-# Project context
+# Sender identities and current names
 
-[Tiếng Việt](PROJECT-CONTEXT.vi.md)
+[Tiếng Việt](current-user-names.vi.md)
 
-Updated: 2026-10-15. Branch: `fix/sync-sender-identities`. Base: `f6b9914`.
+Unreleased implementation reference for [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2), targeting `v2.0-dev`.
 
 ## Current change
 

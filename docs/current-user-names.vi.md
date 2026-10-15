@@ -1,8 +1,8 @@
-# Ngữ cảnh dự án
+# Danh tính người gửi và tên hiện tại
 
-[English](PROJECT-CONTEXT.md)
+[English](current-user-names.md)
 
-Cập nhật: 2026-10-15. Branch: `fix/sync-sender-identities`. Commit gốc: `f6b9914`.
+Tài liệu tính năng chưa phát hành cho [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2), nhánh đích `v2.0-dev`.
 
 ## Thay đổi hiện tại
 

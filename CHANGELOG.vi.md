@@ -4,6 +4,9 @@
 
 ## Chưa phát hành — 2026-10-15
 
+- Chuyển đích sang `v2.0-dev`, mở CI cho nhánh này. Giữ changelog; chuyển tài
+  liệu tính năng sang `docs/current-user-names.vi.md`, bỏ file ngữ cảnh gốc.
+
 - Thêm `senderDisplayName` và `senderDisplayNameSource` hiện tại bên cạnh
   `senderName` lịch sử được giữ nguyên khi MCP/CLI đọc tin nhắn. Ưu tiên alias
   riêng của tài khoản, rồi `zaloName`, rồi UID.

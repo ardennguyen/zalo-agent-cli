@@ -4,6 +4,9 @@
 
 ## Unreleased — 2026-10-15
 
+- Target `v2.0-dev` and run CI for that branch. Keep the changelog; move the
+  feature reference to `docs/current-user-names.md` instead of a root context file.
+
 - Add current `senderDisplayName` and `senderDisplayNameSource` alongside the
   preserved historical `senderName` in MCP/CLI message reads. Current labels
   prefer the account owner's explicit alias, then `zaloName`, then UID.

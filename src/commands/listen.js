@@ -5,9 +5,9 @@
 
 import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
-import { getApi, autoLogin, clearSession } from "../core/zalo-client.js";
+import { getApi, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning } from "../utils/output.js";
-import { getActive } from "../core/accounts.js";
+import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
@@ -55,6 +55,11 @@ const CLOSE_DUPLICATE = 3000;
 export function registerListenCommand(program) {
     program
         .command("listen")
+        .option(
+            "--account <id>",
+            "Pin this daemon to an exact registered account ID (default: active at startup)",
+            parseAccountId,
+        )
         .description(
             "Listen for all Zalo events (messages, friend requests, group events) via one WebSocket. Auto-reconnect enabled.",
         )
@@ -77,9 +82,11 @@ export function registerListenCommand(program) {
             "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
         .action(async (opts) => {
-            const activeAcc = getActive();
-            if (!activeAcc) {
-                error("No active account. Please login first.");
+            let activeAcc;
+            try {
+                activeAcc = selectDaemonAccount(opts.account);
+            } catch (e) {
+                error(e.message);
                 process.exit(1);
             }
             const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
@@ -104,6 +111,13 @@ export function registerListenCommand(program) {
                     console.error(`[listen] Failed to release lock: ${e.message}`);
                 }
             };
+            try {
+                await loginDaemonAccount(activeAcc);
+            } catch (e) {
+                releaseLock(accountDir);
+                error(`Pinned account login failed: ${e.message}`);
+                process.exit(1);
+            }
             try {
                 initDb(join(accountDir, "zalo.db"));
                 info(`Local database initialized at ${accountDir}/zalo.db`);
@@ -703,7 +717,7 @@ export function registerListenCommand(program) {
                     await new Promise((r) => setTimeout(r, 5000));
                     try {
                         clearSession();
-                        await autoLogin(jsonMode);
+                        await loginDaemonAccount(activeAcc);
                         info("Re-login successful. Restarting listener...");
                         // Attach ALL handlers to the NEW api (including lifecycle),
                         // and repoint the SyncManager at it so its bookkeeping
@@ -717,7 +731,7 @@ export function registerListenCommand(program) {
                         await new Promise((r) => setTimeout(r, 30000));
                         try {
                             clearSession();
-                            await autoLogin(jsonMode);
+                            await loginDaemonAccount(activeAcc);
                             const retryApi = getApi();
                             syncManager.api = retryApi;
                             attachAllHandlers(retryApi);

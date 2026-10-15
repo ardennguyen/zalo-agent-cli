@@ -4,6 +4,8 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 
 ## Global Behavior
 
+- **Daemon account selection (unreleased):** `listen --account <id>` and `mcp start --account <id>` pin an exact, full numeric registered account ID for startup, reconnect and retry. Omitting the flag pins the active account at startup. Names, partial IDs and empty values are refused; the shared active account is never changed. The selected account's lock is acquired before authentication, and a mismatched authenticated UID is rejected. This is not a global flag. See [English](../../docs/account-pinning.md) / [Tiếng Việt](../../docs/account-pinning.vi.md).
+
 - **`--json`** (global flag, works before any command) — machine-readable JSON output for every command. Also suppresses the startup disclaimer and the "Note:"/`info()` lines that would otherwise print to stdout.
 - **`-V, --version`** — print the installed version.
 - **`-h, --help`** — help for the CLI or any subcommand (`zalo-agent <group> --help`).

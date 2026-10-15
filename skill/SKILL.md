@@ -16,6 +16,8 @@ Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 Surface: **190 CLI commands** across 21 command containers (14 top-level groups + 7 OA subgroups) + **12 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
+
+For `listen` or `mcp start`, use `--account <ID>` to pin an exact registered numeric account across reconnect/retry. Without it, the active-at-startup account is pinned. This does not switch the shared active account. See [English](../docs/account-pinning.md) / [Tiếng Việt](../docs/account-pinning.vi.md); the wrapper must explicitly forward this flag to support it.
 - **Requires**: `zalo-agent` CLI pre-installed by user (`zalo-agent --version` to verify)
 - **Node.js 22+**
 - See [installation guide](https://github.com/ardennguyen/zalo-agent-cli/blob/main/INSTALLATION.md) for setup

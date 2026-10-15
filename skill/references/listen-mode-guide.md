@@ -14,6 +14,7 @@ zalo-agent listen --auto-accept                            # Auto-accept friend 
 ## Options
 | Flag | Description | Default |
 |------|-------------|---------|
+| `--account <id>` | Full registered numeric account ID, pinned across startup/reconnect/retry; does not switch global active | Active at startup, then pinned |
 | `-e, --events <types>` | message,friend,group,reaction,read | message,friend |
 | `-f, --filter <type>` | user, group, all | all |
 | `-w, --webhook <url>` | POST events as JSON to URL | — |
@@ -28,6 +29,8 @@ zalo-agent listen --auto-accept                            # Auto-accept friend 
 > `--events` controls what you **see** (stdout, JSONL, webhook), not what is **stored**. Reactions, recalls, delivery receipts, board changes, read state reported by your other devices and "you left this group" are written to `zalo.db` on every run, because none of them can be recovered afterwards — the mobile sync payload has no reaction field at all. Earlier builds gated the writes too, so a default `zalo-agent listen` silently discarded every reaction it saw.
 
 ## Side Effects (always on)
+
+Account selection: [English](../../docs/account-pinning.md) / [Tiếng Việt](../../docs/account-pinning.vi.md). Run one process per account; there is no automatic listen-all mode.
 
 `listen` is not read-only. On every run it also:
 

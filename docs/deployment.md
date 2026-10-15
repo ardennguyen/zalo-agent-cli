@@ -4,6 +4,8 @@
 **Licensing:** from 2.0.1 this software is licensed CC BY-NC-SA 4.0; use in a company's business operations needs a separate commercial license (see [NOTICE](../NOTICE)).
 **Audience:** whoever runs this on a server and gets paged when it stops.
 
+**Unreleased account pinning:** `listen --account <ID>` and `mcp start --account <ID>` select an exact registered numeric ID and keep it through reconnect/retry without changing the shared active account. Omitting the flag also pins the active-at-startup account. See [English](account-pinning.md) / [Tiếng Việt](account-pinning.vi.md) for multiple-process operation and the wrapper forwarding limitation.
+
 Every architectural claim below is traced to a file in `src/`, or, for the command surface, to [`skill/references/command-reference.md`](../skill/references/command-reference.md), which wins whenever two docs disagree. Line numbers refer to `9e47020` (a few commits before the `2.0.0` tag) and will drift; the function and handler names next to them will not. Numbers come from `package.json`, the lockfile, the code, the npm registry, or one account directory measured once (labeled where it is used). The [Appendix](#appendix--re-measure-everything-yourself) has the commands to measure your own. Where a sentence is an assessment rather than something the code shows (the sizing tables, and all of §6), it says so. On this codebase the general answer about "how messaging bots usually work" is often wrong, so this document avoids it.
 
 Two conventions used throughout:

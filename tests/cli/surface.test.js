@@ -314,6 +314,7 @@ const FLAG_CONTRACT = {
     // offline-queue catch-up both run on reconnect; each must exist on both
     // or they diverge.
     listen: [
+        "--account",
         "--filter",
         "--webhook",
         "--no-self",
@@ -322,7 +323,7 @@ const FLAG_CONTRACT = {
         "--no-delivered-receipts",
         "--no-self-heal",
     ],
-    "mcp start": ["--config", "--http", "--auth", "--host", "--no-delivered-receipts", "--no-self-heal"],
+    "mcp start": ["--account", "--config", "--http", "--auth", "--host", "--no-delivered-receipts", "--no-self-heal"],
     "catalog add-product": ["--photos"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],

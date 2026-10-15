@@ -59,8 +59,9 @@ program
         }
         // Auto-login before any command that needs it (skip for login/account/oa
         // commands, and for a logout that will not call Zalo at all).
+        // Daemons authenticate their pinned identity after acquiring its lock.
         const skipAutoLogin =
-            ["login", "account", "help", "version", "update", "oa", "mcp"].includes(cmdName) ||
+            ["login", "account", "help", "version", "update", "oa", "mcp", "listen"].includes(cmdName) ||
             (cmdName === "logout" && !logoutNeedsSession(actionCommand.opts(), getActive()));
         if (!skipAutoLogin) {
             await autoLogin(program.opts().json);

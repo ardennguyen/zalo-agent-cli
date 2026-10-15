@@ -4,6 +4,10 @@
 
 ## Unreleased — 2026-10-15
 
+- Add `listen --account <ID>` and `mcp start --account <ID>` to pin startup,
+  reconnects and retries to an exact registered account without changing the
+  shared active account. Acquire its lock before login and reject UID mismatches.
+
 - Target `v2.0-dev` and run CI for that branch. Keep the changelog; move the
   feature reference to `docs/current-user-names.md` instead of a root context file.
 

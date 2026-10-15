@@ -1,3 +1,5 @@
+import { readUserAliases, resolveCurrentUserNames } from "../core/current-user-names.js";
+
 /**
  * In-memory cache mapping threadId → {name, type, memberCount}.
  * Built on startup by fetching all groups + friends from Zalo API.
@@ -35,6 +37,7 @@ export class ThreadNameCache {
         const start = Date.now();
         let groupCount = 0;
         let friendCount = 0;
+        const friendProfiles = new Map();
 
         // Load groups: getAllGroups() → IDs → batched getGroupInfo()
         try {
@@ -63,12 +66,13 @@ export class ThreadNameCache {
             console.error("[thread-name-cache] getAllGroups failed:", e.message);
         }
 
-        // Load friends (DM threads)
+        // Load friends (DM threads), honoring the owner's aliases explicitly.
         try {
             const friends = await api.getAllFriends();
             const list = Array.isArray(friends) ? friends : [];
             for (const f of list) {
                 if (f.userId) {
+                    friendProfiles.set(String(f.userId), f);
                     this._cache.set(f.userId, {
                         name: f.displayName || f.zaloName || "?",
                         type: "dm",
@@ -80,6 +84,7 @@ export class ThreadNameCache {
             console.error("[thread-name-cache] getAllFriends failed:", e.message);
         }
 
+        await this.refreshUsers(api, friendProfiles);
         this._ready = true;
         const elapsed = Date.now() - start;
         console.error(`[thread-name-cache] Ready: ${groupCount} groups, ${friendCount} friends (${elapsed}ms)`);
@@ -92,6 +97,14 @@ export class ThreadNameCache {
      */
     get(threadId) {
         return this._cache.get(threadId) || null;
+    }
+
+    /** Refresh current DM labels without modifying per-message names or group titles. */
+    async refreshUsers(api, profiles = new Map()) {
+        const ids = [...this._cache].filter(([, v]) => v.type === "dm").map(([id]) => id);
+        const aliases = await readUserAliases(api);
+        const names = await resolveCurrentUserNames(api, ids, { aliases, profiles });
+        for (const [id, current] of names) this.set(id, { name: current.name, type: "dm" });
     }
 
     /**

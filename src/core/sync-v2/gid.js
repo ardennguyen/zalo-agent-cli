@@ -83,6 +83,7 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
 
     // 2. userId -> display name via getUserInfo (batched). Best-effort.
     const names = new Map();
+    const zaloNames = new Map();
     const uids = [...new Set([...idToUser.values()])];
     for (let i = 0; i < uids.length; i += NAME_BATCH) {
         const batch = uids.slice(i, i + NAME_BATCH);
@@ -90,7 +91,8 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
             const info = await api.getUserInfo(batch);
             for (const bag of [info?.changed_profiles, info?.unchanged_profiles]) {
                 for (const [uid, p] of Object.entries(bag || {})) {
-                    if (!names.has(uid) && p) names.set(uid, p.displayName || p.zaloName || "");
+                    if (!names.has(uid) && p) names.set(uid, p.zaloName || p.displayName || "");
+                    if (p?.zaloName) zaloNames.set(uid, p.zaloName);
                 }
             }
         } catch (e) {
@@ -98,6 +100,7 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
         }
     }
 
-    for (const [gid, uid] of idToUser) out.set(gid, { id: uid, name: names.get(uid) || "" });
+    for (const [gid, uid] of idToUser)
+        out.set(gid, { id: uid, name: names.get(uid) || "", zaloName: zaloNames.get(uid) || "" });
     return out;
 }

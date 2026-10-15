@@ -242,11 +242,11 @@ describe("zalo_list_conversations", () => {
         );
     });
 
-    it("a thread the cache has no name for takes the thread index's", async () => {
+    it("a DM with no current profile falls back to its UID, not an old thread label", async () => {
         upsertThread({ threadId: "d9", type: "dm", name: null, lastUpdate: 1700000009000 });
         const index = { ready: true, get: (id) => (id === "d9" ? { name: "Chú Tư" } : null), search: () => [] };
         const out = payloadOf(await call("zalo_list_conversations", { type: "all", limit: 20 }, {}, index));
-        assert.equal(out.conversations[0].name, "Chú Tư");
+        assert.equal(out.conversations[0].name, "d9");
     });
 
     it("an empty cache answers with no conversations and says why, without asking Zalo", async () => {

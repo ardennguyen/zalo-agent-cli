@@ -1,8 +1,8 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **12 tools**.
+Model Context Protocol (MCP) cho phép Claude Code và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **14 tools**.
 
-Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video, xoá/chuyển tiếp tin, friend, phần còn lại của group và conv, profile, poll, reminder, auto-reply, quick-msg, label, catalog, account, sync-mobile — **chưa có MCP tool**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
+Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video, xoá/chuyển tiếp tin, friend, phần còn lại của group và conv, profile, poll, reminder, auto-reply, quick-msg, label, catalog, account — **chưa có MCP tool**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
 Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo` ↔ `msg undo`, `zalo_get_group_members` ↔ `group members`, `zalo_list_conversations` ↔ `conv recent`) đều gọi đúng đoạn code mà lệnh đó dùng, nên cách tra cứu và các trường hợp từ chối giống hệt nhau.
 
@@ -12,6 +12,7 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 
 | Flag | Mặc định | Mô tả |
 |------|----------|--------|
+| `--account <id>` | Active lúc khởi động, sau đó ghim | ID số đầy đủ của tài khoản đã đăng ký; giữ nguyên qua reconnect/retry, không đổi active chung. [Chi tiết](../../docs/account-pinning.vi.md) |
 | `--http <port>` | *(stdio)* | Dùng HTTP transport trên port này. Bỏ trống = stdio |
 | `--auth <token>` | *(không)* | Yêu cầu header `Authorization: Bearer <token>` cho mọi endpoint trừ `/health` |
 | `--host <address>` | `127.0.0.1` | Địa chỉ bind cho HTTP mode. Đặt `0.0.0.0` để nhận kết nối từ ngoài |
@@ -109,7 +110,7 @@ Nếu wrapper không tìm thấy `zalo-agent-cli` trong `node_modules/`, nó t�
 
 ---
 
-## Tham chiếu Tools (12 tools)
+## Tham chiếu Tools (14 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -223,6 +224,8 @@ Lưu ý: cache tên thread được xây dựng lúc khởi động MCP server (
 ---
 
 ### `zalo_get_history`
+Tên người gửi có hai trường: `senderName` là tên lịch sử/được ghi nhận lần đầu, giữ nguyên khi đọc; `senderDisplayName` là tên hiện tại tra theo UID với ưu tiên **alias bạn đặt → `zaloName` → UID**. `senderDisplayNameSource` cho biết nguồn (`alias`, `zalo`, `uid`). Hai trường hiển thị hiện tại cũng có trong `zalo_get_messages`; client nên dùng `senderDisplayName` để hiển thị. Xóa/đổi alias và đổi tên profile được nhận biết ở lượt đọc sau, không sửa tên cũ trên tin. Không tra được profile/alias thì fallback theo dữ liệu khả dụng đến UID, không dùng tên lịch sử để giả làm tên hiện tại. Chat 1-1 lấy tên theo UID đối tác, kể cả tin do chính mình gửi. Sync làm mới tên hội thoại đã cache cả khi không có tin mới; lượt đọc tên không ghi database. ID còn mã hóa từ cache cũ vẫn cần sync lại bằng engine đã sửa để bổ sung UID thật. Chi tiết: [Tiếng Việt](../../docs/current-user-names.vi.md) · [English](../../docs/current-user-names.md).
+
 Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức toàn bộ những gì `mcp start`/`listen` đã lưu và những gì `zalo-agent sync` / `sync-mobile` đã khôi phục từ điện thoại (có thể là toàn bộ lịch sử) — chỉ khi cache không có gì cho thread đó mới hỏi server Zalo. Khi hỏi server, tool dùng chung một đường lấy tin với `msg history` của daemon: với nhóm thì hỏi kho tin nhắn đám mây (`cm/getrecentv2`) trước, rồi mới đến luồng socket; tin lấy được đều được lưu vào cache (chỉ thêm, không sửa tin đã có). Phân trang cache bằng `before` (epoch ms, lấy từ `cursor` của lần trước), phân trang đường server bằng `lastMsgId`. Trường `source` trong kết quả cho biết dữ liệu đến từ `"cache"` hay `"server"`, và `via` cho biết đường server nào trả lời (`"store"` hay `"socket"`).
 
 > Giới hạn đo được ngày 2026-09-30: qua cả hai đường, Zalo chỉ trả tin nhắn **kể từ lần đăng nhập này**; tin cũ hơn bị giữ lại — khi đó kết quả có `filtered: true` kèm `note` giải thích. Muốn có lịch sử cũ hơn, chạy `zalo-agent sync` (cần bấm xác nhận trên điện thoại) để khôi phục vào cache, sau đó tool này đọc được từ cache. Tool cũng dùng chung khoá "mỗi lúc một stage" với daemon: nếu một stage sync đang chạy trên socket, tool báo lỗi ngay thay vì chạy song song.
@@ -378,13 +381,32 @@ Cho biết cache cục bộ đầy đủ tới đâu. Mỗi "khoảng hở" (cov
   "hint": "1 coverage gap(s) pending: …"
 }
 ```
-`command` khôi phục mọi khoảng hở trong một lần chạy: ngày được tính từ khoảng hở cũ nhất (theo ngày UTC), vì một lần sync chỉ đóng những khoảng nằm trọn trong khoảng thời gian nó khôi phục — chạy từ một ngày muộn hơn thì lệnh vẫn "thành công" mà khoảng hở cũ vẫn còn đó. Lệnh này hiện yêu cầu xác nhận trên điện thoại của chủ tài khoản (bấm "ĐỒNG BỘ NGAY"), nên phải do người thật chạy — agent chỉ báo lại lệnh. Không cần dừng `mcp start`: lần sync đó chạy trên chính socket của server. Không còn khoảng hở nào thì `pendingCount` là 0 và `command` là `null`.
+`command` khôi phục mọi khoảng hở trong một lần chạy: ngày được tính từ khoảng hở cũ nhất (theo ngày UTC), vì một lần sync chỉ đóng những khoảng nằm trọn trong khoảng thời gian nó khôi phục. Chạy từ ngày muộn hơn có thể thành công mà khoảng hở cũ vẫn còn. Cần xác nhận trên điện thoại (bấm "ĐỒNG BỘ NGAY"). Khi chủ tài khoản yêu cầu sync rõ ràng, agent có thể dùng `zalo_sync` với `from` tương ứng; không tự sync chỉ vì thấy gap. Không cần dừng `mcp start`. Không còn gap thì `pendingCount` là 0, `command` là `null`.
+
+### `zalo_sync` và `zalo_sync_status`
+
+`zalo_sync` nhận `requestId` riêng (1–64 ký tự chữ/số hoặc `._:-`), `stage`
+(`messages` mặc định hoặc `reactions`). Messages nhận `days` (1–36500) **hoặc**
+`from` (ngày UTC YYYY-MM-DD hợp lệ); bỏ cả hai để lấy mọi lịch sử điện thoại
+còn giữ, trên tất cả hội thoại. `waitMs` tùy chọn 30000–600000 ms mỗi giai đoạn.
+Reactions không có khoảng ngày, nhận `applyRemovals` (mặc định true) cho cache.
+
+Tool trả ngay `jobId`, `state`, `phoneConfirmationRequired`. Messages vẫn gửi
+prompt điện thoại. Gọi `zalo_sync_status` với `jobId` mỗi vài giây; bỏ ID xem
+job mới nhất hoặc idle. `completed` chỉ nghĩa runner đã trả: phải xem
+`result.reason`, số tin đã lưu và coverage để phân biệt restore đầy đủ/dở.
+Thử lại cùng `requestId` và tham số sẽ lấy job cũ khi còn được giữ.
+
+Job dùng socket và khóa chung với CLI sync/history/self-heal, giữ mười job gần
+nhất trong RAM, mất khi restart; không có tool hủy. Media, board, cloud và trạng
+thái hội thoại vẫn dùng CLI. Wrapper ghim 2.0.0 chưa có hai tool này: cần engine
+mới được phát hành và wrapper cập nhật. [Hướng dẫn đầy đủ](../../docs/mcp-sync.vi.md).
 
 ---
 
 ## Phạm vi tool — cái gì có, cái gì phải gọi CLI
 
-MCP server chỉ expose **12 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
+MCP server chỉ expose **14 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
 
 | Nhóm chức năng | MCP tool | Cách gọi qua CLI |
 |---|---|---|
@@ -408,7 +430,7 @@ MCP server chỉ expose **12 tool cho tài khoản cá nhân**. Mọi thứ còn
 | Hồ sơ (11 lệnh) | — | `zalo-agent --json profile …` |
 | Khảo sát, nhắc nhở, trả lời tự động, tin nhắn nhanh, nhãn, catalog | — | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
 | Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
-| Khôi phục lịch sử từ điện thoại | — | `zalo-agent sync` hoặc `zalo-agent sync-mobile` (ping điện thoại, cần xác nhận một lần; không cần dừng `mcp start`) |
+| Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |
 | Đọc lịch sử từ cache cục bộ | `zalo_get_history` (đọc `zalo.db` trước, rồi mới hỏi server) | `zalo-agent --json msg history <id>` (đọc `zalo.db`) |
 | Official Account (32 lệnh) | — | `zalo-agent --json oa …` |
 
@@ -473,7 +495,7 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP) — registerTools() đăng ký cả 12 tools
+MCP Server (stdio hoặc HTTP) — registerTools() đăng ký cả 14 tools
      ↓
 Claude Code / MCP Client
 ```

@@ -1,8 +1,8 @@
 /**
  * MCP tool registrations for Zalo message access and sending.
- * Registers 12 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * Registers 14 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
- * zalo_list_conversations, zalo_coverage.
+ * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js), so the two cannot
@@ -24,6 +24,7 @@ import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 
 /**
  * Resolve a thread's type the way the CLI does.
@@ -270,8 +271,9 @@ function cacheHistory(threadId, limit, before, nameCache) {
  * @param {string} [accountDir] - account data dir; media is fetched into <accountDir>/media
  * @param {ReturnType<import("../core/daemon-channel.js").createStageLock>} [stageLock] - the
  *   daemon's one-stage-at-a-time lock; a server-side history fetch takes it, as `listen`'s does
+ * @param {object} [syncJobs] - the daemon's account-local sync job tracker
  */
-export function registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock) {
+export function registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs) {
     const maxPerPoll = config.limits?.maxMessagesPerPoll ?? 20;
 
     // Several bots can share one listener, each with its own read cursor
@@ -297,7 +299,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "not marked read (see zalo_mark_read). Use 'since' cursor from previous response for incremental polling. " +
                 "Each message's `readOnZalo` says whether the account itself has already read it on Zalo -- the " +
                 "human, on the phone or Zalo Web -- and is null when the listener has not heard; zalo_mark_read " +
-                "does not change it.",
+                "does not change it. Use senderDisplayName for the current label (your alias, then Zalo profile name, " +
+                "then UID); senderDisplayNameSource reports alias/zalo/uid. senderName remains the historical snapshot.",
             inputSchema: z.object({
                 threadId: z.string().optional().describe("Thread ID to read from. Omit for all watched threads."),
                 since: z
@@ -322,6 +325,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         if (info) msg.threadName = info.name;
                     }
                 }
+                const dmIds = result.messages
+                    .filter((m) => (nameCache?.get(m.threadId)?.type || buffer.getThreadType?.(m.threadId)) === "dm")
+                    .map((m) => m.threadId);
+                result.messages = await withCurrentSenderNames(api, result.messages, dmIds);
                 // Whether the human already read each one, from its
                 // conversation's read watermark (src/core/read-state.js).
                 const watermarks = new Map();
@@ -537,6 +544,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             try {
                 // Unread is per consumer: after what this consumer marked read.
                 const stats = buffer.getStats(buffer.readCursor(consumer));
+                const dmNames = await resolveCurrentUserNames(
+                    api,
+                    stats.filter((t) => buffer.getThreadType(t.threadId) === "dm").map((t) => t.threadId),
+                );
                 const reads = readStatesOf(
                     api,
                     stats.map((t) => String(t.threadId)),
@@ -548,7 +559,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     return {
                         ...t,
                         threadType,
-                        name: cached?.name ?? null,
+                        name: dmNames.get(String(t.threadId))?.name ?? cached?.name ?? null,
                         ...(cached?.memberCount !== undefined && { memberCount: cached.memberCount }),
                         readState: describeReadState(reads.get(String(t.threadId))),
                     };
@@ -583,6 +594,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 if (!nameCache?.ready) {
                     return err("Thread name cache not initialized yet. Try again shortly.");
                 }
+                await nameCache.refreshUsers?.(api);
                 const results = nameCache.search(query, type, limit);
                 return ok({ results, total: results.length });
             } catch (e) {
@@ -628,6 +640,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             title: "Get Zalo Message History",
             description:
                 "Fetch historical messages from a Zalo DM or group conversation. " +
+                "senderName preserves the historical snapshot; senderDisplayName resolves the current label by UID " +
+                "(your alias, then Zalo profile name, then UID), with senderDisplayNameSource alias/zalo/uid. " +
                 "Reads the local cache first (everything the listener and `zalo-agent sync` " +
                 "have stored, which can be the full history), and falls back to asking the Zalo server " +
                 "when the cache has nothing for the thread: a group's cloud-message store first, then the " +
@@ -670,7 +684,14 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // request on current accounts, while the cache holds whatever
                 // the listener saw and whatever a transfer sync restored.
                 const cached = cacheHistory(threadId, limit, before, nameCache);
-                if (cached) return ok(cached);
+                if (cached) {
+                    cached.messages = await withCurrentSenderNames(
+                        api,
+                        cached.messages,
+                        threadType === THREAD_USER ? [threadId] : [],
+                    );
+                    return ok(cached);
+                }
 
                 // Nothing cached: ask Zalo through the one shared fetch `listen`'s
                 // daemon uses for `msg history` (src/core/history-fetch.js): a
@@ -732,7 +753,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     // Which Zalo path answered: a group's cloud-message store, or the socket stream.
                     via: fetched.source,
                     count: allMessages.length,
-                    messages: allMessages,
+                    messages: await withCurrentSenderNames(
+                        api,
+                        allMessages,
+                        threadType === THREAD_USER ? [threadId] : [],
+                    ),
                     cursor,
                     hasMore: Boolean(fetched.more) || (fetched.source === "socket" && allMessages.length >= limit),
                     filtered: fetched.filtered === true,
@@ -1034,6 +1059,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         async ({ type, limit }) => {
             try {
                 const threads = recentConversations(limit, type);
+                const dmNames = await resolveCurrentUserNames(
+                    api,
+                    threads.filter((t) => t.type !== "group").map((t) => String(t.threadId)),
+                );
                 const reads = readStatesOf(
                     api,
                     threads.map((t) => String(t.threadId)),
@@ -1045,7 +1074,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         threadId: String(t.threadId),
                         type: isGroup ? "group" : "dm",
                         threadType: isGroup ? THREAD_GROUP : THREAD_USER,
-                        name: t.name || nameCache?.get(String(t.threadId))?.name || null,
+                        name:
+                            dmNames.get(String(t.threadId))?.name ||
+                            t.name ||
+                            nameCache?.get(String(t.threadId))?.name ||
+                            null,
                         lastActivity: ts,
                         lastActivityAt: ts ? new Date(ts).toISOString() : null,
                         readState: describeReadState(reads.get(String(t.threadId))),
@@ -1078,7 +1111,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "this account's connection to Zalo was down, so messages from them may be missing — with each " +
                 "gap's from/to and reason, counts the gaps already resolved, and names the `zalo-agent sync --from " +
                 "<date>` run that restores the pending ones from the owner's phone (it needs a tap on the phone, " +
-                "so a person runs it). Read-only: nothing is sent to Zalo.",
+                "so the owner must approve it). Use zalo_sync only when the owner asks to restore. " +
+                "Read-only: nothing is sent to Zalo.",
             inputSchema: z.object({}),
         },
         async () => {
@@ -1086,6 +1120,102 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return ok(coverageReport());
             } catch (e) {
                 console.error("[mcp-tools] zalo_coverage error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // An explicit start returns immediately; phone-backed restores can take minutes.
+    server.registerTool(
+        "zalo_sync",
+        {
+            title: "Request Zalo Sync",
+            description:
+                "Start a messages restore or reaction-backlog sync on this MCP account's existing socket. " +
+                "Only call when the owner explicitly requests sync; messages sends a confirmation to their phone. " +
+                "Returns a job immediately: poll zalo_sync_status every few seconds. Reuse requestId for retries. " +
+                "This updates the local cache, not Zalo messages. Messages restores all conversations in the window; " +
+                "it is not a per-thread sync. No media download, boards, cloud index or conversation-state sync.",
+            inputSchema: z
+                .object({
+                    requestId: z
+                        .string()
+                        .min(1)
+                        .max(64)
+                        .regex(/^[A-Za-z0-9._:-]+$/)
+                        .describe(
+                            "Unique request key; reuse the same key and arguments after a timeout to avoid duplicate sync.",
+                        ),
+                    stage: z.enum(["messages", "reactions"]).default("messages"),
+                    days: z
+                        .number()
+                        .int()
+                        .min(1)
+                        .max(36500)
+                        .optional()
+                        .describe("Restore the last N days; omit both days and from for full phone history."),
+                    from: z
+                        .string()
+                        .regex(/^\d{4}-\d{2}-\d{2}$/)
+                        .refine((value) => {
+                            const time = Date.parse(value + "T00:00:00Z");
+                            return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+                        }, "Use a valid YYYY-MM-DD date")
+                        .optional()
+                        .describe("Restore since this UTC date, e.g. the date from zalo_coverage."),
+                    waitMs: z
+                        .number()
+                        .int()
+                        .min(30000)
+                        .max(600000)
+                        .optional()
+                        .describe("Per-phase wait budget in milliseconds."),
+                    applyRemovals: z
+                        .boolean()
+                        .optional()
+                        .describe("Reactions only: apply observed removals; defaults to true."),
+                })
+                .strict()
+                .refine(
+                    (value) => !(value.days !== undefined && value.from !== undefined),
+                    "Choose days or from, not both",
+                )
+                .refine(
+                    (value) => value.stage !== "reactions" || (value.days === undefined && value.from === undefined),
+                    "Reactions sync has no date window",
+                )
+                .refine(
+                    (value) => value.stage !== "messages" || value.applyRemovals === undefined,
+                    "applyRemovals is reactions-only",
+                ),
+            annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+        },
+        async (args) => {
+            try {
+                if (!syncJobs) throw new Error("Sync is unavailable in this server; restart with a compatible engine.");
+                return ok(syncJobs.start(args));
+            } catch (e) {
+                return err(e.message);
+            }
+        },
+    );
+
+    server.registerTool(
+        "zalo_sync_status",
+        {
+            title: "Zalo Sync Status",
+            description:
+                "Read sync progress and the final result without starting or repeating sync. Omit jobId for the latest " +
+                "job (or idle). Completed means the runner returned: inspect result.reason for partial/timeout/socket loss, " +
+                "not proof that all history was restored. Last ten jobs are kept in memory until daemon restart.",
+            inputSchema: z.object({ jobId: z.string().uuid().optional() }).strict(),
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        },
+        async ({ jobId }) => {
+            try {
+                if (!syncJobs) throw new Error("Sync is unavailable in this server; restart with a compatible engine.");
+                return ok(syncJobs.status(jobId));
+            } catch (e) {
                 return err(e.message);
             }
         },

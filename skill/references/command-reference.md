@@ -4,6 +4,9 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 
 ## Global Behavior
 
+- **Daemon account selection (unreleased):** `listen --account <id>` and `mcp start --account <id>` pin an exact, full numeric registered account ID for startup, reconnect and retry. Omitting the flag pins the active account at startup. Names, partial IDs and empty values are refused; the shared active account is never changed. The selected account's lock is acquired before authentication, and a mismatched authenticated UID is rejected. This is not a global flag. See [English](../../docs/account-pinning.md) / [Tiếng Việt](../../docs/account-pinning.vi.md).
+- **Current versus historical names (unreleased):** `msg history`, MCP history and buffered-message reads preserve `senderName` and add `senderDisplayName` plus `senderDisplayNameSource` (`alias`, `zalo`, `uid`). Display uses this account's explicit alias, then the fresh profile's `zaloName`, then UID; it never rewrites the message snapshot. CLI text history prints the current label. Sync refreshes cached DM titles even outside the restored message window without changing activity timestamps. See [English](../../docs/current-user-names.md) / [Tiếng Việt](../../docs/current-user-names.vi.md) for failure behavior and restoration limits.
+
 - **`--json`** (global flag, works before any command) — machine-readable JSON output for every command. Also suppresses the startup disclaimer and the "Note:"/`info()` lines that would otherwise print to stdout.
 - **`-V, --version`** — print the installed version.
 - **`-h, --help`** — help for the CLI or any subcommand (`zalo-agent <group> --help`).
@@ -319,7 +322,7 @@ Requires a Zalo Shop / zBusiness account.
 
 **Via the `zalo-mcp` wrapper:** `node mcp-server.js` spawns exactly this command, but forwards **only** `--http` and `--auth`. `--host` and `--config` are dropped silently, and the wrapper runs whichever CLI version its `package.json` pins — so a tool added here is not reachable through the wrapper until that pin is bumped and released. Tool list identical; flag list and version are not.
 
-**12 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools" or "7 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
+**14 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools" or "7 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -335,6 +338,10 @@ Requires a Zalo Shop / zBusiness account.
 | `zalo_get_group_members` | A group's members, as `group members` lists them (`getGroupInfo`, uids out of `memVerList`), each with a `displayName`: the local cache's, else Zalo's (`getGroupMembersInfo`, the lookup `msg send` uses for mentions, 50 uids per request). Nothing is written to `zalo.db`. `totalMember` is Zalo's own count; a group missing from Zalo's answer is an error, not an empty list | `groupId` |
 | `zalo_list_conversations` | Recent conversations from the local cache, newest first — `conv recent`'s cache path, through the same function: `threadId`, `type` (`dm`/`group`), `threadType` (0/1), `name`, `lastActivity` (epoch ms), `lastActivityAt` (ISO) and `readState` (how far the account itself has read it on Zalo, as `conv recent --json` reports it, or `null`). `limit` is **per type**, as `conv recent -n` is. Cache only: an empty cache answers with an empty list and a `note`, not a network call | `type` (`dm`/`group`/`all`, default `all`), `limit` (default 20, max 200) |
 | `zalo_coverage` | Read-only coverage report from `zalo.db`'s `sync_gaps`: every pending gap (`from`, `to`, `reason`, `span`), `resolvedCount`, and `command` — the one `zalo-agent sync --from <YYYY-MM-DD>` run, dated from the oldest pending gap's UTC day, that restores them all (the same dating `listen` prints). The run needs a tap on the owner's phone; the tool only reports. Nothing is sent to Zalo | — |
+| `zalo_sync` | Explicitly requested sync on this MCP account's existing socket. Returns a job immediately; messages requires phone confirmation, reactions drains the backlog. Shared stage lock, no second socket. Retry the same requestId and parameters while retained to avoid repeating a prompt | `requestId` (1–64 safe characters), `stage` (`messages` default or `reactions`), `days?` (1–36500) **or** `from?` (YYYY-MM-DD UTC, messages only; omit both for full history), `waitMs?` (30000–600000 per phase), `applyRemovals?` (reactions only; default true) |
+| `zalo_sync_status` | Read-only latest job/idle, or a specific job. Reports bounded progress, `running`/`completed`/`failed`, final result/error. A returned partial outcome stays partial. Last ten jobs survive requests, not daemon restarts; no cancellation or automatic retry | `jobId?` (returned UUID) |
+
+See [MCP sync](../../docs/mcp-sync.md) / [Tiếng Việt](../../docs/mcp-sync.vi.md) for examples, retention and release prerequisites. Only the owner's explicit request authorizes `zalo_sync`; coverage reads never start it. Bulk media, boards, cloud and conversation-state sync remain CLI-only.
 
 **MCP config** (`~/.zalo-agent-cli/mcp-config.json`, shallow-merged per top-level key over these defaults):
 
@@ -452,9 +459,9 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `label` | 2 |
 | `catalog` | 9 |
 | `listen` | 1 |
-| `mcp start` | 1 (exposing 12 MCP tools) |
+| `mcp start` | 1 (exposing 14 MCP tools) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **190 CLI commands** + 12 MCP tools |
+| **Total** | **190 CLI commands** + 14 MCP tools |
 
 ## Provenance
 

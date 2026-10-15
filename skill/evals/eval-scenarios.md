@@ -3,6 +3,21 @@
 Test scenarios to verify skill works correctly with any LLM backend.
 Each scenario: user prompt → expected step-by-step reasoning → validation criteria.
 
+## Owner-requested MCP sync
+
+Prompt: "Restore the last seven days through MCP." Expected: call `zalo_sync`
+with a unique requestId, stage messages and days 7; explain phone confirmation;
+poll `zalo_sync_status`. Retry a lost response using the same key and arguments.
+Report partial/timeout/socket-lost outcomes accurately; inspect coverage afterward.
+A coverage check alone must never initiate restore. Reactions may be requested
+separately; bulk media, boards, cloud and conversation state still use the CLI.
+
+Tiếng Việt: "Khôi phục bảy ngày gần nhất qua MCP." Gọi `zalo_sync` với requestId
+riêng, stage messages và days 7; hướng dẫn xác nhận điện thoại, xem tiến độ qua
+`zalo_sync_status`. Mất response thì dùng lại khóa/tham số. Báo đúng restore dở
+và kiểm tra coverage; không tự sync chỉ vì có gap. Phản ứng sync riêng;
+media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI.
+
 ## How to Use
 1. Load the skill (SKILL.md + references) into your agent
 2. Send the user prompt to the agent

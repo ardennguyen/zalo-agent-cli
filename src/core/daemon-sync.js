@@ -69,8 +69,8 @@ export function createSyncRunners({ getApi, accountName }) {
          *
          * Still prompts the owner's phone exactly once — routing through the
          * daemon removes the second WebSocket, not the confirmation. The
-         * daemon never calls this on its own; only a `zalo-agent sync` the
-         * owner typed reaches it.
+         * daemon never calls this on its own; an explicit CLI sync or MCP
+         * sync request authorized by the owner reaches it.
          *
          * @param {{days?: number|null, from?: string|number, waitMs?: number,
          *   shardSize?: number, waveSize?: number}} params

@@ -1,0 +1,88 @@
+# Sync qua MCP
+
+[English](mcp-sync.md)
+
+Tính năng trong source, chưa phát hành. Engine có 14 tool, gồm `zalo_sync` và
+`zalo_sync_status`. Wrapper deploy vẫn ghim engine 2.0.0: cần phát hành engine
+mới và cập nhật wrapper để dùng. Chọn tài khoản theo ID thuộc engine PR #3
+riêng; các tool này chỉ dùng tài khoản MCP process đang giữ, không đổi tài khoản.
+
+Đề xuất thứ tự phát hành: merge tính năng engine, phát hành engine **2.1.0**,
+rồi wrapper **1.1.0** với dependency **^2.0.1** như
+[wrapper PR #1](https://github.com/ardennguyen/zalo-mcp/pull/1). Dải này nhận
+các bản 2.x tương thích, không nhận 3.x. Đã xác minh npm mới có 2.0.0 ngày
+2026-10-15 nên chưa resolve được dải mới (ETARGET); tạo lại lockfile wrapper
+sau khi phát hành. Đây là khuyến nghị, chưa phát hành phiên bản nào.
+
+## Cách dùng
+
+Chỉ gọi `zalo_sync` khi chủ tài khoản yêu cầu đồng bộ rõ ràng. Kết quả coverage
+hoặc tìm kiếm thiếu tin tự nó không cho phép gửi yêu cầu xác nhận tới điện thoại.
+
+```json
+{"requestId":"restore-october-1","stage":"messages","from":"2026-10-01"}
+```
+
+Tool trả ngay `jobId`, `state: "running"` và `phoneConfirmationRequired: true`.
+Báo chủ tài khoản xác nhận trong ứng dụng Zalo trên điện thoại. Gọi
+`zalo_sync_status` với `{"jobId":"<jobId vừa nhận>"}` mỗi vài giây. Bỏ jobId để
+xem job mới nhất hoặc `{"state":"idle"}`.
+
+Messages nhận `days` (số nguyên dương, tối đa 36500) **hoặc** `from` (ngày UTC
+hợp lệ YYYY-MM-DD). Bỏ cả hai để lấy mọi lịch sử điện thoại còn giữ. Khoảng
+thời gian áp dụng cho tất cả hội thoại, không giới hạn một nhóm. `waitMs` tùy
+chọn từ 30000–600000 ms là ngân sách chờ mỗi giai đoạn, không phải toàn job.
+
+Đồng bộ hàng đợi phản ứng:
+
+```json
+{"requestId":"reactions-october-1","stage":"reactions","applyRemovals":true}
+```
+
+Reactions không có khoảng ngày hay prompt khôi phục trên điện thoại.
+`applyRemovals` mặc định true, chỉ áp dụng sự kiện gỡ phản ứng đã nhận vào cache
+cục bộ. Không gửi phản ứng hay sửa tin trên Zalo. Kết quả là các bộ đếm runner
+và `socketAlive`. Đây chưa phải sync tổng hợp CLI: trạng thái hội thoại, board,
+cloud index và media hàng loạt vẫn dùng CLI.
+
+## Kết quả và thử lại
+
+`completed` nghĩa là stage đã trả kết quả, không chứng minh khôi phục đầy đủ.
+Kiểm tra `result.reason`, `confirmed`, số tin đã lưu và `zalo_coverage` sau đó.
+Phải báo đúng kết quả `partial`, `timeout`, `socket-lost` hoặc chưa xác nhận.
+Runner giữ dữ liệu đã nhận; bộ theo dõi job không thêm thao tác ghi database.
+Lỗi trả `state: "failed"` và `error`; luôn nhả khóa stage.
+
+Dùng `requestId` riêng dài 1–64 ký tự (`A-Z a-z 0-9 . _ : -`) cho lần chạy mới.
+Sau timeout phía client, thử lại cùng khóa **và tham số**: khi job còn được giữ,
+tool trả job cũ, không khởi động sync hay gửi prompt lần nữa. Đổi tham số với
+cùng khóa sẽ báo lỗi. Stage đang bận trả lỗi MCP ngay, không xếp hàng hay tự retry.
+
+Process chỉ giữ mười job gần nhất và hai mươi sự kiện tiến độ gần nhất mỗi job
+trong RAM. Job, kết quả và chống lặp mất khi restart hoặc bị thay thế. Nếu mất
+response khởi động, xem job mới nhất. Sau khi daemon restart, kiểm tra coverage
+trước khi quyết định sync lại. Đóng request MCP không hủy job. Chưa có tool hủy
+vì runner chưa có cơ chế abort an toàn; không tạo job mới để hủy job cũ. Dừng
+daemon ngắt công việc và có thể để lại restore dở; không hứa tự resume.
+
+## Kiến trúc, bảo mật và kiểm thử
+
+`mcp start` tạo một `createSyncJobs` dùng chung cho stdio và HTTP. HTTP tạo MCP
+server mới mỗi request nhưng giữ chung bộ theo dõi job. Hai tool dùng đúng
+`createSyncRunners` của daemon channel CLI, lấy API hiện tại mỗi lần chạy và
+giữ chung khóa stage với history/self-heal. Không thêm login, WebSocket,
+kết nối database hay writer thứ hai. Reconnect cập nhật các lần chạy sau;
+mất socket giữa restore có thể kết thúc dở như CLI sync qua daemon hiện tại.
+
+Tool dùng quyền MCP hiện có: cùng bearer token HTTP cho phép sync; stdio dùng
+quyền process cục bộ của client. Không có ranh giới quyền riêng từng bot.
+`zalo_sync_status` chỉ đọc, không liên hệ Zalo. Log vẫn ở stderr; không lưu job
+bền vững hay migration schema. Rollback bằng engine đã phát hành trước đó và
+restart client theo [hướng dẫn deploy](deployment.md).
+
+Kiểm thử offline gồm kiểm tra tham số qua SDK, khóa chống chạy chồng, retry
+không lặp, giới hạn lưu trữ, lỗi/kết quả dở, cô lập trạng thái tài khoản và chọn
+session hiện tại. Transport stdio thật và HTTP stateless dùng runner giả, dữ
+liệu giả. Chưa chạy sync điện thoại thật hay deploy. Trước phát hành, maintainer
+nên yêu cầu restore ngắn, xác nhận điện thoại, xem tiến độ tới khi xong và kiểm
+tra coverage, rồi thử ngắt restore; dùng tài khoản test ngoài production.

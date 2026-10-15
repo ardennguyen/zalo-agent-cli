@@ -17,7 +17,7 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8
 /**
  * Create HTTP MCP server with optional bearer token auth.
  * @param {Function} registerToolsFn - Registers tools on a McpServer instance
- * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir }
+ * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs }
  * @param {number} port
  * @param {string|null} authToken - Bearer token (null = no auth)
  * @returns {import("http").Server}
@@ -53,6 +53,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 deps.nameCache,
                 deps.accountDir,
                 deps.stageLock,
+                deps.syncJobs,
             );
 
             const transport = new StreamableHTTPServerTransport({

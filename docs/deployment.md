@@ -1,5 +1,10 @@
 # Production deployment — `zalo-agent-cli` + `zalo-mcp` as a smart autobot
 
+**Unreleased source addition (2026-10-15):** owner-requested MCP sync now has
+`zalo_sync` and `zalo_sync_status`, sharing the existing socket/stage lock.
+The wrapper pin 2.0.0 does not include them. See [usage, security and rollout](mcp-sync.md)
+/ [Tiếng Việt](mcp-sync.vi.md). This source change does not update a deployment.
+
 **Status:** re-verified 2026-09-30 against the code that became `zalo-agent-cli` `2.0.0`, and updated 2026-10-13 for its publication: `2.0.0` is on npm, and the `zalo-mcp` wrapper's `1.0.16` depends on it. First written 2026-09-29.
 **Licensing:** from 2.0.1 this software is licensed CC BY-NC-SA 4.0; use in a company's business operations needs a separate commercial license (see [NOTICE](../NOTICE)).
 **Audience:** whoever runs this on a server and gets paged when it stops.
@@ -49,7 +54,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 >
 > | | `listen` | `mcp start` |
 > |---|---|---|
-> | MCP tool surface (the 12 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
+> | MCP tool surface (the 14 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
 > | HTTP `/health` | no | **yes** (`--http` only) |
 > | `--webhook <url>` outbound fan-out | **yes** | no |
 > | `--save <dir>` JSONL archive | **yes** | no |

@@ -433,4 +433,50 @@ describe("createHTTPServer — HTTPS with TLS cert & key", () => {
         const refreshed = JSON.parse(refreshRes.body);
         assert.ok(refreshed.access_token.startsWith("zmcp_at_"));
     });
+
+    it("supports multiple OAuth clients (oauth.clients[]) for concurrent Gemini and CRM integration", async () => {
+        const tls = generateSelfSignedTls();
+        const deps = {
+            api: {},
+            buffer: { getStats: () => [] },
+            filter: {},
+            config: {},
+            nameCache: null,
+            accountDir: ".",
+        };
+        const server = createHTTPServer(() => {}, deps, 0, "master-s3cret", "127.0.0.1", tls, {
+            clientId: "gemini-client",
+            clientSecret: "gemini-s3cret",
+            clients: [{ clientId: "crm-backend", clientSecret: "crm-s3cret" }],
+        });
+        servers.push(server);
+        if (!server.listening) await once(server, "listening");
+        const port = server.address().port;
+
+        // CRM client exchanges client_credentials with its own secret
+        const crmRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "client_credentials",
+                client_id: "crm-backend",
+                client_secret: "crm-s3cret",
+            }).toString(),
+        });
+        assert.equal(crmRes.status, 200);
+        const crmTok = JSON.parse(crmRes.body);
+        assert.ok(crmTok.access_token.startsWith("zmcp_at_"));
+
+        // Wrong secret for crm-backend is rejected
+        const badRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "client_credentials",
+                client_id: "crm-backend",
+                client_secret: "wrong-secret",
+            }).toString(),
+        });
+        assert.equal(badRes.status, 401);
+    });
 });

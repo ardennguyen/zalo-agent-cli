@@ -17,6 +17,8 @@ import {
     getDefaultConfig,
     loadMCPConfig,
     readMCPConfig,
+    resolveAccountMCPConfig,
+    envForAccount,
     saveMCPConfig,
     parseDuration,
 } from "../../src/mcp/mcp-config.js";
@@ -221,5 +223,66 @@ describe("readMCPConfig -- what mcp start refuses instead of serving the default
         assert.equal(r.problem, null);
         assert.deepEqual(r.config, loadMCPConfig());
         assert.deepEqual(r.config.watchThreads, ["group:Only*"]);
+    });
+});
+
+describe("envForAccount & resolveAccountMCPConfig — multi-account CRM readiness", () => {
+    it("prefers <KEY>_<accountId> over <KEY> and trims whitespace", () => {
+        const fakeEnv = {
+            ZALO_MCP_AUTH_TOKEN: "global-token",
+            ZALO_MCP_AUTH_TOKEN_1001: "  account-1001-token  ",
+        };
+        assert.equal(envForAccount("ZALO_MCP_AUTH_TOKEN", "1001", fakeEnv), "account-1001-token");
+        assert.equal(envForAccount("ZALO_MCP_AUTH_TOKEN", "2002", fakeEnv), "global-token");
+        assert.equal(envForAccount("ZALO_MCP_MISSING", "1001", fakeEnv), null);
+    });
+
+    it("merges config.accounts[accountId] and <accountDir>/mcp-config.json over top-level config", () => {
+        const base = {
+            ...getDefaultConfig(),
+            watchThreads: ["dm:*"],
+            tls: { cert: "/global/cert.pem", key: "/global/key.pem" },
+            accounts: {
+                1001: {
+                    httpPort: 3101,
+                    oauth: { clientId: "crm-1001", clientSecret: "sec-1001" },
+                },
+            },
+        };
+        const acctDir = join(CONFIG_DIR, "accounts", "1001");
+        mkdirSync(acctDir, { recursive: true });
+        writeFileSync(
+            join(acctDir, "mcp-config.json"),
+            JSON.stringify({
+                watchThreads: ["group:ACME*"],
+                webhook: "https://crm.example.com/hook/1001",
+            }),
+            "utf-8",
+        );
+
+        const { config, problem } = resolveAccountMCPConfig(base, {
+            accountId: "1001",
+            accountDir: acctDir,
+            explicitConfigPath: null,
+        });
+        assert.equal(problem, null);
+        assert.equal(config.httpPort, 3101);
+        assert.equal(config.oauth.clientId, "crm-1001");
+        assert.equal(config.tls.cert, "/global/cert.pem");
+        assert.deepEqual(config.watchThreads, ["group:ACME*"]);
+        assert.equal(config.webhook, "https://crm.example.com/hook/1001");
+    });
+
+    it("reports a problem when <accountDir>/mcp-config.json exists and is invalid JSON", () => {
+        const acctDir = join(CONFIG_DIR, "accounts", "1002");
+        mkdirSync(acctDir, { recursive: true });
+        writeFileSync(join(acctDir, "mcp-config.json"), "{ invalid json", "utf-8");
+
+        const { problem } = resolveAccountMCPConfig(getDefaultConfig(), {
+            accountId: "1002",
+            accountDir: acctDir,
+            explicitConfigPath: null,
+        });
+        assert.match(problem, /per-account config file .* is not valid JSON/);
     });
 });

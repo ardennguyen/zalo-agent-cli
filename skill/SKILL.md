@@ -234,11 +234,11 @@ zalo-agent mcp start --http <port> --auth <token>   # Bearer token auth (HTTP mo
 zalo-agent mcp start --http <port> --host 0.0.0.0   # Bind address (default 127.0.0.1)
 zalo-agent mcp start --config <path>                # Custom config (default ~/.zalo-agent-cli/mcp-config.json)
 ```
-The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **21-tool MCP surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
+The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **23-tool MCP surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
 
 To run **multiple Zalo accounts live at once**, launch one MCP server per account with `--account <ID>` (e.g. multiple entries in `.claude/settings.json` `mcpServers` for stdio, or separate `--http <port>` instances on a VPS) and pass `--account <ID>` when shelling out to CLI commands. See `references/mcp-guide.md`.
 
-**MCP tools exposed (21 — personal account only):**
+**MCP tools exposed (23 — personal account only):**
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
@@ -263,6 +263,8 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_reminder` | Create, list, inspect, view responses, edit, or remove reminders in a DM or group | `action`, `threadId?`, `reminderId?`, `title?`, `time?`, `repeat?` |
 | `zalo_note` | Create/edit group notes, list group board items, or pin/unpin a cached text message | `action`, `groupId?`, `threadId?`, `noteId?`, `title?`, `pin?`, `msgId?` |
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll | `action`, `groupId?`, `pollId?`, `question?`, `options?`, `optionIds?` |
+| `zalo_wait_for_message` | Long-poll the live message buffer for the next incoming watched message without manual polling (mirrors `GET /events/wait`) | `threadId?`, `since?`, `timeoutSec` (default 55, max 300) |
+| `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) | `action` (`list`｜`assign`｜`unassign`｜`update`), `labelId?`, `labelText?`, `threadId?`, `threadIds?`, `labelData?`, `version?` |
 
 Sync requests share the daemon socket and lock. Reuse requestId and arguments after a timeout; keep polling the same job. Ten jobs are held in RAM, lost on restart. No safe cancellation is exposed. Never initiate restore merely because coverage reports a gap. [Details](../docs/mcp-sync.md) / [Tiếng Việt](../docs/mcp-sync.vi.md).
 
@@ -270,7 +272,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 
 | Capability | MCP tool | CLI fallback |
 |------------|----------|--------------|
-| Read live messages | `zalo_get_messages` | `zalo-agent --json listen` |
+| Read live messages | `zalo_get_messages`, `zalo_wait_for_message` | `zalo-agent --json listen` |
 | Read older history | `zalo_get_history` | `zalo-agent --json msg history <id>` |
 | Search cached message text | `zalo_search_messages` | — |
 | Send text, link preview, contact card | `zalo_send_message` | `zalo-agent --json msg send\|send-link\|send-card …` |
@@ -283,13 +285,13 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Recall your own message | `zalo_undo` | `zalo-agent --json msg undo` |
 | Forward / delete a message | `zalo_forward_message`, `zalo_delete_message` | `zalo-agent --json msg forward\|delete` |
 | A group's members | `zalo_get_group_members` | `zalo-agent --json group members` |
-| Reminders, group notes & pins, group polls | `zalo_reminder`, `zalo_note`, `zalo_poll` | `zalo-agent --json reminder\|poll\|group note-*\|msg pin` |
+| Reminders, group notes & pins, group polls, labels | `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_label` | `zalo-agent --json reminder\|poll\|group note-*\|msg pin\|label` |
 | Is the cache complete? (coverage gaps) | `zalo_coverage` | — (`listen`/`mcp start` print each gap as it is filed) |
 | Owner-requested message/reaction sync | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-reactions` |
 | Send image / file / voice / video / sticker | **none** | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|sticker` |
 | Bank card / VietQR | **none** | `zalo-agent --json msg send-bank\|send-qr-transfer` |
 | Friend management, group admin, conversation settings, profile | **none** | `zalo-agent --json friend\|group\|conv\|profile …` |
-| Auto-reply, quick-msg, labels, catalog | **none** | `zalo-agent --json auto-reply\|quick-msg\|label\|catalog …` |
+| Auto-reply, quick-msg, catalog | **none** | `zalo-agent --json auto-reply\|quick-msg\|catalog …` |
 | Multi-account, devices, export | **none** | `zalo-agent --json account …` |
 | Official Account (all 32 commands) | **none** | `zalo-agent --json oa …` |
 

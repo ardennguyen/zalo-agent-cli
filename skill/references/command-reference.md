@@ -323,7 +323,7 @@ Requires a Zalo Shop / zBusiness account.
 
 **Via the `zalo-mcp` wrapper (`v2.0.0+`):** `zalo-mcp` (or `node mcp-server.js`) forwards **all** `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `-w`/`--webhook`, `--config`, `--no-delivered-receipts`, `--no-self-heal`, `-d`/`--daemon`, `--stop`, `--status`), all global storage/`.env` flags (`--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`), and any CLI subcommand (`zalo-mcp --account <id> msg send ...`). (Older `zalo-mcp` `1.x` releases forwarded only `--http` and `--auth`.) The wrapper runs the `@ardennguyen/zalo-agent-cli` version installed in its `node_modules/`.
 
-**21 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools", "7 tools", or "14 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
+**23 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools", "7 tools", or "14 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -348,17 +348,22 @@ Requires a Zalo Shop / zBusiness account.
 | `zalo_reminder` | Create, list, inspect, view responses, edit, or remove reminders in a DM or group, matching `reminder` subcommands | `action` (`create`｜`list`｜`info`｜`responses`｜`edit`｜`remove`), `threadId?`, `threadType?`, `reminderId?`, `title?`, `time?` (epoch-ms, `"YYYY-MM-DD HH:mm"`, or ISO), `emoji?`, `repeat?` (`none`｜`daily`｜`weekly`｜`monthly`), `page` (default 1), `count` (default 20) |
 | `zalo_note` | Create or edit group notes, list group board items, or pin/unpin a cached text message at the top of a conversation, matching `group note-create`/`note-edit` and `msg pin`/`unpin` | `action` (`create`｜`edit`｜`list`｜`pin_message`｜`unpin_message`), `groupId?`, `threadId?`, `threadType?`, `noteId?`, `title?`, `pin` (default `false`), `msgId?`, `page` (default 1), `count` (default 20) |
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll, matching `poll` subcommands | `action` (`create`｜`info`｜`vote`｜`unvote`｜`add_options`｜`lock`｜`share`), `groupId?`, `pollId?`, `question?`, `options?`, `optionIds?`, `multi`, `allowAddOptions`, `anonymous`, `hidePreview`, `expireMinutes?`, `voteNewOptions` |
+| `zalo_wait_for_message` | Long-poll the live MCP message buffer for the next incoming watched message without manual polling, mirroring `GET /events/wait` for remote HTTPS/OAuth2 MCP clients. Returns immediately (`status: "message"`, `message` with `threadName`, `cursor`) if a buffered message newer than `since` exists; otherwise waits up to `timeoutSec` seconds before returning `status: "timeout"` | `threadId?`, `since?` (buffer cursor), `timeoutSec` (default 55, max 300) |
+| `zalo_label` | List, assign, unassign, or raw-update Zalo conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`), matching `label list` and `label update` | `action` (`list`｜`assign`｜`unassign`｜`update`), `labelId?`, `labelText?`, `threadId?`, `threadIds?`, `labelData?`, `version?` |
 
 See [MCP sync](../../docs/mcp-sync.md) / [Tiếng Việt](../../docs/mcp-sync.vi.md) for examples, retention and release prerequisites. Only the owner's explicit request authorizes `zalo_sync`; coverage reads never start it. Bulk media, boards, cloud and conversation-state sync remain CLI-only.
 
-**MCP config** (`~/.zalo-agent-cli/mcp-config.json`, shallow-merged per top-level key over these defaults):
+**MCP config** (`~/.zalo-agent-cli/mcp-config.json`, plus per-account overrides in `accounts["<ownId>"]` and `~/.zalo-agent-cli/accounts/<ownId>/mcp-config.json`; environment variables support `<KEY>_<ownId>` per-account priority falling back to `<KEY>`):
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `watchThreads` | `["dm:*", "group:*"]` | Glob patterns for which threads to buffer at all |
 | `mode` | `"manual"` | Polling mode |
 | `triggerKeywords` | `["@bot"]` | Keywords that mark a message as needing attention |
-| `webhook` | `null` | Optional webhook URL to POST each watched incoming message to (overridden by `-w, --webhook <url>`) |
+| `webhook` | `null` | Optional webhook URL to POST each watched incoming message to (overridden by `-w, --webhook <url>` or `ZALO_WEBHOOK_URL[_<ownId>]`) |
+| `webhookSecret` | `null` | Optional shared secret for webhook POSTs (`Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>`, or `ZALO_WEBHOOK_SECRET[_<ownId>]`; also supported by `listen`) |
+| `httpPort` | `null` | Optional default HTTP/HTTPS port for this account (overridden by `--http <port>` or `ZALO_MCP_HTTP_PORT[_<ownId>]`) |
+| `host` | `null` (`"127.0.0.1"`) | Optional bind address when serving HTTP/HTTPS (overridden by `--host` or `ZALO_MCP_HOST[_<ownId>]`) |
 | `notify.enabled` | `false` | Send a Zalo-group notification summary when no MCP client is connected |
 | `notify.thread` | `null` | Group ID to notify |
 | `notify.on` | `["dm"]` | Event types to notify on |
@@ -369,11 +374,13 @@ See [MCP sync](../../docs/mcp-sync.md) / [Tiếng Việt](../../docs/mcp-sync.vi
 | `limits.bufferMaxSize` | `500` | Ring-buffer max messages per thread |
 | `media.downloadDir` | `null` → `accounts/<ownId>/media/<threadId>/` | Overrides the media root for the **MCP server** only. Left unset it writes exactly where every other command writes, so one conversation has one media folder — and that tree *is* removed by `logout --purge` / `account remove`. Set it to keep MCP media outside the account's data dir |
 | `media.autoOpen` | `true` | Default for `zalo_view_media`'s `open` param |
-| `tls.cert` | `null` | Optional PEM certificate path for HTTPS mode (overridden by `--cert <path>` or `ZALO_MCP_TLS_CERT`) |
-| `tls.key` | `null` | Optional PEM private key path for HTTPS mode (overridden by `--key <path>` or `ZALO_MCP_TLS_KEY`) |
-| `oauth.clientId` | `"zalo-mcp"` | OAuth 2.0 Client ID for remote MCP clients like Gemini Connected Apps (overridden by `--client-id` or `ZALO_MCP_OAUTH_CLIENT_ID`) |
-| `oauth.clientSecret` | `null` (falls back to `--auth` / `ZALO_MCP_AUTH_TOKEN`) | OAuth 2.0 Client Secret (prefer setting `ZALO_MCP_AUTH_TOKEN` or `ZALO_MCP_OAUTH_CLIENT_SECRET` in `~/.zalo-agent-cli/.env`) |
-| `oauth.issuerUrl` | `null` (inferred from request `Host`) | Optional explicit OAuth 2.0 issuer origin (e.g. `https://mcp.example.com:3100`) |
+| `tls.cert` | `null` | Optional PEM certificate path for HTTPS mode (overridden by `--cert <path>` or `ZALO_MCP_TLS_CERT[_<ownId>]`) |
+| `tls.key` | `null` | Optional PEM private key path for HTTPS mode (overridden by `--key <path>` or `ZALO_MCP_TLS_KEY[_<ownId>]`) |
+| `oauth.clientId` | `"zalo-mcp"` | Primary OAuth 2.0 Client ID for remote MCP clients like Gemini Connected Apps (overridden by `--client-id` or `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]`) |
+| `oauth.clientSecret` | `null` (falls back to `--auth` / `ZALO_MCP_AUTH_TOKEN[_<ownId>]`) | Primary OAuth 2.0 Client Secret (prefer setting `ZALO_MCP_AUTH_TOKEN[_<ownId>]` or `ZALO_MCP_OAUTH_CLIENT_SECRET[_<ownId>]` in `~/.zalo-agent-cli/.env`) |
+| `oauth.issuerUrl` | `null` (inferred from request `Host`) | Optional explicit OAuth 2.0 issuer origin (`ZALO_MCP_ISSUER_URL[_<ownId>]`, e.g. `https://mcp.example.com:3100`) |
+| `oauth.clients` | `[]` | Additional static OAuth 2.0 clients (`[{ "clientId": "crm-prod", "clientSecret": "..." }]`) so Gemini, CRM backends, and automation runners can authenticate concurrently with separate credentials |
+| `accounts["<ownId>"]` | `{}` | Per-account config overrides merged automatically when running `mcp start --account <ownId>` |
 
 ---
 

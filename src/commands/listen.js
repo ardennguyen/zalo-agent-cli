@@ -3,6 +3,7 @@
  * Production-ready with auto-reconnect and re-login.
  */
 
+import { createHmac } from "crypto";
 import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
@@ -39,6 +40,7 @@ import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
 import { describeGap } from "../core/sync-v2/gap-advice.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
+import { envForAccount } from "../mcp/mcp-config.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -381,13 +383,24 @@ export function registerListenCommand(program) {
                 return h > 0 ? `${h}h${m}m` : `${m}m${s % 60}s`;
             }
 
+            const webhookUrl = opts.webhook?.trim() || envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) || null;
+            const webhookSecret = envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId) || null;
+
             /** Fire-and-forget webhook POST — never blocks event processing */
             function postWebhook(data) {
-                if (!opts.webhook) return;
-                fetch(opts.webhook, {
+                if (!webhookUrl) return;
+                const payload = { accountId: activeAcc.ownId, ...data };
+                const body = JSON.stringify(payload);
+                const headers = { "Content-Type": "application/json" };
+                if (webhookSecret) {
+                    headers["Authorization"] = `Bearer ${webhookSecret}`;
+                    headers["X-Zalo-Signature"] =
+                        `sha256=${createHmac("sha256", webhookSecret).update(body).digest("hex")}`;
+                }
+                fetch(webhookUrl, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(data),
+                    headers,
+                    body,
                     signal: AbortSignal.timeout(5000),
                 }).catch((e) => {
                     console.error(`[listen] Webhook failed: ${e.message}`);
@@ -838,7 +851,7 @@ export function registerListenCommand(program) {
                 info(`Events: ${opts.events}`);
                 info("Auto-reconnect enabled.");
                 if (opts.filter !== "all") info(`Message filter: ${opts.filter}`);
-                if (opts.webhook) info(`Webhook: ${opts.webhook}`);
+                if (webhookUrl) info(`Webhook: ${webhookUrl}${webhookSecret ? " (signed)" : ""}`);
                 if (saveDir) info(`Save dir: ${saveDir} (JSONL per thread)`);
                 if (opts.autoAccept) info("Auto-accept friend requests: ON");
                 info(

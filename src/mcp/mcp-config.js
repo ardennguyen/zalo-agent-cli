@@ -41,8 +41,62 @@ export function getDefaultConfig() {
             clientId: null,
             clientSecret: null,
             issuerUrl: null,
+            clients: [],
+        },
+        webhookSecret: null,
+        httpPort: null,
+        host: null,
+    };
+}
+
+/**
+ * Deep-merge an override layer over a base MCP config object.
+ * @param {object} base
+ * @param {object} layer
+ * @returns {object}
+ */
+export function mergeMCPConfigLayer(base, layer) {
+    if (!layer || typeof layer !== "object") return base;
+    return {
+        ...base,
+        ...layer,
+        notify: { ...base.notify, ...(layer.notify || {}) },
+        limits: { ...base.limits, ...(layer.limits || {}) },
+        media: { ...base.media, ...(layer.media || {}) },
+        tls: { ...base.tls, ...(layer.tls || {}) },
+        oauth: {
+            ...base.oauth,
+            ...(layer.oauth || {}),
+            clients: Array.isArray(layer.oauth?.clients)
+                ? layer.oauth.clients
+                : Array.isArray(base.oauth?.clients)
+                  ? base.oauth.clients
+                  : [],
         },
     };
+}
+
+/**
+ * Resolve an environment variable with per-account priority:
+ * checks `<baseKey>_<accountId>` first (when `accountId` is provided), then `<baseKey>`.
+ *
+ * @param {string} baseKey - Base environment variable name (e.g. "ZALO_MCP_AUTH_TOKEN")
+ * @param {string|null|undefined} accountId - Zalo account ID (`ownId`)
+ * @param {NodeJS.ProcessEnv} [env=process.env] - Environment dictionary
+ * @returns {string|null} Trimmed non-empty string, or null
+ */
+export function envForAccount(baseKey, accountId, env = process.env) {
+    if (accountId !== undefined && accountId !== null && String(accountId).trim()) {
+        const scoped = env?.[`${baseKey}_${String(accountId).trim()}`];
+        if (typeof scoped === "string" && scoped.trim()) {
+            return scoped.trim();
+        }
+    }
+    const globalVal = env?.[baseKey];
+    if (typeof globalVal === "string" && globalVal.trim()) {
+        return globalVal.trim();
+    }
+    return null;
 }
 
 /**
@@ -61,16 +115,7 @@ export function loadMCPConfig(configPath) {
     try {
         const raw = readFileSync(configPath || mcpConfigFile(), "utf-8");
         const saved = JSON.parse(raw);
-        // Shallow merge: saved values override defaults
-        return {
-            ...defaults,
-            ...saved,
-            notify: { ...defaults.notify, ...saved.notify },
-            limits: { ...defaults.limits, ...saved.limits },
-            media: { ...defaults.media, ...saved.media },
-            tls: { ...defaults.tls, ...saved.tls },
-            oauth: { ...defaults.oauth, ...saved.oauth },
-        };
+        return mergeMCPConfigLayer(defaults, saved);
     } catch {
         // File doesn't exist or invalid JSON — use defaults
         return defaults;
@@ -105,6 +150,52 @@ export function readMCPConfig(configPath) {
         return { config: getDefaultConfig(), problem: `the config file ${file} is not valid JSON (${e.message})` };
     }
     return { config: loadMCPConfig(configPath), problem: null };
+}
+
+/**
+ * Resolve per-account MCP config overrides for `--account <ownId>`:
+ * 1. `baseConfig.accounts?.[accountId]` inside the main `mcp-config.json`
+ * 2. `<accountDir>/mcp-config.json` (when `explicitConfigPath` is not set and the file exists)
+ *
+ * If `<accountDir>/mcp-config.json` exists but is unreadable or invalid JSON, returns `problem`
+ * so `mcp start` refuses rather than falling back to defaults.
+ *
+ * @param {object} baseConfig - Config returned by `readMCPConfig`
+ * @param {{ accountId?: string|null, accountDir?: string|null, explicitConfigPath?: string|null }} [opts]
+ * @returns {{ config: object, problem: string|null }}
+ */
+export function resolveAccountMCPConfig(baseConfig, { accountId, accountDir, explicitConfigPath } = {}) {
+    let merged = baseConfig || getDefaultConfig();
+    const id = accountId !== undefined && accountId !== null ? String(accountId).trim() : "";
+    if (id && merged.accounts && typeof merged.accounts === "object" && merged.accounts[id]) {
+        merged = mergeMCPConfigLayer(merged, merged.accounts[id]);
+    }
+    if (!explicitConfigPath && accountDir) {
+        const perAccountFile = join(accountDir, "mcp-config.json");
+        let raw = null;
+        try {
+            raw = readFileSync(perAccountFile, "utf-8");
+        } catch (e) {
+            if (e.code !== "ENOENT") {
+                return {
+                    config: merged,
+                    problem: `cannot read the per-account config file ${perAccountFile} (${e.code || e.message})`,
+                };
+            }
+        }
+        if (raw !== null) {
+            try {
+                const parsed = JSON.parse(raw);
+                merged = mergeMCPConfigLayer(merged, parsed);
+            } catch (e) {
+                return {
+                    config: merged,
+                    problem: `the per-account config file ${perAccountFile} is not valid JSON (${e.message})`,
+                };
+            }
+        }
+    }
+    return { config: merged, problem: null };
 }
 
 /**

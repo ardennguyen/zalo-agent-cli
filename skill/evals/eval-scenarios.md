@@ -408,19 +408,21 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 
 ---
 
-## E26b: MCP — The `zalo-mcp` Wrapper Drops `--host`
+## E26b: MCP — Running Multiple Live Accounts Simultaneously (`--account <ID>`)
 
-**Prompt:** "I installed zalo-mcp and ran `node mcp-server.js --http 3847 --auth abc --host 0.0.0.0`, but my agent on another machine can't connect"
+**Prompt:** "How do I run two Zalo accounts live at the same time in MCP and CLI without them overwriting each other?"
 
 **Expected reasoning:**
-1. The wrapper forwards **only** `--http` and `--auth` — `--host` (and `--config`) are dropped silently, with no error
-2. So the server is still bound to `127.0.0.1` and is unreachable from any other machine; the symptom is a connection refusal, not a 401
-3. Fix: call the CLI directly — `zalo-agent mcp start --http 3847 --auth abc --host 0.0.0.0` — or use an SSH tunnel and keep the loopback bind
-4. Confirm with `curl http://<vps>:3847/health` from the remote machine (no token needed)
-5. Separately: the wrapper serves whatever CLI version its `package.json` pins, so a tool missing from the client's list may just mean a stale pin — check it and run the wrapper's `update`
+1. Each personal account has its own isolated SQLite cache (`<DATA_DIR>/<ownId>/zalo.db`), media folder, `daemon.lock`, and loopback channel (`daemon-channel.json`), while `listen` / `mcp start` hold one WebSocket per process
+2. Start one MCP server (or `listen`) process per account with `--account <ownId>` (or `ZALO_ACCOUNT=<ownId>`):
+   - In stdio mode (`.claude/settings.json`), configure two entries under `mcpServers` (e.g. `zalo-a` and `zalo-b`), each passing `["mcp", "start", "--account", "<ownId>"]` (or `zalo-mcp` with `["--account", "<ownId>"]`)
+   - In HTTP mode (VPS), run each account on its own `--http <port>` with `--account <ownId>` and `--auth <token>`
+3. For any CLI fallback command, pass `--account <ownId>` (or `ZALO_ACCOUNT=<ownId>`): e.g. `zalo-agent --account <ownId> msg send <threadId> "…" --json` (or `zalo-mcp --account <ownId> …`)
+4. `--account` pins the account for that process only and never mutates the shared `activeAccount` in `accounts.json`, avoiding race conditions across concurrent agents/scripts
+5. Recommend one dedicated proxy per account (`zalo-agent account login -p <proxy>`) to reduce ban risk
 
-**Must include:** that `--host` is not forwarded by the wrapper, the direct `zalo-agent mcp start` command as the fix, `/health` as the unauthenticated check
-**Must NOT:** Blame the firewall or the token first, claim the wrapper is a full pass-through, or suggest editing `mcp-server.js` in a deployed install
+**Must include:** one MCP process per account with `--account <ID>`, `--account <ID>` (or `ZALO_ACCOUNT`) on CLI commands, that `accounts.json` is not mutated
+**Must NOT:** Suggest calling `zalo-agent account switch` between concurrent requests, or claim one `mcp start` process opens sockets for all accounts at once
 
 ---
 

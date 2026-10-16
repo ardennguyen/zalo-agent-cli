@@ -72,41 +72,90 @@ curl http://localhost:3847/health
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) là một wrapper mỏng: `mcp-server.js` chỉ spawn `zalo-agent mcp start` và pipe stdio qua. **Danh sách tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 14 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
-> [!WARNING]
-> **Wrapper chỉ forward `--http` và `--auth`.** `--host` và `--config` bị bỏ qua âm thầm — `node mcp-server.js --http 3847 --host 0.0.0.0` vẫn bind `127.0.0.1` và máy khác không kết nối được. Muốn dùng hai flag đó thì gọi thẳng `zalo-agent mcp start`.
->
-> Ngoài ra wrapper chạy đúng phiên bản CLI mà `package.json` của nó **ghim**, không phải bản mới nhất. Tool mới thêm ở CLI phiên bản sau sẽ chưa dùng được qua wrapper cho tới khi pin đó được nâng và publish. Kiểm tra bằng:
-> ```bash
-> node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
-> ```
+- **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
+- **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
+  ```bash
+  node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
+  ```
 
 ```bash
-node mcp-server.js                       # stdio
-node mcp-server.js --http 3847           # HTTP; port lấy từ arg, hoặc ZALO_MCP_HTTP_PORT
-node mcp-server.js --http 3847 --auth <token>
+zalo-mcp                                                 # stdio (hoặc: node mcp-server.js)
+zalo-mcp --account <ID>                                  # stdio ghim cố định tài khoản <ID>
+zalo-mcp --http 3847 --auth <token> --host 0.0.0.0       # HTTP remote
+zalo-mcp --account <ID> msg list --json                  # Chuyển tiếp lệnh CLI cho tài khoản <ID>
 ```
 
 ```json
 {
   "mcpServers": {
     "zalo": {
-      "command": "node",
-      "args": ["/absolute/path/to/zalo-mcp/mcp-server.js"],
-      "cwd": "/absolute/path/to/zalo-mcp"
+      "command": "zalo-mcp",
+      "args": []
     }
   }
 }
 ```
+*(Hoặc dùng `"command": "node", "args": ["/absolute/path/to/zalo-mcp/mcp-server.js"]` nếu không thêm global bin vào `PATH`.)*
+
+> [!TIP]
+> **Phân tách `.env` khuyến nghị:** Chỉ giữ cấu hình port (`ZALO_MCP_HTTP_PORT`, `ZALO_OA_WEBHOOK_PORT`) trong `zalo-mcp/.env`, và đặt mọi đường dẫn lưu trữ (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) trong `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) để cả `zalo-mcp` và `zalo-agent` luôn đọc chung một nơi.
 
 | Biến `.env` của `zalo-mcp` | Mặc định | Tác dụng |
 |------|----------|----------|
 | `ZALO_MCP_HTTP_PORT` | `3847` | Port fallback khi gọi `--http` không kèm số |
 | `ZALO_OA_WEBHOOK_PORT` | `3000` | Port mặc định cho `oa listen` |
-| `ZALO_OA_APP_ID` / `ZALO_OA_SECRET` | *(trống)* | Credentials OA, nếu dùng |
 
 Nếu wrapper không tìm thấy `zalo-agent-cli` trong `node_modules/`, nó tự chạy `npm install` một lần rồi mới spawn.
+
+---
+
+### Chạy nhiều tài khoản Zalo cùng lúc (Multi-Account Live MCP & CLI)
+
+Mỗi tài khoản Zalo cá nhân có cơ sở dữ liệu (`<DATA_DIR>/<ownId>/zalo.db`), thư mục media, `daemon.lock` và kênh loopback (`daemon-channel.json`) **hoàn toàn tách biệt**. Bạn có thể chạy **nhiều tài khoản live đồng thời** trên cùng một máy bằng cách chạy mỗi tài khoản một tiến trình MCP (hoặc `listen`) kèm `--account <ownId>` và truyền `--account <ownId>` (hoặc biến môi trường `ZALO_ACCOUNT=<ownId>`) khi gọi CLI:
+
+1. **Đăng nhập từng tài khoản** (nên gắn mỗi tài khoản một proxy riêng để tránh rủi ro hạn chế từ Zalo):
+   ```bash
+   zalo-agent account login -p "http://user:pass@proxy1:8080" -n "Shop A"
+   zalo-agent account login -p "http://user:pass@proxy2:8080" -n "Shop B"
+   zalo-agent account list
+   # → Giả sử Shop A có ID số là 101, Shop B có ID số là 202 (ví dụ minh họa)
+   ```
+
+2. **Chạy nhiều MCP server cùng lúc ở chế độ stdio (Claude Code / Cursor):**
+   Khai báo mỗi tài khoản là một MCP server riêng trong `.claude/settings.json` — AI client sẽ thấy đồng thời cả hai tài khoản và tự định tuyến tool theo từng server mà không bao giờ đụng tới `activeAccount` dùng chung trong `accounts.json`:
+   ```json
+   {
+     "mcpServers": {
+       "zalo-shop-a": {
+         "command": "zalo-agent",
+         "args": ["mcp", "start", "--account", "101"]
+       },
+       "zalo-shop-b": {
+         "command": "zalo-agent",
+         "args": ["mcp", "start", "--account", "202"]
+       }
+     }
+   }
+   ```
+   *(Với `zalo-mcp`, dùng `"command": "zalo-mcp", "args": ["--account", "101"]`.)*
+
+3. **Chạy nhiều MCP server cùng lúc ở chế độ HTTP (VPS):**
+   Mỗi tài khoản lắng nghe trên một port riêng:
+   ```bash
+   zalo-agent mcp start --account 101 --http 3847 --auth <token-a> --host 0.0.0.0
+   zalo-agent mcp start --account 202 --http 3848 --auth <token-b> --host 0.0.0.0
+   ```
+
+4. **Gọi lệnh CLI song song cho từng tài khoản mà không cần `account switch`:**
+   Mọi lệnh CLI cá nhân đều nhận global flag `--account <ID>` (hoặc biến môi trường `ZALO_ACCOUNT=<ID>`). Khi truyền flag này, lệnh chỉ ghim tài khoản trong tiến trình hiện tại, không ghi đè `accounts.json`, và tự động đi qua `daemon-channel.json` của đúng daemon thuộc tài khoản đó:
+   ```bash
+   zalo-agent --account 101 msg send <threadId> "Xin chào từ Shop A" --json
+   zalo-agent --account 202 sync --days 7
+   # Hoặc qua zalo-mcp:
+   zalo-mcp --account 101 conv recent --json
+   ```
 
 ---
 
@@ -399,8 +448,7 @@ Thử lại cùng `requestId` và tham số sẽ lấy job cũ khi còn được
 
 Job dùng socket và khóa chung với CLI sync/history/self-heal, giữ mười job gần
 nhất trong RAM, mất khi restart; không có tool hủy. Media, board, cloud và trạng
-thái hội thoại vẫn dùng CLI. Wrapper ghim 2.0.0 chưa có hai tool này: cần engine
-mới được phát hành và wrapper cập nhật. [Hướng dẫn đầy đủ](../../docs/mcp-sync.vi.md).
+thái hội thoại vẫn dùng CLI. [Hướng dẫn đầy đủ](../../docs/mcp-sync.vi.md).
 
 ---
 

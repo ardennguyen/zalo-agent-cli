@@ -324,31 +324,28 @@ Every live message is written synchronously on the event loop (`storeLiveMessage
 
 ### 4.1 Install
 
-[`INSTALLATION.md`](../INSTALLATION.md) covers the wrapper's install commands. For a production server the wrapper is still the second-best vehicle:
+[`INSTALLATION.md`](../INSTALLATION.md) covers the wrapper's install commands.
 
-> [!WARNING]
-> **A `zalo-mcp` install runs a published engine, never a branch of this repository.** Checked 2026-10-13:
+> [!NOTE]
+> **A `zalo-mcp` install runs a published engine, never a branch of this repository.**
 >
-> - The wrapper's `1.0.16` (GitHub `main` and npm) pins `@ardennguyen/zalo-agent-cli` to `2.0.0`. Releases before it pin `1.0.7` or older; an unreleased `1.0.16` once pinned `1.0.8`, which npm never had.
+> - Starting with `zalo-mcp` `2.0.0`, the wrapper tracks `@ardennguyen/zalo-agent-cli` `^2.1.0` and forwards all `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`), global storage flags, and CLI subcommands. (Older `1.0.x` wrapper releases pinned `2.0.0` or `1.0.7` and forwarded only `--http` and `--auth`.)
 > - Its `update` command installs `@ardennguyen/zalo-mcp@latest` from npm, copies that package's `package.json` and scripts over yours, then runs `npm install @ardennguyen/zalo-agent-cli@latest`, also from npm (`run_update` in `zalo-mcp.sh`).
-> - npm's `latest` for the engine is `2.0.0`.
 >
-> The wrapper forwards only `--http` and `--auth`, so none of the engine flags this guide uses beyond those (`--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`) reach it. Check what an existing install serves, and what npm has:
+> Check what an existing install serves, and what npm has:
 > ```bash
 > node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
 > npm view @ardennguyen/zalo-agent-cli versions
 > ```
 > If you do run the wrapper: never run `npm install` inside a deployed `zalo-mcp` folder, use `./zalo-mcp.sh update` (or `.\zalo-mcp.ps1 update`), and take the wrapper from `ardennguyen/zalo-mcp`, not the upstream repository it was forked from (`AGENTS.md` §9).
 
-**For a production server, install the engine directly** and run `zalo-agent mcp start` under systemd (§4.2). Pin an exact version and upgrade deliberately; `zalo-agent update` installs `@latest`.
+**For a production server, you can also install the engine directly** and run `zalo-agent mcp start` under systemd (§4.2) so there is no extra wrapper process and you can pin an exact version and upgrade deliberately (`zalo-agent update` installs `@latest`).
 
 ```bash
 npm view @ardennguyen/zalo-agent-cli versions             # is the version you want published?
 sudo npm install -g @ardennguyen/zalo-agent-cli@<version>
 command -v zalo-agent                                     # the path ExecStart= needs
 ```
-
-The wrapper adds an extra process and a flag surface that silently drops `--host` and `--config`. Through `1.0.15` it also logged your bearer token (§5.4); `1.0.16` masks it as `--auth ***`.
 
 Login is interactive and must be done once, **as the service user, from an unelevated shell**:
 
@@ -666,12 +663,8 @@ zalo-agent mcp start --http 3847 --auth "$TOKEN" --host 127.0.0.1   # 127.0.0.1 
 
 Even with a token, prefer **not** to bind publicly. Bind loopback and put remote consumers behind an SSH tunnel, a WireGuard interface, or a reverse proxy that terminates TLS and adds its own auth. The MCP transport is plain HTTP: a token on the wire without TLS is a token in someone's packet capture.
 
-> [!WARNING]
-> **`zalo-mcp` forwards only `--http` and `--auth`.** Its `mcp-server.js` scans `process.argv` for those two and builds `[cliEntryPoint, 'mcp', 'start', ...]` from them alone. So `--host`, `--config`, `--no-delivered-receipts` and `--no-self-heal` are **dropped silently**: `node mcp-server.js --http 3847 --host 0.0.0.0` stays on `127.0.0.1`, reads the default config, and runs receipts and self-heal whenever its engine has them. The flag is not rejected; it is ignored. The *tool surface* is the pinned engine's; the *flag surface* is not this CLI's (§4.1 for which engine that is).
->
-> Wrapper releases up to `1.0.15` also printed `Starting Zalo MCP Server via: node <args>` to stderr on every start, and with `--auth` those args included the bearer token. `1.0.16` prints `--auth ***` instead. Rotate the token if a journal from an older wrapper that held it is shared.
->
-> To bind a non-loopback address, use a custom config, or keep the token out of a log, call the CLI directly.
+> [!NOTE]
+> **Historical wrapper note (`zalo-mcp` < 2.0.0):** Wrapper releases prior to `2.0.0` forwarded only `--http` and `--auth` and silently dropped `--host`, `--config`, `--account`, `--no-delivered-receipts`, and `--no-self-heal` (and releases up to `1.0.15` logged `--auth` tokens in stderr before `1.0.16` masked them as `--auth ***`). Starting with `zalo-mcp` `2.0.0`, all `mcp start` flags, global storage flags, and CLI subcommands are forwarded. If a host still runs a `1.0.x` wrapper, run `./zalo-mcp.sh update` (or invoke `zalo-agent mcp start` directly).
 
 **`--config <path>` works on the CLI.** `mcp start` reads the given path, else `~/.zalo-agent-cli/mcp-config.json`, through `readMCPConfig()` (`src/mcp/mcp-config.js`). A `--config` path that cannot be read, or a config that is not valid JSON, makes it **refuse to start, before logging in** — before 2.0.0 it fell back to the built-in defaults, which watch every thread (`watchThreads: ["dm:*", "group:*"]`), and said nothing. Only an absent default file means the defaults. The startup line `[mcp] Config loaded: …` prints only `limits`; validate the file (`jq . <file>`) before a restart anyway, so a typo fails your deploy step rather than the restart. The merge over the defaults is shallow, per top-level key.
 

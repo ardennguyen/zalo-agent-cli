@@ -2,19 +2,12 @@
 
 [English](mcp-sync.md)
 
-Tính năng trong source, chưa phát hành. Engine có 14 tool, gồm `zalo_sync` và
-`zalo_sync_status`. Wrapper deploy vẫn ghim engine 2.0.0: cần phát hành engine
-mới và cập nhật wrapper để dùng. Đã tích hợp chọn tài khoản theo ID từ engine
-PR #3 đã merge: `mcp start --account <ID>` ghim tài khoản khi khởi động và qua
-các lần reconnect. Tool sync chỉ dùng runner và khóa sẵn có của tài khoản đó,
-không nhận tham số đổi tài khoản theo từng request.
-
-Đề xuất thứ tự phát hành: merge tính năng engine, phát hành engine **2.1.0**,
-rồi wrapper **1.1.0** với dependency **^2.0.1** như
-[wrapper PR #1](https://github.com/ardennguyen/zalo-mcp/pull/1). Dải này nhận
-các bản 2.x tương thích, không nhận 3.x. Đã xác minh npm mới có 2.0.0 ngày
-2026-10-15 nên chưa resolve được dải mới (ETARGET); tạo lại lockfile wrapper
-sau khi phát hành. Đây là khuyến nghị, chưa phát hành phiên bản nào.
+Engine cung cấp 14 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
+`@ardennguyen/zalo-agent-cli` v2.1.0+ và `@ardennguyen/zalo-mcp` v2.0.0+).
+`mcp start --account <ID>` (hoặc `ZALO_ACCOUNT=<ID>`) ghim tiến trình vào đúng
+tài khoản đã đăng ký lúc khởi động và qua các lần reconnect; hai tool sync chỉ
+dùng runner và khóa của tài khoản đó, không nhận tham số đổi tài khoản theo
+từng request.
 
 ## Cách dùng
 

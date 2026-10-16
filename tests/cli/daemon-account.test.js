@@ -78,3 +78,38 @@ for (const command of [["listen"], ["mcp", "start"]]) {
         });
     });
 }
+
+describe("global --account on one-shot CLI commands", () => {
+    it("targets the inactive account without modifying accounts.json", async () => {
+        const result = await runCli(["--json", "--account", "101", "status"], options);
+        assert.equal(result.code, 0, result.stderr);
+        const data = JSON.parse(result.stdout.trim());
+        assert.equal(data.activeAccount?.ownId, "101");
+        assert.equal(data.activeAccount?.name, "Example One");
+        const registry = JSON.parse(readFileSync(join(CONFIG_DIR, "accounts.json"), "utf8"));
+        assert.equal(registry.find((a) => a.active).ownId, "202");
+    });
+
+    it("also accepts --account after the subcommand or via ZALO_ACCOUNT", async () => {
+        const trailing = await runCli(["account", "info", "--json", "--account", "101"], options);
+        assert.equal(trailing.code, 0, trailing.stderr);
+        assert.equal(JSON.parse(trailing.stdout.trim())?.ownId, "101");
+
+        const envRes = await runCli(["--json", "status"], {
+            ...options,
+            env: { ZALO_ACCOUNT: "101" },
+        });
+        assert.equal(envRes.code, 0, envRes.stderr);
+        assert.equal(JSON.parse(envRes.stdout.trim()).activeAccount?.ownId, "101");
+    });
+
+    it("rejects an unregistered or non-numeric --account on one-shot commands", async () => {
+        const unknown = await runCli(["--account", "999", "status"], options);
+        assert.notEqual(unknown.code, 0);
+        assert.match(unknown.all, /not registered/);
+
+        const byName = await runCli(["--account", "Example One", "status"], options);
+        assert.notEqual(byName.code, 0);
+        assert.match(byName.all, /full numeric account ID/);
+    });
+});

@@ -30,7 +30,8 @@ import { registerOACommands } from "./commands/oa.js";
 import { registerMCPCommands } from "./commands/mcp.js";
 import { registerSyncCommands } from "./commands/sync.js";
 import { autoLogin } from "./core/zalo-client.js";
-import { getActive } from "./core/accounts.js";
+import { getActive, setPinnedAccount } from "./core/accounts.js";
+import { parseAccountId, selectDaemonAccount } from "./core/daemon-account.js";
 import { configureStoragePaths } from "./core/credentials.js";
 import { logoutNeedsSession } from "./core/logout.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
@@ -47,6 +48,11 @@ program
     .description("CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments")
     .version(pkg.version)
     .option("--json", "Output results as JSON (machine-readable)")
+    .option(
+        "--account <id>",
+        "Pin this command to an exact registered account ID without changing the active account (env: ZALO_ACCOUNT)",
+        parseAccountId,
+    )
     .option("--env-file <path>", "Load environment variables from a .env file (env: ZALO_ENV_FILE)")
     .option("--config-dir <dir>", "Config directory (default: ~/.zalo-agent-cli, env: ZALO_CONFIG_DIR)")
     .option(
@@ -78,6 +84,23 @@ program
             // OA commands use official Zalo API — no disclaimer needed
             warning(DISCLAIMER);
             console.log();
+        }
+        // Pin the target account for this invocation when --account or ZALO_ACCOUNT is set,
+        // without changing the global active entry in accounts.json. Daemons (`listen`, `mcp`)
+        // perform their own selection and lock acquisition inside their command actions.
+        const envAccount = process.env.ZALO_ACCOUNT?.trim() || undefined;
+        const requestedAccount = actionCommand.opts()?.account ?? globalOpts.account ?? envAccount;
+        if (
+            requestedAccount !== undefined &&
+            !["mcp", "listen", "oa", "update", "help", "version", "login"].includes(cmdName)
+        ) {
+            try {
+                const pinned = selectDaemonAccount(requestedAccount);
+                setPinnedAccount(pinned.ownId);
+            } catch (e) {
+                error(e.message);
+                process.exit(1);
+            }
         }
         // Auto-login before any command that needs it (skip for login/account/oa
         // commands, and for a logout that will not call Zalo at all).

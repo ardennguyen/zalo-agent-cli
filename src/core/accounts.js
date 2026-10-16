@@ -33,14 +33,37 @@ function save(accounts) {
     chmodSync(file, 0o600);
 }
 
+let _pinnedAccountId = null;
+
+/**
+ * Pin this process's target account ID without modifying accounts.json on disk.
+ * Used when `--account <id>` or `ZALO_ACCOUNT` is passed to a CLI command.
+ * @param {string|null|undefined} ownId
+ */
+export function setPinnedAccount(ownId) {
+    _pinnedAccountId = ownId ? String(ownId) : null;
+}
+
+/**
+ * Return the process-pinned account ID if set, or null.
+ * @returns {string|null}
+ */
+export function getPinnedAccountId() {
+    return _pinnedAccountId;
+}
+
 /** List all registered accounts. */
 export function listAccounts() {
     return load();
 }
 
-/** Get currently active account or null. */
+/** Get currently active (or process-pinned) account or null. */
 export function getActive() {
-    return load().find((a) => a.active) || null;
+    const accounts = load();
+    if (_pinnedAccountId !== null) {
+        return accounts.find((a) => a.ownId === _pinnedAccountId) || null;
+    }
+    return accounts.find((a) => a.active) || null;
 }
 
 /** Set an account as active (deactivates others). Returns false if not found. */

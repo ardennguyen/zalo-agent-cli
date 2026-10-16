@@ -9,23 +9,22 @@ This document covers deploying the **`zalo-mcp`** wrapper — a self-contained, 
 ## How the two repos relate
 
 - **`zalo-agent-cli`** (this repo) — the core engine. All API logic, auth, and the actual MCP server source (`src/mcp/`) live here.
-- **`zalo-mcp`** — a lightweight deployment wrapper (separate repo: [github.com/ardennguyen/zalo-mcp](https://github.com/ardennguyen/zalo-mcp)). It contains no engine code; its install script pulls `zalo-agent-cli` into an isolated local folder, sets up Node/Python, and writes a `.env` so an AI client can run it immediately. `mcp-server.js` simply spawns `zalo-agent mcp start` and pipes stdio through, forwarding `--http` and `--auth`.
+- **`zalo-mcp`** — a lightweight deployment wrapper (separate repo: [github.com/ardennguyen/zalo-mcp](https://github.com/ardennguyen/zalo-mcp)). It contains no engine code; its install script pulls `zalo-agent-cli` into an isolated local folder, links the global `zalo-mcp` and `zalo-agent` CLI commands, and writes a `.env` so an AI client can run it immediately. When invoked without a CLI subcommand (`zalo-mcp` or `node mcp-server.js`), it spawns `zalo-agent mcp start` and forwards all `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, plus global storage flags); when invoked with a CLI subcommand (`zalo-mcp login`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), it forwards the arguments directly to `zalo-agent`.
 
 Because the wrapper is a pass-through, **the MCP tool surface is defined entirely by `src/mcp/mcp-tools.js` in this repo** — whichever `zalo-agent-cli` version `zalo-mcp` has installed.
 
 > [!NOTE]
-> `zalo-mcp`'s `package.json` pins an exact `@ardennguyen/zalo-agent-cli` version. The tools you actually get are the ones registered **in that pinned version**, not the newest published one. Check with:
+> A deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed in its `node_modules/`. Check with:
 > ```bash
 > node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
 > ```
-> Run `./zalo-mcp.sh update` (or `.\zalo-mcp.ps1 update`) to pull a newer engine.
+> Run `./zalo-mcp.sh update` (or `.\zalo-mcp.ps1 update`) to pull the latest published engine.
 
 ---
 
 ## Prerequisites
 
 - **Node.js** 22+ (the CLI's `engines` field requires it; `undici` and `commander` do too)
-- **Python** 3.8+ (optional — only needed if the MCP server renders charts/PDF reports)
 - **Git**
 
 ---
@@ -42,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/ardennguyen/zalo-mcp/main/zalo-mcp.
 Set-ExecutionPolicy Bypass -Scope Process -Force; irm https://raw.githubusercontent.com/ardennguyen/zalo-mcp/main/zalo-mcp.ps1 | Out-File $env:TEMP\zalo-mcp.ps1; & $env:TEMP\zalo-mcp.ps1 install
 ```
 
-This creates a `zalo-mcp/` folder at your current location, installs Node packages into a local `node_modules/`, creates an isolated Python `venv/` (if Python is available), and writes a `.env`. You may be prompted for ports during interactive install, or edit `.env` afterward.
+This creates a `zalo-mcp/` folder at your current location, installs Node packages into a local `node_modules/`, links the global `zalo-mcp` and `zalo-agent` commands, and writes a `.env`. You may be prompted for ports during interactive install, or edit `.env` afterward.
 
 ### Wrapper script commands
 
@@ -51,9 +50,9 @@ Run from inside the installed `zalo-mcp/` folder:
 | Command | Description |
 |:---|:---|
 | `install` | Clone the wrapper from GitHub into a new directory |
-| `init [--clean] [--oa-port <port>] [--mcp-port <port>]` | Install Node/Python deps and write `.env` |
+| `init [--clean] [--oa-port <port>] [--mcp-port <port>]` | Install Node deps, link global CLI commands, and write `.env` |
 | `update` | Pull the latest engine + dependencies |
-| `clean` | Remove `node_modules/` and `venv/` for a fresh reinstall |
+| `clean` | Remove `node_modules/` for a fresh reinstall |
 
 ```bash
 # Windows
@@ -75,8 +74,6 @@ Keep `zalo-mcp/.env` **for port configuration only** (`ZALO_MCP_HTTP_PORT` and `
 |:---|:---|:---|
 | `ZALO_MCP_HTTP_PORT` | `3847` | Port used when `mcp-server.js --http` is passed without an explicit port |
 | `ZALO_OA_WEBHOOK_PORT` | `3000` | Default port for the OA webhook listener |
-| `ZALO_OA_APP_ID` | *(unset)* | Zalo OA App ID, if you connect an Official Account |
-| `ZALO_OA_SECRET` | *(unset)* | Zalo OA App Secret |
 
 ### npm scripts inside the wrapper
 
@@ -94,7 +91,7 @@ All credentials are kept strictly local.
 
 ### A. Personal Zalo Account (unofficial API)
 ```bash
-npm run login   # from inside the installed zalo-mcp/ folder
+zalo-mcp login   # or: npm run login (from inside the installed zalo-mcp/ folder)
 ```
 A QR code prints in the terminal, and a local HTTP server also serves it at `http://127.0.0.1:18927/qr` — loopback only; `--qr-url` binds it to every interface for a headless machine, and anyone who reaches it before it expires can sign in as this account. Scan it with the **Zalo app's QR Scanner** (not the phone's regular camera) and confirm on the phone. If you decline on the phone, the CLI reports it immediately instead of waiting out the 60-second QR timeout.
 
@@ -103,15 +100,15 @@ A QR code prints in the terminal, and a local HTTP server also serves it at `htt
 
 ### B. Zalo Official Account (official API v3.0)
 ```bash
-npx zalo-agent oa init --app-id <YOUR_APP_ID> --secret <YOUR_APP_SECRET>
+zalo-mcp oa init --app-id <YOUR_APP_ID> --secret <YOUR_APP_SECRET>
 ```
 Follow the browser prompt to authorize the app. For a headless VPS:
 ```bash
-npx zalo-agent oa login --app-id <ID> --secret <KEY> --callback-host https://your-domain.com
+zalo-mcp oa login --app-id <ID> --secret <KEY> --callback-host https://your-domain.com
 ```
 
 > **Storage:** `~/.zalo-agent/oa-credentials.json` (mode `0600`) — note this is a **different directory** from the personal account's `~/.zalo-agent-cli/`.
-> OA access tokens expire after ~25h — refresh anytime with `npx zalo-agent oa refresh`.
+> OA access tokens expire after ~25h — refresh anytime with `zalo-mcp oa refresh`.
 
 Full OA setup, webhook exposure options, and error codes: [docs/official-account.md](docs/official-account.md).
 
@@ -121,22 +118,22 @@ Full OA setup, webhook exposure options, and error codes: [docs/official-account
 
 ### stdio transport (local)
 
-Point your AI client at the installed `zalo-mcp/mcp-server.js`:
+Point your AI client at the global `zalo-mcp` command (or `zalo-agent mcp start`):
 
 **Claude Code (`~/.claude/settings.json`):**
 ```json
 {
   "mcpServers": {
     "zalo": {
-      "command": "node",
-      "args": ["/absolute/path/to/zalo-mcp/mcp-server.js"],
-      "cwd": "/absolute/path/to/zalo-mcp"
+      "command": "zalo-mcp",
+      "args": []
     }
   }
 }
 ```
+*(Or use `"command": "node", "args": ["/absolute/path/to/zalo-mcp/mcp-server.js"]` if the global binary is not on `PATH`.)*
 
-If you installed the CLI globally instead of using the wrapper, point at the CLI directly:
+If you installed the CLI globally without the wrapper, point at the CLI directly:
 ```json
 {
   "mcpServers": {
@@ -145,32 +142,26 @@ If you installed the CLI globally instead of using the wrapper, point at the CLI
 }
 ```
 
-**Cursor / other stdio clients:** `node /absolute/path/to/zalo-mcp/mcp-server.js`
+**Cursor / other stdio clients:** `zalo-mcp` (or `node /absolute/path/to/zalo-mcp/mcp-server.js`)
 
 ### HTTP transport (remote / VPS)
 
 ```bash
-node mcp-server.js --http 3847                 # port from arg, or ZALO_MCP_HTTP_PORT
-node mcp-server.js --http 3847 --auth <token>  # require a bearer token
+zalo-mcp --http 3847                                 # port from arg, or ZALO_MCP_HTTP_PORT
+zalo-mcp --http 3847 --auth <token> --host 0.0.0.0   # remote access with bearer token
 ```
 
-Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>]`.
-
-> [!IMPORTANT]
-> **The wrapper forwards only `--http` and `--auth`.** `--host` and `--config` are *not* passed through — `node mcp-server.js --http 3847 --host 0.0.0.0` silently drops the `--host` and stays bound to `127.0.0.1`. To bind a non-loopback address or point at a custom config, invoke the CLI directly:
-> ```bash
-> zalo-agent mcp start --http 3847 --auth <token> --host 0.0.0.0
-> ```
-> The *tool surface* is identical either way; only the flag surface differs.
-
-Full flag set when calling the CLI directly:
+Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [--host <addr>]`. All `mcp start` flags are supported identically via `zalo-mcp` and `zalo-agent mcp start`:
 
 | Flag | Default | Description |
 |:---|:---|:---|
+| `--account <id>` | Active at startup, then pinned | Registered numeric account ID to pin across reconnect/retry without changing the shared active account |
 | `--http <port>` | *(stdio)* | Use HTTP transport on this port |
 | `--auth <token>` | *(none)* | Require `Authorization: Bearer <token>` on every endpoint except `/health` |
 | `--host <address>` | `127.0.0.1` | Bind address — set `0.0.0.0` to accept remote connections |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | Custom MCP config file |
+| `--no-self-heal` | *(enabled)* | Disable automatic gap self-healing after reconnect |
+| `--no-delivered-receipts` | *(enabled)* | Do not send delivered receipts for incoming messages |
 
 Client config:
 ```json
@@ -194,9 +185,45 @@ curl http://localhost:3847/health
 
 Running it unattended on a production host (systemd unit, restarts, monitoring, backup, security) is covered in [docs/deployment.md](docs/deployment.md).
 
+### Running multiple live accounts simultaneously (MCP & CLI)
+
+Each registered personal account has its own isolated SQLite database (`<DATA_DIR>/<ownId>/zalo.db`), media folder, `daemon.lock`, and loopback channel (`daemon-channel.json`). You can run **multiple live accounts at the same time** by starting one MCP server (or `listen` daemon) per account with `--account <ownId>` and passing `--account <ownId>` (or `ZALO_ACCOUNT=<ownId>`) on CLI commands:
+
+1. **Register each account** (one dedicated proxy per account is recommended):
+   ```bash
+   zalo-agent account login -p "http://user:pass@proxy1:8080" -n "Shop A"
+   zalo-agent account login -p "http://user:pass@proxy2:8080" -n "Shop B"
+   zalo-agent account list
+   ```
+2. **Multiple stdio MCP servers in Claude Code / Cursor (`~/.claude/settings.json`, using synthetic IDs `101` and `202`):**
+   ```json
+   {
+     "mcpServers": {
+       "zalo-shop-a": {
+         "command": "zalo-mcp",
+         "args": ["--account", "101"]
+       },
+       "zalo-shop-b": {
+         "command": "zalo-mcp",
+         "args": ["--account", "202"]
+       }
+     }
+   }
+   ```
+3. **Multiple HTTP MCP servers on a VPS (one port per account):**
+   ```bash
+   zalo-mcp --account 101 --http 3847 --auth <token-a> --host 0.0.0.0
+   zalo-mcp --account 202 --http 3848 --auth <token-b> --host 0.0.0.0
+   ```
+4. **Concurrent CLI commands per account (without touching `accounts.json`):**
+   ```bash
+   zalo-agent --account 101 msg send <threadId> "Hello from Shop A" --json
+   zalo-mcp --account 202 sync --days 7
+   ```
+
 ### MCP tools exposed
 
-This engine source registers **14 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**. The wrapper exposes the tool surface of its pinned engine version:
+This engine source registers **14 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
 
 | Tool | Purpose |
 |:---|:---|
@@ -215,12 +242,9 @@ This engine source registers **14 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_sync` | Start an owner-requested message restore or reaction sync; returns immediately with a job ID. Messages still needs phone confirmation |
 | `zalo_sync_status` | Read progress and final result; completed does not mean a partial restore became complete |
 
-These counts describe this engine source. The wrapper still pins engine 2.0.0,
-so the new sync tools require a published engine containing them and a wrapper
-update. [Sync usage and release prerequisites](docs/mcp-sync.md) /
-[Tiếng Việt](docs/mcp-sync.vi.md). No local deployment is updated by a source PR.
+See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Official Account, catalog, poll, reminder, auto-reply, label, profile, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `npx zalo-agent <command> --json`.
+Official Account, catalog, poll, reminder, auto-reply, label, profile, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -339,6 +363,7 @@ See [`.env.example`](.env.example) for a template.
 
 | Variable | Effect |
 |:---|:---|
+| `ZALO_ACCOUNT` | Registered numeric personal account ID to pin for the current process (`listen`, `mcp start`, or any personal CLI command; also overridable via `--account <id>`) without mutating `accounts.json` |
 | `ZALO_ENV_FILE` | Path to a custom `.env` file to load at startup (also overridable via `--env-file <path>`) |
 | `ZALO_CONFIG_DIR` | Root directory for `accounts.json`, `mcp-config.json`, and `qr.png` (default `~/.zalo-agent-cli`; also overridable via `--config-dir`) |
 | `ZALO_CREDENTIALS_DIR` | Directory for personal session files `cred_<ownId>.json` (default `<CONFIG_DIR>/credentials`; also overridable via `--credentials-dir`) |
@@ -360,8 +385,8 @@ See [`.env.example`](.env.example) for a template.
 | `Duplicate Zalo Web session detected. Exiting.` | Only one WebSocket per account. Close Zalo Web in the browser, and don't run `listen` and `mcp start` for the same account at once |
 | `logout` (any form) / `account remove` refuses with a PID | A `listen` or `mcp start` daemon holds `daemon.lock` for that account. Stop it first |
 | `Thread name cache not initialized yet` from `zalo_search_threads` | The cache builds at MCP startup by fetching all groups + friends. Retry after a few seconds |
-| HTTP MCP server unreachable from another machine despite `--host 0.0.0.0` | You passed `--host` to `mcp-server.js`, which doesn't forward it. Run `zalo-agent mcp start --http <port> --auth <token> --host 0.0.0.0` directly |
-| `zalo_view_media` saves somewhere other than `accounts/<ownId>/media/<threadId>/` | Only when `media.downloadDir` is set in `mcp-config.json`: it moves the MCP server's media root. Unset, the server uses the same per-account folder as every other command |
+| HTTP MCP server unreachable from another machine | By default `--http` binds `127.0.0.1` (loopback only). Pass `--host 0.0.0.0 --auth <token>` (supported on both `zalo-mcp` and `zalo-agent mcp start`) |
+| `zalo_view_media` saves somewhere other than `accounts/<ownId>/media/<threadId>/` | Only when `--media-dir` / `ZALO_MEDIA_DIR` is set, or `media.downloadDir` is set in `mcp-config.json`. Unset, the server uses the same per-account folder as every other command |
 | `sync-mobile` reports nothing and your phone never prompted | You passed `--socket`, which asks the server-side probe instead of your phone; it normally returns empty. Drop the flag. |
 | OA call fails with `-216` | Access token expired → `npx zalo-agent oa refresh` |
 | OA call fails with `-224` | OA tier too low → see [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing) |

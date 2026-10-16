@@ -67,7 +67,9 @@ Run from inside the installed `zalo-mcp/` folder:
 
 **Never run `npm install` directly inside a deployed `zalo-mcp` folder** — always go through `update`, which refreshes the scripts and `package.json` from the published `@ardennguyen/zalo-mcp` and then installs the engine's latest npm release, `@ardennguyen/zalo-agent-cli@latest`, in a controlled way. A deployment therefore runs a published engine, never a branch.
 
-### `.env` keys
+### `.env` keys (inside `zalo-mcp/`)
+
+Keep `zalo-mcp/.env` **for port configuration only** (`ZALO_MCP_HTTP_PORT` and `ZALO_OA_WEBHOOK_PORT`). Put storage directory overrides (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) and engine settings in `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) so `zalo-mcp` and `zalo-agent` always share a single configuration and never drift.
 
 | Key | Default | Purpose |
 |:---|:---|:---|
@@ -329,6 +331,9 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 1. `--env-file <path>` (or `ZALO_ENV_FILE`)
 2. `./.env` in the current working directory
 3. `<CONFIG_DIR>/.env` (default `~/.zalo-agent-cli/.env`)
+
+> [!TIP]
+> **Recommended `.env` split:** Keep `zalo-mcp/.env` for **port settings only** (`ZALO_MCP_HTTP_PORT`, `ZALO_OA_WEBHOOK_PORT`), and put all storage directory overrides (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) and engine settings in `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`). That way both `zalo-mcp` and `zalo-agent` read the exact same paths from any directory without conflicting `.env` files.
 
 See [`.env.example`](.env.example) for a template.
 

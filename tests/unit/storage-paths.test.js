@@ -7,7 +7,7 @@
 import { SANDBOX_HOME, SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import http from "node:http";
 import {
@@ -43,6 +43,7 @@ function closeOpenDb() {
 }
 
 function resetDefaultPaths() {
+    delete process.env.ZALO_ENV_FILE;
     delete process.env.ZALO_CONFIG_DIR;
     delete process.env.ZALO_CREDENTIALS_DIR;
     delete process.env.ZALO_DATA_DIR;
@@ -50,6 +51,7 @@ function resetDefaultPaths() {
     delete process.env.ZALO_MEDIA_DIR;
     delete process.env.ZALO_OA_DIR;
     configureStoragePaths({
+        loadEnv: false,
         configDir: SANDBOX_CONFIG_DIR,
         credentialsDir: join(SANDBOX_CONFIG_DIR, "credentials"),
         dataDir: join(SANDBOX_CONFIG_DIR, "accounts"),
@@ -227,5 +229,18 @@ describe("separated storage paths (unit + CLI)", () => {
         });
         assert.equal(byEnv.ok, true);
         assert.equal(byEnv.data.ownId, TEST_UID);
+
+        // 3. Via --env-file <path>
+        const envFile = join(customRoot, "prod.env");
+        writeFileSync(
+            envFile,
+            `ZALO_CONFIG_DIR=${customConfig}\nZALO_CREDENTIALS_DIR=${customCreds}\nZALO_DATA_DIR=${customData}\n`,
+            "utf8",
+        );
+        const byEnvFile = await runJson(["--env-file", envFile, "account", "info"], {
+            home: SANDBOX_HOME,
+        });
+        assert.equal(byEnvFile.ok, true);
+        assert.equal(byEnvFile.data.ownId, TEST_UID);
     });
 });

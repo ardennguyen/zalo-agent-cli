@@ -47,6 +47,8 @@ export function runCli(args, opts = {}) {
         childEnv.HOME = home;
         childEnv.HOMEDRIVE = "";
         childEnv.HOMEPATH = "";
+        childEnv.ZALO_SANDBOX_ACTIVE = "1";
+        delete childEnv.ZALO_ENV_FILE;
         delete childEnv.ZALO_CONFIG_DIR;
         delete childEnv.ZALO_CREDENTIALS_DIR;
         delete childEnv.ZALO_DATA_DIR;

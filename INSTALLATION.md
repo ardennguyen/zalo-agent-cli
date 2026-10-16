@@ -325,8 +325,16 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 
 ## Environment variables
 
+`zalo-agent` natively loads `.env` files (via Node 22 `util.parseEnv`, without overwriting existing shell variables) in this order:
+1. `--env-file <path>` (or `ZALO_ENV_FILE`)
+2. `./.env` in the current working directory
+3. `<CONFIG_DIR>/.env` (default `~/.zalo-agent-cli/.env`)
+
+See [`.env.example`](.env.example) for a template.
+
 | Variable | Effect |
 |:---|:---|
+| `ZALO_ENV_FILE` | Path to a custom `.env` file to load at startup (also overridable via `--env-file <path>`) |
 | `ZALO_CONFIG_DIR` | Root directory for `accounts.json`, `mcp-config.json`, and `qr.png` (default `~/.zalo-agent-cli`; also overridable via `--config-dir`) |
 | `ZALO_CREDENTIALS_DIR` | Directory for personal session files `cred_<ownId>.json` (default `<CONFIG_DIR>/credentials`; also overridable via `--credentials-dir`) |
 | `ZALO_DATA_DIR` / `ZALO_DB_DIR` | Root directory for per-account data `<ownId>/zalo.db`, `daemon.lock`, and `daemon-channel.json` (default `<CONFIG_DIR>/accounts`; also overridable via `--data-dir`) |

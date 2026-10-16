@@ -36,6 +36,8 @@ process.env.USERPROFILE = SANDBOX_HOME;
 process.env.HOME = SANDBOX_HOME;
 process.env.HOMEDRIVE = "";
 process.env.HOMEPATH = "";
+process.env.ZALO_SANDBOX_ACTIVE = "1";
+delete process.env.ZALO_ENV_FILE;
 delete process.env.ZALO_CONFIG_DIR;
 delete process.env.ZALO_CREDENTIALS_DIR;
 delete process.env.ZALO_DATA_DIR;

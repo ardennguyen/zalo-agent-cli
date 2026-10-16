@@ -8,6 +8,7 @@
     },
     "main": "./src/index.js",
     "files": [
+        ".env.example",
         "DISCLAIMER.md",
         "LICENSE",
         "NOTICE",

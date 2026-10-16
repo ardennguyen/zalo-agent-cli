@@ -47,6 +47,7 @@ program
     .description("CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments")
     .version(pkg.version)
     .option("--json", "Output results as JSON (machine-readable)")
+    .option("--env-file <path>", "Load environment variables from a .env file (env: ZALO_ENV_FILE)")
     .option("--config-dir <dir>", "Config directory (default: ~/.zalo-agent-cli, env: ZALO_CONFIG_DIR)")
     .option(
         "--credentials-dir <dir>",
@@ -61,6 +62,7 @@ program
     .hook("preAction", async (thisCommand, actionCommand) => {
         const globalOpts = program.opts();
         configureStoragePaths({
+            envFile: globalOpts.envFile,
             configDir: globalOpts.configDir,
             credentialsDir: globalOpts.credentialsDir,
             dataDir: globalOpts.dataDir,

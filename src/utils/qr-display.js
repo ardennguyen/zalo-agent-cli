@@ -19,8 +19,6 @@ import { platform } from "os";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { info } from "./output.js";
 
-const QR_PATH = resolve(CONFIG_DIR, "qr.png");
-
 /** Get platform-specific command to open a file. */
 function getOpenCommand() {
     switch (platform()) {
@@ -42,18 +40,19 @@ function getOpenCommand() {
 export function displayQR(event) {
     const imageB64 = event.data?.image || "";
     const jsonMode = process.env.ZALO_JSON_MODE === "1";
+    const qrPath = getQRPath();
 
     // Always save PNG to config dir (needed by HTTP server and agents)
     if (imageB64) {
         try {
             mkdirSync(CONFIG_DIR, { recursive: true });
-            writeFileSync(QR_PATH, Buffer.from(imageB64, "base64"));
+            writeFileSync(qrPath, Buffer.from(imageB64, "base64"));
         } catch {}
     }
 
     // Also fire-and-forget the zca-js built-in save
     if (event.actions?.saveToFile) {
-        event.actions.saveToFile(QR_PATH).catch(() => {});
+        event.actions.saveToFile(qrPath).catch(() => {});
     }
 
     // JSON mode: structured output for AI agents — no terminal escapes, no noise
@@ -63,7 +62,7 @@ export function displayQR(event) {
                 JSON.stringify({
                     event: "qr",
                     image: imageB64,
-                    file: QR_PATH,
+                    file: qrPath,
                     dataUrl: `data:image/png;base64,${imageB64}`,
                 }),
             );
@@ -78,8 +77,8 @@ export function displayQR(event) {
         process.stdout.write(`\x1b]1337;File=inline=1;width=30;preserveAspectRatio=1:${b64ForTerm}\x07\n`);
 
         const openCmd = getOpenCommand();
-        info(`QR image saved: ${QR_PATH}`);
-        info(`To open: ${openCmd} "${QR_PATH}"`);
+        info(`QR image saved: ${qrPath}`);
+        info(`To open: ${openCmd} "${qrPath}"`);
         info("Copy this URL and paste in any browser to view QR:");
         console.log(`data:image/png;base64,${imageB64}`);
     }
@@ -87,5 +86,5 @@ export function displayQR(event) {
 
 /** Get the QR image path. */
 export function getQRPath() {
-    return QR_PATH;
+    return resolve(CONFIG_DIR, "qr.png");
 }

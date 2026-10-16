@@ -1,22 +1,32 @@
 /**
  * Zalo Official Account API v3.0 client.
- * Wraps OA REST endpoints with node-fetch. No dependency on zca-js.
+ * Wraps OA REST endpoints with native fetch. No dependency on zca-js.
  * Credentials stored in ~/.zalo-agent/oa-credentials.json.
  */
 
 import fs from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import nodefetch from "node-fetch";
 
 const V3_BASE = "https://openapi.zalo.me/v3.0/oa";
 const V2_BASE = "https://openapi.zalo.me/v2.0/oa";
-const DATA_DIR = join(homedir(), ".zalo-agent");
-const OA_CREDS_FILE = join(DATA_DIR, "oa-credentials.json");
+
+/**
+ * Resolve the Official Account data directory (defaults to ~/.zalo-agent, or ZALO_OA_DIR).
+ * @returns {string}
+ */
+export function getOADataDir() {
+    return process.env.ZALO_OA_DIR ? resolve(process.env.ZALO_OA_DIR) : join(homedir(), ".zalo-agent");
+}
+
+function getOACredsFile() {
+    return join(getOADataDir(), "oa-credentials.json");
+}
 
 /** Ensure data directory exists. */
 function ensureDir() {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const dir = getOADataDir();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 const OAUTH_URL = "https://oauth.zaloapp.com/v4/oa/permission";
@@ -25,12 +35,13 @@ const TOKEN_URL = "https://oauth.zaloapp.com/v4/oa/access_token";
 /** Save full OA credentials to disk with restricted file permissions. */
 export function saveOACreds(data, oaId = "default") {
     ensureDir();
+    const credsFile = getOACredsFile();
     let creds = {};
-    if (fs.existsSync(OA_CREDS_FILE)) {
-        creds = JSON.parse(fs.readFileSync(OA_CREDS_FILE, "utf8"));
+    if (fs.existsSync(credsFile)) {
+        creds = JSON.parse(fs.readFileSync(credsFile, "utf8"));
     }
     creds[oaId] = { ...creds[oaId], ...data, updatedAt: new Date().toISOString() };
-    fs.writeFileSync(OA_CREDS_FILE, JSON.stringify(creds, null, 2), { mode: 0o600 });
+    fs.writeFileSync(credsFile, JSON.stringify(creds, null, 2), { mode: 0o600 });
 }
 
 /** Save OA access token to disk (backward compat). */
@@ -40,8 +51,9 @@ export function saveOAToken(accessToken, oaId = "default") {
 
 /** Load full OA credentials from disk. */
 export function loadOACreds(oaId = "default") {
-    if (!fs.existsSync(OA_CREDS_FILE)) return null;
-    const creds = JSON.parse(fs.readFileSync(OA_CREDS_FILE, "utf8"));
+    const credsFile = getOACredsFile();
+    if (!fs.existsSync(credsFile)) return null;
+    const creds = JSON.parse(fs.readFileSync(credsFile, "utf8"));
     return creds[oaId] || null;
 }
 
@@ -70,7 +82,7 @@ export function getOAuthUrl(appId, redirectUri = "http://localhost:3456/callback
 
 /** Exchange authorization code for access + refresh tokens. */
 export async function exchangeCode(code, appId, secretKey, redirectUri = "http://localhost:3456/callback") {
-    const res = await nodefetch(TOKEN_URL, {
+    const res = await fetch(TOKEN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
         body: new URLSearchParams({
@@ -85,7 +97,7 @@ export async function exchangeCode(code, appId, secretKey, redirectUri = "http:/
 
 /** Refresh access token using refresh token. */
 export async function refreshAccessToken(refreshToken, appId, secretKey) {
-    const res = await nodefetch(TOKEN_URL, {
+    const res = await fetch(TOKEN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
         body: new URLSearchParams({
@@ -106,7 +118,7 @@ async function oaFetch(url, { method = "GET", body, token, isFormData = false } 
     if (body && !isFormData) opts.body = JSON.stringify(body);
     if (body && isFormData) opts.body = body;
 
-    const res = await nodefetch(url, opts);
+    const res = await fetch(url, opts);
     const data = await res.json();
     if (data.error && data.error !== 0) {
         throw new Error(`OA API error ${data.error}: ${data.message || JSON.stringify(data)}`);
@@ -281,7 +293,7 @@ export async function removeFollowerFromTag(userId, tagName, oaId = "default") {
 /** Upload image to OA (returns attachment_id). */
 export async function uploadImage(filePath, oaId = "default") {
     const token = getToken(oaId);
-    // Use native FormData-like via node-fetch's Blob
+    // Use native Blob and FormData
     const fileData = fs.readFileSync(filePath);
     const blob = new (await import("node:buffer")).Blob([fileData]);
     const form = new globalThis.FormData();

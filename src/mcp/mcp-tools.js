@@ -824,7 +824,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         threadId: String(row?.threadId || buffered?.threadId || threadId || ""),
                         limit: 50,
                         concurrency: 2,
-                        mediaRoot: mediaConfig.downloadDir || undefined,
+                        mediaRoot: process.env.ZALO_MEDIA_DIR || mediaConfig.downloadDir || undefined,
                     });
                     localPath = getMessageById(messageId)?.localPath || null;
                     if (!localPath) {

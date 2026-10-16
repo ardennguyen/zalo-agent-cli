@@ -482,9 +482,10 @@ export async function downloadSyncedMedia(opts = {}) {
         }
     }
 
-    // The MCP server honours a configured download dir; everything else files
-    // media under the account's own data dir.
-    const mediaRoot = mediaRootOpt ? resolve(mediaRootOpt) : resolve(accountDir, "media");
+    // Explicit mediaRootOpt or global ZALO_MEDIA_DIR (--media-dir) overrides the
+    // per-account default (<accountDir>/media).
+    const configuredRoot = mediaRootOpt || process.env.ZALO_MEDIA_DIR;
+    const mediaRoot = configuredRoot ? resolve(configuredRoot) : resolve(accountDir, "media");
 
     // Folders are ids, so without this the media tree is unreadable by a human.
     // Written before any download, so an interrupted run still leaves an index.

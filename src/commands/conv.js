@@ -3,12 +3,11 @@
  * mute, unmute, read, unread, delete.
  */
 
-import { join } from "path";
 import { MuteAction } from "zca-js";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
-import { CONFIG_DIR } from "../core/credentials.js";
+import { getAccountDbPath } from "../core/credentials.js";
 import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readStateLabel } from "../core/read-state.js";
@@ -41,7 +40,7 @@ async function newestMessageAnchor(api, threadId, type) {
     try {
         const activeAcc = getActive();
         if (activeAcc) {
-            initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+            initDb(getAccountDbPath(activeAcc.ownId));
             cacheOpen = true;
         }
     } catch {
@@ -231,8 +230,7 @@ export function registerConvCommands(program, deps = {}) {
             }
 
             try {
-                const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
-                initDb(join(accountDir, "zalo.db"));
+                initDb(getAccountDbPath(activeAcc.ownId));
                 // `-n` is documented as "max results per type", and the live
                 // path below honors that (up to `limit` friends AND up to
                 // `limit` groups). The cache path used to apply `limit`
@@ -524,7 +522,7 @@ export function registerConvCommands(program, deps = {}) {
 
             let result;
             try {
-                initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+                initDb(getAccountDbPath(activeAcc.ownId));
                 const rows = getMessages(String(threadId), SEEN_ANCHOR_SCAN_DEPTH);
                 result = await markConversationRead(zaloApi(), { threadId, type, ownId: activeAcc.ownId, rows });
             } catch (e) {
@@ -749,8 +747,7 @@ export function registerConvCommands(program, deps = {}) {
                 error("Give a threadId, or --orphans to forget every conversation the account no longer has.");
                 process.exit(1);
             }
-            const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
-            initDb(join(accountDir, "zalo.db"));
+            initDb(getAccountDbPath(activeAcc.ownId));
 
             const targets = opts.orphans
                 ? getOrphanThreads().map((t) => ({ threadId: String(t.threadId), name: t.name, ...t }))

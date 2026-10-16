@@ -5,19 +5,22 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, rmSync } from "fs";
 import { join } from "path";
-import { CONFIG_DIR, deleteCredentials } from "./credentials.js";
+import { CONFIG_DIR, getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
 
-const ACCOUNTS_FILE = `${CONFIG_DIR}/accounts.json`;
+function accountsFile() {
+    return join(CONFIG_DIR, "accounts.json");
+}
 
 function ensureDir() {
     mkdirSync(CONFIG_DIR, { recursive: true });
 }
 
 function load() {
-    if (!existsSync(ACCOUNTS_FILE)) return [];
+    const file = accountsFile();
+    if (!existsSync(file)) return [];
     try {
-        return JSON.parse(readFileSync(ACCOUNTS_FILE, "utf-8"));
+        return JSON.parse(readFileSync(file, "utf-8"));
     } catch {
         return [];
     }
@@ -25,8 +28,9 @@ function load() {
 
 function save(accounts) {
     ensureDir();
-    writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), "utf-8");
-    chmodSync(ACCOUNTS_FILE, 0o600);
+    const file = accountsFile();
+    writeFileSync(file, JSON.stringify(accounts, null, 2), "utf-8");
+    chmodSync(file, 0o600);
 }
 
 /** List all registered accounts. */
@@ -102,7 +106,7 @@ export function addAccount(ownId, name = "", proxy = null) {
  * @returns {{wiped: boolean, skippedLocked?: {pid: number}}}
  */
 export function wipeAccountDir(ownId) {
-    const accountDir = join(CONFIG_DIR, "accounts", ownId);
+    const accountDir = getAccountDir(ownId);
     if (!existsSync(accountDir)) return { wiped: false };
 
     const lockStatus = checkLock(accountDir);

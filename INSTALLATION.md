@@ -67,7 +67,9 @@ Run from inside the installed `zalo-mcp/` folder:
 
 **Never run `npm install` directly inside a deployed `zalo-mcp` folder** — always go through `update`, which refreshes the scripts and `package.json` from the published `@ardennguyen/zalo-mcp` and then installs the engine's latest npm release, `@ardennguyen/zalo-agent-cli@latest`, in a controlled way. A deployment therefore runs a published engine, never a branch.
 
-### `.env` keys
+### `.env` keys (inside `zalo-mcp/`)
+
+Keep `zalo-mcp/.env` **for port configuration only** (`ZALO_MCP_HTTP_PORT` and `ZALO_OA_WEBHOOK_PORT`). Put storage directory overrides (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) and engine settings in `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) so `zalo-mcp` and `zalo-agent` always share a single configuration and never drift.
 
 | Key | Default | Purpose |
 |:---|:---|:---|
@@ -241,7 +243,17 @@ Full table of fields and defaults: [skill/references/mcp-guide.md](skill/referen
 
 ## Local storage layout
 
-Everything the CLI persists lives under `~/.zalo-agent-cli/`:
+By default, everything the CLI persists lives under `~/.zalo-agent-cli/` (personal accounts) and `~/.zalo-agent/` (Official Accounts). In production, each storage root can be placed on a separate volume or mount via global CLI flags or environment variables:
+
+| Storage tier | Default location | CLI flag | Environment variable |
+|:---|:---|:---|:---|
+| Config & account registry (`accounts.json`, `mcp-config.json`, `qr.png`) | `~/.zalo-agent-cli/` | `--config-dir <dir>` | `ZALO_CONFIG_DIR` |
+| Session credentials (`cred_<ownId>.json`, mode `0600`) | `<CONFIG_DIR>/credentials/` | `--credentials-dir <dir>` | `ZALO_CREDENTIALS_DIR` |
+| Per-account database & runtime state (`<ownId>/zalo.db`, `daemon.lock`, `daemon-channel.json`) | `<CONFIG_DIR>/accounts/` | `--data-dir <dir>` | `ZALO_DATA_DIR` *(or `ZALO_DB_DIR`)* |
+| Downloaded media (`<threadId>/`, `_conversations.json`) | `<DATA_DIR>/<ownId>/media/` | `--media-dir <dir>` | `ZALO_MEDIA_DIR` |
+| Official Account credentials (`oa-credentials.json`, mode `0600`) | `~/.zalo-agent/` | `--oa-dir <dir>` | `ZALO_OA_DIR` |
+
+Default layout when no custom paths are set:
 
 ```
 ~/.zalo-agent-cli/
@@ -257,12 +269,12 @@ Everything the CLI persists lives under `~/.zalo-agent-cli/`:
 ```
 
 > [!NOTE]
-> **One media directory, one layout.** Every command — `listen`, `msg history`, `mcp start`, `sync-media`, `sync-mobile` and the MCP tools — writes to `accounts/<ownId>/media/<threadId>/`. Folders are named by thread ID, never by conversation name, because a name can contain a path separator or change when someone renames the group; `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` can move the root for the MCP server only.
+> **One media directory, one layout.** Every command — `listen`, `msg history`, `mcp start`, `sync-media`, `sync-mobile` and the MCP tools — writes to `<mediaRoot>/<threadId>/` (default `accounts/<ownId>/media/<threadId>/`, or `--media-dir` / `ZALO_MEDIA_DIR` globally). Folders are named by thread ID, never by conversation name, because a name can contain a path separator or change when someone renames the group; `_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` can also override the media root for the MCP server specifically.
 
 > [!WARNING]
-> **A custom `media.downloadDir` is not removed by `logout --purge` or `account remove`.** Those wipe `accounts/<ownId>/` — media included — and the credential file. Unset, the MCP server downloads into that same per-account folder, so a purge removes its media too; a root moved with `media.downloadDir` sits outside it, and its attachments survive. Delete that directory by hand when removing an account for privacy reasons.
+> **A custom `--media-dir` / `ZALO_MEDIA_DIR` or `media.downloadDir` is not removed by `logout --purge` or `account remove`.** Those wipe `<DATA_DIR>/<ownId>/` — default media included — and the credential file. Unset, the CLI and MCP server download into that same per-account folder, so a purge removes its media too; an external media mount sits outside it, and its attachments survive. Delete that directory by hand when removing an account for privacy reasons.
 
-Official Account credentials are stored separately at `~/.zalo-agent/oa-credentials.json`.
+Official Account credentials are stored separately at `~/.zalo-agent/oa-credentials.json` (or `<ZALO_OA_DIR>/oa-credentials.json`).
 
 ---
 
@@ -315,8 +327,24 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 
 ## Environment variables
 
+`zalo-agent` natively loads `.env` files (via Node 22 `util.parseEnv`, without overwriting existing shell variables) in this order:
+1. `--env-file <path>` (or `ZALO_ENV_FILE`)
+2. `./.env` in the current working directory
+3. `<CONFIG_DIR>/.env` (default `~/.zalo-agent-cli/.env`)
+
+> [!TIP]
+> **Recommended `.env` split:** Keep `zalo-mcp/.env` for **port settings only** (`ZALO_MCP_HTTP_PORT`, `ZALO_OA_WEBHOOK_PORT`), and put all storage directory overrides (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) and engine settings in `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`). That way both `zalo-mcp` and `zalo-agent` read the exact same paths from any directory without conflicting `.env` files.
+
+See [`.env.example`](.env.example) for a template.
+
 | Variable | Effect |
 |:---|:---|
+| `ZALO_ENV_FILE` | Path to a custom `.env` file to load at startup (also overridable via `--env-file <path>`) |
+| `ZALO_CONFIG_DIR` | Root directory for `accounts.json`, `mcp-config.json`, and `qr.png` (default `~/.zalo-agent-cli`; also overridable via `--config-dir`) |
+| `ZALO_CREDENTIALS_DIR` | Directory for personal session files `cred_<ownId>.json` (default `<CONFIG_DIR>/credentials`; also overridable via `--credentials-dir`) |
+| `ZALO_DATA_DIR` / `ZALO_DB_DIR` | Root directory for per-account data `<ownId>/zalo.db`, `daemon.lock`, and `daemon-channel.json` (default `<CONFIG_DIR>/accounts`; also overridable via `--data-dir`) |
+| `ZALO_MEDIA_DIR` | Root directory for downloaded media `<threadId>/` and `_conversations.json` across all commands (default `<DATA_DIR>/<ownId>/media`; also overridable via `--media-dir`) |
+| `ZALO_OA_DIR` | Directory for Official Account `oa-credentials.json` (default `~/.zalo-agent`; also overridable via `--oa-dir`) |
 | `ZALO_AGENT_NO_UPDATE_CHECK` | Set to any value to disable the background update-version check |
 | `ZALO_API_VERSION` | Protocol version announced to Zalo (`zpw_ver` / `client_version`), on the HTTP calls and the WebSocket URL alike. Default `691` (the live Zalo Web value); set `685` to roll back to zca-js's default. Must be a positive whole number — `0685`, `6.91`, `1e3`, `0x2b3`, `-685` and `0` are refused before Zalo is contacted, so a bad value fails every login rather than quietly falling back. Whitespace-only counts as unset. Only logins read it. |
 | `ZALO_JSON_MODE` | Set automatically by the CLI in `--json` and `mcp` modes to suppress `zca-js` stdout logs. Don't set it by hand |

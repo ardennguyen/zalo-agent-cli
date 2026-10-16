@@ -6,7 +6,6 @@
 
 import http from "http";
 import { readFileSync, existsSync, statSync } from "fs";
-import nodefetch from "node-fetch";
 import { info } from "./output.js";
 
 /**
@@ -180,7 +179,7 @@ setInterval(async()=>{
 
         // Auto-detect public IP for VPS users
         try {
-            const res = await nodefetch("https://api.ipify.org", { timeout: 3000 });
+            const res = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(3000) });
             publicIp = (await res.text()).trim() || null;
         } catch {}
 

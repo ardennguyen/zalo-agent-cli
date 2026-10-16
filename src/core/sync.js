@@ -1,7 +1,7 @@
 import fs from "fs";
 import { resolve } from "path";
 import crypto from "crypto";
-import { CONFIG_DIR } from "./credentials.js";
+import { getAccountDir } from "./credentials.js";
 import {
     initDb,
     insertMessage,
@@ -19,7 +19,7 @@ const THREAD_TYPE_USER = 0;
 const THREAD_TYPE_GROUP = 1;
 
 function resolveAccountDir(accountName) {
-    return resolve(CONFIG_DIR, "accounts", accountName);
+    return resolve(getAccountDir(accountName));
 }
 
 /** Zalo Web's own client only ever seems to backfill about this far on a

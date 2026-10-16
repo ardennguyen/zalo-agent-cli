@@ -339,9 +339,15 @@ describe("program surface", () => {
         assert.match(root, /Usage: zalo-agent/);
     });
 
-    it("exposes --json and --version globally", () => {
+    it("exposes --json, --version, --env-file, and storage path flags globally", () => {
         assert.match(root, /--json/);
         assert.match(root, /-V, --version/);
+        assert.match(root, /--env-file <path>/);
+        assert.match(root, /--config-dir <dir>/);
+        assert.match(root, /--credentials-dir <dir>/);
+        assert.match(root, /--data-dir <dir>/);
+        assert.match(root, /--media-dir <dir>/);
+        assert.match(root, /--oa-dir <dir>/);
     });
 
     for (const cmd of TOP_LEVEL) {

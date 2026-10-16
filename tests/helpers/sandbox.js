@@ -36,6 +36,12 @@ process.env.USERPROFILE = SANDBOX_HOME;
 process.env.HOME = SANDBOX_HOME;
 process.env.HOMEDRIVE = "";
 process.env.HOMEPATH = "";
+delete process.env.ZALO_CONFIG_DIR;
+delete process.env.ZALO_CREDENTIALS_DIR;
+delete process.env.ZALO_DATA_DIR;
+delete process.env.ZALO_DB_DIR;
+delete process.env.ZALO_MEDIA_DIR;
+delete process.env.ZALO_OA_DIR;
 // Keep chalk deterministic so assertions never trip over ANSI escapes.
 process.env.FORCE_COLOR = "0";
 process.env.NO_COLOR = "1";

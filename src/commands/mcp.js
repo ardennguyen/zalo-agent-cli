@@ -9,7 +9,7 @@ import { join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
-import { CONFIG_DIR } from "../core/credentials.js";
+import { getAccountDir, MEDIA_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
@@ -148,7 +148,7 @@ export function registerMCPCommands(program) {
                 console.error("[mcp] Account selection failed:", e.message);
                 process.exit(1);
             }
-            const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+            const accountDir = getAccountDir(activeAcc.ownId);
 
             // This server now opens the account's WebSocket *and* writes to
             // zalo.db, which is exactly what the `listen` daemon does. Zalo
@@ -385,7 +385,7 @@ export function registerMCPCommands(program) {
                     threadId,
                     limit: 5,
                     concurrency: 2,
-                    mediaRoot: config.media?.downloadDir || undefined,
+                    mediaRoot: MEDIA_DIR || config.media?.downloadDir || undefined,
                 }).catch((e) => console.error(`[mcp] media download failed: ${e.message}`));
             }
 

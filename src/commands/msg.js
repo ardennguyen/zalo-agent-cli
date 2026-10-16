@@ -11,7 +11,7 @@ import { withCurrentSenderNames } from "../core/current-user-names.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { getActive } from "../core/accounts.js";
-import { CONFIG_DIR } from "../core/credentials.js";
+import { getAccountDir, getAccountDbPath } from "../core/credentials.js";
 import { initDb, getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
 import { sendViaDaemon, getDaemonChannel, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
@@ -47,7 +47,7 @@ function openAccountDb() {
     try {
         const acc = getActive();
         if (!acc) return false;
-        initDb(join(CONFIG_DIR, "accounts", acc.ownId, "zalo.db"));
+        initDb(getAccountDbPath(acc.ownId));
         return true;
     } catch {
         return false;
@@ -447,7 +447,7 @@ async function sendAttachments(api, absPaths, threadId, type, opts) {
     if (needsListener) {
         const acc = getActive();
         if (acc) {
-            const viaDaemon = await sendViaDaemon(join(CONFIG_DIR, "accounts", acc.ownId), {
+            const viaDaemon = await sendViaDaemon(getAccountDir(acc.ownId), {
                 paths: absPaths,
                 threadId,
                 type,
@@ -1211,7 +1211,7 @@ export function registerMsgCommands(program) {
 
             let row;
             try {
-                initDb(join(CONFIG_DIR, "accounts", activeAcc.ownId, "zalo.db"));
+                initDb(getAccountDbPath(activeAcc.ownId));
                 row = getMessageById(msgId);
             } catch (e) {
                 error(
@@ -1530,7 +1530,7 @@ export function registerMsgCommands(program) {
             let dbActive = false;
 
             try {
-                const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+                const accountDir = getAccountDir(activeAcc.ownId);
                 initDb(join(accountDir, "zalo.db"));
                 dbActive = true;
 
@@ -1625,7 +1625,7 @@ export function registerMsgCommands(program) {
                 // session the scan needs and is the one db writer (AGENTS.md
                 // §13). With a daemon up that is the daemon, and this command
                 // only displays what it returns.
-                const daemonDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+                const daemonDir = getAccountDir(activeAcc.ownId);
                 const daemon = getDaemonChannel(daemonDir);
                 let fetched = null;
                 let handledByDaemon = false;

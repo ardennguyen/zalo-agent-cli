@@ -21,7 +21,7 @@
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
-import { CONFIG_DIR, deleteCredentials } from "./credentials.js";
+import { getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
 
 const require = createRequire(import.meta.url);
@@ -164,7 +164,7 @@ const EMPTY_REPLY = /Failed to parse response data/;
  * @returns {{dbDeleted: boolean, mediaDeleted: boolean}}
  */
 export function deleteLocalHistory(ownId) {
-    const accountDir = join(CONFIG_DIR, "accounts", ownId);
+    const accountDir = getAccountDir(ownId);
     let dbDeleted = false;
     let mediaDeleted = false;
     if (existsSync(accountDir)) {
@@ -194,7 +194,7 @@ export function deleteLocalHistory(ownId) {
  * @returns {number|null}
  */
 export function lockHolder(ownId) {
-    const lock = checkLock(join(CONFIG_DIR, "accounts", ownId));
+    const lock = checkLock(getAccountDir(ownId));
     return lock.locked ? lock.pid : null;
 }
 

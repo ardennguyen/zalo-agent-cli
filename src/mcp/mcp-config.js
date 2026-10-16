@@ -6,7 +6,9 @@ import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR } from "../core/credentials.js";
 
-const MCP_CONFIG_FILE = join(CONFIG_DIR, "mcp-config.json");
+function mcpConfigFile() {
+    return join(CONFIG_DIR, "mcp-config.json");
+}
 
 /** Default MCP config — sensible defaults for local development */
 export function getDefaultConfig() {
@@ -47,7 +49,7 @@ export function getDefaultConfig() {
 export function loadMCPConfig(configPath) {
     const defaults = getDefaultConfig();
     try {
-        const raw = readFileSync(configPath || MCP_CONFIG_FILE, "utf-8");
+        const raw = readFileSync(configPath || mcpConfigFile(), "utf-8");
         const saved = JSON.parse(raw);
         // Shallow merge: saved values override defaults
         return {
@@ -77,7 +79,7 @@ export function loadMCPConfig(configPath) {
  * @returns {{config: object, problem: string|null}}
  */
 export function readMCPConfig(configPath) {
-    const file = configPath || MCP_CONFIG_FILE;
+    const file = configPath || mcpConfigFile();
     let raw;
     try {
         raw = readFileSync(file, "utf-8");
@@ -99,7 +101,7 @@ export function readMCPConfig(configPath) {
  */
 export function saveMCPConfig(config) {
     mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(MCP_CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8");
+    writeFileSync(mcpConfigFile(), JSON.stringify(config, null, 2), "utf-8");
 }
 
 /**

@@ -419,12 +419,15 @@ export class SyncV2 {
     constructor(api, accountName) {
         this.api = api;
         this.accountName = accountName;
-        this.accountDir = resolve(
-            process.env.USERPROFILE || process.env.HOME || "",
-            ".zalo-agent-cli",
-            "accounts",
-            accountName,
-        );
+        const dataRoot =
+            process.env.ZALO_DATA_DIR ||
+            process.env.ZALO_DB_DIR ||
+            resolve(
+                process.env.ZALO_CONFIG_DIR ||
+                    resolve(process.env.USERPROFILE || process.env.HOME || "", ".zalo-agent-cli"),
+                "accounts",
+            );
+        this.accountDir = resolve(dataRoot, accountName);
     }
 
     /** Build opaque-globalId -> {id, name, type} from the friend + group lists. */

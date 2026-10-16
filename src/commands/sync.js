@@ -1,7 +1,7 @@
 import { join } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { getActive } from "../core/accounts.js";
-import { CONFIG_DIR } from "../core/credentials.js";
+import { getAccountDir } from "../core/credentials.js";
 import { acquireLock, releaseLock, checkLock } from "../core/lock.js";
 import { error, info, success, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
@@ -344,7 +344,7 @@ const MB = 1024 * 1024;
 
 /** Download attachments recorded by an earlier sync. No phone, no socket. */
 async function runMediaDownload(activeAcc, opts) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
     let kinds;
@@ -464,7 +464,7 @@ async function runMediaDownload(activeAcc, opts) {
 
 /** Reclaim media held by conversations the account no longer has. */
 async function runPruneOrphans(activeAcc, opts) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
     // The recorded definition: the same set `sync`'s warning counts and
@@ -521,7 +521,7 @@ async function runPruneOrphans(activeAcc, opts) {
 
 /** Delete downloaded media older than N days. Never removes message rows. */
 async function runMediaPrune(activeAcc, opts) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
     // "all" is a mode, not a very large number of days: a cutoff computed from
@@ -570,7 +570,7 @@ async function runMediaPrune(activeAcc, opts) {
 
 /** Sync board items + reminders for the cached threads. No phone, no socket. */
 async function runBoardSync(activeAcc, opts) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
     let api;
@@ -664,7 +664,7 @@ async function boardPass(api, opts) {
  * @param {{wait?: number, pages?: number, applyRemovals?: boolean}} opts
  */
 async function runReactionSync(activeAcc, opts) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
     let api;
@@ -862,7 +862,7 @@ function reportReactionDrain(stats, opts) {
 
 /** Walk the zCloud index. No phone, no socket. */
 async function runCloudSync(activeAcc, opts) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
     let api;
@@ -998,7 +998,7 @@ async function reconnectListener(api, waitMs = 30000) {
  * @param {{force?: boolean, wait?: number, days?: number}} opts
  */
 async function runTransferSync(activeAcc, opts) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
 
     let api;
     let syncManager;
@@ -1501,7 +1501,7 @@ function printPlan(plan, win, jsonMode) {
  * @param {boolean} jsonMode
  */
 async function runUnifiedSync(activeAcc, opts, jsonMode) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
     initDb(join(accountDir, "zalo.db"));
 
     let api;
@@ -1890,7 +1890,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
  * @param {{wait?: number}} opts
  */
 async function runSocketBackfill(activeAcc, opts) {
-    const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+    const accountDir = getAccountDir(activeAcc.ownId);
 
     // Build the SyncManager first so we can consult the local sync-freshness
     // marker BEFORE touching the network. A redundant run should neither open

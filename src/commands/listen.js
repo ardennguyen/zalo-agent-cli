@@ -8,7 +8,7 @@ import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning } from "../utils/output.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
-import { CONFIG_DIR } from "../core/credentials.js";
+import { getAccountDir } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
@@ -89,7 +89,7 @@ export function registerListenCommand(program) {
                 error(e.message);
                 process.exit(1);
             }
-            const accountDir = join(CONFIG_DIR, "accounts", activeAcc.ownId);
+            const accountDir = getAccountDir(activeAcc.ownId);
             if (!acquireLock(accountDir)) {
                 error(`Another listen daemon is already running for account ${activeAcc.ownId}.`);
                 process.exit(1);

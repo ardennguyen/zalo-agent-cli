@@ -20,9 +20,8 @@
  * `upsertThread` refuses to downgrade a group regardless, so this is the
  * ergonomic half of the fix, not the safety half.
  */
-import { join } from "node:path";
 import { getActive } from "../core/accounts.js";
-import { CONFIG_DIR } from "../core/credentials.js";
+import { getAccountDbPath } from "../core/credentials.js";
 import { initDb, getThreadType } from "../core/db.js";
 
 /**
@@ -34,7 +33,7 @@ import { initDb, getThreadType } from "../core/db.js";
 function lookupCachedType(threadId) {
     const acc = getActive();
     if (!acc) return null;
-    initDb(join(CONFIG_DIR, "accounts", acc.ownId, "zalo.db"));
+    initDb(getAccountDbPath(acc.ownId));
     return getThreadType(threadId);
 }
 

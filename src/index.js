@@ -31,6 +31,7 @@ import { registerMCPCommands } from "./commands/mcp.js";
 import { registerSyncCommands } from "./commands/sync.js";
 import { autoLogin } from "./core/zalo-client.js";
 import { getActive } from "./core/accounts.js";
+import { configureStoragePaths } from "./core/credentials.js";
 import { logoutNeedsSession } from "./core/logout.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
 import { applyCachedThreadType } from "./utils/thread-type.js";
@@ -46,10 +47,29 @@ program
     .description("CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments")
     .version(pkg.version)
     .option("--json", "Output results as JSON (machine-readable)")
+    .option("--config-dir <dir>", "Config directory (default: ~/.zalo-agent-cli, env: ZALO_CONFIG_DIR)")
+    .option(
+        "--credentials-dir <dir>",
+        "Credentials directory (default: <config-dir>/credentials, env: ZALO_CREDENTIALS_DIR)",
+    )
+    .option(
+        "--data-dir <dir>",
+        "Per-account database and runtime directory (default: <config-dir>/accounts, env: ZALO_DATA_DIR)",
+    )
+    .option("--media-dir <dir>", "Downloaded media directory (default: <data-dir>/<ownId>/media, env: ZALO_MEDIA_DIR)")
+    .option("--oa-dir <dir>", "Official Account credentials directory (default: ~/.zalo-agent, env: ZALO_OA_DIR)")
     .hook("preAction", async (thisCommand, actionCommand) => {
+        const globalOpts = program.opts();
+        configureStoragePaths({
+            configDir: globalOpts.configDir,
+            credentialsDir: globalOpts.credentialsDir,
+            dataDir: globalOpts.dataDir,
+            mediaDir: globalOpts.mediaDir,
+            oaDir: globalOpts.oaDir,
+        });
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
         // Suppress zca-js internal logs in JSON mode to keep stdout clean for piping
-        if (program.opts().json || cmdName === "mcp") {
+        if (globalOpts.json || cmdName === "mcp") {
             // Suppress zca-js stdout logs: JSON mode needs clean output, MCP uses stdout as transport
             process.env.ZALO_JSON_MODE = "1";
         } else if (cmdName !== "oa") {

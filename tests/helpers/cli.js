@@ -41,13 +41,20 @@ export function stripAnsi(s) {
  */
 export function runCli(args, opts = {}) {
     const { home, timeout = 60_000, env = {} } = opts;
-    const childEnv = { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1", ...env };
+    const childEnv = { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" };
     if (home) {
         childEnv.USERPROFILE = home;
         childEnv.HOME = home;
         childEnv.HOMEDRIVE = "";
         childEnv.HOMEPATH = "";
+        delete childEnv.ZALO_CONFIG_DIR;
+        delete childEnv.ZALO_CREDENTIALS_DIR;
+        delete childEnv.ZALO_DATA_DIR;
+        delete childEnv.ZALO_DB_DIR;
+        delete childEnv.ZALO_MEDIA_DIR;
+        delete childEnv.ZALO_OA_DIR;
     }
+    Object.assign(childEnv, env);
     // Belt and braces: checkForUpdates() already bails when stdout isn't a
     // TTY (it never is under execFile), but the explicit opt-out means a
     // test run can never shell out to `npm view`.

@@ -4,6 +4,7 @@
  */
 
 import express from "express";
+import https from "https";
 import { timingSafeEqual } from "crypto";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -15,14 +16,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8"));
 
 /**
- * Create HTTP MCP server with optional bearer token auth.
+ * Create HTTP or HTTPS MCP server with optional bearer token auth.
  * @param {Function} registerToolsFn - Registers tools on a McpServer instance
  * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs }
  * @param {number} port
  * @param {string|null} authToken - Bearer token (null = no auth)
- * @returns {import("http").Server}
+ * @param {string} [host="127.0.0.1"] - Bind address
+ * @param {{cert: Buffer|string, key: Buffer|string}|null} [tls=null] - TLS cert and private key for HTTPS
+ * @returns {import("http").Server | import("https").Server}
  */
-export function createHTTPServer(registerToolsFn, deps, port, authToken, host = "127.0.0.1") {
+export function createHTTPServer(registerToolsFn, deps, port, authToken, host = "127.0.0.1", tls = null) {
     const app = express();
     app.use(express.json());
 
@@ -127,6 +130,12 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             threads: deps.buffer.getStats().length,
         });
     });
+
+    if (tls?.cert && tls?.key) {
+        return https.createServer({ cert: tls.cert, key: tls.key }, app).listen(port, host, () => {
+            console.error(`MCP HTTPS server listening on ${host}:${port}`);
+        });
+    }
 
     return app.listen(port, host, () => {
         console.error(`MCP HTTP server listening on ${host}:${port}`);

@@ -334,6 +334,8 @@ const FLAG_CONTRACT = {
         "--http",
         "--auth",
         "--host",
+        "--cert",
+        "--key",
         "--webhook",
         "--no-delivered-receipts",
         "--no-self-heal",

@@ -17,8 +17,10 @@
 import "../helpers/sandbox.js";
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import https from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openFile, SHELL_METACHARACTERS } from "../../src/utils/open-file.js";
@@ -188,5 +190,136 @@ describe("createHTTPServer — bearer auth", () => {
         const base = await start(null);
         const res = await fetch(`${base}/mcp`, { method: "POST", body: "{}" });
         assert.notEqual(res.status, 401, "with authToken=null the transport accepts anything");
+    });
+});
+
+/**
+ * Build a minimal DER TLV node (`tag`, `length`, `value`).
+ * @param {number} tag
+ * @param {Buffer} body
+ * @returns {Buffer}
+ */
+function derNode(tag, body) {
+    const len = body.length;
+    if (len < 128) return Buffer.concat([Buffer.from([tag, len]), body]);
+    const lenBytes = [];
+    let n = len;
+    while (n > 0) {
+        lenBytes.unshift(n & 0xff);
+        n >>= 8;
+    }
+    return Buffer.concat([Buffer.from([tag, 0x80 | lenBytes.length, ...lenBytes]), body]);
+}
+
+/**
+ * Generate an ephemeral self-signed P-256 X.509 certificate and private key in
+ * memory using pure Node `node:crypto` (no external `openssl` binary and no
+ * static base64 fixture strings that could trip `no-real-ids.test.js`).
+ * @returns {{ cert: string, key: string }}
+ */
+function generateSelfSignedTls() {
+    const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const spki = publicKey.export({ type: "spki", format: "der" });
+    // OID 1.2.840.10045.4.3.2 (ecdsa-with-SHA256)
+    const algId = derNode(0x30, Buffer.from([0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
+    // Name: RDNSequence -> RelativeDistinguishedName -> AttributeTypeAndValue (CN=localhost)
+    const cnOid = Buffer.from([0x06, 0x03, 0x55, 0x04, 0x03]);
+    const cnVal = derNode(0x0c, Buffer.from("localhost", "utf8"));
+    const name = derNode(0x30, derNode(0x31, derNode(0x30, Buffer.concat([cnOid, cnVal]))));
+    const validity = derNode(
+        0x30,
+        Buffer.concat([
+            derNode(0x17, Buffer.from("250101000000Z", "ascii")),
+            derNode(0x17, Buffer.from("350101000000Z", "ascii")),
+        ]),
+    );
+    const serial = derNode(0x02, Buffer.from([0x01]));
+    const tbs = derNode(0x30, Buffer.concat([serial, algId, name, validity, name, spki]));
+    const sig = sign("sha256", tbs, privateKey);
+    const bitString = derNode(0x03, Buffer.concat([Buffer.from([0x00]), sig]));
+    const certDer = derNode(0x30, Buffer.concat([tbs, algId, bitString]));
+    const b64 = certDer
+        .toString("base64")
+        .replace(/(.{64})/g, "$1\n")
+        .trim();
+    const cert = `-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----\n`;
+    const key = privateKey.export({ type: "pkcs8", format: "pem" });
+    return { cert, key };
+}
+
+/**
+ * Perform an HTTPS request against a self-signed local test server.
+ * @param {number} port
+ * @param {string} path
+ * @param {{ method?: string, headers?: Record<string, string>, body?: string }} [options]
+ * @returns {Promise<{ status: number, body: string }>}
+ */
+function httpsRequest(port, path, options = {}) {
+    return new Promise((resolve, reject) => {
+        const req = https.request(
+            {
+                hostname: "127.0.0.1",
+                port,
+                path,
+                method: options.method || "GET",
+                headers: options.headers || {},
+                rejectUnauthorized: false,
+            },
+            (res) => {
+                const chunks = [];
+                res.on("data", (c) => chunks.push(c));
+                res.on("end", () =>
+                    resolve({
+                        status: res.statusCode,
+                        body: Buffer.concat(chunks).toString("utf8"),
+                    }),
+                );
+            },
+        );
+        req.on("error", reject);
+        if (options.body) req.write(options.body);
+        req.end();
+    });
+}
+
+describe("createHTTPServer — HTTPS with TLS cert & key", () => {
+    const servers = [];
+    after(() => servers.forEach((s) => s.close()));
+
+    it("serves HTTPS over TLS and enforces bearer auth on /mcp while leaving /health open", async () => {
+        const tls = generateSelfSignedTls();
+        const deps = {
+            api: {},
+            buffer: { getStats: () => [] },
+            filter: {},
+            config: {},
+            nameCache: null,
+            accountDir: ".",
+        };
+        const server = createHTTPServer(() => {}, deps, 0, "tls-s3cret", "127.0.0.1", tls);
+        servers.push(server);
+        if (!server.listening) await once(server, "listening");
+        const port = server.address().port;
+
+        const health = await httpsRequest(port, "/health");
+        assert.equal(health.status, 200);
+        assert.equal(JSON.parse(health.body).status, "ok");
+
+        const unauth = await httpsRequest(port, "/mcp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+        });
+        assert.equal(unauth.status, 401);
+
+        const authed = await httpsRequest(port, "/mcp", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: "Bearer tls-s3cret",
+            },
+            body: "{}",
+        });
+        assert.notEqual(authed.status, 401);
     });
 });

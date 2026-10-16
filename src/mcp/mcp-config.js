@@ -33,6 +33,10 @@ export function getDefaultConfig() {
             downloadDir: null, // unset -> the same per-account dir every other command uses
             autoOpen: true,
         },
+        tls: {
+            cert: null,
+            key: null,
+        },
     };
 }
 
@@ -59,6 +63,7 @@ export function loadMCPConfig(configPath) {
             notify: { ...defaults.notify, ...saved.notify },
             limits: { ...defaults.limits, ...saved.limits },
             media: { ...defaults.media, ...saved.media },
+            tls: { ...defaults.tls, ...saved.tls },
         };
     } catch {
         // File doesn't exist or invalid JSON — use defaults

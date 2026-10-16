@@ -144,21 +144,24 @@ If you installed the CLI globally without the wrapper, point at the CLI directly
 
 **Cursor / other stdio clients:** `zalo-mcp` (or `node /absolute/path/to/zalo-mcp/mcp-server.js`)
 
-### HTTP transport (remote / VPS)
+### HTTP / HTTPS transport (remote / VPS / cloud agents)
 
 ```bash
 zalo-mcp --http 3847                                 # port from arg, or ZALO_MCP_HTTP_PORT
 zalo-mcp --http 3847 --auth <token> --host 0.0.0.0   # remote access with bearer token
+zalo-mcp --http 3847 --auth <token> --host 0.0.0.0 --cert /path/to/fullchain.pem --key /path/to/privkey.pem
 ```
 
-Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [--host <addr>]`. All `mcp start` flags are supported identically via `zalo-mcp` and `zalo-agent mcp start`:
+Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [--host <addr>] [--cert <path> --key <path>]`. All `mcp start` flags are supported identically via `zalo-mcp` and `zalo-agent mcp start`:
 
 | Flag | Default | Description |
 |:---|:---|:---|
 | `--account <id>` | Active at startup, then pinned | Registered numeric account ID to pin across reconnect/retry without changing the shared active account |
-| `--http <port>` | *(stdio)* | Use HTTP transport on this port |
+| `--http <port>` | *(stdio)* | Use HTTP (or HTTPS when `--cert` and `--key` are given) transport on this port |
 | `--auth <token>` | *(none)* | Require `Authorization: Bearer <token>` on every endpoint except `/health` |
 | `--host <address>` | `127.0.0.1` | Bind address — set `0.0.0.0` to accept remote connections |
+| `--cert <path>` | `tls.cert` in `mcp-config.json` | TLS certificate file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--key`) |
+| `--key <path>` | `tls.key` in `mcp-config.json` | TLS private key file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--cert`) |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | Custom MCP config file |
 | `--no-self-heal` | *(enabled)* | Disable automatic gap self-healing after reconnect |
 | `--no-delivered-receipts` | *(enabled)* | Do not send delivered receipts for incoming messages |
@@ -168,7 +171,7 @@ Client config:
 {
   "mcpServers": {
     "zalo": {
-      "url": "http://your-vps:3847/mcp",
+      "url": "https://your-domain:3847/mcp",
       "headers": { "Authorization": "Bearer your-secret" }
     }
   }

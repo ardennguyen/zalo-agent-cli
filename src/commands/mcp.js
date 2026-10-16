@@ -5,6 +5,7 @@
  * IMPORTANT: All diagnostic output uses console.error() — stdout is the MCP transport channel.
  */
 
+import { readFileSync } from "fs";
 import { join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
@@ -140,11 +141,13 @@ export function registerMCPCommands(program) {
             "Pin this server to an exact registered account ID (default: active at startup)",
             parseAccountId,
         )
-        .description("Start MCP server (stdio or HTTP transport)")
+        .description("Start MCP server (stdio, HTTP, or HTTPS transport)")
         .option("--config <path>", "Config file path (default: ~/.zalo-agent-cli/mcp-config.json)")
-        .option("--http <port>", "Use HTTP transport on specified port (default: stdio)")
-        .option("--auth <token>", "Bearer token for HTTP auth (only with --http)")
-        .option("--host <address>", "HTTP bind address (default: 127.0.0.1, only with --http)")
+        .option("--http <port>", "Use HTTP/HTTPS transport on specified port (default: stdio)")
+        .option("--auth <token>", "Bearer token for HTTP/HTTPS auth (only with --http)")
+        .option("--host <address>", "HTTP/HTTPS bind address (default: 127.0.0.1, only with --http)")
+        .option("--cert <path>", "TLS certificate file path (PEM) to serve HTTPS (requires --http and --key)")
+        .option("--key <path>", "TLS private key file path (PEM) to serve HTTPS (requires --http and --cert)")
         .option(
             "-w, --webhook <url>",
             "POST each watched incoming message as JSON to this URL (or set webhook in mcp-config.json)",
@@ -165,6 +168,7 @@ export function registerMCPCommands(program) {
             const isDaemonCli = Boolean(opts.status || opts.stop || (opts.daemon && !process.env.ZALO_DAEMON_CHILD));
 
             let config = null;
+            let tlsOptions = null;
             if (!opts.status && !opts.stop) {
                 // An empty --auth is a token that went missing -- an unset variable
                 // in a unit file -- not a request for no auth, and it used to start
@@ -189,6 +193,50 @@ export function registerMCPCommands(program) {
                     process.exit(1);
                 }
                 config = loadedConfig;
+
+                const rawCert = opts.cert !== undefined ? opts.cert : config?.tls?.cert;
+                const rawKey = opts.key !== undefined ? opts.key : config?.tls?.key;
+                if ((rawCert !== undefined && rawCert !== null) || (rawKey !== undefined && rawKey !== null)) {
+                    const certPath = typeof rawCert === "string" ? rawCert.trim() : "";
+                    const keyPath = typeof rawKey === "string" ? rawKey.trim() : "";
+                    if (!certPath || !keyPath) {
+                        const msg = "Refusing to start: --cert and --key must both be provided to enable HTTPS.";
+                        if (isDaemonCli) error(msg);
+                        else console.error(`[mcp] ${msg}`);
+                        process.exit(1);
+                    }
+                    if (!opts.http) {
+                        const msg = "Refusing to start: --cert and --key require --http <port>.";
+                        if (isDaemonCli) error(msg);
+                        else console.error(`[mcp] ${msg}`);
+                        process.exit(1);
+                    }
+                    let cert;
+                    let key;
+                    try {
+                        cert = readFileSync(certPath);
+                    } catch (e) {
+                        const msg = `Refusing to start: cannot read the TLS certificate file ${certPath} (${e.code || e.message}).`;
+                        if (isDaemonCli) error(msg);
+                        else console.error(`[mcp] ${msg}`);
+                        process.exit(1);
+                    }
+                    try {
+                        key = readFileSync(keyPath);
+                    } catch (e) {
+                        const msg = `Refusing to start: cannot read the TLS private key file ${keyPath} (${e.code || e.message}).`;
+                        if (isDaemonCli) error(msg);
+                        else console.error(`[mcp] ${msg}`);
+                        process.exit(1);
+                    }
+                    if (!cert.length || !key.length) {
+                        const msg = "Refusing to start: TLS certificate or private key file is empty.";
+                        if (isDaemonCli) error(msg);
+                        else console.error(`[mcp] ${msg}`);
+                        process.exit(1);
+                    }
+                    tlsOptions = { cert, key, certPath, keyPath };
+                }
             }
 
             // Select account first so --status, --stop, and --daemon can use
@@ -263,18 +311,20 @@ export function registerMCPCommands(program) {
                     }
                     process.exit(1);
                 }
+                const scheme = tlsOptions ? "HTTPS" : "HTTP";
                 output(
                     {
                         accountId: activeAcc.ownId,
                         pid: spawned.pid,
                         httpPort: port,
+                        https: Boolean(tlsOptions),
                         channelPort: spawned.channelPort,
                         logPath: spawned.logPath,
                     },
                     jsonMode,
                     () => {
                         success(
-                            `MCP server started in background for account ${activeAcc.ownId} (PID ${spawned.pid}, HTTP port ${port})`,
+                            `MCP server started in background for account ${activeAcc.ownId} (PID ${spawned.pid}, ${scheme} port ${port})`,
                         );
                         info(`Log file: ${spawned.logPath}`);
                         info("Stop with: zalo-agent mcp start --stop");
@@ -402,8 +452,9 @@ export function registerMCPCommands(program) {
                         syncJobs,
                     };
                     const authToken = opts.auth?.trim() || null;
-                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host);
-                    console.error(`[mcp] HTTP server started on port ${port}`);
+                    const scheme = tlsOptions ? "HTTPS" : "HTTP";
+                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions);
+                    console.error(`[mcp] ${scheme} server started on port ${port}`);
                     if (!authToken) {
                         console.error(
                             `[mcp] WARNING: no --auth token. Anyone who can reach ${host}:${port} can read this ` +

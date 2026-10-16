@@ -322,4 +322,115 @@ describe("createHTTPServer — HTTPS with TLS cert & key", () => {
         });
         assert.notEqual(authed.status, 401);
     });
+
+    it("supports full OAuth 2.0 discovery, authorization_code, refresh_token, and Basic client auth for Gemini", async () => {
+        const tls = generateSelfSignedTls();
+        const deps = {
+            api: {},
+            buffer: { getStats: () => [] },
+            filter: {},
+            config: {},
+            nameCache: null,
+            accountDir: ".",
+        };
+        const server = createHTTPServer(() => {}, deps, 0, "static-s3cret", "127.0.0.1", tls, {
+            clientId: "gemini-client",
+            clientSecret: "oauth-s3cret",
+            issuerUrl: null,
+        });
+        servers.push(server);
+        if (!server.listening) await once(server, "listening");
+        const port = server.address().port;
+
+        // 1. Metadata discovery (unauthenticated)
+        const metaRes = await httpsRequest(port, "/.well-known/oauth-authorization-server");
+        assert.equal(metaRes.status, 200);
+        const meta = JSON.parse(metaRes.body);
+        assert.equal(meta.authorization_endpoint, `https://127.0.0.1:${port}/authorize`);
+        assert.equal(meta.token_endpoint, `https://127.0.0.1:${port}/token`);
+
+        const prmRes = await httpsRequest(port, "/.well-known/oauth-protected-resource/mcp");
+        assert.equal(prmRes.status, 200);
+        const prm = JSON.parse(prmRes.body);
+        assert.equal(prm.resource, `https://127.0.0.1:${port}/mcp`);
+
+        // 2. Authorization code flow (GET /authorize -> 302 redirect with ?code=...&state=...)
+        const redirectUri = "https://vertexaisearch.cloud.google.com/oauth-redirect";
+        const authPath =
+            `/authorize?response_type=code&client_id=gemini-client` +
+            `&redirect_uri=${encodeURIComponent(redirectUri)}&state=xyz123`;
+        const authRes = await new Promise((resolve, reject) => {
+            const req = https.request(
+                { hostname: "127.0.0.1", port, path: authPath, method: "GET", rejectUnauthorized: false },
+                (res) => resolve({ status: res.statusCode, location: res.headers.location }),
+            );
+            req.on("error", reject);
+            req.end();
+        });
+        assert.equal(authRes.status, 302);
+        const redirected = new URL(authRes.location);
+        assert.equal(redirected.origin + redirected.pathname, redirectUri);
+        assert.equal(redirected.searchParams.get("state"), "xyz123");
+        const code = redirected.searchParams.get("code");
+        assert.ok(code && code.startsWith("zmcp_code_"));
+
+        // 3. Exchange code at POST /token using client_secret_basic (Authorization: Basic ...)
+        const basicAuth = Buffer.from("gemini-client:oauth-s3cret", "utf8").toString("base64");
+        const tokenBody = new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: redirectUri,
+        }).toString();
+        const tokenRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Authorization: `Basic ${basicAuth}`,
+            },
+            body: tokenBody,
+        });
+        assert.equal(tokenRes.status, 200);
+        const tokens = JSON.parse(tokenRes.body);
+        assert.ok(tokens.access_token.startsWith("zmcp_at_"));
+        assert.ok(tokens.refresh_token.startsWith("zmcp_rt_"));
+        assert.equal(tokens.token_type, "Bearer");
+
+        // 4. Reusing the same authorization code is rejected (single-use)
+        const replayRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Authorization: `Basic ${basicAuth}`,
+            },
+            body: tokenBody,
+        });
+        assert.equal(replayRes.status, 400);
+
+        // 5. Call POST /mcp with the issued OAuth access_token
+        const mcpWithOAuth = await httpsRequest(port, "/mcp", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${tokens.access_token}`,
+            },
+            body: "{}",
+        });
+        assert.notEqual(mcpWithOAuth.status, 401);
+
+        // 6. Refresh token grant
+        const refreshBody = new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: tokens.refresh_token,
+            client_id: "gemini-client",
+            client_secret: "oauth-s3cret",
+        }).toString();
+        const refreshRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: refreshBody,
+        });
+        assert.equal(refreshRes.status, 200);
+        const refreshed = JSON.parse(refreshRes.body);
+        assert.ok(refreshed.access_token.startsWith("zmcp_at_"));
+    });
 });

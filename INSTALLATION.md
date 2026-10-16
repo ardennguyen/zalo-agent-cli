@@ -158,10 +158,13 @@ Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [-
 |:---|:---|:---|
 | `--account <id>` | Active at startup, then pinned | Registered numeric account ID to pin across reconnect/retry without changing the shared active account |
 | `--http <port>` | *(stdio)* | Use HTTP (or HTTPS when `--cert` and `--key` are given) transport on this port |
-| `--auth <token>` | *(none)* | Require `Authorization: Bearer <token>` on every endpoint except `/health` |
+| `--auth <token>` | `ZALO_MCP_AUTH_TOKEN` in `.env` | Require `Authorization: Bearer <token>` on every endpoint except `/health` and OAuth discovery/handshake endpoints |
 | `--host <address>` | `127.0.0.1` | Bind address — set `0.0.0.0` to accept remote connections |
 | `--cert <path>` | `tls.cert` in `mcp-config.json` | TLS certificate file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--key`) |
 | `--key <path>` | `tls.key` in `mcp-config.json` | TLS private key file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--cert`) |
+| `--client-id <id>` | `zalo-mcp` (or `ZALO_MCP_OAUTH_CLIENT_ID`) | OAuth 2.0 Client ID for remote MCP clients like Gemini Connected Apps |
+| `--client-secret <key>` | `--auth` / `ZALO_MCP_AUTH_TOKEN` | OAuth 2.0 Client Secret for `/token` exchange |
+| `--issuer-url <url>` | *(inferred from request Host)* | Explicit OAuth 2.0 issuer base URL (e.g. `https://mcp.example.com:3100`) |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | Custom MCP config file |
 | `--no-self-heal` | *(enabled)* | Disable automatic gap self-healing after reconnect |
 | `--no-delivered-receipts` | *(enabled)* | Do not send delivered receipts for incoming messages |

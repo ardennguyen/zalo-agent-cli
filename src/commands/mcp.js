@@ -144,10 +144,22 @@ export function registerMCPCommands(program) {
         .description("Start MCP server (stdio, HTTP, or HTTPS transport)")
         .option("--config <path>", "Config file path (default: ~/.zalo-agent-cli/mcp-config.json)")
         .option("--http <port>", "Use HTTP/HTTPS transport on specified port (default: stdio)")
-        .option("--auth <token>", "Bearer token for HTTP/HTTPS auth (only with --http)")
+        .option("--auth <token>", "Bearer token for HTTP/HTTPS auth (or set ZALO_MCP_AUTH_TOKEN in .env)")
         .option("--host <address>", "HTTP/HTTPS bind address (default: 127.0.0.1, only with --http)")
         .option("--cert <path>", "TLS certificate file path (PEM) to serve HTTPS (requires --http and --key)")
         .option("--key <path>", "TLS private key file path (PEM) to serve HTTPS (requires --http and --cert)")
+        .option(
+            "--client-id <id>",
+            "OAuth 2.0 Client ID for remote MCP clients like Gemini (default: zalo-mcp, or ZALO_MCP_OAUTH_CLIENT_ID)",
+        )
+        .option(
+            "--client-secret <key>",
+            "OAuth 2.0 Client Secret (defaults to --auth / ZALO_MCP_AUTH_TOKEN, or ZALO_MCP_OAUTH_CLIENT_SECRET)",
+        )
+        .option(
+            "--issuer-url <url>",
+            "Explicit OAuth 2.0 issuer base URL (e.g. https://mcp.example.com:3100; default: inferred from request Host)",
+        )
         .option(
             "-w, --webhook <url>",
             "POST each watched incoming message as JSON to this URL (or set webhook in mcp-config.json)",
@@ -194,8 +206,9 @@ export function registerMCPCommands(program) {
                 }
                 config = loadedConfig;
 
-                const rawCert = opts.cert !== undefined ? opts.cert : config?.tls?.cert;
-                const rawKey = opts.key !== undefined ? opts.key : config?.tls?.key;
+                const rawCert =
+                    opts.cert !== undefined ? opts.cert : (process.env.ZALO_MCP_TLS_CERT ?? config?.tls?.cert);
+                const rawKey = opts.key !== undefined ? opts.key : (process.env.ZALO_MCP_TLS_KEY ?? config?.tls?.key);
                 if ((rawCert !== undefined && rawCert !== null) || (rawKey !== undefined && rawKey !== null)) {
                     const certPath = typeof rawCert === "string" ? rawCert.trim() : "";
                     const keyPath = typeof rawKey === "string" ? rawKey.trim() : "";
@@ -451,11 +464,38 @@ export function registerMCPCommands(program) {
                         stageLock,
                         syncJobs,
                     };
-                    const authToken = opts.auth?.trim() || null;
+                    const authToken =
+                        opts.auth?.trim() ||
+                        process.env.ZALO_MCP_AUTH_TOKEN?.trim() ||
+                        process.env.ZALO_MCP_OAUTH_CLIENT_SECRET?.trim() ||
+                        config?.oauth?.clientSecret?.trim() ||
+                        null;
+                    const oauthClientId =
+                        opts.clientId?.trim() ||
+                        process.env.ZALO_MCP_OAUTH_CLIENT_ID?.trim() ||
+                        config?.oauth?.clientId?.trim() ||
+                        "zalo-mcp";
+                    const oauthClientSecret =
+                        opts.clientSecret?.trim() ||
+                        process.env.ZALO_MCP_OAUTH_CLIENT_SECRET?.trim() ||
+                        config?.oauth?.clientSecret?.trim() ||
+                        authToken;
+                    const oauthIssuerUrl =
+                        opts.issuerUrl?.trim() ||
+                        process.env.ZALO_MCP_ISSUER_URL?.trim() ||
+                        config?.oauth?.issuerUrl?.trim() ||
+                        null;
+                    const oauthOptions = oauthClientSecret
+                        ? {
+                              clientId: oauthClientId,
+                              clientSecret: oauthClientSecret,
+                              issuerUrl: oauthIssuerUrl,
+                          }
+                        : null;
                     const scheme = tlsOptions ? "HTTPS" : "HTTP";
-                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions);
+                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions, oauthOptions);
                     console.error(`[mcp] ${scheme} server started on port ${port}`);
-                    if (!authToken) {
+                    if (!authToken && !oauthClientSecret) {
                         console.error(
                             `[mcp] WARNING: no --auth token. Anyone who can reach ${host}:${port} can read this ` +
                                 "account's messages and send as it.",

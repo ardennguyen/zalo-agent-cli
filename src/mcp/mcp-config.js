@@ -37,6 +37,11 @@ export function getDefaultConfig() {
             cert: null,
             key: null,
         },
+        oauth: {
+            clientId: null,
+            clientSecret: null,
+            issuerUrl: null,
+        },
     };
 }
 
@@ -64,6 +69,7 @@ export function loadMCPConfig(configPath) {
             limits: { ...defaults.limits, ...saved.limits },
             media: { ...defaults.media, ...saved.media },
             tls: { ...defaults.tls, ...saved.tls },
+            oauth: { ...defaults.oauth, ...saved.oauth },
         };
     } catch {
         // File doesn't exist or invalid JSON — use defaults

@@ -28,6 +28,8 @@ export class MessageBuffer {
         this._globalCursor = 0;
         /** @type {Map<string, { cursor: number, at: number }>} */
         this._readCursors = new Map();
+        /** @type {Set<{ threadId: string|null, resolve: Function, timer: NodeJS.Timeout }>} */
+        this._waiters = new Set();
     }
 
     /**
@@ -40,7 +42,8 @@ export class MessageBuffer {
     }
 
     /**
-     * Add message to thread buffer. Auto-evicts stale messages.
+     * Add message to thread buffer. Auto-evicts stale messages and wakes any
+     * long-poll waiters matching the thread.
      * @param {string} threadId
      * @param {object} message - Normalized message object
      */
@@ -54,6 +57,64 @@ export class MessageBuffer {
         thread.messages.push(message);
         thread.lastActivity = Date.now();
         this._evict(threadId);
+
+        for (const waiter of [...this._waiters]) {
+            if (!waiter.threadId || waiter.threadId === String(threadId)) {
+                this._waiters.delete(waiter);
+                clearTimeout(waiter.timer);
+                waiter.resolve(message);
+            }
+        }
+    }
+
+    /**
+     * Wait for the next buffered message (or return immediately if `since` is
+     * provided and a newer message is already in the buffer).
+     *
+     * @param {object} [opts]
+     * @param {string} [opts.threadId] - Optional thread filter
+     * @param {number} [opts.since] - Optional cursor; if a message > since already exists, resolves immediately
+     * @param {number} [opts.timeoutMs=60000] - Max wait duration in milliseconds
+     * @param {AbortSignal} [opts.signal] - Optional abort signal (e.g. when HTTP client disconnects)
+     * @returns {Promise<object|null>} The message object, or null on timeout/abort
+     */
+    waitForMessage({ threadId = null, since = undefined, timeoutMs = 60000, signal = undefined } = {}) {
+        if (since !== undefined && since !== null && Number.isFinite(Number(since))) {
+            const existing = this.read(threadId || undefined, Number(since), 1);
+            if (existing.messages.length > 0) {
+                return Promise.resolve(existing.messages[0]);
+            }
+        }
+        if (signal?.aborted) {
+            return Promise.resolve(null);
+        }
+        return new Promise((resolve) => {
+            const waiter = {
+                threadId: threadId ? String(threadId) : null,
+                resolve: (msg) => {
+                    signal?.removeEventListener("abort", onAbort);
+                    resolve(msg);
+                },
+                timer: null,
+            };
+            const onAbort = () => {
+                if (this._waiters.delete(waiter)) {
+                    clearTimeout(waiter.timer);
+                    resolve(null);
+                }
+            };
+            waiter.timer = setTimeout(
+                () => {
+                    if (this._waiters.delete(waiter)) {
+                        signal?.removeEventListener("abort", onAbort);
+                        resolve(null);
+                    }
+                },
+                Math.max(1, Number(timeoutMs) || 60000),
+            );
+            signal?.addEventListener("abort", onAbort, { once: true });
+            this._waiters.add(waiter);
+        });
     }
 
     /**

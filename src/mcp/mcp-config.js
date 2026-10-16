@@ -16,6 +16,7 @@ export function getDefaultConfig() {
         watchThreads: ["dm:*", "group:*"],
         mode: "manual",
         triggerKeywords: ["@bot"],
+        webhook: null,
         notify: {
             enabled: false,
             thread: null,

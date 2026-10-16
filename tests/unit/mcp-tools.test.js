@@ -45,6 +45,8 @@ const EXPECTED_TOOLS = [
     "zalo_reminder",
     "zalo_note",
     "zalo_poll",
+    "zalo_wait_for_message",
+    "zalo_label",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -1237,5 +1239,92 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
 
         const shared = payloadOf(await server.call("zalo_poll", { action: "share", pollId: 42 }));
         assert.equal(shared.success, true);
+    });
+
+    it("zalo_wait_for_message returns buffered message with threadName or times out cleanly", async () => {
+        const buf = new MessageBuffer();
+        buf.push("g1", { id: "m100", threadId: "g1", text: "Ping assistant", timestamp: Date.now() });
+        const { server } = register({
+            buffer: buf,
+            nameCache: {
+                ready: true,
+                get: (tid) => (tid === "g1" ? { name: "COGNI Team", type: "group" } : null),
+                search: () => [],
+            },
+        });
+
+        const hit = payloadOf(await server.call("zalo_wait_for_message", { since: 0, timeoutSec: 2 }));
+        assert.equal(hit.status, "message");
+        assert.equal(hit.cursor, 1);
+        assert.equal(hit.message.id, "m100");
+        assert.equal(hit.message.threadName, "COGNI Team");
+
+        const miss = payloadOf(await server.call("zalo_wait_for_message", { since: 1, timeoutSec: 1 }));
+        assert.equal(miss.status, "timeout");
+        assert.equal(miss.message, null);
+        assert.equal(miss.cursor, 1);
+    });
+
+    it("zalo_label lists, assigns by labelText, unassigns by labelId, and updates raw labelData", async () => {
+        let store = {
+            version: 5,
+            lastUpdateTime: 1700000000000,
+            labelData: [
+                { id: 1, text: "Nội bộ", textKey: "noi_bo", conversations: ["g1"], color: "#ff0000" },
+                { id: 2, text: "Khách hàng", textKey: "khach_hang", conversations: [], color: "#00ff00" },
+                { id: 3, text: "Đối tác", textKey: "doi_tac", conversations: [], color: "#0000ff" },
+            ],
+        };
+        const { server } = register({
+            api: {
+                getLabels: async () => structuredClone(store),
+                updateLabels: async ({ labelData, version }) => {
+                    store = {
+                        version: version + 1,
+                        lastUpdateTime: Date.now(),
+                        labelData: structuredClone(labelData),
+                    };
+                    return structuredClone(store);
+                },
+            },
+        });
+
+        const listed = payloadOf(await server.call("zalo_label", { action: "list" }));
+        assert.equal(listed.version, 5);
+        assert.equal(listed.labelData.length, 3);
+
+        const assigned = payloadOf(
+            await server.call("zalo_label", {
+                action: "assign",
+                labelText: "khách hàng",
+                threadId: "g2",
+                threadIds: ["g3"],
+            }),
+        );
+        assert.equal(assigned.success, true);
+        assert.equal(assigned.labelId, 2);
+        assert.deepEqual(assigned.conversations, ["g2", "g3"]);
+        assert.equal(assigned.version, 6);
+
+        const unassigned = payloadOf(
+            await server.call("zalo_label", {
+                action: "unassign",
+                labelId: 2,
+                threadId: "g2",
+            }),
+        );
+        assert.equal(unassigned.success, true);
+        assert.deepEqual(unassigned.conversations, ["g3"]);
+        assert.equal(unassigned.version, 7);
+
+        const rawUpdated = payloadOf(
+            await server.call("zalo_label", {
+                action: "update",
+                labelData: store.labelData,
+                version: store.version,
+            }),
+        );
+        assert.equal(rawUpdated.success, true);
+        assert.equal(rawUpdated.version, 8);
     });
 });

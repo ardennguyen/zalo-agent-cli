@@ -5,6 +5,7 @@
  * IMPORTANT: All diagnostic output uses console.error() — stdout is the MCP transport channel.
  */
 
+import { createHmac } from "crypto";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
@@ -44,7 +45,7 @@ import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
-import { readMCPConfig, parseDuration } from "../mcp/mcp-config.js";
+import { readMCPConfig, resolveAccountMCPConfig, envForAccount, parseDuration } from "../mcp/mcp-config.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
@@ -109,20 +110,28 @@ export function normalizeMessage(msg, info = null) {
  * @param {object} message - Normalized message object
  * @param {object} [extra] - Additional top-level fields (e.g. `{ accountId }`)
  * @param {Function} [fetchFn=fetch] - Injectable fetch for unit testing
+ * @param {string|null} [webhookSecret=null] - Optional shared secret for Bearer auth & X-Zalo-Signature HMAC-SHA256
  * @returns {Promise<boolean>} True when dispatched, false when skipped or failed
  */
-export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = fetch) {
+export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = fetch, webhookSecret = null) {
     if (!webhookUrl) return false;
     const payload = {
         event: "message",
         ...extra,
         ...message,
     };
+    const body = JSON.stringify(payload);
+    const headers = { "Content-Type": "application/json" };
+    if (typeof webhookSecret === "string" && webhookSecret.trim()) {
+        const secret = webhookSecret.trim();
+        headers["Authorization"] = `Bearer ${secret}`;
+        headers["X-Zalo-Signature"] = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    }
     try {
         await fetchFn(webhookUrl, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            headers,
+            body,
             signal: AbortSignal.timeout(5000),
         });
         return true;
@@ -130,6 +139,44 @@ export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = 
         console.error(`[mcp] Webhook failed: ${e.message}`);
         return false;
     }
+}
+
+/**
+ * Validate and load TLS certificate & private key buffers from paths.
+ * @param {string|null|undefined} rawCert
+ * @param {string|null|undefined} rawKey
+ * @param {boolean} hasHttpPort
+ * @param {(msg: string) => never} fail
+ * @returns {{ cert: Buffer, key: Buffer, certPath: string, keyPath: string }|null}
+ */
+function loadTlsOptions(rawCert, rawKey, hasHttpPort, fail) {
+    if ((rawCert === undefined || rawCert === null) && (rawKey === undefined || rawKey === null)) {
+        return null;
+    }
+    const certPath = typeof rawCert === "string" ? rawCert.trim() : "";
+    const keyPath = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!certPath || !keyPath) {
+        fail("Refusing to start: --cert and --key must both be provided to enable HTTPS.");
+    }
+    if (!hasHttpPort) {
+        fail("Refusing to start: --cert and --key require --http <port>.");
+    }
+    let cert;
+    let key;
+    try {
+        cert = readFileSync(certPath);
+    } catch (e) {
+        fail(`Refusing to start: cannot read the TLS certificate file ${certPath} (${e.code || e.message}).`);
+    }
+    try {
+        key = readFileSync(keyPath);
+    } catch (e) {
+        fail(`Refusing to start: cannot read the TLS private key file ${keyPath} (${e.code || e.message}).`);
+    }
+    if (!cert.length || !key.length) {
+        fail("Refusing to start: TLS certificate or private key file is empty.");
+    }
+    return { cert, key, certPath, keyPath };
 }
 
 export function registerMCPCommands(program) {
@@ -178,6 +225,11 @@ export function registerMCPCommands(program) {
         .action(async (opts) => {
             const jsonMode = program.opts().json;
             const isDaemonCli = Boolean(opts.status || opts.stop || (opts.daemon && !process.env.ZALO_DAEMON_CHILD));
+            const failStart = (msg) => {
+                if (isDaemonCli) error(msg);
+                else console.error(`[mcp] ${msg}`);
+                process.exit(1);
+            };
 
             let config = null;
             let tlsOptions = null;
@@ -186,12 +238,10 @@ export function registerMCPCommands(program) {
                 // in a unit file -- not a request for no auth, and it used to start
                 // the server open, saying nothing. Refused before anything logs in.
                 if (opts.http && opts.auth !== undefined && !String(opts.auth).trim()) {
-                    const msg =
+                    failStart(
                         "--auth was given an empty token. Refusing to start: that would serve this account's " +
-                        "messages with no authentication at all.";
-                    if (isDaemonCli) error(msg);
-                    else console.error(`[mcp] ${msg}`);
-                    process.exit(1);
+                            "messages with no authentication at all.",
+                    );
                 }
 
                 // The config, read before anything logs in. A file it cannot use is
@@ -199,57 +249,14 @@ export function registerMCPCommands(program) {
                 // a server meant for one group would buffer every DM for its bots.
                 const { config: loadedConfig, problem: configProblem } = readMCPConfig(opts.config);
                 if (configProblem) {
-                    const msg = `Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`;
-                    if (isDaemonCli) error(msg);
-                    else console.error(`[mcp] ${msg}`);
-                    process.exit(1);
+                    failStart(`Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`);
                 }
                 config = loadedConfig;
 
                 const rawCert =
                     opts.cert !== undefined ? opts.cert : (process.env.ZALO_MCP_TLS_CERT ?? config?.tls?.cert);
                 const rawKey = opts.key !== undefined ? opts.key : (process.env.ZALO_MCP_TLS_KEY ?? config?.tls?.key);
-                if ((rawCert !== undefined && rawCert !== null) || (rawKey !== undefined && rawKey !== null)) {
-                    const certPath = typeof rawCert === "string" ? rawCert.trim() : "";
-                    const keyPath = typeof rawKey === "string" ? rawKey.trim() : "";
-                    if (!certPath || !keyPath) {
-                        const msg = "Refusing to start: --cert and --key must both be provided to enable HTTPS.";
-                        if (isDaemonCli) error(msg);
-                        else console.error(`[mcp] ${msg}`);
-                        process.exit(1);
-                    }
-                    if (!opts.http) {
-                        const msg = "Refusing to start: --cert and --key require --http <port>.";
-                        if (isDaemonCli) error(msg);
-                        else console.error(`[mcp] ${msg}`);
-                        process.exit(1);
-                    }
-                    let cert;
-                    let key;
-                    try {
-                        cert = readFileSync(certPath);
-                    } catch (e) {
-                        const msg = `Refusing to start: cannot read the TLS certificate file ${certPath} (${e.code || e.message}).`;
-                        if (isDaemonCli) error(msg);
-                        else console.error(`[mcp] ${msg}`);
-                        process.exit(1);
-                    }
-                    try {
-                        key = readFileSync(keyPath);
-                    } catch (e) {
-                        const msg = `Refusing to start: cannot read the TLS private key file ${keyPath} (${e.code || e.message}).`;
-                        if (isDaemonCli) error(msg);
-                        else console.error(`[mcp] ${msg}`);
-                        process.exit(1);
-                    }
-                    if (!cert.length || !key.length) {
-                        const msg = "Refusing to start: TLS certificate or private key file is empty.";
-                        if (isDaemonCli) error(msg);
-                        else console.error(`[mcp] ${msg}`);
-                        process.exit(1);
-                    }
-                    tlsOptions = { cert, key, certPath, keyPath };
-                }
+                tlsOptions = loadTlsOptions(rawCert, rawKey, Boolean(opts.http || config?.httpPort), failStart);
             }
 
             // Select account first so --status, --stop, and --daemon can use
@@ -299,16 +306,36 @@ export function registerMCPCommands(program) {
                 return;
             }
 
+            // Merge per-account config (`config.accounts[ownId]` and `<accountDir>/mcp-config.json`)
+            const { config: accountConfig, problem: accountProblem } = resolveAccountMCPConfig(config, {
+                accountId: activeAcc.ownId,
+                accountDir,
+                explicitConfigPath: opts.config,
+            });
+            if (accountProblem) {
+                failStart(`Refusing to start: ${accountProblem}.`);
+            }
+            config = accountConfig;
+
+            const effectiveHttpPort =
+                opts.http ?? envForAccount("ZALO_MCP_HTTP_PORT", activeAcc.ownId) ?? config?.httpPort ?? null;
+
+            if (!tlsOptions) {
+                const acctCert = envForAccount("ZALO_MCP_TLS_CERT", activeAcc.ownId) ?? config?.tls?.cert;
+                const acctKey = envForAccount("ZALO_MCP_TLS_KEY", activeAcc.ownId) ?? config?.tls?.key;
+                tlsOptions = loadTlsOptions(acctCert, acctKey, Boolean(effectiveHttpPort), failStart);
+            }
+
             if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
-                if (!opts.http) {
+                if (!effectiveHttpPort) {
                     error(
                         "`mcp start --daemon` requires `--http <port>` (stdio transport cannot run detached in the background).",
                     );
                     process.exit(1);
                 }
-                const port = Number(opts.http);
+                const port = Number(effectiveHttpPort);
                 if (!Number.isInteger(port) || port < 1 || port > 65535) {
-                    error(`Invalid port: ${opts.http}. Must be 1-65535.`);
+                    error(`Invalid port: ${effectiveHttpPort}. Must be 1-65535.`);
                     process.exit(1);
                 }
                 const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
@@ -443,17 +470,18 @@ export function registerMCPCommands(program) {
                     "The Zalo session is logging in again after a dropped connection; try again in a few seconds.",
             });
 
-            // Start MCP server — stdio (default) or HTTP
+            // Start MCP server — stdio (default) or HTTP/HTTPS
             let httpServer = null;
             try {
-                if (opts.http) {
-                    const port = Number(opts.http);
+                if (effectiveHttpPort) {
+                    const port = Number(effectiveHttpPort);
                     if (!Number.isInteger(port) || port < 1 || port > 65535) {
                         dropLock();
-                        console.error(`[mcp] Invalid port: ${opts.http}. Must be 1-65535.`);
+                        console.error(`[mcp] Invalid port: ${effectiveHttpPort}. Must be 1-65535.`);
                         process.exit(1);
                     }
-                    const host = opts.host || "127.0.0.1";
+                    const host =
+                        opts.host || envForAccount("ZALO_MCP_HOST", activeAcc.ownId) || config?.host || "127.0.0.1";
                     const deps = {
                         api: sessionApi,
                         buffer,
@@ -466,36 +494,39 @@ export function registerMCPCommands(program) {
                     };
                     const authToken =
                         opts.auth?.trim() ||
-                        process.env.ZALO_MCP_AUTH_TOKEN?.trim() ||
-                        process.env.ZALO_MCP_OAUTH_CLIENT_SECRET?.trim() ||
+                        envForAccount("ZALO_MCP_AUTH_TOKEN", activeAcc.ownId) ||
+                        envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
                         config?.oauth?.clientSecret?.trim() ||
                         null;
                     const oauthClientId =
                         opts.clientId?.trim() ||
-                        process.env.ZALO_MCP_OAUTH_CLIENT_ID?.trim() ||
+                        envForAccount("ZALO_MCP_OAUTH_CLIENT_ID", activeAcc.ownId) ||
                         config?.oauth?.clientId?.trim() ||
                         "zalo-mcp";
                     const oauthClientSecret =
                         opts.clientSecret?.trim() ||
-                        process.env.ZALO_MCP_OAUTH_CLIENT_SECRET?.trim() ||
+                        envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
                         config?.oauth?.clientSecret?.trim() ||
                         authToken;
                     const oauthIssuerUrl =
                         opts.issuerUrl?.trim() ||
-                        process.env.ZALO_MCP_ISSUER_URL?.trim() ||
+                        envForAccount("ZALO_MCP_ISSUER_URL", activeAcc.ownId) ||
                         config?.oauth?.issuerUrl?.trim() ||
                         null;
-                    const oauthOptions = oauthClientSecret
-                        ? {
-                              clientId: oauthClientId,
-                              clientSecret: oauthClientSecret,
-                              issuerUrl: oauthIssuerUrl,
-                          }
-                        : null;
+                    const oauthClients = Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [];
+                    const oauthOptions =
+                        oauthClientSecret || oauthClients.length > 0
+                            ? {
+                                  clientId: oauthClientId,
+                                  clientSecret: oauthClientSecret,
+                                  issuerUrl: oauthIssuerUrl,
+                                  clients: oauthClients,
+                              }
+                            : null;
                     const scheme = tlsOptions ? "HTTPS" : "HTTP";
                     httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions, oauthOptions);
                     console.error(`[mcp] ${scheme} server started on port ${port}`);
-                    if (!authToken && !oauthClientSecret) {
+                    if (!authToken && !oauthClientSecret && oauthClients.length === 0) {
                         console.error(
                             `[mcp] WARNING: no --auth token. Anyone who can reach ${host}:${port} can read this ` +
                                 "account's messages and send as it.",
@@ -521,9 +552,15 @@ export function registerMCPCommands(program) {
 
             // Setup notifier (sends to Zalo group when agent is offline)
             const notifier = new ZaloNotifier(sessionApi, config);
-            const webhookUrl = opts.webhook?.trim() || config.webhook?.trim() || null;
+            const webhookUrl =
+                opts.webhook?.trim() ||
+                envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) ||
+                config.webhook?.trim() ||
+                null;
+            const webhookSecret =
+                envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId) || config?.webhookSecret?.trim() || null;
             if (webhookUrl) {
-                console.error(`[mcp] Webhook enabled: ${webhookUrl}`);
+                console.error(`[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}`);
             }
 
             // Delivered receipts: the same shared implementation `listen` uses
@@ -610,7 +647,7 @@ export function registerMCPCommands(program) {
                         if (!filter.shouldKeep(normalized)) continue;
                         buffer.push(normalized.threadId, normalized);
                         notifier.onMessage(normalized);
-                        postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId });
+                        postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId }, fetch, webhookSecret);
                     }
                 },
             });
@@ -684,7 +721,7 @@ export function registerMCPCommands(program) {
 
                     buffer.push(normalized.threadId, normalized);
                     notifier.onMessage(normalized);
-                    postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId });
+                    postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId }, fetch, webhookSecret);
                     console.error(`[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`);
                 });
 

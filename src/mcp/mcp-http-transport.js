@@ -145,18 +145,36 @@ function resolveIssuerOrigin(req, configuredIssuer, isTls) {
  * @param {Function} registerToolsFn - Registers tools on a McpServer instance
  * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs }
  * @param {number} port
- * @param {string|null} authToken - Bearer token (null = no auth unless oauth.clientSecret is set)
+ * @param {string|null} authToken - Bearer token (null = no auth unless oauth.clientSecret or oauth.clients is set)
  * @param {string} [host="127.0.0.1"] - Bind address
  * @param {{cert: Buffer|string, key: Buffer|string}|null} [tls=null] - TLS cert and private key for HTTPS
- * @param {{clientId?: string|null, clientSecret?: string|null, issuerUrl?: string|null}|null} [oauth=null]
+ * @param {{clientId?: string|null, clientSecret?: string|null, issuerUrl?: string|null, clients?: Array<{clientId: string, clientSecret: string}>}|null} [oauth=null]
  * @returns {import("http").Server | import("https").Server}
  */
 export function createHTTPServer(registerToolsFn, deps, port, authToken, host = "127.0.0.1", tls = null, oauth = null) {
     const app = express();
     const isTls = Boolean(tls?.cert && tls?.key);
-    const signingSecret = oauth?.clientSecret || authToken || null;
     const configuredClientId = oauth?.clientId || "zalo-mcp";
     const configuredIssuer = oauth?.issuerUrl || null;
+
+    // Static OAuth clients map: clientId -> clientSecret (supports primary + oauth.clients[] for multi-consumer CRM/AI)
+    const configuredClients = new Map();
+    if (oauth?.clientSecret || authToken) {
+        configuredClients.set(configuredClientId, oauth?.clientSecret || authToken);
+    }
+    if (Array.isArray(oauth?.clients)) {
+        for (const entry of oauth.clients) {
+            const cid = typeof entry?.clientId === "string" ? entry.clientId.trim() : "";
+            const csec = typeof entry?.clientSecret === "string" ? entry.clientSecret.trim() : "";
+            if (cid && csec) {
+                configuredClients.set(cid, csec);
+            }
+        }
+    }
+    const signingSecret =
+        oauth?.clientSecret ||
+        authToken ||
+        (configuredClients.size > 0 ? configuredClients.values().next().value : null);
 
     // Single-use authorization code replay cache (jti -> expiry epoch seconds)
     const redeemedCodes = new Map();
@@ -267,7 +285,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                     error_description: "A valid redirect_uri is required",
                 });
             }
-            if (!clientId || (clientId !== configuredClientId && !dynamicClients.has(clientId))) {
+            if (!clientId || (!configuredClients.has(clientId) && !dynamicClients.has(clientId))) {
                 return res.status(400).json({
                     error: "invalid_client",
                     error_description: "Unknown client_id",
@@ -343,9 +361,18 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 };
             };
 
-            const isValidSecret =
-                (clientSecret && safeEqual(clientSecret, signingSecret)) ||
-                (authToken && clientSecret && safeEqual(clientSecret, authToken));
+            const isValidSecretFor = (cid) => {
+                if (!clientSecret) return false;
+                if (cid && configuredClients.has(cid)) {
+                    const expected = configuredClients.get(cid);
+                    return (
+                        safeEqual(clientSecret, expected) || Boolean(authToken && safeEqual(clientSecret, authToken))
+                    );
+                }
+                return (
+                    safeEqual(clientSecret, signingSecret) || Boolean(authToken && safeEqual(clientSecret, authToken))
+                );
+            };
 
             if (grantType === "authorization_code") {
                 const rawCode = String(req.body?.code || "").trim();
@@ -379,7 +406,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
 
                 const dynClient = dynamicClients.get(effectiveClientId);
                 const isPublicDynClient = dynClient?.authMethod === "none" && Boolean(codePayload.cc);
-                if (!isValidSecret && !isPublicDynClient) {
+                if (!isValidSecretFor(effectiveClientId) && !isPublicDynClient) {
                     return res.status(401).json({
                         error: "invalid_client",
                         error_description: "Invalid client_secret",
@@ -416,8 +443,9 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                         error_description: "Invalid or expired refresh_token",
                     });
                 }
-                const dynClient = dynamicClients.get(rtPayload.cid);
-                if (!isValidSecret && dynClient?.authMethod !== "none") {
+                const effectiveClientId = clientId || rtPayload.cid;
+                const dynClient = dynamicClients.get(effectiveClientId);
+                if (!isValidSecretFor(effectiveClientId) && dynClient?.authMethod !== "none") {
                     return res.status(401).json({
                         error: "invalid_client",
                         error_description: "Invalid client_secret",
@@ -427,13 +455,14 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             }
 
             if (grantType === "client_credentials") {
-                if (clientId && clientId !== configuredClientId && !dynamicClients.has(clientId)) {
+                if (clientId && !configuredClients.has(clientId) && !dynamicClients.has(clientId)) {
                     return res.status(401).json({
                         error: "invalid_client",
                         error_description: "Invalid client_id",
                     });
                 }
-                if (!isValidSecret) {
+                const targetClientId = clientId || configuredClientId;
+                if (!isValidSecretFor(targetClientId)) {
                     return res.status(401).json({
                         error: "invalid_client",
                         error_description: "Invalid client_secret",
@@ -441,7 +470,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 }
                 const scope =
                     typeof req.body?.scope === "string" && req.body.scope.trim() ? req.body.scope.trim() : "mcp:tools";
-                return res.status(200).json(issueTokens(clientId || configuredClientId, scope));
+                return res.status(200).json(issueTokens(targetClientId, scope));
             }
 
             return res.status(400).json({
@@ -463,8 +492,16 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             const authHeader = req.headers.authorization || "";
             const token = /^bearer\s+/i.test(authHeader) ? authHeader.slice(7).trim() : "";
 
-            const matchesStaticToken =
+            let matchesStaticToken =
                 Boolean(token) && ((authToken && safeEqual(token, authToken)) || safeEqual(token, signingSecret));
+            if (!matchesStaticToken && token) {
+                for (const sec of configuredClients.values()) {
+                    if (safeEqual(token, sec)) {
+                        matchesStaticToken = true;
+                        break;
+                    }
+                }
+            }
             const oauthClaims =
                 !matchesStaticToken && token ? verifyOAuthToken(token, "zmcp_at_", signingSecret) : null;
 

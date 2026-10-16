@@ -229,7 +229,7 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
 
 ### MCP tools exposed
 
-This engine source registers **21 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+This engine source registers **23 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
 
 | Tool | Purpose |
 |:---|:---|
@@ -254,10 +254,12 @@ This engine source registers **21 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_reminder` | Create, list, inspect, view responses, edit, or remove reminders in a DM or group |
 | `zalo_note` | Create/edit group notes, list group board items, or pin/unpin a cached text message |
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll |
+| `zalo_wait_for_message` | Long-poll the live message buffer for the next incoming watched message without manual polling (mirrors `GET /events/wait` for remote HTTPS/OAuth2 MCP clients) |
+| `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Official Account, catalog, auto-reply, quick-msg, label, profile, friend management, group administration, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
+Official Account, catalog, auto-reply, quick-msg, profile, friend management, group administration, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 

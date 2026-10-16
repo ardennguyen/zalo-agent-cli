@@ -1,9 +1,10 @@
 /**
  * MCP tool registrations for Zalo message access, sending, user lookup, and group productivity.
- * Registers 21 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * Registers 23 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
  * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status, zalo_search_messages,
- * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll.
+ * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll,
+ * zalo_wait_for_message, zalo_label.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
@@ -2256,6 +2257,234 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return err(`Unsupported poll action: ${action}`);
             } catch (e) {
                 console.error("[mcp-tools] zalo_poll error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_wait_for_message ---
+    server.registerTool(
+        "zalo_wait_for_message",
+        {
+            title: "Wait for Incoming Zalo Message",
+            description:
+                "Long-poll the live MCP message buffer for the next incoming watched message without manual polling. " +
+                "Returns immediately if a buffered message newer than `since` is already waiting; otherwise waits up to " +
+                "`timeoutSec` seconds (default 55, max 300) for a new message to arrive. Mirrors GET /events/wait for " +
+                "remote HTTPS/OAuth2 MCP clients.",
+            inputSchema: z.object({
+                threadId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("Optional thread ID to wait on (omit to wait for a message in any watched thread)"),
+                since: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .optional()
+                    .describe(
+                        "Optional buffer cursor (`_cursor` from a prior message or `cursor` from a prior wait). " +
+                            "If a buffered message with `_cursor > since` already exists, returns immediately.",
+                    ),
+                timeoutSec: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(300)
+                    .default(55)
+                    .describe("Maximum seconds to wait before returning `status: 'timeout'` (default 55, max 300)"),
+            }),
+        },
+        async ({ threadId, since, timeoutSec = 55 }) => {
+            try {
+                if (typeof buffer?.waitForMessage !== "function") {
+                    return err("Live message buffer does not support waitForMessage in this context.");
+                }
+                const cleanThreadId = typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
+                const clampedSec = Math.max(1, Math.min(300, Number(timeoutSec) || 55));
+                const msg = await buffer.waitForMessage({
+                    threadId: cleanThreadId,
+                    since: typeof since === "number" && Number.isFinite(since) ? since : undefined,
+                    timeoutMs: clampedSec * 1000,
+                });
+                if (msg) {
+                    const tid = String(msg.threadId || "");
+                    let threadName = nameCache?.get(tid)?.name || null;
+                    if (!threadName && tid) {
+                        try {
+                            threadName = getDisplayName(tid) || null;
+                        } catch {
+                            threadName = null;
+                        }
+                    }
+                    return ok({
+                        status: "message",
+                        message: {
+                            ...msg,
+                            ...(threadName ? { threadName } : {}),
+                        },
+                        cursor: msg._cursor,
+                    });
+                }
+                return ok({
+                    status: "timeout",
+                    message: null,
+                    cursor: Math.max(
+                        typeof since === "number" && Number.isFinite(since) ? since : 0,
+                        Number(buffer._globalCursor) || 0,
+                        typeof buffer.readCursor === "function" ? buffer.readCursor() : 0,
+                    ),
+                });
+            } catch (e) {
+                console.error("[mcp-tools] zalo_wait_for_message error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_label ---
+    server.registerTool(
+        "zalo_label",
+        {
+            title: "Manage Zalo Conversation Labels",
+            description:
+                "List, assign, unassign, or update Zalo conversation/contact labels (tags such as 'Nội bộ', 'Khách hàng', 'Đối tác'). " +
+                "Actions: 'list' (returns all labels with their IDs, text, colors, conversations array, and version), " +
+                "'assign' (adds threadId or threadIds to a label identified by labelId or labelText), " +
+                "'unassign' (removes threadId or threadIds from a label identified by labelId or labelText), " +
+                "'update' (raw update with full labelData array and version, matching 'label update').",
+            inputSchema: z.object({
+                action: z
+                    .enum(["list", "assign", "unassign", "update"])
+                    .describe("Label operation to perform: 'list', 'assign', 'unassign', or 'update'"),
+                labelId: z
+                    .number()
+                    .int()
+                    .optional()
+                    .describe("Numeric label ID (for 'assign' or 'unassign'; optional if labelText is provided)"),
+                labelText: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe(
+                        "Label name/text, e.g. 'Nội bộ', 'Khách hàng', 'Đối tác' (case-insensitive match for 'assign' or 'unassign')",
+                    ),
+                threadId: z.string().min(1).optional().describe("Single thread ID to assign or unassign"),
+                threadIds: z
+                    .array(z.string().min(1))
+                    .optional()
+                    .describe("Multiple thread IDs to assign or unassign in one call"),
+                labelData: z
+                    .array(z.any())
+                    .optional()
+                    .describe("Full labelData array from action='list' (required for raw action='update')"),
+                version: z
+                    .number()
+                    .int()
+                    .optional()
+                    .describe("Label version integer from action='list' (required for raw action='update')"),
+            }),
+        },
+        async ({ action, labelId, labelText, threadId, threadIds, labelData, version }) => {
+            try {
+                if (action === "list") {
+                    const res = await api.getLabels();
+                    return ok({
+                        action: "list",
+                        labelData: Array.isArray(res?.labelData) ? res.labelData : [],
+                        version: res?.version ?? 0,
+                        lastUpdateTime: res?.lastUpdateTime ?? null,
+                    });
+                }
+
+                if (action === "update") {
+                    if (!Array.isArray(labelData) || typeof version !== "number" || !Number.isFinite(version)) {
+                        return err("labelData (array) and version (number) are required for action='update'.");
+                    }
+                    const updated = await api.updateLabels({
+                        labelData,
+                        version: Number(version),
+                    });
+                    return ok({
+                        action: "update",
+                        success: true,
+                        version: updated?.version ?? version,
+                        labelData: updated?.labelData ?? labelData,
+                        result: updated,
+                    });
+                }
+
+                if (action === "assign" || action === "unassign") {
+                    const targets = [
+                        ...new Set(
+                            [
+                                ...(threadId ? [String(threadId).trim()] : []),
+                                ...(Array.isArray(threadIds) ? threadIds.map((t) => String(t).trim()) : []),
+                            ].filter(Boolean),
+                        ),
+                    ];
+                    if (targets.length === 0) {
+                        return err(`threadId (or threadIds) is required for action='${action}'.`);
+                    }
+                    if (labelId === undefined && (!labelText || !labelText.trim())) {
+                        return err(`labelId or labelText is required for action='${action}'.`);
+                    }
+
+                    const current = await api.getLabels();
+                    const list = Array.isArray(current?.labelData) ? current.labelData : [];
+                    const needle = labelText ? labelText.trim().toLowerCase() : null;
+                    const matched =
+                        labelId !== undefined
+                            ? list.find((l) => Number(l.id) === Number(labelId))
+                            : list.find(
+                                  (l) =>
+                                      String(l.text ?? "")
+                                          .trim()
+                                          .toLowerCase() === needle ||
+                                      String(l.textKey ?? "")
+                                          .trim()
+                                          .toLowerCase() === needle,
+                              );
+                    if (!matched) {
+                        const available = list.map((l) => `${l.id}:${l.text}`).join(", ") || "none";
+                        return err(
+                            `Label not found (${labelId !== undefined ? `labelId=${labelId}` : `labelText="${labelText}"`}). Available labels: ${available}`,
+                        );
+                    }
+
+                    const targetSet = new Set(targets);
+                    let updatedConvList = [];
+                    const nextLabelData = list.map((lbl) => {
+                        if (Number(lbl.id) !== Number(matched.id)) return lbl;
+                        const existing = Array.isArray(lbl.conversations) ? lbl.conversations.map(String) : [];
+                        const nextConvs =
+                            action === "assign"
+                                ? [...new Set([...existing, ...targets])]
+                                : existing.filter((c) => !targetSet.has(String(c)));
+                        updatedConvList = nextConvs;
+                        return { ...lbl, conversations: nextConvs };
+                    });
+                    const nextVersion = Number(current?.version ?? 0);
+                    const updated = await api.updateLabels({
+                        labelData: nextLabelData,
+                        version: nextVersion,
+                    });
+                    return ok({
+                        action,
+                        success: true,
+                        labelId: matched.id,
+                        labelText: matched.text,
+                        threadIds: targets,
+                        conversations: updatedConvList,
+                        version: updated?.version ?? nextVersion,
+                        result: updated,
+                    });
+                }
+
+                return err(`Unsupported label action: ${action}`);
+            } catch (e) {
+                console.error("[mcp-tools] zalo_label error:", e.message);
                 return err(e.message);
             }
         },

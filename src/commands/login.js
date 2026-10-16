@@ -14,7 +14,7 @@ import {
     getOwnId,
 } from "../core/zalo-client.js";
 import { saveCredentials, loadCredentials } from "../core/credentials.js";
-import { addAccount, getActive, removeAccount } from "../core/accounts.js";
+import { addAccount, getActive, removeAccount, updateAccountName } from "../core/accounts.js";
 import { serverLogout, reportLogout, finishLocalLogout, lockHolder } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
@@ -309,8 +309,9 @@ export function registerLoginCommands(program) {
             try {
                 const api = getApi();
                 const accountInfo = await api.fetchAccountInfo();
+                const p = accountInfo?.profile || {};
+                updateAccountName(p.userId || getOwnId(), p.displayName || p.zaloName);
                 output(accountInfo, program.opts().json, () => {
-                    const p = accountInfo?.profile || {};
                     info(`Name: ${p.displayName || "?"}`);
                     info(`ID: ${p.userId || getOwnId()}`);
                     info(`Phone: ${p.phoneNumber || "?"}`);

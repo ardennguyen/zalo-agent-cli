@@ -19,6 +19,7 @@ import {
     getActive,
     setActive,
     addAccount,
+    updateAccountName,
     getAccount,
     getProxyFor,
     wipeAccountDir,
@@ -132,6 +133,20 @@ describe("registry CRUD", () => {
         addAccount(A, "Alpha");
         assert.equal(setActive("nope"), false);
         assert.equal(getActive().ownId, A);
+    });
+
+    it("updateAccountName updates the cached label without changing active or proxy", () => {
+        addAccount(A, "Alpha", "http://proxy:8080");
+        addAccount(B, "Beta"); // B is now active, A is inactive
+        assert.equal(updateAccountName(A, "Alpha Updated"), true);
+        assert.equal(getAccount(A).name, "Alpha Updated");
+        assert.equal(getAccount(A).proxy, "http://proxy:8080");
+        assert.equal(getAccount(A).active, false);
+        assert.equal(getActive().ownId, B);
+        // No-op when unchanged, blank, or unknown
+        assert.equal(updateAccountName(A, "Alpha Updated"), false);
+        assert.equal(updateAccountName(A, "   "), false);
+        assert.equal(updateAccountName("unknown", "Name"), false);
     });
 
     it(

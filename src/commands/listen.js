@@ -84,7 +84,9 @@ export function registerListenCommand(program) {
         .action(async (opts) => {
             let activeAcc;
             try {
-                activeAcc = selectDaemonAccount(opts.account);
+                const requestedAccount =
+                    opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || undefined);
+                activeAcc = selectDaemonAccount(requestedAccount);
             } catch (e) {
                 error(e.message);
                 process.exit(1);

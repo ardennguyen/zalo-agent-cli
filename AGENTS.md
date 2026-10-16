@@ -210,7 +210,7 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**190**), command groups (**21** containers), MCP tools (**14**), OA commands (**32**), offline tests (**1986** as of 2026-10-16). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**190**), command groups (**21** containers), MCP tools (**14**), OA commands (**32**), offline tests (**1989** as of 2026-10-16). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`.
 
@@ -282,5 +282,5 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
 - **Unofficial API.** `patches/` holds patch-package patches against zca-js, applied by `prepare` and shipped **inside the tarball** via `bundleDependencies` — never a consumer `postinstall`, which cannot reach a hoisted `zca-js`. Bumping `zca-js` means regenerating the patch *and* re-pinning the exact version; `tests/unit/packaging.test.js` enforces both.
 - **One media downloader, one layout.** `src/core/sync-v2/media.js` is the only one; everything writes to `accounts/<ownId>/media/<threadId>/`. **Folders are thread IDs, never names** — a name can carry a path separator and changes on rename. `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` overrides the root for the MCP server only.
   - **A custom `media.downloadDir` survives a purge** — `wipeAccountDir()` removes only `CONFIG_DIR/accounts/<ownId>`. Warned about in `Security.md` / `Bảo-Mật.md` and `INSTALLATION.md`; not fixed in code.
-- **`zalo-mcp` is a partial pass-through.** It forwards only `--http` and `--auth`; `--host` and `--config` are **not** forwarded. The *tool surface* is identical; the *flag surface* is not. Never say "it's a pass-through" without that qualifier.
-- **`zalo-mcp`'s dependency pin drifts.** It pins a published version, so a tool added here is unreachable through the wrapper until that pin is bumped and released. Check the pin before claiming a new tool is available to wrapper users.
+- **`zalo-mcp` is a pass-through launcher (v2.0+).** It forwards all `mcp start` flags, global storage flags, and CLI subcommands (`--account`, `--http`, `--auth`, `--host`, `--config`, …) to `zalo-agent`.
+- **`zalo-mcp` serves a published engine.** A tool or flag added here is unreachable through the wrapper until published to npm and updated (`zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).

@@ -47,12 +47,13 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > **MCP Server (AI Agent Integration)** — Model Context Protocol cho Claude Code và các MCP client:
 > ```bash
 > zalo-agent mcp start                                  # stdio (local Claude Code)
+> zalo-agent mcp start --account <ID>                   # Ghim tài khoản (chạy nhiều tài khoản live cùng lúc)
 > zalo-agent mcp start --http 3847 --auth your-secret   # HTTP (VPS)
 > ```
 > 14 tools: `zalo_get_messages` · `zalo_send_message` · `zalo_list_threads` · `zalo_search_threads` · `zalo_mark_read` · `zalo_get_history` · `zalo_view_media` · `zalo_react` · `zalo_undo` · `zalo_get_group_members` · `zalo_list_conversations` · `zalo_coverage` · `zalo_sync` · `zalo_sync_status`
 
-[Sync qua MCP và điều kiện phát hành](docs/mcp-sync.vi.md).
-> Auto-reconnect · thread filter · noise reduction · tự tải media · thông báo qua nhóm Zalo
+[Sync qua MCP](docs/mcp-sync.vi.md) · [Ghim đa tài khoản live](docs/account-pinning.vi.md).
+> Auto-reconnect · thread filter · noise reduction · tự tải media · thông báo qua nhóm Zalo · chạy song song nhiều tài khoản (`--account <ID>`)
 > Xem [MCP Guide](skill/references/mcp-guide.md) · [INSTALLATION.md](INSTALLATION.md)
 
 ---
@@ -133,7 +134,7 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 ## Tính năng
 
 - Đăng nhập QR qua HTTP server tự động (browser + terminal), báo ngay khi bị **từ chối trên điện thoại** thay vì treo tới hết 60s
-- Đa tài khoản với proxy riêng biệt (1:1), device fingerprint riêng cho từng tài khoản
+- Đa tài khoản với proxy riêng biệt (1:1), device fingerprint riêng cho từng tài khoản; chạy **nhiều tài khoản live đồng thời** (mỗi tài khoản một tiến trình `mcp start` hoặc `listen` kèm `--account <ID>`, và truyền `--account <ID>` / `ZALO_ACCOUNT` trên mọi lệnh CLI mà không ghi đè `accounts.json`)
 - **190 lệnh** phủ hết tính năng Zalo cá nhân
 - **Zalo Official Account (OA) API v3.0** — OAuth login, gửi tin nhắn, follower, tag, bài viết, cửa hàng, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 14 tools cho Claude Code và các MCP client: đọc, gửi (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp), thả cảm xúc, thu hồi tin, xem thành viên nhóm, liệt kê hội thoại gần đây và kiểm tra độ đầy đủ của cache
@@ -211,12 +212,13 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > **MCP Server (AI Agent Integration)** — Model Context Protocol support for Claude Code and MCP clients:
 > ```bash
 > zalo-agent mcp start                                  # stdio (local Claude Code)
+> zalo-agent mcp start --account <ID>                   # Pin account (run multiple live accounts at once)
 > zalo-agent mcp start --http 3847 --auth your-secret   # HTTP (VPS)
 > ```
 > 14 tools: `zalo_get_messages` · `zalo_send_message` · `zalo_list_threads` · `zalo_search_threads` · `zalo_mark_read` · `zalo_get_history` · `zalo_view_media` · `zalo_react` · `zalo_undo` · `zalo_get_group_members` · `zalo_list_conversations` · `zalo_coverage` · `zalo_sync` · `zalo_sync_status`
 
-[MCP sync and release prerequisites](docs/mcp-sync.md).
-> Auto-reconnect · thread filter · noise reduction · media auto-download · Zalo-group notifications
+[MCP sync](docs/mcp-sync.md) · [Multi-account pinning](docs/account-pinning.md).
+> Auto-reconnect · thread filter · noise reduction · media auto-download · Zalo-group notifications · concurrent multi-account (`--account <ID>`)
 > See [MCP Guide](skill/references/mcp-guide.md) · [INSTALLATION.md](INSTALLATION.md)
 
 ### Quick Start
@@ -261,7 +263,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 ### Features
 
 - QR login over an auto-started HTTP server (browser + terminal), reporting a **decline on the phone** immediately instead of hanging until the 60s timeout
-- Multi-account with a dedicated proxy (1:1) and a per-account device fingerprint
+- Multi-account with a dedicated proxy (1:1) and a per-account device fingerprint; run **multiple live accounts simultaneously** (one `mcp start` or `listen` process per account with `--account <ID>`, plus `--account <ID>` / `ZALO_ACCOUNT` on any CLI command without mutating `accounts.json`)
 - **190 commands** covering the personal-account Zalo surface
 - **Zalo Official Account (OA) API v3.0** — OAuth login, messaging, followers, tags, articles, store, webhook listener, multi-OA
 - **MCP server** (stdio + HTTP) — 14 tools for Claude Code and other MCP clients: read, send (to My Documents too, marked Important/Urgent), react, recall, list a group's members, list recent conversations, and check how complete the cache is

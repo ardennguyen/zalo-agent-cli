@@ -72,11 +72,17 @@ zalo-agent login --credentials ./creds.json -p "http://user:pass@host:port"
 zalo-agent account login -p "http://user:pass@proxy1:port" -n "Account 1"
 zalo-agent account login -p "http://user:pass@proxy2:port" -n "Account 2"
 
-# Switch active
-zalo-agent account switch <ownerId>
-
-# List all
+# List all registered accounts and their numeric IDs
 zalo-agent account list
+
+# Run any command or daemon for a specific account without changing accounts.json (safe for concurrent live accounts)
+zalo-agent mcp start --account <ownerId>
+zalo-agent listen --account <ownerId>
+zalo-agent --account <ownerId> msg send <threadId> "Hello" --json
+ZALO_ACCOUNT=<ownerId> zalo-agent conv recent --json
+
+# Or switch the default active account in accounts.json
+zalo-agent account switch <ownerId>
 ```
 
 ## Proxy Support

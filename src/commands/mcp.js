@@ -143,7 +143,9 @@ export function registerMCPCommands(program) {
             // Select once; acquire the selected account's lock before authentication.
             let activeAcc;
             try {
-                activeAcc = selectDaemonAccount(opts.account);
+                const requestedAccount =
+                    opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || undefined);
+                activeAcc = selectDaemonAccount(requestedAccount);
             } catch (e) {
                 console.error("[mcp] Account selection failed:", e.message);
                 process.exit(1);

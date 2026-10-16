@@ -108,13 +108,13 @@ pm2 startup && pm2 save
 ```
 
 ## Combining Listen + Send
-Both use the same WebSocket connection on the same account:
+Both use the same WebSocket connection on the same account (pass `--account <ACCOUNT_ID>` on both when running multiple accounts simultaneously):
 ```bash
 # Terminal 1: Listen (background)
-zalo-agent listen --webhook http://localhost:3000/events &
+zalo-agent listen --account <ACCOUNT_ID> --webhook http://localhost:3000/events &
 
-# Terminal 2: Send (same account)
-zalo-agent msg send <ID> "reply"
+# Terminal 2: Send (same account — routes uploads/history/sync through Terminal 1's daemon channel)
+zalo-agent --account <ACCOUNT_ID> msg send <THREAD_ID> "reply"
 ```
 
 ## Reliability

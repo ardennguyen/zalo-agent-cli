@@ -2,19 +2,11 @@
 
 [Tiếng Việt](mcp-sync.vi.md)
 
-Source feature, not a published release. The engine exposes 14 tools, including
-`zalo_sync` and `zalo_sync_status`. The deployment wrapper still pins engine
-2.0.0: it needs a future published engine and wrapper update to expose them.
-Account-ID selection from merged engine PR #3 is included: `mcp start --account <ID>`
-pins the process at startup and across reconnects. Sync tools use only that
-account's existing runners and lock, with no per-request account override.
-
-Suggested release sequence: merge engine features, publish engine **2.1.0**,
-then publish wrapper **1.1.0** with dependency **^2.0.1** as proposed in
-[wrapper PR #1](https://github.com/ardennguyen/zalo-mcp/pull/1). The range allows
-compatible 2.x releases, not 3.x. npm latest was verified as 2.0.0 on 2026-10-15,
-so that range cannot resolve yet (ETARGET); regenerate the wrapper lockfile
-after publication. These are release recommendations; no release is made here.
+The engine exposes 14 MCP tools, including `zalo_sync` and `zalo_sync_status`
+(available in `@ardennguyen/zalo-agent-cli` v2.1.0+ and `@ardennguyen/zalo-mcp`
+v2.0.0+). `mcp start --account <ID>` (or `ZALO_ACCOUNT=<ID>`) pins the process
+to a specific registered account at startup and across reconnects; sync tools
+use only that account's runners and lock, with no per-request account override.
 
 ## Usage
 

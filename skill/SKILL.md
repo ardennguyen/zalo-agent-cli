@@ -17,7 +17,7 @@ Surface: **190 CLI commands** across 21 command containers (14 top-level groups 
 
 ## Prerequisites
 
-For `listen` or `mcp start`, use `--account <ID>` to pin an exact registered numeric account across reconnect/retry. Without it, the active-at-startup account is pinned. This does not switch the shared active account. See [English](../docs/account-pinning.md) / [Tiếng Việt](../docs/account-pinning.vi.md); the wrapper must explicitly forward this flag to support it.
+Use `--account <ID>` (or `ZALO_ACCOUNT=<ID>`) on any personal-account CLI command, `listen`, or `mcp start` to pin an exact registered numeric account for that process without mutating the shared active account in `accounts.json`. For `listen` and `mcp start`, the pinned account is preserved across reconnect/retry; without `--account`, the active-at-startup account is pinned. This lets multiple accounts run live simultaneously (one `mcp start` or `listen` process per account, plus concurrent CLI calls with `--account <ID>`). See [English](../docs/account-pinning.md) / [Tiếng Việt](../docs/account-pinning.vi.md).
 - **Requires**: `zalo-agent` CLI pre-installed by user (`zalo-agent --version` to verify)
 - **Node.js 22+**
 - See [installation guide](https://github.com/ardennguyen/zalo-agent-cli/blob/main/INSTALLATION.md) for setup
@@ -115,6 +115,7 @@ fails with no daemon up.
 ### Listen (WebSocket, auto-reconnect)
 ```bash
 zalo-agent listen                                          # Messages + friends
+zalo-agent listen --account <ID>                           # Pin a specific account (run multiple listeners at once)
 zalo-agent listen --filter user --no-self                  # DM only
 zalo-agent listen --webhook http://n8n.local/webhook/zalo  # Forward to webhook
 zalo-agent listen --events message,friend,group,reaction,read   # All events
@@ -192,12 +193,14 @@ VietQR templates: compact, print, qronly. Content max 50 chars.
 
 ### Multi-Account
 ```bash
-zalo-agent account list                          # List
-zalo-agent account login -p "proxy" -n "Shop"    # Add with proxy
-zalo-agent account switch <ownerId>              # Switch
-zalo-agent account export -o creds.json          # Export
-zalo-agent account devices                       # List linked devices/sessions (read-only)
-zalo-agent account remove <ownerId>               # Invalidate remote session + wipe local data + delete creds
+zalo-agent account list                                     # List registered accounts
+zalo-agent account login -p "proxy" -n "Shop"               # Add account with proxy
+zalo-agent account switch <ownerId>                         # Switch default active account in accounts.json
+zalo-agent --account <ownerId> msg send <ID> "hi" --json    # Run any command as <ownerId> without switching accounts.json
+ZALO_ACCOUNT=<ownerId> zalo-agent conv recent --json        # Or pin via environment variable
+zalo-agent account export -o creds.json                     # Export
+zalo-agent account devices                                  # List linked devices/sessions (read-only)
+zalo-agent account remove <ownerId>                         # Invalidate remote session + wipe local data + delete creds
 ```
 
 ### Official Account (OA) — API v3.0
@@ -219,15 +222,15 @@ Full reference: `references/oa-command-reference.md`
 ### MCP Server (Model Context Protocol)
 ```bash
 zalo-agent mcp start                                # stdio transport (default, for local Claude Code)
+zalo-agent mcp start --account <ID>                 # Pin to a specific registered account (run multiple MCP servers simultaneously)
 zalo-agent mcp start --http <port>                  # HTTP transport (for VPS/remote clients)
 zalo-agent mcp start --http <port> --auth <token>   # Bearer token auth (HTTP mode)
 zalo-agent mcp start --http <port> --host 0.0.0.0   # Bind address (default 127.0.0.1)
 zalo-agent mcp start --config <path>                # Custom config (default ~/.zalo-agent-cli/mcp-config.json)
 ```
-The `zalo-mcp` deployment wrapper (`node mcp-server.js [--http <port>] [--auth <token>]`) spawns exactly this command, so the **tool surface below is identical** whether the client talks to `zalo-agent mcp start` or to `zalo-mcp/mcp-server.js`. Two caveats that are not identical:
+The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **14-tool MCP surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
 
-- **The wrapper forwards only `--http` and `--auth`.** `--host` and `--config` are dropped silently — `node mcp-server.js --http 3847 --host 0.0.0.0` stays on `127.0.0.1`. For those, run `zalo-agent mcp start` directly.
-- **The wrapper serves the CLI version its `package.json` pins**, not the newest one. A tool added in a newer CLI is unreachable through the wrapper until that pin is bumped. Check with `node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"` inside the install.
+To run **multiple Zalo accounts live at once**, launch one MCP server per account with `--account <ID>` (e.g. multiple entries in `.claude/settings.json` `mcpServers` for stdio, or separate `--http <port>` instances on a VPS) and pass `--account <ID>` when shelling out to CLI commands. See `references/mcp-guide.md`.
 
 **MCP tools exposed (14 — personal account only):**
 

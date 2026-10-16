@@ -83,7 +83,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **21** containers — 14 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **14** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **1983** as of 2026-10-15 (1979 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **1989** as of 2026-10-16 (1985 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -535,16 +535,20 @@ All hit on 2026-09-28; each reports success, or reports an error that names the 
   account" because `USERPROFILE` had not carried over. For a long-running daemon, `nohup … &` from
   Bash survived where `Start-Process` did not.
 
-### `zalo-mcp`: partial pass-through, drifting pin
+### `zalo-mcp`: pass-through launcher and published engine dependency
 
-`zalo-mcp/mcp-server.js` forwards only `--http` and `--auth`. `--host` and `--config` are not
-forwarded, so a wrapper user cannot bind `0.0.0.0` or point at a custom config through it; they must
-invoke `zalo-agent mcp start` directly. The tool surface is identical; the flag surface is not.
+Starting in `zalo-mcp` `2.0.0` (`2.0.1` adds leading `--account <id>` CLI pass-through), `mcp-server.js`
+is a full pass-through launcher: when invoked with no CLI subcommand (`zalo-mcp` or `node mcp-server.js`),
+it spawns `zalo-agent mcp start` and forwards `--account`, `--http`, `--auth`, `--host`, `--config`,
+`--no-self-heal`, `--no-delivered-receipts`, and all global storage flags (`--env-file`, `--config-dir`,
+`--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`). When invoked with any CLI subcommand
+(`zalo-mcp [--account <id>] <cmd> ...`), it forwards all arguments directly to `zalo-agent`. (Historically,
+`zalo-mcp` `1.0.x` forwarded only `--http` and `--auth` and silently dropped `--host` and `--config`.)
 
-Its `package.json` pins `@ardennguyen/zalo-agent-cli` as a real npm dependency — currently `1.0.8`,
-while this repo is at `2.0.0`. Whatever the pin says is what a deployed wrapper actually serves, so
-an MCP tool added here is not reachable through `zalo-mcp` until that pin is bumped and released.
-When the MCP tool list changes here, `zalo-mcp`'s pin and README must be updated too.
+Its `package.json` depends on `@ardennguyen/zalo-agent-cli` (`^2.1.0` in `zalo-mcp` `2.0.x`). Whatever
+version is installed in a deployed wrapper's `node_modules/` is what it actually serves, so an MCP tool
+or flag added here is not reachable through `zalo-mcp` until the engine is published to npm and the
+deployment runs `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`.
 
 
 ---

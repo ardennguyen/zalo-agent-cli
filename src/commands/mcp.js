@@ -9,6 +9,7 @@ import { join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
+import { updateAccountName } from "../core/accounts.js";
 import { getAccountDir, MEDIA_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import {
@@ -24,11 +25,12 @@ import { createSyncJobs } from "../mcp/sync-jobs.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createReadStateSync } from "../core/read-state.js";
-import { initDb, getPendingSyncGaps } from "../core/db.js";
+import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
 import {
     storeLiveMessage,
+    refreshLiveMessageIdentities,
     storeLiveReaction,
     storeLiveUndo,
     storeGroupEvent,
@@ -160,6 +162,34 @@ export function registerMCPCommands(program) {
         .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
+            const isDaemonCli = Boolean(opts.status || opts.stop || (opts.daemon && !process.env.ZALO_DAEMON_CHILD));
+
+            let config = null;
+            if (!opts.status && !opts.stop) {
+                // An empty --auth is a token that went missing -- an unset variable
+                // in a unit file -- not a request for no auth, and it used to start
+                // the server open, saying nothing. Refused before anything logs in.
+                if (opts.http && opts.auth !== undefined && !String(opts.auth).trim()) {
+                    const msg =
+                        "--auth was given an empty token. Refusing to start: that would serve this account's " +
+                        "messages with no authentication at all.";
+                    if (isDaemonCli) error(msg);
+                    else console.error(`[mcp] ${msg}`);
+                    process.exit(1);
+                }
+
+                // The config, read before anything logs in. A file it cannot use is
+                // refused, not replaced by the defaults: they watch every thread, so
+                // a server meant for one group would buffer every DM for its bots.
+                const { config: loadedConfig, problem: configProblem } = readMCPConfig(opts.config);
+                if (configProblem) {
+                    const msg = `Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`;
+                    if (isDaemonCli) error(msg);
+                    else console.error(`[mcp] ${msg}`);
+                    process.exit(1);
+                }
+                config = loadedConfig;
+            }
 
             // Select account first so --status, --stop, and --daemon can use
             // standard CLI output before redirecting console.log for stdio MCP.
@@ -169,7 +199,7 @@ export function registerMCPCommands(program) {
                     opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || undefined);
                 activeAcc = selectDaemonAccount(requestedAccount);
             } catch (e) {
-                if (opts.status || opts.stop || (opts.daemon && !process.env.ZALO_DAEMON_CHILD)) {
+                if (isDaemonCli) {
                     error(`Account selection failed: ${e.message}`);
                 } else {
                     console.error("[mcp] Account selection failed:", e.message);
@@ -220,17 +250,6 @@ export function registerMCPCommands(program) {
                     error(`Invalid port: ${opts.http}. Must be 1-65535.`);
                     process.exit(1);
                 }
-                if (opts.auth !== undefined && !String(opts.auth).trim()) {
-                    error(
-                        "--auth was given an empty token. Refusing to start: that would serve this account's messages with no authentication at all.",
-                    );
-                    process.exit(1);
-                }
-                const { problem: configProblem } = readMCPConfig(opts.config);
-                if (configProblem) {
-                    error(`Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`);
-                    process.exit(1);
-                }
                 const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
                 if (!spawned.ok) {
                     if (spawned.alreadyRunning) {
@@ -268,28 +287,6 @@ export function registerMCPCommands(program) {
             // Stdout is the MCP JSON-RPC transport — any non-JSON output corrupts the stream.
             // This catches rogue prints from dependencies (zca-js, chalk, etc.) that we can't control.
             console.log = (...args) => console.error(...args);
-
-            // An empty --auth is a token that went missing -- an unset variable
-            // in a unit file -- not a request for no auth, and it used to start
-            // the server open, saying nothing. Refused before anything logs in.
-            if (opts.http && opts.auth !== undefined && !String(opts.auth).trim()) {
-                console.error(
-                    "[mcp] --auth was given an empty token. Refusing to start: that would serve this account's " +
-                        "messages with no authentication at all.",
-                );
-                process.exit(1);
-            }
-
-            // The config, read before anything logs in. A file it cannot use is
-            // refused, not replaced by the defaults: they watch every thread, so
-            // a server meant for one group would buffer every DM for its bots.
-            const { config, problem: configProblem } = readMCPConfig(opts.config);
-            if (configProblem) {
-                console.error(
-                    `[mcp] Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`,
-                );
-                process.exit(1);
-            }
 
             // This server now opens the account's WebSocket *and* writes to
             // zalo.db, which is exactly what the `listen` daemon does. Zalo
@@ -358,9 +355,22 @@ export function registerMCPCommands(program) {
             // One stage at a time on this socket, shared by the sync routes, the
             // self-heal catch-up and the tools' own history fetch. Created before
             // the server so the tools can hold it too.
+            const onSelfName = (name) => updateAccountName(activeAcc.ownId, name);
             const stageLock = createStageLock();
-            const syncRunners = createSyncRunners({ getApi, accountName: activeAcc.ownId });
+            const syncRunners = createSyncRunners({
+                getApi,
+                accountName: activeAcc.ownId,
+                onSelfName,
+                onMessagesRestored: () => {
+                    for (const [tid, info] of getThreadNames()) {
+                        if (info?.name) {
+                            nameCache.set(tid, { name: info.name, type: info.type === "group" ? "group" : "dm" });
+                        }
+                    }
+                },
+            });
             const syncJobs = createSyncJobs({ runners: syncRunners, lock: stageLock });
+            syncJobs.onSelfName = onSelfName;
 
             // What the tools and the notifier call. Not getApi()'s object:
             // a re-login after a dropped connection replaces it, and they
@@ -548,7 +558,8 @@ export function registerMCPCommands(program) {
                     // whether a message survives the noise filter. This server
                     // used to hold everything in memory only, so a restart lost
                     // every message it had ever seen.
-                    const threadName = nameCache?.get(String(msg.threadId))?.name || undefined;
+                    const cachedThread = nameCache?.get(String(msg.threadId));
+                    const threadName = cachedThread?.type === "group" ? cachedThread.name || undefined : undefined;
                     const stored = storeLiveMessage(msg, { threadName });
                     // A "delete for me" frame removes a message; it must not be
                     // buffered as one for an agent to read.
@@ -562,6 +573,11 @@ export function registerMCPCommands(program) {
                         console.error(`[mcp] message not stored: ${stored.reason}`);
                         return;
                     }
+                    refreshLiveMessageIdentities(api, msg, {
+                        onSelfName,
+                        nameCache,
+                        log: (line) => console.error(`[mcp] ${line}`),
+                    }).catch((e) => console.error(`[mcp] identity refresh failed: ${e.message}`));
                     if (stored.info.hasAttachment) fetchMedia(String(msg.threadId));
 
                     // Skip self-sent messages for the agent-facing buffer
@@ -611,6 +627,13 @@ export function registerMCPCommands(program) {
                 api.listener.on("group_event", (event) => {
                     noteBoardChange(event);
                     storeGroupEventRow(event);
+                    const groupName = typeof event?.data?.groupName === "string" ? event.data.groupName.trim() : "";
+                    if (groupName && event?.threadId !== undefined && event?.threadId !== null) {
+                        const tid = String(event.threadId);
+                        if (String(event?.type || "").toLowerCase() === "update" || !nameCache?.get(tid)?.name) {
+                            nameCache?.set(tid, { name: groupName, type: "group" });
+                        }
+                    }
                     // Same call as `listen`: our uid tells being removed from
                     // removing someone else, and a later event clears the flag.
                     const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });

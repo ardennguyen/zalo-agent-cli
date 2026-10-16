@@ -33,6 +33,7 @@ import {
     replaceLiveGroupEventPlaceholder,
     getThreadType,
     getRecentThreads,
+    findMessageByClientId,
 } from "../db.js";
 import { ensureAssets, loadCodecs } from "./assets.js";
 import { classifySyncMessage } from "./message-types.js";
@@ -403,12 +404,18 @@ export function isSessionComplete(state) {
  * where they overwrote one another through insertMessage's upsert.
  *
  * @param {object} msg - a decoded Sync2.Message.Message
+ * @param {string|null} [threadId=null] - thread id to match an already-stored live row by cliMsgId
  * @returns {string}
  */
-function syncMsgId(msg) {
+function syncMsgId(msg, threadId = null) {
     const gid = msg?.globalId;
     if (gid !== undefined && gid !== null && String(gid) !== "0" && String(gid) !== "") return String(gid);
-    return String(msg?.clientId ?? "");
+    const cid = String(msg?.clientId ?? "");
+    if (cid && cid !== "0" && threadId) {
+        const existing = findMessageByClientId(cid, threadId);
+        if (existing?.msgId) return String(existing.msgId);
+    }
+    return cid;
 }
 
 export class SyncV2 {
@@ -491,6 +498,22 @@ export class SyncV2 {
         }
     }
 
+    /** Refresh the active account's own display name via onSelfName if provided. */
+    async _refreshSelfName(onSelfName) {
+        if (typeof onSelfName !== "function") return;
+        const ownId = String(this.accountName || "");
+        if (!/^[1-9][0-9]*$/.test(ownId)) return;
+        try {
+            const names = await resolveCurrentUserNames(this.api, [ownId], { aliases: new Map() });
+            const self = names.get(ownId);
+            if (self && self.source === "zalo" && self.name) {
+                await onSelfName(self.name);
+            }
+        } catch {
+            /* best-effort registry sync */
+        }
+    }
+
     _send590(listener, kind, syncId, ek, ik, req) {
         listener.sendWs(
             {
@@ -564,6 +587,7 @@ export class SyncV2 {
         initDb(resolve(this.accountDir, "zalo.db"));
         this._refreshThreadNames(threadMap);
         await this._refreshDmNames(threadMap);
+        await this._refreshSelfName(opts.onSelfName);
 
         const L = this.api.listener;
         const sessions = new Map(); // syncId -> {kind, batches:[], statuses:[], done, err}
@@ -1142,7 +1166,7 @@ export class SyncV2 {
                                             // it does in a removal's
                                             // globalDelMsgId and a reaction's
                                             // gMsgID.
-                                            msgId: syncMsgId(msg),
+                                            msgId: syncMsgId(msg, threadId),
                                             threadId,
                                             senderId: senders.get(msg.senderId).id,
                                             senderName: senders.get(msg.senderId).name,

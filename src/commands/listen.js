@@ -8,6 +8,7 @@ import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
+import { updateAccountName } from "../core/accounts.js";
 import { getAccountDir } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import {
@@ -24,6 +25,7 @@ import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
     storeLiveMessage,
+    refreshLiveMessageIdentities,
     storeLiveDelete,
     storeLiveReaction,
     storeLiveUndo,
@@ -575,6 +577,10 @@ export function registerListenCommand(program) {
                             console.error(`[listen] message not stored: ${stored.reason}`);
                             return;
                         }
+                        refreshLiveMessageIdentities(api, msg, {
+                            onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
+                            log: (line) => console.error(`[listen] ${line}`),
+                        }).catch((err) => console.error(`[listen] identity refresh failed: ${err.message}`));
                         // Fetch through the SAME downloader the mobile sync
                         // uses: it brings the request deadline, the
                         // expiry-vs-throttling classification and the shared
@@ -904,7 +910,11 @@ export function registerListenCommand(program) {
                     getApi,
                     accountDir,
                     onLog: (m) => info(m),
-                    runners: createSyncRunners({ getApi, accountName: activeAcc.ownId }),
+                    runners: createSyncRunners({
+                        getApi,
+                        accountName: activeAcc.ownId,
+                        onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
+                    }),
                     // The self-heal's lock: a stage and a catch-up never share the socket.
                     lock: stageLock,
                     onStop: shutdown,

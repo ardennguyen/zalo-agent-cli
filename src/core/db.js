@@ -486,6 +486,51 @@ export function insertMessage(msg) {
         ELSE MAX(COALESCE(excluded.msgStatus, 0), COALESCE(messages.msgStatus, 0)) END
   `);
 
+    const rawObj =
+        typeof msg.raw_data === "object" && msg.raw_data !== null
+            ? msg.raw_data
+            : (() => {
+                  try {
+                      return typeof msg.raw_data === "string" && msg.raw_data.startsWith("{")
+                          ? JSON.parse(msg.raw_data)
+                          : null;
+                  } catch {
+                      return null;
+                  }
+              })();
+    const cliMsgId = rawObj?.cliMsgId;
+    let inheritedLocalPath = msg.localPath || null;
+    let inheritedStatus = Number.isFinite(Number(msg.msgStatus)) ? Number(msg.msgStatus) : null;
+    if (
+        cliMsgId !== undefined &&
+        cliMsgId !== null &&
+        String(cliMsgId) !== "" &&
+        String(cliMsgId) !== "0" &&
+        String(cliMsgId) !== String(msg.msgId) &&
+        msg.threadId
+    ) {
+        const tempRow = db
+            .prepare("SELECT localPath, msgStatus, type FROM messages WHERE msgId = ? AND threadId = ?")
+            .get(String(cliMsgId), String(msg.threadId));
+        if (tempRow && tempRow.type !== "deleted") {
+            if (!inheritedLocalPath && tempRow.localPath) inheritedLocalPath = tempRow.localPath;
+            if (Number.isFinite(Number(tempRow.msgStatus))) {
+                inheritedStatus =
+                    inheritedStatus === null
+                        ? Number(tempRow.msgStatus)
+                        : Math.max(inheritedStatus, Number(tempRow.msgStatus));
+            }
+            db.prepare("DELETE FROM messages WHERE msgId = ? AND threadId = ?").run(
+                String(cliMsgId),
+                String(msg.threadId),
+            );
+            db.prepare("UPDATE OR IGNORE reactions SET msgId = ? WHERE msgId = ?").run(
+                String(msg.msgId),
+                String(cliMsgId),
+            );
+        }
+    }
+
     const raw_data =
         typeof msg.raw_data === "object" && msg.raw_data !== null ? JSON.stringify(msg.raw_data) : msg.raw_data;
 
@@ -498,9 +543,9 @@ export function insertMessage(msg) {
         timestamp: msg.timestamp,
         type: msg.type,
         raw_data: raw_data,
-        localPath: msg.localPath || null,
+        localPath: inheritedLocalPath,
         has_attachment: msg.has_attachment ? 1 : 0,
-        msgStatus: Number.isFinite(Number(msg.msgStatus)) ? Number(msg.msgStatus) : null,
+        msgStatus: inheritedStatus,
     });
 }
 
@@ -1488,11 +1533,23 @@ export function markMessageRecalled(msgId, at = Date.now(), opts = {}) {
  * query with it.
  *
  * @param {string|number} cliMsgId
+ * @param {string} [threadId] - optional thread scope for index-backed lookup
  * @returns {object|null}
  */
-export function findMessageByClientId(cliMsgId) {
+export function findMessageByClientId(cliMsgId, threadId = null) {
     if (!db) throw new Error("Database not initialized");
     if (cliMsgId === undefined || cliMsgId === null || cliMsgId === "") return null;
+    if (threadId !== undefined && threadId !== null && threadId !== "") {
+        return (
+            db
+                .prepare(
+                    `SELECT * FROM messages
+             WHERE threadId = ? AND json_valid(raw_data) AND json_extract(raw_data, '$.cliMsgId') = ?
+             ORDER BY timestamp DESC LIMIT 1`,
+                )
+                .get(String(threadId), String(cliMsgId)) || null
+        );
+    }
     return (
         db
             .prepare(

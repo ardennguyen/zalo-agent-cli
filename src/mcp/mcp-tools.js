@@ -1490,9 +1490,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 if (self) {
                     const info = await api.fetchAccountInfo();
                     const p = info?.profile || info || {};
+                    const ownId = ownIdOf(api) || p.userId || null;
+                    if (p.displayName || p.zaloName) syncJobs?.onSelfName?.(p.displayName || p.zaloName);
                     return ok({
                         mode: "self",
-                        ownId: ownIdOf(api) || p.userId || null,
+                        ownId,
                         displayName: p.displayName || p.zaloName || null,
                         zaloName: p.zaloName || null,
                         phoneNumber: p.phoneNumber || null,

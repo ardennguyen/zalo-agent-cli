@@ -5,6 +5,7 @@ accounts.json
 *.credentials.json
 .env
 .env.*
+!.env.example
 qr.png
 test_qr.png
 confirm_payload.json

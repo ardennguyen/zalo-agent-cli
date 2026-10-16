@@ -90,6 +90,38 @@ export function normalizeMessage(msg, info = null) {
     };
 }
 
+/**
+ * Fire-and-forget HTTP POST for an incoming buffered MCP message when a
+ * webhook URL is configured (`-w, --webhook <url>` or `webhook` in
+ * `mcp-config.json`). Never blocks or throws into the listener loop.
+ *
+ * @param {string|null} webhookUrl
+ * @param {object} message - Normalized message object
+ * @param {object} [extra] - Additional top-level fields (e.g. `{ accountId }`)
+ * @param {Function} [fetchFn=fetch] - Injectable fetch for unit testing
+ * @returns {Promise<boolean>} True when dispatched, false when skipped or failed
+ */
+export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = fetch) {
+    if (!webhookUrl) return false;
+    const payload = {
+        event: "message",
+        ...extra,
+        ...message,
+    };
+    try {
+        await fetchFn(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(5000),
+        });
+        return true;
+    } catch (e) {
+        console.error(`[mcp] Webhook failed: ${e.message}`);
+        return false;
+    }
+}
+
 export function registerMCPCommands(program) {
     const mcp = program.command("mcp").description("MCP server for AI agent integration");
 
@@ -104,6 +136,10 @@ export function registerMCPCommands(program) {
         .option("--http <port>", "Use HTTP transport on specified port (default: stdio)")
         .option("--auth <token>", "Bearer token for HTTP auth (only with --http)")
         .option("--host <address>", "HTTP bind address (default: 127.0.0.1, only with --http)")
+        .option(
+            "-w, --webhook <url>",
+            "POST each watched incoming message as JSON to this URL (or set webhook in mcp-config.json)",
+        )
         .option(
             "--no-delivered-receipts",
             "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
@@ -281,6 +317,10 @@ export function registerMCPCommands(program) {
 
             // Setup notifier (sends to Zalo group when agent is offline)
             const notifier = new ZaloNotifier(sessionApi, config);
+            const webhookUrl = opts.webhook?.trim() || config.webhook?.trim() || null;
+            if (webhookUrl) {
+                console.error(`[mcp] Webhook enabled: ${webhookUrl}`);
+            }
 
             // Delivered receipts: the same shared implementation `listen` uses
             // (AGENTS.md §13 -- the two listeners must not differ). Diagnostics
@@ -366,6 +406,7 @@ export function registerMCPCommands(program) {
                         if (!filter.shouldKeep(normalized)) continue;
                         buffer.push(normalized.threadId, normalized);
                         notifier.onMessage(normalized);
+                        postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId });
                     }
                 },
             });
@@ -433,6 +474,7 @@ export function registerMCPCommands(program) {
 
                     buffer.push(normalized.threadId, normalized);
                     notifier.onMessage(normalized);
+                    postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId });
                     console.error(`[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`);
                 });
 

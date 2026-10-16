@@ -16,6 +16,7 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 | `--http <port>` | *(stdio)* | Dùng HTTP transport trên port này. Bỏ trống = stdio |
 | `--auth <token>` | *(không)* | Yêu cầu header `Authorization: Bearer <token>` cho mọi endpoint trừ `/health` |
 | `--host <address>` | `127.0.0.1` | Địa chỉ bind cho HTTP mode. Đặt `0.0.0.0` để nhận kết nối từ ngoài |
+| `-w, --webhook <url>` | *(không)* | POST mỗi tin nhắn mới (đã lọc theo `watchThreads`) dạng JSON tới URL này (hoặc đặt `"webhook"` trong `mcp-config.json`) |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | File cấu hình tuỳ chỉnh |
 
 > [!WARNING]
@@ -63,18 +64,22 @@ Endpoint MCP là **`POST /mcp`** (stateless — mỗi request tạo server+trans
 }
 ```
 
-Health check (không cần auth):
+Health check (không cần auth) và long-poll nhận tin tức thì (0% CPU, không cần polling lặp):
 
 ```bash
 curl http://localhost:3847/health
 # → {"status":"ok","uptime":123,"threads":5}
+
+# Chờ tin nhắn tiếp theo (tối đa 300s) hoặc trả về ngay nếu đã có tin sau cursor `since`
+curl -s "http://localhost:3847/events/wait?timeout=300&since=0"
+# → {"status":"message","message":{...},"cursor":1}
 ```
 
 ### Qua wrapper `zalo-mcp`
 
 Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 21 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
-- **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
+- **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `-w`/`--webhook <url>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
   ```bash
   node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"

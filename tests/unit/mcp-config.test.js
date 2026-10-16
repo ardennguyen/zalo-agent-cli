@@ -37,9 +37,10 @@ describe("getDefaultConfig", () => {
         assert.deepEqual(getDefaultConfig().watchThreads, ["dm:*", "group:*"]);
     });
 
-    it("defaults to manual mode with notifications OFF", () => {
+    it("defaults to manual mode with notifications and webhook OFF", () => {
         const d = getDefaultConfig();
         assert.equal(d.mode, "manual");
+        assert.equal(d.webhook, null);
         assert.equal(d.notify.enabled, false);
         assert.equal(d.notify.thread, null);
     });

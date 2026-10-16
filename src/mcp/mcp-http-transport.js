@@ -79,6 +79,46 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         }
     });
 
+    // Long-poll endpoint for zero-CPU event-driven wakeup (protected by auth middleware above)
+    app.get("/events/wait", async (req, res) => {
+        const rawTimeout = Number(req.query.timeout);
+        const timeoutSec = Number.isFinite(rawTimeout) && rawTimeout > 0 ? Math.min(rawTimeout, 300) : 60;
+        const threadId =
+            typeof req.query.threadId === "string" && req.query.threadId.trim() ? req.query.threadId.trim() : null;
+        const sinceRaw = req.query.since !== undefined ? Number(req.query.since) : undefined;
+        const since = Number.isFinite(sinceRaw) ? sinceRaw : undefined;
+
+        const ac = new AbortController();
+        res.on("close", () => ac.abort());
+
+        try {
+            const msg = await deps.buffer.waitForMessage({
+                threadId,
+                since,
+                timeoutMs: timeoutSec * 1000,
+                signal: ac.signal,
+            });
+            if (res.writableEnded) return;
+            if (msg) {
+                res.json({
+                    status: "message",
+                    message: msg,
+                    cursor: msg._cursor,
+                });
+            } else {
+                res.json({
+                    status: "timeout",
+                    message: null,
+                    cursor: deps.buffer.readCursor(),
+                });
+            }
+        } catch (err) {
+            if (!res.headersSent) {
+                res.status(500).json({ error: err.message });
+            }
+        }
+    });
+
     // Health check — no auth required
     app.get("/health", (req, res) => {
         res.json({

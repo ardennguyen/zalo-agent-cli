@@ -1,10 +1,10 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **14 tools**.
+Model Context Protocol (MCP) cho phép Claude Code và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **21 tools**.
 
-Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video, xoá/chuyển tiếp tin, friend, phần còn lại của group và conv, profile, poll, reminder, auto-reply, quick-msg, label, catalog, account — **chưa có MCP tool**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
+Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, label, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
-Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo` ↔ `msg undo`, `zalo_get_group_members` ↔ `group members`, `zalo_list_conversations` ↔ `conv recent`) đều gọi đúng đoạn code mà lệnh đó dùng, nên cách tra cứu và các trường hợp từ chối giống hệt nhau.
+Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo` ↔ `msg undo`, `zalo_forward_message` ↔ `msg forward`, `zalo_delete_message` ↔ `msg delete`, `zalo_get_group_members` ↔ `group members`, `zalo_list_conversations` ↔ `conv recent`, `zalo_reminder` ↔ `reminder`, `zalo_note` ↔ `group note-*` + `msg pin/unpin`, `zalo_poll` ↔ `poll`) đều gọi đúng đoạn code mà lệnh đó dùng, nên cách tra cứu và các trường hợp từ chối giống hệt nhau.
 
 ---
 
@@ -72,7 +72,7 @@ curl http://localhost:3847/health
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 14 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 21 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
 - **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
@@ -159,7 +159,7 @@ Mỗi tài khoản Zalo cá nhân có cơ sở dữ liệu (`<DATA_DIR>/<ownId>/
 
 ---
 
-## Tham chiếu Tools (14 tools)
+## Tham chiếu Tools (21 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -189,13 +189,15 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 ---
 
 ### `zalo_send_message`
-Gửi tin nhắn văn bản đến một thread. Viết `@[uid]` trong nội dung để tag người đó trong nhóm (`@[-1]` là @All): tên hiển thị lấy từ cache cục bộ, uid nào cache chưa biết tên thì hiện nguyên uid và được liệt kê trong `unresolvedMentions`. Truyền `quoteMsgId` để trả lời trích dẫn một tin văn bản đã có trong cache.
+Gửi tin nhắn văn bản, thẻ link preview (`link`), hoặc danh thiếp liên hệ (`cardUserId`) đến một thread. Viết `@[uid]` trong nội dung để tag người đó trong nhóm (`@[-1]` là @All): tên hiển thị lấy từ cache cục bộ, uid nào cache chưa biết tên thì hiện nguyên uid và được liệt kê trong `unresolvedMentions`. Truyền `quoteMsgId` để trả lời trích dẫn một tin văn bản đã có trong cache.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
 | `threadId` | string | ID của người dùng hoặc nhóm. `me` (hoặc uid của chính bạn) là My Documents — "Cloud của tôi" |
-| `text` | string | Nội dung tin nhắn (bắt buộc, không rỗng) |
+| `text` | string (tuỳ chọn khi có `link`/`cardUserId`) | Nội dung tin nhắn (bắt buộc nếu không truyền `link` hay `cardUserId`; làm chú thích tuỳ chọn khi gửi `link`) |
+| `link` | string URL (tuỳ chọn) | Gửi thẻ xem trước liên kết (dùng `text` làm chú thích nếu có) |
+| `cardUserId` | string (tuỳ chọn) | Gửi danh thiếp Zalo của user có ID này vào hội thoại |
 | `threadType` | number (tuỳ chọn) | 0 = DM (User), 1 = nhóm. Bỏ trống thì dùng loại thread đã lưu trong cache, giống CLI |
 | `quoteMsgId` | string (tuỳ chọn) | msgId của một tin văn bản trong thread này để trả lời trích dẫn |
 | `urgency` | enum "normal"\|"important"\|"urgent" (tuỳ chọn) | Đánh dấu tin **Quan trọng** (`important`) hoặc **Khẩn cấp** (`urgent`) như tuỳ chọn trong app, ánh xạ y hệt `msg send --urgency`. Bỏ trống hoặc `normal` là tin thường |
@@ -452,34 +454,146 @@ thái hội thoại vẫn dùng CLI. [Hướng dẫn đầy đủ](../../docs/mc
 
 ---
 
+### `zalo_search_messages`
+Tìm kiếm nội dung tin nhắn trên toàn bộ cơ sở dữ liệu SQLite cục bộ (`zalo.db`). Không tốn cuộc gọi mạng nào tới Zalo, trả về kết quả từ mới nhất đến cũ nhất.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `query` | string | Chuỗi văn bản cần tìm (không phân biệt hoa/thường) |
+| `threadId` | string (tuỳ chọn) | Giới hạn tìm kiếm trong một hội thoại cụ thể |
+| `senderId` | string (tuỳ chọn) | Giới hạn tìm kiếm theo UID người gửi |
+| `since` | number (tuỳ chọn) | Chỉ lấy tin nhắn có `timestamp >= since` (epoch ms) |
+| `until` | number (tuỳ chọn) | Chỉ lấy tin nhắn có `timestamp <= until` (epoch ms) |
+| `limit` | number (mặc định 50, tối đa 200) | Số tin khớp tối đa trả về |
+
+---
+
+### `zalo_lookup_user`
+Tra cứu thông tin người dùng Zalo theo số điện thoại (`phone`), username (`username`), user ID (`userId`), hoặc xem hồ sơ của chính tài khoản đang đăng nhập (`self: true`). Rất hữu ích để lấy `userId` (cũng chính là `threadId` chat 1-1) trước khi gửi tin nhắn hoặc chia sẻ danh thiếp. Không ghi gì vào `zalo.db`.
+
+**Tham số (chọn đúng 1 trong 4):**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `self` | boolean (tuỳ chọn) | Đặt `true` để xem thông tin tài khoản hiện tại (`whoami`) |
+| `phone` | string (tuỳ chọn) | Số điện thoại cần tìm (ví dụ `"0901234567"`) |
+| `username` | string (tuỳ chọn) | Username Zalo cần tìm |
+| `userId` | string (tuỳ chọn) | Zalo user ID cần lấy thông tin hồ sơ chi tiết |
+
+---
+
+### `zalo_forward_message`
+Chuyển tiếp một tin nhắn đã có trong cache (`msgId`) sang hội thoại khác (`threadId`), hoạt động y hệt `msg forward`: tin văn bản được gửi qua API forward kèm nhãn "Đã chuyển tiếp"; danh thiếp, sticker, link, video, voice và file/ảnh đã tải về máy được gửi lại đúng loại tương ứng.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `msgId` | string | ID tin nhắn trong cache cần chuyển tiếp |
+| `threadId` | string | ID hội thoại đích (`me` là My Documents) |
+| `threadType` | number (tuỳ chọn) | 0 = DM, 1 = nhóm (bỏ trống sẽ tự suy từ cache) |
+
+---
+
+### `zalo_delete_message`
+Xoá một tin nhắn ở phía bạn (`everyone: false`, mặc định) hoặc xoá với mọi người trong nhóm (`everyone: true`, chỉ áp dụng cho tin nhắn của người khác trong nhóm khi bạn có quyền admin — muốn thu hồi tin của chính bạn ở cả hai phía hãy dùng `zalo_undo`). Tự động tra `cliMsgId` và `uidFrom` từ cache khi bỏ trống.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `msgId` | string | ID tin nhắn cần xoá |
+| `threadId` | string | ID hội thoại chứa tin nhắn |
+| `threadType` | number (tuỳ chọn) | 0 = DM, 1 = nhóm |
+| `cliMsgId` | string (tuỳ chọn) | ID phía client (tra từ cache nếu bỏ trống) |
+| `uidFrom` | string (tuỳ chọn) | UID người gửi (tra từ cache hoặc mặc định là UID của bạn) |
+| `everyone` | boolean (mặc định `false`) | `true` = xoá với mọi người trong nhóm |
+
+---
+
+### `zalo_reminder`
+Tạo, liệt kê, xem chi tiết, xem danh sách phản hồi, sửa hoặc xoá nhắc hẹn (reminder) trong hội thoại 1-1 hoặc nhóm, tương đương nhóm lệnh `reminder`.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `action` | enum `"create"\|"list"\|"info"\|"responses"\|"edit"\|"remove"` | Thao tác cần thực hiện |
+| `threadId` | string (tuỳ chọn) | ID hội thoại (bắt buộc cho `create`, `list`, `edit`, `remove`) |
+| `threadType` | number (tuỳ chọn) | 0 = DM, 1 = nhóm (tự suy từ cache khi bỏ trống) |
+| `reminderId` | string (tuỳ chọn) | ID nhắc hẹn (bắt buộc cho `info`, `responses`, `edit`, `remove`) |
+| `title` | string (tuỳ chọn) | Nội dung nhắc hẹn (bắt buộc cho `create`, `edit`) |
+| `time` | number\|string (tuỳ chọn) | Thời gian nhắc hẹn: epoch ms, `"YYYY-MM-DD HH:mm"`, hoặc chuỗi ISO |
+| `emoji` | string (tuỳ chọn) | Biểu tượng cảm xúc (mặc định `"⏰"` khi tạo mới) |
+| `repeat` | enum `"none"\|"daily"\|"weekly"\|"monthly"` (tuỳ chọn) | Chế độ lặp lại |
+| `page`, `count` | number (tuỳ chọn) | Phân trang cho `list` (mặc định `page: 1`, `count: 20`) |
+
+---
+
+### `zalo_note`
+Tạo/sửa ghi chú nhóm, liệt kê bảng tin nhóm (ghi chú, tin ghim, bình chọn), hoặc ghim/bỏ ghim tin nhắn văn bản ở đầu hội thoại, tương đương `group note-create`/`note-edit` và `msg pin`/`unpin`.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `action` | enum `"create"\|"edit"\|"list"\|"pin_message"\|"unpin_message"` | Thao tác cần thực hiện |
+| `groupId` | string (tuỳ chọn) | ID nhóm (bắt buộc cho `create`, `edit`, `list`) |
+| `threadId` | string (tuỳ chọn) | ID hội thoại cho `pin_message` / `unpin_message` (mặc định lấy từ tin nhắn trong cache) |
+| `threadType` | number (tuỳ chọn) | 0 = DM, 1 = nhóm |
+| `noteId` | string (tuỳ chọn) | ID ghi chú cần sửa (bắt buộc cho `edit`) |
+| `title` | string (tuỳ chọn) | Nội dung ghi chú (bắt buộc cho `create`, `edit`) |
+| `pin` | boolean (mặc định `false`) | Ghim ghi chú lên đầu bảng tin nhóm khi `create` hoặc `edit` |
+| `msgId` | string (tuỳ chọn) | ID tin nhắn văn bản trong cache cần ghim (`pin_message`) hoặc bỏ ghim (`unpin_message`) |
+| `page`, `count` | number (tuỳ chọn) | Phân trang cho `list` (mặc định `page: 1`, `count: 20`) |
+
+---
+
+### `zalo_poll`
+Tạo, xem kết quả, bình chọn, rút bình chọn, thêm phương án, khoá hoặc chia sẻ khảo sát (poll) trong nhóm, tương đương nhóm lệnh `poll`.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `action` | enum `"create"\|"info"\|"vote"\|"unvote"\|"add_options"\|"lock"\|"share"` | Thao tác cần thực hiện |
+| `groupId` | string (tuỳ chọn) | ID nhóm (bắt buộc cho `create`) |
+| `pollId` | number\|string (tuỳ chọn) | ID khảo sát (bắt buộc cho các action ngoài `create`) |
+| `question` | string (tuỳ chọn) | Câu hỏi khảo sát (bắt buộc cho `create`) |
+| `options` | string[] (tuỳ chọn) | Danh sách phương án (ít nhất 2 cho `create`, ít nhất 1 cho `add_options`) |
+| `optionIds` | number[] (tuỳ chọn) | Danh sách `option_id` cần bầu chọn cho `vote` (xem từ `info`) |
+| `multi`, `allowAddOptions`, `anonymous`, `hidePreview`, `expireMinutes` | tuỳ chọn | Các tuỳ chọn khi tạo poll (`create`) |
+| `voteNewOptions` | boolean (mặc định `false`) | Tự động bầu cho phương án vừa thêm (`add_options`) |
+
+---
+
 ## Phạm vi tool — cái gì có, cái gì phải gọi CLI
 
-MCP server chỉ expose **14 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
+MCP server expose **21 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
 
 | Nhóm chức năng | MCP tool | Cách gọi qua CLI |
 |---|---|---|
 | Đọc tin nhắn live | `zalo_get_messages` | `zalo-agent --json listen` |
 | Đọc lịch sử cũ | `zalo_get_history` | `zalo-agent --json msg history <id>` |
-| Gửi text (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send <id> "…" [-t 1] [--urgency important\|urgent]` |
+| Tìm kiếm nội dung tin nhắn trong cache | `zalo_search_messages` | — |
+| Gửi text, link preview, danh thiếp (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send\|send-link\|send-card …` |
 | Tìm thread theo tên | `zalo_search_threads` | `zalo-agent --json friend search "…"` · `group list -q "…"` |
+| Tra cứu người dùng (SĐT, username, userId, whoami) | `zalo_lookup_user` | `zalo-agent --json friend find\|info …` · `whoami` |
 | Liệt kê thread đang có trong buffer (kèm số tin chưa đọc) | `zalo_list_threads` | — |
 | Liệt kê hội thoại gần đây | `zalo_list_conversations` | `zalo-agent --json conv recent` |
 | Mở media đã nhận | `zalo_view_media` | — |
 | Thả cảm xúc | `zalo_react` | `zalo-agent --json msg react …` |
 | Thu hồi tin của mình | `zalo_undo` | `zalo-agent --json msg undo …` |
+| Chuyển tiếp tin nhắn | `zalo_forward_message` | `zalo-agent --json msg forward …` |
+| Xoá tin nhắn | `zalo_delete_message` | `zalo-agent --json msg delete …` |
 | Thành viên nhóm | `zalo_get_group_members` | `zalo-agent --json group members <groupId>` |
+| Nhắc hẹn (Reminder) | `zalo_reminder` | `zalo-agent --json reminder …` |
+| Ghi chú nhóm & Ghim tin nhắn | `zalo_note` | `zalo-agent --json group note-create\|note-edit …` · `msg pin\|unpin …` |
+| Khảo sát nhóm (Poll) | `zalo_poll` | `zalo-agent --json poll …` |
 | Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
-| Gửi ảnh / file / voice / video / link / sticker | — | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|send-link\|sticker …` |
-| Xoá / chuyển tiếp | — | `zalo-agent --json msg delete\|forward …` |
-| Thẻ ngân hàng / VietQR | — | `zalo-agent --json msg send-bank\|send-qr-transfer …` |
-| Bạn bè (22 lệnh) | — | `zalo-agent --json friend …` |
-| Nhóm (33 lệnh; ngoài `group members`) | — | `zalo-agent --json group …` |
-| Hội thoại (15 lệnh; ngoài `conv recent`) | — | `zalo-agent --json conv …` |
-| Hồ sơ (11 lệnh) | — | `zalo-agent --json profile …` |
-| Khảo sát, nhắc nhở, trả lời tự động, tin nhắn nhanh, nhãn, catalog | — | `zalo-agent --json poll\|reminder\|auto-reply\|quick-msg\|label\|catalog …` |
-| Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
 | Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |
-| Đọc lịch sử từ cache cục bộ | `zalo_get_history` (đọc `zalo.db` trước, rồi mới hỏi server) | `zalo-agent --json msg history <id>` (đọc `zalo.db`) |
+| Gửi ảnh / file / voice / video / sticker | — | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|sticker …` |
+| Thẻ ngân hàng / VietQR | — | `zalo-agent --json msg send-bank\|send-qr-transfer …` |
+| Quản lý bạn bè (kết bạn, chặn, biệt danh) | — | `zalo-agent --json friend …` |
+| Quản trị nhóm nâng cao (tạo nhóm, mời, duyệt, link, giải tán) | — | `zalo-agent --json group …` |
+| Cài đặt hội thoại (ghim hội thoại, tắt thông báo, ẩn, tự xoá) | — | `zalo-agent --json conv …` |
+| Hồ sơ, trả lời tự động, tin nhắn nhanh, nhãn, catalog | — | `zalo-agent --json profile\|auto-reply\|quick-msg\|label\|catalog …` |
+| Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
 | Official Account (32 lệnh) | — | `zalo-agent --json oa …` |
 
 **Nguyên tắc:** có MCP tool thì dùng tool; không có thì gọi CLI. Đừng trả lời "không làm được" chỉ vì chưa có MCP tool tương ứng.
@@ -543,7 +657,7 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP) — registerTools() đăng ký cả 14 tools
+MCP Server (stdio hoặc HTTP) — registerTools() đăng ký cả 21 tools
      ↓
 Claude Code / MCP Client
 ```

@@ -622,6 +622,50 @@ export function getMessageById(msgId) {
 }
 
 /**
+ * Search cached messages by text substring across one or all conversations, newest first.
+ *
+ * Purely local SQLite query — never touches the Zalo network. Excludes recalled/deleted
+ * tombstones (`type = 'deleted'`) and escapes SQLite LIKE wildcards (`%`, `_`, `\`) so literal
+ * characters in `query` match as literals.
+ *
+ * @param {object} opts
+ * @param {string} opts.query - Substring to match in message text (case-insensitive for ASCII)
+ * @param {string} [opts.threadId] - Restrict to one conversation
+ * @param {string} [opts.senderId] - Restrict to one sender UID
+ * @param {number} [opts.since] - Only messages at or after this epoch-ms timestamp
+ * @param {number} [opts.until] - Only messages at or before this epoch-ms timestamp
+ * @param {number} [opts.limit=50] - Max messages to return
+ * @returns {Array<object>}
+ */
+export function searchMessages(opts = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const { query, threadId, senderId, since, until, limit = 50 } = opts;
+    const escaped = String(query ?? "").replace(/[\\%_]/g, "\\$&");
+    const where = ["COALESCE(type, '') != 'deleted'", "text IS NOT NULL", "text LIKE ? ESCAPE '\\'"];
+    const params = [`%${escaped}%`];
+    if (threadId) {
+        where.push("threadId = ?");
+        params.push(String(threadId));
+    }
+    if (senderId) {
+        where.push("senderId = ?");
+        params.push(String(senderId));
+    }
+    if (Number.isFinite(since)) {
+        where.push("timestamp >= ?");
+        params.push(Number(since));
+    }
+    if (Number.isFinite(until)) {
+        where.push("timestamp <= ?");
+        params.push(Number(until));
+    }
+    params.push(limit);
+    return db
+        .prepare(`SELECT * FROM messages WHERE ${where.join(" AND ")} ORDER BY timestamp DESC LIMIT ?`)
+        .all(...params);
+}
+
+/**
  * Most recently active threads, newest first.
  *
  * `type` filters in SQL rather than after the fact. That distinction is the

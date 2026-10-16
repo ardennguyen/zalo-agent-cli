@@ -38,6 +38,13 @@ const EXPECTED_TOOLS = [
     "zalo_coverage",
     "zalo_sync",
     "zalo_sync_status",
+    "zalo_search_messages",
+    "zalo_lookup_user",
+    "zalo_forward_message",
+    "zalo_delete_message",
+    "zalo_reminder",
+    "zalo_note",
+    "zalo_poll",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -836,5 +843,399 @@ describe("zalo_send_message composes mentions and quotes", () => {
         assert.equal(r.isError, true);
         assert.match(r.content[0].text, /cliMsgId was never cached/i);
         assert.equal(api.calls.length, 0);
+    });
+
+    it("sends a link preview card when `link` is provided", async () => {
+        let seen;
+        const { server } = register({
+            api: {
+                sendLink: async (opts, tid, type) => {
+                    seen = { opts, tid, type };
+                    return { msgId: "link1", cliMsgId: "cl1" };
+                },
+            },
+        });
+        const r = await server.call("zalo_send_message", {
+            threadId: "g1",
+            link: "https://example.com/doc",
+            text: "Xem tài liệu",
+        });
+        assert.equal(r.isError, undefined);
+        assert.deepEqual(seen, {
+            opts: { link: "https://example.com/doc", msg: "Xem tài liệu" },
+            tid: "g1",
+            type: 1,
+        });
+        assert.equal(payloadOf(r).kind, "link");
+        assert.equal(payloadOf(r).messageId, "link1");
+    });
+
+    it("sends a contact card when `cardUserId` is provided", async () => {
+        let seen;
+        const { server } = register({
+            api: {
+                sendCard: async (opts, tid, type) => {
+                    seen = { opts, tid, type };
+                    return { msgId: "card1" };
+                },
+            },
+        });
+        const r = await server.call("zalo_send_message", {
+            threadId: "g1",
+            cardUserId: "u99",
+        });
+        assert.equal(r.isError, undefined);
+        assert.deepEqual(seen, { opts: { userId: "u99" }, tid: "g1", type: 1 });
+        assert.equal(payloadOf(r).kind, "card");
+        assert.equal(payloadOf(r).cardUserId, "u99");
+    });
+});
+
+describe("Tier 1 & Tier 2 MCP tools", () => {
+    const ROOT = mkdtempSync(join(tmpdir(), "zalo-mcp-tier12-"));
+    const handles = [];
+    let n = 0;
+
+    beforeEach(() => {
+        handles.push(initDb(join(ROOT, `t${n++}.sqlite`)));
+        upsertThread({ threadId: "g1", type: "group", name: "Nhóm Dự Án", lastUpdate: 100 });
+        upsertThread({ threadId: "u2", type: "dm", name: "Anh Minh", lastUpdate: 100 });
+    });
+
+    after(() => {
+        for (const h of handles) {
+            try {
+                h.close();
+            } catch {
+                /* already closed */
+            }
+        }
+        try {
+            rmSync(ROOT, { recursive: true, force: true });
+        } catch {
+            /* ignore */
+        }
+    });
+
+    it("zalo_search_messages searches local SQLite messages with filters and zero network calls", async () => {
+        insertMessage({
+            msgId: "m1",
+            threadId: "g1",
+            senderId: "u2",
+            senderName: "Anh Minh",
+            text: "Báo cáo doanh thu quý 3",
+            timestamp: 1000,
+            type: "text",
+            raw_data: JSON.stringify({ cliMsgId: "c1", content: "Báo cáo doanh thu quý 3" }),
+        });
+        insertMessage({
+            msgId: "m2",
+            threadId: "u2",
+            senderId: "u3",
+            senderName: "Chị Lan",
+            text: "Báo cáo nhân sự",
+            timestamp: 2000,
+            type: "text",
+            raw_data: JSON.stringify({ cliMsgId: "c2", content: "Báo cáo nhân sự" }),
+        });
+
+        const { server } = register();
+        const all = payloadOf(await server.call("zalo_search_messages", { query: "Báo cáo", limit: 10 }));
+        assert.equal(all.count, 2);
+        assert.deepEqual(
+            all.messages.map((m) => m.msgId),
+            ["m2", "m1"],
+            "newest first",
+        );
+
+        const filtered = payloadOf(
+            await server.call("zalo_search_messages", { query: "Báo cáo", threadId: "g1", limit: 10 }),
+        );
+        assert.equal(filtered.count, 1);
+        assert.equal(filtered.messages[0].msgId, "m1");
+        assert.equal(filtered.messages[0].threadName, "Nhóm Dự Án");
+        assert.equal(filtered.messages[0].cliMsgId, "c1");
+    });
+
+    it("zalo_lookup_user supports self, phone, username, and userId modes", async () => {
+        const { server } = register({
+            api: {
+                getOwnId: () => "u_self",
+                fetchAccountInfo: async () => ({ profile: { userId: "u_self", displayName: "Tôi" } }),
+                findUser: async (p) => ({ uid: "u_phone", display_name: `Phone ${p}` }),
+                findUserByUsername: async (u) => ({ uid: "u_name", display_name: `User ${u}` }),
+                getUserInfo: async (id) => ({ changed_profiles: { [id]: { displayName: "Profile Name" } } }),
+            },
+        });
+
+        const schema = server.tools.get("zalo_lookup_user").meta.inputSchema;
+        assert.throws(() => schema.parse({}), "must require one lookup mode");
+        assert.throws(() => schema.parse({ self: true, phone: "0901234567" }), "must reject multiple modes");
+
+        const selfOut = payloadOf(await server.call("zalo_lookup_user", { self: true }));
+        assert.equal(selfOut.mode, "self");
+        assert.equal(selfOut.ownId, "u_self");
+        assert.equal(selfOut.displayName, "Tôi");
+
+        const phoneOut = payloadOf(await server.call("zalo_lookup_user", { phone: "0901234567" }));
+        assert.equal(phoneOut.mode, "phone");
+        assert.equal(phoneOut.userId, "u_phone");
+
+        const userOut = payloadOf(await server.call("zalo_lookup_user", { username: "arden" }));
+        assert.equal(userOut.mode, "username");
+        assert.equal(userOut.userId, "u_name");
+
+        const idOut = payloadOf(await server.call("zalo_lookup_user", { userId: "u2" }));
+        assert.equal(idOut.mode, "userId");
+        assert.equal(idOut.displayName, "Profile Name");
+    });
+
+    it("zalo_delete_message resolves cliMsgId and uidFrom from local cache and passes onlyMe=!everyone", async () => {
+        insertMessage({
+            msgId: "m_del",
+            threadId: "g1",
+            senderId: "u2",
+            senderName: "Anh Minh",
+            text: "xoá tin này",
+            timestamp: 1500,
+            type: "text",
+            raw_data: JSON.stringify({ cliMsgId: "cli_del", uidFrom: "u2", content: "xoá tin này" }),
+        });
+
+        let seen;
+        const { server } = register({
+            api: {
+                deleteMessage: async (dest, onlyMe) => {
+                    seen = { dest, onlyMe };
+                    return { status: 0 };
+                },
+            },
+        });
+
+        const out = payloadOf(
+            await server.call("zalo_delete_message", { msgId: "m_del", threadId: "g1", everyone: true }),
+        );
+        assert.equal(out.success, true);
+        assert.equal(out.cliMsgId, "cli_del");
+        assert.equal(seen.onlyMe, false, "everyone: true means onlyMe: false");
+        assert.deepEqual(seen.dest, {
+            data: { cliMsgId: "cli_del", msgId: "m_del", uidFrom: "u2" },
+            threadId: "g1",
+            type: 1,
+        });
+    });
+
+    it("zalo_forward_message forwards a cached link or card to the target thread", async () => {
+        insertMessage({
+            msgId: "m_link",
+            threadId: "g1",
+            senderId: "u2",
+            senderName: "Anh Minh",
+            text: "https://example.com",
+            timestamp: 1600,
+            type: "link",
+            raw_data: JSON.stringify({ cliMsgId: "cli_l", content: { href: "https://example.com" } }),
+        });
+
+        let seen;
+        const { server } = register({
+            api: {
+                sendLink: async (opts, tid, type) => {
+                    seen = { opts, tid, type };
+                    return { msgId: "fwd_1" };
+                },
+            },
+        });
+
+        const out = payloadOf(await server.call("zalo_forward_message", { msgId: "m_link", threadId: "u2" }));
+        assert.equal(out.success, true);
+        assert.equal(out.kind, "link");
+        assert.deepEqual(seen, {
+            opts: { link: "https://example.com" },
+            tid: "u2",
+            type: 0,
+        });
+    });
+
+    it("zalo_reminder dispatches create, list, info, responses, edit, and remove", async () => {
+        const calls = [];
+        const { server } = register({
+            api: {
+                createReminder: async (opts, tid, type) => {
+                    calls.push(["create", opts, tid, type]);
+                    return { reminderId: "r1" };
+                },
+                getListReminder: async (opts, tid, type) => {
+                    calls.push(["list", opts, tid, type]);
+                    return [{ id: "r1", params: { title: "Họp" } }];
+                },
+                getReminder: async (id) => ({ id, params: { title: "Họp" } }),
+                getReminderResponses: async (id) => ({ id, acceptMember: ["u2"], rejectMember: [] }),
+                editReminder: async (opts, tid, type) => {
+                    calls.push(["edit", opts, tid, type]);
+                    return { id: opts.topicId };
+                },
+                removeReminder: async (id, tid, type) => {
+                    calls.push(["remove", id, tid, type]);
+                    return { ok: true };
+                },
+            },
+        });
+
+        const created = payloadOf(
+            await server.call("zalo_reminder", {
+                action: "create",
+                threadId: "g1",
+                title: "Họp nhóm",
+                time: "2026-10-20 09:00",
+                repeat: "weekly",
+            }),
+        );
+        assert.equal(created.success, true);
+        assert.equal(created.reminderId, "r1");
+        assert.equal(created.repeat, "weekly");
+        assert.equal(calls[0][3], 1, "group threadType inferred from cache");
+
+        const listed = payloadOf(
+            await server.call("zalo_reminder", { action: "list", threadId: "g1", page: 1, count: 20 }),
+        );
+        assert.equal(listed.count, 1);
+
+        const info = payloadOf(await server.call("zalo_reminder", { action: "info", reminderId: "r1" }));
+        assert.equal(info.reminder.id, "r1");
+
+        const resp = payloadOf(await server.call("zalo_reminder", { action: "responses", reminderId: "r1" }));
+        assert.deepEqual(resp.responses.acceptMember, ["u2"]);
+
+        const edited = payloadOf(
+            await server.call("zalo_reminder", {
+                action: "edit",
+                reminderId: "r1",
+                threadId: "g1",
+                title: "Họp nhóm chiều",
+            }),
+        );
+        assert.equal(edited.success, true);
+
+        const removed = payloadOf(
+            await server.call("zalo_reminder", { action: "remove", reminderId: "r1", threadId: "g1" }),
+        );
+        assert.equal(removed.success, true);
+    });
+
+    it("zalo_note dispatches create, edit, and list", async () => {
+        const calls = [];
+        const { server } = register({
+            api: {
+                createNote: async (opts, gid) => {
+                    calls.push(["create", opts, gid]);
+                    return { id: "n1" };
+                },
+                editNote: async (opts, gid) => {
+                    calls.push(["edit", opts, gid]);
+                    return { id: opts.topicId };
+                },
+                getListBoard: async (opts, gid) => {
+                    calls.push(["list", opts, gid]);
+                    return { items: [{ id: "n1" }] };
+                },
+            },
+        });
+
+        const created = payloadOf(
+            await server.call("zalo_note", { action: "create", groupId: "g1", title: "Nội quy", pin: true }),
+        );
+        assert.equal(created.success, true);
+        assert.equal(created.pinned, true);
+        assert.deepEqual(calls[0], ["create", { title: "Nội quy", pinAct: true }, "g1"]);
+
+        const edited = payloadOf(
+            await server.call("zalo_note", {
+                action: "edit",
+                groupId: "g1",
+                noteId: "n1",
+                title: "Nội quy mới",
+                pin: false,
+            }),
+        );
+        assert.equal(edited.success, true);
+
+        const listed = payloadOf(await server.call("zalo_note", { action: "list", groupId: "g1", page: 1, count: 20 }));
+        assert.equal(listed.count, 1);
+    });
+
+    it("zalo_poll dispatches create, info, vote, unvote, add_options, lock, and share", async () => {
+        const calls = [];
+        const { server } = register({
+            api: {
+                createPoll: async (opts, gid) => {
+                    calls.push(["create", opts, gid]);
+                    return { poll_id: 42 };
+                },
+                getPollDetail: async (pid) => ({ poll_id: pid, question: "Trưa ăn gì?" }),
+                votePoll: async (pid, oids) => {
+                    calls.push(["vote", pid, oids]);
+                    return { options: [] };
+                },
+                addPollOptions: async (payload) => {
+                    calls.push(["add_options", payload]);
+                    return { options: [] };
+                },
+                lockPoll: async (pid) => {
+                    calls.push(["lock", pid]);
+                    return { ok: true };
+                },
+                sharePoll: async (pid) => {
+                    calls.push(["share", pid]);
+                    return { ok: true };
+                },
+            },
+        });
+
+        const created = payloadOf(
+            await server.call("zalo_poll", {
+                action: "create",
+                groupId: "g1",
+                question: "Trưa ăn gì?",
+                options: ["Phở", "Bún chả"],
+                multi: true,
+                allowAddOptions: false,
+                anonymous: false,
+                hidePreview: false,
+            }),
+        );
+        assert.equal(created.success, true);
+        assert.equal(created.pollId, 42);
+
+        const info = payloadOf(await server.call("zalo_poll", { action: "info", pollId: 42 }));
+        assert.equal(info.poll.question, "Trưa ăn gì?");
+
+        const voted = payloadOf(await server.call("zalo_poll", { action: "vote", pollId: "42", optionIds: [1, 2] }));
+        assert.equal(voted.success, true);
+        assert.deepEqual(calls[1], ["vote", 42, [1, 2]]);
+
+        const unvoted = payloadOf(await server.call("zalo_poll", { action: "unvote", pollId: 42 }));
+        assert.equal(unvoted.success, true);
+        assert.deepEqual(calls[2], ["vote", 42, []]);
+
+        const added = payloadOf(
+            await server.call("zalo_poll", {
+                action: "add_options",
+                pollId: 42,
+                options: ["Cơm tấm"],
+                voteNewOptions: true,
+            }),
+        );
+        assert.equal(added.added, 1);
+        assert.deepEqual(calls[3], [
+            "add_options",
+            { pollId: 42, options: [{ content: "Cơm tấm", voted: true }], votedOptionIds: [] },
+        ]);
+
+        const locked = payloadOf(await server.call("zalo_poll", { action: "lock", pollId: 42 }));
+        assert.equal(locked.success, true);
+
+        const shared = payloadOf(await server.call("zalo_poll", { action: "share", pollId: 42 }));
+        assert.equal(shared.success, true);
     });
 });

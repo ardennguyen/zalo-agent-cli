@@ -210,9 +210,9 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**190**), command groups (**21** containers), MCP tools (**14**), OA commands (**32**), offline tests (**1989** as of 2026-10-16). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**190**), command groups (**21** containers), MCP tools (**21**), OA commands (**32**), offline tests (**2005** as of 2026-10-16). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
-**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`.
+**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`.
 
 `tests/cli/surface.test.js` is the **machine-checkable twin** of `command-reference.md`. For the wiki, the authoritative EN⇄VN pairing is `_Sidebar.md` in that checkout.
 
@@ -230,11 +230,9 @@ It fails the push on any of:
 2. **Phone shapes** that are not the known dummies (`0123456789`, `0901234567`).
 3. **Confidential terms** — company/product names and the personal names scrubbed in `b0f267c`.
 
-The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose**. This file is committed to a *public* repo, so the denylist cannot live in it: writing those names here is precisely the disclosure the check exists to prevent. If the list is missing the script exits 2 rather than passing — recreate it, never skip it.
+The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose** (this file is public, so the denylist cannot live here). If the list is missing the script exits 2 rather than passing — recreate it, never skip it. The same rule covers npm READMEs, GitHub releases, and issue comments.
 
-The same rule covers everything published: npm READMEs, GitHub releases, issue comments. The wiki is just the shortest path from edit to public.
-
-**The check guards the working tree, so it runs *before* the push.** A pushed term stays in public history and every clone; deleting it later removes nothing — remediation is a history rewrite plus rotating whatever leaked. Audit with `git log --all -S'<term>'`: **0 on every remote ref of both repos as of 2026-09-30, apart from the copyright holder's name in LICENSE, NOTICE and README since 2.0.1** (intentional, and no longer a denylist term). A local branch cut before a scrub can still carry the scrubbed value — rebase it onto the scrubbed history with the value replaced before it is ever pushed, never push or merge it as-is (see [`docs/agent-notes.md`](docs/agent-notes.md)).
+**The check guards the working tree, so it runs *before* the push.** A pushed term stays in public history; remediation is a history rewrite plus rotating whatever leaked. Audit with `git log --all -S'<term>'`: **0 on every remote ref of both repos as of 2026-09-30, apart from the copyright holder's name in LICENSE, NOTICE and README since 2.0.1** (intentional). Rebase any pre-scrub branch with the value replaced before pushing (see [`docs/agent-notes.md`](docs/agent-notes.md)).
 
 > Keep the script honest: after changing it, plant one sample per category in a scratch directory, confirm it exits 1, and delete them. Why that matters: [`docs/agent-notes.md`](docs/agent-notes.md).
 

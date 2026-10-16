@@ -1,20 +1,42 @@
 /**
- * MCP tool registrations for Zalo message access and sending.
- * Registers 14 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * MCP tool registrations for Zalo message access, sending, user lookup, and group productivity.
+ * Registers 21 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
- * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status.
+ * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status, zalo_search_messages,
+ * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
- * group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js), so the two cannot
- * drift apart.
+ * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
+ * so the two cannot drift apart.
  */
 
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { z } from "zod";
 import { openFile } from "../utils/open-file.js";
-import { getMessages, getMessageById, getDisplayName, getThreadType, getConvState, getReadStates } from "../core/db.js";
+import {
+    getMessages,
+    getMessageById,
+    searchMessages,
+    getDisplayName,
+    getThreadType,
+    getThreadNames,
+    getConvState,
+    getReadStates,
+} from "../core/db.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { describeZaloError } from "../core/sync-v2/board.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
-import { reactionCliMsgId, recallCliMsgId } from "../core/cached-message.js";
+import {
+    cachedCliMsgId,
+    cachedText,
+    resolveSenderUid,
+    cachedMessageById,
+    reactionCliMsgId,
+    recallCliMsgId,
+} from "../core/cached-message.js";
+import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
+import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
 import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
@@ -25,6 +47,81 @@ import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
+
+/** Repeat mode codes matching zca-js ReminderRepeatMode enum and src/commands/reminder.js. */
+const REMINDER_REPEAT_MODES = { none: 0, daily: 1, weekly: 2, monthly: 3 };
+const REMINDER_REPEAT_LABELS = { 0: "none", 1: "daily", 2: "weekly", 3: "monthly" };
+
+/**
+ * Parse a reminder time value (epoch-ms number, "YYYY-MM-DD HH:mm", or ISO string) into epoch ms.
+ *
+ * @param {number|string} val
+ * @returns {number|null}
+ */
+function parseReminderTime(val) {
+    if (typeof val === "number") return Number.isFinite(val) && val > 0 ? Math.trunc(val) : null;
+    const str = String(val ?? "").trim();
+    if (/^\d+$/.test(str)) {
+        const n = Number(str);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+    if (match) {
+        const [, y, mo, d, h, mi] = match;
+        return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi)).getTime();
+    }
+    const ts = Date.parse(str);
+    return Number.isNaN(ts) ? null : ts;
+}
+
+/**
+ * Build the source descriptor `buildForwardReference` expects from a cached message row.
+ *
+ * @param {object} api - logged-in zca-js API instance
+ * @param {object} row - cached message row from zalo.db
+ * @returns {Promise<object>}
+ */
+async function forwardSourceForMcp(api, row) {
+    const cliMsgId = cachedCliMsgId(row);
+    if (!cliMsgId) {
+        return {
+            error:
+                "its cliMsgId was never cached, and the forward reference is derived from it " +
+                "(`listen`/`mcp` caches messages as they arrive, `sync` restores older ones)",
+        };
+    }
+    const threadId = String(row.threadId || "");
+    let send2meId = null;
+    try {
+        send2meId = api.getContext?.()?.loginInfo?.send2me_id ? String(api.getContext().loginInfo.send2me_id) : null;
+    } catch {
+        /* ignore */
+    }
+    const isMyDocuments = Boolean(threadId) && threadId === send2meId;
+    let kind = null;
+    try {
+        kind = threadId ? getThreadType(threadId) : null;
+    } catch {
+        /* reported below */
+    }
+    if (!kind && !isMyDocuments) {
+        return {
+            error:
+                `the local cache does not say whether its conversation (${threadId || "unknown"}) is a group ` +
+                "or a 1-1, and the forward reference depends on it",
+        };
+    }
+    const sender = await resolveSenderUid(api, row.senderId, ownIdOf(api));
+    if (sender.error) return { error: sender.error };
+    return {
+        cliMsgId,
+        senderUid: sender.uid,
+        threadId,
+        isGroup: kind === "group" && !isMyDocuments,
+        ts: Number(row.timestamp) || Number(cliMsgId),
+        ...(isMyDocuments && { logSrcType: LOG_SRC_TYPE.MY_CLOUD }),
+    };
+}
 
 /**
  * Resolve a thread's type the way the CLI does.
@@ -362,7 +459,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Send Zalo Message",
             description:
-                "Send a text message to a Zalo thread (DM or group). threadType: 0=DM(User), 1=Group. " +
+                "Send a text message, link preview card (`link`), or contact card (`cardUserId`) to a Zalo thread " +
+                "(DM or group). threadType: 0=DM(User), 1=Group. " +
                 "To @-mention someone in a group, put `@[uid]` in the text where the tag belongs — " +
                 "`@[123456]` becomes `@Their Name` and notifies them, and `@[-1]` is @All. " +
                 "Use the `senderId` from zalo_get_messages or zalo_get_history as the uid; the display name " +
@@ -372,41 +470,72 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "to text messages only, and the quoted message must already be in the local cache. " +
                 '`urgency` marks the message Important or Urgent, as the apps do. `threadId: "me"` sends to ' +
                 "My Documents (your own cloud chat); the reply carries its real thread id.",
-            inputSchema: z.object({
-                threadId: z
-                    .string()
-                    .describe("Thread ID to send message to. `me` (or your own uid) is My Documents, a 1-1 thread"),
-                text: z
-                    .string()
-                    .min(1)
-                    .describe("Message text to send. `@[uid]` tokens expand to @-mentions; `@[-1]` is @All."),
-                threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
-                    .optional()
-                    .describe(
-                        "Thread type: 0=DM(User), 1=Group. Omit it and the cached thread type is " +
-                            "used, which is what the CLI does — pass a value only to override that.",
-                    ),
-                quoteMsgId: z
-                    .string()
-                    .optional()
-                    .describe(
-                        "msgId of a cached TEXT message in this thread to quote-reply to. " +
-                            "Get it from zalo_get_messages or zalo_get_history.",
-                    ),
-                urgency: z
-                    .enum(["normal", "important", "urgent"])
-                    .optional()
-                    .describe(
-                        "Mark the message the way the apps' Important/Urgent option does. Omit it, or 'normal', " +
-                            "for an ordinary message",
-                    ),
-            }),
+            inputSchema: z
+                .object({
+                    threadId: z
+                        .string()
+                        .describe("Thread ID to send message to. `me` (or your own uid) is My Documents, a 1-1 thread"),
+                    text: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Message text to send (required unless `link` or `cardUserId` is set; optional caption when `link` is set). " +
+                                "`@[uid]` tokens expand to @-mentions; `@[-1]` is @All.",
+                        ),
+                    link: z
+                        .string()
+                        .url()
+                        .optional()
+                        .describe("Optional URL to send as a rich link preview card (uses `text` as optional caption)"),
+                    cardUserId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe("Optional Zalo user ID to share as a contact card in this thread"),
+                    threadType: z
+                        .number()
+                        .int()
+                        .min(0)
+                        .max(1)
+                        .optional()
+                        .describe(
+                            "Thread type: 0=DM(User), 1=Group. Omit it and the cached thread type is " +
+                                "used, which is what the CLI does — pass a value only to override that.",
+                        ),
+                    quoteMsgId: z
+                        .string()
+                        .optional()
+                        .describe(
+                            "msgId of a cached TEXT message in this thread to quote-reply to. " +
+                                "Get it from zalo_get_messages or zalo_get_history.",
+                        ),
+                    urgency: z
+                        .enum(["normal", "important", "urgent"])
+                        .optional()
+                        .describe(
+                            "Mark the message the way the apps' Important/Urgent option does. Omit it, or 'normal', " +
+                                "for an ordinary message",
+                        ),
+                })
+                .refine(
+                    (val) => Boolean(val.text || val.link || val.cardUserId),
+                    "Provide at least one of text, link, or cardUserId",
+                )
+                .refine(
+                    (val) => !(val.link && val.cardUserId),
+                    "Cannot send both link and cardUserId in a single call",
+                ),
         },
-        async ({ threadId: threadIdIn, text, threadType: threadTypeIn, quoteMsgId, urgency: urgencyIn }) => {
+        async ({
+            threadId: threadIdIn,
+            text,
+            link,
+            cardUserId,
+            threadType: threadTypeIn,
+            quoteMsgId,
+            urgency: urgencyIn,
+        }) => {
             // `me` (or the own uid) is My Documents, always a 1-1 -- resolved
             // before anything else reads the thread id, as `msg send me` is.
             const thread = actionThread(api, threadIdIn, threadTypeIn);
@@ -416,6 +545,41 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             }
             const { threadId, threadType } = thread;
             try {
+                if (cardUserId) {
+                    const result = await api.sendCard({ userId: cardUserId }, threadId, Number(threadType));
+                    const messageId = result?.msgId ?? result?.message?.msgId ?? null;
+                    const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
+                    return ok({
+                        success: true,
+                        kind: "card",
+                        cardUserId,
+                        messageId,
+                        ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                        threadType,
+                        ...(thread.notice && { threadId, notice: thread.notice }),
+                    });
+                }
+
+                if (link) {
+                    const linkOpts = text ? { link, msg: text } : { link };
+                    const result = await api.sendLink(linkOpts, threadId, Number(threadType));
+                    const messageId = result?.msgId ?? result?.message?.msgId ?? null;
+                    const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
+                    return ok({
+                        success: true,
+                        kind: "link",
+                        link,
+                        messageId,
+                        ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                        threadType,
+                        ...(thread.notice && { threadId, notice: thread.notice }),
+                    });
+                }
+
+                if (!text) {
+                    return err("Provide text, link, or cardUserId.");
+                }
+
                 const warnings = [];
 
                 // `@[uid]` -> `@Display Name`, with the mention offsets measured
@@ -1216,6 +1380,880 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 if (!syncJobs) throw new Error("Sync is unavailable in this server; restart with a compatible engine.");
                 return ok(syncJobs.status(jobId));
             } catch (e) {
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_search_messages ---
+    server.registerTool(
+        "zalo_search_messages",
+        {
+            title: "Search Zalo Messages",
+            description:
+                "Search message text across the local SQLite cache (`zalo.db`). Zero network calls. " +
+                "Filter optionally by `threadId`, `senderId`, `since` (epoch ms), and `until` (epoch ms). " +
+                "Results are ordered newest-first.",
+            inputSchema: z.object({
+                query: z.string().min(1).describe("Case-insensitive text substring to search for in cached messages"),
+                threadId: z.string().min(1).optional().describe("Restrict search to a single thread ID"),
+                senderId: z.string().min(1).optional().describe("Restrict search to a specific sender UID"),
+                since: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe("Only messages with timestamp >= this epoch-ms value"),
+                until: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe("Only messages with timestamp <= this epoch-ms value"),
+                limit: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(200)
+                    .default(50)
+                    .describe("Max matching messages to return (default 50, max 200)"),
+            }),
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        },
+        async ({ query, threadId, senderId, since, until, limit }) => {
+            try {
+                const rows = searchMessages({ query, threadId, senderId, since, until, limit });
+                const threadNames = getThreadNames();
+                const messages = rows.map((r) => {
+                    let cliMsgId = null;
+                    try {
+                        cliMsgId = cachedCliMsgId(r);
+                    } catch {
+                        /* ignore */
+                    }
+                    return {
+                        msgId: r.msgId,
+                        ...(cliMsgId && { cliMsgId: String(cliMsgId) }),
+                        threadId: r.threadId,
+                        threadName:
+                            threadNames.get(String(r.threadId))?.name ?? nameCache?.get(r.threadId)?.name ?? null,
+                        senderId: r.senderId,
+                        senderName: r.senderDisplayName || r.senderName || null,
+                        text: r.text,
+                        timestamp: r.timestamp,
+                        type: r.type,
+                        hasAttachment: Boolean(r.has_attachment),
+                        localPath: r.localPath || null,
+                    };
+                });
+                return ok({ query, count: messages.length, messages });
+            } catch (e) {
+                console.error("[mcp-tools] zalo_search_messages error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_lookup_user ---
+    server.registerTool(
+        "zalo_lookup_user",
+        {
+            title: "Lookup Zalo User",
+            description:
+                "Look up a Zalo user by phone number (`phone`), username (`username`), user ID (`userId`), or inspect " +
+                "this logged-in account's own profile (`self: true`). Useful for finding a contact's `userId` (which is " +
+                "also their 1-1 DM `threadId`) before sending a message or contact card.",
+            inputSchema: z
+                .object({
+                    self: z
+                        .boolean()
+                        .optional()
+                        .describe("Set true to fetch the currently logged-in account's own profile (`whoami`)"),
+                    phone: z
+                        .string()
+                        .min(3)
+                        .optional()
+                        .describe("Phone number to search for on Zalo (e.g. '0901234567' or '+84901234567')"),
+                    username: z.string().min(1).optional().describe("Zalo username to search for"),
+                    userId: z.string().min(1).optional().describe("Zalo user ID to fetch full profile info for"),
+                })
+                .refine(
+                    (v) =>
+                        [v.self === true, Boolean(v.phone), Boolean(v.username), Boolean(v.userId)].filter(Boolean)
+                            .length === 1,
+                    "Specify exactly one of self: true, phone, username, or userId",
+                ),
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        },
+        async ({ self, phone, username, userId }) => {
+            try {
+                if (self) {
+                    const info = await api.fetchAccountInfo();
+                    const p = info?.profile || info || {};
+                    return ok({
+                        mode: "self",
+                        ownId: ownIdOf(api) || p.userId || null,
+                        displayName: p.displayName || p.zaloName || null,
+                        zaloName: p.zaloName || null,
+                        phoneNumber: p.phoneNumber || null,
+                        avatar: p.avatar || null,
+                        profile: p,
+                    });
+                }
+                if (phone) {
+                    const phoneNumber = phone;
+                    const user = await api.findUser(phoneNumber);
+                    return ok({
+                        mode: "phone",
+                        query: phoneNumber,
+                        userId: user?.uid || user?.userId || null,
+                        displayName: user?.display_name || user?.zalo_name || null,
+                        zaloName: user?.zalo_name || null,
+                        avatar: user?.avatar || null,
+                        user: user || null,
+                    });
+                }
+                if (username) {
+                    const user = await api.findUserByUsername(username);
+                    return ok({
+                        mode: "username",
+                        query: username,
+                        userId: user?.uid || user?.userId || null,
+                        displayName: user?.display_name || user?.zalo_name || null,
+                        zaloName: user?.zalo_name || null,
+                        avatar: user?.avatar || null,
+                        user: user || null,
+                    });
+                }
+                const info = await api.getUserInfo(userId);
+                const changed = info?.changed_profiles?.[userId] || info?.unchanged_profiles?.[userId] || null;
+                return ok({
+                    mode: "userId",
+                    userId,
+                    displayName: changed?.displayName || changed?.zaloName || cachedDisplayName(userId) || null,
+                    zaloName: changed?.zaloName || null,
+                    avatar: changed?.avatar || null,
+                    profile: changed || info || null,
+                });
+            } catch (e) {
+                console.error("[mcp-tools] zalo_lookup_user error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_forward_message ---
+    server.registerTool(
+        "zalo_forward_message",
+        {
+            title: "Forward Zalo Message",
+            description:
+                "Forward a cached message (`msgId`) to another Zalo conversation (`threadId`). Text messages are sent " +
+                "through Zalo's forward API with the 'forwarded' badge; cards, stickers, links, videos, voices, and " +
+                "locally downloaded media attachments are re-sent as a message of their own kind, matching `msg forward`.",
+            inputSchema: z.object({
+                msgId: z
+                    .string()
+                    .min(1)
+                    .describe("msgId of the cached message to forward (from zalo_get_messages or zalo_get_history)"),
+                threadId: z
+                    .string()
+                    .min(1)
+                    .describe("Destination thread ID (`me` or your own uid resolves to My Documents)"),
+                threadType: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .max(1)
+                    .optional()
+                    .describe("Destination thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+            }),
+        },
+        async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn }) => {
+            const thread = actionThread(api, threadIdIn, threadTypeIn);
+            if (thread.error) {
+                console.error("[mcp-tools] zalo_forward_message refused:", thread.error);
+                return err(thread.error);
+            }
+            const { threadId, threadType } = thread;
+            try {
+                let row = null;
+                try {
+                    row = getMessageById(msgId);
+                } catch (e) {
+                    return err(`Local cache unavailable (${e.message}).`);
+                }
+                if (!row) {
+                    return err(
+                        `Message ${msgId} is not in the local cache. Call zalo_get_history on its conversation first.`,
+                    );
+                }
+
+                let raw = {};
+                try {
+                    raw = JSON.parse(row.raw_data || "{}");
+                } catch {
+                    /* fall back to text forward */
+                }
+                const c = raw.content && typeof raw.content === "object" ? raw.content : null;
+
+                const resendLocal = async () => {
+                    if (!row.localPath || !existsSync(row.localPath)) {
+                        throw new Error(
+                            `Message ${msgId} is "${row.type}" but its media is not downloaded locally. Call zalo_view_media with messageId="${msgId}" first.`,
+                        );
+                    }
+                    return api.sendMessage(
+                        { msg: "", attachments: [resolve(row.localPath)] },
+                        threadId,
+                        Number(threadType),
+                    );
+                };
+
+                const forwarders = {
+                    card: async () =>
+                        api.sendCard({ userId: String(c?.params ?? "").trim() }, threadId, Number(threadType)),
+                    sticker: async () =>
+                        api.sendSticker(
+                            { id: c?.id, cateId: c?.catId, type: c?.type ?? 3 },
+                            threadId,
+                            Number(threadType),
+                        ),
+                    link: async () => api.sendLink({ link: c?.href }, threadId, Number(threadType)),
+                    video: async () => {
+                        let p = {};
+                        try {
+                            p = typeof c?.params === "string" ? JSON.parse(c.params) : (c?.params ?? {});
+                        } catch {
+                            /* default geometry */
+                        }
+                        return api.sendVideo(
+                            {
+                                videoUrl: c?.href,
+                                thumbnailUrl: c?.thumb || "",
+                                duration: Number(p.duration) || 0,
+                                width: Number(p.video_width || p.video_original_width) || 1280,
+                                height: Number(p.video_height || p.video_original_height) || 720,
+                            },
+                            threadId,
+                            Number(threadType),
+                        );
+                    },
+                    voice: async () => api.sendVoice({ voiceUrl: c?.href }, threadId, Number(threadType)),
+                    photo: resendLocal,
+                    file: resendLocal,
+                    gif: resendLocal,
+                    doodle: resendLocal,
+                };
+
+                const kind = c?.action === "recommened.user" ? "card" : row.type;
+                if (kind !== "text") {
+                    const send = forwarders[kind];
+                    if (!send) {
+                        return err(`Cannot forward a "${row.type}" message — no send path reproduces it.`);
+                    }
+                    const res = await send();
+                    return ok({
+                        success: true,
+                        kind,
+                        threadId,
+                        threadType,
+                        ...(thread.notice && { notice: thread.notice }),
+                        result: res,
+                    });
+                }
+
+                const text = cachedText(row);
+                if (!text) {
+                    return err(`Message ${msgId} has no text to forward.`);
+                }
+                const source = await forwardSourceForMcp(api, row);
+                if (source.error) {
+                    return err(`Cannot forward message ${msgId}: ${source.error}.`);
+                }
+                const { reference, decorLog } = buildForwardReference(source);
+                const result = await sendForward(
+                    api,
+                    { message: text, reference, decorLog },
+                    [threadId],
+                    Number(threadType),
+                );
+                const rejected = result?.failed ?? result?.fail ?? [];
+                if (rejected.length > 0) {
+                    return err(`Forward rejected for ${rejected.length} target(s): ${JSON.stringify(rejected)}`);
+                }
+                const shared = (result?.cliMsgId ?? null) === null ? null : String(result.cliMsgId);
+                const sent = (Array.isArray(result?.success) ? result.success : [])
+                    .filter((x) => (x?.msgId ?? null) !== null)
+                    .map((x) => ({
+                        msgId: String(x.msgId),
+                        cliMsgId: (x.clientId ?? shared ?? null) === null ? null : String(x.clientId ?? shared),
+                    }));
+                return ok({
+                    success: true,
+                    kind: "text",
+                    threadId,
+                    threadType,
+                    ...(thread.notice && { notice: thread.notice }),
+                    sent,
+                });
+            } catch (e) {
+                console.error("[mcp-tools] zalo_forward_message error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_delete_message ---
+    server.registerTool(
+        "zalo_delete_message",
+        {
+            title: "Delete Zalo Message",
+            description:
+                "Delete a message from your own view (`everyone: false`, the default) or for everyone in a group " +
+                "(`everyone: true`, only valid for someone else's message in a group — to recall your own sent " +
+                "message for both sides, use `zalo_undo`). Resolves `cliMsgId` and `uidFrom` from the local cache when omitted.",
+            inputSchema: z.object({
+                msgId: z.string().min(1).describe("Message ID (`msgId`) to delete"),
+                threadId: z.string().min(1).describe("Thread ID the message belongs to"),
+                threadType: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .max(1)
+                    .optional()
+                    .describe("Thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+                cliMsgId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("Client message ID (`cliMsgId`). Looked up in the local cache when omitted."),
+                uidFrom: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe(
+                        "Sender UID (`uidFrom`). Looked up in the local cache or defaults to own UID when omitted.",
+                    ),
+                everyone: z
+                    .boolean()
+                    .default(false)
+                    .describe("Set true to delete someone else's message for everyone in a group (admin/owner)"),
+            }),
+        },
+        async ({
+            msgId,
+            threadId: threadIdIn,
+            threadType: threadTypeIn,
+            cliMsgId: cliMsgIdIn,
+            uidFrom: uidFromIn,
+            everyone,
+        }) => {
+            const thread = actionThread(api, threadIdIn, threadTypeIn);
+            if (thread.error) {
+                console.error("[mcp-tools] zalo_delete_message refused:", thread.error);
+                return err(thread.error);
+            }
+            const { threadId, threadType } = thread;
+            try {
+                let cliMsgId = cliMsgIdIn;
+                let uidFrom = uidFromIn;
+                if (!cliMsgId || !uidFrom) {
+                    const cached = cachedMessageById(threadId, msgId);
+                    cliMsgId = cliMsgId || cached?.cliMsgId;
+                    uidFrom = uidFrom || cached?.uidFrom;
+                }
+                uidFrom = uidFrom || ownIdOf(api);
+                if (!cliMsgId) {
+                    return err(
+                        `Message ${msgId} is not in the local cache and cliMsgId was not provided. Pass ${CLI_MSG_ID_HINT}.`,
+                    );
+                }
+                const dest = {
+                    data: { cliMsgId: String(cliMsgId), msgId: String(msgId), uidFrom: String(uidFrom) },
+                    threadId,
+                    type: Number(threadType),
+                };
+                const onlyMe = Boolean(everyone) === false;
+                const result = await api.deleteMessage(dest, onlyMe);
+                return ok({
+                    success: true,
+                    msgId,
+                    cliMsgId: String(cliMsgId),
+                    threadId,
+                    threadType,
+                    everyone: Boolean(everyone),
+                    ...(thread.notice && { notice: thread.notice }),
+                    result,
+                });
+            } catch (e) {
+                console.error("[mcp-tools] zalo_delete_message error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_reminder ---
+    server.registerTool(
+        "zalo_reminder",
+        {
+            title: "Manage Zalo Reminders",
+            description:
+                "Create, list, inspect, view responses, edit, or remove reminders in a Zalo DM or group thread. " +
+                "Actions: 'create' (requires threadId, title), 'list' (requires threadId), 'info' (requires reminderId, group only), " +
+                "'responses' (requires reminderId, group only), 'edit' (requires reminderId, threadId, title), " +
+                "'remove' (requires reminderId, threadId).",
+            inputSchema: z.object({
+                action: z
+                    .enum(["create", "list", "info", "responses", "edit", "remove"])
+                    .describe("Reminder operation to perform"),
+                threadId: z.string().min(1).optional().describe("Thread ID (required for create, list, edit, remove)"),
+                threadType: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .max(1)
+                    .optional()
+                    .describe("Thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+                reminderId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("Reminder ID (required for info, responses, edit, remove)"),
+                title: z.string().min(1).optional().describe("Reminder title (required for create and edit)"),
+                time: z
+                    .union([z.number().int().positive(), z.string().min(1)])
+                    .optional()
+                    .describe(
+                        'Reminder start time as epoch-ms, "YYYY-MM-DD HH:mm", or ISO-8601 string (defaults to now on create)',
+                    ),
+                emoji: z.string().min(1).optional().describe("Emoji icon for the reminder (default '⏰' on create)"),
+                repeat: z
+                    .enum(["none", "daily", "weekly", "monthly"])
+                    .optional()
+                    .describe("Repeat schedule: 'none', 'daily', 'weekly', or 'monthly'"),
+                page: z.number().int().min(1).default(1).describe("Page number for 'list' (default 1)"),
+                count: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(100)
+                    .default(20)
+                    .describe("Max items per page for 'list' (default 20)"),
+            }),
+        },
+        async ({
+            action,
+            threadId: threadIdIn,
+            threadType: threadTypeIn,
+            reminderId,
+            title,
+            time,
+            emoji,
+            repeat,
+            page,
+            count,
+        }) => {
+            try {
+                if (action === "info") {
+                    if (!reminderId) return err("reminderId is required for action='info'.");
+                    const result = await api.getReminder(reminderId);
+                    return ok({ action, reminderId, reminder: result });
+                }
+                if (action === "responses") {
+                    if (!reminderId) return err("reminderId is required for action='responses'.");
+                    const result = await api.getReminderResponses(reminderId);
+                    return ok({ action, reminderId, responses: result });
+                }
+                if (!threadIdIn) {
+                    return err(`threadId is required for action='${action}'.`);
+                }
+                const thread = actionThread(api, threadIdIn, threadTypeIn);
+                if (thread.error) return err(thread.error);
+                const { threadId, threadType } = thread;
+
+                if (action === "create") {
+                    if (!title) return err("title is required for action='create'.");
+                    const repeatMode = REMINDER_REPEAT_MODES[repeat ?? "none"];
+                    const startTime = time !== undefined ? parseReminderTime(time) : Date.now();
+                    if (!startTime) {
+                        return err(`Invalid time format: "${time}". Use epoch-ms, "YYYY-MM-DD HH:mm", or ISO-8601.`);
+                    }
+                    const result = await api.createReminder(
+                        { title, emoji: emoji || "⏰", startTime, repeat: repeatMode },
+                        threadId,
+                        Number(threadType),
+                    );
+                    return ok({
+                        action,
+                        success: true,
+                        threadId,
+                        threadType,
+                        reminderId: result?.reminderId ?? result?.id ?? null,
+                        startTime,
+                        repeat: REMINDER_REPEAT_LABELS[repeatMode],
+                        result,
+                    });
+                }
+
+                if (action === "list") {
+                    let result = null;
+                    try {
+                        result = await api.getListReminder({ page, count }, threadId, Number(threadType));
+                    } catch {
+                        result = null;
+                    }
+                    const reminders = Array.isArray(result) ? result : [];
+                    return ok({ action, threadId, threadType, count: reminders.length, reminders });
+                }
+
+                if (action === "edit") {
+                    if (!reminderId) return err("reminderId is required for action='edit'.");
+                    if (!title) return err("title is required for action='edit'.");
+                    const editOpts = { title, topicId: reminderId };
+                    if (emoji) editOpts.emoji = emoji;
+                    if (time !== undefined) {
+                        const ts = parseReminderTime(time);
+                        if (!ts) {
+                            return err(
+                                `Invalid time format: "${time}". Use epoch-ms, "YYYY-MM-DD HH:mm", or ISO-8601.`,
+                            );
+                        }
+                        editOpts.startTime = ts;
+                    }
+                    if (repeat !== undefined) {
+                        editOpts.repeat = REMINDER_REPEAT_MODES[repeat];
+                    }
+                    const result = await api.editReminder(editOpts, threadId, Number(threadType));
+                    return ok({ action, success: true, reminderId, threadId, threadType, result });
+                }
+
+                if (action === "remove") {
+                    if (!reminderId) return err("reminderId is required for action='remove'.");
+                    const result = await api.removeReminder(reminderId, threadId, Number(threadType));
+                    return ok({ action, success: true, reminderId, threadId, threadType, result });
+                }
+
+                return err(`Unsupported reminder action: ${action}`);
+            } catch (e) {
+                console.error("[mcp-tools] zalo_reminder error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_note ---
+    server.registerTool(
+        "zalo_note",
+        {
+            title: "Manage Zalo Group Notes & Pins",
+            description:
+                "Create or edit group notes, list group board items (notes, pinned messages, polls), or pin/unpin " +
+                "a cached text message at the top of a conversation. " +
+                "Actions: 'create' (requires groupId, title), 'edit' (requires groupId, noteId, title), " +
+                "'list' (requires groupId), 'pin_message' (requires msgId; threadId optional if cached), " +
+                "'unpin_message' (requires msgId; threadId optional if cached).",
+            inputSchema: z.object({
+                action: z
+                    .enum(["create", "edit", "list", "pin_message", "unpin_message"])
+                    .describe("Note or pin operation to perform"),
+                groupId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("Group ID (required for 'create', 'edit', 'list'; alias for threadId on pin/unpin)"),
+                threadId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe(
+                        "Thread ID for 'pin_message' / 'unpin_message' (defaults to the message's cached threadId)",
+                    ),
+                threadType: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .max(1)
+                    .optional()
+                    .describe(
+                        "Thread type for 'pin_message' / 'unpin_message': 0=DM(User), 1=Group. Inferred from cache when omitted.",
+                    ),
+                noteId: z.string().min(1).optional().describe("Note topicId to update (required for 'edit')"),
+                title: z.string().min(1).optional().describe("Note text/title (required for 'create' and 'edit')"),
+                pin: z
+                    .boolean()
+                    .default(false)
+                    .describe("Whether to pin the note to the group board on 'create' or 'edit'"),
+                msgId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("Message ID (`msgId`) to pin or unpin (required for 'pin_message' and 'unpin_message')"),
+                page: z.number().int().min(1).default(1).describe("Page number for 'list' (default 1)"),
+                count: z.number().int().min(1).max(100).default(20).describe("Items per page for 'list' (default 20)"),
+            }),
+        },
+        async ({
+            action,
+            groupId,
+            threadId: threadIdIn,
+            threadType: threadTypeIn,
+            noteId,
+            title,
+            pin,
+            msgId,
+            page,
+            count,
+        }) => {
+            try {
+                if (action === "create") {
+                    if (!groupId) return err("groupId is required for action='create'.");
+                    if (!title) return err("title is required for action='create'.");
+                    const pinAct = Boolean(pin);
+                    const result = await api.createNote({ title, pinAct }, groupId);
+                    return ok({ action, success: true, groupId, pinned: pinAct, result });
+                }
+
+                if (action === "edit") {
+                    if (!groupId) return err("groupId is required for action='edit'.");
+                    if (!noteId) return err("noteId is required for action='edit'.");
+                    if (!title) return err("title is required for action='edit'.");
+                    const pinAct = Boolean(pin);
+                    const topicId = noteId;
+                    const result = await api.editNote({ title, topicId, pinAct }, groupId);
+                    return ok({ action, success: true, groupId, noteId, pinned: pinAct, result });
+                }
+
+                if (action === "list") {
+                    if (!groupId) return err("groupId is required for action='list'.");
+                    const result = await api.getListBoard({ page, count }, groupId);
+                    return ok({
+                        action,
+                        groupId,
+                        items: result?.items ?? [],
+                        count: Array.isArray(result?.items) ? result.items.length : 0,
+                    });
+                }
+
+                if (action === "pin_message") {
+                    if (!msgId) return err("msgId is required for action='pin_message'.");
+                    let row = null;
+                    try {
+                        row = getMessageById(msgId);
+                    } catch {
+                        row = null;
+                    }
+                    if (!row) {
+                        return err(
+                            `Message ${msgId} is not in the local cache, so it cannot be pinned (pinning requires cached cliMsgId, sender, and text).`,
+                        );
+                    }
+                    const targetThread = threadIdIn || groupId;
+                    if (targetThread && row.threadId && String(row.threadId) !== String(targetThread)) {
+                        return err(`Message ${msgId} belongs to thread ${row.threadId}, not ${targetThread}.`);
+                    }
+                    if (row.type !== "text") {
+                        return err(`Only text messages can be pinned; message ${msgId} is "${row.type || "unknown"}".`);
+                    }
+                    const cliMsgId = cachedCliMsgId(row);
+                    if (!cliMsgId) {
+                        return err(`Message ${msgId}'s cliMsgId was never cached, and a pin must name it.`);
+                    }
+                    const conversation = String(targetThread || row.threadId);
+                    const resolvedType = resolveThreadType(conversation, threadTypeIn);
+                    const isGroup = Number(resolvedType) === THREAD_GROUP;
+                    const sender = await resolveSenderUid(api, row.senderId, ownIdOf(api));
+                    if (sender.error) {
+                        return err(`Cannot pin message ${msgId}: ${sender.error}.`);
+                    }
+                    const params = textPinParams({
+                        cliMsgId,
+                        msgId,
+                        senderUid: sender.uid,
+                        senderName: row.senderName,
+                        text: cachedText(row),
+                    });
+                    const result = await pinMessage(api, { threadId: conversation, isGroup, params });
+                    return ok({ action, success: true, msgId, threadId: conversation, isGroup, result });
+                }
+
+                if (action === "unpin_message") {
+                    if (!msgId) return err("msgId is required for action='unpin_message'.");
+                    let row = null;
+                    try {
+                        row = getMessageById(msgId);
+                    } catch {
+                        row = null;
+                    }
+                    const targetThread = threadIdIn || groupId;
+                    if (targetThread && row?.threadId && String(row.threadId) !== String(targetThread)) {
+                        return err(`Message ${msgId} belongs to thread ${row.threadId}, not ${targetThread}.`);
+                    }
+                    const conversation = targetThread || row?.threadId;
+                    if (!conversation) {
+                        return err(
+                            `Message ${msgId} is not in the local cache, so its thread is unknown. Pass threadId (or groupId).`,
+                        );
+                    }
+                    const resolvedType = resolveThreadType(String(conversation), threadTypeIn);
+                    const isGroup = Number(resolvedType) === THREAD_GROUP;
+                    const result = await unpinMessage(api, { threadId: String(conversation), isGroup, msgId });
+                    if (result.notPinned) {
+                        return err(`Message ${msgId} is not pinned in ${conversation}.`);
+                    }
+                    return ok({ action, success: true, msgId, threadId: String(conversation), isGroup, result });
+                }
+
+                return err(`Unsupported note action: ${action}`);
+            } catch (e) {
+                console.error("[mcp-tools] zalo_note error:", describeZaloError(e));
+                return err(describeZaloError(e));
+            }
+        },
+    );
+
+    // --- zalo_poll ---
+    server.registerTool(
+        "zalo_poll",
+        {
+            title: "Manage Zalo Group Polls",
+            description:
+                "Create, inspect, vote, unvote, add options, lock, or share a poll in a Zalo group. " +
+                "Actions: 'create' (requires groupId, question, options with >=2 items), 'info' (requires pollId), " +
+                "'vote' (requires pollId, optionIds), 'unvote' (requires pollId), " +
+                "'add_options' (requires pollId, options), 'lock' (requires pollId), 'share' (requires pollId).",
+            inputSchema: z.object({
+                action: z
+                    .enum(["create", "info", "vote", "unvote", "add_options", "lock", "share"])
+                    .describe("Poll operation to perform"),
+                groupId: z.string().min(1).optional().describe("Group ID (required for 'create')"),
+                pollId: z
+                    .union([z.number().int().positive(), z.string().regex(/^\d+$/)])
+                    .optional()
+                    .describe(
+                        "Numeric poll ID (required for 'info', 'vote', 'unvote', 'add_options', 'lock', 'share')",
+                    ),
+                question: z.string().min(1).optional().describe("Poll question text (required for 'create')"),
+                options: z
+                    .array(z.string().min(1))
+                    .optional()
+                    .describe("Poll option strings (at least 2 required for 'create'; at least 1 for 'add_options')"),
+                optionIds: z
+                    .array(z.number().int())
+                    .optional()
+                    .describe("Option IDs to vote for on 'vote' (get option_id values from action='info')"),
+                multi: z.boolean().default(false).describe("Allow voters to pick multiple options ('create' only)"),
+                allowAddOptions: z
+                    .boolean()
+                    .default(false)
+                    .describe("Allow group members to add new options ('create' only)"),
+                anonymous: z.boolean().default(false).describe("Hide voter identities ('create' only)"),
+                hidePreview: z.boolean().default(false).describe("Hide vote counts until voted ('create' only)"),
+                expireMinutes: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe("Auto-close the poll after N minutes ('create' only; omit for no expiration)"),
+                voteNewOptions: z
+                    .boolean()
+                    .default(false)
+                    .describe("Also cast your vote for the newly added options ('add_options' only)"),
+            }),
+        },
+        async ({
+            action,
+            groupId,
+            pollId,
+            question,
+            options,
+            optionIds,
+            multi,
+            allowAddOptions,
+            anonymous,
+            hidePreview,
+            expireMinutes,
+            voteNewOptions,
+        }) => {
+            try {
+                if (action === "create") {
+                    if (!groupId) return err("groupId is required for action='create'.");
+                    if (!question) return err("question is required for action='create'.");
+                    if (!Array.isArray(options) || options.length < 2) {
+                        return err("A poll requires at least 2 options in `options`.");
+                    }
+                    const expiredTime = expireMinutes ? Date.now() + expireMinutes * 60 * 1000 : 0;
+                    const pollOpts = {
+                        question,
+                        options,
+                        allowMultiChoices: Boolean(multi),
+                        allowAddNewOption: Boolean(allowAddOptions),
+                        isAnonymous: Boolean(anonymous),
+                        hideVotePreview: Boolean(hidePreview),
+                        expiredTime,
+                    };
+                    const result = await api.createPoll(pollOpts, groupId);
+                    return ok({
+                        action,
+                        success: true,
+                        groupId,
+                        pollId: result?.poll_id ?? null,
+                        result,
+                    });
+                }
+
+                if (pollId === undefined || pollId === null || String(pollId).trim() === "") {
+                    return err(`pollId is required for action='${action}'.`);
+                }
+                const numericPollId = Number(pollId);
+
+                if (action === "info") {
+                    const result = await api.getPollDetail(numericPollId);
+                    return ok({ action, pollId: numericPollId, poll: result });
+                }
+
+                if (action === "vote") {
+                    if (!Array.isArray(optionIds) || optionIds.length === 0) {
+                        return err("optionIds (non-empty array of numeric option IDs) is required for action='vote'.");
+                    }
+                    const result = await api.votePoll(numericPollId, optionIds.map(Number));
+                    return ok({ action, success: true, pollId: numericPollId, optionIds, result });
+                }
+
+                if (action === "unvote") {
+                    const result = await api.votePoll(numericPollId, []);
+                    return ok({ action, success: true, pollId: numericPollId, result });
+                }
+
+                if (action === "add_options") {
+                    if (!Array.isArray(options) || options.length === 0) {
+                        return err("options (non-empty array of strings) is required for action='add_options'.");
+                    }
+                    const newOptions = options.map((content) => ({
+                        content,
+                        voted: Boolean(voteNewOptions),
+                    }));
+                    const result = await api.addPollOptions({
+                        pollId: numericPollId,
+                        options: newOptions,
+                        votedOptionIds: [],
+                    });
+                    return ok({ action, success: true, pollId: numericPollId, added: options.length, result });
+                }
+
+                if (action === "lock") {
+                    const result = await api.lockPoll(numericPollId);
+                    return ok({ action, success: true, pollId: numericPollId, result });
+                }
+
+                if (action === "share") {
+                    const result = await api.sharePoll(numericPollId);
+                    return ok({ action, success: true, pollId: numericPollId, result });
+                }
+
+                return err(`Unsupported poll action: ${action}`);
+            } catch (e) {
+                console.error("[mcp-tools] zalo_poll error:", e.message);
                 return err(e.message);
             }
         },

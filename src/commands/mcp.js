@@ -11,7 +11,14 @@ import { liveApi } from "../core/live-api.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { getAccountDir, MEDIA_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
-import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
+import {
+    createStageLock,
+    startDaemonChannel,
+    getDaemonStatus,
+    stopDaemon,
+    spawnDaemonProcess,
+} from "../core/daemon-channel.js";
+import { success, error, info, output } from "../utils/output.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
 import { createSocketTap } from "../core/socket-tap.js";
@@ -148,7 +155,115 @@ export function registerMCPCommands(program) {
             "--no-self-heal",
             "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
+        .option("-d, --daemon", "Run in the background (requires --http <port>; logs to <accountDir>/daemon.log)")
+        .option("--stop", "Stop the running background daemon for this account")
+        .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
+            const jsonMode = program.opts().json;
+
+            // Select account first so --status, --stop, and --daemon can use
+            // standard CLI output before redirecting console.log for stdio MCP.
+            let activeAcc;
+            try {
+                const requestedAccount =
+                    opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || undefined);
+                activeAcc = selectDaemonAccount(requestedAccount);
+            } catch (e) {
+                if (opts.status || opts.stop || (opts.daemon && !process.env.ZALO_DAEMON_CHILD)) {
+                    error(`Account selection failed: ${e.message}`);
+                } else {
+                    console.error("[mcp] Account selection failed:", e.message);
+                }
+                process.exit(1);
+            }
+            const accountDir = getAccountDir(activeAcc.ownId);
+
+            if (opts.status) {
+                const status = getDaemonStatus(accountDir);
+                output({ accountId: activeAcc.ownId, ...status }, jsonMode, () => {
+                    if (status.running) {
+                        success(
+                            `Daemon running for account ${activeAcc.ownId} (PID ${status.pid}${status.channelPort ? `, channel 127.0.0.1:${status.channelPort}` : ""})`,
+                        );
+                        info(`Log file: ${status.logPath}`);
+                    } else {
+                        info(`No daemon running for account ${activeAcc.ownId}`);
+                        info(`Log file: ${status.logPath}`);
+                    }
+                });
+                return;
+            }
+
+            if (opts.stop) {
+                const res = await stopDaemon(accountDir);
+                output({ accountId: activeAcc.ownId, ...res }, jsonMode, () => {
+                    if (res.stopped) {
+                        success(
+                            `Stopped daemon for account ${activeAcc.ownId} (PID ${res.pid}${res.graceful ? "" : ", forced"})`,
+                        );
+                    } else {
+                        info(`No daemon running for account ${activeAcc.ownId}`);
+                    }
+                });
+                return;
+            }
+
+            if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
+                if (!opts.http) {
+                    error(
+                        "`mcp start --daemon` requires `--http <port>` (stdio transport cannot run detached in the background).",
+                    );
+                    process.exit(1);
+                }
+                const port = Number(opts.http);
+                if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                    error(`Invalid port: ${opts.http}. Must be 1-65535.`);
+                    process.exit(1);
+                }
+                if (opts.auth !== undefined && !String(opts.auth).trim()) {
+                    error(
+                        "--auth was given an empty token. Refusing to start: that would serve this account's messages with no authentication at all.",
+                    );
+                    process.exit(1);
+                }
+                const { problem: configProblem } = readMCPConfig(opts.config);
+                if (configProblem) {
+                    error(`Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`);
+                    process.exit(1);
+                }
+                const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
+                if (!spawned.ok) {
+                    if (spawned.alreadyRunning) {
+                        error(
+                            `Another listener (listen daemon or MCP server) is already running for account ${activeAcc.ownId} (PID ${spawned.pid}).`,
+                        );
+                        info("Stop it first with: zalo-agent mcp start --stop");
+                    } else {
+                        error(`Failed to start background MCP server: ${spawned.error}`);
+                        info(`Log file: ${spawned.logPath}`);
+                    }
+                    process.exit(1);
+                }
+                output(
+                    {
+                        accountId: activeAcc.ownId,
+                        pid: spawned.pid,
+                        httpPort: port,
+                        channelPort: spawned.channelPort,
+                        logPath: spawned.logPath,
+                    },
+                    jsonMode,
+                    () => {
+                        success(
+                            `MCP server started in background for account ${activeAcc.ownId} (PID ${spawned.pid}, HTTP port ${port})`,
+                        );
+                        info(`Log file: ${spawned.logPath}`);
+                        info("Stop with: zalo-agent mcp start --stop");
+                    },
+                );
+                return;
+            }
+
             // Safety net: redirect ALL console.log to stderr for the entire MCP process.
             // Stdout is the MCP JSON-RPC transport — any non-JSON output corrupts the stream.
             // This catches rogue prints from dependencies (zca-js, chalk, etc.) that we can't control.
@@ -175,18 +290,6 @@ export function registerMCPCommands(program) {
                 );
                 process.exit(1);
             }
-
-            // Select once; acquire the selected account's lock before authentication.
-            let activeAcc;
-            try {
-                const requestedAccount =
-                    opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || undefined);
-                activeAcc = selectDaemonAccount(requestedAccount);
-            } catch (e) {
-                console.error("[mcp] Account selection failed:", e.message);
-                process.exit(1);
-            }
-            const accountDir = getAccountDir(activeAcc.ownId);
 
             // This server now opens the account's WebSocket *and* writes to
             // zalo.db, which is exactly what the `listen` daemon does. Zalo
@@ -570,42 +673,7 @@ export function registerMCPCommands(program) {
                 });
             }
 
-            // Wire listener and start
-            try {
-                const api = getApi();
-                attachListenerHandlers(api);
-                api.listener.start({ retryOnClose: true });
-                console.error("[mcp] Zalo listener started. MCP server ready.");
-                // This process holds the account's one permitted socket, so it
-                // performs the work that needs one on behalf of the CLI:
-                // attachment uploads, and the socket stages of `zalo-agent
-                // sync`. Otherwise `msg send-file` opens a second session and
-                // Zalo kills this one, and a sync cannot run at all while this
-                // server is up. Best-effort: a failed channel only costs the
-                // fallback. `getApi` rather than an api, because a
-                // duplicate-session close rebuilds it under us.
-                try {
-                    channel = await startDaemonChannel({
-                        getApi,
-                        accountDir,
-                        onLog: (m) => console.error(`[mcp] ${m}`),
-                        runners: syncRunners,
-                        // The self-heal's lock: a stage and a catch-up never share the socket.
-                        lock: stageLock,
-                    });
-                    console.error(`[mcp] Sync & upload channel ready on 127.0.0.1:${channel.port}`);
-                } catch (e) {
-                    console.error(`[mcp] Daemon channel unavailable: ${e.message}`);
-                    console.error("[mcp] Attachment sends open their own session, and `zalo-agent sync` will refuse.");
-                }
-            } catch (e) {
-                dropLock();
-                console.error("[mcp] Failed to start listener:", e.message);
-                process.exit(1);
-            }
-
-            // Graceful shutdown on SIGINT
-            process.on("SIGINT", () => {
+            const shutdown = () => {
                 // First, before listener.stop() emits closed(1000) -- otherwise
                 // the shutdown is indistinguishable from a drop and files a gap
                 // for a window nothing was missed in.
@@ -630,7 +698,46 @@ export function registerMCPCommands(program) {
                 httpServer?.close();
                 dropLock();
                 process.exit(0);
-            });
+            };
+
+            // Wire listener and start
+            try {
+                const api = getApi();
+                attachListenerHandlers(api);
+                api.listener.start({ retryOnClose: true });
+                console.error("[mcp] Zalo listener started. MCP server ready.");
+                // This process holds the account's one permitted socket, so it
+                // performs the work that needs one on behalf of the CLI:
+                // attachment uploads, and the socket stages of `zalo-agent
+                // sync`. Otherwise `msg send-file` opens a second session and
+                // Zalo kills this one, and a sync cannot run at all while this
+                // server is up. Best-effort: a failed channel only costs the
+                // fallback. `getApi` rather than an api, because a
+                // duplicate-session close rebuilds it under us.
+                try {
+                    channel = await startDaemonChannel({
+                        getApi,
+                        accountDir,
+                        onLog: (m) => console.error(`[mcp] ${m}`),
+                        runners: syncRunners,
+                        // The self-heal's lock: a stage and a catch-up never share the socket.
+                        lock: stageLock,
+                        onStop: shutdown,
+                    });
+                    console.error(`[mcp] Sync & upload channel ready on 127.0.0.1:${channel.port}`);
+                } catch (e) {
+                    console.error(`[mcp] Daemon channel unavailable: ${e.message}`);
+                    console.error("[mcp] Attachment sends open their own session, and `zalo-agent sync` will refuse.");
+                }
+            } catch (e) {
+                dropLock();
+                console.error("[mcp] Failed to start listener:", e.message);
+                process.exit(1);
+            }
+
+            // Graceful shutdown on SIGINT / SIGTERM
+            process.on("SIGINT", shutdown);
+            process.on("SIGTERM", shutdown);
             // A lock outliving its process blocks the next launch until the
             // stale-PID check reclaims it, so release it on any exit path.
             process.on("exit", dropLock);

@@ -5,6 +5,9 @@ WebSocket-based event listener with auto-reconnect. Production-safe for months.
 ## Usage
 ```bash
 zalo-agent listen                                          # Default: all event types (message,friend,group,reaction,read)
+zalo-agent listen -d                                       # Start detached in background (logs to <accountDir>/daemon.log)
+zalo-agent listen --status                                 # Check background daemon status (PID, channel port, log path)
+zalo-agent listen --stop                                   # Stop background daemon gracefully
 zalo-agent listen --filter user --no-self                  # DM only, no self
 zalo-agent listen --filter group                           # Groups only
 zalo-agent listen --events message,friend                  # Narrow output to messages + friends only
@@ -21,6 +24,9 @@ zalo-agent listen --auto-accept                            # Auto-accept friend 
 | `--no-self` | Hide your own messages from the OUTPUT (they are still cached) | false |
 | `--auto-accept` | Auto-accept friend requests | false |
 | `--save <dir>` | Save as JSONL (1 file/thread) | — |
+| `-d, --daemon` | Run detached in background (`<accountDir>/daemon.log`) | false |
+| `--stop` | Gracefully stop the running background daemon | false |
+| `--status` | Show background daemon status for this account | false |
 
 > The default for `-e/--events` is `message,friend,group,reaction,read` (all five event types). Pass `-e` with a subset (e.g., `-e message,friend`) to narrow what is printed/forwarded.
 >

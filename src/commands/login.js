@@ -13,8 +13,9 @@ import {
     getApi,
     getOwnId,
 } from "../core/zalo-client.js";
-import { saveCredentials, loadCredentials } from "../core/credentials.js";
+import { saveCredentials, loadCredentials, getAccountDir } from "../core/credentials.js";
 import { addAccount, getActive, removeAccount, updateAccountName } from "../core/accounts.js";
+import { getDaemonStatus } from "../core/daemon-channel.js";
 import { serverLogout, reportLogout, finishLocalLogout, lockHolder } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
@@ -279,12 +280,14 @@ export function registerLoginCommands(program) {
         .description("Show current login status")
         .action(() => {
             const active = getActive();
+            const daemon = active ? getDaemonStatus(getAccountDir(active.ownId)) : null;
             const data = {
                 loggedIn: isLoggedIn(),
                 ownId: getOwnId(),
                 activeAccount: active
                     ? { ownId: active.ownId, name: active.name, proxy: maskProxy(active.proxy) }
                     : null,
+                daemon,
             };
             output(data, program.opts().json, () => {
                 if (data.loggedIn) {
@@ -298,6 +301,15 @@ export function registerLoginCommands(program) {
                         info(`Active account: ${active.name || active.ownId} (will auto-login on next command)`);
                     else if (active)
                         info(`Account ${active.name || active.ownId} is logged out — run: zalo-agent login`);
+                }
+                if (daemon) {
+                    if (daemon.running) {
+                        info(
+                            `Daemon: running (PID ${daemon.pid}${daemon.channelPort ? `, channel 127.0.0.1:${daemon.channelPort}` : ""})`,
+                        );
+                    } else {
+                        info("Daemon: not running");
+                    }
                 }
             });
         });

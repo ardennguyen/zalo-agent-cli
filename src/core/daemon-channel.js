@@ -79,9 +79,12 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
 const CHANNEL_FILE = "daemon-channel.json";
+const LOCK_FILE = "daemon.lock";
+const LOG_FILE = "daemon.log";
 
 /** Sync stages a daemon will run on its own socket, as `POST /sync/<stage>`. */
 const SYNC_ROUTE = /^\/sync\/(messages|reactions|history)$/;
@@ -285,9 +288,19 @@ function readJsonBody(req, reply) {
  * @param {ReturnType<typeof createStageLock>} [args.lock] - the daemon's stage
  *   lock, shared with the jobs it runs on its own socket (its offline-queue
  *   catch-up). Omitted, the channel keeps one of its own.
+ * @param {() => void} [args.onStop] - graceful shutdown callback invoked by
+ *   `POST /stop` so `--stop` runs the same teardown as `SIGINT` (stamping
+ *   `markConnected`, flushing delivered receipts, releasing `daemon.lock`).
  * @returns {Promise<{port: number, stop: () => void}>}
  */
-export function startDaemonChannel({ getApi, accountDir, onLog, runners = {}, lock = createStageLock() }) {
+export function startDaemonChannel({
+    getApi,
+    accountDir,
+    onLog,
+    runners = {},
+    lock = createStageLock(),
+    onStop = null,
+}) {
     const token = randomBytes(24).toString("hex");
 
     // One stage at a time on this socket. Two stages sharing it is measured to
@@ -386,6 +399,23 @@ export function startDaemonChannel({ getApi, accountDir, onLog, runners = {}, lo
         }
     };
 
+    /** Trigger a graceful shutdown over the loopback channel (`--stop`). */
+    const serveStop = (body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof onStop !== "function") {
+            return reply(503, { error: "this daemon does not support channel stop" });
+        }
+        onLog?.("received graceful stop request via daemon channel");
+        reply(200, { ok: true, pid: process.pid });
+        setImmediate(() => {
+            try {
+                onStop();
+            } catch {
+                /* shutdown callback handles its own exit */
+            }
+        });
+    };
+
     const server = http.createServer(async (req, res) => {
         const reply = (code, body) => {
             res.writeHead(code, { "content-type": "application/json" });
@@ -394,10 +424,11 @@ export function startDaemonChannel({ getApi, accountDir, onLog, runners = {}, lo
         if (req.method !== "POST") return reply(404, { error: "not found" });
 
         const stage = SYNC_ROUTE.exec(req.url || "")?.[1];
-        if (req.url !== "/send-attachments" && !stage) return reply(404, { error: "not found" });
+        if (req.url !== "/send-attachments" && req.url !== "/stop" && !stage) return reply(404, { error: "not found" });
 
         const body = await readJsonBody(req, reply);
         if (!body) return; // already answered, or the request went away
+        if (req.url === "/stop") return serveStop(body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 
@@ -635,4 +666,390 @@ export function syncViaDaemon(accountDir, { stage, params = {}, onEvent, idleTim
         r.on("error", (e) => finish({ ok: false, disconnected: true, error: e?.message || String(e) }));
         r.end(payload);
     });
+}
+
+/**
+ * Inspect whether a `listen` or `mcp start` daemon is currently running for an
+ * account directory.
+ *
+ * Consults both `daemon-channel.json` (which removes itself if its PID is dead)
+ * and `daemon.lock` (so a daemon still logging in before its channel opens is
+ * also seen as running).
+ *
+ * @param {string} accountDir
+ * @returns {{
+ *   running: boolean,
+ *   pid: number|null,
+ *   channelPort: number|null,
+ *   stages: string[],
+ *   logPath: string,
+ * }}
+ */
+export function getDaemonStatus(accountDir) {
+    const logPath = path.join(accountDir, LOG_FILE);
+    const chan = getDaemonChannel(accountDir);
+    if (chan) {
+        return {
+            running: true,
+            pid: chan.pid,
+            channelPort: chan.port,
+            stages: chan.stages,
+            logPath,
+        };
+    }
+
+    const lockFile = path.join(accountDir, LOCK_FILE);
+    try {
+        if (fs.existsSync(lockFile)) {
+            const pid = parseInt(fs.readFileSync(lockFile, "utf8").trim(), 10);
+            if (!Number.isNaN(pid) && isProcessAlive(pid)) {
+                return {
+                    running: true,
+                    pid,
+                    channelPort: null,
+                    stages: [],
+                    logPath,
+                };
+            }
+        }
+    } catch {
+        /* unreadable lock is treated as not running */
+    }
+
+    return {
+        running: false,
+        pid: null,
+        channelPort: null,
+        stages: [],
+        logPath,
+    };
+}
+
+/**
+ * Ask a running daemon to shut down gracefully over its loopback channel.
+ *
+ * @param {string} accountDir
+ * @param {{timeoutMs?: number}} [opts]
+ * @returns {Promise<{ok: boolean, pid?: number, status?: number, error?: string}|null>}
+ *   null when no daemon channel is published
+ */
+export function stopViaDaemon(accountDir, { timeoutMs = 3000 } = {}) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+
+    const payload = JSON.stringify({ token: chan.token });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/stop",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: Number(timeoutMs) || 3000,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    if (res.statusCode === 200 && body.ok) {
+                        resolve({ ok: true, pid: Number(body.pid) || chan.pid });
+                    } else {
+                        resolve({
+                            ok: false,
+                            status: res.statusCode,
+                            error: body.error || `HTTP ${res.statusCode}`,
+                        });
+                    }
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
+}
+
+/**
+ * Stop the running daemon for an account directory, preferring `POST /stop` so
+ * the daemon runs its own graceful shutdown handler (`markConnected`, receipt
+ * flush, lock/channel cleanup) before falling back to `process.kill(pid)`.
+ *
+ * @param {string} accountDir
+ * @param {{timeoutMs?: number}} [opts]
+ * @returns {Promise<{stopped: boolean, pid: number|null, graceful: boolean}>}
+ */
+export async function stopDaemon(accountDir, { timeoutMs = 5000 } = {}) {
+    const status = getDaemonStatus(accountDir);
+    const lockFile = path.join(accountDir, LOCK_FILE);
+    const chanFile = channelPath(accountDir);
+
+    if (!status.running || !status.pid) {
+        for (const f of [lockFile, chanFile]) {
+            try {
+                if (fs.existsSync(f)) fs.unlinkSync(f);
+            } catch {
+                /* already removed */
+            }
+        }
+        return { stopped: false, pid: null, graceful: false };
+    }
+
+    const pid = status.pid;
+    let graceful = false;
+    const stopRes = await stopViaDaemon(accountDir, { timeoutMs: Math.min(2500, timeoutMs) });
+    if (stopRes?.ok) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (!isProcessAlive(pid)) {
+                graceful = true;
+                break;
+            }
+            await new Promise((r) => setTimeout(r, 80));
+        }
+    }
+
+    if (isProcessAlive(pid)) {
+        try {
+            process.kill(pid);
+        } catch {
+            /* exited between check and kill */
+        }
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline && isProcessAlive(pid)) {
+            await new Promise((r) => setTimeout(r, 80));
+        }
+    }
+
+    for (const f of [lockFile, chanFile]) {
+        try {
+            if (fs.existsSync(f)) fs.unlinkSync(f);
+        } catch {
+            /* already removed */
+        }
+    }
+
+    return { stopped: true, pid, graceful };
+}
+
+/**
+ * Quote a single argument for a Windows `CommandLineToArgvW` command line.
+ *
+ * @param {string} arg
+ * @returns {string}
+ */
+function quoteWinArg(arg) {
+    const s = String(arg);
+    if (!/[\s"]/.test(s) && s.length > 0) return s;
+    let out = '"';
+    let backslashes = 0;
+    for (const ch of s) {
+        if (ch === "\\") {
+            backslashes++;
+        } else if (ch === '"') {
+            out += "\\".repeat(backslashes * 2 + 1) + '"';
+            backslashes = 0;
+        } else {
+            out += "\\".repeat(backslashes) + ch;
+            backslashes = 0;
+        }
+    }
+    out += "\\".repeat(backslashes * 2) + '"';
+    return out;
+}
+
+/**
+ * When launched as a detached background child via WMI (`ZALO_DAEMON_LOG` set),
+ * redirect `process.stdout.write` and `process.stderr.write` to the daemon log
+ * file so every log line and uncaught error is captured without relying on
+ * inherited OS file descriptors.
+ */
+export function attachDaemonLogIfChild() {
+    if (process.env.ZALO_DAEMON_CHILD !== "1" || !process.env.ZALO_DAEMON_LOG) return;
+    let logFd;
+    try {
+        logFd = fs.openSync(process.env.ZALO_DAEMON_LOG, "a", 0o600);
+    } catch {
+        return;
+    }
+    const writeToLog = (chunk, encoding, cb) => {
+        try {
+            const buf = Buffer.isBuffer(chunk)
+                ? chunk
+                : Buffer.from(String(chunk), typeof encoding === "string" ? encoding : "utf8");
+            fs.writeSync(logFd, buf);
+        } catch {
+            /* ignore logging errors */
+        }
+        if (typeof encoding === "function") encoding();
+        else if (typeof cb === "function") cb();
+        return true;
+    };
+    process.stdout.write = writeToLog;
+    process.stderr.write = writeToLog;
+    process.on("uncaughtException", (err) => {
+        writeToLog(`${err?.stack || err}\n`);
+        process.exit(1);
+    });
+}
+
+/**
+ * On Windows, spawn via `Win32_Process.Create` (WMI) so the background daemon
+ * is parented to `WmiPrvSE.exe` outside any terminal or agent Job Object
+ * (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), preventing the daemon from dying when
+ * the calling shell or tool session closes. Returns the new PID or null on
+ * failure so the caller can fall back to `child_process.spawn`.
+ *
+ * @param {string} execPath
+ * @param {string[]} args
+ * @param {string} logPath
+ * @returns {number|null}
+ */
+function trySpawnWin32JobBreakaway(execPath, args, logPath) {
+    if (process.platform !== "win32") return null;
+    try {
+        const cmdLine = [quoteWinArg(execPath), ...args.map(quoteWinArg)].join(" ");
+        const psScript = [
+            "$cmd = $env:ZALO_DAEMON_CMD",
+            "Remove-Item Env:\\ZALO_DAEMON_CMD -ErrorAction SilentlyContinue",
+            '$envList = [string[]]@([System.Environment]::GetEnvironmentVariables().GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })',
+            "$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; EnvironmentVariables = $envList }",
+            "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = (Get-Location).Path; ProcessStartupInformation = $si }",
+            "if ($r.ReturnValue -ne 0 -or -not $r.ProcessId) { exit 1 }",
+            "Write-Output $r.ProcessId",
+        ].join("; ");
+        const res = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", psScript], {
+            windowsHide: true,
+            encoding: "utf8",
+            timeout: 8000,
+            env: {
+                ...process.env,
+                ZALO_DAEMON_CHILD: "1",
+                ZALO_DAEMON_LOG: logPath,
+                ZALO_DAEMON_CMD: cmdLine,
+            },
+        });
+        if (res.status === 0 && res.stdout) {
+            const pid = parseInt(res.stdout.trim(), 10);
+            if (!Number.isNaN(pid) && pid > 0) return pid;
+        }
+    } catch {
+        /* fall back to standard detached spawn */
+    }
+    return null;
+}
+
+/**
+ * Spawn a detached background daemon (`listen -d` or `mcp start --http <port> -d`)
+ * redirecting stdout and stderr to `<accountDir>/daemon.log`, and wait until its
+ * loopback channel is ready (or report startup failure if it exits early).
+ *
+ * @param {object} opts
+ * @param {string} opts.accountDir
+ * @param {string[]} [opts.args] - CLI arguments (defaults to `process.argv.slice(1)`)
+ * @param {number} [opts.timeoutMs=15000] - how long to wait for the channel to come up
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   alreadyRunning?: boolean,
+ *   pid?: number,
+ *   channelPort?: number|null,
+ *   logPath: string,
+ *   error?: string,
+ * }>}
+ */
+export async function spawnDaemonProcess({ accountDir, args = process.argv.slice(1), timeoutMs = 15_000 }) {
+    const status = getDaemonStatus(accountDir);
+    if (status.running) {
+        return {
+            ok: false,
+            alreadyRunning: true,
+            pid: status.pid,
+            channelPort: status.channelPort,
+            logPath: status.logPath,
+        };
+    }
+
+    fs.mkdirSync(accountDir, { recursive: true });
+    const logPath = path.join(accountDir, LOG_FILE);
+    const filteredArgs = args.filter((a) => a !== "-d" && a !== "--daemon");
+
+    const logFd = fs.openSync(logPath, "a", 0o600);
+    const header = `\n--- [${new Date().toISOString()}] starting daemon: ${filteredArgs.join(" ")} ---\n`;
+    fs.writeSync(logFd, header);
+    let startOffset = 0;
+    try {
+        startOffset = fs.statSync(logPath).size;
+    } catch {
+        /* ignore */
+    }
+
+    let pid = trySpawnWin32JobBreakaway(process.execPath, filteredArgs, logPath);
+    if (pid !== null) {
+        try {
+            fs.closeSync(logFd);
+        } catch {
+            /* ignore */
+        }
+    } else {
+        const child = spawn(process.execPath, filteredArgs, {
+            detached: true,
+            windowsHide: true,
+            stdio: ["ignore", logFd, logFd],
+            env: { ...process.env, ZALO_DAEMON_CHILD: "1" },
+        });
+        try {
+            fs.closeSync(logFd);
+        } catch {
+            /* ignore */
+        }
+        child.unref();
+        pid = child.pid;
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const chan = getDaemonChannel(accountDir);
+        if (chan && chan.pid === pid) {
+            return { ok: true, pid, channelPort: chan.port, logPath };
+        }
+        if (!isProcessAlive(pid)) {
+            let tail = "";
+            try {
+                const buf = fs.readFileSync(logPath);
+                tail = buf.subarray(startOffset).toString("utf8").trim();
+            } catch {
+                /* ignore */
+            }
+            const lastLine =
+                tail
+                    .split(/\r?\n/)
+                    .map((l) => l.trim())
+                    .filter(Boolean)
+                    .pop() || "Daemon process exited before becoming ready.";
+            return { ok: false, pid, logPath, error: lastLine };
+        }
+        await new Promise((r) => setTimeout(r, 150));
+    }
+
+    const finalStatus = getDaemonStatus(accountDir);
+    if (finalStatus.running && finalStatus.pid === pid) {
+        return { ok: true, pid, channelPort: finalStatus.channelPort, logPath };
+    }
+    return {
+        ok: false,
+        pid,
+        logPath,
+        error: "Timed out waiting for background daemon to finish starting.",
+    };
 }

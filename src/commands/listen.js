@@ -6,11 +6,17 @@
 import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
-import { success, error, info, warning } from "../utils/output.js";
+import { success, error, info, warning, output } from "../utils/output.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { getAccountDir } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
-import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
+import {
+    createStageLock,
+    startDaemonChannel,
+    getDaemonStatus,
+    stopDaemon,
+    spawnDaemonProcess,
+} from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
@@ -81,7 +87,11 @@ export function registerListenCommand(program) {
             "--no-self-heal",
             "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
+        .option("-d, --daemon", "Run in the background (logs to <accountDir>/daemon.log)")
+        .option("--stop", "Stop the running background daemon for this account")
+        .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
+            const jsonMode = program.opts().json;
             let activeAcc;
             try {
                 const requestedAccount =
@@ -92,6 +102,68 @@ export function registerListenCommand(program) {
                 process.exit(1);
             }
             const accountDir = getAccountDir(activeAcc.ownId);
+
+            if (opts.status) {
+                const status = getDaemonStatus(accountDir);
+                output({ accountId: activeAcc.ownId, ...status }, jsonMode, () => {
+                    if (status.running) {
+                        success(
+                            `Daemon running for account ${activeAcc.ownId} (PID ${status.pid}${status.channelPort ? `, channel 127.0.0.1:${status.channelPort}` : ""})`,
+                        );
+                        info(`Log file: ${status.logPath}`);
+                    } else {
+                        info(`No daemon running for account ${activeAcc.ownId}`);
+                        info(`Log file: ${status.logPath}`);
+                    }
+                });
+                return;
+            }
+
+            if (opts.stop) {
+                const res = await stopDaemon(accountDir);
+                output({ accountId: activeAcc.ownId, ...res }, jsonMode, () => {
+                    if (res.stopped) {
+                        success(
+                            `Stopped daemon for account ${activeAcc.ownId} (PID ${res.pid}${res.graceful ? "" : ", forced"})`,
+                        );
+                    } else {
+                        info(`No daemon running for account ${activeAcc.ownId}`);
+                    }
+                });
+                return;
+            }
+
+            if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
+                const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
+                if (!spawned.ok) {
+                    if (spawned.alreadyRunning) {
+                        error(
+                            `Another listen daemon is already running for account ${activeAcc.ownId} (PID ${spawned.pid}).`,
+                        );
+                        info("Stop it first with: zalo-agent listen --stop");
+                    } else {
+                        error(`Failed to start background listener: ${spawned.error}`);
+                        info(`Log file: ${spawned.logPath}`);
+                    }
+                    process.exit(1);
+                }
+                output(
+                    {
+                        accountId: activeAcc.ownId,
+                        pid: spawned.pid,
+                        channelPort: spawned.channelPort,
+                        logPath: spawned.logPath,
+                    },
+                    jsonMode,
+                    () => {
+                        success(`Listener started in background for account ${activeAcc.ownId} (PID ${spawned.pid})`);
+                        info(`Log file: ${spawned.logPath}`);
+                        info("Stop with: zalo-agent listen --stop");
+                    },
+                );
+                return;
+            }
+
             if (!acquireLock(accountDir)) {
                 error(`Another listen daemon is already running for account ${activeAcc.ownId}.`);
                 process.exit(1);
@@ -284,7 +356,6 @@ export function registerListenCommand(program) {
             }
             const heartbeatTimer = setInterval(heartbeat, HEARTBEAT_MS);
 
-            const jsonMode = program.opts().json;
             const startTime = Date.now();
             let reconnectCount = 0;
             let eventCount = 0;
@@ -794,6 +865,40 @@ export function registerListenCommand(program) {
             // rebuilds one on a duplicate-session close, and a stage bound to
             // the old object would tap a socket zca-js has already nulled.
             let channel = null;
+            const shutdown = () => {
+                // First, before anything can emit a close event.
+                stopping = true;
+                channel?.stop();
+                deliveredReceipts.stop();
+                try {
+                    getApi().listener.stop();
+                } catch (e) {
+                    console.error(`[listen] Stop failed: ${e.message}`);
+                }
+                clearInterval(heartbeatTimer);
+                // Stamp "last known connected" at the moment we stop, so a
+                // deliberate close (or the process simply exiting) gives
+                // the NEXT launch an accurate window to backfill from,
+                // rather than treating this whole downtime as unknown.
+                try {
+                    syncManager.markConnected();
+                } catch (e) {
+                    console.error(`[listen] Failed to stamp shutdown state: ${e.message}`);
+                }
+                releaseLock(accountDir);
+                info(`Stopped. Uptime: ${uptime()}, events: ${eventCount}, reconnects: ${reconnectCount}`);
+                const receipts = deliveredReceipts.stats();
+                if (receipts.calls) {
+                    info(`Delivered receipts: ${receipts.sent} acknowledged, ${receipts.failed} failed`);
+                }
+                if (saveDir) info(`Messages saved to: ${saveDir}`);
+                // Resolving the keep-alive promise is not enough: an async
+                // `closed` handler already in flight resumes after the action
+                // function has returned and keeps the process alive. mcp.js
+                // already exits explicitly here for the same reason.
+                process.exit(0);
+            };
+
             try {
                 channel = await startDaemonChannel({
                     getApi,
@@ -802,6 +907,7 @@ export function registerListenCommand(program) {
                     runners: createSyncRunners({ getApi, accountName: activeAcc.ownId }),
                     // The self-heal's lock: a stage and a catch-up never share the socket.
                     lock: stageLock,
+                    onStop: shutdown,
                 });
                 info(`Sync & upload channel ready on 127.0.0.1:${channel.port} — this socket is reused for both.`);
                 info("`zalo-agent sync` will run its socket stages here; it still needs your phone tap.");
@@ -810,42 +916,15 @@ export function registerListenCommand(program) {
                 warning("Attachment sends will open their own session, and `zalo-agent sync` will refuse to run.");
             }
 
-            // Keep alive until Ctrl+C
-            await new Promise((resolve) => {
+            // Keep alive until Ctrl+C or `listen --stop`
+            await new Promise(() => {
                 process.on("SIGINT", () => {
                     // First, before anything can emit a close event.
                     stopping = true;
-                    channel?.stop();
-                    deliveredReceipts.stop();
-                    try {
-                        getApi().listener.stop();
-                    } catch (e) {
-                        console.error(`[listen] Stop failed: ${e.message}`);
-                    }
-                    clearInterval(heartbeatTimer);
-                    // Stamp "last known connected" at the moment we stop, so a
-                    // deliberate close (or the process simply exiting) gives
-                    // the NEXT launch an accurate window to backfill from,
-                    // rather than treating this whole downtime as unknown.
-                    try {
-                        syncManager.markConnected();
-                    } catch (e) {
-                        console.error(`[listen] Failed to stamp shutdown state: ${e.message}`);
-                    }
-                    releaseLock(accountDir);
-                    info(`Stopped. Uptime: ${uptime()}, events: ${eventCount}, reconnects: ${reconnectCount}`);
-                    const receipts = deliveredReceipts.stats();
-                    if (receipts.calls) {
-                        info(`Delivered receipts: ${receipts.sent} acknowledged, ${receipts.failed} failed`);
-                    }
-                    if (saveDir) info(`Messages saved to: ${saveDir}`);
-                    resolve();
-                    // Resolving the keep-alive promise is not enough: an async
-                    // `closed` handler already in flight resumes after the action
-                    // function has returned and keeps the process alive. mcp.js
-                    // already exits explicitly here for the same reason.
+                    shutdown();
                     process.exit(0);
                 });
+                process.on("SIGTERM", shutdown);
             });
         });
 }

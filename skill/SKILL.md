@@ -115,6 +115,9 @@ fails with no daemon up.
 ### Listen (WebSocket, auto-reconnect)
 ```bash
 zalo-agent listen                                          # All events (message,friend,group,reaction,read)
+zalo-agent listen -d                                       # Start detached in background (logs to <accountDir>/daemon.log)
+zalo-agent listen --status                                 # Check background daemon status (PID, channel port, log path)
+zalo-agent listen --stop                                   # Gracefully stop the background daemon
 zalo-agent listen --account <ID>                           # Pin a specific account (run multiple listeners at once)
 zalo-agent listen --filter user --no-self                  # DM only
 zalo-agent listen --webhook http://n8n.local/webhook/zalo  # Forward to webhook
@@ -123,7 +126,7 @@ zalo-agent listen --save ./logs                            # Save JSONL locally
 ```
 Default `--events` is `message,friend,group,reaction,read` (all five event types).
 Every received message is also written to the per-account SQLite cache (`zalo.db`) and its media auto-downloaded. Reactions, recalls, delivery receipts, board changes, read state from your other devices and "you left this group" are stored too, on every run — `--events` decides what is printed, not what is kept. Only **one** live socket per account (enforced by `daemon.lock`, shared with `mcp start`), and it cannot coexist with browser Zalo on the same account.
-Production-ready with pm2. Details: `references/listen-mode-guide.md`
+Production-ready with `-d`/`--daemon` or pm2. Details: `references/listen-mode-guide.md`
 
 ### Local Cache & Sync
 ```bash
@@ -224,11 +227,14 @@ Full reference: `references/oa-command-reference.md`
 zalo-agent mcp start                                # stdio transport (default, for local Claude Code)
 zalo-agent mcp start --account <ID>                 # Pin to a specific registered account (run multiple MCP servers simultaneously)
 zalo-agent mcp start --http <port>                  # HTTP transport (for VPS/remote clients)
+zalo-agent mcp start --http <port> -d               # Start HTTP MCP server detached in background (logs to <accountDir>/daemon.log)
+zalo-agent mcp start --status                       # Check background daemon status (PID, channel port, log path)
+zalo-agent mcp start --stop                         # Gracefully stop the background daemon
 zalo-agent mcp start --http <port> --auth <token>   # Bearer token auth (HTTP mode)
 zalo-agent mcp start --http <port> --host 0.0.0.0   # Bind address (default 127.0.0.1)
 zalo-agent mcp start --config <path>                # Custom config (default ~/.zalo-agent-cli/mcp-config.json)
 ```
-The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **21-tool MCP surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
+The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **21-tool MCP surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
 
 To run **multiple Zalo accounts live at once**, launch one MCP server per account with `--account <ID>` (e.g. multiple entries in `.claude/settings.json` `mcpServers` for stdio, or separate `--http <port>` instances on a VPS) and pass `--account <ID>` when shelling out to CLI commands. See `references/mcp-guide.md`.
 

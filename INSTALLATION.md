@@ -223,12 +223,12 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
 
 ### MCP tools exposed
 
-This engine source registers **14 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+This engine source registers **21 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
 
 | Tool | Purpose |
 |:---|:---|
 | `zalo_get_messages` | Read buffered live messages with a cursor for incremental polling |
-| `zalo_send_message` | Send a text message to a DM or group — with @-mentions, a quote-reply, Important/Urgent `urgency`, or `threadId: "me"` for My Documents |
+| `zalo_send_message` | Send text, a link preview card (`link`), or a contact card (`cardUserId`) to a DM or group — with @-mentions, a quote-reply, Important/Urgent `urgency`, or `threadId: "me"` for My Documents |
 | `zalo_list_threads` | List buffered threads with unread counts |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread search by name |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer (global, not per-thread; deletes nothing, so several bots can share one server) |
@@ -241,10 +241,17 @@ This engine source registers **14 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_coverage` | Read-only: pending coverage gaps in the local cache, how many are resolved, and the `zalo-agent sync --from <date>` run that restores the rest |
 | `zalo_sync` | Start an owner-requested message restore or reaction sync; returns immediately with a job ID. Messages still needs phone confirmation |
 | `zalo_sync_status` | Read progress and final result; completed does not mean a partial restore became complete |
+| `zalo_search_messages` | Search message text across the local SQLite cache (`zalo.db`), zero network calls |
+| `zalo_lookup_user` | Look up a Zalo user by phone, username, userId, or inspect the logged-in account (`self: true`) |
+| `zalo_forward_message` | Forward a cached message (`msgId`) to another DM or group (`msg forward` parity) |
+| `zalo_delete_message` | Delete a message from own view (`everyone: false`) or for everyone in a group (`everyone: true`) |
+| `zalo_reminder` | Create, list, inspect, view responses, edit, or remove reminders in a DM or group |
+| `zalo_note` | Create/edit group notes, list group board items, or pin/unpin a cached text message |
+| `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Official Account, catalog, poll, reminder, auto-reply, label, profile, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
+Official Account, catalog, auto-reply, quick-msg, label, profile, friend management, group administration, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 

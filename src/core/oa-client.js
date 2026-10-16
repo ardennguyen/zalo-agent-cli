@@ -1,13 +1,12 @@
 /**
  * Zalo Official Account API v3.0 client.
- * Wraps OA REST endpoints with node-fetch. No dependency on zca-js.
+ * Wraps OA REST endpoints with native fetch. No dependency on zca-js.
  * Credentials stored in ~/.zalo-agent/oa-credentials.json.
  */
 
 import fs from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import nodefetch from "node-fetch";
 
 const V3_BASE = "https://openapi.zalo.me/v3.0/oa";
 const V2_BASE = "https://openapi.zalo.me/v2.0/oa";
@@ -70,7 +69,7 @@ export function getOAuthUrl(appId, redirectUri = "http://localhost:3456/callback
 
 /** Exchange authorization code for access + refresh tokens. */
 export async function exchangeCode(code, appId, secretKey, redirectUri = "http://localhost:3456/callback") {
-    const res = await nodefetch(TOKEN_URL, {
+    const res = await fetch(TOKEN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
         body: new URLSearchParams({
@@ -85,7 +84,7 @@ export async function exchangeCode(code, appId, secretKey, redirectUri = "http:/
 
 /** Refresh access token using refresh token. */
 export async function refreshAccessToken(refreshToken, appId, secretKey) {
-    const res = await nodefetch(TOKEN_URL, {
+    const res = await fetch(TOKEN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", secret_key: secretKey },
         body: new URLSearchParams({
@@ -106,7 +105,7 @@ async function oaFetch(url, { method = "GET", body, token, isFormData = false } 
     if (body && !isFormData) opts.body = JSON.stringify(body);
     if (body && isFormData) opts.body = body;
 
-    const res = await nodefetch(url, opts);
+    const res = await fetch(url, opts);
     const data = await res.json();
     if (data.error && data.error !== 0) {
         throw new Error(`OA API error ${data.error}: ${data.message || JSON.stringify(data)}`);
@@ -281,7 +280,7 @@ export async function removeFollowerFromTag(userId, tagName, oaId = "default") {
 /** Upload image to OA (returns attachment_id). */
 export async function uploadImage(filePath, oaId = "default") {
     const token = getToken(oaId);
-    // Use native FormData-like via node-fetch's Blob
+    // Use native Blob and FormData
     const fileData = fs.readFileSync(filePath);
     const blob = new (await import("node:buffer")).Blob([fileData]);
     const form = new globalThis.FormData();

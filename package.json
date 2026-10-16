@@ -1,6 +1,6 @@
 {
     "name": "@ardennguyen/zalo-agent-cli",
-    "version": "2.1.0",
+    "version": "2.1.1",
     "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
     "type": "module",
     "bin": {
@@ -62,7 +62,6 @@
         "google-protobuf": "^3.21.4",
         "https-proxy-agent": "^9.1.0",
         "image-size": "^2.0.4",
-        "node-fetch": "^3.3.2",
         "undici": "^8.5.0",
         "zca-js": "2.2.0",
         "zod": "^4.4.3"
@@ -77,6 +76,6 @@
     },
     "allowScripts": {
         "better-sqlite3@13.0.3": true,
-        "@ardennguyen/zalo-agent-cli@2.0.1": true
+        "@ardennguyen/zalo-agent-cli@2.1.1": true
     }
 }

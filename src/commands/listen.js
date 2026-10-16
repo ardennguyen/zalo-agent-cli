@@ -65,8 +65,8 @@ export function registerListenCommand(program) {
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction,read (default: message,friend)",
-            "message,friend",
+            "Comma-separated event types: message,friend,group,reaction,read (default: message,friend,group,reaction,read)",
+            "message,friend,group,reaction,read",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")
         .option("-w, --webhook <url>", "POST each event as JSON to this URL (for n8n, Make, etc.)")

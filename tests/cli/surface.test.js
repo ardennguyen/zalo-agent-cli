@@ -315,6 +315,8 @@ const FLAG_CONTRACT = {
     // or they diverge.
     listen: [
         "--account",
+        "--events",
+        "message,friend,group,reaction,read",
         "--filter",
         "--webhook",
         "--no-self",

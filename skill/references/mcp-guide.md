@@ -1,10 +1,10 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **21 tools**.
+Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **23 tools**.
 
-Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, label, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
+Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
-Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo` ↔ `msg undo`, `zalo_forward_message` ↔ `msg forward`, `zalo_delete_message` ↔ `msg delete`, `zalo_get_group_members` ↔ `group members`, `zalo_list_conversations` ↔ `conv recent`, `zalo_reminder` ↔ `reminder`, `zalo_note` ↔ `group note-*` + `msg pin/unpin`, `zalo_poll` ↔ `poll`) đều gọi đúng đoạn code mà lệnh đó dùng, nên cách tra cứu và các trường hợp từ chối giống hệt nhau.
+Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo` ↔ `msg undo`, `zalo_forward_message` ↔ `msg forward`, `zalo_delete_message` ↔ `msg delete`, `zalo_get_group_members` ↔ `group members`, `zalo_list_conversations` ↔ `conv recent`, `zalo_reminder` ↔ `reminder`, `zalo_note` ↔ `group note-*` + `msg pin/unpin`, `zalo_poll` ↔ `poll`, `zalo_label` ↔ `label`) đều gọi đúng đoạn code mà lệnh đó dùng, nên cách tra cứu và các trường hợp từ chối giống hệt nhau.
 
 ---
 
@@ -13,14 +13,23 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 | Flag | Mặc định | Mô tả |
 |------|----------|--------|
 | `--account <id>` | Active lúc khởi động, sau đó ghim | ID số đầy đủ của tài khoản đã đăng ký; giữ nguyên qua reconnect/retry, không đổi active chung. [Chi tiết](../../docs/account-pinning.vi.md) |
-| `--http <port>` | *(stdio)* | Dùng HTTP transport trên port này. Bỏ trống = stdio |
-| `--auth <token>` | *(không)* | Yêu cầu header `Authorization: Bearer <token>` cho mọi endpoint trừ `/health` |
-| `--host <address>` | `127.0.0.1` | Địa chỉ bind cho HTTP mode. Đặt `0.0.0.0` để nhận kết nối từ ngoài |
-| `-w, --webhook <url>` | *(không)* | POST mỗi tin nhắn mới (đã lọc theo `watchThreads`) dạng JSON tới URL này (hoặc đặt `"webhook"` trong `mcp-config.json`) |
+| `--http <port>` | *(stdio)* | Dùng HTTP/HTTPS transport trên port này (`ZALO_MCP_HTTP_PORT[_<ownId>]` hoặc `httpPort` trong `mcp-config.json`). Bỏ trống = stdio |
+| `--auth <token>` | `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | Yêu cầu header `Authorization: Bearer <token>` (hoặc OAuth 2.0 `access_token`) cho mọi endpoint trừ `/health` và các endpoint OAuth discovery/handshake |
+| `--host <address>` | `127.0.0.1` | Địa chỉ bind cho HTTP/HTTPS mode (`ZALO_MCP_HOST[_<ownId>]` hoặc `host`). Đặt `0.0.0.0` để nhận kết nối từ ngoài |
+| `--cert <path>` | `tls.cert` / `ZALO_MCP_TLS_CERT[_<ownId>]` | Đường dẫn chứng chỉ PEM để phục vụ HTTPS trực tiếp (cần `--http` và `--key`; khi chạy trên port khác 443 sẽ tự thử bind thêm port 443 song song) |
+| `--key <path>` | `tls.key` / `ZALO_MCP_TLS_KEY[_<ownId>]` | Đường dẫn private key PEM để phục vụ HTTPS trực tiếp |
+| `--client-id <id>` | `zalo-mcp` / `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]` | OAuth 2.0 Client ID cho các remote MCP client (Gemini Connected Apps, Claude Custom Connectors, …) |
+| `--client-secret <secret>` | `--auth` / `ZALO_MCP_OAUTH_CLIENT_SECRET[_<ownId>]` | OAuth 2.0 Client Secret cho bước đổi token tại `/token` |
+| `--issuer-url <url>` | *(suy từ header Host)* | Ghi đè URL gốc OAuth 2.0 issuer (`ZALO_MCP_ISSUER_URL[_<ownId>]`) |
+| `-w, --webhook <url>` | `webhook` / `ZALO_WEBHOOK_URL[_<ownId>]` | POST mỗi tin nhắn mới (đã lọc theo `watchThreads`) dạng JSON tới URL này |
+| `--webhook-secret <secret>` | `webhookSecret` / `ZALO_WEBHOOK_SECRET[_<ownId>]` | Ký mỗi webhook POST bằng `Authorization: Bearer <secret>` và `X-Zalo-Signature: sha256=<hmac>` |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | File cấu hình tuỳ chỉnh |
+| `-d, --daemon` | `false` | Chạy ngầm trong nền (cần `--http <port>`; ghi log vào `accounts/<ownId>/daemon.log`) |
+| `--stop` | `false` | Dừng daemon chạy ngầm của tài khoản này một cách an toàn |
+| `--status` | `false` | Xem trạng thái daemon chạy ngầm (PID, cổng channel, đường dẫn log) |
 
 > [!WARNING]
-> Bind `--host 0.0.0.0` mà không có `--auth` là để lộ toàn bộ phiên Zalo của bạn cho bất kỳ ai truy cập được port đó. Luôn đi kèm `--auth` khi mở ra ngoài loopback.
+> Bind `--host 0.0.0.0` mà không có `--auth` (hoặc `--client-secret`) là để lộ toàn bộ phiên Zalo của bạn cho bất kỳ ai truy cập được port đó. Luôn đi kèm `--auth` khi mở ra ngoài loopback.
 
 ---
 
@@ -45,19 +54,24 @@ Thêm vào `.claude/settings.json` (yêu cầu `zalo-agent` đã cài global ho�
 }
 ```
 
-### Chế độ HTTP (VPS — Remote)
+### Chế độ HTTP / HTTPS & OAuth 2.0 (VPS — Remote / Gemini Connected Apps)
 
 ```bash
+# HTTP + Bearer token
 zalo-agent mcp start --http 3847 --auth your-secret --host 0.0.0.0
+
+# HTTPS gốc + OAuth 2.0 (tự thử bind song song cả port 3100 lẫn 443)
+zalo-agent mcp start --http 3100 --auth your-secret --host 0.0.0.0 \
+  --cert /path/to/fullchain.pem --key /path/to/privkey.pem -d
 ```
 
-Endpoint MCP là **`POST /mcp`** (stateless — mỗi request tạo server+transport mới). Thêm vào cấu hình MCP client:
+Endpoint MCP là **`POST /mcp`** (hỗ trợ cả `HEAD`, `GET`, `POST`, `DELETE` cho Streamable HTTP; đồng thời cung cấp máy chủ OAuth 2.0 / 2.1 tích hợp sẵn tại `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/register`, `/authorize`, `/token`, `/revoke`). Thêm vào cấu hình MCP client:
 
 ```json
 {
   "mcpServers": {
     "zalo": {
-      "url": "http://your-vps:3847/mcp",
+      "url": "https://your-vps:3100/mcp",
       "headers": { "Authorization": "Bearer your-secret" }
     }
   }
@@ -77,9 +91,9 @@ curl -s "http://localhost:3847/events/wait?timeout=300&since=0"
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 21 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 23 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
-- **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `-w`/`--webhook <url>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
+- **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--cert <path>`, `--key <path>`, `--client-id <id>`, `--client-secret <secret>`, `--issuer-url <url>`, `-w`/`--webhook <url>`, `--webhook-secret <secret>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
   ```bash
   node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
@@ -164,7 +178,7 @@ Mỗi tài khoản Zalo cá nhân có cơ sở dữ liệu (`<DATA_DIR>/<ownId>/
 
 ---
 
-## Tham chiếu Tools (21 tools)
+## Tham chiếu Tools (23 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -567,13 +581,40 @@ Tạo, xem kết quả, bình chọn, rút bình chọn, thêm phương án, kho
 
 ---
 
+### `zalo_wait_for_message`
+Chờ tin nhắn mới tiếp theo trong buffer theo cơ chế long-poll (0% CPU, không cần vòng lặp polling), tương đương endpoint `GET /events/wait` nhưng gọi trực tiếp dưới dạng MCP tool cho các remote HTTPS/OAuth 2.0 client. Nếu đã có tin nhắn mới hơn `since` trong buffer, tool trả về ngay lập tức (`0 ms`).
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `threadId` | string (tuỳ chọn) | Chỉ chờ tin nhắn trong hội thoại này |
+| `since` | number (tuỳ chọn) | Cursor từ lần đọc trước; nếu đã có tin mới hơn `since` thì trả về ngay |
+| `timeoutSec` | number (mặc định 55, tối đa 300) | Thời gian chờ tối đa tính bằng giây trước khi trả về `status: "timeout"` |
+
+---
+
+### `zalo_label`
+Liệt kê, gắn nhãn (`assign`), gỡ nhãn (`unassign`), hoặc cập nhật toàn bộ danh sách nhãn hội thoại (`update` — ví dụ `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`), tương đương nhóm lệnh `label`.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `action` | enum `"list"\|"assign"\|"unassign"\|"update"` | Thao tác cần thực hiện |
+| `labelId` | number (tuỳ chọn) | ID của nhãn (tự tra theo `labelText` nếu bỏ trống) |
+| `labelText` | string (tuỳ chọn) | Tên nhãn (không phân biệt hoa/thường khi `assign`/`unassign`) |
+| `threadId` | string (tuỳ chọn) | Một hội thoại cần gắn/gỡ nhãn |
+| `threadIds` | string[] (tuỳ chọn) | Nhiều hội thoại cần gắn/gỡ nhãn cùng lúc |
+| `labelData`, `version` | tuỳ chọn | Dữ liệu nhãn đầy đủ và `version` cho `action: "update"` |
+
+---
+
 ## Phạm vi tool — cái gì có, cái gì phải gọi CLI
 
-MCP server expose **21 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
+MCP server expose **23 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
 
 | Nhóm chức năng | MCP tool | Cách gọi qua CLI |
 |---|---|---|
-| Đọc tin nhắn live | `zalo_get_messages` | `zalo-agent --json listen` |
+| Đọc tin nhắn live / chờ tin nhắn đến | `zalo_get_messages`, `zalo_wait_for_message` | `zalo-agent --json listen` |
 | Đọc lịch sử cũ | `zalo_get_history` | `zalo-agent --json msg history <id>` |
 | Tìm kiếm nội dung tin nhắn trong cache | `zalo_search_messages` | — |
 | Gửi text, link preview, danh thiếp (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send\|send-link\|send-card …` |
@@ -590,6 +631,7 @@ MCP server expose **21 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Nhắc hẹn (Reminder) | `zalo_reminder` | `zalo-agent --json reminder …` |
 | Ghi chú nhóm & Ghim tin nhắn | `zalo_note` | `zalo-agent --json group note-create\|note-edit …` · `msg pin\|unpin …` |
 | Khảo sát nhóm (Poll) | `zalo_poll` | `zalo-agent --json poll …` |
+| Nhãn hội thoại (Label) | `zalo_label` | `zalo-agent --json label …` |
 | Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
 | Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |
 | Gửi ảnh / file / voice / video / sticker | — | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|sticker …` |
@@ -597,7 +639,7 @@ MCP server expose **21 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Quản lý bạn bè (kết bạn, chặn, biệt danh) | — | `zalo-agent --json friend …` |
 | Quản trị nhóm nâng cao (tạo nhóm, mời, duyệt, link, giải tán) | — | `zalo-agent --json group …` |
 | Cài đặt hội thoại (ghim hội thoại, tắt thông báo, ẩn, tự xoá) | — | `zalo-agent --json conv …` |
-| Hồ sơ, trả lời tự động, tin nhắn nhanh, nhãn, catalog | — | `zalo-agent --json profile\|auto-reply\|quick-msg\|label\|catalog …` |
+| Hồ sơ, trả lời tự động, tin nhắn nhanh, catalog | — | `zalo-agent --json profile\|auto-reply\|quick-msg\|catalog …` |
 | Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
 | Official Account (32 lệnh) | — | `zalo-agent --json oa …` |
 
@@ -609,13 +651,17 @@ Tool nào tồn tại là do `registerTools()` trong `src/mcp/mcp-tools.js` quy�
 
 ## Cấu hình (`~/.zalo-agent-cli/mcp-config.json`)
 
-File này tuỳ chọn — nếu không tồn tại, server dùng giá trị mặc định bên dưới. Chỉ cần ghi đè field muốn thay đổi (merge nông với default).
+File này tuỳ chọn — nếu không tồn tại, server dùng giá trị mặc định bên dưới. Chỉ cần ghi đè field muốn thay đổi (merge nông với default; hỗ trợ ghi đè theo từng tài khoản trong `accounts["<ownId>"]` hoặc `~/.zalo-agent-cli/accounts/<ownId>/mcp-config.json`).
 
 ```json
 {
   "watchThreads": ["dm:*", "group:*"],
   "mode": "manual",
   "triggerKeywords": ["@bot"],
+  "webhook": null,
+  "webhookSecret": null,
+  "httpPort": null,
+  "host": null,
   "notify": {
     "enabled": false,
     "thread": null,
@@ -631,7 +677,18 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
   "media": {
     "downloadDir": null,
     "autoOpen": true
-  }
+  },
+  "tls": {
+    "cert": null,
+    "key": null
+  },
+  "oauth": {
+    "clientId": "zalo-mcp",
+    "clientSecret": null,
+    "issuerUrl": null,
+    "clients": []
+  },
+  "accounts": {}
 }
 ```
 
@@ -640,6 +697,10 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `watchThreads` | Danh sách thread cần theo dõi (hỗ trợ wildcard `dm:*`, `group:*`) |
 | `mode` | Chế độ lọc thread (mặc định `manual`) |
 | `triggerKeywords` | Chỉ áp dụng cho tính năng notify — không lọc buffer của `zalo_get_messages` |
+| `webhook` | URL nhận POST mỗi tin nhắn mới (hoặc `-w, --webhook <url>` / `ZALO_WEBHOOK_URL[_<ownId>]`) |
+| `webhookSecret` | Khóa bí mật ký webhook bằng `Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>` (`--webhook-secret` / `ZALO_WEBHOOK_SECRET[_<ownId>]`) |
+| `httpPort` | Port HTTP/HTTPS mặc định cho tài khoản này (`--http <port>` / `ZALO_MCP_HTTP_PORT[_<ownId>]`) |
+| `host` | Địa chỉ bind khi chạy HTTP/HTTPS (`--host` / `ZALO_MCP_HOST[_<ownId>]`) |
 | `notify.enabled` | Bật/tắt gửi thông báo khi agent offline (qua `ZaloNotifier`) |
 | `notify.thread` | Thread ID nhận thông báo (mặc định không đặt) |
 | `notify.on` | Loại thread kích hoạt thông báo, ví dụ `["dm"]` |
@@ -650,6 +711,10 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `limits.bufferMaxSize` | Số tin tối đa giữ lại mỗi thread |
 | `media.downloadDir` | Ghi đè thư mục gốc lưu media của MCP server. Mặc định (bỏ trống) dùng đúng chỗ mọi lệnh khác dùng: `accounts/<ownId>/media/<threadId>/`, và chỗ đó **bị** `logout --purge` / `account remove` xóa. Đặt giá trị riêng nếu muốn media nằm ngoài vùng dữ liệu account |
 | `media.autoOpen` | Giá trị mặc định cho tham số `open` của `zalo_view_media` |
+| `tls.cert`, `tls.key` | Đường dẫn chứng chỉ và private key PEM cho HTTPS (`--cert`, `--key` hoặc `ZALO_MCP_TLS_CERT[_<ownId>]`, `ZALO_MCP_TLS_KEY[_<ownId>]`) |
+| `oauth.clientId`, `oauth.clientSecret`, `oauth.issuerUrl` | Cấu hình OAuth 2.0 chính cho remote MCP client |
+| `oauth.clients` | Danh sách các OAuth 2.0 client tĩnh bổ sung (`[{ "clientId": "crm-prod", "clientSecret": "..." }]`) để nhiều dịch vụ kết nối đồng thời |
+| `accounts["<ownId>"]` | Ghi đè cấu hình riêng cho từng tài khoản khi chạy `mcp start --account <ownId>` |
 
 ---
 
@@ -662,9 +727,9 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP) — registerTools() đăng ký cả 21 tools
+MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 23 tools
      ↓
-Claude Code / MCP Client
+Claude Code / Gemini / MCP Client
 ```
 
 - **Auto-reconnect**: WebSocket tự kết nối lại khi mất mạng hoặc bị đóng; tự re-login nếu cần (trừ trường hợp phát hiện phiên trùng — `CLOSE_DUPLICATE` — thì thoát hẳn để tránh xung đột với phiên khác)

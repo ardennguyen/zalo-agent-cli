@@ -18,7 +18,7 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8
 const ACCESS_TOKEN_TTL_SEC = 30 * 24 * 3600; // 30 days
 const REFRESH_TOKEN_TTL_SEC = 365 * 24 * 3600; // 365 days
 const AUTH_CODE_TTL_SEC = 600; // 10 minutes
-const DEFAULT_SCOPES = ["mcp:tools", "read", "write"];
+const DEFAULT_SCOPES = ["mcp:tools", "read", "write", "ACCESS_VIEW_MANAGE_MCP_CONTENT"];
 
 /**
  * Constant-time string comparison.
@@ -183,6 +183,19 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
 
     // CORS headers for browser-based MCP clients and OAuth discovery
     app.use((req, res, next) => {
+        const remoteIp = req.socket?.remoteAddress || "";
+        const isLoopbackWait =
+            req.path === "/events/wait" &&
+            (remoteIp === "127.0.0.1" || remoteIp === "::1" || remoteIp === "::ffff:127.0.0.1");
+        if (!isLoopbackWait) {
+            res.on("finish", () => {
+                const ua = String(req.headers["user-agent"] || "-").slice(0, 80);
+                const h = String(req.headers.host || "-");
+                console.error(
+                    `[mcp-http] ${req.method} ${req.originalUrl} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
+                );
+            });
+        }
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader(
             "Access-Control-Allow-Headers",
@@ -209,6 +222,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 authorization_servers: [origin],
                 bearer_methods_supported: ["header"],
                 scopes_supported: DEFAULT_SCOPES,
+                resource_name: "Zalo Agent MCP",
             });
         };
         app.get("/.well-known/oauth-protected-resource", handleProtectedResourceMetadata);
@@ -224,10 +238,11 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 registration_endpoint: `${origin}/register`,
                 revocation_endpoint: `${origin}/revoke`,
                 response_types_supported: ["code"],
-                grant_types_supported: ["authorization_code", "refresh_token", "client_credentials"],
+                grant_types_supported: ["authorization_code", "refresh_token"],
                 token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
-                code_challenge_methods_supported: ["S256", "plain"],
+                code_challenge_methods_supported: ["S256"],
                 scopes_supported: DEFAULT_SCOPES,
+                resource_indicators_supported: true,
             });
         };
         app.get("/.well-known/oauth-authorization-server", handleAuthServerMetadata);
@@ -507,18 +522,18 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
 
             if (!matchesStaticToken && !oauthClaims) {
                 const origin = resolveIssuerOrigin(req, configuredIssuer, isTls);
-                res.setHeader(
-                    "WWW-Authenticate",
-                    `Bearer error="invalid_token", error_description="Unauthorized", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
-                );
+                const wwwAuth = token
+                    ? `Bearer error="invalid_token", error_description="Unauthorized", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`
+                    : `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
+                res.setHeader("WWW-Authenticate", wwwAuth);
                 return res.status(401).json({ error: "Unauthorized" });
             }
             next();
         });
     }
 
-    // MCP endpoint — stateless, fresh server+transport per request
-    app.post("/mcp", async (req, res) => {
+    // MCP endpoint — stateless, fresh server+transport per request (POST, GET, DELETE per Streamable HTTP spec)
+    app.all("/mcp", async (req, res) => {
         try {
             const server = new McpServer({ name: "zalo-agent", version: pkg.version });
             registerToolsFn(
@@ -606,9 +621,26 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     });
 
     if (isTls) {
-        return https.createServer({ cert: tls.cert, key: tls.key }, app).listen(port, host, () => {
+        const primary = https.createServer({ cert: tls.cert, key: tls.key }, app).listen(port, host, () => {
             console.error(`MCP HTTPS server listening on ${host}:${port}`);
         });
+        if (port !== 0 && port !== 443) {
+            const tls443 = https.createServer({ cert: tls.cert, key: tls.key }, app);
+            tls443.on("error", () => {
+                /* port 443 already in use or restricted — ignore */
+            });
+            tls443.listen(443, host, () => {
+                console.error(`MCP HTTPS server also listening on ${host}:443`);
+            });
+            primary.on("close", () => {
+                try {
+                    tls443.close();
+                } catch {
+                    /* ignore */
+                }
+            });
+        }
+        return primary;
     }
 
     return app.listen(port, host, () => {

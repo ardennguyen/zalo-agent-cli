@@ -1,6 +1,6 @@
 {
     "name": "@ardennguyen/zalo-agent-cli",
-    "version": "2.2.2",
+    "version": "2.5.0",
     "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
     "type": "module",
     "bin": {

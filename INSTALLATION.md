@@ -160,14 +160,19 @@ Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [-
 | `--http <port>` | *(stdio)* | Use HTTP (or HTTPS when `--cert` and `--key` are given) transport on this port |
 | `--auth <token>` | `ZALO_MCP_AUTH_TOKEN` in `.env` | Require `Authorization: Bearer <token>` on every endpoint except `/health` and OAuth discovery/handshake endpoints |
 | `--host <address>` | `127.0.0.1` | Bind address — set `0.0.0.0` to accept remote connections |
-| `--cert <path>` | `tls.cert` in `mcp-config.json` | TLS certificate file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--key`) |
+| `--cert <path>` | `tls.cert` in `mcp-config.json` | TLS certificate file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--key`; automatically attempts secondary bind on port `443` when `port !== 443`) |
 | `--key <path>` | `tls.key` in `mcp-config.json` | TLS private key file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--cert`) |
-| `--client-id <id>` | `zalo-mcp` (or `ZALO_MCP_OAUTH_CLIENT_ID`) | OAuth 2.0 Client ID for remote MCP clients like Gemini Connected Apps |
-| `--client-secret <key>` | `--auth` / `ZALO_MCP_AUTH_TOKEN` | OAuth 2.0 Client Secret for `/token` exchange |
+| `--client-id <id>` | `zalo-mcp` (or `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]`) | OAuth 2.0 Client ID for remote MCP clients like Gemini Connected Apps |
+| `--client-secret <key>` | `--auth` / `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | OAuth 2.0 Client Secret for `/token` exchange |
 | `--issuer-url <url>` | *(inferred from request Host)* | Explicit OAuth 2.0 issuer base URL (e.g. `https://mcp.example.com:3100`) |
+| `-w, --webhook <url>` | `webhook` in `mcp-config.json` | POST each watched incoming message as JSON to this URL (`ZALO_WEBHOOK_URL[_<ownId>]`) |
+| `--webhook-secret <secret>` | `webhookSecret` in `mcp-config.json` | Shared secret to sign webhook POSTs with `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` (`ZALO_WEBHOOK_SECRET[_<ownId>]`) |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | Custom MCP config file |
 | `--no-self-heal` | *(enabled)* | Disable automatic gap self-healing after reconnect |
 | `--no-delivered-receipts` | *(enabled)* | Do not send delivered receipts for incoming messages |
+| `-d, --daemon` | `false` | Run detached in the background (requires `--http <port>`; logs to `accounts/<ownId>/daemon.log`) |
+| `--stop` | `false` | Gracefully stop the running background daemon for this account |
+| `--status` | `false` | Show background daemon status (PID, channel port, log path) |
 
 Client config:
 ```json
@@ -388,7 +393,14 @@ See [`.env.example`](.env.example) for a template.
 | `ZALO_AGENT_NO_UPDATE_CHECK` | Set to any value to disable the background update-version check |
 | `ZALO_API_VERSION` | Protocol version announced to Zalo (`zpw_ver` / `client_version`), on the HTTP calls and the WebSocket URL alike. Default `691` (the live Zalo Web value); set `685` to roll back to zca-js's default. Must be a positive whole number — `0685`, `6.91`, `1e3`, `0x2b3`, `-685` and `0` are refused before Zalo is contacted, so a bad value fails every login rather than quietly falling back. Whitespace-only counts as unset. Only logins read it. |
 | `ZALO_JSON_MODE` | Set automatically by the CLI in `--json` and `mcp` modes to suppress `zca-js` stdout logs. Don't set it by hand |
-| `ZALO_MCP_HTTP_PORT` | Read by the `zalo-mcp` wrapper as the fallback `--http` port |
+| `ZALO_MCP_HTTP_PORT` | Read by `mcp start` and the `zalo-mcp` wrapper as the fallback `--http` port (supports `ZALO_MCP_HTTP_PORT_<ownId>`) |
+| `ZALO_MCP_HOST` | Default bind address for `mcp start --http` (supports `ZALO_MCP_HOST_<ownId>`) |
+| `ZALO_MCP_AUTH_TOKEN` | Bearer token for `mcp start --http` and fallback OAuth 2.0 client secret (supports `ZALO_MCP_AUTH_TOKEN_<ownId>`) |
+| `ZALO_MCP_OAUTH_CLIENT_ID` | OAuth 2.0 Client ID for `mcp start --http` (default `zalo-mcp`; supports `ZALO_MCP_OAUTH_CLIENT_ID_<ownId>`) |
+| `ZALO_MCP_OAUTH_CLIENT_SECRET` | OAuth 2.0 Client Secret for `mcp start --http` (supports `ZALO_MCP_OAUTH_CLIENT_SECRET_<ownId>`) |
+| `ZALO_MCP_ISSUER_URL` | Explicit OAuth 2.0 issuer base URL for `mcp start --http` (supports `ZALO_MCP_ISSUER_URL_<ownId>`) |
+| `ZALO_MCP_TLS_CERT` / `ZALO_MCP_TLS_KEY` | PEM certificate and private key paths for native HTTPS on `mcp start --http` (supports `_*_<ownId>`) |
+| `ZALO_WEBHOOK_URL` / `ZALO_WEBHOOK_SECRET` | Default webhook URL and signing secret (`Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>`) for `listen` and `mcp start` (supports `_*_<ownId>`) |
 
 ---
 

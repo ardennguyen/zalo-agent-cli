@@ -188,9 +188,10 @@ describe("MessageBuffer.waitForMessage & GET /events/wait", () => {
             const pendingFetch = fetch(`http://127.0.0.1:${port}/events/wait?timeout=5`, {
                 headers: { Authorization: "Bearer secret-token" },
             });
-            setTimeout(() => {
-                buf.push("t9", { id: "m9", threadId: "t9", text: "live push", timestamp: Date.now() });
-            }, 30);
+            while (buf._waiters.size === 0) {
+                await new Promise((r) => setTimeout(r, 10));
+            }
+            buf.push("t9", { id: "m9", threadId: "t9", text: "live push", timestamp: Date.now() });
             const res = await pendingFetch;
             assert.equal(res.status, 200);
             const body = await res.json();

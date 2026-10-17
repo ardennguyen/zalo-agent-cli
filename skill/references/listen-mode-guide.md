@@ -21,6 +21,7 @@ zalo-agent listen --auto-accept                            # Auto-accept friend 
 | `-e, --events <types>` | message,friend,group,reaction,read | message,friend,group,reaction,read |
 | `-f, --filter <type>` | user, group, all | all |
 | `-w, --webhook <url>` | POST events as JSON to URL | — |
+| `--webhook-secret <secret>` | Sign webhook POSTs (`Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>`, or `ZALO_WEBHOOK_SECRET[_<ownId>]`) | — |
 | `--no-self` | Hide your own messages from the OUTPUT (they are still cached) | false |
 | `--auto-accept` | Auto-accept friend requests | false |
 | `--save <dir>` | Save as JSONL (1 file/thread) | — |

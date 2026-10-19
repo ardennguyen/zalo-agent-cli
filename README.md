@@ -41,7 +41,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > zalo-agent oa listen -p 3000                           # Webhook listener
 > ```
 > OAuth login · gửi tin nhắn · follower · tag · bài viết · cửa hàng · webhook listener · multi-OA · VPS support
-> Xem [docs/official-account.md](docs/official-account.md)
+> Xem [docs/official-account.vi.md](docs/official-account.vi.md) · [English](docs/official-account.md)
 
 > [!TIP]
 > **MCP Server (AI Agent Integration)** — Model Context Protocol cho Claude Code và các MCP client:
@@ -52,9 +52,9 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > ```
 > 23 tools: `zalo_get_messages` · `zalo_send_message` · `zalo_list_threads` · `zalo_search_threads` · `zalo_mark_read` · `zalo_get_history` · `zalo_view_media` · `zalo_react` · `zalo_undo` · `zalo_get_group_members` · `zalo_list_conversations` · `zalo_coverage` · `zalo_sync` · `zalo_sync_status` · `zalo_search_messages` · `zalo_lookup_user` · `zalo_forward_message` · `zalo_delete_message` · `zalo_reminder` · `zalo_note` · `zalo_poll` · `zalo_wait_for_message` · `zalo_label`
 
-[Sync qua MCP](docs/mcp-sync.vi.md) · [Ghim đa tài khoản live](docs/account-pinning.vi.md).
+[Sync qua MCP](docs/mcp-sync.vi.md) · [Ghim đa tài khoản live](docs/account-pinning.vi.md) · [Triển khai Production](docs/deployment.vi.md).
 > Auto-reconnect · thread filter · noise reduction · tự tải media · thông báo qua nhóm Zalo · chạy song song nhiều tài khoản (`--account <ID>`)
-> Xem [MCP Guide](skill/references/mcp-guide.md) · [INSTALLATION.md](INSTALLATION.md)
+> Xem [MCP Guide](skill/references/mcp-guide.md) · [INSTALLATION.vi.md](INSTALLATION.vi.md)
 
 ---
 
@@ -66,7 +66,7 @@ Yêu cầu **Node.js 22+**.
 npm install -g @ardennguyen/zalo-agent-cli
 ```
 
-Muốn cài kèm MCP server dạng sandbox (khuyến nghị cho AI client) → xem [INSTALLATION.md](INSTALLATION.md).
+Muốn cài kèm MCP server dạng sandbox (khuyến nghị cho AI client) → xem [INSTALLATION.vi.md](INSTALLATION.vi.md) ([English](INSTALLATION.md)).
 
 ## Bắt đầu nhanh
 
@@ -151,8 +151,9 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 
 | Tài liệu | Nội dung |
 |----------|----------|
-| [INSTALLATION.md](INSTALLATION.md) | Cài đặt `zalo-mcp` wrapper, cấu hình MCP client, thiết lập OA |
-| [docs/official-account.md](docs/official-account.md) | Tham chiếu đầy đủ lệnh OA (tiếng Việt) |
+| [INSTALLATION.vi.md](INSTALLATION.vi.md) ([EN](INSTALLATION.md)) | Cài đặt `zalo-mcp` wrapper, cấu hình MCP client, thiết lập OA |
+| [docs/official-account.vi.md](docs/official-account.vi.md) ([EN](docs/official-account.md)) | Tham chiếu đầy đủ lệnh OA (song ngữ VN / EN) |
+| [docs/deployment.vi.md](docs/deployment.vi.md) ([EN](docs/deployment.md)) | Hướng dẫn triển khai production (một socket, nhiều bot, HTTPS, OAuth 2.0, systemd/Docker) |
 | [skill/SKILL.md](skill/SKILL.md) | Skill cho AI agent |
 | [skill/references/command-reference.md](skill/references/command-reference.md) | Tham chiếu lệnh đầy đủ (nguồn chuẩn) |
 | [skill/references/mcp-guide.md](skill/references/mcp-guide.md) | Hướng dẫn MCP server (tiếng Việt) |
@@ -206,7 +207,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > zalo-agent oa listen -p 3000                           # Webhook listener
 > ```
 > OAuth login · messaging · followers · tags · articles · store · webhook listener · multi-OA · VPS support
-> See [docs/official-account.md](docs/official-account.md)
+> See [docs/official-account.md](docs/official-account.md) · [Tiếng Việt](docs/official-account.vi.md)
 
 > [!TIP]
 > **MCP Server (AI Agent Integration)** — Model Context Protocol support for Claude Code and MCP clients:
@@ -217,7 +218,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > ```
 > 23 tools: `zalo_get_messages` · `zalo_send_message` · `zalo_list_threads` · `zalo_search_threads` · `zalo_mark_read` · `zalo_get_history` · `zalo_view_media` · `zalo_react` · `zalo_undo` · `zalo_get_group_members` · `zalo_list_conversations` · `zalo_coverage` · `zalo_sync` · `zalo_sync_status` · `zalo_search_messages` · `zalo_lookup_user` · `zalo_forward_message` · `zalo_delete_message` · `zalo_reminder` · `zalo_note` · `zalo_poll` · `zalo_wait_for_message` · `zalo_label`
 
-[MCP sync](docs/mcp-sync.md) · [Multi-account pinning](docs/account-pinning.md).
+[MCP sync](docs/mcp-sync.md) · [Multi-account pinning](docs/account-pinning.md) · [Production deployment](docs/deployment.md).
 > Auto-reconnect · thread filter · noise reduction · media auto-download · Zalo-group notifications · concurrent multi-account (`--account <ID>`)
 > See [MCP Guide](skill/references/mcp-guide.md) · [INSTALLATION.md](INSTALLATION.md)
 
@@ -233,7 +234,7 @@ zalo-agent listen                          # 3. Listen for threadId
 zalo-agent msg send <THREAD_ID> "Hello!"   # 4. Send a message
 ```
 
-For the sandboxed MCP-server install (recommended for AI clients), see [INSTALLATION.md](INSTALLATION.md).
+For the sandboxed MCP-server install (recommended for AI clients), see [INSTALLATION.md](INSTALLATION.md) ([Tiếng Việt](INSTALLATION.vi.md)).
 
 ### Commands
 
@@ -266,7 +267,7 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 - Multi-account with a dedicated proxy (1:1) and a per-account device fingerprint; run **multiple live accounts simultaneously** (one `mcp start` or `listen` process per account with `--account <ID>`, plus `--account <ID>` / `ZALO_ACCOUNT` on any CLI command without mutating `accounts.json`)
 - **190 commands** covering the personal-account Zalo surface
 - **Zalo Official Account (OA) API v3.0** — OAuth login, messaging, followers, tags, articles, store, webhook listener, multi-OA
-- **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 23 tools for Claude Code, Gemini and other MCP clients: read, wait for incoming messages (`zalo_wait_for_message`), send (text, link previews, contact cards, to My Documents too, marked Important/Urgent), search cached messages, look up users, manage conversation labels (`zalo_label`), react, recall, forward, delete, reminders, group notes/pins, group polls, list a group's members, list recent conversations, and check how complete the cache is
+- **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 23 tools for Claude Code, Gemini and other MCP clients: read, wait for incoming messages (`zalo_wait_for_message`), send (text, local file/image attachments, link previews, contact cards, to My Documents too, marked Important/Urgent), search cached messages, look up users, manage conversation labels (`zalo_label`), react, recall, forward, delete, reminders, group notes/pins, group polls, list a group's members, list recent conversations, and check how complete the cache is
 - **Local SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync` (or `sync-mobile`) restores full history from the phone into `zalo.db` (transfer-sync-v2 decrypt; one confirmation on the phone), defaulting to **all** history (the old 2024-01-01 floor is gone), with `--days <n>` or `--from <YYYY-MM-DD>` to narrow it. Housekeeping: `sync-media --prune <days|all>` reclaims disk while keeping message text, `--prune-orphans` targets conversations the account no longer has, and `conv forget` removes a conversation's local copy entirely — none of which contact Zalo. The sync stream carries media **links**, not files, so a `sync-mobile` run **downloads its attachments automatically** once the messages are stored (`--messages-only` skips it); `sync-media` re-runs or resumes that fetch on its own, with no phone confirmation. Notes, pinned messages, polls and reminders live outside the message stream — `sync-boards` fetches those
 - Automatic media download — one downloader shared by `listen`, `msg history`, `mcp start` and the sync commands, saving to `~/.zalo-agent-cli/accounts/<id>/media/<threadId>/` (or separate credentials, `zalo.db`, media, and OA credentials onto independent volumes/mounts via `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir` / `ZALO_*_DIR` in `~/.zalo-agent-cli/.env`; when using `zalo-mcp`, keep `zalo-mcp/.env` for PORT settings only and place all storage/engine settings in `<CONFIG_DIR>/.env`)
 - Bank cards (55+ VN banks) and VietQR payment images
@@ -280,8 +281,9 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 
 | Document | Contents |
 |----------|----------|
-| [INSTALLATION.md](INSTALLATION.md) | `zalo-mcp` wrapper install, MCP client config, OA setup |
-| [docs/official-account.md](docs/official-account.md) | Full OA command reference (Vietnamese) |
+| [INSTALLATION.md](INSTALLATION.md) ([VI](INSTALLATION.vi.md)) | `zalo-mcp` wrapper install, MCP client config, OA setup |
+| [docs/official-account.md](docs/official-account.md) ([VI](docs/official-account.vi.md)) | Full OA command reference (bilingual EN / VN) |
+| [docs/deployment.md](docs/deployment.md) ([VI](docs/deployment.vi.md)) | Production deployment guide (one socket, many bots, HTTPS, OAuth 2.0, systemd/Docker) |
 | [skill/SKILL.md](skill/SKILL.md) | AI agent skill |
 | [skill/references/command-reference.md](skill/references/command-reference.md) | Exhaustive command reference (source of truth) |
 | [skill/references/mcp-guide.md](skill/references/mcp-guide.md) | MCP server guide (Vietnamese) |

@@ -1,18 +1,20 @@
 # Zalo Official Account (OA)
 
-Quản lý Zalo Official Account qua API v3.0 chính thức. Độc lập hoàn toàn với tài khoản cá nhân (zca-js).
+[Tiếng Việt](official-account.vi.md)
 
-> **Lưu ý:** Một số API cần upgrade OA tier. Xem [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing).
+Manage a Zalo Official Account via the official Zalo OA REST API v3.0 — completely independent from personal Zalo accounts (`zca-js`).
 
-## Bắt đầu nhanh
+> **Note:** Several OA APIs require a paid OA tier. See [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing).
 
-### Interactive (con người)
+## Quick Start
+
+### Interactive (human)
 
 ```bash
 zalo-agent oa init
 ```
 
-Wizard hướng dẫn từng bước: nhập credentials → OAuth login → webhook setup.
+Step-by-step guided wizard: enter credentials → OAuth login → webhook setup.
 
 ### Non-interactive (AI agent / CI)
 
@@ -41,60 +43,60 @@ zalo-agent oa login --app-id <APP_ID> --secret <SECRET> --callback-host https://
 
 ---
 
-## Lệnh
+## Commands
 
-Tổng cộng **32 lệnh** trong nhóm `oa`. Mọi lệnh đều nhận `--oa-id <id>` (mặc định `default`) để quản lý nhiều OA, và `--json` để xuất kết quả dạng máy đọc.
+There are **32 commands** in the `oa` group. Every command accepts `--oa-id <id>` (default `default`) for managing multiple OAs, and `--json` for machine-readable output.
 
 ### Setup & Auth
 
-| Lệnh | Mô tả |
-|-------|--------|
-| `oa init [flags]` | Guided setup wizard (interactive + non-interactive) — xem bảng flag bên dưới |
-| `oa login --app-id <id> --secret <key> [-p, --port <port>]` | OAuth login (mở browser). Callback server chạy ở `127.0.0.1:<port>`, mặc định port `3456`. Timeout 2 phút |
-| `oa login ... --callback-host <url>` | OAuth login từ VPS — bind `0.0.0.0`, không tự mở browser, in URL để mở thủ công trên máy local |
-| `oa refresh` | Làm mới access token (dùng refresh token đã lưu) |
-| `oa setup <access-token>` | Set token thủ công (bỏ qua OAuth) |
-| `oa whoami` | Xem thông tin OA: tên, ID, mô tả, số follower, loại OA, gói dịch vụ (và hạn dùng), liên kết ZCA. Gói quyết định API nào dùng được: API OA, ZBS và Bài viết cần OA đã xác thực trên gói trả phí Advanced/Premium |
+| Command | Description |
+|---------|-------------|
+| `oa init [flags]` | Guided setup wizard (interactive + non-interactive) — see flag table below |
+| `oa login --app-id <id> --secret <key> [-p, --port <port>]` | OAuth login (opens browser). Callback server listens on `127.0.0.1:<port>`, default port `3456`. 2-minute timeout |
+| `oa login ... --callback-host <url>` | Headless VPS OAuth login — binds `0.0.0.0`, skips opening a browser, and prints the auth URL to open on a local machine |
+| `oa refresh` | Refresh the access token using the saved refresh token |
+| `oa setup <access-token>` | Set an access token manually (bypassing OAuth) |
+| `oa whoami` | View OA profile: name, ID, description, follower count, OA type, service package (and expiry date), and ZCA link status. The package determines which APIs work: OA messaging, ZBS, and Article APIs require a verified OA on a paid Advanced/Premium package |
 
-#### Flag của `oa init`
+#### `oa init` flags
 
-Wizard tự chuyển sang **chế độ agent (non-interactive)** ngay khi có `--app-id`.
+The wizard automatically switches to **agent (non-interactive) mode** whenever `--app-id` is passed.
 
-| Flag | Mặc định | Mô tả |
-|------|----------|--------|
-| `--app-id <id>` | — | Zalo App ID (kích hoạt chế độ non-interactive) |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--app-id <id>` | — | Zalo App ID (triggers non-interactive mode) |
 | `--secret <key>` | — | Zalo App Secret Key |
-| `--oa-id <id>` | `default` | Định danh OA cho multi-OA |
-| `--tunnel <type>` | `ngrok` (chế độ agent) | `ngrok` \| `cloudflared` \| `none` |
-| `--webhook-url <url>` | — | Dùng webhook URL có sẵn (VPS, n8n…) thay vì tạo tunnel |
-| `--verify-code <code>` | — | Mã xác thực domain của Zalo |
-| `-p, --port <port>` | `3000` | Port cho webhook listener cục bộ |
-| `--skip-webhook` | `false` | Bỏ qua hoàn toàn bước webhook |
-| `--skip-login` | `false` | Bỏ qua OAuth (dùng token đã lưu) |
+| `--oa-id <id>` | `default` | OA identifier for multi-OA setups |
+| `--tunnel <type>` | `ngrok` (agent mode) | `ngrok` \| `cloudflared` \| `none` |
+| `--webhook-url <url>` | — | Use an existing webhook URL (VPS, n8n, …) instead of starting a tunnel |
+| `--verify-code <code>` | — | Zalo domain verification code |
+| `-p, --port <port>` | `3000` | Local webhook listener port |
+| `--skip-webhook` | `false` | Skip webhook setup completely |
+| `--skip-login` | `false` | Skip OAuth login (reuse an already-saved token) |
 
-Wizard chạy qua 5 bước: (1) lưu app-id/secret → (2) OAuth login + kiểm tra profile → (3) checklist điều kiện tại developers.zalo.me (chỉ ở chế độ interactive) → (4) expose webhook → (5) in bảng tóm tắt (JSON nếu chạy với `--json`).
+The wizard runs through 5 steps: (1) save app-id/secret → (2) OAuth login + profile check → (3) prerequisite checklist at `developers.zalo.me` (interactive mode only) → (4) expose webhook → (5) print summary table (or JSON when `--json` is passed).
 
-### Tin nhắn
+### Messaging
 
 ```bash
-# Gửi text (message type: cs | transaction | promotion)
-zalo-agent oa msg text <user-id> "Nội dung" [-m cs]
+# Send text (message type: cs | transaction | promotion)
+zalo-agent oa msg text <user-id> "Message content" [-m cs]
 
-# Gửi ảnh (URL hoặc attachment_id)
+# Send image (direct URL or attachment_id)
 zalo-agent oa msg image <user-id> --image-url https://...
 zalo-agent oa msg image <user-id> --image-id <attachment_id>
 
-# Gửi file (cần upload trước)
+# Send file (must upload first)
 zalo-agent oa msg file <user-id> <file-id>
 
-# Gửi danh sách
+# Send list card
 zalo-agent oa msg list <user-id> '[{"title":"Item 1"},{"title":"Item 2"}]'
 
-# Kiểm tra trạng thái
+# Check message delivery status
 zalo-agent oa msg status <message-id>
 ```
 
-### Follower
+### Followers
 
 ```bash
 zalo-agent oa follower list [--offset 0] [--count 50]
@@ -102,7 +104,7 @@ zalo-agent oa follower info <user-id>
 zalo-agent oa follower update <user-id> '{"name":"...","phone":"..."}'
 ```
 
-### Tag
+### Tags
 
 ```bash
 zalo-agent oa tag list
@@ -118,7 +120,7 @@ zalo-agent oa upload image ./photo.jpg    # Returns attachment_id
 zalo-agent oa upload file ./document.pdf  # Returns file token
 ```
 
-### Hội thoại
+### Conversations
 
 ```bash
 zalo-agent oa conv recent [--offset 0] [--count 10]
@@ -128,16 +130,16 @@ zalo-agent oa conv history <user-id> [--offset 0] [--count 10]
 ### Webhook Listener
 
 ```bash
-# Cơ bản
+# Basic
 zalo-agent oa listen -p 3000
 
-# Với MAC verification
+# With MAC verification
 zalo-agent oa listen -p 3000 -s <OA_SECRET_KEY>
 
-# Lọc events
+# Filter events
 zalo-agent oa listen -e user_send_text,follow
 
-# Đổi đường dẫn webhook (mặc định /webhook)
+# Custom webhook URL path (default /webhook)
 zalo-agent oa listen -p 3000 --path /zalo
 
 # Domain verification
@@ -149,75 +151,75 @@ zalo-agent --json oa listen | while read -r event; do
 done
 ```
 
-| Flag | Mặc định | Mô tả |
+| Flag | Default | Description |
 |------|----------|--------|
-| `-p, --port <port>` | `3000` | Port lắng nghe |
-| `-s, --secret <key>` | — | OA Secret Key để verify MAC (HMAC-SHA256, so sánh timing-safe). Không có thì in cảnh báo |
-| `--no-verify` | `false` | Tắt verify MAC dù đã có secret (chỉ dùng khi dev) |
-| `-e, --events <list>` | `all` | Lọc event, phân cách bằng dấu phẩy |
-| `--path <path>` | `/webhook` | Đường dẫn URL của webhook |
-| `--verify-domain <code>` | — | Phục vụ file `/zalo_verifier<code>.html` để xác thực domain |
+| `-p, --port <port>` | `3000` | Listen port |
+| `-s, --secret <key>` | — | OA Secret Key for MAC verification (HMAC-SHA256, timing-safe comparison). Warns if omitted |
+| `--no-verify` | `false` | Disable MAC verification even when a secret is provided (development only) |
+| `-e, --events <list>` | `all` | Comma-separated list of event names to filter |
+| `--path <path>` | `/webhook` | Webhook URL path |
+| `--verify-domain <code>` | — | Serve `/zalo_verifier<code>.html` for Zalo domain verification |
 
-**Events:** `--events` nhận mọi tên event Zalo công bố, ví dụ `follow`, `unfollow`, `user_send_text`, `user_send_image`, `user_send_file`, `user_send_audio`, `user_send_video`, `user_send_sticker`, `user_send_link`, `user_send_business_card`, `user_send_location`, `user_click_chatnow` (người dùng bấm nút "Nhắn tin" của OA), `user_seen_message`, `user_received_message`, `user_reacted_message`, các event `oa_send_*`, event nhóm GMF, gọi thoại và ZBS — danh sách đầy đủ ở `skill/references/oa-command-reference.md`. `user_send_gif`, `user_click_button` và `user_click_link` không phải event của Zalo (bản cũ liệt kê nhầm); lọc theo một tên Zalo không công bố thì listener cảnh báo ngay, vì bộ lọc đó không bao giờ khớp.
+**Events:** `--events` accepts every event name documented by Zalo, including `follow`, `unfollow`, `user_send_text`, `user_send_image`, `user_send_file`, `user_send_audio`, `user_send_video`, `user_send_sticker`, `user_send_link`, `user_send_business_card`, `user_send_location`, `user_click_chatnow` (user clicked the OA's "Chat now" button), `user_seen_message`, `user_received_message`, `user_reacted_message`, `oa_send_*` echo events, GMF group events, voice call events, and ZBS events — see [`skill/references/oa-command-reference.md`](../skill/references/oa-command-reference.md) for the exhaustive list. `user_send_gif`, `user_click_button`, and `user_click_link` are not valid Zalo event names (listed by mistake prior to 2.0.0); filtering on an undocumented name prints an immediate warning at startup because that filter can never match.
 
-Listener tự trả lời `hub.challenge` (GET) của Zalo, và giới hạn body tối đa 1MB. Listener **trả 200 ngay khi nhận** event rồi mới in ra, vì Zalo đòi 200 trong vòng 2 giây. Khi Zalo gửi lại một event (header `num_retry`), kết quả JSON có `_num_retry` và dòng in ra ghi rõ đó là lần gửi lại, để không xử lý nhầm thành event mới.
+The listener answers Zalo's `hub.challenge` (GET) verification automatically and caps request bodies at 1 MB. It **responds with `200 OK` immediately upon accepting an event** before printing it, because Zalo requires a 200 response within 2 seconds. When Zalo retries an event (`num_retry` header), the JSON output includes `_num_retry` and the printed line marks it as a redelivery so consumers do not process it as a brand-new event.
 
-### Menu, Bài viết, Cửa hàng
+### Menu, Articles, Store
 
 ```bash
-zalo-agent oa menu '{"buttons":[...]}'                        # Cập nhật menu OA
+zalo-agent oa menu '{"buttons":[...]}'                        # Update OA chat menu
 
-zalo-agent oa article create '{"title":"..."}'                 # Tạo bài viết (broadcast)
-zalo-agent oa article list [--offset 0] [--limit 10]           # Danh sách bài viết
-zalo-agent oa article detail <article-id>                      # Chi tiết bài viết
+zalo-agent oa article create '{"title":"..."}'                 # Create article (broadcast)
+zalo-agent oa article list [--offset 0] [--limit 10]           # List articles
+zalo-agent oa article detail <article-id>                      # Article details
 
-zalo-agent oa store product-create '{"name":"..."}'            # Tạo sản phẩm
-zalo-agent oa store product-list [--offset 0] [--limit 10]     # Danh sách sản phẩm
-zalo-agent oa store product-info <product-id>                  # Chi tiết sản phẩm
-zalo-agent oa store category-create '{"name":"..."}'           # Tạo danh mục
-zalo-agent oa store category-list                              # Danh mục
-zalo-agent oa store order-create '{"...":"..."}'               # Tạo đơn hàng
+zalo-agent oa store product-create '{"name":"..."}'            # Create product
+zalo-agent oa store product-list [--offset 0] [--limit 10]     # List products
+zalo-agent oa store product-info <product-id>                  # Product details
+zalo-agent oa store category-create '{"name":"..."}'           # Create category
+zalo-agent oa store category-list                              # List categories
+zalo-agent oa store order-create '{"...":"..."}'               # Create order
 ```
 
 ---
 
-## Mã lỗi thường gặp
+## Common Error Codes
 
-| Mã | Ý nghĩa | Cách xử lý |
+| Code | Meaning | Resolution |
 |------|---------|-----|
-| `-216` | Access token không hợp lệ / hết hạn | `zalo-agent oa refresh` hoặc `oa login` lại |
-| `-224` | Gói OA chưa đủ tier cho API này | Nâng cấp tại [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing) |
-| `-14029` | App chưa được duyệt | Xác minh app tại [developers.zalo.me](https://developers.zalo.me) |
+| `-216` | Access token is invalid or expired | Run `zalo-agent oa refresh` or re-run `oa login` |
+| `-224` | OA service package tier is too low for this API | Upgrade at [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing) |
+| `-14029` | App is not approved | Complete app verification at [developers.zalo.me](https://developers.zalo.me) |
 
 ---
 
 ## Webhook Setup
 
-### Yêu cầu từ Zalo
+### Zalo Requirements
 
-1. **Domain verification** — Zalo cần verify domain trước khi dùng webhook
-2. **HTTPS required** — webhook URL phải là HTTPS
-3. **IP Việt Nam** — để nhận đầy đủ thông tin user (tên, avatar, SĐT)
-4. **Trả về 200 OK** — trong vòng 2 giây. Quá hạn thì Zalo gửi lại sau 30 giây, 5, 15, 30 phút và 1 giờ, và nếu vẫn lỗi thì **tắt webhook, huỷ đăng ký app** — khi đó phải đăng ký lại trong phần cài đặt app
+1. **Domain verification** — Zalo requires domain ownership verification before enabling webhooks
+2. **HTTPS required** — the webhook URL must use HTTPS
+3. **Vietnam IP** — required to receive full user profile fields (name, avatar, phone number)
+4. **Return 200 OK within 2 seconds** — otherwise Zalo retries at +30s, +5m, +15m, +30m, and +1h, and if deliveries still fail, **disables the webhook and unsubscribes the app** (requiring manual re-registration in the app settings)
 
-### Checklist tại developers.zalo.me
+### Checklist at `developers.zalo.me`
 
-1. **Official Account → Callback URL**: đặt `http://localhost:3456/callback` (hoặc `<callback-host>/callback` khi login từ VPS)
-2. **Đăng ký sử dụng API → Official Account API**: bật ON
-3. **Official Account → Chọn quyền**: tick đủ quyền cần dùng → Lưu
-4. **Xác thực domain**: serve file verification hoặc meta tag (dùng `oa listen --verify-domain <code>`)
-5. **Webhook**: đặt URL HTTPS và bật các event cần nhận
+1. **Official Account → Callback URL**: set `http://localhost:3456/callback` (or `<callback-host>/callback` when logging in from a VPS)
+2. **API Registration → Official Account API**: toggle ON
+3. **Official Account → Permissions**: select all required permissions → Save
+4. **Domain Verification**: serve the verification file or meta tag (use `oa listen --verify-domain <code>`)
+5. **Webhook**: configure the HTTPS URL and toggle on the desired event subscriptions
 
-### Các cách expose webhook
+### Ways to Expose the Webhook
 
-| Cách | Ưu điểm | Nhược điểm |
+| Method | Pros | Cons |
 |------|----------|------------|
-| **ngrok** | Nhanh nhất, 1 lệnh | IP Singapore, URL thay đổi mỗi lần |
-| **cloudflared** | Free, stable | Cần Cloudflare account |
-| **VPS** | IP VN, ổn định | Cần quản lý server |
-| **n8n** | Visual workflow | Cần deploy n8n |
+| **ngrok** | Fastest, single command | Singapore IP, URL changes on restart |
+| **cloudflared** | Free, stable | Requires a Cloudflare account |
+| **VPS** | Vietnam IP, stable | Requires managing a server |
+| **n8n** | Visual workflow builder | Requires deploying n8n |
 
-### Với ngrok
+### With ngrok
 
 ```bash
 # Terminal 1: listener
@@ -227,19 +229,19 @@ zalo-agent oa listen -p 3000 --no-verify --verify-domain <CODE>
 ngrok http 3000
 ```
 
-### Với VPS (khuyến nghị cho production)
+### With a VPS (recommended for production)
 
 ```bash
-# Install trên VPS (cần Node.js 22+)
+# Install on VPS (requires Node.js 22+)
 npm install -g @ardennguyen/zalo-agent-cli
 
-# Login từ VPS
+# Login from VPS
 zalo-agent oa login --app-id <ID> --secret <KEY> --callback-host https://your-vps.com
 
 # Run listener
 zalo-agent oa listen -p 3000 -s <SECRET>
 
-# Dùng systemd/pm2 để keep alive
+# Keep alive with systemd or pm2
 pm2 start "zalo-agent oa listen -p 3000 -s <SECRET>" --name zalo-oa
 ```
 
@@ -247,10 +249,10 @@ pm2 start "zalo-agent oa listen -p 3000 -s <SECRET>" --name zalo-oa
 
 ## Credentials
 
-Lưu tại `~/.zalo-agent/oa-credentials.json` (quyền 0600, chỉ owner đọc được).
+Saved at `~/.zalo-agent/oa-credentials.json` (mode `0600`, owner-readable only; overridable via `--oa-dir <dir>` or `ZALO_OA_DIR`).
 
 > [!IMPORTANT]
-> Thư mục này là `~/.zalo-agent/` — **không có hậu tố `-cli`**. Tài khoản cá nhân dùng `~/.zalo-agent-cli/`. Hai đường dẫn khác nhau hoàn toàn: xoá cái này không ảnh hưởng cái kia, và `logout --purge` của tài khoản cá nhân không đụng tới credentials OA.
+> The default directory is `~/.zalo-agent/` — **with no `-cli` suffix**. Personal accounts use `~/.zalo-agent-cli/`. These two paths are completely separate: wiping one never affects the other, and `logout --purge` on a personal account never touches OA credentials.
 
 ```json
 {
@@ -265,13 +267,13 @@ Lưu tại `~/.zalo-agent/oa-credentials.json` (quyền 0600, chỉ owner đọc
 }
 ```
 
-`expiresIn` tính bằng giây — `90000` ≈ **25 giờ**. Sau đó mọi lệnh OA sẽ trả về lỗi `-216`. Làm mới bằng `zalo-agent oa refresh` (dùng refresh token đã lưu, không cần mở browser lại). Với listener chạy dài ngày, nên đặt cron làm mới token mỗi ~24 giờ:
+`expiresIn` is in seconds — `90000` ≈ **25 hours**. After expiry, OA commands fail with error `-216`. Renew anytime with `zalo-agent oa refresh` (uses the stored refresh token without opening a browser). For long-running listeners, schedule a cron job to refresh the token every ~12–24 hours:
 
 ```bash
 0 */12 * * * zalo-agent oa refresh --oa-id default >/dev/null 2>&1
 ```
 
-**Multi-OA:** Dùng `--oa-id` để quản lý nhiều OA:
+**Multi-OA:** Use `--oa-id` to manage multiple Official Accounts:
 
 ```bash
 zalo-agent oa login --app-id <ID1> --secret <KEY1> --oa-id shop1
@@ -286,37 +288,38 @@ zalo-agent oa whoami --oa-id shop2
 
 - Credentials file: `chmod 600` (owner-only)
 - MAC verification: HMAC-SHA256 with timing-safe comparison
-- Message type whitelist: `cs`, `transaction`, `promotion` only
-- Webhook body size limit: 1MB max
+- Message type allowlist: `cs`, `transaction`, `promotion` only
+- Webhook body size limit: 1 MB max
 - OAuth callback: binds `127.0.0.1` (local) or `0.0.0.0` (VPS mode)
-- No hardcoded secrets — all from CLI flags or credential file
+- No hardcoded secrets — all secrets come from CLI flags or the credential file
 
 ---
 
-## So sánh
+## Personal vs Official Account Comparison
 
 | | `zalo-agent` (personal) | `zalo-agent oa` (official) |
 |---|---|---|
-| API | Unofficial (zca-js) | Official (Zalo OA API v3.0) |
+| API | Unofficial (`zca-js`) | Official (Zalo OA API v3.0) |
 | Auth | QR code login | OAuth 2.0 |
-| Scope | Tài khoản cá nhân | Official Account |
-| Risk | Có thể bị ban | An toàn, API chính thức |
-| Features | Chat, friend, group, poll... | Messaging, follower, tag, article, store, webhook |
-| Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (không có hậu tố `-cli`) |
-| Disclaimer khi chạy | Có | Không (API chính thức) |
-| Auto-login trước lệnh | Có | Không — `oa` tự quản lý token riêng |
-| Số lệnh | 146 | 32 |
-| Realtime | WebSocket (`listen`) | Webhook HTTP (`oa listen`) |
-| Có MCP tool? | Có — 14 tools (xem [mcp-guide](../skill/references/mcp-guide.md)) | **Chưa** — chỉ dùng được qua CLI |
+| Scope | Personal Zalo account | Official Account |
+| Risk | Account can be banned | Safe — sanctioned official API |
+| Features | Chat, friends, groups, polls, … | Messaging, followers, tags, articles, store, webhook |
+| Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (no `-cli` suffix) |
+| Runtime disclaimer | Shown | Suppressed (official API) |
+| Pre-command auto-login | Yes | No — `oa` manages its own OAuth token |
+| Command count | 158 (of 190 total CLI commands) | 32 |
+| Real-time events | WebSocket (`listen`) | HTTP Webhook (`oa listen`) |
+| Exposed as MCP tools? | Yes — 23 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | **No** — CLI only |
 
 > [!NOTE]
-> Các lệnh `oa` **chưa** được expose thành MCP tool. AI agent muốn dùng OA phải gọi CLI trực tiếp, ví dụ `zalo-agent --json oa msg text <uid> "..."`.
+> `oa` commands are **not** exposed as MCP tools. AI agents that need to act on an Official Account should invoke the CLI directly with `--json`, e.g., `zalo-agent --json oa msg text <uid> "..."`.
 
 ---
 
-## Tài liệu liên quan
+## Related Documentation
 
-- [skill/references/oa-command-reference.md](../skill/references/oa-command-reference.md) — bản tham chiếu OA tiếng Anh cho AI agent
-- [skill/references/command-reference.md](../skill/references/command-reference.md) — tham chiếu đầy đủ mọi lệnh (nguồn chuẩn)
-- [INSTALLATION.md](../INSTALLATION.md) — cài đặt, cấu hình MCP client, thiết lập OA
-- [Wiki: Official Account (VN)](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))
+- [docs/official-account.vi.md](official-account.vi.md) — Vietnamese version of this guide
+- [skill/references/oa-command-reference.md](../skill/references/oa-command-reference.md) — concise OA quick reference for AI agents
+- [skill/references/command-reference.md](../skill/references/command-reference.md) — exhaustive CLI reference (source of truth)
+- [INSTALLATION.md](../INSTALLATION.md) / [INSTALLATION.vi.md](../INSTALLATION.vi.md) — installation, MCP client setup, and OA configuration
+- [Wiki: Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)

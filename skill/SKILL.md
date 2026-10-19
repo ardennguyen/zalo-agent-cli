@@ -231,10 +231,13 @@ zalo-agent mcp start --http <port> -d               # Start HTTP MCP server deta
 zalo-agent mcp start --status                       # Check background daemon status (PID, channel port, log path)
 zalo-agent mcp start --stop                         # Gracefully stop the background daemon
 zalo-agent mcp start --http <port> --auth <token>   # Bearer token auth (HTTP mode)
+zalo-agent mcp start --http <port> --cert <pem> --key <pem>  # Native HTTPS (+ auto-443 listener when port != 443)
+zalo-agent mcp start --http <port> --client-id <id> --client-secret <sec>  # Built-in OAuth 2.0 / 2.1 server
+zalo-agent mcp start -w <url> --webhook-secret <sec>         # Signed outbound webhook on every watched message
 zalo-agent mcp start --http <port> --host 0.0.0.0   # Bind address (default 127.0.0.1)
 zalo-agent mcp start --config <path>                # Custom config (default ~/.zalo-agent-cli/mcp-config.json)
 ```
-The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **23-tool MCP surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
+The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **23-tool MCP surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
 
 To run **multiple Zalo accounts live at once**, launch one MCP server per account with `--account <ID>` (e.g. multiple entries in `.claude/settings.json` `mcpServers` for stdio, or separate `--http <port>` instances on a VPS) and pass `--account <ID>` when shelling out to CLI commands. See `references/mcp-guide.md`.
 
@@ -243,7 +246,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | Tool | Purpose | Key params |
 |------|---------|-----------|
 | `zalo_get_messages` | Buffered live messages, cursor-based incremental reads; each says whether the human already read it on Zalo (`readOnZalo`) | `threadId?`, `since` (default 0), `limit` (default 20, max 100) |
-| `zalo_send_message` | Send text, link preview card (`link`), or contact card (`cardUserId`) to a DM or group; `@[uid]` mentions, quote-replies, Important/Urgent, and `threadId: "me"` for My Documents | `threadId`, `text?`, `link?`, `cardUserId?`, `threadType?` (cached type when omitted), `quoteMsgId?`, `urgency?` (`normal`/`important`/`urgent`) |
+| `zalo_send_message` | Send text, local file/image attachments (`filePath` / `files`), link preview card (`link`), or contact card (`cardUserId`) to a DM or group; `@[uid]` mentions, quote-replies, Important/Urgent, and `threadId: "me"` for My Documents | `threadId`, `text?`, `filePath?`, `files?`, `link?`, `cardUserId?`, `threadType?` (cached type when omitted), `quoteMsgId?`, `urgency?` (`normal`/`important`/`urgent`) |
 | `zalo_list_threads` | Buffered threads with unread counts, names and the account's own read state on Zalo (`readState`) | `type` (`dm`/`group`/`all`) |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit` (default 10, max 50) |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global, not per-thread**; deletes nothing, so bots sharing a server keep their own cursors | `cursor`, `consumer` |
@@ -275,7 +278,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Read live messages | `zalo_get_messages`, `zalo_wait_for_message` | `zalo-agent --json listen` |
 | Read older history | `zalo_get_history` | `zalo-agent --json msg history <id>` |
 | Search cached message text | `zalo_search_messages` | — |
-| Send text, link preview, contact card | `zalo_send_message` | `zalo-agent --json msg send\|send-link\|send-card …` |
+| Send text, file/image attachments, link preview, contact card | `zalo_send_message` | `zalo-agent --json msg send\|send-image\|send-file\|send-link\|send-card …` |
 | Find a thread by name | `zalo_search_threads` | `zalo-agent --json friend search` / `group list -q` |
 | Look up a user (phone, username, userId, self) | `zalo_lookup_user` | `zalo-agent --json friend find\|info …` / `whoami` |
 | List buffered threads (unread counts) | `zalo_list_threads` | — |
@@ -288,7 +291,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Reminders, group notes & pins, group polls, labels | `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_label` | `zalo-agent --json reminder\|poll\|group note-*\|msg pin\|label` |
 | Is the cache complete? (coverage gaps) | `zalo_coverage` | — (`listen`/`mcp start` print each gap as it is filed) |
 | Owner-requested message/reaction sync | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-reactions` |
-| Send image / file / voice / video / sticker | **none** | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|sticker` |
+| Send voice (URL) / video (URL) / sticker | **none** | `zalo-agent --json msg send-voice\|send-video\|sticker` |
 | Bank card / VietQR | **none** | `zalo-agent --json msg send-bank\|send-qr-transfer` |
 | Friend management, group admin, conversation settings, profile | **none** | `zalo-agent --json friend\|group\|conv\|profile …` |
 | Auto-reply, quick-msg, catalog | **none** | `zalo-agent --json auto-reply\|quick-msg\|catalog …` |

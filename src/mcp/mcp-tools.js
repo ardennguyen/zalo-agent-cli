@@ -460,8 +460,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Send Zalo Message",
             description:
-                "Send a text message, link preview card (`link`), or contact card (`cardUserId`) to a Zalo thread " +
-                "(DM or group). threadType: 0=DM(User), 1=Group. " +
+                "Send a text message, file/image attachment (`filePath` or `files`), link preview card (`link`), or " +
+                "contact card (`cardUserId`) to a Zalo thread (DM or group). threadType: 0=DM(User), 1=Group. " +
                 "To @-mention someone in a group, put `@[uid]` in the text where the tag belongs — " +
                 "`@[123456]` becomes `@Their Name` and notifies them, and `@[-1]` is @All. " +
                 "Use the `senderId` from zalo_get_messages or zalo_get_history as the uid; the display name " +
@@ -481,8 +481,22 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .min(1)
                         .optional()
                         .describe(
-                            "Message text to send (required unless `link` or `cardUserId` is set; optional caption when `link` is set). " +
-                                "`@[uid]` tokens expand to @-mentions; `@[-1]` is @All.",
+                            "Message text to send (required unless `filePath`, `files`, `link`, or `cardUserId` is set; " +
+                                "optional caption when `filePath`, `files`, or `link` is set). `@[uid]` tokens expand to @-mentions; `@[-1]` is @All.",
+                        ),
+                    filePath: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Optional local file or image path to send as an attachment (uses `text` as optional caption)",
+                        ),
+                    files: z
+                        .array(z.string().min(1))
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Optional list of local file or image paths to send as attachments in one call (uses `text` as optional caption)",
                         ),
                     link: z
                         .string()
@@ -520,17 +534,27 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         ),
                 })
                 .refine(
-                    (val) => Boolean(val.text || val.link || val.cardUserId),
-                    "Provide at least one of text, link, or cardUserId",
+                    (val) =>
+                        Boolean(
+                            val.text ||
+                            val.link ||
+                            val.cardUserId ||
+                            val.filePath ||
+                            (Array.isArray(val.files) && val.files.length > 0),
+                        ),
+                    "Provide at least one of text, filePath, files, link, or cardUserId",
                 )
-                .refine(
-                    (val) => !(val.link && val.cardUserId),
-                    "Cannot send both link and cardUserId in a single call",
-                ),
+                .refine((val) => {
+                    const hasFile = Boolean(val.filePath || (Array.isArray(val.files) && val.files.length > 0));
+                    const modes = [Boolean(val.link), Boolean(val.cardUserId), hasFile].filter(Boolean).length;
+                    return modes <= 1;
+                }, "Cannot combine link, cardUserId, and file attachments in a single call"),
         },
         async ({
             threadId: threadIdIn,
             text,
+            filePath,
+            files,
             link,
             cardUserId,
             threadType: threadTypeIn,
@@ -577,8 +601,44 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     });
                 }
 
+                const rawFiles = [...(filePath ? [filePath] : []), ...(Array.isArray(files) ? files : [])];
+                if (rawFiles.length > 0) {
+                    const absPaths = rawFiles.map((p) => resolve(String(p).trim()));
+                    const missing = absPaths.filter((p) => !existsSync(p));
+                    if (missing.length > 0) {
+                        return err(`File not found: ${missing.join(", ")}`);
+                    }
+                    const result = await api.sendMessage(
+                        { msg: text || "", attachments: absPaths },
+                        threadId,
+                        Number(threadType),
+                    );
+                    const rawAtt = result?.attachment;
+                    const attRows = rawAtt ? (Array.isArray(rawAtt) ? rawAtt : [rawAtt]) : [];
+                    const sent = attRows
+                        .filter((r) => (r?.msgId ?? null) !== null)
+                        .map((r) => ({
+                            msgId: String(r.msgId),
+                            cliMsgId: (r.cliMsgId ?? null) === null ? null : String(r.cliMsgId),
+                        }));
+                    const messageId =
+                        result?.message?.msgId ?? result?.msgId ?? (sent.length > 0 ? sent[0].msgId : null);
+                    const cliMsgId =
+                        result?.message?.cliMsgId ?? result?.cliMsgId ?? (sent.length > 0 ? sent[0].cliMsgId : null);
+                    return ok({
+                        success: true,
+                        kind: "attachment",
+                        files: absPaths,
+                        sent,
+                        messageId,
+                        ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                        threadType,
+                        ...(thread.notice && { threadId, notice: thread.notice }),
+                    });
+                }
+
                 if (!text) {
-                    return err("Provide text, link, or cardUserId.");
+                    return err("Provide text, filePath, files, link, or cardUserId.");
                 }
 
                 const warnings = [];

@@ -216,7 +216,6 @@ const FLAG_CONTRACT = {
         "--force",
         "--days",
         "--from",
-        "--legacy",
         "--wait",
         "--messages-only",
         "--shard-size",
@@ -455,7 +454,7 @@ describe("flag contract", () => {
     // This used to be `helps[cmd].includes(flag)` — an unanchored substring
     // search over the entire help text, descriptions included. Commander
     // prose mentions other flags constantly: `sync-mobile`'s description
-    // names --transfer and --legacy, `--from`'s description says "Overrides
+    // names --socket, `--from`'s description says "Overrides
     // --days". So deleting the real `-t, --transfer` registration left this
     // contract green, which is the exact regression it exists to catch. A
     // listed `--prune` was also satisfied by `--prune-orphans`.

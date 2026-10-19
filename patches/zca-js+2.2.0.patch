@@ -2,53 +2,21 @@ diff --git a/node_modules/zca-js/dist/apis.js b/node_modules/zca-js/dist/apis.js
 index c8b38fb..ebcf8f9 100644
 --- a/node_modules/zca-js/dist/apis.js
 +++ b/node_modules/zca-js/dist/apis.js
-@@ -154,6 +154,11 @@ import { uploadAttachmentFactory } from "./apis/uploadAttachment.js";
+@@ -154,6 +154,7 @@ import { uploadAttachmentFactory } from "./apis/uploadAttachment.js";
  import { uploadProductPhotoFactory } from "./apis/uploadProductPhoto.js";
  import { votePollFactory } from "./apis/votePoll.js";
  import { customFactory } from "./apis/custom.js";
-+import { requestSyncMessageFactory } from "./apis/requestSyncMessage.js";
-+import { pullMobileMsgFactory } from "./apis/pullMobileMsg.js";
-+import { getCrossDBFactory } from "./apis/getCrossDB.js";
-+import { deleteSnapshotMobileMsgFactory } from "./apis/deleteSnapshotMobileMsg.js";
 +import { logoutV2Factory } from "./apis/logoutV2.js";
  export class API {
      constructor(ctx, zpwServiceMap, wsUrls) {
          this.zpwServiceMap = zpwServiceMap;
-@@ -313,5 +318,10 @@ export class API {
+@@ -313,5 +314,6 @@ export class API {
          this.uploadProductPhoto = uploadProductPhotoFactory(ctx, this);
          this.votePoll = votePollFactory(ctx, this);
          this.custom = customFactory(ctx, this);
-+        this.requestSyncMessage = requestSyncMessageFactory(ctx, this);
-+        this.pullMobileMsg = pullMobileMsgFactory(ctx, this);
-+        this.getCrossDB = getCrossDBFactory(ctx, this);
-+        this.deleteSnapshotMobileMsg = deleteSnapshotMobileMsgFactory(ctx, this);
 +        this.logoutV2 = logoutV2Factory(ctx, this);
      }
  }
-diff --git a/node_modules/zca-js/dist/apis/deleteSnapshotMobileMsg.js b/node_modules/zca-js/dist/apis/deleteSnapshotMobileMsg.js
-new file mode 100644
-index 0000000..ec513e6
---- /dev/null
-+++ b/node_modules/zca-js/dist/apis/deleteSnapshotMobileMsg.js
-@@ -0,0 +1,18 @@
-+import { ZaloApiError } from "../Errors/ZaloApiError.js";
-+import { apiFactory } from "../utils.js";
-+
-+export const deleteSnapshotMobileMsgFactory = apiFactory()((api, ctx, utils) => {
-+    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/delete_snapshot_mobile_msg`);
-+    return async function deleteSnapshotMobileMsg(publicKey) {
-+        const params = {
-+            public_key: publicKey,
-+            imei: ctx.imei
-+        };
-+        const encryptedParams = utils.encodeAES(JSON.stringify(params));
-+        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
-+        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
-+            method: "GET"
-+        });
-+        return utils.resolve(response);
-+    };
-+});
 diff --git a/node_modules/zca-js/dist/apis/forwardMessage.js b/node_modules/zca-js/dist/apis/forwardMessage.js
 index ff4f6c6..499fbcf 100644
 --- a/node_modules/zca-js/dist/apis/forwardMessage.js
@@ -83,30 +51,6 @@ index ff4f6c6..499fbcf 100644
 +        return resolved;
      };
  });
-diff --git a/node_modules/zca-js/dist/apis/getCrossDB.js b/node_modules/zca-js/dist/apis/getCrossDB.js
-new file mode 100644
-index 0000000..3bf97b9
---- /dev/null
-+++ b/node_modules/zca-js/dist/apis/getCrossDB.js
-@@ -0,0 +1,18 @@
-+import { ZaloApiError } from "../Errors/ZaloApiError.js";
-+import { apiFactory } from "../utils.js";
-+
-+export const getCrossDBFactory = apiFactory()((api, _, utils) => {
-+    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/get_crossdb`);
-+    return async function getCrossDB(syncSession) {
-+        const params = {
-+            pc_name: "Web",
-+            sync_session: syncSession
-+        };
-+        const encryptedParams = utils.encodeAES(JSON.stringify(params));
-+        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
-+        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
-+            method: "GET"
-+        });
-+        return utils.resolve(response);
-+    };
-+});
 diff --git a/node_modules/zca-js/dist/apis/loginQR.js b/node_modules/zca-js/dist/apis/loginQR.js
 index 7405811..309c23c 100644
 --- a/node_modules/zca-js/dist/apis/loginQR.js
@@ -493,58 +437,6 @@ index 0000000..e250100
 +        return await utils.resolve(response, undefined, false);
 +    };
 +});
-diff --git a/node_modules/zca-js/dist/apis/pullMobileMsg.js b/node_modules/zca-js/dist/apis/pullMobileMsg.js
-new file mode 100644
-index 0000000..ef850ea
---- /dev/null
-+++ b/node_modules/zca-js/dist/apis/pullMobileMsg.js
-@@ -0,0 +1,22 @@
-+import { ZaloApiError } from "../Errors/ZaloApiError.js";
-+import { apiFactory } from "../utils.js";
-+
-+export const pullMobileMsgFactory = apiFactory()((api, _, utils) => {
-+    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/pull_mobile_msg`);
-+    return async function pullMobileMsg(publicKey, fromSeqId = 0, isRetry = 0, tempKey = "") {
-+        const params = {
-+            pc_name: "Web",
-+            public_key: publicKey,
-+            from_seq_id: fromSeqId,
-+            is_retry: isRetry,
-+            min_seq_id: 0,
-+            temp_key: tempKey
-+        };
-+        const encryptedParams = utils.encodeAES(JSON.stringify(params));
-+        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
-+        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
-+            method: "GET"
-+        });
-+        return utils.resolve(response);
-+    };
-+});
-diff --git a/node_modules/zca-js/dist/apis/requestSyncMessage.js b/node_modules/zca-js/dist/apis/requestSyncMessage.js
-new file mode 100644
-index 0000000..d459340
---- /dev/null
-+++ b/node_modules/zca-js/dist/apis/requestSyncMessage.js
-@@ -0,0 +1,18 @@
-+import { ZaloApiError } from "../Errors/ZaloApiError.js";
-+import { apiFactory } from "../utils.js";
-+
-+export const requestSyncMessageFactory = apiFactory()((api, _, utils) => {
-+    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/transfer-sync-v2/request-sync`);
-+    return async function requestSyncMessage(reqId, data) {
-+        const params = {
-+            reqId: String(reqId),
-+            data: JSON.stringify(data)
-+        };
-+        const encryptedParams = utils.encodeAES(JSON.stringify(params));
-+        if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
-+        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
-+            method: "GET"
-+        });
-+        return utils.resolve(response);
-+    };
-+});
 diff --git a/node_modules/zca-js/dist/apis/sendBankCard.js b/node_modules/zca-js/dist/apis/sendBankCard.js
 index f1fbae0..5841159 100644
 --- a/node_modules/zca-js/dist/apis/sendBankCard.js
@@ -928,58 +820,21 @@ diff --git a/node_modules/zca-js/dist/cjs/apis.cjs b/node_modules/zca-js/dist/cj
 index c151de0..e49f3d6 100644
 --- a/node_modules/zca-js/dist/cjs/apis.cjs
 +++ b/node_modules/zca-js/dist/cjs/apis.cjs
-@@ -156,6 +156,11 @@ var uploadAttachment = require('./apis/uploadAttachment.cjs');
+@@ -156,6 +156,7 @@ var uploadAttachment = require('./apis/uploadAttachment.cjs');
  var uploadProductPhoto = require('./apis/uploadProductPhoto.cjs');
  var votePoll = require('./apis/votePoll.cjs');
  var custom = require('./apis/custom.cjs');
-+var requestSyncMessage = require('./apis/requestSyncMessage.cjs');
-+var pullMobileMsg = require('./apis/pullMobileMsg.cjs');
-+var getCrossDB = require('./apis/getCrossDB.cjs');
-+var deleteSnapshotMobileMsg = require('./apis/deleteSnapshotMobileMsg.cjs');
 +var logoutV2 = require('./apis/logoutV2.cjs');
  
  class API {
      constructor(ctx, zpwServiceMap, wsUrls) {
-@@ -316,6 +321,11 @@ class API {
+@@ -316,6 +317,7 @@ class API {
          this.uploadProductPhoto = uploadProductPhoto.uploadProductPhotoFactory(ctx, this);
          this.votePoll = votePoll.votePollFactory(ctx, this);
          this.custom = custom.customFactory(ctx, this);
-+        this.requestSyncMessage = requestSyncMessage.requestSyncMessageFactory(ctx, this);
-+        this.pullMobileMsg = pullMobileMsg.pullMobileMsgFactory(ctx, this);
-+        this.getCrossDB = getCrossDB.getCrossDBFactory(ctx, this);
-+        this.deleteSnapshotMobileMsg = deleteSnapshotMobileMsg.deleteSnapshotMobileMsgFactory(ctx, this);
 +        this.logoutV2 = logoutV2.logoutV2Factory(ctx, this);
      }
  }
- 
-diff --git a/node_modules/zca-js/dist/cjs/apis/deleteSnapshotMobileMsg.cjs b/node_modules/zca-js/dist/cjs/apis/deleteSnapshotMobileMsg.cjs
-new file mode 100644
-index 0000000..d5b3f5c
---- /dev/null
-+++ b/node_modules/zca-js/dist/cjs/apis/deleteSnapshotMobileMsg.cjs
-@@ -0,0 +1,22 @@
-+'use strict';
-+
-+var ZaloApiError = require('../Errors/ZaloApiError.cjs');
-+var utils = require('../utils.cjs');
-+
-+const deleteSnapshotMobileMsgFactory = utils.apiFactory()((api, ctx, utils) => {
-+    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/delete_snapshot_mobile_msg`);
-+    return async function deleteSnapshotMobileMsg(publicKey) {
-+        const params = {
-+            public_key: publicKey,
-+            imei: ctx.imei
-+        };
-+        const encryptedParams = utils.encodeAES(JSON.stringify(params));
-+        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
-+        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
-+            method: "GET"
-+        });
-+        return utils.resolve(response);
-+    };
-+});
-+
-+exports.deleteSnapshotMobileMsgFactory = deleteSnapshotMobileMsgFactory;
 diff --git a/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs b/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs
 index f9c670b..4dfa11c 100644
 --- a/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs
@@ -1016,34 +871,6 @@ index f9c670b..4dfa11c 100644
      };
  });
  
-diff --git a/node_modules/zca-js/dist/cjs/apis/getCrossDB.cjs b/node_modules/zca-js/dist/cjs/apis/getCrossDB.cjs
-new file mode 100644
-index 0000000..da5f16d
---- /dev/null
-+++ b/node_modules/zca-js/dist/cjs/apis/getCrossDB.cjs
-@@ -0,0 +1,22 @@
-+'use strict';
-+
-+var ZaloApiError = require('../Errors/ZaloApiError.cjs');
-+var utils = require('../utils.cjs');
-+
-+const getCrossDBFactory = utils.apiFactory()((api, _, utils) => {
-+    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/get_crossdb`);
-+    return async function getCrossDB(syncSession) {
-+        const params = {
-+            pc_name: "Web",
-+            sync_session: syncSession
-+        };
-+        const encryptedParams = utils.encodeAES(JSON.stringify(params));
-+        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
-+        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
-+            method: "GET"
-+        });
-+        return utils.resolve(response);
-+    };
-+});
-+
-+exports.getCrossDBFactory = getCrossDBFactory;
 diff --git a/node_modules/zca-js/dist/cjs/apis/loginQR.cjs b/node_modules/zca-js/dist/cjs/apis/loginQR.cjs
 index dbd08ed..8abfdab 100644
 --- a/node_modules/zca-js/dist/cjs/apis/loginQR.cjs
@@ -1246,66 +1073,6 @@ index 0000000..53cedb4
 +});
 +
 +exports.logoutV2Factory = logoutV2Factory;
-diff --git a/node_modules/zca-js/dist/cjs/apis/pullMobileMsg.cjs b/node_modules/zca-js/dist/cjs/apis/pullMobileMsg.cjs
-new file mode 100644
-index 0000000..579bc2e
---- /dev/null
-+++ b/node_modules/zca-js/dist/cjs/apis/pullMobileMsg.cjs
-@@ -0,0 +1,26 @@
-+'use strict';
-+
-+var ZaloApiError = require('../Errors/ZaloApiError.cjs');
-+var utils = require('../utils.cjs');
-+
-+const pullMobileMsgFactory = utils.apiFactory()((api, _, utils) => {
-+    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/message/pull_mobile_msg`);
-+    return async function pullMobileMsg(publicKey, fromSeqId = 0, isRetry = 0, tempKey = "") {
-+        const params = {
-+            pc_name: "Web",
-+            public_key: publicKey,
-+            from_seq_id: fromSeqId,
-+            is_retry: isRetry,
-+            min_seq_id: 0,
-+            temp_key: tempKey
-+        };
-+        const encryptedParams = utils.encodeAES(JSON.stringify(params));
-+        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
-+        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
-+            method: "GET"
-+        });
-+        return utils.resolve(response);
-+    };
-+});
-+
-+exports.pullMobileMsgFactory = pullMobileMsgFactory;
-diff --git a/node_modules/zca-js/dist/cjs/apis/requestSyncMessage.cjs b/node_modules/zca-js/dist/cjs/apis/requestSyncMessage.cjs
-new file mode 100644
-index 0000000..324995e
---- /dev/null
-+++ b/node_modules/zca-js/dist/cjs/apis/requestSyncMessage.cjs
-@@ -0,0 +1,22 @@
-+'use strict';
-+
-+var ZaloApiError = require('../Errors/ZaloApiError.cjs');
-+var utils = require('../utils.cjs');
-+
-+const requestSyncMessageFactory = utils.apiFactory()((api, _, utils) => {
-+    const serviceURL = utils.makeURL(`${api.zpwServiceMap.file[0]}/api/transfer-sync-v2/request-sync`);
-+    return async function requestSyncMessage(reqId, data) {
-+        const params = {
-+            reqId: String(reqId),
-+            data: JSON.stringify(data)
-+        };
-+        const encryptedParams = utils.encodeAES(JSON.stringify(params));
-+        if (!encryptedParams) throw new ZaloApiError.ZaloApiError("Failed to encrypt message");
-+        const response = await utils.request(`${serviceURL}&params=${encodeURIComponent(encryptedParams)}`, {
-+            method: "GET"
-+        });
-+        return utils.resolve(response);
-+    };
-+});
-+
-+exports.requestSyncMessageFactory = requestSyncMessageFactory;
 diff --git a/node_modules/zca-js/dist/cjs/apis/sendBankCard.cjs b/node_modules/zca-js/dist/cjs/apis/sendBankCard.cjs
 index a2ad818..3726a37 100644
 --- a/node_modules/zca-js/dist/cjs/apis/sendBankCard.cjs

@@ -1,11 +1,7 @@
-import fs from "fs";
 import { resolve } from "path";
-import crypto from "crypto";
 import { getAccountDir } from "./credentials.js";
 import {
     initDb,
-    insertMessage,
-    upsertThread,
     getSyncState,
     setSyncState,
     recordSyncGap,
@@ -42,93 +38,12 @@ export const MAX_GAP_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
  */
 export const SYNC_FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
 
-/**
- * Best-effort field aliases for a single synced message, mirroring the shape
- * `src/commands/listen.js` already normalizes live WS messages into before
- * calling insertMessage()/upsertThread(). The exact shape of a `get_crossdb`
- * message record hasn't been confirmed against real data yet (see
- * agent/docs/mobile-sync-live-test-results.md) — this stays defensive and
- * falls back to the raw dump file whenever a record doesn't look recognizable,
- * rather than silently dropping or mis-storing it.
- */
-function normalizeSyncedMessage(raw) {
-    if (!raw || typeof raw !== "object") return null;
-
-    const msgId = raw.msgId ?? raw.msg_id ?? raw.cliMsgId ?? raw.cli_msg_id;
-    const threadId = raw.threadId ?? raw.toId ?? raw.to_uid ?? raw.groupId ?? raw.uidTo;
-    if (!msgId || !threadId) return null;
-
-    const senderId = raw.uidFrom ?? raw.fromUid ?? raw.senderId ?? raw.from_uid ?? "";
-    const senderName = raw.dName ?? raw.displayName ?? raw.senderName ?? "";
-    const rawContent = raw.content ?? raw.text ?? raw.msg ?? null;
-    const isText = typeof rawContent === "string";
-    const msgType = raw.msgType ?? raw.msg_type ?? null;
-    const timestamp = raw.ts ? Number(raw.ts) : raw.timestamp ? Number(raw.timestamp) : Date.now();
-    const isGroup = raw.type === 1 || raw.isGroup === true || !!raw.groupId;
-
-    return {
-        msgId: String(msgId),
-        threadId: String(threadId),
-        senderId: String(senderId),
-        senderName: String(senderName),
-        text: isText ? rawContent : rawContent ? JSON.stringify(rawContent) : "",
-        timestamp,
-        type: isText ? "text" : msgType || "attachment",
-        raw_data: rawContent,
-        threadType: isGroup ? "group" : "dm",
-    };
-}
-
-/** Pull out a plausible array of message-like records from whatever shape
- * getCrossDB's decrypted payload turns out to have (object/array/JSON string). */
-function extractMessageRecords(payload) {
-    let parsed = payload;
-    if (typeof parsed === "string") {
-        try {
-            parsed = JSON.parse(parsed);
-        } catch {
-            return []; // not JSON — nothing we can map into rows
-        }
-    }
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed && typeof parsed === "object") {
-        for (const key of ["msgs", "messages", "data", "list", "items"]) {
-            if (Array.isArray(parsed[key])) return parsed[key];
-        }
-    }
-    return [];
-}
-
 export class SyncManager {
     constructor(api, accountName) {
         this.api = api;
         this.accountName = accountName;
         this.accountDir = resolveAccountDir(accountName);
-        this.syncSessionDir = resolve(this.accountDir, "sync");
-        if (!fs.existsSync(this.syncSessionDir)) {
-            fs.mkdirSync(this.syncSessionDir, { recursive: true });
-        }
-        this.keys = this._loadOrGenerateKeys();
         this.dbInitialized = false;
-    }
-
-    _loadOrGenerateKeys() {
-        const keyFile = resolve(this.syncSessionDir, "rsa_keys.json");
-        if (fs.existsSync(keyFile)) {
-            return JSON.parse(fs.readFileSync(keyFile, "utf8"));
-        }
-        const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
-            modulusLength: 2048,
-            publicKeyEncoding: { type: "spki", format: "pem" },
-            privateKeyEncoding: { type: "pkcs8", format: "pem" },
-        });
-        const pubKeyRaw = publicKey
-            .replace(/-----BEGIN PUBLIC KEY-----/g, "")
-            .replace(/-----END PUBLIC KEY-----/g, "")
-            .replace(/\n/g, "");
-        const keys = { publicKey: pubKeyRaw, privateKey };
-        fs.writeFileSync(keyFile, JSON.stringify(keys), "utf8");
-        return keys;
     }
 
     /** Lazily open the same zalo.db the `listen` daemon uses, so synced
@@ -163,8 +78,8 @@ export class SyncManager {
     }
 
     /** Called whenever we're confidently caught up (e.g. right after the WS
-     * reports "connected", or right after startup with no prior gap) so the
-     * debounce check in pollSync() has an accurate picture. */
+     * reports "connected", or right after startup with no prior gap) so
+     * sync freshness checks have an accurate picture. */
     markConnected() {
         this._ensureDb();
         setSyncState("lastConnectedAt", Date.now());
@@ -197,7 +112,7 @@ export class SyncManager {
      * This single marker is what {@link checkSyncFreshness} reads, so every
      * sync path that reaches the server should call it on success.
      *
-     * @param {string} [kind] - which path completed ("backfill" | "legacy" | "transfer").
+     * @param {string} [kind] - which path completed ("backfill" | "transfer").
      * @param {{coveredFrom?: number}} [opts] - ms epoch this run reached back to,
      *   for the paths that know their window (transfer-sync does; the socket
      *   backfill does not). Recorded so a later, WIDER sync is not suppressed
@@ -213,7 +128,7 @@ export class SyncManager {
 
     /**
      * ms epoch the last successful sync reached back to, or null when that
-     * path never recorded a window (socket backfill, legacy, or a db written
+     * path never recorded a window (socket backfill, or a db written
      * before this marker existed).
      *
      * @returns {number|null}
@@ -277,90 +192,6 @@ export class SyncManager {
             return widening ? out(false, "wider-window") : out(true, "fresh");
         }
         return out(false, "stale");
-    }
-
-    /**
-     * One full sync cycle:
-     *  1. pullMobileMsg() — nudges the phone and gets back a short opaque
-     *     token (confirmed live: 64 raw bytes, NOT message content — see
-     *     agent/docs/mobile-sync-live-test-results.md). Earlier code treated
-     *     this token itself as "the sync data" and stopped here, which meant
-     *     it never actually retrieved anything.
-     *  2. getCrossDB(token) — the actual retrieval call. Only call this once
-     *     we have a token from step 1.
-     *  3. Parse + store whatever comes back into zalo.db via the same
-     *     insertMessage()/upsertThread() helpers the `listen` daemon uses.
-     *  4. deleteSnapshotMobileMsg() to ack completion, regardless of whether
-     *     step 3 found anything, so the pending server-side request is
-     *     cleaned up either way.
-     *
-     * By default this is gap-aware and debounced (task #3): if we have no
-     * recorded pending gap and our last known connection state was healthy,
-     * it returns `{status: "already-synced", cached: true}` immediately
-     * instead of calling the mobile API — mirroring what Zalo Web itself does
-     * (confirmed live: its own IndexedDB `missing_message_range` table is
-     * what gates whether clicking "Sync" re-pings the phone or just reports
-     * success instantly). Pass `{force: true}` to bypass this and always hit
-     * the API, e.g. for the explicit `sync-mobile` CLI command.
-     */
-    async pollSync(fromSeqId = 0, isRetry = 0, opts = {}) {
-        const force = opts === true || opts?.force === true; // tolerate old boolean-ish callers
-        this._ensureDb();
-
-        if (!force) {
-            const pending = getPendingSyncGaps();
-            const connectionOk = getSyncState("lastConnectionOk");
-            if (pending.length === 0 && connectionOk === "true") {
-                console.log(`[Sync] No known coverage gap and connection state is healthy — skipping API call.`);
-                return { status: "already-synced", cached: true };
-            }
-        }
-
-        console.log(`[Sync] Requesting mobile push (pullMobileMsg)...`);
-        const pullRes = await this.api.pullMobileMsg(this.keys.publicKey, fromSeqId, isRetry, "");
-        const token = this._unwrap(pullRes);
-        if (!token) {
-            // MEASURED 2026-09-20 against the live Zalo Web client: this is
-            // not "the phone hasn't answered yet", it is the endpoint being
-            // retired. `/api/message/pull_mobile_msg` and `get_crossdb` still
-            // exist in Zalo Web's bundle but NOTHING calls them — 0 call sites
-            // across all 4,642 loaded modules. Current Zalo syncs over the
-            // WebSocket instead (cmd 590/591, "transfer-sync-v2"). See
-            // agent/work/transfer-sync-v2/NOTES.md § Mobile sync.
-            //
-            // Retrying therefore cannot help, and every retry used to push a
-            // notification to a real person's phone. One attempt, then stop.
-            console.log(`[Sync] pullMobileMsg returned no session token — the legacy mobile-sync endpoint is retired.`);
-            return { status: "legacy-retired", raw: pullRes };
-        }
-
-        console.log(`[Sync] Got sync session token, calling getCrossDB...`);
-        let crossDbRes;
-        try {
-            crossDbRes = await this.api.getCrossDB(token);
-        } catch (e) {
-            console.error(`[Sync] getCrossDB failed:`, e.message);
-            return { status: "crossdb-error", error: e.message, token };
-        }
-
-        const payload = this._unwrap(crossDbRes);
-        const result = await this.processSyncData(payload, token);
-
-        try {
-            await this.api.deleteSnapshotMobileMsg(this.keys.publicKey);
-        } catch (e) {
-            console.error(`[Sync] deleteSnapshotMobileMsg failed (non-fatal):`, e.message);
-        }
-
-        // A completed round-trip (even one that found nothing new) means
-        // we've genuinely asked the server "what did I miss?" and gotten an
-        // answer, so whatever gaps we knew about are covered now.
-        resolveAllPendingSyncGaps();
-        setSyncState("lastFullSyncAt", Date.now());
-        setSyncState("lastConnectionOk", "true");
-        this.markSyncSuccess("legacy");
-
-        return result;
     }
 
     /**
@@ -474,67 +305,5 @@ export class SyncManager {
             console.error(`[Sync] Failed to save backfilled message ${msg.data.msgId}: ${e.message}`);
             return false;
         }
-    }
-
-    /** zca-js's apiFactory convention isn't 100% consistent about whether a
-     * raw method return is the payload itself or `{data: payload, ...}` —
-     * handle both without guessing wrong silently. */
-    _unwrap(res) {
-        if (res && typeof res === "object" && "data" in res && Object.keys(res).length <= 2) {
-            return res.data;
-        }
-        return res;
-    }
-
-    async processSyncData(payload, token) {
-        // Always keep the raw dump — cheap forensic safety net regardless of
-        // whether structured parsing below succeeds.
-        const dumpFile = resolve(this.syncSessionDir, `sync_dump_${Date.now()}.json`);
-        fs.writeFileSync(dumpFile, JSON.stringify({ token, payload }), "utf8");
-
-        const records = extractMessageRecords(payload);
-        if (records.length === 0) {
-            console.log(
-                `[Sync] getCrossDB returned no recognizable message records (dumped raw to ${dumpFile}). ` +
-                    `This is expected if there's no real offline gap right now, or means the payload shape ` +
-                    `needs re-checking against agent/docs/mobile-sync-live-test-results.md.`,
-            );
-            return { status: "empty-or-unrecognized", dumpFile };
-        }
-
-        const threadsTouched = new Map();
-        let saved = 0;
-        for (const raw of records) {
-            const msg = normalizeSyncedMessage(raw);
-            if (!msg) continue;
-            try {
-                insertMessage({
-                    msgId: msg.msgId,
-                    threadId: msg.threadId,
-                    senderId: msg.senderId,
-                    senderName: msg.senderName,
-                    text: msg.text,
-                    timestamp: msg.timestamp,
-                    type: msg.type,
-                    raw_data: msg.raw_data,
-                });
-                if (!threadsTouched.has(msg.threadId) || threadsTouched.get(msg.threadId) < msg.timestamp) {
-                    threadsTouched.set(msg.threadId, msg.timestamp);
-                    upsertThread({
-                        threadId: msg.threadId,
-                        type: msg.threadType,
-                        name: msg.senderName,
-                        lastUpdate: msg.timestamp,
-                        sync_timestamp: Date.now(),
-                    });
-                }
-                saved++;
-            } catch (e) {
-                console.error(`[Sync] Failed to save message ${msg.msgId}:`, e.message);
-            }
-        }
-
-        console.log(`[Sync] Saved ${saved}/${records.length} synced messages to zalo.db (dump: ${dumpFile}).`);
-        return { status: "saved", saved, total: records.length, dumpFile };
     }
 }

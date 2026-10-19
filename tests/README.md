@@ -251,14 +251,6 @@ nothing warned. An inherited value is now discarded and named on stderr.
 
 `run-e2e.js` sets these for you based on its flags; you rarely set them by hand.
 
-`ZALO_TEST_SYNC_MOBILE` is the exception — `run-e2e.js` never sets it. It gates
-`sync-mobile --legacy`, the old phone-transfer path. Set it by hand, once,
-when the phone's owner is expecting it:
-
-```bash
-ZALO_TEST_LIVE=1 ZALO_TEST_SYNC_MOBILE=1 node --test tests/e2e/tier3-mutate-restore.test.js
-```
-
 `sync-mobile --socket` needs no phone at all, and runs in tier 3 under plain
 `ZALO_TEST_LIVE=1`. It must keep the flag: the phone-backed restore is now
 `sync-mobile`'s default, so a bare invocation in that tier would wake the
@@ -281,12 +273,11 @@ The socket backfill logic itself is covered against a fake listener in
 `tests/unit/sync-backfill.test.js`.
 
 > **Known gap.** `tests/cli/validation.test.js` has offline guards for `--force`
-> and `--legacy` (boolean-flag parsing, unknown-flag rejection, the no-account
-> exit) but **none for `--transfer`**. Nothing offline asserts that
-> `sync-mobile --transfer` stops at the account guard before opening a socket,
-> or that `--transfer --force` parses as two flags rather than `--transfer`
-> swallowing the next argument. Those are cheap to add and belong next to the
-> existing `--legacy` cases.
+> (boolean-flag parsing, unknown-flag rejection, the no-account exit) but
+> **none for `--transfer`**. Nothing offline asserts that `sync-mobile --transfer`
+> stops at the account guard before opening a socket, or that `--transfer --force`
+> parses as two flags rather than `--transfer` swallowing the next argument. Those
+> are cheap to add and belong next to the existing flag validation cases.
 
 ### Setup
 
@@ -707,8 +698,6 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 - [ ] `sync-mobile --transfer` — one phone confirm, then restores history into zalo.db with real thread names
 - [ ] `sync-mobile` while `listen` is running — refuses, naming the lock
 - [ ] `sync-mobile` while Zalo Web is open — reports the one-web-session rule
-- [ ] `sync-mobile --legacy` — one attempt, then reports it returned nothing
-- [ ] `sync-mobile --legacy --force` — skips the debounce
 - [ ] Kill `listen`, wait >30s, send a message to a disposable thread, restart — the gap is recorded,
       and the self-heal brings the message back (`[catch-up]`) and resolves it; with `--no-self-heal`
       it stays pending, and the printed `sync --from <date>` is what closes it

@@ -53,9 +53,11 @@ function socketAlive(api) {
  * @param {object} args
  * @param {() => object} args.getApi - resolves the daemon's CURRENT zca-js api
  * @param {string} args.accountName - ownId; picks the account data dir
+ * @param {(res: object) => void|Promise<void>} [args.onMessagesRestored] - optional hook after messages restore
+ * @param {(name: string) => void|Promise<void>} [args.onSelfName] - optional hook when active account's profile name is refreshed
  * @returns {Record<string, (params: object, onEvent: (e: object) => void) => Promise<object>>}
  */
-export function createSyncRunners({ getApi, accountName }) {
+export function createSyncRunners({ getApi, accountName, onMessagesRestored, onSelfName }) {
     /** The live api, or a refusal the CLI can print. */
     const liveApi = (what) => {
         const api = getApi();
@@ -79,7 +81,7 @@ export function createSyncRunners({ getApi, accountName }) {
          */
         async messages(params = {}, onEvent = () => {}) {
             const api = liveApi("restore");
-            return new SyncV2(api, accountName).restore({
+            const res = await new SyncV2(api, accountName).restore({
                 days: params.days ?? null,
                 from: params.from,
                 waitMs: Number(params.waitMs) || undefined,
@@ -101,7 +103,16 @@ export function createSyncRunners({ getApi, accountName }) {
                 // would race it. A socket lost mid-stage therefore ends as a
                 // partial restore and the daemon recovers the session.
                 onStatus: onEvent,
+                onSelfName,
             });
+            if (typeof onMessagesRestored === "function") {
+                try {
+                    await onMessagesRestored(res);
+                } catch {
+                    /* best-effort cache refresh */
+                }
+            }
+            return res;
         },
 
         /**

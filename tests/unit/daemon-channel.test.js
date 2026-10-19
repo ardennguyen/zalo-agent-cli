@@ -26,6 +26,9 @@ import {
     startDaemonChannel,
     sendViaDaemon,
     syncViaDaemon,
+    getDaemonStatus,
+    stopViaDaemon,
+    stopDaemon,
 } from "../../src/core/daemon-channel.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-daemon-chan-"));
@@ -657,5 +660,63 @@ describe("daemon-sync.js option choices", () => {
 
     it("keeps the restore's heartbeat on — a daemon has no socket window of its own", () => {
         assert.match(code, /keepAlive:\s*true/);
+    });
+});
+
+describe("daemon status and graceful stop", () => {
+    it("getDaemonStatus reports running false when no lock or channel exists", () => {
+        const st = getDaemonStatus(dir);
+        assert.equal(st.running, false);
+        assert.equal(st.pid, null);
+        assert.equal(st.channelPort, null);
+        assert.equal(st.logPath, join(dir, "daemon.log"));
+    });
+
+    it("getDaemonStatus reports running true and channelPort when channel is up", async () => {
+        const d = fakeDaemon(dir);
+        const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir });
+        started.push(chan);
+
+        const st = getDaemonStatus(dir);
+        assert.equal(st.running, true);
+        assert.equal(st.pid, process.pid);
+        assert.equal(st.channelPort, chan.port);
+    });
+
+    it("POST /stop invokes onStop and rejects bad tokens", async () => {
+        const d = fakeDaemon(dir);
+        let stoppedCount = 0;
+        const chan = await startDaemonChannel({
+            getApi: d.getApi,
+            accountDir: dir,
+            onStop: () => {
+                stoppedCount++;
+                chan.stop();
+            },
+        });
+        started.push(chan);
+
+        const bad = await fetch(`http://127.0.0.1:${chan.port}/stop`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: "wrong" }),
+        });
+        assert.equal(bad.status, 403);
+        assert.equal(stoppedCount, 0);
+
+        const res = await stopViaDaemon(dir);
+        assert.equal(res.ok, true);
+        assert.equal(res.pid, process.pid);
+        await new Promise((r) => setTimeout(r, 30));
+        assert.equal(stoppedCount, 1);
+    });
+
+    it("stopDaemon cleans up stale files and returns stopped false when no daemon is running", async () => {
+        writeFileSync(join(dir, "daemon.lock"), "2147483646");
+        writeFileSync(join(dir, "daemon-channel.json"), JSON.stringify({ pid: 0x7ffffffe, port: 1, token: "t" }));
+        const res = await stopDaemon(dir);
+        assert.equal(res.stopped, false);
+        assert.equal(existsSync(join(dir, "daemon.lock")), false);
+        assert.equal(existsSync(join(dir, "daemon-channel.json")), false);
     });
 });

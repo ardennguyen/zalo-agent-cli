@@ -30,6 +30,7 @@ import {
     LIVE_GROUP_EVENT_PREFIX,
 } from "./db.js";
 import { classifyLiveMessage } from "./sync-v2/message-types.js";
+import { resolveCurrentUserNames } from "./current-user-names.js";
 
 /** zca-js ThreadType.User */
 const THREAD_USER = 0;
@@ -207,6 +208,54 @@ export function storeLiveMessage(msg, opts = {}) {
     }
     if (typeof opts.onStored === "function") opts.onStored(info, msg);
     return { stored: true, info };
+}
+
+/**
+ * Refresh durable identity labels observed on a live message:
+ *  - When the message is an outgoing echo from our own account (`msg.isSelf`),
+ *    `msg.data.dName` carries our current Zalo profile name, so invoke
+ *    `opts.onSelfName(name)` to update the account registry if it changed.
+ *  - When the message is in a 1-1 DM (`msg.type === THREAD_USER`), resolve the
+ *    peer's current alias / Zalo profile name and update `threads.name` in
+ *    `zalo.db` (and the MCP `nameCache`, when provided).
+ *
+ * Best-effort and non-throwing so it never blocks or drops a live message.
+ *
+ * @param {object} api - authenticated zca-js API instance
+ * @param {object} msg - zca-js message event
+ * @param {{onSelfName?: (name: string) => boolean|void, nameCache?: object, log?: Function}} [opts]
+ * @returns {Promise<{selfUpdated: boolean, dmName: string|null}>}
+ */
+export async function refreshLiveMessageIdentities(api, msg, opts = {}) {
+    let selfUpdated = false;
+    let dmName = null;
+    try {
+        if (
+            msg?.isSelf &&
+            typeof opts.onSelfName === "function" &&
+            typeof msg?.data?.dName === "string" &&
+            msg.data.dName.trim()
+        ) {
+            selfUpdated = Boolean(await opts.onSelfName(msg.data.dName.trim()));
+        }
+    } catch {
+        /* registry update is best-effort */
+    }
+    if (msg?.type === THREAD_USER && msg.threadId !== undefined && msg.threadId !== null) {
+        const peerId = String(msg.threadId);
+        try {
+            const names = await resolveCurrentUserNames(api, [peerId], { log: opts.log });
+            const current = names.get(peerId);
+            if (current && current.source !== "uid" && current.name) {
+                dmName = current.name;
+                upsertThread({ threadId: peerId, type: "dm", name: current.name, lastUpdate: 0 });
+                opts.nameCache?.set?.(peerId, { name: current.name, type: "dm" });
+            }
+        } catch {
+            /* network lookup is best-effort */
+        }
+    }
+    return { selfUpdated, dmName };
 }
 
 /**
@@ -636,7 +685,15 @@ export function storeGroupEventRow(event) {
         // A sync that ran after the event already holds the richer row.
         if (hasSyncedGroupEventNear(String(threadId), ts)) return { stored: false, reason: "already synced" };
         const msgId = `${LIVE_GROUP_EVENT_PREFIX}${threadId}:${ts}:${type}`;
-        upsertThread({ threadId: String(threadId), type: "group", name: "", lastUpdate: ts, nameHint: true });
+        const groupName = typeof d.groupName === "string" ? d.groupName.trim() : "";
+        const isRename = type === "update" && Boolean(groupName);
+        upsertThread({
+            threadId: String(threadId),
+            type: "group",
+            name: groupName,
+            lastUpdate: ts,
+            nameHint: !isRename,
+        });
         insertMessage({
             msgId,
             threadId: String(threadId),

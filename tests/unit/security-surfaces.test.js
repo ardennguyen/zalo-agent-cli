@@ -17,8 +17,10 @@
 import "../helpers/sandbox.js";
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import https from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openFile, SHELL_METACHARACTERS } from "../../src/utils/open-file.js";
@@ -188,5 +190,293 @@ describe("createHTTPServer — bearer auth", () => {
         const base = await start(null);
         const res = await fetch(`${base}/mcp`, { method: "POST", body: "{}" });
         assert.notEqual(res.status, 401, "with authToken=null the transport accepts anything");
+    });
+});
+
+/**
+ * Build a minimal DER TLV node (`tag`, `length`, `value`).
+ * @param {number} tag
+ * @param {Buffer} body
+ * @returns {Buffer}
+ */
+function derNode(tag, body) {
+    const len = body.length;
+    if (len < 128) return Buffer.concat([Buffer.from([tag, len]), body]);
+    const lenBytes = [];
+    let n = len;
+    while (n > 0) {
+        lenBytes.unshift(n & 0xff);
+        n >>= 8;
+    }
+    return Buffer.concat([Buffer.from([tag, 0x80 | lenBytes.length, ...lenBytes]), body]);
+}
+
+/**
+ * Generate an ephemeral self-signed P-256 X.509 certificate and private key in
+ * memory using pure Node `node:crypto` (no external `openssl` binary and no
+ * static base64 fixture strings that could trip `no-real-ids.test.js`).
+ * @returns {{ cert: string, key: string }}
+ */
+function generateSelfSignedTls() {
+    const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const spki = publicKey.export({ type: "spki", format: "der" });
+    // OID 1.2.840.10045.4.3.2 (ecdsa-with-SHA256)
+    const algId = derNode(0x30, Buffer.from([0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]));
+    // Name: RDNSequence -> RelativeDistinguishedName -> AttributeTypeAndValue (CN=localhost)
+    const cnOid = Buffer.from([0x06, 0x03, 0x55, 0x04, 0x03]);
+    const cnVal = derNode(0x0c, Buffer.from("localhost", "utf8"));
+    const name = derNode(0x30, derNode(0x31, derNode(0x30, Buffer.concat([cnOid, cnVal]))));
+    const validity = derNode(
+        0x30,
+        Buffer.concat([
+            derNode(0x17, Buffer.from("250101000000Z", "ascii")),
+            derNode(0x17, Buffer.from("350101000000Z", "ascii")),
+        ]),
+    );
+    const serial = derNode(0x02, Buffer.from([0x01]));
+    const tbs = derNode(0x30, Buffer.concat([serial, algId, name, validity, name, spki]));
+    const sig = sign("sha256", tbs, privateKey);
+    const bitString = derNode(0x03, Buffer.concat([Buffer.from([0x00]), sig]));
+    const certDer = derNode(0x30, Buffer.concat([tbs, algId, bitString]));
+    const b64 = certDer
+        .toString("base64")
+        .replace(/(.{64})/g, "$1\n")
+        .trim();
+    const cert = `-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----\n`;
+    const key = privateKey.export({ type: "pkcs8", format: "pem" });
+    return { cert, key };
+}
+
+/**
+ * Perform an HTTPS request against a self-signed local test server.
+ * @param {number} port
+ * @param {string} path
+ * @param {{ method?: string, headers?: Record<string, string>, body?: string }} [options]
+ * @returns {Promise<{ status: number, body: string }>}
+ */
+function httpsRequest(port, path, options = {}) {
+    return new Promise((resolve, reject) => {
+        const req = https.request(
+            {
+                hostname: "127.0.0.1",
+                port,
+                path,
+                method: options.method || "GET",
+                headers: options.headers || {},
+                rejectUnauthorized: false,
+            },
+            (res) => {
+                const chunks = [];
+                res.on("data", (c) => chunks.push(c));
+                res.on("end", () =>
+                    resolve({
+                        status: res.statusCode,
+                        body: Buffer.concat(chunks).toString("utf8"),
+                    }),
+                );
+            },
+        );
+        req.on("error", reject);
+        if (options.body) req.write(options.body);
+        req.end();
+    });
+}
+
+describe("createHTTPServer — HTTPS with TLS cert & key", () => {
+    const servers = [];
+    after(() => servers.forEach((s) => s.close()));
+
+    it("serves HTTPS over TLS and enforces bearer auth on /mcp while leaving /health open", async () => {
+        const tls = generateSelfSignedTls();
+        const deps = {
+            api: {},
+            buffer: { getStats: () => [] },
+            filter: {},
+            config: {},
+            nameCache: null,
+            accountDir: ".",
+        };
+        const server = createHTTPServer(() => {}, deps, 0, "tls-s3cret", "127.0.0.1", tls);
+        servers.push(server);
+        if (!server.listening) await once(server, "listening");
+        const port = server.address().port;
+
+        const health = await httpsRequest(port, "/health");
+        assert.equal(health.status, 200);
+        assert.equal(JSON.parse(health.body).status, "ok");
+
+        const unauth = await httpsRequest(port, "/mcp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+        });
+        assert.equal(unauth.status, 401);
+
+        const authed = await httpsRequest(port, "/mcp", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: "Bearer tls-s3cret",
+            },
+            body: "{}",
+        });
+        assert.notEqual(authed.status, 401);
+    });
+
+    it("supports full OAuth 2.0 discovery, authorization_code, refresh_token, and Basic client auth for Gemini", async () => {
+        const tls = generateSelfSignedTls();
+        const deps = {
+            api: {},
+            buffer: { getStats: () => [] },
+            filter: {},
+            config: {},
+            nameCache: null,
+            accountDir: ".",
+        };
+        const server = createHTTPServer(() => {}, deps, 0, "static-s3cret", "127.0.0.1", tls, {
+            clientId: "gemini-client",
+            clientSecret: "oauth-s3cret",
+            issuerUrl: null,
+        });
+        servers.push(server);
+        if (!server.listening) await once(server, "listening");
+        const port = server.address().port;
+
+        // 1. Metadata discovery (unauthenticated)
+        const metaRes = await httpsRequest(port, "/.well-known/oauth-authorization-server");
+        assert.equal(metaRes.status, 200);
+        const meta = JSON.parse(metaRes.body);
+        assert.equal(meta.authorization_endpoint, `https://127.0.0.1:${port}/authorize`);
+        assert.equal(meta.token_endpoint, `https://127.0.0.1:${port}/token`);
+
+        const prmRes = await httpsRequest(port, "/.well-known/oauth-protected-resource/mcp");
+        assert.equal(prmRes.status, 200);
+        const prm = JSON.parse(prmRes.body);
+        assert.equal(prm.resource, `https://127.0.0.1:${port}/mcp`);
+
+        // 2. Authorization code flow (GET /authorize -> 302 redirect with ?code=...&state=...)
+        const redirectUri = "https://vertexaisearch.cloud.google.com/oauth-redirect";
+        const authPath =
+            `/authorize?response_type=code&client_id=gemini-client` +
+            `&redirect_uri=${encodeURIComponent(redirectUri)}&state=xyz123`;
+        const authRes = await new Promise((resolve, reject) => {
+            const req = https.request(
+                { hostname: "127.0.0.1", port, path: authPath, method: "GET", rejectUnauthorized: false },
+                (res) => resolve({ status: res.statusCode, location: res.headers.location }),
+            );
+            req.on("error", reject);
+            req.end();
+        });
+        assert.equal(authRes.status, 302);
+        const redirected = new URL(authRes.location);
+        assert.equal(redirected.origin + redirected.pathname, redirectUri);
+        assert.equal(redirected.searchParams.get("state"), "xyz123");
+        const code = redirected.searchParams.get("code");
+        assert.ok(code && code.startsWith("zmcp_code_"));
+
+        // 3. Exchange code at POST /token using client_secret_basic (Authorization: Basic ...)
+        const basicAuth = Buffer.from("gemini-client:oauth-s3cret", "utf8").toString("base64");
+        const tokenBody = new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: redirectUri,
+        }).toString();
+        const tokenRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Authorization: `Basic ${basicAuth}`,
+            },
+            body: tokenBody,
+        });
+        assert.equal(tokenRes.status, 200);
+        const tokens = JSON.parse(tokenRes.body);
+        assert.ok(tokens.access_token.startsWith("zmcp_at_"));
+        assert.ok(tokens.refresh_token.startsWith("zmcp_rt_"));
+        assert.equal(tokens.token_type, "Bearer");
+
+        // 4. Reusing the same authorization code is rejected (single-use)
+        const replayRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Authorization: `Basic ${basicAuth}`,
+            },
+            body: tokenBody,
+        });
+        assert.equal(replayRes.status, 400);
+
+        // 5. Call POST /mcp with the issued OAuth access_token
+        const mcpWithOAuth = await httpsRequest(port, "/mcp", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${tokens.access_token}`,
+            },
+            body: "{}",
+        });
+        assert.notEqual(mcpWithOAuth.status, 401);
+
+        // 6. Refresh token grant
+        const refreshBody = new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: tokens.refresh_token,
+            client_id: "gemini-client",
+            client_secret: "oauth-s3cret",
+        }).toString();
+        const refreshRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: refreshBody,
+        });
+        assert.equal(refreshRes.status, 200);
+        const refreshed = JSON.parse(refreshRes.body);
+        assert.ok(refreshed.access_token.startsWith("zmcp_at_"));
+    });
+
+    it("supports multiple OAuth clients (oauth.clients[]) for concurrent Gemini and CRM integration", async () => {
+        const tls = generateSelfSignedTls();
+        const deps = {
+            api: {},
+            buffer: { getStats: () => [] },
+            filter: {},
+            config: {},
+            nameCache: null,
+            accountDir: ".",
+        };
+        const server = createHTTPServer(() => {}, deps, 0, "master-s3cret", "127.0.0.1", tls, {
+            clientId: "gemini-client",
+            clientSecret: "gemini-s3cret",
+            clients: [{ clientId: "crm-backend", clientSecret: "crm-s3cret" }],
+        });
+        servers.push(server);
+        if (!server.listening) await once(server, "listening");
+        const port = server.address().port;
+
+        // CRM client exchanges client_credentials with its own secret
+        const crmRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "client_credentials",
+                client_id: "crm-backend",
+                client_secret: "crm-s3cret",
+            }).toString(),
+        });
+        assert.equal(crmRes.status, 200);
+        const crmTok = JSON.parse(crmRes.body);
+        assert.ok(crmTok.access_token.startsWith("zmcp_at_"));
+
+        // Wrong secret for crm-backend is rejected
+        const badRes = await httpsRequest(port, "/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "client_credentials",
+                client_id: "crm-backend",
+                client_secret: "wrong-secret",
+            }).toString(),
+        });
+        assert.equal(badRes.status, 401);
     });
 });

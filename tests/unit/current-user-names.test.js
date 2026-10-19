@@ -7,7 +7,16 @@ import { readUserAliases, resolveCurrentUserNames, withCurrentSenderNames } from
 import { SyncV2 } from "../../src/core/sync-v2/index.js";
 import { createSenderResolver } from "../../src/core/sync-v2/senders.js";
 import { ThreadNameCache } from "../../src/mcp/thread-name-cache.js";
-import { initDb, insertMessage, getMessages, upsertThread, getRecentThreads } from "../../src/core/db.js";
+import {
+    initDb,
+    insertMessage,
+    getMessages,
+    upsertThread,
+    getRecentThreads,
+    findMessageByClientId,
+} from "../../src/core/db.js";
+import { refreshLiveMessageIdentities, storeGroupEventRow } from "../../src/core/live-store.js";
+import { addAccount, getAccount, removeAccount, updateAccountName } from "../../src/core/accounts.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 
 const NOISED = "VNOISED0000000000000000000000001";
@@ -303,5 +312,80 @@ describe("current DM names and immutable message snapshots", () => {
         assert.equal(conversations.find((c) => c.threadId === "101").name, "Current Profile");
         assert.equal(conversations.find((c) => c.threadId === "101").lastActivity, 1000);
         assert.equal(getRecentThreads(10, "dm")[0].name, "Old Alias", "a display read never writes the database");
+    });
+
+    it("refreshes DM thread name, nameCache, and self registry name on live messages", async () => {
+        const api = apiNames();
+        addAccount("999", "Old Self Name");
+        try {
+            upsertThread({ threadId: "101", type: "dm", name: "Stale Name", lastUpdate: 1000 });
+            const cache = new ThreadNameCache();
+            cache.set("101", { type: "dm", name: "Stale Name" });
+
+            const res = await refreshLiveMessageIdentities(
+                api,
+                {
+                    type: 0,
+                    threadId: "101",
+                    isSelf: true,
+                    data: { uidFrom: "999", dName: "Renamed Self", msgId: "m1" },
+                },
+                { onSelfName: (name) => updateAccountName("999", name), nameCache: cache },
+            );
+            assert.equal(res.selfUpdated, true);
+            assert.equal(res.dmName, "My Alias");
+            assert.equal(getRecentThreads(10, "dm")[0].name, "My Alias");
+            assert.equal(cache.get("101").name, "My Alias");
+            assert.equal(getAccount("999")?.name, "Renamed Self");
+        } finally {
+            removeAccount("999");
+        }
+    });
+
+    it("updates group thread name on live group_event update (rename) without overwriting on non-rename events", () => {
+        upsertThread({ threadId: "303", type: "group", name: "Original Group", lastUpdate: 1000 });
+        storeGroupEventRow({
+            type: "join",
+            threadId: "303",
+            data: { groupName: "Should Not Overwrite", time: 1500 },
+        });
+        assert.equal(getRecentThreads(10, "group")[0].name, "Original Group");
+
+        storeGroupEventRow({
+            type: "update",
+            threadId: "303",
+            data: { groupName: "Renamed Group", time: 2000 },
+        });
+        assert.equal(getRecentThreads(10, "group")[0].name, "Renamed Group");
+    });
+
+    it("deduplicates phone-synced clientId rows against canonical globalId rows in the same thread", () => {
+        // Case 1: sync stores under clientId first (when globalId is 0), then live/history writes canonical globalId
+        insertMessage({
+            msgId: "cli-100",
+            threadId: "101",
+            senderId: "999",
+            senderName: "Self",
+            text: "I saw it",
+            timestamp: 1000,
+            type: "text",
+            raw_data: { src: "sync-v2", cliMsgId: "cli-100" },
+            msgStatus: 4,
+        });
+        insertMessage({
+            msgId: "global-200",
+            threadId: "101",
+            senderId: "999",
+            senderName: "Self",
+            text: "I saw it",
+            timestamp: 1001,
+            type: "text",
+            raw_data: { src: "listen", cliMsgId: "cli-100" },
+        });
+        const rows = getMessages("101", 10);
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].msgId, "global-200");
+        assert.equal(rows[0].msgStatus, 4);
+        assert.equal(findMessageByClientId("cli-100", "101")?.msgId, "global-200");
     });
 });

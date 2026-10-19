@@ -13,6 +13,7 @@ import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readStateLabel } from "../core/read-state.js";
 import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
 import { markConversationRead, zaloPost } from "../core/receipts.js";
+import { readUserAliases, currentUserName } from "../core/current-user-names.js";
 
 /**
  * Find the newest message in a thread and return the anchor triple
@@ -298,10 +299,16 @@ export function registerConvCommands(program, deps = {}) {
                         .filter((f) => f.lastActionTime > 0)
                         .sort((a, b) => b.lastActionTime - a.lastActionTime)
                         .slice(0, limit);
+                    const aliases = sorted.length > 0 ? await readUserAliases(api) : new Map();
                     for (const f of sorted) {
+                        const resolved = currentUserName(f.userId, f, aliases);
                         conversations.push({
                             threadId: f.userId,
-                            name: f.displayName || f.zaloName || "?",
+                            name:
+                                (resolved.source !== "uid" ? resolved.name : null) ||
+                                f.displayName ||
+                                f.zaloName ||
+                                "?",
                             type: "User",
                             typeFlag: 0,
                             // lastActionTime is epoch MILLISECONDS (13 digits). The old x1000

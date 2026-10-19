@@ -4,10 +4,13 @@ WebSocket-based event listener with auto-reconnect. Production-safe for months.
 
 ## Usage
 ```bash
-zalo-agent listen                                          # Default: messages + friends
+zalo-agent listen                                          # Default: all event types (message,friend,group,reaction,read)
+zalo-agent listen -d                                       # Start detached in background (logs to <accountDir>/daemon.log)
+zalo-agent listen --status                                 # Check background daemon status (PID, channel port, log path)
+zalo-agent listen --stop                                   # Stop background daemon gracefully
 zalo-agent listen --filter user --no-self                  # DM only, no self
 zalo-agent listen --filter group                           # Groups only
-zalo-agent listen --events message,friend,group,reaction,read   # All event types
+zalo-agent listen --events message,friend                  # Narrow output to messages + friends only
 zalo-agent listen --auto-accept                            # Auto-accept friend requests
 ```
 
@@ -15,18 +18,22 @@ zalo-agent listen --auto-accept                            # Auto-accept friend 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--account <id>` | Full registered numeric account ID, pinned across startup/reconnect/retry; does not switch global active | Active at startup, then pinned |
-| `-e, --events <types>` | message,friend,group,reaction,read | message,friend |
+| `-e, --events <types>` | message,friend,group,reaction,read | message,friend,group,reaction,read |
 | `-f, --filter <type>` | user, group, all | all |
 | `-w, --webhook <url>` | POST events as JSON to URL | — |
+| `--webhook-secret <secret>` | Sign webhook POSTs (`Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>`, or `ZALO_WEBHOOK_SECRET[_<ownId>]`) | — |
 | `--no-self` | Hide your own messages from the OUTPUT (they are still cached) | false |
 | `--auto-accept` | Auto-accept friend requests | false |
 | `--save <dir>` | Save as JSONL (1 file/thread) | — |
+| `-d, --daemon` | Run detached in background (`<accountDir>/daemon.log`) | false |
+| `--stop` | Gracefully stop the running background daemon | false |
+| `--status` | Show background daemon status for this account | false |
 
-> The default for `-e/--events` is `message,friend` — **`group`, `reaction` and `read` events are not printed/forwarded unless you ask for them explicitly.**
+> The default for `-e/--events` is `message,friend,group,reaction,read` (all five event types). Pass `-e` with a subset (e.g., `-e message,friend`) to narrow what is printed/forwarded.
 >
 > **Your own messages are captured.** `zca-js` defaults `selfListen` to off, which drops every event your account authored — from your phone, from Zalo Web, from this CLI — before any handler runs. It is on now, so the cache holds both sides of a conversation instead of only what other people said. `--no-self` hides them from stdout/webhook/JSONL; it does not keep them out of `zalo.db`.
 >
-> `--events` controls what you **see** (stdout, JSONL, webhook), not what is **stored**. Reactions, recalls, delivery receipts, board changes, read state reported by your other devices and "you left this group" are written to `zalo.db` on every run, because none of them can be recovered afterwards — the mobile sync payload has no reaction field at all. Earlier builds gated the writes too, so a default `zalo-agent listen` silently discarded every reaction it saw.
+> `--events` controls what you **see** (stdout, JSONL, webhook), not what is **stored**. Reactions, recalls, delivery receipts, board changes, read state reported by your other devices and "you left this group" are written to `zalo.db` on every run, because none of them can be recovered afterwards — the mobile sync payload has no reaction field at all. Earlier builds gated the writes too, so a filtered `zalo-agent listen` silently discarded reactions it saw.
 
 ## Side Effects (always on)
 

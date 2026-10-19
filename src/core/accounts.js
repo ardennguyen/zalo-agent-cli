@@ -171,6 +171,26 @@ export function removeAccount(ownId) {
     return { removed: true, wiped };
 }
 
+/**
+ * Update the cached display name for a registered account in accounts.json
+ * without changing which account is active or touching proxy settings.
+ *
+ * @param {string|null|undefined} ownId
+ * @param {string|null|undefined} name
+ * @returns {boolean} true when an existing account's name was changed
+ */
+export function updateAccountName(ownId, name) {
+    const id = ownId ? String(ownId).trim() : "";
+    const trimmed = typeof name === "string" ? name.trim() : "";
+    if (!id || !trimmed) return false;
+    const accounts = load();
+    const existing = accounts.find((a) => a.ownId === id);
+    if (!existing || existing.name === trimmed) return false;
+    existing.name = trimmed;
+    save(accounts);
+    return true;
+}
+
 /** Get account by ownId. */
 export function getAccount(ownId) {
     return load().find((a) => a.ownId === ownId) || null;

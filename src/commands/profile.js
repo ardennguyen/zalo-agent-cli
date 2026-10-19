@@ -3,7 +3,8 @@
  */
 
 import { resolve } from "path";
-import { getApi } from "../core/zalo-client.js";
+import { getApi, getOwnId } from "../core/zalo-client.js";
+import { updateAccountName } from "../core/accounts.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 
@@ -66,6 +67,7 @@ export function registerProfileCommands(program) {
             try {
                 const result = await getApi().fetchAccountInfo();
                 const p = result?.profile || {};
+                updateAccountName(p.userId || getOwnId(), p.displayName || p.zaloName);
                 output(result, program.opts().json, () => {
                     info(`Name: ${p.displayName || p.zaloName || "?"}`);
                     info(`User ID: ${p.userId || "?"}`);
@@ -144,14 +146,16 @@ export function registerProfileCommands(program) {
                     const parts = p.sdob.split("/");
                     if (parts.length === 3) currentDob = `${parts[2]}-${parts[1]}-${parts[0]}`;
                 }
+                const nextName = opts.name || p.displayName || p.zaloName;
                 const payload = {
                     profile: {
-                        name: opts.name || p.displayName || p.zaloName,
+                        name: nextName,
                         dob: opts.dob || currentDob,
                         gender: opts.gender !== undefined ? Number(opts.gender) : (p.gender ?? 0),
                     },
                 };
                 const result = await getApi().updateProfile(payload);
+                updateAccountName(p.userId || getOwnId(), nextName);
                 output(result, program.opts().json, () => success("Profile updated"));
             } catch (e) {
                 error(`Profile update failed: ${e.message}`);

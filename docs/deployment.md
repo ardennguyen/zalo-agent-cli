@@ -1,15 +1,14 @@
 # Production deployment — `zalo-agent-cli` + `zalo-mcp` as a smart autobot
 
-**Unreleased source addition (2026-10-15):** owner-requested MCP sync now has
-`zalo_sync` and `zalo_sync_status`, sharing the existing socket/stage lock.
-The wrapper pin 2.0.0 does not include them. See [usage, security and rollout](mcp-sync.md)
-/ [Tiếng Việt](mcp-sync.vi.md). This source change does not update a deployment.
+[Tiếng Việt](deployment.vi.md)
 
-**Status:** re-verified 2026-09-30 against the code that became `zalo-agent-cli` `2.0.0`, and updated 2026-10-13 for its publication: `2.0.0` is on npm, and the `zalo-mcp` wrapper's `1.0.16` depends on it. First written 2026-09-29.
+**Status:** re-verified against `zalo-agent-cli` `2.5.1` (23 MCP tools, native HTTPS `--cert`/`--key`, built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and `-d, --daemon` / `--stop` / `--status` background lifecycle) and `zalo-mcp` `2.2.0+`. First written 2026-09-29.
 **Licensing:** from 2.0.1 this software is licensed CC BY-NC-SA 4.0; use in a company's business operations needs a separate commercial license (see [NOTICE](../NOTICE)).
 **Audience:** whoever runs this on a server and gets paged when it stops.
 
-**Unreleased account pinning:** `listen --account <ID>` and `mcp start --account <ID>` select an exact registered numeric ID and keep it through reconnect/retry without changing the shared active account. Omitting the flag also pins the active-at-startup account. See [English](account-pinning.md) / [Tiếng Việt](account-pinning.vi.md) for multiple-process operation and the wrapper forwarding limitation.
+**Related guides:**
+- Owner-requested MCP sync (`zalo_sync` & `zalo_sync_status`): [English](mcp-sync.md) / [Tiếng Việt](mcp-sync.vi.md).
+- Multi-account pinning (`--account <ID>` / `ZALO_ACCOUNT`): [English](account-pinning.md) / [Tiếng Việt](account-pinning.vi.md).
 
 Every architectural claim below is traced to a file in `src/`, or, for the command surface, to [`skill/references/command-reference.md`](../skill/references/command-reference.md), which wins whenever two docs disagree. Line numbers refer to `9e47020` (a few commits before the `2.0.0` tag) and will drift; the function and handler names next to them will not. Numbers come from `package.json`, the lockfile, the code, the npm registry, or one account directory measured once (labeled where it is used). The [Appendix](#appendix--re-measure-everything-yourself) has the commands to measure your own. Where a sentence is an assessment rather than something the code shows (the sizing tables, and all of §6), it says so. On this codebase the general answer about "how messaging bots usually work" is often wrong, so this document avoids it.
 
@@ -56,22 +55,23 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 >
 > | | `listen` | `mcp start` |
 > |---|---|---|
-> | MCP tool surface (the 14 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
-> | HTTP `/health` | no | **yes** (`--http` only) |
-> | `--webhook <url>` outbound fan-out | **yes** | no |
+> | MCP tool surface (the 23 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
+> | HTTP / HTTPS `/health`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
+> | `-w, --webhook <url>` + `--webhook-secret <secret>` outbound fan-out | **yes** | **yes** |
 > | `--save <dir>` JSONL archive | **yes** | no |
 > | Event printing (`--events`, `--filter`, `--no-self`), `--auto-accept` | **yes** | no |
 > | Owner notifications (`notify.*`, see §7.2) | no | yes |
 > | Coverage-gap tracking (`sync_gaps`) | yes, written inline in `listen.js` | yes, `createGapTracker` in `src/core/listener-lifecycle.js` |
 > | Self-heal from Zalo's offline queue on every connect (`--no-self-heal` opts out) | yes | yes |
 > | Delivered receipts (`--no-delivered-receipts` opts out); read state reported by other devices | yes | yes |
-> | Daemon channel (`/send-attachments`, `/sync/messages`, `/sync/reactions`, `/sync/history`) | yes | yes |
+> | Daemon channel (`/send-attachments`, `/sync/messages`, `/sync/reactions`, `/sync/history`, `/stop`) | yes | yes |
+> | Background daemon lifecycle (`-d, --daemon`, `--stop`, `--status`) | yes | yes (`--http` required for `-d`) |
 > | Where its own lines go | notices on stdout, `[listen]` diagnostics on stderr | everything on stderr |
 >
-> `tests/unit/listener-lifecycle-rules.test.js` holds both to the same gap rules (each builds a `SyncManager` and files a startup gap), and `tests/unit/self-heal-wiring.test.js` runs its wiring checks against both files. Loss detection is therefore no longer a reason to pick one over the other: pick `mcp start` for MCP bots, `listen` for a webhook or JSONL consumer.
+> `tests/unit/listener-lifecycle-rules.test.js` holds both to the same gap rules (each builds a `SyncManager` and files a startup gap), and `tests/unit/self-heal-wiring.test.js` runs its wiring checks against both files. Loss detection is therefore no longer a reason to pick one over the other: pick `mcp start` for MCP bots (and webhook push / long-polling), `listen` for a CLI-only webhook or JSONL consumer.
 
 > [!NOTE]
-> **`mcp start`'s tools follow a re-login.** A socket that closes for good (a `closed` event with any code except `3000`; zca-js retries some drops itself) is handled inside the process: `clearSession()`, then `autoLogin()`, which builds a new zca-js API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the twelve tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
+> **`mcp start`'s tools follow a re-login.** A socket that closes for good (a `closed` event with any code except `3000`; zca-js retries some drops itself) is handled inside the process: `clearSession()`, then `autoLogin()`, which builds a new zca-js API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 23 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 What `daemon-channel.js` actually is
 
@@ -79,7 +79,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 
 - `startDaemonChannel({ getApi, accountDir, onLog, runners, lock })` listens with `server.listen(0, "127.0.0.1")`: an ephemeral port, loopback only, never `0.0.0.0`. The comment says why: these endpoints send messages as the logged-in account and restore its history.
 - It writes `daemon-channel.json` (`{ pid, port, token, stages }`) with `{ mode: 0o600 }`. The token is `randomBytes(24).toString("hex")`, travels in the JSON request body, and is compared by `tokenMatches`: a length check, then `timingSafeEqual`.
-- Four routes, all `POST`: `/send-attachments`, `/sync/messages`, `/sync/reactions` and `/sync/history`. Anything else is a 404 before the body is read, and a body over 64 KB is cut off. `/sync/history` is what `msg history` uses when a daemon is up: the daemon fetches and writes, and the CLI only displays (`src/core/history-fetch.js`).
+- Five routes, all `POST`: `/send-attachments`, `/sync/messages`, `/sync/reactions`, `/sync/history`, and `/stop` (for `--stop` graceful daemon shutdown). Anything else is a 404 before the body is read, and a body over 64 KB is cut off. `/sync/history` is what `msg history` uses when a daemon is up: the daemon fetches and writes, and the CLI only displays (`src/core/history-fetch.js`).
 - `getDaemonChannel(accountDir)` is the discovery function. It reads the descriptor and **deletes it on sight if `process.kill(pid, 0)` says the pid is gone**, so a crashed daemon cannot make every later send dial a dead port.
 - `getSyncChannel(accountDir, stage)` adds a capability check against the advertised `stages` array, which lists the runners the daemon wired (`messages`, `history` and `reactions` from `createSyncRunners` in `src/core/daemon-sync.js`). A daemon started before sync routing existed publishes a valid channel with no stages. The descriptor is asked rather than the route probed, because probing would mean sending something.
 - `createStageLock()` allows one stage at a time on the socket. The routes hold it, and so do two jobs the daemon runs itself: the self-heal catch-up (§4.5), which waits its turn, and `zalo_get_history`'s server fallback, which answers "A <stage> stage is running on this socket. Try again when it finishes." rather than waiting behind a restore. A route that finds the lock taken answers `409` with the busy stage and its start time.
@@ -87,7 +87,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 
 Two design rules are load-bearing:
 
-1. **`getApi` is a function, never a captured `api` object.** On a re-login the daemon builds a new api; an upload parked in the old one's `ctx.uploadCallbacks` can never be settled and the send hangs forever. The channel and the stage runners follow this rule; the MCP tools do not (§1.1).
+1. **`getApi` is a function, never a captured `api` object.** On a re-login the daemon builds a new api; an upload parked in the old one's `ctx.uploadCallbacks` can never be settled and the send hangs forever. The channel, the stage runners, and the MCP tools (`liveApi(getApi)`) all follow this rule (§1.1).
 2. **The channel is a transport and imports nothing but node builtins.** `tests/unit/daemon-channel.test.js` enforces it. Stage bodies live in `src/core/daemon-sync.js` and are injected as `runners`, because `msg send` imports the channel for `sendViaDaemon`, and importing SyncV2 there would drag its decrypt stack, its CDN asset fetcher and its database writes into every message send.
 
 The failure semantics differ deliberately between the two client helpers, and you need to know which is which when you read logs:
@@ -103,16 +103,17 @@ The failure semantics differ deliberately between the two client helpers, and yo
 - The channel routes are request/response (`/send-attachments`) or a single streamed job (`/sync/*`). Nothing in `startDaemonChannel` binds a route to one caller. The stage lock serializes sync stages, which is correct: running the reaction drain beside the restore is measured to lose the socket (close 1006 at batch 0 of 5, on both live attempts; the comment in `startDaemonChannel` and the ordering note in `src/commands/sync.js`). A second caller gets a clean `409` naming the busy stage and its start time, not a hang.
 - Discovery is a file with a pid, so any number of readers on the box can find the daemon without coordination.
 
-**For inbound events: polling works for several bots; push does not exist.** Every channel route is caller-initiated, and nothing in `daemon-channel.js` pushes an event to anybody. The NDJSON stream on `/sync/*` carries *that job's* progress to *that job's* caller and ends when the job ends.
+**For inbound events: zero-CPU long-polling, webhook push, and cursor polling all work today.** Every loopback channel route (`daemon-channel.js`) is caller-initiated, while `mcp start` exposes `zalo_wait_for_message`, `GET /events/wait`, `-w, --webhook <url>`, and `zalo_get_messages`.
 
 What exists today for inbound, and what each costs:
 
 | Mechanism | Consumers | Works with `mcp start`? | Honest verdict |
 |---|---|---|---|
-| `zalo_get_messages` polling over `POST /mcp`, one `consumer` name per bot | N | yes | Works: each consumer has its own read cursor (§1.4a). The buffer is memory only and bounded by `limits.bufferMaxSize` and `limits.bufferMaxAge`; a restart empties it |
-| `listen --webhook <url>` | **1** URL | **no** (`mcp start` has no `--webhook`) | Fire-and-forget `fetch`, 5 s `AbortSignal.timeout`, `.catch()` logs and drops. No retry, no queue, no signature, no auth header. Messages the self-heal recovers are posted too, with `catchUp: true` |
+| `zalo_wait_for_message` MCP tool or `GET /events/wait?timeout=300&since=<cursor>` | N | **yes** | Zero-CPU long-poll: returns immediately (`0 ms`) if a buffered message after `since` exists, otherwise blocks until the next watched message arrives |
+| `zalo_get_messages` polling over `POST /mcp`, one `consumer` name per bot | N | **yes** | Works: each consumer has its own read cursor (§1.4a). The buffer is memory only and bounded by `limits.bufferMaxSize` and `limits.bufferMaxAge`; a restart empties it |
+| `listen` or `mcp start` `-w, --webhook <url> [--webhook-secret <secret>]` | **1** URL | **yes** | Fire-and-forget `fetch`, 5 s `AbortSignal.timeout`, optional `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` signing. Messages the self-heal recovers are posted too, with `catchUp: true` |
 | `listen --save <dir>` JSONL | N tailers | **no** | `appendFileSync` per event, one file per `threadId`, recovered messages included. A fine audit trail; a poor bus |
-| Read `zalo.db` directly, read-only | N | yes | SQLite WAL allows many concurrent readers alongside the one writer. Polling, not push, but it also holds everything the buffer has already evicted |
+| Read `zalo.db` directly, read-only | N | **yes** | SQLite WAL allows many concurrent readers alongside the one writer. Polling, not push, but it also holds everything the buffer has already evicted |
 
 After a drop, the self-heal hands what it recovered to the MCP buffer through the same watch and noise filters, flagged `catchUp: true` (`onRecovered` in `mcp.js`), so a polling bot sees missed messages as it would have seen them live, minus the eviction limit in §1.4a.
 

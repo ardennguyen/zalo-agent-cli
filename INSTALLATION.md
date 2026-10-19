@@ -1,5 +1,7 @@
 # Zalo MCP Server & CLI Installation Guide
 
+[Tiếng Việt](INSTALLATION.vi.md)
+
 This document covers deploying the **`zalo-mcp`** wrapper — a self-contained, sandboxed installer that pulls in the `zalo-agent-cli` engine and exposes it as a Model Context Protocol (MCP) server, so AI agents (Claude Code, Cursor, and others) can automate Zalo Personal & Official Accounts without touching your global system.
 
 > If you only want the CLI (no MCP server), skip straight to `npm install -g @ardennguyen/zalo-agent-cli` — see the main [README.md](README.md).

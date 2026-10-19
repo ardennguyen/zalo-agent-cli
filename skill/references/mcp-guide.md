@@ -2,7 +2,7 @@
 
 Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **23 tools**.
 
-Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
+Mọi tính năng khác của CLI — Official Account (`oa …`), gửi voice/video (từ URL)/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
 Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo` ↔ `msg undo`, `zalo_forward_message` ↔ `msg forward`, `zalo_delete_message` ↔ `msg delete`, `zalo_get_group_members` ↔ `group members`, `zalo_list_conversations` ↔ `conv recent`, `zalo_reminder` ↔ `reminder`, `zalo_note` ↔ `group note-*` + `msg pin/unpin`, `zalo_poll` ↔ `poll`, `zalo_label` ↔ `label`) đều gọi đúng đoạn code mà lệnh đó dùng, nên cách tra cứu và các trường hợp từ chối giống hệt nhau.
 
@@ -619,7 +619,7 @@ MCP server expose **23 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Đọc tin nhắn live / chờ tin nhắn đến | `zalo_get_messages`, `zalo_wait_for_message` | `zalo-agent --json listen` |
 | Đọc lịch sử cũ | `zalo_get_history` | `zalo-agent --json msg history <id>` |
 | Tìm kiếm nội dung tin nhắn trong cache | `zalo_search_messages` | — |
-| Gửi text, link preview, danh thiếp (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send\|send-link\|send-card …` |
+| Gửi text, ảnh/file đính kèm, link preview, danh thiếp (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send\|send-image\|send-file\|send-link\|send-card …` |
 | Tìm thread theo tên | `zalo_search_threads` | `zalo-agent --json friend search "…"` · `group list -q "…"` |
 | Tra cứu người dùng (SĐT, username, userId, whoami) | `zalo_lookup_user` | `zalo-agent --json friend find\|info …` · `whoami` |
 | Liệt kê thread đang có trong buffer (kèm số tin chưa đọc) | `zalo_list_threads` | — |
@@ -636,7 +636,7 @@ MCP server expose **23 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Nhãn hội thoại (Label) | `zalo_label` | `zalo-agent --json label …` |
 | Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
 | Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |
-| Gửi ảnh / file / voice / video / sticker | — | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|sticker …` |
+| Gửi voice (URL) / video (URL) / sticker | — | `zalo-agent --json msg send-voice\|send-video\|sticker …` |
 | Thẻ ngân hàng / VietQR | — | `zalo-agent --json msg send-bank\|send-qr-transfer …` |
 | Quản lý bạn bè (kết bạn, chặn, biệt danh) | — | `zalo-agent --json friend …` |
 | Quản trị nhóm nâng cao (tạo nhóm, mời, duyệt, link, giải tán) | — | `zalo-agent --json group …` |

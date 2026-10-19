@@ -2,7 +2,7 @@
 
 [English](mcp-sync.md)
 
-Engine cung cấp 14 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
+Engine cung cấp 23 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
 `@ardennguyen/zalo-agent-cli` v2.1.0+ và `@ardennguyen/zalo-mcp` v2.0.0+).
 `mcp start --account <ID>` (hoặc `ZALO_ACCOUNT=<ID>`) ghim tiến trình vào đúng
 tài khoản đã đăng ký lúc khởi động và qua các lần reconnect; hai tool sync chỉ
@@ -73,7 +73,7 @@ Tool dùng quyền MCP hiện có: cùng bearer token HTTP cho phép sync; stdio
 quyền process cục bộ của client. Không có ranh giới quyền riêng từng bot.
 `zalo_sync_status` chỉ đọc, không liên hệ Zalo. Log vẫn ở stderr; không lưu job
 bền vững hay migration schema. Rollback bằng engine đã phát hành trước đó và
-restart client theo [hướng dẫn deploy](deployment.md).
+restart client theo [hướng dẫn deploy](deployment.vi.md).
 
 Kiểm thử offline gồm kiểm tra tham số qua SDK, khóa chống chạy chồng, retry
 không lặp, giới hạn lưu trữ, lỗi/kết quả dở, cô lập trạng thái tài khoản và chọn

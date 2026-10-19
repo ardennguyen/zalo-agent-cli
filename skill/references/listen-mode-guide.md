@@ -137,11 +137,11 @@ Both open the account's single WebSocket, so they cannot run at the same time fo
 
 | | `listen` | `mcp start` |
 |---|---|---|
-| Consumer | Webhook endpoint, JSONL files, shell pipeline | An MCP client (Claude Code, Cursor, …) |
-| Delivery | Push — one POST/line per event | Pull — agent calls `zalo_get_messages` with a cursor |
+| Consumer | Webhook endpoint, JSONL files, shell pipeline | MCP clients (Claude Code, Gemini, Cursor, …) + webhook endpoint (`-w/--webhook`) |
+| Delivery | Push — one POST/line per event | Push (`-w/--webhook` + `--webhook-secret`) + zero-CPU long-polling (`zalo_wait_for_message` / `GET /events/wait`) + cursor polling (`zalo_get_messages`) |
 | Persistence | Writes every message to `zalo.db` (+ JSONL with `--save`) | **Also writes every message to the same `zalo.db`**, plus an in-memory ring buffer for incremental polling |
 | Filtering | `-f/--filter`, `--no-self` | `watchThreads` globs + noise filter in `mcp-config.json` — these filter the *buffer*, not the cache |
-| Sending | Separate `msg send` command | `zalo_send_message` tool |
+| Sending | Separate `msg send` command | `zalo_send_message` tool (text, local file/image attachments, link previews, contact cards) |
 | Lock | Holds `daemon.lock` | Holds `daemon.lock` too |
 
 Both hold the account's `daemon.lock`, so starting one while the other runs is refused with a clear message instead of letting Zalo silently kill one of the two sockets. Pick one per account: `mcp start` is now a superset for storage — it keeps the same durable cache `listen` does, so an agent gets both durable history (`zalo_get_history`, `msg history`) and live polling from one process.

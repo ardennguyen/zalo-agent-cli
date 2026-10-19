@@ -199,9 +199,9 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 | `skill/references/command-reference.md` | Any command, subcommand, flag or default (**source of truth**) |
 | `skill/SKILL.md` | Any user-visible command surface change |
 | `skill/references/mcp-guide.md` (VN), `login-flow.md`, `listen-mode-guide.md`, `skill/evals/eval-scenarios.md` | The matching MCP / login / listener / skill behavior changes |
-| `skill/references/oa-command-reference.md` (EN), `docs/official-account.md` (VN) | Any `oa …` change |
+| `skill/references/oa-command-reference.md` (EN), `docs/official-account.{md,vi.md}` | Any `oa …` change |
 | `README.md` (VN/EN) | A command group is added/removed, or a headline feature ships |
-| `INSTALLATION.md` | Install/update flow, MCP transport flags, or config keys |
+| `INSTALLATION.{md,vi.md}`, `docs/deployment.{md,vi.md}` | Install/update flow, MCP transport/daemon flags, or config keys |
 | `tests/README.md` | A suite moves, a gate or the test count changes, a manual check is added |
 | `docs/agent-notes.md` | The background behind a rule here changes, or a new incident is worth recording |
 | `agent/work/transfer-sync-v2/{NOTES,HANDOFF,FINDINGS}.md` | New measured behavior or protocol detail (gitignored — does not travel) |

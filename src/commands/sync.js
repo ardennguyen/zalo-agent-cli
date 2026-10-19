@@ -1,6 +1,6 @@
 import { join } from "path";
 import { getApi } from "../core/zalo-client.js";
-import { getActive } from "../core/accounts.js";
+import { getActive, updateAccountName } from "../core/accounts.js";
 import { getAccountDir } from "../core/credentials.js";
 import { acquireLock, releaseLock, checkLock } from "../core/lock.js";
 import { error, info, success, warning, output } from "../utils/output.js";
@@ -1100,6 +1100,7 @@ async function runTransferSync(activeAcc, opts) {
                     // the heartbeat too -- see runUnifiedSync for why.
                     keepAlive: false,
                     reconnect: () => reconnectListener(api),
+                    onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
                     onStatus: ({ phase, detail }) => {
                         if (phase === "confirm") warning(detail);
                         else if (detail) info(`  ${detail}`);
@@ -1690,6 +1691,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                             // The window-level heartbeat above covers this stage.
                             keepAlive: false,
                             reconnect: () => reconnectListener(api),
+                            onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
                             onStatus: ({ phase, detail }) => {
                                 if (phase === "confirm") warning(detail);
                                 else if (detail) info(`  ${detail}`);

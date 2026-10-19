@@ -36,7 +36,10 @@ import { configureStoragePaths } from "./core/credentials.js";
 import { logoutNeedsSession } from "./core/logout.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
 import { applyCachedThreadType } from "./utils/thread-type.js";
+import { attachDaemonLogIfChild } from "./core/daemon-channel.js";
 import { success, error, warning } from "./utils/output.js";
+
+attachDaemonLogIfChild();
 
 const DISCLAIMER =
     "This tool uses unofficial Zalo APIs (zca-js) — your account may be banned. Use at your own risk. | Tool này dùng API Zalo không chính thức (zca-js) — account có thể bị ban. Tự chịu trách nhiệm.";

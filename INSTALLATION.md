@@ -144,31 +144,42 @@ If you installed the CLI globally without the wrapper, point at the CLI directly
 
 **Cursor / other stdio clients:** `zalo-mcp` (or `node /absolute/path/to/zalo-mcp/mcp-server.js`)
 
-### HTTP transport (remote / VPS)
+### HTTP / HTTPS transport (remote / VPS / cloud agents)
 
 ```bash
 zalo-mcp --http 3847                                 # port from arg, or ZALO_MCP_HTTP_PORT
 zalo-mcp --http 3847 --auth <token> --host 0.0.0.0   # remote access with bearer token
+zalo-mcp --http 3847 --auth <token> --host 0.0.0.0 --cert /path/to/fullchain.pem --key /path/to/privkey.pem
 ```
 
-Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [--host <addr>]`. All `mcp start` flags are supported identically via `zalo-mcp` and `zalo-agent mcp start`:
+Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [--host <addr>] [--cert <path> --key <path>]`. All `mcp start` flags are supported identically via `zalo-mcp` and `zalo-agent mcp start`:
 
 | Flag | Default | Description |
 |:---|:---|:---|
 | `--account <id>` | Active at startup, then pinned | Registered numeric account ID to pin across reconnect/retry without changing the shared active account |
-| `--http <port>` | *(stdio)* | Use HTTP transport on this port |
-| `--auth <token>` | *(none)* | Require `Authorization: Bearer <token>` on every endpoint except `/health` |
+| `--http <port>` | *(stdio)* | Use HTTP (or HTTPS when `--cert` and `--key` are given) transport on this port |
+| `--auth <token>` | `ZALO_MCP_AUTH_TOKEN` in `.env` | Require `Authorization: Bearer <token>` on every endpoint except `/health` and OAuth discovery/handshake endpoints |
 | `--host <address>` | `127.0.0.1` | Bind address — set `0.0.0.0` to accept remote connections |
+| `--cert <path>` | `tls.cert` in `mcp-config.json` | TLS certificate file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--key`; automatically attempts secondary bind on port `443` when `port !== 443`) |
+| `--key <path>` | `tls.key` in `mcp-config.json` | TLS private key file path (PEM) to serve HTTPS directly via Node's `https` server (requires `--http` and `--cert`) |
+| `--client-id <id>` | `zalo-mcp` (or `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]`) | OAuth 2.0 Client ID for remote MCP clients like Gemini Connected Apps |
+| `--client-secret <key>` | `--auth` / `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | OAuth 2.0 Client Secret for `/token` exchange |
+| `--issuer-url <url>` | *(inferred from request Host)* | Explicit OAuth 2.0 issuer base URL (e.g. `https://mcp.example.com:3100`) |
+| `-w, --webhook <url>` | `webhook` in `mcp-config.json` | POST each watched incoming message as JSON to this URL (`ZALO_WEBHOOK_URL[_<ownId>]`) |
+| `--webhook-secret <secret>` | `webhookSecret` in `mcp-config.json` | Shared secret to sign webhook POSTs with `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` (`ZALO_WEBHOOK_SECRET[_<ownId>]`) |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | Custom MCP config file |
 | `--no-self-heal` | *(enabled)* | Disable automatic gap self-healing after reconnect |
 | `--no-delivered-receipts` | *(enabled)* | Do not send delivered receipts for incoming messages |
+| `-d, --daemon` | `false` | Run detached in the background (requires `--http <port>`; logs to `accounts/<ownId>/daemon.log`) |
+| `--stop` | `false` | Gracefully stop the running background daemon for this account |
+| `--status` | `false` | Show background daemon status (PID, channel port, log path) |
 
 Client config:
 ```json
 {
   "mcpServers": {
     "zalo": {
-      "url": "http://your-vps:3847/mcp",
+      "url": "https://your-domain:3847/mcp",
       "headers": { "Authorization": "Bearer your-secret" }
     }
   }
@@ -223,7 +234,7 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
 
 ### MCP tools exposed
 
-This engine source registers **21 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+This engine source registers **23 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
 
 | Tool | Purpose |
 |:---|:---|
@@ -248,10 +259,12 @@ This engine source registers **21 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_reminder` | Create, list, inspect, view responses, edit, or remove reminders in a DM or group |
 | `zalo_note` | Create/edit group notes, list group board items, or pin/unpin a cached text message |
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll |
+| `zalo_wait_for_message` | Long-poll the live message buffer for the next incoming watched message without manual polling (mirrors `GET /events/wait` for remote HTTPS/OAuth2 MCP clients) |
+| `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Official Account, catalog, auto-reply, quick-msg, label, profile, friend management, group administration, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
+Official Account, catalog, auto-reply, quick-msg, profile, friend management, group administration, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -380,7 +393,14 @@ See [`.env.example`](.env.example) for a template.
 | `ZALO_AGENT_NO_UPDATE_CHECK` | Set to any value to disable the background update-version check |
 | `ZALO_API_VERSION` | Protocol version announced to Zalo (`zpw_ver` / `client_version`), on the HTTP calls and the WebSocket URL alike. Default `691` (the live Zalo Web value); set `685` to roll back to zca-js's default. Must be a positive whole number — `0685`, `6.91`, `1e3`, `0x2b3`, `-685` and `0` are refused before Zalo is contacted, so a bad value fails every login rather than quietly falling back. Whitespace-only counts as unset. Only logins read it. |
 | `ZALO_JSON_MODE` | Set automatically by the CLI in `--json` and `mcp` modes to suppress `zca-js` stdout logs. Don't set it by hand |
-| `ZALO_MCP_HTTP_PORT` | Read by the `zalo-mcp` wrapper as the fallback `--http` port |
+| `ZALO_MCP_HTTP_PORT` | Read by `mcp start` and the `zalo-mcp` wrapper as the fallback `--http` port (supports `ZALO_MCP_HTTP_PORT_<ownId>`) |
+| `ZALO_MCP_HOST` | Default bind address for `mcp start --http` (supports `ZALO_MCP_HOST_<ownId>`) |
+| `ZALO_MCP_AUTH_TOKEN` | Bearer token for `mcp start --http` and fallback OAuth 2.0 client secret (supports `ZALO_MCP_AUTH_TOKEN_<ownId>`) |
+| `ZALO_MCP_OAUTH_CLIENT_ID` | OAuth 2.0 Client ID for `mcp start --http` (default `zalo-mcp`; supports `ZALO_MCP_OAUTH_CLIENT_ID_<ownId>`) |
+| `ZALO_MCP_OAUTH_CLIENT_SECRET` | OAuth 2.0 Client Secret for `mcp start --http` (supports `ZALO_MCP_OAUTH_CLIENT_SECRET_<ownId>`) |
+| `ZALO_MCP_ISSUER_URL` | Explicit OAuth 2.0 issuer base URL for `mcp start --http` (supports `ZALO_MCP_ISSUER_URL_<ownId>`) |
+| `ZALO_MCP_TLS_CERT` / `ZALO_MCP_TLS_KEY` | PEM certificate and private key paths for native HTTPS on `mcp start --http` (supports `_*_<ownId>`) |
+| `ZALO_WEBHOOK_URL` / `ZALO_WEBHOOK_SECRET` | Default webhook URL and signing secret (`Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>`) for `listen` and `mcp start` (supports `_*_<ownId>`) |
 
 ---
 

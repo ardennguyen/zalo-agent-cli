@@ -125,6 +125,23 @@ describe("postMCPWebhook", () => {
         });
         assert.equal(ok, false);
     });
+
+    it("attaches Authorization Bearer and X-Zalo-Signature HMAC-SHA256 when webhookSecret is provided", async () => {
+        let capturedHeaders = null;
+        const ok = await postMCPWebhook(
+            "http://127.0.0.1:4999/hook",
+            { id: "m1", text: "signed crm event" },
+            { accountId: "101" },
+            async (_url, opts) => {
+                capturedHeaders = opts.headers;
+                return { ok: true };
+            },
+            "crm-webhook-s3cret",
+        );
+        assert.equal(ok, true);
+        assert.equal(capturedHeaders["Authorization"], "Bearer crm-webhook-s3cret");
+        assert.match(capturedHeaders["X-Zalo-Signature"], /^sha256=[0-9a-f]{64}$/);
+    });
 });
 
 describe("MessageBuffer.waitForMessage & GET /events/wait", () => {
@@ -171,9 +188,10 @@ describe("MessageBuffer.waitForMessage & GET /events/wait", () => {
             const pendingFetch = fetch(`http://127.0.0.1:${port}/events/wait?timeout=5`, {
                 headers: { Authorization: "Bearer secret-token" },
             });
-            setTimeout(() => {
-                buf.push("t9", { id: "m9", threadId: "t9", text: "live push", timestamp: Date.now() });
-            }, 30);
+            while (buf._waiters.size === 0) {
+                await new Promise((r) => setTimeout(r, 10));
+            }
+            buf.push("t9", { id: "m9", threadId: "t9", text: "live push", timestamp: Date.now() });
             const res = await pendingFetch;
             assert.equal(res.status, 200);
             const body = await res.json();

@@ -5,23 +5,34 @@
  * IMPORTANT: All diagnostic output uses console.error() — stdout is the MCP transport channel.
  */
 
+import { createHmac } from "crypto";
+import { readFileSync } from "fs";
 import { join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
+import { updateAccountName } from "../core/accounts.js";
 import { getAccountDir, MEDIA_DIR } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
-import { createStageLock, startDaemonChannel } from "../core/daemon-channel.js";
+import {
+    createStageLock,
+    startDaemonChannel,
+    getDaemonStatus,
+    stopDaemon,
+    spawnDaemonProcess,
+} from "../core/daemon-channel.js";
+import { success, error, info, output } from "../utils/output.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createReadStateSync } from "../core/read-state.js";
-import { initDb, getPendingSyncGaps } from "../core/db.js";
+import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
 import {
     storeLiveMessage,
+    refreshLiveMessageIdentities,
     storeLiveReaction,
     storeLiveUndo,
     storeGroupEvent,
@@ -34,7 +45,7 @@ import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
-import { readMCPConfig, parseDuration } from "../mcp/mcp-config.js";
+import { readMCPConfig, resolveAccountMCPConfig, envForAccount, parseDuration } from "../mcp/mcp-config.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
@@ -99,20 +110,28 @@ export function normalizeMessage(msg, info = null) {
  * @param {object} message - Normalized message object
  * @param {object} [extra] - Additional top-level fields (e.g. `{ accountId }`)
  * @param {Function} [fetchFn=fetch] - Injectable fetch for unit testing
+ * @param {string|null} [webhookSecret=null] - Optional shared secret for Bearer auth & X-Zalo-Signature HMAC-SHA256
  * @returns {Promise<boolean>} True when dispatched, false when skipped or failed
  */
-export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = fetch) {
+export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = fetch, webhookSecret = null) {
     if (!webhookUrl) return false;
     const payload = {
         event: "message",
         ...extra,
         ...message,
     };
+    const body = JSON.stringify(payload);
+    const headers = { "Content-Type": "application/json" };
+    if (typeof webhookSecret === "string" && webhookSecret.trim()) {
+        const secret = webhookSecret.trim();
+        headers["Authorization"] = `Bearer ${secret}`;
+        headers["X-Zalo-Signature"] = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    }
     try {
         await fetchFn(webhookUrl, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            headers,
+            body,
             signal: AbortSignal.timeout(5000),
         });
         return true;
@@ -120,6 +139,44 @@ export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = 
         console.error(`[mcp] Webhook failed: ${e.message}`);
         return false;
     }
+}
+
+/**
+ * Validate and load TLS certificate & private key buffers from paths.
+ * @param {string|null|undefined} rawCert
+ * @param {string|null|undefined} rawKey
+ * @param {boolean} hasHttpPort
+ * @param {(msg: string) => never} fail
+ * @returns {{ cert: Buffer, key: Buffer, certPath: string, keyPath: string }|null}
+ */
+function loadTlsOptions(rawCert, rawKey, hasHttpPort, fail) {
+    if ((rawCert === undefined || rawCert === null) && (rawKey === undefined || rawKey === null)) {
+        return null;
+    }
+    const certPath = typeof rawCert === "string" ? rawCert.trim() : "";
+    const keyPath = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!certPath || !keyPath) {
+        fail("Refusing to start: --cert and --key must both be provided to enable HTTPS.");
+    }
+    if (!hasHttpPort) {
+        fail("Refusing to start: --cert and --key require --http <port>.");
+    }
+    let cert;
+    let key;
+    try {
+        cert = readFileSync(certPath);
+    } catch (e) {
+        fail(`Refusing to start: cannot read the TLS certificate file ${certPath} (${e.code || e.message}).`);
+    }
+    try {
+        key = readFileSync(keyPath);
+    } catch (e) {
+        fail(`Refusing to start: cannot read the TLS private key file ${keyPath} (${e.code || e.message}).`);
+    }
+    if (!cert.length || !key.length) {
+        fail("Refusing to start: TLS certificate or private key file is empty.");
+    }
+    return { cert, key, certPath, keyPath };
 }
 
 export function registerMCPCommands(program) {
@@ -131,11 +188,25 @@ export function registerMCPCommands(program) {
             "Pin this server to an exact registered account ID (default: active at startup)",
             parseAccountId,
         )
-        .description("Start MCP server (stdio or HTTP transport)")
+        .description("Start MCP server (stdio, HTTP, or HTTPS transport)")
         .option("--config <path>", "Config file path (default: ~/.zalo-agent-cli/mcp-config.json)")
-        .option("--http <port>", "Use HTTP transport on specified port (default: stdio)")
-        .option("--auth <token>", "Bearer token for HTTP auth (only with --http)")
-        .option("--host <address>", "HTTP bind address (default: 127.0.0.1, only with --http)")
+        .option("--http <port>", "Use HTTP/HTTPS transport on specified port (default: stdio)")
+        .option("--auth <token>", "Bearer token for HTTP/HTTPS auth (or set ZALO_MCP_AUTH_TOKEN in .env)")
+        .option("--host <address>", "HTTP/HTTPS bind address (default: 127.0.0.1, only with --http)")
+        .option("--cert <path>", "TLS certificate file path (PEM) to serve HTTPS (requires --http and --key)")
+        .option("--key <path>", "TLS private key file path (PEM) to serve HTTPS (requires --http and --cert)")
+        .option(
+            "--client-id <id>",
+            "OAuth 2.0 Client ID for remote MCP clients like Gemini (default: zalo-mcp, or ZALO_MCP_OAUTH_CLIENT_ID)",
+        )
+        .option(
+            "--client-secret <key>",
+            "OAuth 2.0 Client Secret (defaults to --auth / ZALO_MCP_AUTH_TOKEN, or ZALO_MCP_OAUTH_CLIENT_SECRET)",
+        )
+        .option(
+            "--issuer-url <url>",
+            "Explicit OAuth 2.0 issuer base URL (e.g. https://mcp.example.com:3100; default: inferred from request Host)",
+        )
         .option(
             "-w, --webhook <url>",
             "POST each watched incoming message as JSON to this URL (or set webhook in mcp-config.json)",
@@ -148,45 +219,164 @@ export function registerMCPCommands(program) {
             "--no-self-heal",
             "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
+        .option("-d, --daemon", "Run in the background (requires --http <port>; logs to <accountDir>/daemon.log)")
+        .option("--stop", "Stop the running background daemon for this account")
+        .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
-            // Safety net: redirect ALL console.log to stderr for the entire MCP process.
-            // Stdout is the MCP JSON-RPC transport — any non-JSON output corrupts the stream.
-            // This catches rogue prints from dependencies (zca-js, chalk, etc.) that we can't control.
-            console.log = (...args) => console.error(...args);
-
-            // An empty --auth is a token that went missing -- an unset variable
-            // in a unit file -- not a request for no auth, and it used to start
-            // the server open, saying nothing. Refused before anything logs in.
-            if (opts.http && opts.auth !== undefined && !String(opts.auth).trim()) {
-                console.error(
-                    "[mcp] --auth was given an empty token. Refusing to start: that would serve this account's " +
-                        "messages with no authentication at all.",
-                );
+            const jsonMode = program.opts().json;
+            const isDaemonCli = Boolean(opts.status || opts.stop || (opts.daemon && !process.env.ZALO_DAEMON_CHILD));
+            const failStart = (msg) => {
+                if (isDaemonCli) error(msg);
+                else console.error(`[mcp] ${msg}`);
                 process.exit(1);
+            };
+
+            let config = null;
+            let tlsOptions = null;
+            if (!opts.status && !opts.stop) {
+                // An empty --auth is a token that went missing -- an unset variable
+                // in a unit file -- not a request for no auth, and it used to start
+                // the server open, saying nothing. Refused before anything logs in.
+                if (opts.http && opts.auth !== undefined && !String(opts.auth).trim()) {
+                    failStart(
+                        "--auth was given an empty token. Refusing to start: that would serve this account's " +
+                            "messages with no authentication at all.",
+                    );
+                }
+
+                // The config, read before anything logs in. A file it cannot use is
+                // refused, not replaced by the defaults: they watch every thread, so
+                // a server meant for one group would buffer every DM for its bots.
+                const { config: loadedConfig, problem: configProblem } = readMCPConfig(opts.config);
+                if (configProblem) {
+                    failStart(`Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`);
+                }
+                config = loadedConfig;
+
+                const rawCert =
+                    opts.cert !== undefined ? opts.cert : (process.env.ZALO_MCP_TLS_CERT ?? config?.tls?.cert);
+                const rawKey = opts.key !== undefined ? opts.key : (process.env.ZALO_MCP_TLS_KEY ?? config?.tls?.key);
+                tlsOptions = loadTlsOptions(rawCert, rawKey, Boolean(opts.http || config?.httpPort), failStart);
             }
 
-            // The config, read before anything logs in. A file it cannot use is
-            // refused, not replaced by the defaults: they watch every thread, so
-            // a server meant for one group would buffer every DM for its bots.
-            const { config, problem: configProblem } = readMCPConfig(opts.config);
-            if (configProblem) {
-                console.error(
-                    `[mcp] Refusing to start: ${configProblem}. Without it the defaults would watch every thread.`,
-                );
-                process.exit(1);
-            }
-
-            // Select once; acquire the selected account's lock before authentication.
+            // Select account first so --status, --stop, and --daemon can use
+            // standard CLI output before redirecting console.log for stdio MCP.
             let activeAcc;
             try {
                 const requestedAccount =
                     opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || undefined);
                 activeAcc = selectDaemonAccount(requestedAccount);
             } catch (e) {
-                console.error("[mcp] Account selection failed:", e.message);
+                if (isDaemonCli) {
+                    error(`Account selection failed: ${e.message}`);
+                } else {
+                    console.error("[mcp] Account selection failed:", e.message);
+                }
                 process.exit(1);
             }
             const accountDir = getAccountDir(activeAcc.ownId);
+
+            if (opts.status) {
+                const status = getDaemonStatus(accountDir);
+                output({ accountId: activeAcc.ownId, ...status }, jsonMode, () => {
+                    if (status.running) {
+                        success(
+                            `Daemon running for account ${activeAcc.ownId} (PID ${status.pid}${status.channelPort ? `, channel 127.0.0.1:${status.channelPort}` : ""})`,
+                        );
+                        info(`Log file: ${status.logPath}`);
+                    } else {
+                        info(`No daemon running for account ${activeAcc.ownId}`);
+                        info(`Log file: ${status.logPath}`);
+                    }
+                });
+                return;
+            }
+
+            if (opts.stop) {
+                const res = await stopDaemon(accountDir);
+                output({ accountId: activeAcc.ownId, ...res }, jsonMode, () => {
+                    if (res.stopped) {
+                        success(
+                            `Stopped daemon for account ${activeAcc.ownId} (PID ${res.pid}${res.graceful ? "" : ", forced"})`,
+                        );
+                    } else {
+                        info(`No daemon running for account ${activeAcc.ownId}`);
+                    }
+                });
+                return;
+            }
+
+            // Merge per-account config (`config.accounts[ownId]` and `<accountDir>/mcp-config.json`)
+            const { config: accountConfig, problem: accountProblem } = resolveAccountMCPConfig(config, {
+                accountId: activeAcc.ownId,
+                accountDir,
+                explicitConfigPath: opts.config,
+            });
+            if (accountProblem) {
+                failStart(`Refusing to start: ${accountProblem}.`);
+            }
+            config = accountConfig;
+
+            const effectiveHttpPort =
+                opts.http ?? envForAccount("ZALO_MCP_HTTP_PORT", activeAcc.ownId) ?? config?.httpPort ?? null;
+
+            if (!tlsOptions) {
+                const acctCert = envForAccount("ZALO_MCP_TLS_CERT", activeAcc.ownId) ?? config?.tls?.cert;
+                const acctKey = envForAccount("ZALO_MCP_TLS_KEY", activeAcc.ownId) ?? config?.tls?.key;
+                tlsOptions = loadTlsOptions(acctCert, acctKey, Boolean(effectiveHttpPort), failStart);
+            }
+
+            if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
+                if (!effectiveHttpPort) {
+                    error(
+                        "`mcp start --daemon` requires `--http <port>` (stdio transport cannot run detached in the background).",
+                    );
+                    process.exit(1);
+                }
+                const port = Number(effectiveHttpPort);
+                if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                    error(`Invalid port: ${effectiveHttpPort}. Must be 1-65535.`);
+                    process.exit(1);
+                }
+                const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
+                if (!spawned.ok) {
+                    if (spawned.alreadyRunning) {
+                        error(
+                            `Another listener (listen daemon or MCP server) is already running for account ${activeAcc.ownId} (PID ${spawned.pid}).`,
+                        );
+                        info("Stop it first with: zalo-agent mcp start --stop");
+                    } else {
+                        error(`Failed to start background MCP server: ${spawned.error}`);
+                        info(`Log file: ${spawned.logPath}`);
+                    }
+                    process.exit(1);
+                }
+                const scheme = tlsOptions ? "HTTPS" : "HTTP";
+                output(
+                    {
+                        accountId: activeAcc.ownId,
+                        pid: spawned.pid,
+                        httpPort: port,
+                        https: Boolean(tlsOptions),
+                        channelPort: spawned.channelPort,
+                        logPath: spawned.logPath,
+                    },
+                    jsonMode,
+                    () => {
+                        success(
+                            `MCP server started in background for account ${activeAcc.ownId} (PID ${spawned.pid}, ${scheme} port ${port})`,
+                        );
+                        info(`Log file: ${spawned.logPath}`);
+                        info("Stop with: zalo-agent mcp start --stop");
+                    },
+                );
+                return;
+            }
+
+            // Safety net: redirect ALL console.log to stderr for the entire MCP process.
+            // Stdout is the MCP JSON-RPC transport — any non-JSON output corrupts the stream.
+            // This catches rogue prints from dependencies (zca-js, chalk, etc.) that we can't control.
+            console.log = (...args) => console.error(...args);
 
             // This server now opens the account's WebSocket *and* writes to
             // zalo.db, which is exactly what the `listen` daemon does. Zalo
@@ -255,9 +445,22 @@ export function registerMCPCommands(program) {
             // One stage at a time on this socket, shared by the sync routes, the
             // self-heal catch-up and the tools' own history fetch. Created before
             // the server so the tools can hold it too.
+            const onSelfName = (name) => updateAccountName(activeAcc.ownId, name);
             const stageLock = createStageLock();
-            const syncRunners = createSyncRunners({ getApi, accountName: activeAcc.ownId });
+            const syncRunners = createSyncRunners({
+                getApi,
+                accountName: activeAcc.ownId,
+                onSelfName,
+                onMessagesRestored: () => {
+                    for (const [tid, info] of getThreadNames()) {
+                        if (info?.name) {
+                            nameCache.set(tid, { name: info.name, type: info.type === "group" ? "group" : "dm" });
+                        }
+                    }
+                },
+            });
             const syncJobs = createSyncJobs({ runners: syncRunners, lock: stageLock });
+            syncJobs.onSelfName = onSelfName;
 
             // What the tools and the notifier call. Not getApi()'s object:
             // a re-login after a dropped connection replaces it, and they
@@ -267,17 +470,18 @@ export function registerMCPCommands(program) {
                     "The Zalo session is logging in again after a dropped connection; try again in a few seconds.",
             });
 
-            // Start MCP server — stdio (default) or HTTP
+            // Start MCP server — stdio (default) or HTTP/HTTPS
             let httpServer = null;
             try {
-                if (opts.http) {
-                    const port = Number(opts.http);
+                if (effectiveHttpPort) {
+                    const port = Number(effectiveHttpPort);
                     if (!Number.isInteger(port) || port < 1 || port > 65535) {
                         dropLock();
-                        console.error(`[mcp] Invalid port: ${opts.http}. Must be 1-65535.`);
+                        console.error(`[mcp] Invalid port: ${effectiveHttpPort}. Must be 1-65535.`);
                         process.exit(1);
                     }
-                    const host = opts.host || "127.0.0.1";
+                    const host =
+                        opts.host || envForAccount("ZALO_MCP_HOST", activeAcc.ownId) || config?.host || "127.0.0.1";
                     const deps = {
                         api: sessionApi,
                         buffer,
@@ -288,10 +492,41 @@ export function registerMCPCommands(program) {
                         stageLock,
                         syncJobs,
                     };
-                    const authToken = opts.auth?.trim() || null;
-                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host);
-                    console.error(`[mcp] HTTP server started on port ${port}`);
-                    if (!authToken) {
+                    const authToken =
+                        opts.auth?.trim() ||
+                        envForAccount("ZALO_MCP_AUTH_TOKEN", activeAcc.ownId) ||
+                        envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
+                        config?.oauth?.clientSecret?.trim() ||
+                        null;
+                    const oauthClientId =
+                        opts.clientId?.trim() ||
+                        envForAccount("ZALO_MCP_OAUTH_CLIENT_ID", activeAcc.ownId) ||
+                        config?.oauth?.clientId?.trim() ||
+                        "zalo-mcp";
+                    const oauthClientSecret =
+                        opts.clientSecret?.trim() ||
+                        envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
+                        config?.oauth?.clientSecret?.trim() ||
+                        authToken;
+                    const oauthIssuerUrl =
+                        opts.issuerUrl?.trim() ||
+                        envForAccount("ZALO_MCP_ISSUER_URL", activeAcc.ownId) ||
+                        config?.oauth?.issuerUrl?.trim() ||
+                        null;
+                    const oauthClients = Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [];
+                    const oauthOptions =
+                        oauthClientSecret || oauthClients.length > 0
+                            ? {
+                                  clientId: oauthClientId,
+                                  clientSecret: oauthClientSecret,
+                                  issuerUrl: oauthIssuerUrl,
+                                  clients: oauthClients,
+                              }
+                            : null;
+                    const scheme = tlsOptions ? "HTTPS" : "HTTP";
+                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions, oauthOptions);
+                    console.error(`[mcp] ${scheme} server started on port ${port}`);
+                    if (!authToken && !oauthClientSecret && oauthClients.length === 0) {
                         console.error(
                             `[mcp] WARNING: no --auth token. Anyone who can reach ${host}:${port} can read this ` +
                                 "account's messages and send as it.",
@@ -317,9 +552,15 @@ export function registerMCPCommands(program) {
 
             // Setup notifier (sends to Zalo group when agent is offline)
             const notifier = new ZaloNotifier(sessionApi, config);
-            const webhookUrl = opts.webhook?.trim() || config.webhook?.trim() || null;
+            const webhookUrl =
+                opts.webhook?.trim() ||
+                envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) ||
+                config.webhook?.trim() ||
+                null;
+            const webhookSecret =
+                envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId) || config?.webhookSecret?.trim() || null;
             if (webhookUrl) {
-                console.error(`[mcp] Webhook enabled: ${webhookUrl}`);
+                console.error(`[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}`);
             }
 
             // Delivered receipts: the same shared implementation `listen` uses
@@ -406,7 +647,7 @@ export function registerMCPCommands(program) {
                         if (!filter.shouldKeep(normalized)) continue;
                         buffer.push(normalized.threadId, normalized);
                         notifier.onMessage(normalized);
-                        postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId });
+                        postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId }, fetch, webhookSecret);
                     }
                 },
             });
@@ -445,7 +686,8 @@ export function registerMCPCommands(program) {
                     // whether a message survives the noise filter. This server
                     // used to hold everything in memory only, so a restart lost
                     // every message it had ever seen.
-                    const threadName = nameCache?.get(String(msg.threadId))?.name || undefined;
+                    const cachedThread = nameCache?.get(String(msg.threadId));
+                    const threadName = cachedThread?.type === "group" ? cachedThread.name || undefined : undefined;
                     const stored = storeLiveMessage(msg, { threadName });
                     // A "delete for me" frame removes a message; it must not be
                     // buffered as one for an agent to read.
@@ -459,6 +701,11 @@ export function registerMCPCommands(program) {
                         console.error(`[mcp] message not stored: ${stored.reason}`);
                         return;
                     }
+                    refreshLiveMessageIdentities(api, msg, {
+                        onSelfName,
+                        nameCache,
+                        log: (line) => console.error(`[mcp] ${line}`),
+                    }).catch((e) => console.error(`[mcp] identity refresh failed: ${e.message}`));
                     if (stored.info.hasAttachment) fetchMedia(String(msg.threadId));
 
                     // Skip self-sent messages for the agent-facing buffer
@@ -474,7 +721,7 @@ export function registerMCPCommands(program) {
 
                     buffer.push(normalized.threadId, normalized);
                     notifier.onMessage(normalized);
-                    postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId });
+                    postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId }, fetch, webhookSecret);
                     console.error(`[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`);
                 });
 
@@ -508,6 +755,13 @@ export function registerMCPCommands(program) {
                 api.listener.on("group_event", (event) => {
                     noteBoardChange(event);
                     storeGroupEventRow(event);
+                    const groupName = typeof event?.data?.groupName === "string" ? event.data.groupName.trim() : "";
+                    if (groupName && event?.threadId !== undefined && event?.threadId !== null) {
+                        const tid = String(event.threadId);
+                        if (String(event?.type || "").toLowerCase() === "update" || !nameCache?.get(tid)?.name) {
+                            nameCache?.set(tid, { name: groupName, type: "group" });
+                        }
+                    }
                     // Same call as `listen`: our uid tells being removed from
                     // removing someone else, and a later event clears the flag.
                     const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
@@ -570,42 +824,7 @@ export function registerMCPCommands(program) {
                 });
             }
 
-            // Wire listener and start
-            try {
-                const api = getApi();
-                attachListenerHandlers(api);
-                api.listener.start({ retryOnClose: true });
-                console.error("[mcp] Zalo listener started. MCP server ready.");
-                // This process holds the account's one permitted socket, so it
-                // performs the work that needs one on behalf of the CLI:
-                // attachment uploads, and the socket stages of `zalo-agent
-                // sync`. Otherwise `msg send-file` opens a second session and
-                // Zalo kills this one, and a sync cannot run at all while this
-                // server is up. Best-effort: a failed channel only costs the
-                // fallback. `getApi` rather than an api, because a
-                // duplicate-session close rebuilds it under us.
-                try {
-                    channel = await startDaemonChannel({
-                        getApi,
-                        accountDir,
-                        onLog: (m) => console.error(`[mcp] ${m}`),
-                        runners: syncRunners,
-                        // The self-heal's lock: a stage and a catch-up never share the socket.
-                        lock: stageLock,
-                    });
-                    console.error(`[mcp] Sync & upload channel ready on 127.0.0.1:${channel.port}`);
-                } catch (e) {
-                    console.error(`[mcp] Daemon channel unavailable: ${e.message}`);
-                    console.error("[mcp] Attachment sends open their own session, and `zalo-agent sync` will refuse.");
-                }
-            } catch (e) {
-                dropLock();
-                console.error("[mcp] Failed to start listener:", e.message);
-                process.exit(1);
-            }
-
-            // Graceful shutdown on SIGINT
-            process.on("SIGINT", () => {
+            const shutdown = () => {
                 // First, before listener.stop() emits closed(1000) -- otherwise
                 // the shutdown is indistinguishable from a drop and files a gap
                 // for a window nothing was missed in.
@@ -630,7 +849,46 @@ export function registerMCPCommands(program) {
                 httpServer?.close();
                 dropLock();
                 process.exit(0);
-            });
+            };
+
+            // Wire listener and start
+            try {
+                const api = getApi();
+                attachListenerHandlers(api);
+                api.listener.start({ retryOnClose: true });
+                console.error("[mcp] Zalo listener started. MCP server ready.");
+                // This process holds the account's one permitted socket, so it
+                // performs the work that needs one on behalf of the CLI:
+                // attachment uploads, and the socket stages of `zalo-agent
+                // sync`. Otherwise `msg send-file` opens a second session and
+                // Zalo kills this one, and a sync cannot run at all while this
+                // server is up. Best-effort: a failed channel only costs the
+                // fallback. `getApi` rather than an api, because a
+                // duplicate-session close rebuilds it under us.
+                try {
+                    channel = await startDaemonChannel({
+                        getApi,
+                        accountDir,
+                        onLog: (m) => console.error(`[mcp] ${m}`),
+                        runners: syncRunners,
+                        // The self-heal's lock: a stage and a catch-up never share the socket.
+                        lock: stageLock,
+                        onStop: shutdown,
+                    });
+                    console.error(`[mcp] Sync & upload channel ready on 127.0.0.1:${channel.port}`);
+                } catch (e) {
+                    console.error(`[mcp] Daemon channel unavailable: ${e.message}`);
+                    console.error("[mcp] Attachment sends open their own session, and `zalo-agent sync` will refuse.");
+                }
+            } catch (e) {
+                dropLock();
+                console.error("[mcp] Failed to start listener:", e.message);
+                process.exit(1);
+            }
+
+            // Graceful shutdown on SIGINT / SIGTERM
+            process.on("SIGINT", shutdown);
+            process.on("SIGTERM", shutdown);
             // A lock outliving its process blocks the next launch until the
             // stale-PID check reclaims it, so release it on any exit path.
             process.on("exit", dropLock);

@@ -451,3 +451,36 @@ describe("mcp start --config", () => {
         assert.doesNotMatch(r.all, /Auto-login failed/, "refused before anything logs in");
     });
 });
+
+describe("mcp start --cert / --key (HTTPS)", () => {
+    it("refuses --cert without --key before logging in", async () => {
+        const r = await runCli(["mcp", "start", "--http", "8765", "--cert", "cert.pem"], opts);
+        assert.equal(r.code, 1);
+        assert.match(r.all, /--cert and --key must both be provided/);
+        assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
+    });
+
+    it("refuses --key without --cert before logging in", async () => {
+        const r = await runCli(["mcp", "start", "--http", "8765", "--key", "key.pem"], opts);
+        assert.equal(r.code, 1);
+        assert.match(r.all, /--cert and --key must both be provided/);
+        assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
+    });
+
+    it("refuses --cert and --key when --http is omitted", async () => {
+        const r = await runCli(["mcp", "start", "--cert", "cert.pem", "--key", "key.pem"], opts);
+        assert.equal(r.code, 1);
+        assert.match(r.all, /--cert and --key require --http <port>/);
+        assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
+    });
+
+    it("refuses an unreadable --cert file before logging in", async () => {
+        const r = await runCli(
+            ["mcp", "start", "--http", "8765", "--cert", "no-such-dir/cert.pem", "--key", "no-such-dir/key.pem"],
+            opts,
+        );
+        assert.equal(r.code, 1);
+        assert.match(r.all, /cannot read the TLS certificate file/);
+        assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
+    });
+});

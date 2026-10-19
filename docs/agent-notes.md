@@ -79,7 +79,7 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **190** invokable leaves (158 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **192** invokable leaves (160 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **21** containers — 14 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **23** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
@@ -111,14 +111,15 @@ which is the convention `command-reference.md` already uses.
 To measure it, parse the import/call pairs out of `src/index.js` rather than
 hardcoding them — three exports do not follow the plural pattern
 (`registerListenCommand`, `registerOACommands`, `registerMCPCommands`), and
-guessing those names silently drops OA's 32 commands and MCP's 1. Load each into
+guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured at `99d5a97` (2026-09-30): **190 leaves, 21 containers, 211 nodes**.
+Measured (2026-10-19): **192 leaves, 21 containers, 213 nodes**.
 By group: group 33, oa 32, friend 22, msg 20, conv 20, top-level 12, profile 11,
-catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, label 2,
-mcp 1. (Was 184 at `a719c99`, before `conv` gained pin/unpin/archive/unarchive
+catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, mcp 3,
+label 2. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
+184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
 trustworthy as the *contract* even though counting its string literals is not

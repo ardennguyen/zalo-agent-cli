@@ -593,6 +593,16 @@ Chờ tin nhắn mới tiếp theo trong buffer theo cơ chế long-poll (0% CPU
 | `since` | number (tuỳ chọn) | Cursor từ lần đọc trước; nếu đã có tin mới hơn `since` thì trả về ngay |
 | `timeoutSec` | number (mặc định 55, tối đa 300) | Thời gian chờ tối đa tính bằng giây trước khi trả về `status: "timeout"` |
 
+**Gọi trực tiếp qua CLI (không cần gọi qua MCP hay HTTP port):**
+Khi `mcp start` đang chạy (dù ở chế độ stdio hay HTTP/HTTPS), bất kỳ script/agent nào trên cùng máy đều có thể gọi trực tiếp qua kênh loopback cục bộ (`daemon-channel.json`):
+```bash
+# Chờ tin nhắn mới (hoặc trả về ngay nếu có tin sau cursor của consumer "my-bot")
+zalo-agent mcp wait -c my-bot --timeout 55 --json
+
+# Đánh dấu đã đọc tới cursor vừa nhận cho consumer "my-bot"
+zalo-agent mcp mark-read <cursor> -c my-bot --json
+```
+
 ---
 
 ### `zalo_label`
@@ -616,7 +626,7 @@ MCP server expose **23 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 
 | Nhóm chức năng | MCP tool | Cách gọi qua CLI |
 |---|---|---|
-| Đọc tin nhắn live / chờ tin nhắn đến | `zalo_get_messages`, `zalo_wait_for_message` | `zalo-agent --json listen` |
+| Đọc tin nhắn live / chờ tin nhắn đến (zero-polling) | `zalo_get_messages`, `zalo_wait_for_message`, `zalo_mark_read` | `zalo-agent --json mcp wait` · `mcp mark-read <cursor>` · `listen` |
 | Đọc lịch sử cũ | `zalo_get_history` | `zalo-agent --json msg history <id>` |
 | Tìm kiếm nội dung tin nhắn trong cache | `zalo_search_messages` | — |
 | Gửi text, ảnh/file đính kèm, link preview, danh thiếp (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send\|send-image\|send-file\|send-link\|send-card …` |

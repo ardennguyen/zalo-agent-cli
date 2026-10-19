@@ -326,7 +326,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 190 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 192 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |
@@ -338,6 +338,8 @@ Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục 
 | `npx zalo-agent sync-mobile [-d <days>]` | **Khôi phục lịch sử tin nhắn từ điện thoại** vào cache cục bộ (xác nhận một lần trên điện thoại). Mặc định lấy toàn bộ lịch sử; `-d/--days <n>` giới hạn trong *n* ngày gần nhất |
 | `npx zalo-agent update` | Tự cập nhật lên phiên bản mới nhất đã phát hành |
 | `npx zalo-agent mcp start [--http <port>] [--auth <token>] [--host <addr>]` | Khởi chạy MCP server |
+| `npx zalo-agent mcp wait [since] [-t <threadId>] [--timeout <s>] [-c <name>]` | Long-poll chờ tin nhắn mới từ buffer của `mcp start` đang chạy (tương đương `zalo_wait_for_message`) |
+| `npx zalo-agent mcp mark-read <cursor> [-c <name>]` | Đánh dấu đã đọc tới `<cursor>` trong buffer của `mcp start` đang chạy (tương đương `zalo_mark_read`) |
 
 ### Tài khoản cá nhân
 | Lệnh | Mô tả |

@@ -552,13 +552,13 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
 └── accounts/<ownId>/
     ├── zalo.db  zalo.db-wal  zalo.db-shm   # back up as one unit
     ├── media/                              # the large part (unless media.downloadDir moves it)
-    ├── sync/                               # regenerable: legacy rsa_keys.json, zproto-cache/
+    ├── sync/                               # regenerable: zproto-cache/
     ├── daemon.lock                         # runtime; exclude
     └── daemon-channel.json                 # runtime, 0600; exclude
 ```
 
 - **`accounts.json` and `credentials/cred_<ownId>.json` are mode `0600`, and that is deliberate** (`src/core/accounts.js`, `src/core/credentials.js`). Your backup must preserve it, and the modes of `zalo.db` and `media/` too (§4.2 `UMask`). Use `tar --preserve-permissions`/`-p`, `rsync -a`, or a filesystem snapshot. A backup that lands the credentials world-readable has leaked a live Zalo login.
-- **`sync/` is regenerable.** `rsa_keys.json` belongs to the legacy `SyncManager` and is used only by `sync-mobile --legacy`, whose `pullMobileMsg` endpoint Zalo Web no longer calls and which answers empty; it is regenerated when missing. `zproto-cache/` holds the assets `transfer-sync-v2` fetched from Zalo's CDN; they are fetched again on the next restore. The phone-backed restore generates its own key pairs per run. Backing `sync/` up is harmless; losing it costs nothing.
+- **`sync/` is regenerable.** `zproto-cache/` holds the assets `transfer-sync-v2` fetched from Zalo's CDN; they are fetched again on the next restore. The phone-backed restore generates its own key pairs per run. Backing `sync/` up is harmless; losing it costs nothing.
 - **Exclude `daemon.lock` and `daemon-channel.json`.** They are pid-stamped runtime state. Restoring them is usually harmless (both are reclaimed by a liveness check) but pointless, and a restored lock on a machine where that pid happens to belong to a live process will block a start.
 - **Quiesce the database, or snapshot it correctly.** Copying `zalo.db` while the daemon writes gives you a torn file. Either stop the unit (the self-heal then pulls the window back, §4.5), or use `sqlite3 zalo.db ".backup /path/out.db"` or the `better-sqlite3` backup API, which are WAL-safe and online.
 - **A restored `zalo.db` brings its bookkeeping with it.** The next start files a startup gap from the snapshot's `lastConnectedAt` (clamped to 14 days), and the self-heal asks the offline queue from the snapshot's cursors; whatever the queue no longer holds stays pending for `sync`.

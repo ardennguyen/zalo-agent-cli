@@ -512,10 +512,10 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 4. **Do not stop the daemon.** A running `listen`/`mcp` publishes a sync channel and the restore runs on its socket, so live capture continues throughout. Stopping it would open a fresh gap — the very thing being repaired. Zalo's one-web-session rule still means a browser Zalo Web session is evicted
 5. Afterwards read the messages with `zalo-agent msg history <threadId>` (served from the cache)
 6. `--wait <seconds>` bounds each phase (default 30s, floored at 180s on the restore path); `--force` skips the one-hour "already synced" debounce
-7. Mention the caveats honestly: the phone-backed restore is the **default**, so `--transfer` is accepted but does nothing; `--socket` opts out to the old server probe that usually returns empty; `--legacy` reaches for `pull_mobile_msg`/`get_crossdb`, still shipped in Zalo Web's bundle but empty when called; conversations with non-friends and OAs may land under an opaque id rather than a real name
+7. Mention the caveats honestly: the phone-backed restore is the **default**, so `--transfer` is accepted but does nothing; `--socket` opts out to the old server probe that usually returns empty; conversations with non-friends and OAs may land under an opaque id rather than a real name
 
 **Must include:** `sync --from <date>` (or `sync-mobile`), the phone confirmation prompt, that **no daemon needs stopping**, `msg history` to read the result
-**Must NOT:** Claim the gap is unrecoverable, tell the user to stop `listen` first, recommend `--socket` or `--legacy` as the fix, present the phone prompt as a bug or something to avoid, or promise the restore works without the owner tapping the phone
+**Must NOT:** Claim the gap is unrecoverable, tell the user to stop `listen` first, recommend `--socket` as the fix, present the phone prompt as a bug or something to avoid, or promise the restore works without the owner tapping the phone
 
 ---
 

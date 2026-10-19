@@ -1,8 +1,7 @@
 /**
  * The published tarball must carry a *patched* zca-js, on every install path.
  *
- * We patch zca-js (patches/zca-js+2.2.0.patch) to add `logoutV2`,
- * `pullMobileMsg`, `getCrossDB` and `deleteSnapshotMobileMsg`, and to modify
+ * We patch zca-js (patches/zca-js+2.2.0.patch) to add `logoutV2`, and to modify
  * `loginQR` and `sendMessage`. Without those, `logout` and `account remove`
  * die on "is not a function" against a real session.
  *
@@ -170,9 +169,9 @@ describe("packaging: the patched zca-js must reach consumers", () => {
         );
     });
 
-    it("adds the four extra methods to both builds", () => {
+    it("adds the extra method to both builds", () => {
         const { created } = patchedPaths();
-        for (const m of ["logoutV2", "pullMobileMsg", "getCrossDB", "deleteSnapshotMobileMsg"]) {
+        for (const m of ["logoutV2"]) {
             assert.ok(created.includes(`dist/apis/${m}.js`), `the patch no longer creates the ESM ${m}`);
             assert.ok(
                 created.includes(`dist/cjs/apis/${m}.cjs`),

@@ -158,13 +158,12 @@ zalo-agent conv unarchive <threadId>         # Move back to Focused
 zalo-agent conv read <threadId>              # Clear unread + send a seen receipt
 zalo-agent conv forget <threadId>            # Remove ALL local data for one conversation
 zalo-agent conv forget --orphans             # ...for every conversation the account no longer has
-zalo-agent sync-mobile --legacy              # Legacy endpoint: one attempt, pings the phone, recovers nothing
 ```
 **`sync-mobile` is the working full-history restore** (transfer-sync-v2, socket cmd 590/591). It sends ONE sync request the owner confirms on their phone, enumerates every conversation, requests message history in shards of ≤30, decrypts with Zalo's `libzproto` WASM (fetched+cached from Zalo's CDN on first run), decodes protobuf, maps each opaque conversation id to the real numeric threadId + name via the friend/group lists, and writes to `zalo.db`. The phone is the data source, so it **must** show a confirmation prompt — tap it. Non-friend/OA conversations may stay keyed by an opaque id. **A running `listen`/`mcp` daemon no longer has to be stopped** — the restore runs on that daemon's socket over its loopback channel, with live capture continuing throughout; with no daemon up it takes `daemon.lock` itself. Zalo's one-web-session rule applies either way, and so does the phone tap.
 
 `--days <n>` narrows the restore to the last *n* days; the default is full history, with no date floor. The window applies to the conversation round as well, so a short window means fewer conversations, fewer shards and a much shorter run. The debounce records how far back the last run reached, so a narrow sync never suppresses a wider one.
 
-`sync-mobile` IS the phone-backed restore now — `--transfer` is still accepted but does nothing, so older commands and docs keep working. `--socket` asks for the best-effort server backfill (cmd 510/511) that usually returns empty. The old phone-to-PC transfer (`pull_mobile_msg`/`get_crossdb`) is still shipped in Zalo Web's own bundle, but it answers empty here — see `--legacy`.
+`sync-mobile` IS the phone-backed restore now — `--transfer` is still accepted but does nothing, so older commands and docs keep working. `--socket` asks for the best-effort server backfill (cmd 510/511) that usually returns empty.
 
 ### Friends
 ```bash

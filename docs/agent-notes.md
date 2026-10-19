@@ -67,7 +67,7 @@ tests/                    # Test suite — see tests/README.md
 ├── accounts/<ownId>/
 │   ├── zalo.db                   # SQLite cache (messages, threads, contacts, sync_state, sync_gaps)
 │   ├── media/                    # Auto-downloaded attachments
-│   ├── sync/                     # RSA sync keys
+│   ├── sync/                     # transfer-sync-v2 assets (zproto-cache/)
 │   ├── daemon.lock               # Held by a running `listen` daemon or `mcp start`
 │   └── daemon-channel.json       # Loopback port + token of that daemon's upload channel (0600)
 └── qr.png
@@ -225,8 +225,7 @@ npmjs.com (repository, workflow filename, environment left empty) before suspect
 
 ## Why the patched zca-js is bundled, not patched on install (§13)
 
-We patch zca-js to add `logoutV2`, `pullMobileMsg`, `getCrossDB` and `deleteSnapshotMobileMsg`, and
-to modify `loginQR` and `sendMessage`. Without them `logout` and `account remove` die on
+We patch zca-js to add `logoutV2`, and to modify `loginQR` and `sendMessage`. Without them `logout` and `account remove` die on
 "is not a function". Getting that patched copy into a consumer's tree took two goes, both found on
 2026-09-29 against npm 11.17.0 / Node 24.19.0.
 
@@ -243,8 +242,8 @@ relative to its own cwd, which is the installed package directory.
   patch-package looks. It printed `zca-js@2.2.0 ✔` and the patch applied.
 - Installed as a *dependency*: npm **hoists** `zca-js` to the consumer's root. patch-package cannot
   see it and fails with `Patch file found for package zca-js which is not present at
-  node_modules/zca-js` — but the install still exits 0, so the patch silently did nothing and the
-  four methods were simply absent at runtime.
+  node_modules/zca-js` — but the install still exits 0, so the patch silently did nothing and
+  `logoutV2` was simply absent at runtime.
 
 That second case is not hypothetical: `zalo-mcp` takes this package as a plain dependency and its
 `zalo-mcp.ps1` / `.sh` update path runs `npm install @ardennguyen/zalo-agent-cli@latest`.
@@ -274,7 +273,7 @@ zca-js ships two trees — ESM at `dist/` and CJS at `dist/cjs/` — and its exp
 reasoning that this package is `"type": "module"` and so can never load the CJS bundle. That
 reasoning was correct and is still asserted, but it was the wrong conclusion: a library that
 ships two entry points should not have one that works and one that silently lacks `logoutV2`,
-`pullMobileMsg`, `getCrossDB`, `deleteSnapshotMobileMsg`, every client-id stamp, and the
+every client-id stamp, and the
 device-fingerprint client hints. "Correct today because nothing takes that path" is not the same
 as correct.
 

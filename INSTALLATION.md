@@ -239,7 +239,7 @@ This engine source registers **23 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | Tool | Purpose |
 |:---|:---|
 | `zalo_get_messages` | Read buffered live messages with a cursor for incremental polling |
-| `zalo_send_message` | Send text, a link preview card (`link`), or a contact card (`cardUserId`) to a DM or group — with @-mentions, a quote-reply, Important/Urgent `urgency`, or `threadId: "me"` for My Documents |
+| `zalo_send_message` | Send text, file/image attachments (`filePath`/`files`), a link preview card (`link`), or a contact card (`cardUserId`) to a DM or group — with @-mentions, a quote-reply, Important/Urgent `urgency`, or `threadId: "me"` for My Documents |
 | `zalo_list_threads` | List buffered threads with unread counts |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread search by name |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer (global, not per-thread; deletes nothing, so several bots can share one server) |

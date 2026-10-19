@@ -14,7 +14,7 @@
 
 import { describe, it, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
@@ -890,6 +890,70 @@ describe("zalo_send_message composes mentions and quotes", () => {
         assert.deepEqual(seen, { opts: { userId: "u99" }, tid: "g1", type: 1 });
         assert.equal(payloadOf(r).kind, "card");
         assert.equal(payloadOf(r).cardUserId, "u99");
+    });
+
+    it("sends file attachments when `filePath` or `files` is provided, and reports attachment msgIds", async () => {
+        const fileA = join(ROOT, "report.html");
+        const fileB = join(ROOT, "diagram.png");
+        writeFileSync(fileA, "<h1>Report</h1>");
+        writeFileSync(fileB, "PNG");
+
+        let seen;
+        const { server } = register({
+            api: {
+                sendMessage: async (content, tid, type) => {
+                    seen = { content, tid, type };
+                    return {
+                        message: null,
+                        attachment: [
+                            { msgId: "att1", cliMsgId: "c_att1" },
+                            { msgId: "att2", cliMsgId: "c_att2" },
+                        ],
+                    };
+                },
+            },
+        });
+        const r = await server.call("zalo_send_message", {
+            threadId: "g1",
+            filePath: fileA,
+            files: [fileB],
+            text: "Báo cáo đính kèm",
+        });
+        assert.equal(r.isError, undefined);
+        assert.deepEqual(seen, {
+            content: { msg: "Báo cáo đính kèm", attachments: [fileA, fileB] },
+            tid: "g1",
+            type: 1,
+        });
+        const out = payloadOf(r);
+        assert.equal(out.kind, "attachment");
+        assert.deepEqual(out.files, [fileA, fileB]);
+        assert.deepEqual(out.sent, [
+            { msgId: "att1", cliMsgId: "c_att1" },
+            { msgId: "att2", cliMsgId: "c_att2" },
+        ]);
+        assert.equal(out.messageId, "att1");
+        assert.equal(out.cliMsgId, "c_att1");
+    });
+
+    it("refuses a missing attachment file before calling the API", async () => {
+        let called = false;
+        const { server } = register({
+            api: {
+                sendMessage: async () => {
+                    called = true;
+                    return { msgId: "x" };
+                },
+            },
+        });
+        const missingPath = join(ROOT, "does-not-exist.pdf");
+        const r = await server.call("zalo_send_message", {
+            threadId: "g1",
+            filePath: missingPath,
+        });
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /File not found/);
+        assert.equal(called, false);
     });
 });
 

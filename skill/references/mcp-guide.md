@@ -208,13 +208,15 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 ---
 
 ### `zalo_send_message`
-Gửi tin nhắn văn bản, thẻ link preview (`link`), hoặc danh thiếp liên hệ (`cardUserId`) đến một thread. Viết `@[uid]` trong nội dung để tag người đó trong nhóm (`@[-1]` là @All): tên hiển thị lấy từ cache cục bộ, uid nào cache chưa biết tên thì hiện nguyên uid và được liệt kê trong `unresolvedMentions`. Truyền `quoteMsgId` để trả lời trích dẫn một tin văn bản đã có trong cache.
+Gửi tin nhắn văn bản, tệp/ảnh đính kèm (`filePath` hoặc `files`), thẻ link preview (`link`), hoặc danh thiếp liên hệ (`cardUserId`) đến một thread. Viết `@[uid]` trong nội dung để tag người đó trong nhóm (`@[-1]` là @All): tên hiển thị lấy từ cache cục bộ, uid nào cache chưa biết tên thì hiện nguyên uid và được liệt kê trong `unresolvedMentions`. Truyền `quoteMsgId` để trả lời trích dẫn một tin văn bản đã có trong cache.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
 | `threadId` | string | ID của người dùng hoặc nhóm. `me` (hoặc uid của chính bạn) là My Documents — "Cloud của tôi" |
-| `text` | string (tuỳ chọn khi có `link`/`cardUserId`) | Nội dung tin nhắn (bắt buộc nếu không truyền `link` hay `cardUserId`; làm chú thích tuỳ chọn khi gửi `link`) |
+| `text` | string (tuỳ chọn khi có `filePath`/`files`/`link`/`cardUserId`) | Nội dung tin nhắn (bắt buộc nếu không truyền tệp, `link` hay `cardUserId`; làm chú thích tuỳ chọn khi gửi tệp hoặc `link`) |
+| `filePath` | string (tuỳ chọn) | Đường dẫn tệp hoặc ảnh cục bộ để gửi đính kèm (dùng `text` làm chú thích nếu có) |
+| `files` | string[] (tuỳ chọn) | Danh sách đường dẫn tệp hoặc ảnh cục bộ để gửi đính kèm trong một lần gọi |
 | `link` | string URL (tuỳ chọn) | Gửi thẻ xem trước liên kết (dùng `text` làm chú thích nếu có) |
 | `cardUserId` | string (tuỳ chọn) | Gửi danh thiếp Zalo của user có ID này vào hội thoại |
 | `threadType` | number (tuỳ chọn) | 0 = DM (User), 1 = nhóm. Bỏ trống thì dùng loại thread đã lưu trong cache, giống CLI |

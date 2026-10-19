@@ -159,7 +159,7 @@ const COMMAND_SURFACE = {
         "delete-product",
         "upload-photo",
     ],
-    mcp: ["start"],
+    mcp: ["start", "wait", "mark-read"],
     oa: [
         "login",
         "refresh",
@@ -346,6 +346,8 @@ const FLAG_CONTRACT = {
         "--stop",
         "--status",
     ],
+    "mcp wait": ["--account", "--since", "--thread", "--timeout", "--consumer"],
+    "mcp mark-read": ["--account", "--consumer"],
     "catalog add-product": ["--photos"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],

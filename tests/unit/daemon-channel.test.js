@@ -29,6 +29,8 @@ import {
     getDaemonStatus,
     stopViaDaemon,
     stopDaemon,
+    waitViaDaemon,
+    markReadViaDaemon,
 } from "../../src/core/daemon-channel.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-daemon-chan-"));
@@ -718,5 +720,77 @@ describe("daemon status and graceful stop", () => {
         assert.equal(res.stopped, false);
         assert.equal(existsSync(join(dir, "daemon.lock")), false);
         assert.equal(existsSync(join(dir, "daemon-channel.json")), false);
+    });
+});
+
+describe("MCP buffer wait and mark-read over daemon channel", () => {
+    it("returns null when no daemon channel is published", async () => {
+        assert.equal(await waitViaDaemon(dir, { since: 0, timeoutSec: 1 }), null);
+        assert.equal(await markReadViaDaemon(dir, { cursor: 5 }), null);
+    });
+
+    it("answers 503 when the running daemon has no MCP buffer (e.g. listen)", async () => {
+        const d = fakeDaemon(dir);
+        const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir });
+        started.push(chan);
+
+        const w = await waitViaDaemon(dir, { since: 0, timeoutSec: 1 });
+        assert.equal(w.ok, false);
+        assert.equal(w.status, 503);
+        assert.match(w.error, /message buffer/);
+
+        const m = await markReadViaDaemon(dir, { cursor: 5 });
+        assert.equal(m.ok, false);
+        assert.equal(m.status, 503);
+        assert.match(m.error, /message buffer/);
+    });
+
+    it("serves waitViaDaemon and markReadViaDaemon and rejects bad tokens", async () => {
+        const d = fakeDaemon(dir);
+        const cursors = new Map();
+        const chan = await startDaemonChannel({
+            getApi: d.getApi,
+            accountDir: dir,
+            onWait: async (params) => ({
+                status: "message",
+                message: {
+                    id: "m1",
+                    threadId: params.threadId || "t1",
+                    text: "hello from buffer",
+                },
+                cursor: (Number(params.since) || 0) + 1,
+            }),
+            onMarkRead: async (params) => {
+                const c = params.consumer || "default";
+                cursors.set(c, Number(params.cursor));
+                return {
+                    marked: 2,
+                    readCursor: Number(params.cursor),
+                    consumer: c,
+                };
+            },
+        });
+        started.push(chan);
+
+        const badWait = await fetch(`http://127.0.0.1:${chan.port}/wait`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: "wrong" }),
+        });
+        assert.equal(badWait.status, 403);
+
+        const w = await waitViaDaemon(dir, { threadId: "t99", since: 41, timeoutSec: 5, consumer: "bot-a" });
+        assert.equal(w.ok, true);
+        assert.equal(w.status, "message");
+        assert.equal(w.cursor, 42);
+        assert.equal(w.message.threadId, "t99");
+        assert.equal(w.message.text, "hello from buffer");
+
+        const m = await markReadViaDaemon(dir, { cursor: 42, consumer: "bot-a" });
+        assert.equal(m.ok, true);
+        assert.equal(m.marked, 2);
+        assert.equal(m.readCursor, 42);
+        assert.equal(m.consumer, "bot-a");
+        assert.equal(cursors.get("bot-a"), 42);
     });
 });

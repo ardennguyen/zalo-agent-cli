@@ -20,6 +20,8 @@ import {
     getDaemonStatus,
     stopDaemon,
     spawnDaemonProcess,
+    waitViaDaemon,
+    markReadViaDaemon,
 } from "../core/daemon-channel.js";
 import { success, error, info, output } from "../utils/output.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
@@ -874,6 +876,70 @@ export function registerMCPCommands(program) {
                         // The self-heal's lock: a stage and a catch-up never share the socket.
                         lock: stageLock,
                         onStop: shutdown,
+                        onWait: async (params, signal) => {
+                            const cleanThreadId =
+                                typeof params?.threadId === "string" && params.threadId.trim()
+                                    ? params.threadId.trim()
+                                    : null;
+                            const consumer =
+                                typeof params?.consumer === "string" && params.consumer.trim()
+                                    ? params.consumer.trim()
+                                    : undefined;
+                            const clampedSec = Math.max(1, Math.min(300, Number(params?.timeoutSec) || 55));
+                            const explicitSince =
+                                typeof params?.since === "number" && Number.isFinite(params.since)
+                                    ? params.since
+                                    : undefined;
+                            const effectiveSince =
+                                explicitSince !== undefined
+                                    ? explicitSince
+                                    : consumer
+                                      ? buffer.readCursor(consumer)
+                                      : undefined;
+                            const msg = await buffer.waitForMessage({
+                                threadId: cleanThreadId,
+                                since: effectiveSince,
+                                timeoutMs: clampedSec * 1000,
+                                signal,
+                            });
+                            if (msg) {
+                                const tid = String(msg.threadId || "");
+                                const threadName = nameCache?.get(tid)?.name || null;
+                                return {
+                                    status: "message",
+                                    message: {
+                                        ...msg,
+                                        ...(threadName ? { threadName } : {}),
+                                    },
+                                    cursor: msg._cursor,
+                                };
+                            }
+                            return {
+                                status: "timeout",
+                                message: null,
+                                cursor: Math.max(
+                                    effectiveSince ?? 0,
+                                    Number(buffer._globalCursor) || 0,
+                                    buffer.readCursor(consumer),
+                                ),
+                            };
+                        },
+                        onMarkRead: async (params) => {
+                            const cursorNum = Number(params?.cursor);
+                            if (!Number.isInteger(cursorNum) || cursorNum < 0) {
+                                throw new Error("cursor must be a non-negative integer");
+                            }
+                            const consumer =
+                                typeof params?.consumer === "string" && params.consumer.trim()
+                                    ? params.consumer.trim()
+                                    : undefined;
+                            const marked = buffer.markRead(cursorNum, consumer);
+                            return {
+                                marked,
+                                readCursor: buffer.readCursor(consumer),
+                                consumer: consumer || "default",
+                            };
+                        },
                     });
                     console.error(`[mcp] Sync & upload channel ready on 127.0.0.1:${channel.port}`);
                 } catch (e) {
@@ -895,5 +961,150 @@ export function registerMCPCommands(program) {
 
             // Keep process alive (MCP server runs on stdio — process must not exit)
             await new Promise(() => {});
+        });
+
+    mcp.command("wait [since]")
+        .description(
+            "Zero-CPU long-poll on the running MCP server's live message buffer (CLI equivalent of zalo_wait_for_message)",
+        )
+        .option("--account <id>", "Target a specific registered account ID (default: active account)", parseAccountId)
+        .option("-s, --since <cursor>", "Return immediately if a buffered message after this cursor already exists")
+        .option("-t, --thread <threadId>", "Only wake on messages from this thread ID")
+        .option("--timeout <seconds>", "Maximum seconds to wait before returning timeout (1-300, default: 55)", "55")
+        .option(
+            "-c, --consumer <name>",
+            "Consumer name whose read cursor is used when --since is omitted (matches zalo_mark_read)",
+        )
+        .action(async (sinceArg, opts) => {
+            const jsonMode = program.opts().json;
+            const rawSince = opts.since !== undefined ? opts.since : sinceArg;
+            let parsedSince;
+            if (rawSince !== undefined) {
+                const n = Number(rawSince);
+                if (!Number.isInteger(n) || n < 0 || !/^\d+$/.test(String(rawSince).trim())) {
+                    error(`Invalid cursor "${rawSince}": must be a non-negative integer.`);
+                    process.exit(1);
+                }
+                parsedSince = n;
+            }
+            const rawTimeout = Number(opts.timeout);
+            if (!Number.isInteger(rawTimeout) || rawTimeout < 1 || rawTimeout > 300) {
+                error(`Invalid --timeout "${opts.timeout}": must be an integer between 1 and 300 seconds.`);
+                process.exit(1);
+            }
+            const consumer = opts.consumer?.trim() || undefined;
+            if (consumer && !/^[A-Za-z0-9._:@-]{1,64}$/.test(consumer)) {
+                error(`Invalid --consumer "${consumer}": must be 1-64 characters matching [A-Za-z0-9._:@-].`);
+                process.exit(1);
+            }
+
+            let activeAcc;
+            try {
+                const requestedAccount =
+                    opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || undefined);
+                activeAcc = selectDaemonAccount(requestedAccount);
+            } catch (e) {
+                error(`Account selection failed: ${e.message}`);
+                process.exit(1);
+            }
+            const accountDir = getAccountDir(activeAcc.ownId);
+            const res = await waitViaDaemon(accountDir, {
+                threadId: opts.thread?.trim() || null,
+                since: parsedSince,
+                timeoutSec: rawTimeout,
+                consumer,
+            });
+            if (!res) {
+                error(
+                    `No running MCP server found for account ${activeAcc.ownId}. Start one with: zalo-agent mcp start`,
+                );
+                process.exit(1);
+            }
+            if (!res.ok) {
+                error(`Wait failed: ${res.error}`);
+                process.exit(1);
+            }
+            output(
+                {
+                    status: res.status,
+                    message: res.message,
+                    cursor: res.cursor,
+                },
+                jsonMode,
+                () => {
+                    if (res.status === "message" && res.message) {
+                        const m = res.message;
+                        const label = m.threadName ? `${m.threadName} (${m.threadId})` : m.threadId;
+                        success(
+                            `[cursor ${res.cursor}] ${m.senderName || m.senderId} in ${label}: ${m.text || `(${m.type})`}`,
+                        );
+                    } else {
+                        info(`Timeout after ${rawTimeout}s (cursor: ${res.cursor})`);
+                    }
+                },
+            );
+        });
+
+    mcp.command("mark-read <cursor>")
+        .description(
+            "Advance a consumer's read cursor in the running MCP server's live buffer (CLI equivalent of zalo_mark_read)",
+        )
+        .option("--account <id>", "Target a specific registered account ID (default: active account)", parseAccountId)
+        .option(
+            "-c, --consumer <name>",
+            'Consumer name whose read cursor to advance (default: "default"; deletes nothing for other consumers)',
+        )
+        .action(async (cursorArg, opts) => {
+            const jsonMode = program.opts().json;
+            const trimmedCursor = String(cursorArg ?? "").trim();
+            const parsedCursor = Number(trimmedCursor);
+            if (!Number.isInteger(parsedCursor) || parsedCursor < 0 || !/^\d+$/.test(trimmedCursor)) {
+                error(`Invalid cursor "${cursorArg}": must be a non-negative integer.`);
+                process.exit(1);
+            }
+            const consumer = opts.consumer?.trim() || undefined;
+            if (consumer && !/^[A-Za-z0-9._:@-]{1,64}$/.test(consumer)) {
+                error(`Invalid --consumer "${consumer}": must be 1-64 characters matching [A-Za-z0-9._:@-].`);
+                process.exit(1);
+            }
+
+            let activeAcc;
+            try {
+                const requestedAccount =
+                    opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || undefined);
+                activeAcc = selectDaemonAccount(requestedAccount);
+            } catch (e) {
+                error(`Account selection failed: ${e.message}`);
+                process.exit(1);
+            }
+            const accountDir = getAccountDir(activeAcc.ownId);
+            const res = await markReadViaDaemon(accountDir, {
+                cursor: parsedCursor,
+                consumer,
+            });
+            if (!res) {
+                error(
+                    `No running MCP server found for account ${activeAcc.ownId}. Start one with: zalo-agent mcp start`,
+                );
+                process.exit(1);
+            }
+            if (!res.ok) {
+                error(`Mark-read failed: ${res.error}`);
+                process.exit(1);
+            }
+            output(
+                {
+                    success: true,
+                    marked: res.marked,
+                    readCursor: res.readCursor,
+                    consumer: res.consumer,
+                },
+                jsonMode,
+                () => {
+                    success(
+                        `Marked ${res.marked} message(s) read for consumer "${res.consumer}" (readCursor: ${res.readCursor})`,
+                    );
+                },
+            );
         });
 }

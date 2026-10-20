@@ -79,11 +79,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **192** invokable leaves (160 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **21** containers — 14 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| CLI commands | **212** invokable leaves (180 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **22** containers — 15 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2110** as of 2026-10-20 (2106 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2183** as of 2026-10-20 (2179 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -115,7 +115,7 @@ guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-19): **192 leaves, 21 containers, 213 nodes**.
+Measured (2026-10-20): **212 leaves, 22 containers, 234 nodes**.
 By group: group 33, oa 32, friend 22, msg 20, conv 20, top-level 12, profile 11,
 catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, mcp 3,
 label 2. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and

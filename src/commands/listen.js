@@ -76,7 +76,7 @@ export function registerListenCommand(program) {
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction,read (default: message,friend,group,reaction,read)",
+            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing) and upload (an attachment upload finished)",
             "message,friend,group,reaction,read",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")
@@ -672,6 +672,35 @@ export function registerListenCommand(program) {
                                 error(`Auto-accept failed: ${e.message}`);
                             }
                         }
+                    });
+                }
+
+                // --- Typing and upload events (opt-in) ---
+                // Not in the default --events: typing is constant noise, and upload
+                // only matters to a caller that is uploading. Neither is stored.
+                // zca-js also emits `cipher_key`, the session's key material; it is
+                // deliberately never subscribed to, so it can reach no log, file or webhook.
+                if (enabledEvents.has("typing")) {
+                    api.listener.on("typing", (t) => {
+                        emitEvent(
+                            {
+                                event: "typing",
+                                threadId: t.threadId,
+                                isGroup: t.type === THREAD_GROUP,
+                                uid: t.data?.uid ?? null,
+                                isPC: Boolean(t.data?.isPC),
+                                data: t.data,
+                            },
+                            `Typing: ${t.data?.uid ?? "?"} in ${t.threadId}`,
+                        );
+                    });
+                }
+                if (enabledEvents.has("upload")) {
+                    api.listener.on("upload_attachment", (u) => {
+                        emitEvent(
+                            { event: "upload_attachment", fileId: u?.fileId ?? null, fileUrl: u?.fileUrl ?? null },
+                            `Upload finished: ${u?.fileId ?? "?"}`,
+                        );
                     });
                 }
 

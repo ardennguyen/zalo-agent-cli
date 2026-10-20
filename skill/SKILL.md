@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **192 CLI commands** across 21 command containers (14 top-level groups + 7 OA subgroups) + **25 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **212 CLI commands** across 22 command containers (15 top-level groups + 7 OA subgroups) + **25 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -124,7 +124,7 @@ zalo-agent listen --webhook http://n8n.local/webhook/zalo  # Forward to webhook
 zalo-agent listen --events message,friend                  # Narrow output to messages + friend events only
 zalo-agent listen --save ./logs                            # Save JSONL locally
 ```
-Default `--events` is `message,friend,group,reaction,read` (all five event types).
+Default `--events` is `message,friend,group,reaction,read` (all five event types); `typing` and `upload` are opt-in extras.
 Every received message is also written to the per-account SQLite cache (`zalo.db`) and its media auto-downloaded. Reactions, recalls, delivery receipts, board changes, read state from your other devices and "you left this group" are stored too, on every run — `--events` decides what is printed, not what is kept. Only **one** live socket per account (enforced by `daemon.lock`, shared with `mcp start`), and it cannot coexist with browser Zalo on the same account.
 Production-ready with `-d`/`--daemon` or pm2. Details: `references/listen-mode-guide.md`
 
@@ -315,7 +315,7 @@ Full commands: `references/command-reference.md`
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 192 commands + 25 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 212 commands + 25 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

@@ -326,7 +326,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - `cliMsgId` required for: react, undo, and rebuilding a `--quote` payload → get from `--json send` (the real wire id, not a guess) or `--json listen`; `msg delete`/`msg undo` also find it in the local cache on their own
 - Mentions only in groups (`-t 1`)
 - QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting out the 60s timeout
-- `sync-mobile` is the real history restore and is now the default path; it deliberately prompts the phone once (that is the data source). `--socket` and `--legacy` do not restore history and never prompt.
+- `sync-mobile` is the real history restore and is now the default path; it deliberately prompts the phone once (that is the data source). `--socket` does not restore history and never prompts. The old `--legacy` flag is gone: passing it is an unknown-option error.
 - `sync-mobile` restores full history by default. Suggest `--days <n>` when the user only needs recent messages — on a busy account that is the difference between ~50 message rounds and a handful
 - 1 proxy per account recommended (shared proxies risk a ban)
 - Credentials: `~/.zalo-agent-cli/` (personal, 0600) and `~/.zalo-agent/` (OA, 0600) — different directories

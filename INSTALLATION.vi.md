@@ -309,7 +309,7 @@ Cấu trúc mặc định khi không đặt đường dẫn tùy chỉnh:
 ├── accounts/<ownId>/
 │   ├── zalo.db                    # Bộ nhớ đệm tin nhắn/hội thoại SQLite (WAL)
 │   ├── media/                     # Media tải về bởi `listen` / `msg` / `mcp` (theo tài khoản)
-│   ├── sync/                      # Dữ liệu tạm của sync (khóa --legacy, bộ đệm giao thức)
+│   ├── sync/                      # Dữ liệu tạm của sync (bộ đệm giao thức của lần khôi phục từ điện thoại)
 │   └── daemon.lock                # Khóa giữ bởi daemon `listen`/`mcp start` đang chạy
 └── qr.png                         # Mã QR đăng nhập gần nhất
 ```

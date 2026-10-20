@@ -77,7 +77,7 @@ describe("SyncManager sync-freshness debounce", () => {
     });
 
     it("does not skip once the last sync is older than the window", () => {
-        manager.markSyncSuccess("legacy");
+        manager.markSyncSuccess("transfer");
         const last = manager.getLastSuccessfulSyncAt();
         const r = manager.checkSyncFreshness({ now: last + SYNC_FRESHNESS_MS + 1, freshnessMs: SYNC_FRESHNESS_MS });
         assert.equal(r.skip, false);

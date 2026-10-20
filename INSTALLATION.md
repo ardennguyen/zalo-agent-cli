@@ -309,7 +309,7 @@ Default layout when no custom paths are set:
 ├── accounts/<ownId>/
 │   ├── zalo.db                    # SQLite message/thread cache (WAL)
 │   ├── media/                     # Media downloaded by `listen` / `msg` (per account)
-│   ├── sync/                      # sync scratch (the --legacy path's keys, a protocol cache)
+│   ├── sync/                      # sync scratch (the phone restore's protocol cache)
 │   └── daemon.lock                # Held while a `listen`/`mcp start` daemon runs
 └── qr.png                         # Most recent login QR
 ```

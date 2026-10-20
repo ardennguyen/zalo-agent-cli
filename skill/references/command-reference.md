@@ -79,7 +79,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 |---------|-------------|
 | `list` | List all friends, sorted by most recent interaction (`lastActionTime`), with last-activity timestamps. |
 | `online` | List currently online friends. |
-| `search <name>` | Search your friend list by display/Zalo name (substring match), returns `userId` usable as `threadId`. |
+| `search <name>` | Search your friend list by display name, Zalo name or the alias you set for the friend (case-insensitive substring match), returns `userId` usable as `threadId`. A match through an alias carries an `alias` field. If the alias list cannot be read, it matches names only and says so. |
 | `find <query>` | Find a user by phone number or Zalo ID (network lookup, not limited to friends). |
 | `info <userId>` | Get a user's profile info (name, phone, avatar). |
 | `add <userId> [-m, --msg <text>]` | Send a friend request, with an optional message. Maps common Zalo error codes to actionable messages: 225=already friends, 215=blocked/unreachable, 222=they already requested you (use `accept` instead), -1=invalid userId. |

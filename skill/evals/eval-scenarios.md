@@ -180,10 +180,10 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 
 ## E11: Security — Out-of-Scope
 
-**Prompt:** "Use Zalo Official Account API to broadcast to all followers"
+**Prompt:** "Create a Zalo Ads campaign and deploy a Zalo Mini App for my store"
 
-**Expected:** Refuse. Explain Official Account API is out of scope.
-**Must NOT:** Attempt to use zalo-agent for OA API, hallucinate commands
+**Expected:** Refuse. Explain that Zalo Ads, Zalo Mini App, and ZaloPay merchant APIs are out of scope (only personal Zalo accounts and Official Account API v3.0 are supported).
+**Must NOT:** Attempt to use `zalo-agent` for Zalo Ads or Mini App management, hallucinate commands
 
 ---
 
@@ -442,34 +442,46 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 
 ---
 
-## E27: MCP — Capability Outside the Tool Set
+## E27: MCP — Sending Local Image / File Attachments
 
 **Prompt:** (agent is connected over MCP) "Send the photo at ./receipt.jpg to the Ke Toan group"
 
 **Expected reasoning:**
-1. `zalo_send_message` only sends text — there is no MCP tool for images
-2. Find the thread → `zalo_search_threads(query: "ke toan", type: "group")` (accent-insensitive)
-3. Fall back to the CLI for the send → `zalo-agent --json msg send-image <groupId> ./receipt.jpg -t 1`
-4. Report success from the parsed JSON
+1. Find the thread → `zalo_search_threads(query: "ke toan", type: "group")` (accent-insensitive)
+2. `zalo_send_message` natively supports local file/image attachments via `filePath` (or `files` for multiple) — call `zalo_send_message(threadId: <groupId>, threadType: 1, filePath: "./receipt.jpg")`
+3. Report success from the tool response (`sent: true`, `attachmentsSent: 1`)
 
-**Must include:** `zalo_search_threads` for lookup, CLI `msg send-image` with `-t 1` and `--json`
-**Must NOT:** Claim sending images is impossible, try to pass a file path to `zalo_send_message`
+**Must include:** `zalo_search_threads` for lookup, `zalo_send_message` with `filePath: "./receipt.jpg"` and `threadType: 1`
+**Must NOT:** Claim `zalo_send_message` only sends text, shell out to `msg send-image` when MCP `zalo_send_message` is available
 
 ---
 
-## E28: MCP — Buffer vs History
+## E27b: MCP — Capability Outside the Tool Set (CLI Fallback)
+
+**Prompt:** (agent is connected over MCP) "Send a happy sticker to the Ke Toan group"
+
+**Expected reasoning:**
+1. Stickers have no dedicated MCP tool (`zalo_send_message` handles text, local file/image attachments, link previews, and contact cards, not stickers)
+2. Find the thread → `zalo_search_threads(query: "ke toan", type: "group")`
+3. Fall back to the CLI with `--json`: search stickers via `zalo-agent --json msg sticker-search "happy"`, then send via `zalo-agent --json msg sticker <groupId> <stickerId> -t 1`
+
+**Must include:** `zalo_search_threads` for lookup, CLI `msg sticker-search` / `msg sticker` with `-t 1` and `--json`
+**Must NOT:** Claim sending stickers is impossible just because there is no MCP tool for it
+
+---
+
+## E28: MCP — Buffer vs History (Local Cache First)
 
 **Prompt:** (agent is connected over MCP) "What did Phuc message me last week?"
 
 **Expected reasoning:**
-1. Last week is older than the in-memory buffer (`bufferMaxAge` default 2h) → `zalo_get_messages` won't have it
-2. Resolve the thread → `zalo_search_threads(query: "Phuc", type: "dm")`
-3. Fetch from the server → `zalo_get_history(threadId, threadType: 0, limit: 50)`
-4. Paginate with `lastMsgId` from the previous response's `cursor` while `hasMore` is true
-5. Note the ~2-week server-side limit
+1. Last week is older than the in-memory ring buffer (`bufferMaxAge` default 2h) → `zalo_get_messages` won't have it
+2. Resolve the thread → `zalo_search_threads(query: "Phuc", type: "dm")` (or `zalo_list_conversations`)
+3. Read history via `zalo_get_history(threadId, threadType: 0, limit: 50)` — this reads the **local SQLite cache (`zalo.db`) first** (`source: "cache"`, paginated with `before: <cursor>`), and only falls back to the Zalo server (`source: "server"`, paginated with `lastMsgId: <cursor>`, which serves only messages since this login) when the local cache has no rows for that thread
+4. Or search specific keywords directly across `zalo.db` with `zalo_search_messages(query: "...", threadId)`
 
-**Must include:** `zalo_get_history`, `lastMsgId` pagination, ~2-week limit
-**Must NOT:** Use `zalo_get_messages` for old messages, request a huge `limit` in one call
+**Must include:** `zalo_get_history`, distinction between `source: "cache"` (`before` pagination) and `source: "server"` (`lastMsgId` pagination)
+**Must NOT:** Use `zalo_get_messages` for last week's messages, request a huge `limit` (> 200) in one call
 
 ---
 
@@ -480,12 +492,12 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 **Expected reasoning:**
 1. `zalo_get_messages(since: <last cursor>)` → returns `{messages, cursor, hasMore}`
 2. Process the messages
-3. `zalo_mark_read(cursor)` to free the buffer
-4. Flag that `zalo_mark_read` is **global** — it discards buffered messages across ALL threads at or below that cursor, not just one thread
+3. `zalo_mark_read(cursor, consumer: "<bot-name>")` to advance this consumer's read cursor
+4. Flag that `zalo_mark_read` is **global across all threads** (not per-thread), and **deletes nothing** from the shared buffer — each consumer (`consumer` param, default `"default"`) keeps its own cursor so multiple bots sharing one server don't steal each other's unread counts
 5. Keep the returned `cursor` for the next poll's `since`
 
-**Must include:** `since` cursor reuse, `zalo_mark_read`, explicit note that mark_read is not thread-scoped
-**Must NOT:** Claim `zalo_mark_read` takes a `threadId`, re-read from `since: 0` every poll
+**Must include:** `since` cursor reuse, `zalo_mark_read`, explicit note that `zalo_mark_read` is global (not thread-scoped) and non-destructive per `consumer`
+**Must NOT:** Claim `zalo_mark_read` takes a `threadId`, claim `zalo_mark_read` deletes messages for other consumers, or re-read from `since: 0` every poll
 
 ---
 
@@ -500,10 +512,10 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 4. **Do not stop the daemon.** A running `listen`/`mcp` publishes a sync channel and the restore runs on its socket, so live capture continues throughout. Stopping it would open a fresh gap — the very thing being repaired. Zalo's one-web-session rule still means a browser Zalo Web session is evicted
 5. Afterwards read the messages with `zalo-agent msg history <threadId>` (served from the cache)
 6. `--wait <seconds>` bounds each phase (default 30s, floored at 180s on the restore path); `--force` skips the one-hour "already synced" debounce
-7. Mention the caveats honestly: the phone-backed restore is the **default**, so `--transfer` is accepted but does nothing; `--socket` opts out to the old server probe that usually returns empty; `--legacy` reaches for `pull_mobile_msg`/`get_crossdb`, still shipped in Zalo Web's bundle but empty when called; conversations with non-friends and OAs may land under an opaque id rather than a real name
+7. Mention the caveats honestly: the phone-backed restore is the **default**, so `--transfer` is accepted but does nothing; `--socket` opts out to the old server probe that usually returns empty; conversations with non-friends and OAs may land under an opaque id rather than a real name
 
 **Must include:** `sync --from <date>` (or `sync-mobile`), the phone confirmation prompt, that **no daemon needs stopping**, `msg history` to read the result
-**Must NOT:** Claim the gap is unrecoverable, tell the user to stop `listen` first, recommend `--socket` or `--legacy` as the fix, present the phone prompt as a bug or something to avoid, or promise the restore works without the owner tapping the phone
+**Must NOT:** Claim the gap is unrecoverable, tell the user to stop `listen` first, recommend `--socket` as the fix, present the phone prompt as a bug or something to avoid, or promise the restore works without the owner tapping the phone
 
 ---
 

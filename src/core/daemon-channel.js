@@ -81,6 +81,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { maskSecretArgs } from "../utils/secrets.js";
 
 const CHANNEL_FILE = "daemon-channel.json";
 const LOCK_FILE = "daemon.lock";
@@ -291,6 +292,10 @@ function readJsonBody(req, reply) {
  * @param {() => void} [args.onStop] - graceful shutdown callback invoked by
  *   `POST /stop` so `--stop` runs the same teardown as `SIGINT` (stamping
  *   `markConnected`, flushing delivered receipts, releasing `daemon.lock`).
+ * @param {(params: object, signal: AbortSignal) => Promise<object>} [args.onWait] -
+ *   long-poll callback invoked by `POST /wait` (`zalo-agent mcp wait`).
+ * @param {(params: object) => Promise<object>} [args.onMarkRead] -
+ *   read-cursor callback invoked by `POST /mark-read` (`zalo-agent mcp mark-read`).
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -300,6 +305,8 @@ export function startDaemonChannel({
     runners = {},
     lock = createStageLock(),
     onStop = null,
+    onWait = null,
+    onMarkRead = null,
 }) {
     const token = randomBytes(24).toString("hex");
 
@@ -416,6 +423,40 @@ export function startDaemonChannel({
         });
     };
 
+    /** Long-poll the MCP daemon's live message buffer (`zalo-agent mcp wait`). */
+    const serveWait = async (body, res, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof onWait !== "function") {
+            return reply(503, {
+                error: "this daemon does not have an MCP message buffer (run `zalo-agent mcp start` instead of `listen`)",
+            });
+        }
+        const ac = new AbortController();
+        res.on("close", () => ac.abort());
+        try {
+            const result = await onWait(body, ac.signal);
+            if (!res.writableEnded) reply(200, { ok: true, ...result });
+        } catch (e) {
+            if (!res.writableEnded) reply(200, { ok: false, error: e?.message || String(e) });
+        }
+    };
+
+    /** Advance one consumer's read cursor in the MCP daemon's buffer (`zalo-agent mcp mark-read`). */
+    const serveMarkRead = async (body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof onMarkRead !== "function") {
+            return reply(503, {
+                error: "this daemon does not have an MCP message buffer (run `zalo-agent mcp start` instead of `listen`)",
+            });
+        }
+        try {
+            const result = await onMarkRead(body);
+            reply(200, { ok: true, ...result });
+        } catch (e) {
+            reply(200, { ok: false, error: e?.message || String(e) });
+        }
+    };
+
     const server = http.createServer(async (req, res) => {
         const reply = (code, body) => {
             res.writeHead(code, { "content-type": "application/json" });
@@ -424,11 +465,21 @@ export function startDaemonChannel({
         if (req.method !== "POST") return reply(404, { error: "not found" });
 
         const stage = SYNC_ROUTE.exec(req.url || "")?.[1];
-        if (req.url !== "/send-attachments" && req.url !== "/stop" && !stage) return reply(404, { error: "not found" });
+        if (
+            req.url !== "/send-attachments" &&
+            req.url !== "/stop" &&
+            req.url !== "/wait" &&
+            req.url !== "/mark-read" &&
+            !stage
+        ) {
+            return reply(404, { error: "not found" });
+        }
 
         const body = await readJsonBody(req, reply);
         if (!body) return; // already answered, or the request went away
         if (req.url === "/stop") return serveStop(body, reply);
+        if (req.url === "/wait") return serveWait(body, res, reply);
+        if (req.url === "/mark-read") return serveMarkRead(body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 
@@ -782,6 +833,143 @@ export function stopViaDaemon(accountDir, { timeoutMs = 3000 } = {}) {
 }
 
 /**
+ * Long-poll the running MCP daemon's live message buffer (`zalo-agent mcp wait`),
+ * mirroring the `zalo_wait_for_message` MCP tool over the loopback channel.
+ *
+ * @param {string} accountDir
+ * @param {{threadId?: string|null, since?: number, timeoutSec?: number, consumer?: string}} [opts]
+ * @returns {Promise<{ok: boolean, status?: "message"|"timeout"|number, message?: object|null, cursor?: number, error?: string}|null>}
+ *   null when no daemon channel is published
+ */
+export function waitViaDaemon(accountDir, { threadId = null, since = undefined, timeoutSec = 55, consumer } = {}) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+
+    const clampedSec = Math.max(1, Math.min(300, Number(timeoutSec) || 55));
+    const payload = JSON.stringify({
+        token: chan.token,
+        ...(threadId ? { threadId: String(threadId) } : {}),
+        ...(typeof since === "number" && Number.isFinite(since) ? { since } : {}),
+        timeoutSec: clampedSec,
+        ...(consumer ? { consumer: String(consumer) } : {}),
+    });
+
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/wait",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: (clampedSec + 10) * 1000,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    if (res.statusCode === 200 && body.ok) {
+                        resolve({
+                            ok: true,
+                            status: body.status,
+                            message: body.message ?? null,
+                            cursor: body.cursor,
+                        });
+                    } else {
+                        resolve({
+                            ok: false,
+                            status: res.statusCode,
+                            error: body.error || `HTTP ${res.statusCode}`,
+                        });
+                    }
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout waiting for daemon response" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
+}
+
+/**
+ * Advance one consumer's read cursor in the running MCP daemon's live message
+ * buffer (`zalo-agent mcp mark-read`), mirroring the `zalo_mark_read` MCP tool.
+ *
+ * @param {string} accountDir
+ * @param {{cursor: number, consumer?: string}} opts
+ * @returns {Promise<{ok: boolean, marked?: number, readCursor?: number, consumer?: string, status?: number, error?: string}|null>}
+ *   null when no daemon channel is published
+ */
+export function markReadViaDaemon(accountDir, { cursor, consumer } = {}) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+
+    const payload = JSON.stringify({
+        token: chan.token,
+        cursor: Number(cursor),
+        ...(consumer ? { consumer: String(consumer) } : {}),
+    });
+
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/mark-read",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: 5000,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    if (res.statusCode === 200 && body.ok) {
+                        resolve({
+                            ok: true,
+                            marked: body.marked ?? 0,
+                            readCursor: body.readCursor ?? Number(cursor),
+                            consumer: body.consumer || consumer || "default",
+                        });
+                    } else {
+                        resolve({
+                            ok: false,
+                            status: res.statusCode,
+                            error: body.error || `HTTP ${res.statusCode}`,
+                        });
+                    }
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout waiting for daemon response" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
+}
+
+/**
  * Stop the running daemon for an account directory, preferring `POST /stop` so
  * the daemon runs its own graceful shutdown handler (`markConnected`, receipt
  * flush, lock/channel cleanup) before falling back to `process.kill(pid)`.
@@ -985,7 +1173,8 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
     const filteredArgs = args.filter((a) => a !== "-d" && a !== "--daemon");
 
     const logFd = fs.openSync(logPath, "a", 0o600);
-    const header = `\n--- [${new Date().toISOString()}] starting daemon: ${filteredArgs.join(" ")} ---\n`;
+    // Never the secrets: --auth, --client-secret and --webhook-secret values are masked.
+    const header = `\n--- [${new Date().toISOString()}] starting daemon: ${maskSecretArgs(filteredArgs).join(" ")} ---\n`;
     fs.writeSync(logFd, header);
     let startOffset = 0;
     try {

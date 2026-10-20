@@ -6,6 +6,7 @@ import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
+import { parseOnOff } from "../utils/cli-args.js";
 
 export function registerCatalogCommands(program) {
     const catalog = program.command("catalog").description("Manage Zalo Shop catalogs and products");
@@ -139,6 +140,19 @@ export function registerCatalogCommands(program) {
                 });
             } catch (e) {
                 error(`Upload photo failed: ${e.message}`);
+            }
+        });
+
+    catalog
+        .command("register <on|off>")
+        .description("Turn the Zalo Shop catalog feature on or off for this account")
+        .action(async (state) => {
+            try {
+                const enable = parseOnOff(state, "catalog");
+                const result = await getApi().registerCatalog(enable);
+                output(result, program.opts().json, () => success(`Catalog ${enable ? "enabled" : "disabled"}`));
+            } catch (e) {
+                error(e.message);
             }
         });
 }

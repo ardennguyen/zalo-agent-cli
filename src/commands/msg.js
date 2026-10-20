@@ -10,6 +10,7 @@ import { getApi, getOwnId } from "../core/zalo-client.js";
 import { withCurrentSenderNames } from "../core/current-user-names.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
+import { parseThreadTypeArg, parseReportReason } from "../utils/cli-args.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDir, getAccountDbPath } from "../core/credentials.js";
 import { initDb, getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
@@ -1751,6 +1752,65 @@ export function registerMsgCommands(program) {
                 } catch {}
                 error(`History fetch failed: ${e.message}`);
                 process.exit(1);
+            }
+        });
+
+    msg.command("typing <threadId>")
+        .description('Show the "typing…" indicator in a conversation')
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action(async (threadId, opts) => {
+            try {
+                const result = await getApi().sendTypingEvent(threadId, parseThreadTypeArg(opts.type));
+                output(result, program.opts().json, () => success("Typing indicator sent"));
+            } catch (e) {
+                error(e.message);
+            }
+        });
+
+    msg.command("report <threadId>")
+        .description("Report a user (-t 0) or a group (-t 1) to Zalo")
+        .requiredOption("-r, --reason <reason>", "sensitive, annoy, fraud or other")
+        .option("-c, --content <text>", "What happened (required with --reason other, refused otherwise)")
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action(async (threadId, opts) => {
+            try {
+                const options = parseReportReason(opts.reason, opts.content);
+                const result = await getApi().sendReport(options, threadId, parseThreadTypeArg(opts.type));
+                output(result, program.opts().json, () => success(`Report sent (id ${result?.reportId ?? "?"})`));
+            } catch (e) {
+                error(e.message);
+            }
+        });
+
+    msg.command("link-preview <url>")
+        .description("Fetch the preview Zalo would show for a link (title, description, thumbnail)")
+        .action(async (url) => {
+            try {
+                const result = await getApi().parseLink(url);
+                output(result, program.opts().json, () => {
+                    const d = result?.data ?? {};
+                    info(`Title: ${d.title || "-"}`);
+                    info(`Description: ${d.desc || "-"}`);
+                    info(`Source: ${d.src || d.href || "-"}`);
+                    if (d.thumb) info(`Thumbnail: ${d.thumb}`);
+                });
+            } catch (e) {
+                error(`Link preview failed: ${e.message}`);
+            }
+        });
+
+    msg.command("scan-url <url>")
+        .description("Ask Zalo whether a URL is safe to open")
+        .action(async (url) => {
+            try {
+                const result = await getApi().scanURL(url);
+                output(result, program.opts().json, () =>
+                    result?.isSafe
+                        ? success("Zalo reports this URL as safe")
+                        : warning("Zalo flags this URL as unsafe"),
+                );
+            } catch (e) {
+                error(`URL scan failed: ${e.message}`);
             }
         });
 }

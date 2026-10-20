@@ -119,8 +119,7 @@ export function registerSyncCommands(program) {
             "Restore message history from your phone into the local cache (zalo.db). " +
                 "This IS the real phone-backed restore (transfer-sync-v2) by default: it sends one " +
                 "sync request your phone confirms, then decrypts and stores your history. " +
-                "--socket asks for the old server backfill instead (measured empty); --legacy tries an old " +
-                "endpoint Zalo Web no longer calls (it answers empty).",
+                "--socket asks for the old server backfill instead (measured empty).",
         )
         .option(
             "-t, --transfer",
@@ -146,11 +145,6 @@ export function registerSyncCommands(program) {
             "Restore everything from this date onward (YYYY-MM-DD). Overrides --days. " +
                 "The default is already everything your phone still holds, so this is for deliberately " +
                 "narrowing a run, not widening it",
-        )
-        .option(
-            "-L, --legacy",
-            "Try the old pull_mobile_msg/get_crossdb phone-transfer endpoint instead, which Zalo Web no longer " +
-                "calls and which answers empty. One attempt only — it pings your mobile app",
         )
         .option(
             "-M, --messages-only",
@@ -195,10 +189,6 @@ export function registerSyncCommands(program) {
                 process.exit(1);
             }
 
-            if (opts.legacy) {
-                await runLegacySync(activeAcc, opts);
-                return;
-            }
             if (opts.socket) {
                 await runSocketBackfill(activeAcc, opts);
                 return;
@@ -1994,61 +1984,4 @@ async function runSocketBackfill(activeAcc, opts) {
     }
 
     process.exit(exitCode);
-}
-
-/**
- * The retired path, kept behind --legacy so the behavior stays inspectable.
- *
- * `/api/message/pull_mobile_msg` and `/api/message/get_crossdb` are still
- * present in Zalo Web's own bundle but have ZERO call sites in it — the client
- * moved to a WebSocket protocol (cmd 590/591, "transfer-sync-v2"). The
- * endpoints answer with an empty payload rather than an error, which is why
- * this used to look like "the phone hasn't replied yet" and retry for two
- * minutes, putting a notification on the owner's phone each time.
- *
- * It runs exactly once now.
- *
- * @param {{ownId: string}} activeAcc
- * @param {{force?: boolean}} opts
- */
-async function runLegacySync(activeAcc, opts) {
-    warning(
-        "--legacy uses an endpoint Zalo Web no longer calls; it answers empty. This pings your mobile app " +
-            "and will most likely find nothing.",
-    );
-    try {
-        const syncManager = new SyncManager(getApi(), activeAcc.ownId);
-        const res = await syncManager.pollSync(0, 0, { force: !!opts.force });
-
-        switch (res.status) {
-            case "already-synced":
-                success("Already synced — no known missed messages since the last successful sync.");
-                info("Pass --force to check anyway.");
-                process.exit(0);
-                break;
-            case "saved":
-                success(`Synced ${res.saved}/${res.total} message(s) from mobile into the local cache.`);
-                process.exit(0);
-                break;
-            case "empty-or-unrecognized":
-                success("Sync round-trip completed — nothing new to save.");
-                process.exit(0);
-                break;
-            case "legacy-retired":
-                error("The legacy mobile-sync endpoint returned nothing, as it now always does.");
-                info("Run `zalo-agent sync-mobile` without --legacy to backfill over the WebSocket instead.");
-                process.exit(1);
-                break;
-            case "crossdb-error":
-                error(`Sync failed: ${res.error}`);
-                process.exit(1);
-                break;
-            default:
-                error(`Unrecognized sync result: ${res.status}`);
-                process.exit(1);
-        }
-    } catch (err) {
-        error(`Failed: ${err.message}`);
-        process.exit(1);
-    }
 }

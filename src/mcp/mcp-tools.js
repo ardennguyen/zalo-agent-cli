@@ -1,10 +1,10 @@
 /**
  * MCP tool registrations for Zalo message access, sending, user lookup, and group productivity.
- * Registers 23 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * Registers 25 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
  * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status, zalo_search_messages,
  * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll,
- * zalo_wait_for_message, zalo_label.
+ * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
@@ -47,6 +47,23 @@ import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import {
+    describeFriendAddError,
+    extractErrorCode,
+    friendStatusFrom,
+    friendsFrom,
+    receivedRequestsFrom,
+    sentRequestsFrom,
+} from "../core/friend-requests.js";
+import {
+    CONFIRMED_ACTIONS,
+    NOT_A_MEMBER_CODES,
+    REMOVE_NOT_IN_GROUP,
+    createdGroupFrom,
+    groupConfirmRequired,
+    groupInfoFrom,
+    memberChangeFrom,
+} from "../core/group-admin.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 
 /** Repeat mode codes matching zca-js ReminderRepeatMode enum and src/commands/reminder.js. */
@@ -2545,6 +2562,289 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return err(`Unsupported label action: ${action}`);
             } catch (e) {
                 console.error("[mcp-tools] zalo_label error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_friend ---
+    server.registerTool(
+        "zalo_friend",
+        {
+            title: "Manage Zalo Friends and Friend Requests",
+            description:
+                "Check, list and answer friend requests, and list friends. Actions: " +
+                "'status' (the relationship with userId: is_friend, and is_requested / is_requesting, Zalo's two flags " +
+                "for a request pending between you and them; to tell which direction a request goes, use the two lists), " +
+                "'sent_requests' (requests you sent that are still pending), " +
+                "'received_requests' (requests others sent you, newest first, with their message), " +
+                "'send' (friend request to userId, with an optional message), " +
+                "'accept' / 'reject' (the request from userId), " +
+                "'undo' (cancel the request you sent to userId), " +
+                "'list' (your friends, most recently active first, capped by limit). " +
+                "userId is the numeric Zalo id (zalo_lookup_user finds one from a phone number). " +
+                "Zalo restricts accounts that send many friend requests, so send sparingly.",
+            inputSchema: z.object({
+                action: z
+                    .enum(["status", "sent_requests", "received_requests", "send", "accept", "reject", "undo", "list"])
+                    .describe("Friend operation to perform"),
+                userId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("Numeric Zalo user id (required for status, send, accept, reject and undo)"),
+                message: z
+                    .string()
+                    .optional()
+                    .describe("Message sent with the friend request (only for 'send'; default: none)"),
+                limit: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(1000)
+                    .optional()
+                    .describe(
+                        "Most friends to return for 'list' (default 200; the reply says how many there are in all)",
+                    ),
+            }),
+        },
+        async ({ action, userId, message, limit }) => {
+            const needsUser = ["status", "send", "accept", "reject", "undo"].includes(action);
+            const target = userId === undefined ? "" : String(userId).trim();
+            if (needsUser) {
+                if (!target) return err(`userId is required for action='${action}'.`);
+                if (!/^\d{1,30}$/.test(target)) {
+                    return err(
+                        `userId must be a numeric Zalo id (got "${target}"). zalo_lookup_user finds one from a phone number.`,
+                    );
+                }
+            }
+            try {
+                switch (action) {
+                    case "status":
+                        return ok({ action, ...friendStatusFrom(await api.getFriendRequestStatus(target), target) });
+                    case "sent_requests": {
+                        let res = null;
+                        try {
+                            res = await api.getSentFriendRequest();
+                        } catch (e) {
+                            // Zalo answers code 112 when there are none, which is an empty list, not a failure.
+                            if (!/\b112\b/.test(String(e?.message))) throw e;
+                        }
+                        const requests = sentRequestsFrom(res);
+                        return ok({ action, count: requests.length, requests });
+                    }
+                    case "received_requests": {
+                        const requests = receivedRequestsFrom(await api.getFriendRecommendations());
+                        return ok({ action, count: requests.length, requests });
+                    }
+                    case "send":
+                        await api.sendFriendRequest(message ?? "", target);
+                        return ok({ action, success: true, userId: target });
+                    case "accept":
+                        await api.acceptFriendRequest(target);
+                        return ok({ action, success: true, userId: target });
+                    case "reject":
+                        await api.rejectFriendRequest(target);
+                        return ok({ action, success: true, userId: target });
+                    case "undo":
+                        await api.undoFriendRequest(target);
+                        return ok({ action, success: true, userId: target });
+                    case "list": {
+                        const { total, friends } = friendsFrom(await api.getAllFriends(), limit ?? 200);
+                        return ok({ action, total, count: friends.length, truncated: friends.length < total, friends });
+                    }
+                    default:
+                        return err(`Unsupported friend action: ${action}`);
+                }
+            } catch (e) {
+                console.error("[mcp-tools] zalo_friend error:", e.message);
+                // 'send' keeps the CLI's wording for Zalo's refusal codes (already friends, blocked, ...).
+                const known =
+                    action === "send" ? describeFriendAddError(e.code ?? extractErrorCode(e.message), target) : null;
+                return err(known || e.message);
+            }
+        },
+    );
+
+    // --- zalo_group ---
+    server.registerTool(
+        "zalo_group",
+        {
+            title: "Manage Zalo Groups",
+            description:
+                "Leave, inspect, create and change the membership of a group (zalo_get_group_members lists who is " +
+                "in one). Actions: " +
+                "'info' (the group's name, description, creator, admins, member count and limit, creation time and " +
+                "settings), " +
+                "'create' (a new group named `name` with the members in userIds), " +
+                "'add_members' (add userIds to the group), " +
+                "'remove_member' (remove the one member userId from the group), " +
+                "'leave' (leave the group; `silent` hides the usual notice from ordinary members; the owner still sees it). " +
+                "groupId is the group's thread id (zalo_search_threads or zalo_list_conversations finds it); " +
+                "user ids are numeric Zalo ids (zalo_lookup_user finds one from a phone number). " +
+                "'leave' and 'remove_member' cannot be undone from here, so they need confirm: true (a plain " +
+                "parameter, no prompt; a deployment can turn the check off with groupConfirm: false in " +
+                "mcp-config.json or ZALO_MCP_GROUP_CONFIRM=0). Zalo can refuse some members " +
+                "of a create or add_members: the reply lists the members it did and did not take.",
+            inputSchema: z.object({
+                action: z
+                    .enum(["leave", "info", "create", "add_members", "remove_member"])
+                    .describe("Group operation to perform"),
+                groupId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("The group's id (required for leave, info, add_members and remove_member)"),
+                name: z.string().optional().describe("The new group's name (required for 'create')"),
+                userIds: z
+                    .array(z.string().min(1))
+                    .min(1)
+                    .max(100)
+                    .optional()
+                    .describe("Numeric Zalo user ids (required for 'create' and 'add_members')"),
+                userId: z.string().min(1).optional().describe("Numeric Zalo user id (required for 'remove_member')"),
+                silent: z
+                    .boolean()
+                    .optional()
+                    .describe(
+                        "Only for 'leave': hide the usual notice from ordinary members; the owner still sees it (default false)",
+                    ),
+                confirm: z
+                    .boolean()
+                    .optional()
+                    .describe(
+                        "Must be true for 'leave' and 'remove_member', which cannot be undone from here " +
+                            "(ignored when the deployment has switched the check off)",
+                    ),
+            }),
+        },
+        async ({ action, groupId, name, userIds, userId, silent, confirm }) => {
+            const gid = groupId === undefined ? "" : String(groupId).trim();
+            if (["leave", "info", "add_members", "remove_member"].includes(action)) {
+                if (!gid) return err(`groupId is required for action='${action}'.`);
+                if (!/^\d{1,30}$/.test(gid)) {
+                    return err(
+                        `groupId must be a numeric Zalo group id (got "${gid}"). zalo_search_threads finds one by name.`,
+                    );
+                }
+            }
+            const badId = (id) => !/^\d{1,30}$/.test(id);
+            let members = [];
+            if (action === "create" || action === "add_members") {
+                members = [...new Set((userIds ?? []).map((u) => String(u).trim()))];
+                if (members.length === 0) return err(`userIds is required for action='${action}'.`);
+                const bad = members.find(badId);
+                if (bad !== undefined) {
+                    return err(
+                        `userIds must be numeric Zalo ids (got "${bad}"). zalo_lookup_user finds one from a phone number.`,
+                    );
+                }
+            }
+            const target = userId === undefined ? "" : String(userId).trim();
+            if (action === "remove_member") {
+                if (!target) return err("userId is required for action='remove_member'.");
+                if (badId(target)) {
+                    return err(
+                        `userId must be a numeric Zalo id (got "${target}"). zalo_get_group_members lists a group's members.`,
+                    );
+                }
+            }
+            const groupName = name === undefined ? "" : String(name).trim();
+            if (action === "create" && !groupName) return err("name is required for action='create'.");
+
+            // After validation, before Zalo: a refused call changes nothing and says exactly how to retry.
+            if (CONFIRMED_ACTIONS.includes(action) && confirm !== true && groupConfirmRequired({ config })) {
+                const what = action === "leave" ? `leave group ${gid}` : `remove ${target} from group ${gid}`;
+                return err(
+                    `Not done: this would ${what}, which cannot be undone from here. Repeat the call with ` +
+                        "confirm: true to proceed. (An automatic or headless deployment can turn this check off " +
+                        "with groupConfirm: false in mcp-config.json, or ZALO_MCP_GROUP_CONFIRM=0 in the environment.)",
+                );
+            }
+
+            try {
+                switch (action) {
+                    case "info": {
+                        const info = groupInfoFrom(await api.getGroupInfo([gid]), gid);
+                        if (!info) {
+                            return err(
+                                `Zalo's answer does not include group ${gid}: this account is not in it, or it is not ` +
+                                    "a group id (a 1-1 conversation's id is the other person's uid).",
+                            );
+                        }
+                        return ok({ action, ...info });
+                    }
+                    case "create": {
+                        const made = createdGroupFrom(await api.createGroup({ name: groupName, members }), members);
+                        if (!made.groupId)
+                            return err("Zalo did not return a group id; the group may not have been created.");
+                        return ok({
+                            action,
+                            groupId: made.groupId,
+                            name: groupName,
+                            added: made.added,
+                            failed: made.failed,
+                        });
+                    }
+                    case "add_members": {
+                        const change = memberChangeFrom(await api.addUserToGroup(members, gid), members);
+                        if (change.done.length === 0) {
+                            const why = change.errorData
+                                ? ` (Zalo's error codes: ${JSON.stringify(change.errorData)})`
+                                : "";
+                            return err(
+                                `Zalo did not add any of the ${members.length} member(s) to group ${gid}${why}.`,
+                            );
+                        }
+                        return ok({
+                            action,
+                            groupId: gid,
+                            added: change.done,
+                            failed: change.failed,
+                            ...(change.errorData && { errorData: change.errorData }),
+                        });
+                    }
+                    case "remove_member": {
+                        const change = memberChangeFrom(await api.removeUserFromGroup([target], gid), [target]);
+                        if (change.failed.length > 0) {
+                            return err(
+                                `Zalo did not remove ${target} from group ${gid}: not a member, or this account is not ` +
+                                    "allowed to remove members (a group's owner or an admin can).",
+                            );
+                        }
+                        return ok({ action, success: true, groupId: gid, userId: target });
+                    }
+                    case "leave": {
+                        const quiet = silent === true;
+                        const res = await api.leaveGroup(gid, quiet);
+                        const memberError = Array.isArray(res?.memberError) ? res.memberError : [];
+                        return ok({
+                            action,
+                            success: true,
+                            groupId: gid,
+                            silent: quiet,
+                            ...(memberError.length > 0 && { memberError }),
+                        });
+                    }
+                    default:
+                        return err(`Unsupported group action: ${action}`);
+                }
+            } catch (e) {
+                console.error("[mcp-tools] zalo_group error:", e.message);
+                if (action === "leave" && NOT_A_MEMBER_CODES.includes(Number(e.code ?? extractErrorCode(e.message)))) {
+                    return err(
+                        `This account is not in group ${gid} (already left, or never joined), so there is nothing to leave.`,
+                    );
+                }
+                if (
+                    action === "remove_member" &&
+                    Number(e.code ?? extractErrorCode(e.message)) === REMOVE_NOT_IN_GROUP
+                ) {
+                    return err(
+                        `Zalo says ${target} is not in group ${gid} ("${e.message}", code ${REMOVE_NOT_IN_GROUP}).`,
+                    );
+                }
                 return err(e.message);
             }
         },

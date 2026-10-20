@@ -81,6 +81,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { maskSecretArgs } from "../utils/secrets.js";
 
 const CHANNEL_FILE = "daemon-channel.json";
 const LOCK_FILE = "daemon.lock";
@@ -1172,7 +1173,8 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
     const filteredArgs = args.filter((a) => a !== "-d" && a !== "--daemon");
 
     const logFd = fs.openSync(logPath, "a", 0o600);
-    const header = `\n--- [${new Date().toISOString()}] starting daemon: ${filteredArgs.join(" ")} ---\n`;
+    // Never the secrets: --auth, --client-secret and --webhook-secret values are masked.
+    const header = `\n--- [${new Date().toISOString()}] starting daemon: ${maskSecretArgs(filteredArgs).join(" ")} ---\n`;
     fs.writeSync(logFd, header);
     let startOffset = 0;
     try {

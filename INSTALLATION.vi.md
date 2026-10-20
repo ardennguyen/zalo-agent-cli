@@ -168,7 +168,7 @@ Bên dưới, lệnh này chạy `zalo-agent mcp start --http <port> [--auth <to
 | `--client-secret <key>` | `--auth` / `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | OAuth 2.0 Client Secret cho bước đổi token tại `/token` |
 | `--issuer-url <url>` | *(suy từ header Host)* | URL gốc OAuth 2.0 issuer tường minh (ví dụ `https://mcp.example.com:3100`) |
 | `-w, --webhook <url>` | `webhook` trong `mcp-config.json` | POST mỗi tin nhắn đến (thuộc diện theo dõi) dưới dạng JSON tới URL này (`ZALO_WEBHOOK_URL[_<ownId>]`) |
-| `--webhook-secret <secret>` | `webhookSecret` trong `mcp-config.json` | Khóa bí mật để ký các webhook POST bằng `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` (`ZALO_WEBHOOK_SECRET[_<ownId>]`) |
+| `--webhook-secret <secret>` | `webhookSecret` trong `mcp-config.json` | Khóa bí mật để ký các webhook POST bằng `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` (`ZALO_WEBHOOK_SECRET[_<ownId>]`; cờ được ưu tiên, rồi biến môi trường, rồi khóa trong cấu hình; cờ để trống bị từ chối; nên dùng biến môi trường vì cờ lộ trong danh sách tiến trình) |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | Đường dẫn file cấu hình MCP tùy chỉnh |
 | `--no-self-heal` | *(bật)* | Tắt cơ chế tự động bù khoảng hở (self-heal) sau khi kết nối lại |
 | `--no-delivered-receipts` | *(bật)* | Không gửi báo nhận (`delivered`) cho các tin nhắn đến |
@@ -234,9 +234,9 @@ Mỗi tài khoản cá nhân đã đăng ký có cơ sở dữ liệu SQLite (`<
    zalo-mcp --account 202 sync --days 7
    ```
 
-### Danh sách 23 MCP tools
+### Danh sách 24 MCP tools
 
-Engine này đăng ký **23 MCP tools** trong `src/mcp/mcp-tools.js`, phục vụ cho **tài khoản cá nhân**:
+Engine này đăng ký **24 MCP tools** trong `src/mcp/mcp-tools.js`, phục vụ cho **tài khoản cá nhân**:
 
 | Tool | Công dụng |
 |:---|:---|
@@ -263,10 +263,11 @@ Engine này đăng ký **23 MCP tools** trong `src/mcp/mcp-tools.js`, phục v�
 | `zalo_poll` | Tạo, xem chi tiết, bình chọn, rút bình chọn, thêm phương án, khóa hoặc chia sẻ bình chọn nhóm |
 | `zalo_wait_for_message` | Chờ tin nhắn mới tiếp theo trong buffer theo cơ chế long-poll (0% CPU, không cần vòng lặp polling; tương đương `GET /events/wait`) |
 | `zalo_label` | Liệt kê, gắn, gỡ hoặc cập nhật nhãn hội thoại (ví dụ `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) |
+| `zalo_friend` | Trạng thái kết bạn, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè |
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 
-Các tính năng Official Account (`oa`), danh mục sản phẩm (`catalog`), trả lời tự động (`auto-reply`), tin nhắn nhanh (`quick-msg`), hồ sơ (`profile`), quản lý bạn bè (`friend`), quản trị nhóm nâng cao (`group`), và quản lý tài khoản (`account`) **chỉ có trên CLI** — chưa có MCP tool riêng. AI agent có thể sử dụng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
+Các tính năng Official Account (`oa`), danh mục sản phẩm (`catalog`), trả lời tự động (`auto-reply`), tin nhắn nhanh (`quick-msg`), hồ sơ (`profile`), quản lý bạn bè ngoài lời mời kết bạn và danh sách bạn (`friend`; hai phần đó đã có trong `zalo_friend`), quản trị nhóm nâng cao (`group`), và quản lý tài khoản (`account`) **chỉ có trên CLI** — chưa có MCP tool riêng. AI agent có thể sử dụng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
 
 Tham chiếu đầy đủ về MCP tools (tham số, cấu trúc trả về, cấu hình): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 

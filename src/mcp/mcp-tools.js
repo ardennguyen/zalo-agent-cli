@@ -1,10 +1,10 @@
 /**
  * MCP tool registrations for Zalo message access, sending, user lookup, and group productivity.
- * Registers 23 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * Registers 24 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
  * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status, zalo_search_messages,
  * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll,
- * zalo_wait_for_message, zalo_label.
+ * zalo_wait_for_message, zalo_label, zalo_friend.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
@@ -47,6 +47,14 @@ import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import {
+    describeFriendAddError,
+    extractErrorCode,
+    friendStatusFrom,
+    friendsFrom,
+    receivedRequestsFrom,
+    sentRequestsFrom,
+} from "../core/friend-requests.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 
 /** Repeat mode codes matching zca-js ReminderRepeatMode enum and src/commands/reminder.js. */
@@ -2546,6 +2554,106 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             } catch (e) {
                 console.error("[mcp-tools] zalo_label error:", e.message);
                 return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_friend ---
+    server.registerTool(
+        "zalo_friend",
+        {
+            title: "Manage Zalo Friends and Friend Requests",
+            description:
+                "Check, list and answer friend requests, and list friends. Actions: " +
+                "'status' (the relationship with userId: is_friend, and is_requested / is_requesting, Zalo's two flags " +
+                "for a request pending between you and them; to tell which direction a request goes, use the two lists), " +
+                "'sent_requests' (requests you sent that are still pending), " +
+                "'received_requests' (requests others sent you, newest first, with their message), " +
+                "'send' (friend request to userId, with an optional message), " +
+                "'accept' / 'reject' (the request from userId), " +
+                "'undo' (cancel the request you sent to userId), " +
+                "'list' (your friends, most recently active first, capped by limit). " +
+                "userId is the numeric Zalo id (zalo_lookup_user finds one from a phone number). " +
+                "Zalo restricts accounts that send many friend requests, so send sparingly.",
+            inputSchema: z.object({
+                action: z
+                    .enum(["status", "sent_requests", "received_requests", "send", "accept", "reject", "undo", "list"])
+                    .describe("Friend operation to perform"),
+                userId: z
+                    .string()
+                    .min(1)
+                    .optional()
+                    .describe("Numeric Zalo user id (required for status, send, accept, reject and undo)"),
+                message: z
+                    .string()
+                    .optional()
+                    .describe("Message sent with the friend request (only for 'send'; default: none)"),
+                limit: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(1000)
+                    .optional()
+                    .describe(
+                        "Most friends to return for 'list' (default 200; the reply says how many there are in all)",
+                    ),
+            }),
+        },
+        async ({ action, userId, message, limit }) => {
+            const needsUser = ["status", "send", "accept", "reject", "undo"].includes(action);
+            const target = userId === undefined ? "" : String(userId).trim();
+            if (needsUser) {
+                if (!target) return err(`userId is required for action='${action}'.`);
+                if (!/^\d{1,30}$/.test(target)) {
+                    return err(
+                        `userId must be a numeric Zalo id (got "${target}"). zalo_lookup_user finds one from a phone number.`,
+                    );
+                }
+            }
+            try {
+                switch (action) {
+                    case "status":
+                        return ok({ action, ...friendStatusFrom(await api.getFriendRequestStatus(target), target) });
+                    case "sent_requests": {
+                        let res = null;
+                        try {
+                            res = await api.getSentFriendRequest();
+                        } catch (e) {
+                            // Zalo answers code 112 when there are none, which is an empty list, not a failure.
+                            if (!/\b112\b/.test(String(e?.message))) throw e;
+                        }
+                        const requests = sentRequestsFrom(res);
+                        return ok({ action, count: requests.length, requests });
+                    }
+                    case "received_requests": {
+                        const requests = receivedRequestsFrom(await api.getFriendRecommendations());
+                        return ok({ action, count: requests.length, requests });
+                    }
+                    case "send":
+                        await api.sendFriendRequest(message ?? "", target);
+                        return ok({ action, success: true, userId: target });
+                    case "accept":
+                        await api.acceptFriendRequest(target);
+                        return ok({ action, success: true, userId: target });
+                    case "reject":
+                        await api.rejectFriendRequest(target);
+                        return ok({ action, success: true, userId: target });
+                    case "undo":
+                        await api.undoFriendRequest(target);
+                        return ok({ action, success: true, userId: target });
+                    case "list": {
+                        const { total, friends } = friendsFrom(await api.getAllFriends(), limit ?? 200);
+                        return ok({ action, total, count: friends.length, truncated: friends.length < total, friends });
+                    }
+                    default:
+                        return err(`Unsupported friend action: ${action}`);
+                }
+            } catch (e) {
+                console.error("[mcp-tools] zalo_friend error:", e.message);
+                // 'send' keeps the CLI's wording for Zalo's refusal codes (already friends, blocked, ...).
+                const known =
+                    action === "send" ? describeFriendAddError(e.code ?? extractErrorCode(e.message), target) : null;
+                return err(known || e.message);
             }
         },
     );

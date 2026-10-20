@@ -24,6 +24,7 @@ import {
     markReadViaDaemon,
 } from "../core/daemon-channel.js";
 import { success, error, info, output } from "../utils/output.js";
+import { resolveWebhookSecret } from "../utils/secrets.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
 import { createSocketTap } from "../core/socket-tap.js";
@@ -214,6 +215,10 @@ export function registerMCPCommands(program) {
             "POST each watched incoming message as JSON to this URL (or set webhook in mcp-config.json)",
         )
         .option(
+            "--webhook-secret <secret>",
+            "Sign webhook POSTs: sent as `Authorization: Bearer <secret>` and `X-Zalo-Signature: sha256=<HMAC of the body>`. Prefer the ZALO_WEBHOOK_SECRET[_<ownId>] environment variable: a flag is visible in the process list (or set webhookSecret in mcp-config.json)",
+        )
+        .option(
             "--no-delivered-receipts",
             "Do not acknowledge received messages as delivered (every Zalo client does; seen receipts are never sent)",
         )
@@ -239,6 +244,14 @@ export function registerMCPCommands(program) {
                 // An empty --auth is a token that went missing -- an unset variable
                 // in a unit file -- not a request for no auth, and it used to start
                 // the server open, saying nothing. Refused before anything logs in.
+                // The same for a webhook secret: empty must not mean "unsigned".
+                if (opts.webhookSecret !== undefined) {
+                    try {
+                        resolveWebhookSecret({ flag: opts.webhookSecret });
+                    } catch (e) {
+                        failStart(e.message);
+                    }
+                }
                 if (opts.http && opts.auth !== undefined && !String(opts.auth).trim()) {
                     failStart(
                         "--auth was given an empty token. Refusing to start: that would serve this account's " +
@@ -559,8 +572,14 @@ export function registerMCPCommands(program) {
                 envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) ||
                 config.webhook?.trim() ||
                 null;
-            const webhookSecret =
-                envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId) || config?.webhookSecret?.trim() || null;
+            const webhookSecret = resolveWebhookSecret({
+                flag: opts.webhookSecret,
+                env: envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId),
+                config: config?.webhookSecret,
+            });
+            if (webhookSecret && !webhookUrl) {
+                console.error("[mcp] A webhook secret is set but no webhook URL: nothing will be signed or sent.");
+            }
             if (webhookUrl) {
                 console.error(`[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}`);
             }

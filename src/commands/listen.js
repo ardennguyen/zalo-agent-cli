@@ -8,6 +8,7 @@ import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning, output } from "../utils/output.js";
+import { resolveWebhookSecret } from "../utils/secrets.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { updateAccountName } from "../core/accounts.js";
 import { getAccountDir } from "../core/credentials.js";
@@ -80,6 +81,10 @@ export function registerListenCommand(program) {
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")
         .option("-w, --webhook <url>", "POST each event as JSON to this URL (for n8n, Make, etc.)")
+        .option(
+            "--webhook-secret <secret>",
+            "Sign webhook POSTs: sent as `Authorization: Bearer <secret>` and `X-Zalo-Signature: sha256=<HMAC of the body>`. Prefer the ZALO_WEBHOOK_SECRET[_<ownId>] environment variable: a flag is visible in the process list",
+        )
         .option("--no-self", "Exclude self-sent messages")
         .option("--auto-accept", "Auto-accept incoming friend requests")
         .option("--save <dir>", "Save messages locally as JSONL files (one file per thread, e.g. --save ./zalo-logs)")
@@ -96,6 +101,15 @@ export function registerListenCommand(program) {
         .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
+            // An empty secret is refused before anything else: see resolveWebhookSecret().
+            let cliWebhookSecret;
+            try {
+                if (opts.webhookSecret !== undefined)
+                    cliWebhookSecret = resolveWebhookSecret({ flag: opts.webhookSecret });
+            } catch (e) {
+                error(e.message);
+                process.exit(1);
+            }
             let activeAcc;
             try {
                 const requestedAccount =
@@ -384,7 +398,13 @@ export function registerListenCommand(program) {
             }
 
             const webhookUrl = opts.webhook?.trim() || envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) || null;
-            const webhookSecret = envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId) || null;
+            const webhookSecret = resolveWebhookSecret({
+                flag: cliWebhookSecret,
+                env: envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId),
+            });
+            if (webhookSecret && !webhookUrl) {
+                warning("A webhook secret is set but no webhook URL: nothing will be signed or sent. Pass -w <url>.");
+            }
 
             /** Fire-and-forget webhook POST — never blocks event processing */
             function postWebhook(data) {

@@ -309,7 +309,7 @@ zalo-agent oa whoami --oa-id shop2
 | Pre-command auto-login | Yes | No — `oa` manages its own OAuth token |
 | Command count | 160 (of 192 total CLI commands) | 32 |
 | Real-time events | WebSocket (`listen`) | HTTP Webhook (`oa listen`) |
-| Exposed as MCP tools? | Yes — 23 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | **No** — CLI only |
+| Exposed as MCP tools? | Yes — 24 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | **No** — CLI only |
 
 > [!NOTE]
 > `oa` commands are **not** exposed as MCP tools. AI agents that need to act on an Official Account should invoke the CLI directly with `--json`, e.g., `zalo-agent --json oa msg text <uid> "..."`.

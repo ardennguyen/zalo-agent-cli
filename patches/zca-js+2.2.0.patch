@@ -835,6 +835,7 @@ index c151de0..e49f3d6 100644
 +        this.logoutV2 = logoutV2.logoutV2Factory(ctx, this);
      }
  }
+ 
 diff --git a/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs b/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs
 index f9c670b..4dfa11c 100644
 --- a/node_modules/zca-js/dist/cjs/apis/forwardMessage.cjs

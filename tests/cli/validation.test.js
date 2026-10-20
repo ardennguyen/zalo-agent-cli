@@ -479,3 +479,28 @@ describe("mcp start --cert / --key (HTTPS)", () => {
         assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
     });
 });
+
+describe("--webhook-secret", () => {
+    it("is a real option of both listen and mcp start (it was documented long before it existed)", async () => {
+        for (const args of [
+            ["listen", "--help"],
+            ["mcp", "start", "--help"],
+        ]) {
+            const { stdout } = await runCli(args, opts);
+            assert.match(stdout, /--webhook-secret <secret>/, `${args.join(" ")} must offer --webhook-secret`);
+        }
+    });
+
+    it("an empty secret is refused before anything logs in, on both commands", async () => {
+        // An unset shell variable arrives as exactly this. Red if empty falls back to "unsigned".
+        for (const args of [
+            ["listen", "--webhook", "https://example.invalid/hook", "--webhook-secret", ""],
+            ["mcp", "start", "--webhook", "https://example.invalid/hook", "--webhook-secret", ""],
+        ]) {
+            const r = await runCli(args, opts);
+            assert.equal(r.code, 1, args.join(" "));
+            assert.match(r.all, /--webhook-secret was given an empty secret/);
+            assert.doesNotMatch(r.all, /No active account|Auto-login failed/, "refused before account or login");
+        }
+    });
+});

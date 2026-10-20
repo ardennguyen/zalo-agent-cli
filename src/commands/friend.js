@@ -5,12 +5,7 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
-
-/** Extract numeric error code from zca-js error message string. */
-function extractErrorCode(msg) {
-    const match = String(msg).match(/\((\-?\d+)\)/);
-    return match ? Number(match[1]) : null;
-}
+import { describeFriendAddError, extractErrorCode } from "../core/friend-requests.js";
 
 export function registerFriendCommands(program) {
     const friend = program.command("friend").description("Manage friends and contacts");
@@ -142,13 +137,7 @@ export function registerFriendCommands(program) {
             } catch (e) {
                 // Map Zalo error codes to actionable messages
                 const code = e.code || extractErrorCode(e.message);
-                const errMap = {
-                    225: `Already friends with ${userId}. Use "friend list" to verify.`,
-                    215: `User ${userId} may have blocked you or is unreachable.`,
-                    222: `User ${userId} already sent you a friend request. Use "friend accept ${userId}" instead.`,
-                    "-1": `Invalid userId "${userId}". Use "friend find <phone>" to get the correct userId first.`,
-                };
-                error(errMap[code] || `Friend request failed (code ${code}): ${e.message}`);
+                error(describeFriendAddError(code, userId) || `Friend request failed (code ${code}): ${e.message}`);
             }
         });
 

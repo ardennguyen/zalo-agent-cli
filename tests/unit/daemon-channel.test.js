@@ -558,11 +558,18 @@ describe("daemon-channel.js stays a transport", () => {
 
     it("imports nothing from the sync, db or live-capture layers", () => {
         const imports = [...SRC.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
+        // utils/secrets.js masks secret flags in the daemon.log header. It is a leaf: pure string
+        // handling with no imports of its own (asserted below), so it costs a `msg` invocation nothing.
+        const LEAF_UTILS = ["../utils/secrets.js"];
         assert.deepEqual(
-            imports.filter((p) => !p.startsWith("node:")),
+            imports.filter((p) => !p.startsWith("node:") && !LEAF_UTILS.includes(p)),
             [],
             `daemon-channel.js may only import node builtins; found: ${imports.join(", ")}`,
         );
+        for (const p of LEAF_UTILS) {
+            const leaf = readFileSync(join(import.meta.dirname, "..", "..", "src", "core", p), "utf8");
+            assert.doesNotMatch(leaf, /^import\s/m, `${p} must stay import-free to be allowed in the transport`);
+        }
     });
 
     it("names no stage body of its own — every one arrives as a runner", () => {

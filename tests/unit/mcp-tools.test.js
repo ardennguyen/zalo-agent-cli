@@ -47,6 +47,7 @@ const EXPECTED_TOOLS = [
     "zalo_poll",
     "zalo_wait_for_message",
     "zalo_label",
+    "zalo_friend",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -1390,5 +1391,194 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         );
         assert.equal(rawUpdated.success, true);
         assert.equal(rawUpdated.version, 8);
+    });
+});
+
+describe("zalo_friend", () => {
+    const U = "9100000000000000001";
+    /** A fake api that records every friend call, with per-test answers. */
+    function friendApi(answers = {}) {
+        const calls = [];
+        const rec =
+            (name, fallback) =>
+            async (...args) => {
+                calls.push([name, ...args]);
+                const a = answers[name];
+                if (a instanceof Error) throw a;
+                return typeof a === "function" ? a(...args) : (a ?? fallback);
+            };
+        return {
+            calls,
+            api: {
+                getFriendRequestStatus: rec("getFriendRequestStatus", {
+                    is_friend: 0,
+                    is_requested: 0,
+                    is_requesting: 0,
+                }),
+                getSentFriendRequest: rec("getSentFriendRequest", {}),
+                getFriendRecommendations: rec("getFriendRecommendations", { recommItems: [] }),
+                sendFriendRequest: rec("sendFriendRequest", ""),
+                acceptFriendRequest: rec("acceptFriendRequest", ""),
+                rejectFriendRequest: rec("rejectFriendRequest", ""),
+                undoFriendRequest: rec("undoFriendRequest", ""),
+                getAllFriends: rec("getAllFriends", []),
+            },
+        };
+    }
+    const call = (fa, args) => register({ api: fa.api }).server.call("zalo_friend", args);
+
+    it("takes exactly the eight actions, and a bounded limit", () => {
+        const { server } = register();
+        const schema = server.tools.get("zalo_friend").meta.inputSchema;
+        for (const action of [
+            "status",
+            "sent_requests",
+            "received_requests",
+            "send",
+            "accept",
+            "reject",
+            "undo",
+            "list",
+        ]) {
+            assert.doesNotThrow(() => schema.parse({ action }), action);
+        }
+        assert.throws(() => schema.parse({ action: "block" }), "an action outside the list is refused");
+        assert.throws(() => schema.parse({ action: "list", limit: 0 }));
+        assert.throws(() => schema.parse({ action: "list", limit: 1001 }));
+    });
+
+    it("status asks Zalo about that user and returns the three flags as booleans", async () => {
+        const fa = friendApi({ getFriendRequestStatus: { is_friend: 0, is_requested: 1, is_requesting: 0 } });
+        const out = payloadOf(await call(fa, { action: "status", userId: U }));
+        assert.deepEqual(fa.calls, [["getFriendRequestStatus", U]]);
+        assert.deepEqual(out, {
+            action: "status",
+            userId: U,
+            is_friend: false,
+            is_requested: true,
+            is_requesting: false,
+        });
+    });
+
+    it("sent_requests lists what Zalo has, and treats its 'none' answer (112) as an empty list", async () => {
+        const sent = {
+            [U]: { userId: U, displayName: "A", fReqInfo: { message: "hi", time: 1790000000 } },
+        };
+        const out = payloadOf(await call(friendApi({ getSentFriendRequest: sent }), { action: "sent_requests" }));
+        assert.equal(out.count, 1);
+        assert.deepEqual(out.requests[0], {
+            userId: U,
+            displayName: "A",
+            message: "hi",
+            requestedAt: new Date(1790000000 * 1000).toISOString(),
+        });
+        // Red if Zalo's "no requests" error is surfaced as a failure instead of an empty list.
+        const none = await call(friendApi({ getSentFriendRequest: new Error("Zalo error (112)") }), {
+            action: "sent_requests",
+        });
+        assert.deepEqual(payloadOf(none), { action: "sent_requests", count: 0, requests: [] });
+        const broken = await call(friendApi({ getSentFriendRequest: new Error("boom (500)") }), {
+            action: "sent_requests",
+        });
+        assert.equal(broken.isError, true);
+    });
+
+    it("received_requests keeps only requests sent to us (type 2), newest first, and drops suggestions", async () => {
+        const item = (id, type, time, extra = {}) => ({
+            dataInfo: { userId: id, displayName: `N${id}`, recommType: type, recommTime: time, ...extra },
+        });
+        const fa = friendApi({
+            getFriendRecommendations: {
+                recommItems: [
+                    item("1", 1, 3000), // a suggestion
+                    item("2", 2, 1000, { recommInfo: { message: "old" } }),
+                    item("3", 2, 2000, { recommInfo: { message: "new" }, isSeenFriendReq: true }),
+                ],
+            },
+        });
+        const out = payloadOf(await call(fa, { action: "received_requests" }));
+        // Red if suggestions leak in, or the order is the feed's rather than newest-first.
+        assert.deepEqual(
+            out.requests.map((r) => [r.userId, r.message, r.seen]),
+            [
+                ["3", "new", true],
+                ["2", "old", false],
+            ],
+        );
+        assert.equal(out.count, 2);
+    });
+
+    it("send passes (message, userId) in zca-js's order, defaults the message to empty, and reports success", async () => {
+        const fa = friendApi();
+        assert.deepEqual(payloadOf(await call(fa, { action: "send", userId: U, message: "Chào bạn" })), {
+            action: "send",
+            success: true,
+            userId: U,
+        });
+        await call(fa, { action: "send", userId: U });
+        assert.deepEqual(fa.calls, [
+            ["sendFriendRequest", "Chào bạn", U],
+            ["sendFriendRequest", "", U],
+        ]);
+    });
+
+    it("send explains Zalo's refusals in the CLI's words, and passes an unknown failure through", async () => {
+        const refused = await call(friendApi({ sendFriendRequest: new Error("Zalo error (225)") }), {
+            action: "send",
+            userId: U,
+        });
+        assert.equal(refused.isError, true);
+        assert.match(refused.content[0].text, /Already friends with 9100000000000000001/);
+        const unknown = await call(friendApi({ sendFriendRequest: new Error("weird (999)") }), {
+            action: "send",
+            userId: U,
+        });
+        assert.match(unknown.content[0].text, /weird \(999\)/);
+    });
+
+    it("accept, reject and undo each call their own Zalo method with the user id", async () => {
+        const fa = friendApi();
+        for (const action of ["accept", "reject", "undo"]) {
+            const out = payloadOf(await call(fa, { action, userId: U }));
+            assert.deepEqual(out, { action, success: true, userId: U });
+        }
+        // Red if an action is wired to the wrong method (undo must not reject, accept must not send).
+        assert.deepEqual(fa.calls, [
+            ["acceptFriendRequest", U],
+            ["rejectFriendRequest", U],
+            ["undoFriendRequest", U],
+        ]);
+    });
+
+    it("list returns friends most recently active first, capped, and says how many there are in all", async () => {
+        const friends = [
+            { userId: "1", displayName: "old", lastActionTime: 100 },
+            { userId: "2", zaloName: "newest", lastActionTime: 300 },
+            { userId: "3", displayName: "mid", lastActionTime: 200 },
+        ];
+        const out = payloadOf(await call(friendApi({ getAllFriends: friends }), { action: "list", limit: 2 }));
+        assert.deepEqual(
+            out.friends.map((f) => f.userId),
+            ["2", "3"],
+        );
+        assert.deepEqual([out.total, out.count, out.truncated], [3, 2, true]);
+        assert.equal(out.friends[0].displayName, "newest", "falls back to the Zalo name");
+        const all = payloadOf(await call(friendApi({ getAllFriends: friends }), { action: "list" }));
+        assert.deepEqual([all.count, all.truncated], [3, false]);
+    });
+
+    it("refuses a missing or non-numeric userId without touching Zalo, and needs none for the lists", async () => {
+        const fa = friendApi();
+        for (const action of ["status", "send", "accept", "reject", "undo"]) {
+            const missing = await call(fa, { action });
+            assert.equal(missing.isError, true);
+            assert.match(missing.content[0].text, /userId is required/);
+            const bad = await call(fa, { action, userId: "1,2; drop" });
+            assert.match(bad.content[0].text, /numeric Zalo id/);
+        }
+        assert.deepEqual(fa.calls, [], "no refused call reaches Zalo");
+        for (const action of ["list", "sent_requests", "received_requests"]) {
+            assert.notEqual((await call(fa, { action })).isError, true, action);
+        }
     });
 });

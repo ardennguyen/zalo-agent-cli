@@ -76,7 +76,7 @@ export function registerListenCommand(program) {
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing) and upload (an attachment upload finished)",
+            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing) and upload (Zalo finished processing a video or file you uploaded)",
             "message,friend,group,reaction,read",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")

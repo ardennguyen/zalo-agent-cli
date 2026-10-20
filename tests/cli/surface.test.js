@@ -287,6 +287,7 @@ const FLAG_CONTRACT = {
     "conv archive": ["--type"],
     "conv unarchive": ["--type"],
     "group list": ["--query"],
+    "group leave": ["--silent"],
     "group settings": [
         "--block-name",
         "--no-block-name",

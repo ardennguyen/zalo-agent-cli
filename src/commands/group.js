@@ -336,9 +336,10 @@ export function registerGroupCommands(program) {
     group
         .command("leave <groupId>")
         .description("Leave a group")
-        .action(async (groupId) => {
+        .option("-s, --silent", "Leave without posting the usual notice to the group")
+        .action(async (groupId, opts) => {
             try {
-                const result = await getApi().leaveGroup(groupId);
+                const result = await getApi().leaveGroup(groupId, Boolean(opts.silent));
                 output(result, program.opts().json, () => success("Left group"));
             } catch (e) {
                 error(e.message);

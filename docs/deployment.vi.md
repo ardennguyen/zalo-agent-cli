@@ -2,7 +2,7 @@
 
 [English](deployment.md)
 
-**Trạng thái:** đã xác minh lại trên `zalo-agent-cli` `2.5.1`, kèm phần bổ sung của 2.5.3 (`zalo_friend`, `--webhook-secret`) đã đối chiếu với mã nguồn (24 MCP tools, HTTPS gốc `--cert`/`--key`, máy chủ ủy quyền OAuth 2.0 / 2.1 tích hợp sẵn, webhook có chữ ký HMAC trên cả `listen` lẫn `mcp start`, long-polling 0% CPU qua `GET /events/wait` + `zalo_wait_for_message`, và quản lý tiến trình nền `-d, --daemon` / `--stop` / `--status`) cùng `zalo-mcp` `2.2.0+`. Viết lần đầu ngày 2026-09-29.
+**Trạng thái:** đã xác minh lại trên `zalo-agent-cli` `2.5.1`, kèm phần bổ sung của 2.5.3 (`zalo_friend`, `zalo_group`, `--webhook-secret`) đã đối chiếu với mã nguồn (25 MCP tools, HTTPS gốc `--cert`/`--key`, máy chủ ủy quyền OAuth 2.0 / 2.1 tích hợp sẵn, webhook có chữ ký HMAC trên cả `listen` lẫn `mcp start`, long-polling 0% CPU qua `GET /events/wait` + `zalo_wait_for_message`, và quản lý tiến trình nền `-d, --daemon` / `--stop` / `--status`) cùng `zalo-mcp` `2.2.0+`. Viết lần đầu ngày 2026-09-29.
 **Giấy phép:** từ bản 2.0.1 phần mềm này được cấp phép theo CC BY-NC-SA 4.0; việc sử dụng trong hoạt động kinh doanh của doanh nghiệp cần giấy phép thương mại riêng (xem [NOTICE](../NOTICE)).
 **Đối tượng đọc:** người trực tiếp vận hành hệ thống này trên máy chủ và nhận cảnh báo khi dịch vụ dừng.
 
@@ -55,7 +55,7 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 >
 > | Tính năng | `listen` | `mcp start` |
 > |---|---|---|
-> | Bề mặt 24 MCP tools (`src/mcp/mcp-tools.js`) | không | **có** |
+> | Bề mặt 25 MCP tools (`src/mcp/mcp-tools.js`) | không | **có** |
 > | HTTP / HTTPS `/health`, `/events/wait`, các endpoint OAuth 2.0 | không | **có** (khi có `--http`) |
 > | Đẩy sự kiện qua `-w, --webhook <url>` + `--webhook-secret <secret>` | **có** | **có** |
 > | Lưu trữ JSONL (`--save <dir>`) | **có** | không |
@@ -71,7 +71,7 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 > Chọn `mcp start` khi dùng MCP bots (kèm hỗ trợ webhook và long-polling), hoặc chọn `listen` khi chỉ cần đẩy toàn bộ các loại sự kiện ra webhook/JSONL thuần CLI.
 
 > [!NOTE]
-> **Các MCP tools của `mcp start` tự động đi theo phiên đăng nhập mới sau khi re-login.** Khi socket đóng (với bất kỳ mã nào khác `3000`), tiến trình tự xử lý bên trong: `clearSession()`, sau đó `autoLogin()` tạo đối tượng API `zca-js` mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, daemon channel, trình tải media và cả 24 MCP tools đều đi qua `liveApi(getApi)` (`src/core/live-api.js`) nên luôn gọi đúng phiên hiện hành. Trong vài giây đang re-login, lệnh gọi tool sẽ báo `"The Zalo session is logging in again after a dropped connection; try again in a few seconds."`
+> **Các MCP tools của `mcp start` tự động đi theo phiên đăng nhập mới sau khi re-login.** Khi socket đóng (với bất kỳ mã nào khác `3000`), tiến trình tự xử lý bên trong: `clearSession()`, sau đó `autoLogin()` tạo đối tượng API `zca-js` mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, daemon channel, trình tải media và cả 25 MCP tools đều đi qua `liveApi(getApi)` (`src/core/live-api.js`) nên luôn gọi đúng phiên hiện hành. Trong vài giây đang re-login, lệnh gọi tool sẽ báo `"The Zalo session is logging in again after a dropped connection; try again in a few seconds."`
 
 ### 1.2 Bản chất của `daemon-channel.js`
 

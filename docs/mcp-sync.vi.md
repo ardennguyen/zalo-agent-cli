@@ -2,7 +2,7 @@
 
 [English](mcp-sync.md)
 
-Engine cung cấp 24 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
+Engine cung cấp 25 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
 `@ardennguyen/zalo-agent-cli` v2.1.0+ và `@ardennguyen/zalo-mcp` v2.0.0+).
 `mcp start --account <ID>` (hoặc `ZALO_ACCOUNT=<ID>`) ghim tiến trình vào đúng
 tài khoản đã đăng ký lúc khởi động và qua các lần reconnect; hai tool sync chỉ

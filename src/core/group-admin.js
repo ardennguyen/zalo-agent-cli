@@ -8,8 +8,15 @@
  */
 import { toIso } from "./friend-requests.js";
 
-/** Zalo's error code for leaving a group the account is not in (zca-js documents it on `leaveGroup`). */
-export const NOT_A_MEMBER = 166;
+/**
+ * Zalo's error codes for leaving a group the account is not in. 167 ("Không thể rời nhóm") was measured on a live
+ * account by leaving a group a second time; 166 is the code zca-js documents on `leaveGroup` for the same situation
+ * and has not been seen.
+ */
+export const NOT_A_MEMBER_CODES = Object.freeze([166, 167]);
+
+/** Zalo's code ("Nhóm không có thành viên.") for removing someone who is not in the group, measured live. */
+export const REMOVE_NOT_IN_GROUP = 165;
 
 /** `zalo_group` actions that cannot be undone from the tool, and so ask for `confirm: true`. */
 export const CONFIRMED_ACTIONS = Object.freeze(["leave", "remove_member"]);
@@ -74,7 +81,9 @@ export function groupInfoFrom(result, groupId) {
  * The outcome of `createGroup`.
  *
  * zca-js spells the success list `sucessMembers`; both spellings are read so a
- * fixed typo upstream does not empty it.
+ * fixed typo upstream does not empty it. Zalo's list includes the account that
+ * created the group (measured live: asking for one member returns two ids), so
+ * `added` keeps only the members that were asked for.
  *
  * @param {object|null|undefined} result
  * @param {string[]} requested - the member ids that were asked for
@@ -83,7 +92,9 @@ export function groupInfoFrom(result, groupId) {
 export function createdGroupFrom(result, requested) {
     const failed = (result?.errorMembers ?? []).map(String);
     const given = result?.sucessMembers ?? result?.successMembers;
-    const added = Array.isArray(given) ? given.map(String) : requested.filter((id) => !failed.includes(id));
+    const added = Array.isArray(given)
+        ? given.map(String).filter((id) => requested.includes(id))
+        : requested.filter((id) => !failed.includes(id));
     return { groupId: result?.groupId ? String(result.groupId) : null, added, failed };
 }
 

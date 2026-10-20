@@ -8,7 +8,13 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { NOT_A_MEMBER, createdGroupFrom, groupInfoFrom, memberChangeFrom } from "../../src/core/group-admin.js";
+import {
+    NOT_A_MEMBER_CODES,
+    REMOVE_NOT_IN_GROUP,
+    createdGroupFrom,
+    groupInfoFrom,
+    memberChangeFrom,
+} from "../../src/core/group-admin.js";
 
 const G = "7000000000000000001";
 const A = "9100000000000000001";
@@ -69,6 +75,12 @@ describe("groupInfoFrom", () => {
 });
 
 describe("createdGroupFrom", () => {
+    it("does not count the creator as an added member (Zalo lists the creator too)", () => {
+        // Measured live: asking for one member returned two ids in sucessMembers, one of them our own.
+        const OWNER = "9100000000000000099";
+        assert.deepEqual(createdGroupFrom({ groupId: G, sucessMembers: [OWNER, A], errorMembers: [] }, [A]).added, [A]);
+    });
+
     it("reads zca-js's misspelled sucessMembers, and the corrected spelling too", () => {
         assert.deepEqual(createdGroupFrom({ groupId: G, sucessMembers: [A], errorMembers: [B] }, [A, B]), {
             groupId: G,
@@ -109,7 +121,8 @@ describe("memberChangeFrom", () => {
         assert.deepEqual(memberChangeFrom(undefined, [A]).done, [A]);
     });
 
-    it("exports the code zca-js documents for leaving a group you are not in", () => {
-        assert.equal(NOT_A_MEMBER, 166);
+    it("knows the codes Zalo gives for leaving a group you are not in (167 measured live, 166 documented) and for removing a non-member (165)", () => {
+        assert.deepEqual([...NOT_A_MEMBER_CODES], [166, 167]);
+        assert.equal(REMOVE_NOT_IN_GROUP, 165);
     });
 });

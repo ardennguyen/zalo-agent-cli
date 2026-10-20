@@ -635,12 +635,12 @@ Rời nhóm, xem thông tin nhóm, tạo nhóm và thêm/xóa thành viên — t
 Kết quả theo từng `action`:
 
 - `info`: `{groupId, name, description, type, creatorId, adminIds, totalMember, maxMember, createdAt, avatar, visibility, pendingApproval, settings}`. Không kèm danh sách thành viên (dùng `zalo_get_group_members`). Báo lỗi nếu Zalo không trả nhóm này (tài khoản không ở trong nhóm, hoặc id không phải id nhóm).
-- `create`: `{groupId, name, added, failed}` — `failed` là các thành viên Zalo từ chối. Không có `groupId` trong phản hồi của Zalo thì là lỗi.
+- `create`: `{groupId, name, added, failed}` — `added` chỉ gồm các thành viên bạn đã yêu cầu (Zalo cũng liệt kê cả người tạo nhóm, tool loại ra); `failed` là các thành viên Zalo từ chối. Không có `groupId` trong phản hồi của Zalo thì là lỗi.
 - `add_members`: `{groupId, added, failed, errorData?}`. Zalo trả thành công ngay cả khi không nhận ai; khi không thêm được thành viên nào, tool báo lỗi kèm mã lỗi của Zalo.
 - `remove_member`: `{success: true, groupId, userId}`; Zalo từ chối (không phải thành viên, hoặc tài khoản không đủ quyền — chủ nhóm hoặc quản trị viên mới xóa được) thì là lỗi.
-- `leave`: `{success: true, groupId, silent}`. Mã 166 của Zalo (không ở trong nhóm) được giải thích bằng lời.
+- `leave`: `{success: true, groupId, silent}`. Khi bạn không còn ở trong nhóm (đã rời hoặc chưa từng vào), Zalo trả mã 167 và tool giải thích bằng lời. Chủ nhóm vẫn rời được nhóm của mình (đã đo trên tài khoản thật).
 
-Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên cần `confirm: true`; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Luồng tự động/headless/backend không bị chặn: gửi `confirm: true` trong lệnh gọi, hoặc tắt hẳn bước kiểm tra bằng `"groupConfirm": false` trong `mcp-config.json` hay biến môi trường `ZALO_MCP_GROUP_CONFIRM=0` (biến môi trường được ưu tiên; `1`/`true` bật lại). Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool mới chỉ được kiểm thử offline.
+Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên cần `confirm: true`; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Luồng tự động/headless/backend không bị chặn: gửi `confirm: true` trong lệnh gọi, hoặc tắt hẳn bước kiểm tra bằng `"groupConfirm": false` trong `mcp-config.json` hay biến môi trường `ZALO_MCP_GROUP_CONFIRM=0` (biến môi trường được ưu tiên; `1`/`true` bật lại). Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool đã được chạy thử trên tài khoản thật (nhóm tạm thời): tạo nhóm, xem thông tin, thêm/xóa thành viên, rời nhóm với `silent`. Zalo nhận cờ `silent`, nhưng bên phía bạn không quan sát được thông báo ở phía các thành viên khác.
 
 ### `zalo_friend`
 Kiểm tra, liệt kê và xử lý lời mời kết bạn, và liệt kê bạn bè — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request` và `list`.

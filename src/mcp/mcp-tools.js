@@ -2680,7 +2680,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'create' (a new group named `name` with the members in userIds), " +
                 "'add_members' (add userIds to the group), " +
                 "'remove_member' (remove the one member userId from the group), " +
-                "'leave' (leave the group; `silent` leaves without posting the usual notice to it). " +
+                "'leave' (leave the group; `silent` hides the usual notice from ordinary members; the owner still sees it). " +
                 "groupId is the group's thread id (zalo_search_threads or zalo_list_conversations finds it); " +
                 "user ids are numeric Zalo ids (zalo_lookup_user finds one from a phone number). " +
                 "'leave' and 'remove_member' cannot be undone from here, so they need confirm: true (a plain " +
@@ -2707,7 +2707,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 silent: z
                     .boolean()
                     .optional()
-                    .describe("Only for 'leave': leave without posting the usual notice to the group (default false)"),
+                    .describe(
+                        "Only for 'leave': hide the usual notice from ordinary members; the owner still sees it (default false)",
+                    ),
                 confirm: z
                     .boolean()
                     .optional()

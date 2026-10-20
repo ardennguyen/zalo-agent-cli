@@ -382,4 +382,60 @@ export function registerFriendCommands(program) {
                 error(`Find by phone failed: ${e.message}`);
             }
         });
+
+    friend
+        .command("qr <userIds...>")
+        .description("Get the QR code image URL of one or more users")
+        .action(async (userIds) => {
+            try {
+                const result = await getApi().getQR(userIds);
+                output(result, program.opts().json, () => {
+                    for (const [uid, url] of Object.entries(result ?? {})) console.log(`  ${uid}  ${url}`);
+                });
+            } catch (e) {
+                error(`Get QR failed: ${e.message}`);
+            }
+        });
+
+    friend
+        .command("common-groups <friendIds...>")
+        .description("List the groups you share with one or more friends")
+        .action(async (friendIds) => {
+            try {
+                const result = await getApi().getRelatedFriendGroup(friendIds);
+                output(result, program.opts().json, () => {
+                    for (const [fid, groups] of Object.entries(result?.groupRelateds ?? {})) {
+                        info(`${fid}: ${groups.length} group(s)`);
+                        for (const g of groups) console.log(`  ${g}`);
+                    }
+                });
+            } catch (e) {
+                error(`Get shared groups failed: ${e.message}`);
+            }
+        });
+
+    friend
+        .command("biz <friendId>")
+        .description("Show the business account details of a user (category, address, website, email)")
+        .action(async (friendId) => {
+            try {
+                const result = await getApi().getBizAccount(friendId);
+                output(result, program.opts().json);
+            } catch (e) {
+                error(`Get business account failed: ${e.message}`);
+            }
+        });
+
+    friend
+        .command("block-feed <userId>")
+        .description("Hide a user's posts from your feed (or show them again with --unblock)")
+        .option("--unblock", "Show this user's feed again")
+        .action(async (userId, opts) => {
+            try {
+                const result = await getApi().blockViewFeed(!opts.unblock, userId);
+                output(result, program.opts().json, () => success(opts.unblock ? "Feed shown again" : "Feed hidden"));
+            } catch (e) {
+                error(`Block feed failed: ${e.message}`);
+            }
+        });
 }

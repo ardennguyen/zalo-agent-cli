@@ -802,4 +802,23 @@ export function registerConvCommands(program, deps = {}) {
             info("Nothing was sent to Zalo; this only cleared the local cache.");
             process.exit(0);
         });
+
+    conv.command("muted")
+        .description("List the conversations and groups you have muted")
+        .action(async () => {
+            try {
+                const result = await getApi().getMute();
+                output(result, program.opts().json, () => {
+                    for (const [label, entries] of [
+                        ["chat", result?.chatEntries ?? []],
+                        ["group", result?.groupChatEntries ?? []],
+                    ]) {
+                        info(`${entries.length} muted ${label}(s)`);
+                        for (const m of entries) console.log(`  ${m.id}  mode=${m.muteMode}  duration=${m.duration}`);
+                    }
+                });
+            } catch (e) {
+                error(`Get muted conversations failed: ${e.message}`);
+            }
+        });
 }

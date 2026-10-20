@@ -37,7 +37,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 
 ---
 
-## Messages — `msg` (20 commands)
+## Messages — `msg` (24 commands)
 
 | Command | Description |
 |---------|-------------|
@@ -61,6 +61,10 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `pin <msgId> [threadId] [-t 0\|1]` | Pin a text message to the top of its conversation, as the apps do. The message must be **cached** — the pin carries its `cliMsgId`, sender and text, none of which can be derived from the msgId alone. `[threadId]` defaults to the conversation it was cached under and must match it if given; `-t` defaults to that conversation's cached kind, falling back to `0` when the conversation was never cached. Text messages only. |
 | `unpin <msgId> [threadId] [-t 0\|1]` | Unpin a message. The pin is located in the conversation's **live** pin list, so the message itself need not be cached — but `[threadId]` is then required. Same cached-kind default for `-t` and the same threadId-mismatch guard as `pin`. Refuses when the message is not actually pinned. |
 | `history <threadId> [-t 0\|1] [-n, --limit <n>] [--scan <n>] [--from-msg-id <id>] [--timeout <ms>] [--no-cache]` | Fetch message history. **Groups**: reads Zalo's cloud-message store first (`cm/getrecentv2`, as Zalo Web does when a group is opened), falling back to the WebSocket global-stream scan when the store fails or returns nothing. **Both reach back only to this login** (measured live 2026-09-30): the store withholds older messages — the output then carries `filtered: true` and says so — and the socket stream reaches no further, so on a fresh login older history exists only once the phone-backed `zalo-agent sync` has restored it into the cache. **DMs**: always uses the WebSocket scan (`requestOldMessages`, paginated via `--scan`/raw messages scanned per page, capped by `--timeout` per page wait). By default reads from the local SQLite cache (`zalo.db`) first and only falls back to a live fetch if the cache has fewer than `--limit` messages; **`--no-cache` forces a live fetch even when the cache already has enough**. What a fetch finds is cached **insert-if-absent**, as Zalo Web writes the history it fetches (`storeHistoryMessage`, `src/core/history-fetch.js`): a message not yet in `zalo.db` is added with the listener's type vocabulary (`photo`, not `chat.photo`) and a correct `has_attachment`, and a message already there is left exactly as it is — a fetch never overwrites a better row, never renames a conversation after a message's sender, and never brings back a recalled or deleted message. The DM path (and the group fallback) needs the account's WebSocket. When a `listen`/`mcp` daemon is up it publishes a `history` stage on its loopback channel and the scan runs **on the daemon's own socket** — nothing has to be stopped. The fetch and its cache write then run **in the daemon** — this command only displays what comes back. It opens its own socket only when no daemon is running (or the daemon is confirmed gone before the request reached it); a daemon that is up but cannot answer makes the command fail and say why, with nothing fetched, written or opened beside it. `--from-msg-id` anchors the WebSocket scan to start from an older message ID (pagination). Default `--limit` 50, `--scan` 2000, `--timeout` 15000ms. |
+| `typing <threadId> [-t 0\|1]` | Show the "typing…" indicator in a conversation. |
+| `report <threadId> -r, --reason <sensitive\|annoy\|fraud\|other> [-c, --content <text>] [-t 0\|1]` | Report a user (`-t 0`) or a group (`-t 1`) to Zalo. `--content` is required with `other` and refused with any other reason (zca-js would drop it silently). |
+| `link-preview <url>` | Fetch the preview Zalo would show for a link: title, description, source, thumbnail (zca-js `parseLink`). |
+| `scan-url <url>` | Ask Zalo whether a URL is safe to open (`isSafe`). |
 
 
 **`me` — My Documents.** Every `msg` subcommand that takes a thread argument accepts `me` (case-insensitive), whether the argument is required (`<threadId>`) or optional (`[threadId]`, as on `pin` and `unpin`). It resolves from the session's `loginInfo.send2me_id` as a 1-1 thread. Passing your own uid does the same thing; both print a notice. `me` with `-t 1` is refused, and if the session reports no `send2me_id` the command fails before sending anything.
@@ -73,7 +77,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 
 ---
 
-## Friends — `friend` (22 commands)
+## Friends — `friend` (26 commands)
 
 | Command | Description |
 |---------|-------------|
@@ -99,10 +103,14 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `close` | List your "close friends" (Zalo's close-friends feature). |
 | `recommendations` | Get friend recommendations **and** received friend requests in one call (each item tagged `[request]` or `[suggest]`). |
 | `find-phones <phones...>` | Bulk-lookup users by a list of phone numbers. |
+| `qr <userIds...>` | Get the QR code image URL of one or more users. Zalo answers for your own id; for a friend it returned an empty result when measured. |
+| `common-groups <friendIds...>` | List the groups you share with each friend (zca-js `getRelatedFriendGroup`). |
+| `biz <friendId>` | Show a user's business account details (category, address, website, email); a normal user has none. |
+| `block-feed <userId> [--unblock]` | Hide a user's posts from your feed; `--unblock` shows them again. |
 
 ---
 
-## Groups — `group` (33 commands)
+## Groups — `group` (35 commands)
 
 | Command | Description |
 |---------|-------------|
@@ -139,12 +147,14 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `delete-invite <groupIds...> [--block]` | Delete invitation(s) from the invite box; `--block` also blocks future invites from those groups. |
 | `invite-to <userId> <groupIds...>` | Invite a user to one or more groups you're in. |
 | `disperse <groupId>` | **Permanently disband** a group. Irreversible. |
+| `link-preview <link> [-p, --member-page <n>]` | Show a group's details from its invite link before joining (zca-js `getGroupLinkInfo`); does not join. Not `link-info`, which shows your own group's link. |
+| `invite-info <groupId> [--member-page <n>] [--member-count <n>]` | Show a pending group invitation: the group, who invited you, when it expires (see `invite-boxes`). Uses its own request because zca-js's `getGroupInviteBoxInfo` throws for a group with no topic. |
 
 **`group settings` flags** (each has a `--no-` form; **a flag you omit is left exactly as it is**): `--block-name` (disallow members changing group name/avatar), `--sign-admin` (highlight admin messages), `--msg-history` (allow new members to read message history), `--join-appr` (require approval to join), `--lock-post` (disallow notes/reminders), `--lock-poll` (disallow polls), `--lock-msg` (disallow members sending messages), `--lock-view-member` (hide full member list — community only), `--topic-only` (only the owner and admins can pin messages, notes and polls; `--no-topic-only` lets members pin).
 
 ---
 
-## Conversations — `conv` (20 commands)
+## Conversations — `conv` (21 commands)
 
 | Command | Description |
 |---------|-------------|
@@ -168,6 +178,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `auto-delete <threadId> <ttl> [-t 0\|1]` | Set auto-delete TTL for a conversation. Valid `ttl`: `off`, `1d`, `7d`, `14d` (validated client-side against a fixed map — anything else errors out). |
 | `delete <threadId> [-t 0\|1]` | Delete conversation history. |
 | `forget [threadId] [--orphans] [--dry-run]` | Delete **this machine's** local copy of a conversation: its messages, reactions, board items, reminders, cloud index and downloaded media. **Zalo is never contacted** — nothing is deleted on the server or on any other device. `--orphans` forgets every conversation the account no longer has instead of a named one; `--dry-run` reports what would go without removing it. Requires a `threadId` or `--orphans`, and exits 1 with a pointer if given neither. |
+| `muted` | List the conversations and groups you have muted, as Zalo reports them (`chatEntries`, `groupChatEntries`). |
 
 ---
 
@@ -191,7 +202,7 @@ Multi-account management, each account bound 1:1 to its own dedicated proxy.
 
 ---
 
-## Profile — `profile` (11 commands)
+## Profile — `profile` (14 commands)
 
 | Command | Description |
 |---------|-------------|
@@ -206,6 +217,9 @@ Multi-account management, each account bound 1:1 to its own dedicated proxy.
 | `delete-avatar <photoIds...>` | Delete photo(s) from your avatar gallery. |
 | `reuse-avatar <photoId>` | Re-apply a previous avatar from your gallery. |
 | `set <setting> <value>` | Update one privacy setting — see table below for valid keys/values. |
+| `active <on\|off>` | Turn your online (active) status on or off (zca-js `updateActiveStatus`: ping / deactivate). |
+| `lang <vi\|en>` | Set the account language. |
+| `lost-focus` | Tell Zalo this client moved to the background, as Zalo Web does when its tab loses focus. |
 
 **Privacy settings** (`profile set <setting> <value>`):
 
@@ -281,7 +295,7 @@ Multi-account management, each account bound 1:1 to its own dedicated proxy.
 
 ---
 
-## Catalog / zBusiness — `catalog` (9 commands)
+## Catalog / zBusiness — `catalog` (10 commands)
 
 Requires a Zalo Shop / zBusiness account.
 
@@ -296,14 +310,27 @@ Requires a Zalo Shop / zBusiness account.
 | `update-product <catalogId> <productId> <name> <price> <description> [--photos <urls...>]` | Update a product (all fields required, photos optional). |
 | `delete-product <catalogId> <productIds...>` | Delete one or more products. |
 | `upload-photo <filePath>` | Upload a product photo, returns a URL for use with `--photos`. |
+| `register <on\|off>` | Turn the Zalo Shop catalog feature on or off for this account. |
 
 ---
+
+## Bank — `bank` (5 commands)
+
+Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-qr-transfer` send a card or QR to a thread; these manage Zalo's own saved list.
+
+| Command | Description |
+|---------|-------------|
+| `list [-q, --query <text>]` | List the banks Zalo supports (name, short name, BIN); `-q` filters by name, short name, English name, keyword or BIN. |
+| `accounts [-p, --page <n>] [-l, --limit <n>]` | List your saved bank accounts (`account_id`, bank, number, holder, default flag). |
+| `add <accountNumber> -b, --bank <name> -n, --name <holder>` | Save a bank account. `--bank` is a name alias (`ocb`, `vcb`, ...) or a BIN; an unknown bank is refused before any request. |
+| `update <accountId> <accountNumber> -b, --bank <name> -n, --name <holder>` | Change a saved account (get `<accountId>` from `accounts`). |
+| `remove <accountId>` | Delete a saved account. Looks it up first, because Zalo needs to be told whether it is the default one; an unknown id deletes nothing. |
 
 ## Listener — `listen` (1 command, always running)
 
 | Command | Description |
 |---------|-------------|
-| `listen [--account <id>] [-e, --events <types>] [-f, --filter user\|group\|all] [-w, --webhook <url>] [--webhook-secret <secret>] [--no-self] [--auto-accept] [--save <dir>] [--no-delivered-receipts] [--no-self-heal] [-d, --daemon] [--stop] [--status]` | Unified real-time listener over one WebSocket, with auto-reconnect + auto-re-login. `-d, --daemon` spawns the listener as a detached background process (`windowsHide: true`, `.unref()`), redirects stdout and stderr to `~/.zalo-agent-cli/accounts/<ownId>/daemon.log`, waits until its loopback channel (`daemon-channel.json`) is up, and returns the terminal prompt immediately; `--status` reports whether a background daemon (`listen` or `mcp start`) is running for the account (`pid`, `channelPort`, `logPath`), and `--stop` cleanly stops it over `POST /stop` on the loopback channel (running the exact same graceful shutdown handler as `SIGINT`: stamping `lastConnectedAt`, flushing delivered receipts, releasing `daemon.lock` and `daemon-channel.json`, with fallback to process kill). `--account <id>` (or global `--account <id>` / `ZALO_ACCOUNT`) pins this daemon to an exact registered numeric account ID across reconnects without changing the global active account in `accounts.json`. `-e/--events` is a comma-separated subset of `message,friend,group,reaction,read` (**default is `message,friend,group,reaction,read` — all five event types**). `--events`, `-f/--filter` and `--no-self` select what is **printed/forwarded**, never what is **stored** — every message is written to the cache regardless (until this fix the message handler itself was gated, so `--filter group` silently kept every DM out of the cache and `--events group` stored no messages at all). Likewise: reactions, recalls, delivery receipts, board changes, read state and "you left this group" are written to `zalo.db` on every run, because most cannot be recovered afterwards. Reactions are the exception: the mobile-sync payload has no reaction field, but the socket serves the backlog on cmd 610/611, which `sync` (or `sync-reactions`) drains. **Read state from your other devices:** a conversation the account reads anywhere (the phone, Zalo Web, `conv read`) is reported on the socket as a `clearUnreads` row — cmd 504 (1-1) or 524 (group), and a field of every chat envelope and offline-queue page — which zca-js drops; the listener stores it as `conv_state.lastReadMsgId`/`lastReadTs`, a watermark that only moves forward (one read is reported more than once, and an offline page can arrive after a newer push). An unread mark set or cleared on another device (the cmd 601 `mark_unread` control) updates `conv_state.unreadMarked`. When `read` is included in `--events` (included by default), they are printed as `read` and `unread_mark` events, each naming the socket `cmd` that carried it. Not yet measured live: which cmd a read on the phone arrives on, and whether `conv read` is echoed back. `-f/--filter` restricts message events to DMs (`user`), groups (`group`), or both (`all`, default). `--no-self` hides your own sent messages from the output only — they are still written to the cache (`selfListen` is enabled, so everything this account sends from any device, including the phone, is captured; previously all of it was dropped by the library before any handler ran). `--auto-accept` auto-accepts incoming friend requests. `--webhook <url>` POSTs every event as JSON (fire-and-forget, 5s timeout, never blocks event processing); `--webhook-secret <secret>` (or `ZALO_WEBHOOK_SECRET[_<ownId>]`; the flag wins, an empty flag is refused, and `listen` does not read `mcp-config.json`; prefer the environment variable, since a flag is visible in the process list) adds `Authorization: Bearer <secret>` and `X-Zalo-Signature: sha256=<hmac>` headers. `--save <dir>` appends every event to a per-thread JSONL file (`<dir>/<threadId>.jsonl`) — a practical workaround since the Zalo API itself only returns ~20 recent messages. Every incoming message also writes to the local SQLite cache (`zalo.db`) through `core/live-store.js` — the same writer a running mobile sync uses — and triggers media auto-download through the same downloader `sync-media` uses, into the shared `accounts/<ownId>/media/<threadId>/` layout. Both kinds of Zalo removal are applied to the message they name instead of being stored as new rows: a recall-for-everyone (*Thu hồi*) arrives as the `undo` event and names its target in `content.globalMsgId`, while a delete-for-me (*Xoá ở phía tôi*) arrives as a `message` with `msgType: chat.delete` and names it in `content[0].globalDelMsgId` (falling back to `clientDelMsgId`). Both produce the same tombstone the phone keeps, record the kind in `raw_data.removedAs`, preserve `cliMsgId`, and take the downloaded media with them (`has_attachment` cleared, `mediaPrunedAt` set, file deleted). Rows are classified through the **same** vocabulary the mobile sync uses (`photo`, `file`, `text`, …, not zca-js's `chat.photo`/`share.file`), carry the same attachment shape, and set `has_attachment` — so one query reaches both capture paths and `sync-media` can fetch listener-captured media too. Requires an exclusive per-account lock (`daemon.lock`) — one live socket and one cache writer per account, shared with `mcp start`, which now takes the same lock. **Group system lines are stored as rows.** A rename, a member joining or leaving, an admin change, a pin or unpin reaches the socket only as a cmd 601 control carrying no message id (measured: its `actionId`/`controlId` are queue sequence numbers), so the listener writes a `group_event` row under a `ge:` id with the event's exact time and the whole payload in `raw_data`. A mobile sync restores the same event under the phone's own clientId, landing 1–4 ms from the live time (measured), and replaces the placeholder one-for-one; a live event a sync already holds writes nothing. Polls and reminders are left to their own message frames. **Live sender/conversation name cache refresh:** when a live DM or group message arrives or `sync` runs, cached sender and thread names in `zalo.db` are refreshed automatically without overwriting deliberate user aliases. Tracks connection gaps: after a reconnect, and on startup for the time since the last known-connected moment (anything of a second or more), the window is filed in `sync_gaps`. **Then it self-heals, the way Zalo Web does on every connect:** it asks Zalo's offline message queues (`510_1` for 1-1, `511_1` for groups) on its own socket for everything after the newest message it stored, pages until the server says there is no more, and writes what comes back insert-if-absent (`raw_data.src: "offline"`, printed as `[catch-up]`). No phone tap is involved, and live traffic keeps arriving and being stored meanwhile. A gap is resolved only for the window that pull actually covered. A queue the server reports as dropped (`evict`) or reset is recorded as a gap of its own, and whatever stays pending is printed with the exact run that restores it — `zalo-agent sync --from <YYYY-MM-DD>`, dated from the gap's own start so the window is guaranteed to cover (and resolve) it. That run is the phone-backed `transfer-sync-v2`, which the daemon never starts on its own: it needs a tap on "ĐỒNG BỘ NGAY". Measured live 2026-09-30: a 75-minute outage came back in full from both queues with no prompt on the phone; under `--no-self-heal` a message sent during a drop stayed missing, and the next self-heal run recovered it and closed the gap the opt-out run had left pending. The cursor is the newest *stored* message, so a live message stored during a `--no-self-heal` run moves it past anything not yet recovered — that part stays pending for `sync` rather than being claimed. `--no-self-heal` records and reports gaps without the catch-up. The daemon also **performs** the phone-backed restore when `zalo-agent sync` asks it to, on the socket it already holds (one stage at a time: the catch-up waits behind a running stage), and a completed `sync` resolves the gap via `recordRestoreSuccess()`. **Delivered receipts (default on):** every received message Zalo can identify — your own echoes included — is acknowledged with `deliveredv2`, as Zalo Web does, batched per conversation (150 ms, up to 50 per call). Frames without a usable `msgId`/`cliMsgId`/thread id are skipped, and only `message` events are acknowledged at all; removal frames are not. It is best-effort: failures go to stderr and never affect storage or output. `--no-delivered-receipts` turns it off. **Seen receipts are never sent automatically** — only `conv read` sends one. |
+| `listen [--account <id>] [-e, --events <types>] [-f, --filter user\|group\|all] [-w, --webhook <url>] [--webhook-secret <secret>] [--no-self] [--auto-accept] [--save <dir>] [--no-delivered-receipts] [--no-self-heal] [-d, --daemon] [--stop] [--status]` | Unified real-time listener over one WebSocket, with auto-reconnect + auto-re-login. `-d, --daemon` spawns the listener as a detached background process (`windowsHide: true`, `.unref()`), redirects stdout and stderr to `~/.zalo-agent-cli/accounts/<ownId>/daemon.log`, waits until its loopback channel (`daemon-channel.json`) is up, and returns the terminal prompt immediately; `--status` reports whether a background daemon (`listen` or `mcp start`) is running for the account (`pid`, `channelPort`, `logPath`), and `--stop` cleanly stops it over `POST /stop` on the loopback channel (running the exact same graceful shutdown handler as `SIGINT`: stamping `lastConnectedAt`, flushing delivered receipts, releasing `daemon.lock` and `daemon-channel.json`, with fallback to process kill). `--account <id>` (or global `--account <id>` / `ZALO_ACCOUNT`) pins this daemon to an exact registered numeric account ID across reconnects without changing the global active account in `accounts.json`. `-e/--events` is a comma-separated subset of `message,friend,group,reaction,read` (**default is `message,friend,group,reaction,read` — all five event types**), plus two opt-in types that are never in the default: `typing` (someone is typing in a thread; prints `typing` events with the `uid`) and `upload` (an attachment upload finished; prints `upload_attachment` with `fileId` and `fileUrl`). Neither is stored. The `cipher_key` event zca-js emits carries the session's key material and is deliberately never subscribed to. A group join request arrives as the ordinary `group_join_request` group event. `--events`, `-f/--filter` and `--no-self` select what is **printed/forwarded**, never what is **stored** — every message is written to the cache regardless (until this fix the message handler itself was gated, so `--filter group` silently kept every DM out of the cache and `--events group` stored no messages at all). Likewise: reactions, recalls, delivery receipts, board changes, read state and "you left this group" are written to `zalo.db` on every run, because most cannot be recovered afterwards. Reactions are the exception: the mobile-sync payload has no reaction field, but the socket serves the backlog on cmd 610/611, which `sync` (or `sync-reactions`) drains. **Read state from your other devices:** a conversation the account reads anywhere (the phone, Zalo Web, `conv read`) is reported on the socket as a `clearUnreads` row — cmd 504 (1-1) or 524 (group), and a field of every chat envelope and offline-queue page — which zca-js drops; the listener stores it as `conv_state.lastReadMsgId`/`lastReadTs`, a watermark that only moves forward (one read is reported more than once, and an offline page can arrive after a newer push). An unread mark set or cleared on another device (the cmd 601 `mark_unread` control) updates `conv_state.unreadMarked`. When `read` is included in `--events` (included by default), they are printed as `read` and `unread_mark` events, each naming the socket `cmd` that carried it. Not yet measured live: which cmd a read on the phone arrives on, and whether `conv read` is echoed back. `-f/--filter` restricts message events to DMs (`user`), groups (`group`), or both (`all`, default). `--no-self` hides your own sent messages from the output only — they are still written to the cache (`selfListen` is enabled, so everything this account sends from any device, including the phone, is captured; previously all of it was dropped by the library before any handler ran). `--auto-accept` auto-accepts incoming friend requests. `--webhook <url>` POSTs every event as JSON (fire-and-forget, 5s timeout, never blocks event processing); `--webhook-secret <secret>` (or `ZALO_WEBHOOK_SECRET[_<ownId>]`; the flag wins, an empty flag is refused, and `listen` does not read `mcp-config.json`; prefer the environment variable, since a flag is visible in the process list) adds `Authorization: Bearer <secret>` and `X-Zalo-Signature: sha256=<hmac>` headers. `--save <dir>` appends every event to a per-thread JSONL file (`<dir>/<threadId>.jsonl`) — a practical workaround since the Zalo API itself only returns ~20 recent messages. Every incoming message also writes to the local SQLite cache (`zalo.db`) through `core/live-store.js` — the same writer a running mobile sync uses — and triggers media auto-download through the same downloader `sync-media` uses, into the shared `accounts/<ownId>/media/<threadId>/` layout. Both kinds of Zalo removal are applied to the message they name instead of being stored as new rows: a recall-for-everyone (*Thu hồi*) arrives as the `undo` event and names its target in `content.globalMsgId`, while a delete-for-me (*Xoá ở phía tôi*) arrives as a `message` with `msgType: chat.delete` and names it in `content[0].globalDelMsgId` (falling back to `clientDelMsgId`). Both produce the same tombstone the phone keeps, record the kind in `raw_data.removedAs`, preserve `cliMsgId`, and take the downloaded media with them (`has_attachment` cleared, `mediaPrunedAt` set, file deleted). Rows are classified through the **same** vocabulary the mobile sync uses (`photo`, `file`, `text`, …, not zca-js's `chat.photo`/`share.file`), carry the same attachment shape, and set `has_attachment` — so one query reaches both capture paths and `sync-media` can fetch listener-captured media too. Requires an exclusive per-account lock (`daemon.lock`) — one live socket and one cache writer per account, shared with `mcp start`, which now takes the same lock. **Group system lines are stored as rows.** A rename, a member joining or leaving, an admin change, a pin or unpin reaches the socket only as a cmd 601 control carrying no message id (measured: its `actionId`/`controlId` are queue sequence numbers), so the listener writes a `group_event` row under a `ge:` id with the event's exact time and the whole payload in `raw_data`. A mobile sync restores the same event under the phone's own clientId, landing 1–4 ms from the live time (measured), and replaces the placeholder one-for-one; a live event a sync already holds writes nothing. Polls and reminders are left to their own message frames. **Live sender/conversation name cache refresh:** when a live DM or group message arrives or `sync` runs, cached sender and thread names in `zalo.db` are refreshed automatically without overwriting deliberate user aliases. Tracks connection gaps: after a reconnect, and on startup for the time since the last known-connected moment (anything of a second or more), the window is filed in `sync_gaps`. **Then it self-heals, the way Zalo Web does on every connect:** it asks Zalo's offline message queues (`510_1` for 1-1, `511_1` for groups) on its own socket for everything after the newest message it stored, pages until the server says there is no more, and writes what comes back insert-if-absent (`raw_data.src: "offline"`, printed as `[catch-up]`). No phone tap is involved, and live traffic keeps arriving and being stored meanwhile. A gap is resolved only for the window that pull actually covered. A queue the server reports as dropped (`evict`) or reset is recorded as a gap of its own, and whatever stays pending is printed with the exact run that restores it — `zalo-agent sync --from <YYYY-MM-DD>`, dated from the gap's own start so the window is guaranteed to cover (and resolve) it. That run is the phone-backed `transfer-sync-v2`, which the daemon never starts on its own: it needs a tap on "ĐỒNG BỘ NGAY". Measured live 2026-09-30: a 75-minute outage came back in full from both queues with no prompt on the phone; under `--no-self-heal` a message sent during a drop stayed missing, and the next self-heal run recovered it and closed the gap the opt-out run had left pending. The cursor is the newest *stored* message, so a live message stored during a `--no-self-heal` run moves it past anything not yet recovered — that part stays pending for `sync` rather than being claimed. `--no-self-heal` records and reports gaps without the catch-up. The daemon also **performs** the phone-backed restore when `zalo-agent sync` asks it to, on the socket it already holds (one stage at a time: the catch-up waits behind a running stage), and a completed `sync` resolves the gap via `recordRestoreSuccess()`. **Delivered receipts (default on):** every received message Zalo can identify — your own echoes included — is acknowledged with `deliveredv2`, as Zalo Web does, batched per conversation (150 ms, up to 50 per call). Frames without a usable `msgId`/`cliMsgId`/thread id are skipped, and only `message` events are acknowledged at all; removal frames are not. It is best-effort: failures go to stderr and never affect storage or output. `--no-delivered-receipts` turns it off. **Seen receipts are never sent automatically** — only `conv read` sends one. |
 
 ---
 
@@ -472,22 +499,23 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | Group | Commands |
 |-------|----------|
 | Top-level (login/logout/status/whoami/update/sync/sync-mobile/sync-media/sync-reactions/sync-boards/sync-cloud) | 11 |
-| `msg` | 20 |
-| `friend` | 22 |
-| `group` | 33 |
-| `conv` | 20 |
+| `msg` | 24 |
+| `friend` | 26 |
+| `group` | 35 |
+| `conv` | 21 |
 | `account` | 7 |
-| `profile` | 11 |
+| `profile` | 14 |
 | `poll` | 7 |
 | `reminder` | 6 |
 | `auto-reply` | 4 |
 | `quick-msg` | 4 |
 | `label` | 2 |
-| `catalog` | 9 |
+| `catalog` | 10 |
+| `bank` | 5 |
 | `listen` | 1 |
 | `mcp` | 3 (`start`, `wait`, `mark-read` — exposing 25 MCP tools) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **192 CLI commands** + 25 MCP tools |
+| **Total** | **212 CLI commands** + 25 MCP tools |
 
 ## Provenance
 

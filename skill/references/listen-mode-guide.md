@@ -18,7 +18,7 @@ zalo-agent listen --auto-accept                            # Auto-accept friend 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--account <id>` | Full registered numeric account ID, pinned across startup/reconnect/retry; does not switch global active | Active at startup, then pinned |
-| `-e, --events <types>` | message,friend,group,reaction,read | message,friend,group,reaction,read |
+| `-e, --events <types>` | message,friend,group,reaction,read (opt-in extras: `typing`, `upload`) | message,friend,group,reaction,read |
 | `-f, --filter <type>` | user, group, all | all |
 | `-w, --webhook <url>` | POST events as JSON to URL | — |
 | `--webhook-secret <secret>` | Sign webhook POSTs (`Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>`, or `ZALO_WEBHOOK_SECRET[_<ownId>]`; the flag wins and an empty flag is refused; prefer the environment variable, since a flag is visible in the process list) | — |

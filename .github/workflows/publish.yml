@@ -19,9 +19,10 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # npm trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.
-      # The tests below still run on Node 22, the engines floor.
-      - run: npm install -g npm@^11.5.1
+      # npm trusted publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10. npm ^12.2.0 is the
+      # current line (it needs Node ^22.22.2, which `22` resolves to). The tests below still run on
+      # Node 22, the engines floor.
+      - run: npm install -g npm@^12.2.0
 
       - run: npm ci
       - run: npm run lint

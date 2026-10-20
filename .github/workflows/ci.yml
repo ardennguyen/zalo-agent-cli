@@ -1,10 +1,15 @@
 name: CI
 
+# Every branch and every pull request, whatever its base: a version branch such as v2.5-dev gets the
+# Linux run on each push, not only when a PR is opened.
 on:
   push:
-    branches: [main, v2.0-dev]
+    branches: ['**']
   pull_request:
-    branches: [main, v2.0-dev]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint-and-test:
@@ -18,6 +23,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+
+      # The same npm the publish workflow uses, so the lockfile is checked the way it will be installed.
+      # npm ^12.2.0 needs Node ^22.22.2 or newer; `22` resolves to the latest 22.x.
+      - run: npm install -g npm@^12.2.0
 
       - run: npm ci
       - run: npm run lint

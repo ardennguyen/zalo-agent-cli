@@ -257,7 +257,9 @@ it("shared runners resolve the current API after reconnect and never acquire a s
     assert.equal(seen[1].account, "101");
     assert.equal(seen[1].params.liveStore, false);
     assert.equal(seen[1].params.keepAlive, true);
-    assert.equal(seen[1].params.reconnect, undefined);
+    // A reconnect that only waits for the daemon's own recovery (daemon-sync.js): it never opens a socket itself.
+    assert.equal(typeof seen[1].params.reconnect, "function");
+    assert.equal(seen[1].params.maxResumes, 3, "a daemon allows more resumes than the CLI's one");
 });
 
 it("SDK tools/call validates refinements and tracks async work across separate calls", async (t) => {

@@ -19,6 +19,7 @@
  */
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { runPacedBatches } from "../user-info.js";
 
 const require = createRequire(import.meta.url);
 
@@ -68,15 +69,13 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
         return out;
     }
     const idToUser = new Map();
-    for (let i = 0; i < globalIds.length; i += GID_BATCH) {
-        const batch = globalIds.slice(i, i + GID_BATCH);
-        let map;
-        try {
-            map = await gidDecrypt(batch);
-        } catch (e) {
-            log(`gid/decrypt batch failed (${e.message})`);
-            continue;
-        }
+    const decrypted = await runPacedBatches(globalIds, {
+        batchSize: GID_BATCH,
+        label: "gid/decrypt",
+        log,
+        call: (batch) => gidDecrypt(batch),
+    });
+    for (const map of decrypted.results) {
         for (const [gid, uid] of Object.entries(map || {})) if (uid) idToUser.set(gid, String(uid));
     }
     if (!idToUser.size) return out;
@@ -85,20 +84,21 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
     const names = new Map();
     const zaloNames = new Map();
     const uids = [...new Set([...idToUser.values()])];
-    for (let i = 0; i < uids.length; i += NAME_BATCH) {
-        const batch = uids.slice(i, i + NAME_BATCH);
-        try {
-            const info = await api.getUserInfo(batch);
-            for (const bag of [info?.changed_profiles, info?.unchanged_profiles]) {
-                for (const [uid, p] of Object.entries(bag || {})) {
-                    if (!names.has(uid) && p) names.set(uid, p.zaloName || p.displayName || "");
-                    if (p?.zaloName) zaloNames.set(uid, p.zaloName);
-                }
+    const named = await runPacedBatches(uids, {
+        batchSize: NAME_BATCH,
+        label: "getUserInfo",
+        log,
+        call: (batch) => api.getUserInfo(batch),
+    });
+    for (const info of named.results) {
+        for (const bag of [info?.changed_profiles, info?.unchanged_profiles]) {
+            for (const [uid, p] of Object.entries(bag || {})) {
+                if (!names.has(uid) && p) names.set(uid, p.zaloName || p.displayName || "");
+                if (p?.zaloName) zaloNames.set(uid, p.zaloName);
             }
-        } catch (e) {
-            log(`getUserInfo batch failed (${e.message}); some names may be blank`);
         }
     }
+    if (named.failed || named.skippedIds) log("some names may be blank (getUserInfo did not answer for every batch)");
 
     for (const [gid, uid] of idToUser)
         out.set(gid, { id: uid, name: names.get(uid) || "", zaloName: zaloNames.get(uid) || "" });

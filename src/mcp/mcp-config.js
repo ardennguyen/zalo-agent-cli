@@ -44,6 +44,7 @@ export function getDefaultConfig() {
             clients: [],
         },
         webhookSecret: null,
+        groupConfirm: true, // zalo_group asks for confirm: true before leave / remove_member
         httpPort: null,
         host: null,
     };

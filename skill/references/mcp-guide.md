@@ -630,6 +630,7 @@ Rời nhóm, xem thông tin nhóm, tạo nhóm và thêm/xóa thành viên — t
 | `userIds` | string[] 1–100 (tuỳ chọn) | Các Zalo userId dạng số (bắt buộc với `create` và `add_members`; id trùng chỉ gửi một lần) |
 | `userId` | string (tuỳ chọn) | Một Zalo userId dạng số (bắt buộc với `remove_member`) |
 | `silent` | boolean (tuỳ chọn) | Chỉ với `leave`: rời mà không đăng thông báo thường lệ vào nhóm (mặc định `false`) |
+| `confirm` | boolean (tuỳ chọn) | Phải là `true` với `leave` và `remove_member`. Chỉ là một tham số — không có hộp thoại hay bước chờ người dùng; thiếu thì tool báo lỗi và không gọi Zalo |
 
 Kết quả theo từng `action`:
 
@@ -639,7 +640,7 @@ Kết quả theo từng `action`:
 - `remove_member`: `{success: true, groupId, userId}`; Zalo từ chối (không phải thành viên, hoặc tài khoản không đủ quyền — chủ nhóm hoặc quản trị viên mới xóa được) thì là lỗi.
 - `leave`: `{success: true, groupId, silent}`. Mã 166 của Zalo (không ở trong nhóm) được giải thích bằng lời.
 
-Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool mới chỉ được kiểm thử offline.
+Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên cần `confirm: true`; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Luồng tự động/headless/backend không bị chặn: gửi `confirm: true` trong lệnh gọi, hoặc tắt hẳn bước kiểm tra bằng `"groupConfirm": false` trong `mcp-config.json` hay biến môi trường `ZALO_MCP_GROUP_CONFIRM=0` (biến môi trường được ưu tiên; `1`/`true` bật lại). Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool mới chỉ được kiểm thử offline.
 
 ### `zalo_friend`
 Kiểm tra, liệt kê và xử lý lời mời kết bạn, và liệt kê bạn bè — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request` và `list`.
@@ -718,6 +719,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
   "triggerKeywords": ["@bot"],
   "webhook": null,
   "webhookSecret": null,
+  "groupConfirm": true,
   "httpPort": null,
   "host": null,
   "notify": {
@@ -757,6 +759,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `triggerKeywords` | Chỉ áp dụng cho tính năng notify — không lọc buffer của `zalo_get_messages` |
 | `webhook` | URL nhận POST mỗi tin nhắn mới (hoặc `-w, --webhook <url>` / `ZALO_WEBHOOK_URL[_<ownId>]`) |
 | `webhookSecret` | Khóa bí mật ký webhook bằng `Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>` (`--webhook-secret` / `ZALO_WEBHOOK_SECRET[_<ownId>]`; thứ tự ưu tiên: cờ, biến môi trường, rồi khóa này) |
+| `groupConfirm` | `true` = `zalo_group` đòi `confirm: true` trước `leave` / `remove_member`; `false` (hoặc `ZALO_MCP_GROUP_CONFIRM=0`, được ưu tiên) cho luồng tự động bỏ qua bước này |
 | `httpPort` | Port HTTP/HTTPS mặc định cho tài khoản này (`--http <port>` / `ZALO_MCP_HTTP_PORT[_<ownId>]`) |
 | `host` | Địa chỉ bind khi chạy HTTP/HTTPS (`--host` / `ZALO_MCP_HOST[_<ownId>]`) |
 | `notify.enabled` | Bật/tắt gửi thông báo khi agent offline (qua `ZaloNotifier`) |

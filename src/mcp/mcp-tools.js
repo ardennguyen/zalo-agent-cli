@@ -55,7 +55,14 @@ import {
     receivedRequestsFrom,
     sentRequestsFrom,
 } from "../core/friend-requests.js";
-import { NOT_A_MEMBER, createdGroupFrom, groupInfoFrom, memberChangeFrom } from "../core/group-admin.js";
+import {
+    CONFIRMED_ACTIONS,
+    NOT_A_MEMBER,
+    createdGroupFrom,
+    groupConfirmRequired,
+    groupInfoFrom,
+    memberChangeFrom,
+} from "../core/group-admin.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 
 /** Repeat mode codes matching zca-js ReminderRepeatMode enum and src/commands/reminder.js. */
@@ -2675,7 +2682,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'leave' (leave the group; `silent` leaves without posting the usual notice to it). " +
                 "groupId is the group's thread id (zalo_search_threads or zalo_list_conversations finds it); " +
                 "user ids are numeric Zalo ids (zalo_lookup_user finds one from a phone number). " +
-                "'leave' and 'remove_member' cannot be undone from here. Zalo can refuse some members " +
+                "'leave' and 'remove_member' cannot be undone from here, so they need confirm: true (a plain " +
+                "parameter, no prompt; a deployment can turn the check off with groupConfirm: false in " +
+                "mcp-config.json or ZALO_MCP_GROUP_CONFIRM=0). Zalo can refuse some members " +
                 "of a create or add_members: the reply lists the members it did and did not take.",
             inputSchema: z.object({
                 action: z
@@ -2698,9 +2707,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .boolean()
                     .optional()
                     .describe("Only for 'leave': leave without posting the usual notice to the group (default false)"),
+                confirm: z
+                    .boolean()
+                    .optional()
+                    .describe(
+                        "Must be true for 'leave' and 'remove_member', which cannot be undone from here " +
+                            "(ignored when the deployment has switched the check off)",
+                    ),
             }),
         },
-        async ({ action, groupId, name, userIds, userId, silent }) => {
+        async ({ action, groupId, name, userIds, userId, silent, confirm }) => {
             const gid = groupId === undefined ? "" : String(groupId).trim();
             if (["leave", "info", "add_members", "remove_member"].includes(action)) {
                 if (!gid) return err(`groupId is required for action='${action}'.`);
@@ -2733,6 +2749,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             }
             const groupName = name === undefined ? "" : String(name).trim();
             if (action === "create" && !groupName) return err("name is required for action='create'.");
+
+            // After validation, before Zalo: a refused call changes nothing and says exactly how to retry.
+            if (CONFIRMED_ACTIONS.includes(action) && confirm !== true && groupConfirmRequired({ config })) {
+                const what = action === "leave" ? `leave group ${gid}` : `remove ${target} from group ${gid}`;
+                return err(
+                    `Not done: this would ${what}, which cannot be undone from here. Repeat the call with ` +
+                        "confirm: true to proceed. (An automatic or headless deployment can turn this check off " +
+                        "with groupConfirm: false in mcp-config.json, or ZALO_MCP_GROUP_CONFIRM=0 in the environment.)",
+                );
+            }
 
             try {
                 switch (action) {

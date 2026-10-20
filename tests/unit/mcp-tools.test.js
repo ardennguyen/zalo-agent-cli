@@ -1610,7 +1610,8 @@ describe("zalo_group", () => {
             },
         };
     }
-    const call = (ga, args) => register({ api: ga.api }).server.call("zalo_group", args);
+    const call = (ga, args, config) =>
+        register({ api: ga.api, ...(config && { config }) }).server.call("zalo_group", args);
 
     it("takes exactly the five actions", () => {
         const schema = register().server.tools.get("zalo_group").meta.inputSchema;
@@ -1623,13 +1624,13 @@ describe("zalo_group", () => {
 
     it("leave passes (groupId, silent) to Zalo: loud by default, quiet only when asked", async () => {
         const ga = groupApi();
-        assert.deepEqual(payloadOf(await call(ga, { action: "leave", groupId: G })), {
+        assert.deepEqual(payloadOf(await call(ga, { action: "leave", groupId: G, confirm: true })), {
             action: "leave",
             success: true,
             groupId: G,
             silent: false,
         });
-        const quiet = payloadOf(await call(ga, { action: "leave", groupId: G, silent: true }));
+        const quiet = payloadOf(await call(ga, { action: "leave", groupId: G, silent: true, confirm: true }));
         assert.equal(quiet.silent, true);
         // Red if the flag is dropped on the way to zca-js, or defaults to silent.
         assert.deepEqual(ga.calls, [
@@ -1641,11 +1642,16 @@ describe("zalo_group", () => {
     it("leave explains Zalo's 'not a member' (166) and passes other failures through", async () => {
         const gone = await call(groupApi({ leaveGroup: new Error("Zalo error (166)") }), {
             action: "leave",
+            confirm: true,
             groupId: G,
         });
         assert.equal(gone.isError, true);
         assert.match(gone.content[0].text, /not a member of group 7000000000000000001/);
-        const other = await call(groupApi({ leaveGroup: new Error("boom (500)") }), { action: "leave", groupId: G });
+        const other = await call(groupApi({ leaveGroup: new Error("boom (500)") }), {
+            action: "leave",
+            groupId: G,
+            confirm: true,
+        });
         assert.match(other.content[0].text, /boom \(500\)/);
     });
 
@@ -1708,15 +1714,19 @@ describe("zalo_group", () => {
 
     it("remove_member passes ([userId], groupId), and a refused member is an error", async () => {
         const ga = groupApi();
-        assert.deepEqual(payloadOf(await call(ga, { action: "remove_member", groupId: G, userId: U1 })), {
-            action: "remove_member",
-            success: true,
-            groupId: G,
-            userId: U1,
-        });
+        assert.deepEqual(
+            payloadOf(await call(ga, { action: "remove_member", groupId: G, userId: U1, confirm: true })),
+            {
+                action: "remove_member",
+                success: true,
+                groupId: G,
+                userId: U1,
+            },
+        );
         assert.deepEqual(ga.calls, [["removeUserFromGroup", [U1], G]]);
         const refused = await call(groupApi({ removeUserFromGroup: { errorMembers: [U1] } }), {
             action: "remove_member",
+            confirm: true,
             groupId: G,
             userId: U1,
         });
@@ -1743,5 +1753,116 @@ describe("zalo_group", () => {
         assert.match(await text({ action: "remove_member", groupId: G }), /userId is required/);
         assert.match(await text({ action: "remove_member", groupId: G, userId: "1 2" }), /numeric Zalo id/);
         assert.deepEqual(ga.calls, [], "no refused call reaches Zalo");
+    });
+});
+
+describe("zalo_group confirm guard", () => {
+    const G = "7000000000000000001";
+    const U1 = "9100000000000000001";
+    const calls = [];
+    const api = {
+        leaveGroup: async (...a) => (calls.push(["leaveGroup", ...a]), { memberError: [] }),
+        removeUserFromGroup: async (...a) => (calls.push(["removeUserFromGroup", ...a]), { errorMembers: [] }),
+        createGroup: async (...a) => (calls.push(["createGroup", ...a]), { groupId: G, errorMembers: [] }),
+        addUserToGroup: async (...a) => (calls.push(["addUserToGroup", ...a]), { errorMembers: [] }),
+        getGroupInfo: async (...a) => (calls.push(["getGroupInfo", ...a]), { gridInfoMap: { [G]: { name: "T" } } }),
+    };
+    const run = (args, config) => register({ api, ...(config && { config }) }).server.call("zalo_group", args);
+    const LEAVE = { action: "leave", groupId: G };
+    const REMOVE = { action: "remove_member", groupId: G, userId: U1 };
+
+    /** Run `fn` with ZALO_MCP_GROUP_CONFIRM set (or removed), then put the environment back. */
+    async function withEnv(value, fn) {
+        const saved = process.env.ZALO_MCP_GROUP_CONFIRM;
+        if (value === undefined) delete process.env.ZALO_MCP_GROUP_CONFIRM;
+        else process.env.ZALO_MCP_GROUP_CONFIRM = value;
+        try {
+            return await fn();
+        } finally {
+            if (saved === undefined) delete process.env.ZALO_MCP_GROUP_CONFIRM;
+            else process.env.ZALO_MCP_GROUP_CONFIRM = saved;
+        }
+    }
+    beforeEach(() => {
+        calls.length = 0;
+    });
+
+    it("refuses leave and remove_member without confirm: true, says how to retry, and never reaches Zalo", async () => {
+        await withEnv(undefined, async () => {
+            for (const args of [LEAVE, REMOVE, { ...LEAVE, confirm: false }, { ...REMOVE, confirm: false }]) {
+                const r = await run(args);
+                assert.equal(r.isError, true, JSON.stringify(args));
+                assert.match(r.content[0].text, /Repeat the call with confirm: true/);
+            }
+            assert.match((await run(LEAVE)).content[0].text, /leave group 7000000000000000001/);
+            assert.match(
+                (await run(REMOVE)).content[0].text,
+                /remove 9100000000000000001 from group 7000000000000000001/,
+            );
+            // Red if the guard runs after the Zalo call, or is skipped.
+            assert.deepEqual(calls, []);
+        });
+    });
+
+    it("goes ahead with confirm: true, with no other step (nothing waits for a person)", async () => {
+        await withEnv(undefined, async () => {
+            assert.equal(payloadOf(await run({ ...LEAVE, confirm: true })).success, true);
+            assert.equal(payloadOf(await run({ ...REMOVE, confirm: true })).success, true);
+            assert.deepEqual(calls, [
+                ["leaveGroup", G, false],
+                ["removeUserFromGroup", [U1], G],
+            ]);
+        });
+    });
+
+    it("guards only the irreversible actions: info, create and add_members need no confirm", async () => {
+        await withEnv(undefined, async () => {
+            for (const args of [
+                { action: "info", groupId: G },
+                { action: "create", name: "T", userIds: [U1] },
+                { action: "add_members", groupId: G, userIds: [U1] },
+            ]) {
+                assert.notEqual((await run(args)).isError, true, args.action);
+            }
+        });
+    });
+
+    it("groupConfirm: false in the config switches the check off, for a backend that never sends confirm", async () => {
+        await withEnv(undefined, async () => {
+            assert.equal(payloadOf(await run(LEAVE, { groupConfirm: false })).success, true);
+            assert.equal(payloadOf(await run(REMOVE, { groupConfirm: false })).success, true);
+            // Only an explicit false turns it off; any other value keeps it on.
+            assert.equal((await run(LEAVE, { groupConfirm: "no" })).isError, true);
+            assert.equal((await run(LEAVE, {})).isError, true);
+        });
+    });
+
+    it("ZALO_MCP_GROUP_CONFIRM switches the check off or on, and wins over the config", async () => {
+        for (const off of ["0", "false", "OFF", " no "]) {
+            await withEnv(off, async () => {
+                assert.equal(payloadOf(await run(LEAVE)).success, true, `env=${off}`);
+            });
+        }
+        await withEnv("1", async () => {
+            assert.equal((await run(LEAVE, { groupConfirm: false })).isError, true, "env on beats config off");
+        });
+        await withEnv("0", async () => {
+            assert.equal(payloadOf(await run(LEAVE, { groupConfirm: true })).success, true, "env off beats config on");
+        });
+        await withEnv("maybe", async () => {
+            assert.equal((await run(LEAVE)).isError, true, "an unrecognized value leaves the check on");
+        });
+    });
+
+    it("a bad id is reported as a bad id, before the confirm question", async () => {
+        await withEnv(undefined, async () => {
+            assert.match((await run({ action: "leave", groupId: "abc" })).content[0].text, /numeric Zalo group id/);
+            assert.match((await run({ action: "remove_member", groupId: G })).content[0].text, /userId is required/);
+        });
+    });
+
+    it("the default config ships the check on", async () => {
+        const { getDefaultConfig } = await import("../../src/mcp/mcp-config.js");
+        assert.equal(getDefaultConfig().groupConfirm, true);
     });
 });

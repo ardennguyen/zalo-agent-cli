@@ -48,6 +48,7 @@ const EXPECTED_TOOLS = [
     "zalo_wait_for_message",
     "zalo_label",
     "zalo_friend",
+    "zalo_group",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -1580,5 +1581,167 @@ describe("zalo_friend", () => {
         for (const action of ["list", "sent_requests", "received_requests"]) {
             assert.notEqual((await call(fa, { action })).isError, true, action);
         }
+    });
+});
+
+describe("zalo_group", () => {
+    const G = "7000000000000000001";
+    const U1 = "9100000000000000001";
+    const U2 = "9100000000000000002";
+    /** A fake api that records every group call, with per-test answers. */
+    function groupApi(answers = {}) {
+        const calls = [];
+        const rec =
+            (name, fallback) =>
+            async (...args) => {
+                calls.push([name, ...args]);
+                const a = answers[name];
+                if (a instanceof Error) throw a;
+                return typeof a === "function" ? a(...args) : (a ?? fallback);
+            };
+        return {
+            calls,
+            api: {
+                getGroupInfo: rec("getGroupInfo", { gridInfoMap: {} }),
+                createGroup: rec("createGroup", { groupId: G, sucessMembers: [], errorMembers: [] }),
+                addUserToGroup: rec("addUserToGroup", { errorMembers: [], error_data: {} }),
+                removeUserFromGroup: rec("removeUserFromGroup", { errorMembers: [] }),
+                leaveGroup: rec("leaveGroup", { memberError: [] }),
+            },
+        };
+    }
+    const call = (ga, args) => register({ api: ga.api }).server.call("zalo_group", args);
+
+    it("takes exactly the five actions", () => {
+        const schema = register().server.tools.get("zalo_group").meta.inputSchema;
+        for (const action of ["leave", "info", "create", "add_members", "remove_member"]) {
+            assert.doesNotThrow(() => schema.parse({ action }), action);
+        }
+        assert.throws(() => schema.parse({ action: "rename" }), "an action outside the list is refused");
+        assert.throws(() => schema.parse({ action: "create", userIds: [] }), "an empty member list is refused");
+    });
+
+    it("leave passes (groupId, silent) to Zalo: loud by default, quiet only when asked", async () => {
+        const ga = groupApi();
+        assert.deepEqual(payloadOf(await call(ga, { action: "leave", groupId: G })), {
+            action: "leave",
+            success: true,
+            groupId: G,
+            silent: false,
+        });
+        const quiet = payloadOf(await call(ga, { action: "leave", groupId: G, silent: true }));
+        assert.equal(quiet.silent, true);
+        // Red if the flag is dropped on the way to zca-js, or defaults to silent.
+        assert.deepEqual(ga.calls, [
+            ["leaveGroup", G, false],
+            ["leaveGroup", G, true],
+        ]);
+    });
+
+    it("leave explains Zalo's 'not a member' (166) and passes other failures through", async () => {
+        const gone = await call(groupApi({ leaveGroup: new Error("Zalo error (166)") }), {
+            action: "leave",
+            groupId: G,
+        });
+        assert.equal(gone.isError, true);
+        assert.match(gone.content[0].text, /not a member of group 7000000000000000001/);
+        const other = await call(groupApi({ leaveGroup: new Error("boom (500)") }), { action: "leave", groupId: G });
+        assert.match(other.content[0].text, /boom \(500\)/);
+    });
+
+    it("info asks for the group as an array and returns its details, not its members", async () => {
+        const ga = groupApi({
+            getGroupInfo: {
+                gridInfoMap: {
+                    [G]: {
+                        groupId: G,
+                        name: "Team",
+                        creatorId: U1,
+                        adminIds: [U1],
+                        totalMember: 2,
+                        memVerList: [`${U1}_0`],
+                    },
+                },
+            },
+        });
+        const out = payloadOf(await call(ga, { action: "info", groupId: G }));
+        assert.deepEqual(ga.calls, [["getGroupInfo", [G]]]);
+        assert.equal(out.name, "Team");
+        assert.equal(out.creatorId, U1);
+        assert.equal(out.totalMember, 2);
+        assert.ok(!("memVerList" in out));
+        const missing = await call(groupApi(), { action: "info", groupId: G });
+        assert.equal(missing.isError, true);
+        assert.match(missing.content[0].text, /does not include group/);
+    });
+
+    it("create sends { name, members } and reports who was added and who was refused", async () => {
+        const ga = groupApi({ createGroup: { groupId: G, sucessMembers: [U1], errorMembers: [U2] } });
+        const out = payloadOf(await call(ga, { action: "create", name: "  Team  ", userIds: [U1, U2, U1] }));
+        // The name is trimmed and a repeated id is sent once.
+        assert.deepEqual(ga.calls, [["createGroup", { name: "Team", members: [U1, U2] }]]);
+        assert.deepEqual(out, { action: "create", groupId: G, name: "Team", added: [U1], failed: [U2] });
+        const none = await call(groupApi({ createGroup: {} }), { action: "create", name: "X", userIds: [U1] });
+        assert.equal(none.isError, true, "no group id back is a failure, not a success");
+    });
+
+    it("add_members passes (userIds, groupId) in zca-js's order and splits the outcome", async () => {
+        const ga = groupApi({ addUserToGroup: { errorMembers: [U2], error_data: { 270: [U2] } } });
+        const out = payloadOf(await call(ga, { action: "add_members", groupId: G, userIds: [U1, U2] }));
+        assert.deepEqual(ga.calls, [["addUserToGroup", [U1, U2], G]]);
+        assert.deepEqual(out, {
+            action: "add_members",
+            groupId: G,
+            added: [U1],
+            failed: [U2],
+            errorData: { 270: [U2] },
+        });
+        // Zalo's reply is a success even when it took nobody; the tool must not say so.
+        const all = await call(groupApi({ addUserToGroup: { errorMembers: [U1], error_data: { 270: [U1] } } }), {
+            action: "add_members",
+            groupId: G,
+            userIds: [U1],
+        });
+        assert.equal(all.isError, true);
+        assert.match(all.content[0].text, /did not add any of the 1 member/);
+    });
+
+    it("remove_member passes ([userId], groupId), and a refused member is an error", async () => {
+        const ga = groupApi();
+        assert.deepEqual(payloadOf(await call(ga, { action: "remove_member", groupId: G, userId: U1 })), {
+            action: "remove_member",
+            success: true,
+            groupId: G,
+            userId: U1,
+        });
+        assert.deepEqual(ga.calls, [["removeUserFromGroup", [U1], G]]);
+        const refused = await call(groupApi({ removeUserFromGroup: { errorMembers: [U1] } }), {
+            action: "remove_member",
+            groupId: G,
+            userId: U1,
+        });
+        assert.equal(refused.isError, true);
+        assert.match(refused.content[0].text, /did not remove 9100000000000000001/);
+    });
+
+    it("refuses missing or malformed ids and names without touching Zalo", async () => {
+        const ga = groupApi();
+        const text = async (args) => {
+            const r = await call(ga, args);
+            assert.equal(r.isError, true, JSON.stringify(args));
+            return r.content[0].text;
+        };
+        for (const action of ["leave", "info", "add_members", "remove_member"]) {
+            assert.match(await text({ action }), /groupId is required/);
+            assert.match(await text({ action, groupId: "abc" }), /numeric Zalo group id/);
+        }
+        assert.match(await text({ action: "add_members", groupId: G }), /userIds is required/);
+        assert.match(await text({ action: "add_members", groupId: G, userIds: [U1, "x;y"] }), /numeric Zalo ids/);
+        assert.match(await text({ action: "create", userIds: [U1] }), /name is required/);
+        assert.match(await text({ action: "create", name: "   ", userIds: [U1] }), /name is required/);
+        assert.match(await text({ action: "create", name: "T" }), /userIds is required/);
+        assert.match(await text({ action: "remove_member", groupId: G }), /userId is required/);
+        assert.match(await text({ action: "remove_member", groupId: G, userId: "1 2" }), /numeric Zalo id/);
+        assert.deepEqual(ga.calls, [], "no refused call reaches Zalo");
     });
 });

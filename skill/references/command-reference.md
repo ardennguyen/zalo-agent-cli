@@ -121,7 +121,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `block-member <groupId> <userIds...>` | Block member(s) from rejoining the group. |
 | `unblock-member <groupId> <userIds...>` | Unblock previously blocked member(s). |
 | `upgrade-community <groupId>` | Upgrade a group to a Zalo Community (requires a verified 18+ account). |
-| `leave <groupId>` | Leave a group. |
+| `leave <groupId> [-s, --silent]` | Leave a group. `-s` leaves without posting the usual notice to the group. |
 | `join <link>` | Join a group via an invite link (zca-js `joinGroupLink`; this previously called a nonexistent `joinGroup` and failed before reaching the network). |
 | `members-info <userIds...>` | Get detailed profile info for a list of member IDs. |
 | `settings <groupId> [flags]` | Change group settings. **Only the flags you pass change**; every other setting keeps its current value, because the command reads the group's settings first and sends the rest back unchanged — including Zalo's own media-ban fields, which it never alters. A flag already at the requested value is reported rather than sent, and if nothing would change no request is made at all. It **refuses, sending nothing**, when no flag is given or the current settings cannot be read, exiting 1 in that case and on failure. After a send it **reads the group back** and reports what Zalo actually holds: a field Zalo changed on its own is listed as a side effect (measured live 2026-09-30: turning join approval on also sets `addMemberOnly`, which the request carried at its current value, and turning it off clears both), and a requested change that did not stick is a warning and exit 1. `--json` prints `{groupId, sent, changed: {key: {from, to}}, unchanged, settings, response, verified, sideEffects: {key: {from, to}}, notApplied: {key: {asked, now}}}` — `response` and the read-back fields only when `sent` is true (`verified: false` when the read-back itself failed), `changed[key].from` being Zalo's raw value and `to`/`unchanged` normalized to 0｜1; a refusal prints `{"error": "…"}`. See flags table below. |
@@ -325,7 +325,7 @@ Requires a Zalo Shop / zBusiness account.
 
 **Via the `zalo-mcp` wrapper (`v2.0.0+`):** `zalo-mcp` (or `node mcp-server.js`) forwards **all** `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-delivered-receipts`, `--no-self-heal`, `-d`/`--daemon`, `--stop`, `--status`), all global storage/`.env` flags (`--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`), and any CLI subcommand (`zalo-mcp --account <id> msg send ...`). (Older `zalo-mcp` `1.x` releases forwarded only `--http` and `--auth`.) The wrapper runs the `@ardennguyen/zalo-agent-cli` version installed in its `node_modules/`.
 
-**24 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools", "7 tools", or "14 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
+**25 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools", "7 tools", or "14 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -352,6 +352,7 @@ Requires a Zalo Shop / zBusiness account.
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll, matching `poll` subcommands | `action` (`create`｜`info`｜`vote`｜`unvote`｜`add_options`｜`lock`｜`share`), `groupId?`, `pollId?`, `question?`, `options?`, `optionIds?`, `multi`, `allowAddOptions`, `anonymous`, `hidePreview`, `expireMinutes?`, `voteNewOptions` |
 | `zalo_wait_for_message` | Long-poll the live MCP message buffer for the next incoming watched message without manual polling, mirroring `GET /events/wait` for remote HTTPS/OAuth2 MCP clients. Returns immediately (`status: "message"`, `message` with `threadName`, `cursor`) if a buffered message newer than `since` exists; otherwise waits up to `timeoutSec` seconds before returning `status: "timeout"` | `threadId?`, `since?` (buffer cursor), `timeoutSec` (default 55, max 300) |
 | `zalo_label` | List, assign, unassign, or raw-update Zalo conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`), matching `label list` and `label update` | `action` (`list`｜`assign`｜`unassign`｜`update`), `labelId?`, `labelText?`, `threadId?`, `threadIds?`, `labelData?`, `version?` |
+| `zalo_group` | Leave, inspect, create and change the membership of a group, matching `group leave [-s]`, `info`, `create`, `add-member` and `remove-member` (`zalo_get_group_members` still lists the members): `info` (name, description, creator, admins, member count and limit, creation time, settings), `create` (`name` + `userIds`; replies with `groupId` and which members were added or refused), `add_members` (`groupId` + `userIds`; says which members Zalo refused, and is an error when it took none), `remove_member` (`groupId` + one `userId`; an error if Zalo refused), `leave` (`groupId`, optional `silent`; Zalo's "not a member" code 166 is explained). `leave` and `remove_member` cannot be undone | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`), `groupId?` (numeric; required except for `create`), `name?` (`create`), `userIds?` (1–100 numeric ids; `create`, `add_members`), `userId?` (`remove_member`), `silent?` (`leave`, default false) |
 | `zalo_friend` | Friend requests and friends, matching `friend request-status`, `sent-requests`, `recommendations` (received requests are its type-2 items), `add`, `accept`, `reject`, `undo-request` and `list`: `status` (`is_friend`, `is_requested`, `is_requesting` as booleans), `sent_requests`, `received_requests` (newest first, with the sender's message), `send`, `accept`, `reject`, `undo`, `list`. A refused `send` explains Zalo's code in the CLI's words | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`), `userId?` (numeric; required except for the lists), `message?`, `limit?` (for `list`, default 200) |
 
 See [MCP sync](../../docs/mcp-sync.md) / [Tiếng Việt](../../docs/mcp-sync.vi.md) for examples, retention and release prerequisites. Only the owner's explicit request authorizes `zalo_sync`; coverage reads never start it. Bulk media, boards, cloud and conversation-state sync remain CLI-only.
@@ -483,9 +484,9 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `label` | 2 |
 | `catalog` | 9 |
 | `listen` | 1 |
-| `mcp` | 3 (`start`, `wait`, `mark-read` — exposing 24 MCP tools) |
+| `mcp` | 3 (`start`, `wait`, `mark-read` — exposing 25 MCP tools) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **192 CLI commands** + 24 MCP tools |
+| **Total** | **192 CLI commands** + 25 MCP tools |
 
 ## Provenance
 

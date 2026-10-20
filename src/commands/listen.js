@@ -21,6 +21,8 @@ import {
     spawnDaemonProcess,
 } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
+import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.js";
+import { setUserInfoLogger } from "../core/user-info.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
@@ -521,6 +523,17 @@ export function registerListenCommand(program) {
             // and one raw reader on the socket for the fields zca-js drops.
             // Built once, like the receipter: they outlive every re-login.
             const stageLock = createStageLock();
+            // See mcp.js: stage progress, event-loop stalls and refused lookups belong in the log too.
+            const daemonLog = (m) => console.error(`[listen] ${m}`);
+            const loopMonitor = startEventLoopMonitor({
+                log: daemonLog,
+                context: () => {
+                    const held = stageLock.current();
+                    return held ? `the ${held.stage} stage was running` : "";
+                },
+            });
+            const socketContext = createSocketContext({ lock: stageLock, monitor: loopMonitor });
+            setUserInfoLogger(daemonLog);
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
             // Read state other devices report -- a conversation read on the
             // phone, an unread mark set or cleared there -- which zca-js
@@ -812,6 +825,7 @@ export function registerListenCommand(program) {
 
                 // --- Lifecycle events (MUST be on same listener for reconnect to work) ---
                 api.listener.on("connected", () => {
+                    socketContext.markUp();
                     if (reconnectCount > 0) {
                         info(`Reconnected (#${reconnectCount}, uptime: ${uptime()}, events: ${eventCount})`);
                     }
@@ -834,7 +848,7 @@ export function registerListenCommand(program) {
 
                 api.listener.on("disconnected", (code, _reason) => {
                     if (stopping) return;
-                    warning(`Disconnected (code: ${code}). Auto-retrying...`);
+                    warning(`Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);
                     // First drop wins: a flapping socket that emits several
                     // `disconnected` before one `connected` is ONE outage, and the
                     // gap must span from the start of it.
@@ -854,7 +868,9 @@ export function registerListenCommand(program) {
                     reconnectCount++;
                     if (downSince === null) downSince = Date.now();
                     syncManager.markDisconnected();
-                    warning(`Connection closed (code: ${code}). Re-login in 5s... (uptime: ${uptime()})`);
+                    warning(
+                        `Connection closed (code: ${code}). Re-login in 5s... (uptime: ${uptime()}; ${socketContext.describe()})`,
+                    );
                     await new Promise((r) => setTimeout(r, 5000));
                     try {
                         clearSession();
@@ -975,6 +991,8 @@ export function registerListenCommand(program) {
                     runners: createSyncRunners({
                         getApi,
                         accountName: activeAcc.ownId,
+                        log: daemonLog,
+                        monitor: loopMonitor,
                         onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
                     }),
                     // The self-heal's lock: a stage and a catch-up never share the socket.

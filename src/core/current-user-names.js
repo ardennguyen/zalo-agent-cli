@@ -1,3 +1,8 @@
+import { runPacedBatches, userInfoLog } from "./user-info.js";
+
+/** The default `log`: silent unless a daemon registered a sink with `setUserInfoLogger`. */
+const NO_LOG = () => {};
+
 /**
  * Read the account's complete alias snapshot. Do not reuse a previous snapshot:
  * an absent entry means the owner removed that alias. Failed/partial reads do
@@ -57,23 +62,38 @@ export function currentUserName(uid, profile, aliases = new Map()) {
  * @param {object} [options]
  * @returns {Promise<Map<string, {name: string, source: string}>>} UID -> current label
  */
-export async function resolveCurrentUserNames(api, uids, { aliases, profiles = new Map(), log = () => {} } = {}) {
+export async function resolveCurrentUserNames(api, uids, { aliases, profiles = new Map(), log = NO_LOG } = {}) {
     const ids = [...new Set(uids.filter(Boolean).map(String))];
     if (!ids.length) return new Map();
     const aliasRequest = aliases ? Promise.resolve(aliases) : readUserAliases(api, log);
     const fresh = new Map(profiles);
     const missing = ids.filter((id) => /^[1-9][0-9]*$/.test(id) && !fresh.has(id));
-    for (let i = 0; i < missing.length; i += 100) {
-        try {
-            if (typeof api?.getUserInfo !== "function") break;
-            const result = await api.getUserInfo(missing.slice(i, i + 100));
+    // A live-API proxy throws on any property read while a session is re-logging in, so even the probe is guarded.
+    let canLookup = false;
+    try {
+        canLookup = typeof api?.getUserInfo === "function";
+    } catch {
+        /* session is reconnecting: fall back to aliases or UIDs */
+    }
+    if (missing.length && canLookup) {
+        // Paced, retried on a rate limit and stopped when Zalo keeps refusing; what Zalo said is logged.
+        const lookup = await runPacedBatches(missing, {
+            batchSize: 100,
+            label: "user-info",
+            log: log === NO_LOG ? undefined : log,
+            call: (batch) => api.getUserInfo(batch),
+        });
+        for (const result of lookup.results) {
             for (const bag of [result?.changed_profiles, result?.unchanged_profiles]) {
                 for (const [uid, profile] of Object.entries(bag || {})) {
                     if (profile) fresh.set(uid, profile);
                 }
             }
-        } catch {
-            log("current profiles unavailable; falling back to aliases or UIDs");
+        }
+        if (lookup.failed || lookup.skippedIds) {
+            (log === NO_LOG ? userInfoLog : log)(
+                "current profiles unavailable for some ids; falling back to aliases or UIDs",
+            );
         }
     }
     const ownedAliases = await aliasRequest;

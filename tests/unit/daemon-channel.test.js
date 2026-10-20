@@ -652,8 +652,10 @@ describe("getSyncChannel", () => {
  * Both fail silently rather than loudly, which is why they are pinned here:
  * a missing `liveStore: false` writes every live message twice for the length
  * of a multi-minute restore (the daemon's own handlers already store them),
- * and a `reconnect` callback would have a stage tear the socket down
- * underneath the daemon's own re-login-and-rebuild recovery.
+ * and a `reconnect` callback that opens or closes a socket would have a stage
+ * tear it down underneath the daemon's own re-login-and-rebuild recovery.
+ * The stage may hand the restore a `reconnect` that only WAITS for that
+ * recovery (see tests/unit/daemon-resume.test.js), never one that acts.
  */
 describe("daemon-sync.js option choices", () => {
     const SRC = readFileSync(join(import.meta.dirname, "..", "..", "src", "core", "daemon-sync.js"), "utf8");
@@ -663,8 +665,17 @@ describe("daemon-sync.js option choices", () => {
         assert.match(code, /liveStore:\s*false/, "the daemon is already the tap");
     });
 
-    it("leaves reconnection to the daemon", () => {
-        assert.doesNotMatch(code, /\breconnect\s*:/, "a stage must not race the daemon's own recovery");
+    it("leaves reconnection to the daemon: the stage only waits for it, and never touches the listener", () => {
+        // A stage that loses its socket resumes once the daemon has recovered; that is a `reconnect` which
+        // watches getApi(). It must not start, stop or log in anything: that would race the daemon's own
+        // re-login-and-rebuild, which is what this rule has always been about.
+        assert.match(code, /reconnect:\s*async/, "the restore is told how to wait for the daemon's recovery");
+        assert.match(code, /waitForDaemonSocket\(/);
+        assert.doesNotMatch(
+            code,
+            /\.listener\.(start|stop)\(|connectListener|closeListener|clearSession|autoLogin|loginWithCredentials|loginDaemonAccount/,
+            "a stage must not race the daemon's own recovery",
+        );
     });
 
     it("keeps the restore's heartbeat on — a daemon has no socket window of its own", () => {

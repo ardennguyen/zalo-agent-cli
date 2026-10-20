@@ -6,6 +6,8 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { describeFriendAddError, extractErrorCode } from "../core/friend-requests.js";
+import { readUserAliases } from "../core/current-user-names.js";
+import { searchFriends } from "../core/friend-search.js";
 
 export function registerFriendCommands(program) {
     const friend = program.command("friend").description("Manage friends and contacts");
@@ -54,17 +56,14 @@ export function registerFriendCommands(program) {
 
     friend
         .command("search <name>")
-        .description("Search friends by name (returns thread_id for messaging)")
+        .description("Search friends by name or alias (returns thread_id for messaging)")
         .action(async (name) => {
             try {
                 const result = await getApi().getAllFriends();
                 const friends = Array.isArray(result) ? result : [];
-                const query = name.toLowerCase();
-                const matches = friends.filter((f) => {
-                    const dn = (f.displayName || "").toLowerCase();
-                    const zn = (f.zaloName || "").toLowerCase();
-                    return dn.includes(query) || zn.includes(query);
-                });
+                // The alias you set for a friend is not in the friend list; it comes from the alias list.
+                const aliases = await readUserAliases(getApi(), (m) => info(`${m}; matching names only`));
+                const matches = searchFriends(friends, aliases, name);
                 output(matches, program.opts().json, () => {
                     if (matches.length === 0) {
                         error(`No friends matching "${name}". Use "friend list" to see all.`);
@@ -74,7 +73,8 @@ export function registerFriendCommands(program) {
                     console.log();
                     for (const f of matches) {
                         const display = f.displayName || f.zaloName || "?";
-                        console.log(`  ${f.userId}  ${display}`);
+                        const aka = f.alias && f.alias !== display ? `  (alias: ${f.alias})` : "";
+                        console.log(`  ${f.userId}  ${display}${aka}`);
                     }
                     console.log();
                     info("Use the ID above as thread_id for messaging commands.");

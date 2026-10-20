@@ -57,7 +57,8 @@ import {
 } from "../core/friend-requests.js";
 import {
     CONFIRMED_ACTIONS,
-    NOT_A_MEMBER,
+    NOT_A_MEMBER_CODES,
+    REMOVE_NOT_IN_GROUP,
     createdGroupFrom,
     groupConfirmRequired,
     groupInfoFrom,
@@ -2829,8 +2830,18 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
             } catch (e) {
                 console.error("[mcp-tools] zalo_group error:", e.message);
-                if (action === "leave" && (e.code ?? extractErrorCode(e.message)) === NOT_A_MEMBER) {
-                    return err(`This account is not a member of group ${gid}, so there is nothing to leave.`);
+                if (action === "leave" && NOT_A_MEMBER_CODES.includes(Number(e.code ?? extractErrorCode(e.message)))) {
+                    return err(
+                        `This account is not in group ${gid} (already left, or never joined), so there is nothing to leave.`,
+                    );
+                }
+                if (
+                    action === "remove_member" &&
+                    Number(e.code ?? extractErrorCode(e.message)) === REMOVE_NOT_IN_GROUP
+                ) {
+                    return err(
+                        `Zalo says ${target} is not in group ${gid} ("${e.message}", code ${REMOVE_NOT_IN_GROUP}).`,
+                    );
                 }
                 return err(e.message);
             }

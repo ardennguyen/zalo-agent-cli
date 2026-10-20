@@ -1639,14 +1639,19 @@ describe("zalo_group", () => {
         ]);
     });
 
-    it("leave explains Zalo's 'not a member' (166) and passes other failures through", async () => {
+    it("leave explains Zalo's 'not in the group' codes (167 seen live, 166 documented) and passes other failures through", async () => {
         const gone = await call(groupApi({ leaveGroup: new Error("Zalo error (166)") }), {
             action: "leave",
             confirm: true,
             groupId: G,
         });
         assert.equal(gone.isError, true);
-        assert.match(gone.content[0].text, /not a member of group 7000000000000000001/);
+        assert.match(gone.content[0].text, /not in group 7000000000000000001/);
+        for (const code of [167, 166]) {
+            const e = Object.assign(new Error("Không thể rời nhóm"), { code });
+            const r = await call(groupApi({ leaveGroup: e }), { action: "leave", groupId: G, confirm: true });
+            assert.match(r.content[0].text, /not in group/, `code ${code} read from error.code`);
+        }
         const other = await call(groupApi({ leaveGroup: new Error("boom (500)") }), {
             action: "leave",
             groupId: G,
@@ -1732,6 +1737,18 @@ describe("zalo_group", () => {
         });
         assert.equal(refused.isError, true);
         assert.match(refused.content[0].text, /did not remove 9100000000000000001/);
+    });
+
+    it("remove_member explains Zalo's code 165 (a user who is not in the group), measured live", async () => {
+        const e = Object.assign(new Error("Nhóm không có thành viên."), { code: 165 });
+        const r = await call(groupApi({ removeUserFromGroup: e }), {
+            action: "remove_member",
+            groupId: G,
+            userId: U1,
+            confirm: true,
+        });
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /9100000000000000001 is not in group 7000000000000000001/);
     });
 
     it("refuses missing or malformed ids and names without touching Zalo", async () => {

@@ -1,5 +1,7 @@
 # Zalo MCP Server & CLI Installation Guide
 
+[Tiếng Việt](INSTALLATION.vi.md)
+
 This document covers deploying the **`zalo-mcp`** wrapper — a self-contained, sandboxed installer that pulls in the `zalo-agent-cli` engine and exposes it as a Model Context Protocol (MCP) server, so AI agents (Claude Code, Cursor, and others) can automate Zalo Personal & Official Accounts without touching your global system.
 
 > If you only want the CLI (no MCP server), skip straight to `npm install -g @ardennguyen/zalo-agent-cli` — see the main [README.md](README.md).
@@ -166,7 +168,7 @@ Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [-
 | `--client-secret <key>` | `--auth` / `ZALO_MCP_AUTH_TOKEN[_<ownId>]` | OAuth 2.0 Client Secret for `/token` exchange |
 | `--issuer-url <url>` | *(inferred from request Host)* | Explicit OAuth 2.0 issuer base URL (e.g. `https://mcp.example.com:3100`) |
 | `-w, --webhook <url>` | `webhook` in `mcp-config.json` | POST each watched incoming message as JSON to this URL (`ZALO_WEBHOOK_URL[_<ownId>]`) |
-| `--webhook-secret <secret>` | `webhookSecret` in `mcp-config.json` | Shared secret to sign webhook POSTs with `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` (`ZALO_WEBHOOK_SECRET[_<ownId>]`) |
+| `--webhook-secret <secret>` | `webhookSecret` in `mcp-config.json` | Shared secret to sign webhook POSTs with `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` (`ZALO_WEBHOOK_SECRET[_<ownId>]`; the flag wins, then the environment variable, then the config key; an empty flag is refused; prefer the environment variable, since a flag is visible in the process list) |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | Custom MCP config file |
 | `--no-self-heal` | *(enabled)* | Disable automatic gap self-healing after reconnect |
 | `--no-delivered-receipts` | *(enabled)* | Do not send delivered receipts for incoming messages |
@@ -234,7 +236,7 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
 
 ### MCP tools exposed
 
-This engine source registers **23 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+This engine source registers **25 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
 
 | Tool | Purpose |
 |:---|:---|
@@ -261,10 +263,12 @@ This engine source registers **23 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll |
 | `zalo_wait_for_message` | Long-poll the live message buffer for the next incoming watched message without manual polling (mirrors `GET /events/wait` for remote HTTPS/OAuth2 MCP clients) |
 | `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) |
+| `zalo_group` | Leave (optionally silently), inspect, create a group, add or remove a member |
+| `zalo_friend` | Friend status, sent and received requests, send / accept / reject / cancel a request, list friends |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Official Account, catalog, auto-reply, quick-msg, profile, friend management, group administration, and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
+Official Account, catalog, auto-reply, quick-msg, profile, friend management beyond requests and the friend list (`zalo_friend` covers those), group administration beyond leaving, inspecting, creating and changing membership (`zalo_group` covers those), and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -307,7 +311,7 @@ Default layout when no custom paths are set:
 ├── accounts/<ownId>/
 │   ├── zalo.db                    # SQLite message/thread cache (WAL)
 │   ├── media/                     # Media downloaded by `listen` / `msg` (per account)
-│   ├── sync/                      # sync scratch (the --legacy path's keys, a protocol cache)
+│   ├── sync/                      # sync scratch (the phone restore's protocol cache)
 │   └── daemon.lock                # Held while a `listen`/`mcp start` daemon runs
 └── qr.png                         # Most recent login QR
 ```
@@ -324,7 +328,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 190 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 212 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |
@@ -337,6 +341,8 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | `npx zalo-agent sync-mobile [-F] [-w <s>]` | Restore history from your phone — prompts the phone once. Add `--socket` for the old server probe, which contacts no phone and usually returns nothing |
 | `npx zalo-agent update` | Self-update to the latest published version |
 | `npx zalo-agent mcp start [--http <port>] [--auth <token>] [--host <addr>]` | Start the MCP server |
+| `npx zalo-agent mcp wait [since] [-t <threadId>] [--timeout <s>] [-c <name>]` | Long-poll the running `mcp start` daemon's buffer for the next message (`zalo_wait_for_message` CLI equivalent) |
+| `npx zalo-agent mcp mark-read <cursor> [-c <name>]` | Advance the consumer read cursor in the running `mcp start` daemon's buffer (`zalo_mark_read` CLI equivalent) |
 
 ### Personal account
 | Command | Description |

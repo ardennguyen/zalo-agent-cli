@@ -67,7 +67,7 @@ tests/                    # Test suite — see tests/README.md
 ├── accounts/<ownId>/
 │   ├── zalo.db                   # SQLite cache (messages, threads, contacts, sync_state, sync_gaps)
 │   ├── media/                    # Auto-downloaded attachments
-│   ├── sync/                     # RSA sync keys
+│   ├── sync/                     # transfer-sync-v2 assets (zproto-cache/)
 │   ├── daemon.lock               # Held by a running `listen` daemon or `mcp start`
 │   └── daemon-channel.json       # Loopback port + token of that daemon's upload channel (0600)
 └── qr.png
@@ -79,11 +79,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **190** invokable leaves (158 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **21** containers — 14 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
-| MCP tools | **23** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
+| CLI commands | **212** invokable leaves (180 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **22** containers — 15 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2035** as of 2026-10-17 (2031 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2183** as of 2026-10-20 (2179 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -111,14 +111,15 @@ which is the convention `command-reference.md` already uses.
 To measure it, parse the import/call pairs out of `src/index.js` rather than
 hardcoding them — three exports do not follow the plural pattern
 (`registerListenCommand`, `registerOACommands`, `registerMCPCommands`), and
-guessing those names silently drops OA's 32 commands and MCP's 1. Load each into
+guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured at `99d5a97` (2026-09-30): **190 leaves, 21 containers, 211 nodes**.
+Measured (2026-10-20): **212 leaves, 22 containers, 234 nodes**.
 By group: group 33, oa 32, friend 22, msg 20, conv 20, top-level 12, profile 11,
-catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, label 2,
-mcp 1. (Was 184 at `a719c99`, before `conv` gained pin/unpin/archive/unarchive
+catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, mcp 3,
+label 2. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
+184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
 trustworthy as the *contract* even though counting its string literals is not
@@ -224,8 +225,7 @@ npmjs.com (repository, workflow filename, environment left empty) before suspect
 
 ## Why the patched zca-js is bundled, not patched on install (§13)
 
-We patch zca-js to add `logoutV2`, `pullMobileMsg`, `getCrossDB` and `deleteSnapshotMobileMsg`, and
-to modify `loginQR` and `sendMessage`. Without them `logout` and `account remove` die on
+We patch zca-js to add `logoutV2`, and to modify `loginQR` and `sendMessage`. Without them `logout` and `account remove` die on
 "is not a function". Getting that patched copy into a consumer's tree took two goes, both found on
 2026-09-29 against npm 11.17.0 / Node 24.19.0.
 
@@ -242,8 +242,8 @@ relative to its own cwd, which is the installed package directory.
   patch-package looks. It printed `zca-js@2.2.0 ✔` and the patch applied.
 - Installed as a *dependency*: npm **hoists** `zca-js` to the consumer's root. patch-package cannot
   see it and fails with `Patch file found for package zca-js which is not present at
-  node_modules/zca-js` — but the install still exits 0, so the patch silently did nothing and the
-  four methods were simply absent at runtime.
+  node_modules/zca-js` — but the install still exits 0, so the patch silently did nothing and
+  `logoutV2` was simply absent at runtime.
 
 That second case is not hypothetical: `zalo-mcp` takes this package as a plain dependency and its
 `zalo-mcp.ps1` / `.sh` update path runs `npm install @ardennguyen/zalo-agent-cli@latest`.
@@ -273,7 +273,7 @@ zca-js ships two trees — ESM at `dist/` and CJS at `dist/cjs/` — and its exp
 reasoning that this package is `"type": "module"` and so can never load the CJS bundle. That
 reasoning was correct and is still asserted, but it was the wrong conclusion: a library that
 ships two entry points should not have one that works and one that silently lacks `logoutV2`,
-`pullMobileMsg`, `getCrossDB`, `deleteSnapshotMobileMsg`, every client-id stamp, and the
+every client-id stamp, and the
 device-fingerprint client hints. "Correct today because nothing takes that path" is not the same
 as correct.
 

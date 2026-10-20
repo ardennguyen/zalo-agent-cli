@@ -7,6 +7,7 @@ import { getApi, getOwnId } from "../core/zalo-client.js";
 import { updateAccountName } from "../core/accounts.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
+import { parseOnOff, parseLanguage } from "../utils/cli-args.js";
 
 /** Valid privacy setting keys and their human-readable labels + value descriptions. */
 const SETTING_MAP = {
@@ -274,6 +275,44 @@ export function registerProfileCommands(program) {
                 output(result, program.opts().json, () => success(`${meta.label}: ${meta.values[numVal]} (${numVal})`));
             } catch (e) {
                 error(`Setting update failed: ${e.message}`);
+            }
+        });
+
+    profile
+        .command("active <on|off>")
+        .description("Turn your online (active) status on or off")
+        .action(async (state) => {
+            try {
+                const active = parseOnOff(state, "active");
+                const result = await getApi().updateActiveStatus(active);
+                output(result, program.opts().json, () => success(`Active status: ${active ? "on" : "off"}`));
+            } catch (e) {
+                error(e.message);
+            }
+        });
+
+    profile
+        .command("lang <language>")
+        .description("Set the account language: vi or en")
+        .action(async (language) => {
+            try {
+                const lang = parseLanguage(language);
+                const result = await getApi().updateLang(lang);
+                output(result, program.opts().json, () => success(`Language set to ${lang}`));
+            } catch (e) {
+                error(e.message);
+            }
+        });
+
+    profile
+        .command("lost-focus")
+        .description("Tell Zalo this client moved to the background (what Zalo Web sends when its tab loses focus)")
+        .action(async () => {
+            try {
+                const result = await getApi().lostFocus();
+                output(result, program.opts().json, () => success("Sent"));
+            } catch (e) {
+                error(`Lost focus failed: ${e.message}`);
             }
         });
 }

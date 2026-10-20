@@ -286,10 +286,8 @@ describe("--json stdout contract", () => {
 });
 
 describe("sync-mobile — offline surface", () => {
-    // The default path now backfills over the WebSocket and never touches the
-    // phone; only --legacy does, and that is opt-in twice over (see
-    // tests/e2e/tier3-mutate-restore.test.js). Everything that does NOT need a
-    // session is checked here instead, for free.
+    // The default path restores message history using transfer-sync-v2.
+    // Everything that does NOT need a session is checked here instead, for free.
 
     it("registers --force with a descriptive help entry", async () => {
         const { stdout } = await runCli(["sync-mobile", "--help"], opts);
@@ -352,10 +350,9 @@ describe("sync-mobile — offline surface", () => {
         assert.doesNotMatch(r.all, /Waiting for sync data|pullMobileMsg/, "must not reach any sync path");
     });
 
-    it("offers the retired phone transfer only behind --legacy, and says it pings the phone", async () => {
+    it("no longer offers the retired --legacy flag", async () => {
         const { stdout } = await runCli(["sync-mobile", "--help"], opts);
-        assert.match(stdout, /-L, --legacy/);
-        assert.match(stdout, /mobile app/i, "--legacy must warn that it reaches the user's phone");
+        assert.doesNotMatch(stdout, /--legacy/);
     });
 
     it("no longer advertises the retry loop that used to spam the phone", async () => {
@@ -363,12 +360,10 @@ describe("sync-mobile — offline surface", () => {
         assert.doesNotMatch(stdout, /--interval/, "the repeating poll is gone, so its flag must be too");
     });
 
-    it("--legacy is a boolean flag, not one that swallows the next argument", async () => {
-        // `sync-mobile --legacy --force` must parse as two flags. If --legacy
-        // ever gained a <value> the second flag would be eaten silently.
-        const r = await runCli(["sync-mobile", "--legacy", "--force"], opts);
+    it("rejects --legacy as an unknown option", async () => {
+        const r = await runCli(["sync-mobile", "--legacy"], opts);
         assert.equal(r.code, 1);
-        assert.match(r.all, /No active account/, "both flags parsed; it stopped at the account guard");
+        assert.match(r.all, /unknown option/i);
     });
 });
 
@@ -482,5 +477,30 @@ describe("mcp start --cert / --key (HTTPS)", () => {
         assert.equal(r.code, 1);
         assert.match(r.all, /cannot read the TLS certificate file/);
         assert.doesNotMatch(r.all, /Account selection failed|Auto-login failed/, "refused before anything logs in");
+    });
+});
+
+describe("--webhook-secret", () => {
+    it("is a real option of both listen and mcp start (it was documented long before it existed)", async () => {
+        for (const args of [
+            ["listen", "--help"],
+            ["mcp", "start", "--help"],
+        ]) {
+            const { stdout } = await runCli(args, opts);
+            assert.match(stdout, /--webhook-secret <secret>/, `${args.join(" ")} must offer --webhook-secret`);
+        }
+    });
+
+    it("an empty secret is refused before anything logs in, on both commands", async () => {
+        // An unset shell variable arrives as exactly this. Red if empty falls back to "unsigned".
+        for (const args of [
+            ["listen", "--webhook", "https://example.invalid/hook", "--webhook-secret", ""],
+            ["mcp", "start", "--webhook", "https://example.invalid/hook", "--webhook-secret", ""],
+        ]) {
+            const r = await runCli(args, opts);
+            assert.equal(r.code, 1, args.join(" "));
+            assert.match(r.all, /--webhook-secret was given an empty secret/);
+            assert.doesNotMatch(r.all, /No active account|Auto-login failed/, "refused before account or login");
+        }
     });
 });

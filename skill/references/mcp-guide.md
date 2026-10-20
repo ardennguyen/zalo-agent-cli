@@ -1,8 +1,8 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **23 tools**.
+Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **25 tools**.
 
-Mọi tính năng khác của CLI — Official Account (`oa …`), gửi ảnh/file/voice/video/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
+Mọi tính năng khác của CLI — Official Account (`oa …`), gửi voice/video (từ URL)/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
 Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo` ↔ `msg undo`, `zalo_forward_message` ↔ `msg forward`, `zalo_delete_message` ↔ `msg delete`, `zalo_get_group_members` ↔ `group members`, `zalo_list_conversations` ↔ `conv recent`, `zalo_reminder` ↔ `reminder`, `zalo_note` ↔ `group note-*` + `msg pin/unpin`, `zalo_poll` ↔ `poll`, `zalo_label` ↔ `label`) đều gọi đúng đoạn code mà lệnh đó dùng, nên cách tra cứu và các trường hợp từ chối giống hệt nhau.
 
@@ -22,7 +22,7 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 | `--client-secret <secret>` | `--auth` / `ZALO_MCP_OAUTH_CLIENT_SECRET[_<ownId>]` | OAuth 2.0 Client Secret cho bước đổi token tại `/token` |
 | `--issuer-url <url>` | *(suy từ header Host)* | Ghi đè URL gốc OAuth 2.0 issuer (`ZALO_MCP_ISSUER_URL[_<ownId>]`) |
 | `-w, --webhook <url>` | `webhook` / `ZALO_WEBHOOK_URL[_<ownId>]` | POST mỗi tin nhắn mới (đã lọc theo `watchThreads`) dạng JSON tới URL này |
-| `--webhook-secret <secret>` | `webhookSecret` / `ZALO_WEBHOOK_SECRET[_<ownId>]` | Ký mỗi webhook POST bằng `Authorization: Bearer <secret>` và `X-Zalo-Signature: sha256=<hmac>` |
+| `--webhook-secret <secret>` | `webhookSecret` / `ZALO_WEBHOOK_SECRET[_<ownId>]` | Ký mỗi webhook POST bằng `Authorization: Bearer <secret>` và `X-Zalo-Signature: sha256=<hmac>`. Cờ được ưu tiên, rồi biến môi trường, rồi khóa trong cấu hình; cờ để trống bị từ chối. Nên dùng biến môi trường: cờ lộ trong danh sách tiến trình |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | File cấu hình tuỳ chỉnh |
 | `-d, --daemon` | `false` | Chạy ngầm trong nền (cần `--http <port>`; ghi log vào `accounts/<ownId>/daemon.log`) |
 | `--stop` | `false` | Dừng daemon chạy ngầm của tài khoản này một cách an toàn |
@@ -91,7 +91,7 @@ curl -s "http://localhost:3847/events/wait?timeout=300&since=0"
 
 ### Qua wrapper `zalo-mcp`
 
-Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 23 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
+Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 25 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
 - **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--cert <path>`, `--key <path>`, `--client-id <id>`, `--client-secret <secret>`, `--issuer-url <url>`, `-w`/`--webhook <url>`, `--webhook-secret <secret>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
@@ -178,7 +178,7 @@ Mỗi tài khoản Zalo cá nhân có cơ sở dữ liệu (`<DATA_DIR>/<ownId>/
 
 ---
 
-## Tham chiếu Tools (23 tools)
+## Tham chiếu Tools (25 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -593,6 +593,16 @@ Chờ tin nhắn mới tiếp theo trong buffer theo cơ chế long-poll (0% CPU
 | `since` | number (tuỳ chọn) | Cursor từ lần đọc trước; nếu đã có tin mới hơn `since` thì trả về ngay |
 | `timeoutSec` | number (mặc định 55, tối đa 300) | Thời gian chờ tối đa tính bằng giây trước khi trả về `status: "timeout"` |
 
+**Gọi trực tiếp qua CLI (không cần gọi qua MCP hay HTTP port):**
+Khi `mcp start` đang chạy (dù ở chế độ stdio hay HTTP/HTTPS), bất kỳ script/agent nào trên cùng máy đều có thể gọi trực tiếp qua kênh loopback cục bộ (`daemon-channel.json`):
+```bash
+# Chờ tin nhắn mới (hoặc trả về ngay nếu có tin sau cursor của consumer "my-bot")
+zalo-agent mcp wait -c my-bot --timeout 55 --json
+
+# Đánh dấu đã đọc tới cursor vừa nhận cho consumer "my-bot"
+zalo-agent mcp mark-read <cursor> -c my-bot --json
+```
+
 ---
 
 ### `zalo_label`
@@ -608,18 +618,63 @@ Liệt kê, gắn nhãn (`assign`), gỡ nhãn (`unassign`), hoặc cập nhật
 | `threadIds` | string[] (tuỳ chọn) | Nhiều hội thoại cần gắn/gỡ nhãn cùng lúc |
 | `labelData`, `version` | tuỳ chọn | Dữ liệu nhãn đầy đủ và `version` cho `action: "update"` |
 
+### `zalo_group`
+Rời nhóm, xem thông tin nhóm, tạo nhóm và thêm/xóa thành viên — tương đương `group leave`, `info`, `create`, `add-member` và `remove-member`. Danh sách thành viên vẫn do `zalo_get_group_members` trả về.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `action` | enum `"leave"\|"info"\|"create"\|"add_members"\|"remove_member"` | Thao tác cần thực hiện |
+| `groupId` | string (tuỳ chọn) | Id nhóm dạng số. Bắt buộc với `leave`, `info`, `add_members`, `remove_member`; tìm bằng `zalo_search_threads` |
+| `name` | string (tuỳ chọn) | Tên nhóm mới (bắt buộc với `create`) |
+| `userIds` | string[] 1–100 (tuỳ chọn) | Các Zalo userId dạng số (bắt buộc với `create` và `add_members`; id trùng chỉ gửi một lần) |
+| `userId` | string (tuỳ chọn) | Một Zalo userId dạng số (bắt buộc với `remove_member`) |
+| `silent` | boolean (tuỳ chọn) | Chỉ với `leave`: rời mà không đăng thông báo thường lệ vào nhóm (mặc định `false`) |
+| `confirm` | boolean (tuỳ chọn) | Phải là `true` với `leave` và `remove_member`. Chỉ là một tham số — không có hộp thoại hay bước chờ người dùng; thiếu thì tool báo lỗi và không gọi Zalo |
+
+Kết quả theo từng `action`:
+
+- `info`: `{groupId, name, description, type, creatorId, adminIds, totalMember, maxMember, createdAt, avatar, visibility, pendingApproval, settings}`. Không kèm danh sách thành viên (dùng `zalo_get_group_members`). Báo lỗi nếu Zalo không trả nhóm này (tài khoản không ở trong nhóm, hoặc id không phải id nhóm).
+- `create`: `{groupId, name, added, failed}` — `added` chỉ gồm các thành viên bạn đã yêu cầu (Zalo cũng liệt kê cả người tạo nhóm, tool loại ra); `failed` là các thành viên Zalo từ chối. Không có `groupId` trong phản hồi của Zalo thì là lỗi.
+- `add_members`: `{groupId, added, failed, errorData?}`. Zalo trả thành công ngay cả khi không nhận ai; khi không thêm được thành viên nào, tool báo lỗi kèm mã lỗi của Zalo.
+- `remove_member`: `{success: true, groupId, userId}`; Zalo từ chối (không phải thành viên, hoặc tài khoản không đủ quyền — chủ nhóm hoặc quản trị viên mới xóa được) thì là lỗi.
+- `leave`: `{success: true, groupId, silent}`. Khi bạn không còn ở trong nhóm (đã rời hoặc chưa từng vào), Zalo trả mã 167 và tool giải thích bằng lời. Chủ nhóm vẫn rời được nhóm của mình (đã đo trên tài khoản thật).
+
+Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên cần `confirm: true`; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Luồng tự động/headless/backend không bị chặn: gửi `confirm: true` trong lệnh gọi, hoặc tắt hẳn bước kiểm tra bằng `"groupConfirm": false` trong `mcp-config.json` hay biến môi trường `ZALO_MCP_GROUP_CONFIRM=0` (biến môi trường được ưu tiên; `1`/`true` bật lại). Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool đã được chạy thử trên tài khoản thật (nhóm tạm thời): tạo nhóm, xem thông tin, thêm/xóa thành viên, rời nhóm với `silent`. Đã kiểm chứng trên tài khoản thật: với `silent: true`, các thành viên thường không thấy thông báo "đã rời nhóm", nhưng chủ nhóm vẫn thấy. Chủ nhóm rời nhóm thì quyền chủ nhóm được chuyển cho người khác trước, nên người đó thấy thông báo — muốn rời im lặng hoàn toàn với các thành viên, hãy chuyển quyền chủ nhóm (`group transfer-owner`) rồi mới rời.
+
+### `zalo_friend`
+Kiểm tra, liệt kê và xử lý lời mời kết bạn, và liệt kê bạn bè — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request` và `list`.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `action` | enum `"status"\|"sent_requests"\|"received_requests"\|"send"\|"accept"\|"reject"\|"undo"\|"list"` | Thao tác cần thực hiện |
+| `userId` | string (tuỳ chọn) | Zalo userId dạng số. Bắt buộc với `status`, `send`, `accept`, `reject`, `undo`; tìm bằng `zalo_lookup_user` |
+| `message` | string (tuỳ chọn) | Lời nhắn kèm lời mời (chỉ với `send`) |
+| `limit` | number 1–1000 (tuỳ chọn) | Số bạn bè tối đa trả về cho `list` (mặc định 200; kết quả cho biết tổng số) |
+
+Kết quả theo từng `action`:
+
+- `status`: `{is_friend, is_requested, is_requesting}` dạng boolean. Zalo trả hai cờ cho lời mời đang chờ giữa hai bên; muốn biết lời mời đi theo chiều nào thì dùng hai danh sách bên dưới.
+- `sent_requests`: `{count, requests: [{userId, displayName, message, requestedAt}]}`, các lời mời bạn đã gửi và còn chờ. Zalo trả mã 112 khi không có lời mời nào; tool coi đó là danh sách rỗng.
+- `received_requests`: các lời mời người khác gửi cho bạn, mới nhất trước, kèm lời nhắn của họ và `seen`. Zalo không có danh sách riêng cho việc này: tool lọc các mục loại "lời mời kết bạn đã nhận" (`recommType` 2) trong danh sách gợi ý, giống cách `friend recommendations` gắn nhãn `[request]`.
+- `send`, `accept`, `reject`, `undo`: `{success: true, userId}`. Khi Zalo từ chối `send` (đã là bạn, bị chặn, gửi quá nhiều…), lỗi nêu lý do bằng đúng lời của CLI.
+- `list`: `{total, count, truncated, friends: [{userId, displayName, lastActionTime}]}`, hoạt động gần đây nhất trước.
+
+Lưu ý: Zalo hạn chế tài khoản gửi nhiều lời mời kết bạn, nên chỉ `send` khi cần. Thời gian trong `requestedAt`/`receivedAt` được chuẩn hoá về ISO dù Zalo trả giây hay mili-giây; đơn vị đó chưa được đo trên tài khoản thật. Tool mới chỉ được kiểm thử offline.
+
 ---
 
 ## Phạm vi tool — cái gì có, cái gì phải gọi CLI
 
-MCP server expose **23 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
+MCP server expose **25 tool cho tài khoản cá nhân**. Mọi thứ còn lại vẫn dùng được, nhưng phải gọi CLI với `--json` và parse kết quả.
 
 | Nhóm chức năng | MCP tool | Cách gọi qua CLI |
 |---|---|---|
-| Đọc tin nhắn live / chờ tin nhắn đến | `zalo_get_messages`, `zalo_wait_for_message` | `zalo-agent --json listen` |
+| Đọc tin nhắn live / chờ tin nhắn đến (zero-polling) | `zalo_get_messages`, `zalo_wait_for_message`, `zalo_mark_read` | `zalo-agent --json mcp wait` · `mcp mark-read <cursor>` · `listen` |
 | Đọc lịch sử cũ | `zalo_get_history` | `zalo-agent --json msg history <id>` |
 | Tìm kiếm nội dung tin nhắn trong cache | `zalo_search_messages` | — |
-| Gửi text, link preview, danh thiếp (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send\|send-link\|send-card …` |
+| Gửi text, ảnh/file đính kèm, link preview, danh thiếp (kể cả vào My Documents, đánh dấu Quan trọng/Khẩn cấp) | `zalo_send_message` | `zalo-agent --json msg send\|send-image\|send-file\|send-link\|send-card …` |
 | Tìm thread theo tên | `zalo_search_threads` | `zalo-agent --json friend search "…"` · `group list -q "…"` |
 | Tra cứu người dùng (SĐT, username, userId, whoami) | `zalo_lookup_user` | `zalo-agent --json friend find\|info …` · `whoami` |
 | Liệt kê thread đang có trong buffer (kèm số tin chưa đọc) | `zalo_list_threads` | — |
@@ -634,12 +689,14 @@ MCP server expose **23 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Ghi chú nhóm & Ghim tin nhắn | `zalo_note` | `zalo-agent --json group note-create\|note-edit …` · `msg pin\|unpin …` |
 | Khảo sát nhóm (Poll) | `zalo_poll` | `zalo-agent --json poll …` |
 | Nhãn hội thoại (Label) | `zalo_label` | `zalo-agent --json label …` |
+| Thông tin nhóm, tạo nhóm, thêm/xóa thành viên, rời nhóm | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
+| Bạn bè: trạng thái, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè | `zalo_friend` | `zalo-agent --json friend request-status\|sent-requests\|recommendations\|add\|accept\|reject\|undo-request\|list` |
 | Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
 | Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |
-| Gửi ảnh / file / voice / video / sticker | — | `zalo-agent --json msg send-image\|send-file\|send-voice\|send-video\|sticker …` |
+| Gửi voice (URL) / video (URL) / sticker | — | `zalo-agent --json msg send-voice\|send-video\|sticker …` |
 | Thẻ ngân hàng / VietQR | — | `zalo-agent --json msg send-bank\|send-qr-transfer …` |
-| Quản lý bạn bè (kết bạn, chặn, biệt danh) | — | `zalo-agent --json friend …` |
-| Quản trị nhóm nâng cao (tạo nhóm, mời, duyệt, link, giải tán) | — | `zalo-agent --json group …` |
+| Quản lý bạn bè khác (chặn, bỏ chặn, biệt danh, xoá bạn, tìm bạn) | — | `zalo-agent --json friend block\|unblock\|alias …` |
+| Quản trị nhóm nâng cao ngoài các thao tác trên (đổi tên, quản trị viên, mời, duyệt, link, giải tán) | — | `zalo-agent --json group …` |
 | Cài đặt hội thoại (ghim hội thoại, tắt thông báo, ẩn, tự xoá) | — | `zalo-agent --json conv …` |
 | Hồ sơ, trả lời tự động, tin nhắn nhanh, catalog | — | `zalo-agent --json profile\|auto-reply\|quick-msg\|catalog …` |
 | Đa tài khoản, thiết bị, export | — | `zalo-agent --json account …` |
@@ -662,6 +719,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
   "triggerKeywords": ["@bot"],
   "webhook": null,
   "webhookSecret": null,
+  "groupConfirm": true,
   "httpPort": null,
   "host": null,
   "notify": {
@@ -700,7 +758,8 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `mode` | Chế độ lọc thread (mặc định `manual`) |
 | `triggerKeywords` | Chỉ áp dụng cho tính năng notify — không lọc buffer của `zalo_get_messages` |
 | `webhook` | URL nhận POST mỗi tin nhắn mới (hoặc `-w, --webhook <url>` / `ZALO_WEBHOOK_URL[_<ownId>]`) |
-| `webhookSecret` | Khóa bí mật ký webhook bằng `Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>` (`--webhook-secret` / `ZALO_WEBHOOK_SECRET[_<ownId>]`) |
+| `webhookSecret` | Khóa bí mật ký webhook bằng `Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>` (`--webhook-secret` / `ZALO_WEBHOOK_SECRET[_<ownId>]`; thứ tự ưu tiên: cờ, biến môi trường, rồi khóa này) |
+| `groupConfirm` | `true` = `zalo_group` đòi `confirm: true` trước `leave` / `remove_member`; `false` (hoặc `ZALO_MCP_GROUP_CONFIRM=0`, được ưu tiên) cho luồng tự động bỏ qua bước này |
 | `httpPort` | Port HTTP/HTTPS mặc định cho tài khoản này (`--http <port>` / `ZALO_MCP_HTTP_PORT[_<ownId>]`) |
 | `host` | Địa chỉ bind khi chạy HTTP/HTTPS (`--host` / `ZALO_MCP_HOST[_<ownId>]`) |
 | `notify.enabled` | Bật/tắt gửi thông báo khi agent offline (qua `ZaloNotifier`) |
@@ -729,7 +788,7 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 23 tools
+MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 25 tools
      ↓
 Claude Code / Gemini / MCP Client
 ```

@@ -199,9 +199,9 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 | `skill/references/command-reference.md` | Any command, subcommand, flag or default (**source of truth**) |
 | `skill/SKILL.md` | Any user-visible command surface change |
 | `skill/references/mcp-guide.md` (VN), `login-flow.md`, `listen-mode-guide.md`, `skill/evals/eval-scenarios.md` | The matching MCP / login / listener / skill behavior changes |
-| `skill/references/oa-command-reference.md` (EN), `docs/official-account.md` (VN) | Any `oa …` change |
+| `skill/references/oa-command-reference.md` (EN), `docs/official-account.{md,vi.md}` | Any `oa …` change |
 | `README.md` (VN/EN) | A command group is added/removed, or a headline feature ships |
-| `INSTALLATION.md` | Install/update flow, MCP transport flags, or config keys |
+| `INSTALLATION.{md,vi.md}`, `docs/deployment.{md,vi.md}` | Install/update flow, MCP transport/daemon flags, or config keys |
 | `tests/README.md` | A suite moves, a gate or the test count changes, a manual check is added |
 | `docs/agent-notes.md` | The background behind a rule here changes, or a new incident is worth recording |
 | `agent/work/transfer-sync-v2/{NOTES,HANDOFF,FINDINGS}.md` | New measured behavior or protocol detail (gitignored — does not travel) |
@@ -210,9 +210,9 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**190**), command groups (**21** containers), MCP tools (**23**), OA commands (**32**), offline tests (**2035** as of 2026-10-17). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**212**), command groups (**22** containers), MCP tools (**25**), OA commands (**32**), offline tests (**2183** as of 2026-10-20). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
-**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`.
+**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`.
 
 `tests/cli/surface.test.js` is the **machine-checkable twin** of `command-reference.md`. For the wiki, the authoritative EN⇄VN pairing is `_Sidebar.md` in that checkout.
 

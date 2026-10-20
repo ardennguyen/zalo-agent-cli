@@ -5,6 +5,7 @@
 
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
+import { getInviteBoxInfo } from "../core/group-invite.js";
 import { getGroupHistory } from "../core/group-history.js";
 import { groupMemberUids } from "../core/group-members.js";
 import { success, error, info, warning, output } from "../utils/output.js";
@@ -336,9 +337,10 @@ export function registerGroupCommands(program) {
     group
         .command("leave <groupId>")
         .description("Leave a group")
-        .action(async (groupId) => {
+        .option("-s, --silent", "Leave without the usual notice to ordinary members (the owner still sees it)")
+        .action(async (groupId, opts) => {
             try {
-                const result = await getApi().leaveGroup(groupId);
+                const result = await getApi().leaveGroup(groupId, Boolean(opts.silent));
                 output(result, program.opts().json, () => success("Left group"));
             } catch (e) {
                 error(e.message);
@@ -652,6 +654,40 @@ export function registerGroupCommands(program) {
                 output(result, program.opts().json, () => success(`Group ${groupId} dispersed`));
             } catch (e) {
                 error(`Disperse group failed: ${e.message}`);
+            }
+        });
+
+    group
+        .command("link-preview <link>")
+        .description("Show a group's details from its invite link, before joining (does not join)")
+        .option("-p, --member-page <n>", "Member page to show", parseIntAtLeast(1), 1)
+        .action(async (link, opts) => {
+            try {
+                const result = await getApi().getGroupLinkInfo({ link, memberPage: opts.memberPage });
+                output(result, program.opts().json);
+            } catch (e) {
+                error(`Group link preview failed: ${e.message}`);
+            }
+        });
+
+    group
+        .command("invite-info <groupId>")
+        .description(
+            'Show a pending group invitation: the group, who invited you and when it expires (see "invite-boxes")',
+        )
+        .option("--member-page <n>", "Member page to show", parseIntAtLeast(1), 1)
+        .option("--member-count <n>", "Members per page", parseIntAtLeast(1), 10)
+        .action(async (groupId, opts) => {
+            try {
+                // zca-js's own call throws when the group has no topic; see core/group-invite.js.
+                const result = await getInviteBoxInfo(getApi(), {
+                    groupId,
+                    mpage: opts.memberPage,
+                    mcount: opts.memberCount,
+                });
+                output(result, program.opts().json);
+            } catch (e) {
+                error(`Group invite info failed: ${e.message}`);
             }
         });
 }

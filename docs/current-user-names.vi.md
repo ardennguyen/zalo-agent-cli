@@ -69,5 +69,5 @@ credential tài khoản. Chưa đo rate limit hoặc tải của API thật.
 Wrapper tiếp tục dùng engine đã phát hành được ghim phiên bản, cho đến khi quy
 trình phát hành/cập nhật thông thường cài phiên bản chứa bản sửa.
 
-Tài liệu hiện có: `README.md`, `docs/deployment.md`, `docs/agent-notes.md` và
+Tài liệu hiện có: `README.md`, `docs/deployment.vi.md` (`docs/deployment.md`), `docs/agent-notes.md` và
 `skill/references/command-reference.md`.

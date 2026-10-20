@@ -5,12 +5,9 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
-
-/** Extract numeric error code from zca-js error message string. */
-function extractErrorCode(msg) {
-    const match = String(msg).match(/\((\-?\d+)\)/);
-    return match ? Number(match[1]) : null;
-}
+import { describeFriendAddError, extractErrorCode } from "../core/friend-requests.js";
+import { readUserAliases } from "../core/current-user-names.js";
+import { searchFriends } from "../core/friend-search.js";
 
 export function registerFriendCommands(program) {
     const friend = program.command("friend").description("Manage friends and contacts");
@@ -59,17 +56,14 @@ export function registerFriendCommands(program) {
 
     friend
         .command("search <name>")
-        .description("Search friends by name (returns thread_id for messaging)")
+        .description("Search friends by name or alias (returns thread_id for messaging)")
         .action(async (name) => {
             try {
                 const result = await getApi().getAllFriends();
                 const friends = Array.isArray(result) ? result : [];
-                const query = name.toLowerCase();
-                const matches = friends.filter((f) => {
-                    const dn = (f.displayName || "").toLowerCase();
-                    const zn = (f.zaloName || "").toLowerCase();
-                    return dn.includes(query) || zn.includes(query);
-                });
+                // The alias you set for a friend is not in the friend list; it comes from the alias list.
+                const aliases = await readUserAliases(getApi(), (m) => info(`${m}; matching names only`));
+                const matches = searchFriends(friends, aliases, name);
                 output(matches, program.opts().json, () => {
                     if (matches.length === 0) {
                         error(`No friends matching "${name}". Use "friend list" to see all.`);
@@ -79,7 +73,8 @@ export function registerFriendCommands(program) {
                     console.log();
                     for (const f of matches) {
                         const display = f.displayName || f.zaloName || "?";
-                        console.log(`  ${f.userId}  ${display}`);
+                        const aka = f.alias && f.alias !== display ? `  (alias: ${f.alias})` : "";
+                        console.log(`  ${f.userId}  ${display}${aka}`);
                     }
                     console.log();
                     info("Use the ID above as thread_id for messaging commands.");
@@ -142,13 +137,7 @@ export function registerFriendCommands(program) {
             } catch (e) {
                 // Map Zalo error codes to actionable messages
                 const code = e.code || extractErrorCode(e.message);
-                const errMap = {
-                    225: `Already friends with ${userId}. Use "friend list" to verify.`,
-                    215: `User ${userId} may have blocked you or is unreachable.`,
-                    222: `User ${userId} already sent you a friend request. Use "friend accept ${userId}" instead.`,
-                    "-1": `Invalid userId "${userId}". Use "friend find <phone>" to get the correct userId first.`,
-                };
-                error(errMap[code] || `Friend request failed (code ${code}): ${e.message}`);
+                error(describeFriendAddError(code, userId) || `Friend request failed (code ${code}): ${e.message}`);
             }
         });
 
@@ -391,6 +380,62 @@ export function registerFriendCommands(program) {
                 });
             } catch (e) {
                 error(`Find by phone failed: ${e.message}`);
+            }
+        });
+
+    friend
+        .command("qr <userIds...>")
+        .description("Get the QR code image URL of one or more users")
+        .action(async (userIds) => {
+            try {
+                const result = await getApi().getQR(userIds);
+                output(result, program.opts().json, () => {
+                    for (const [uid, url] of Object.entries(result ?? {})) console.log(`  ${uid}  ${url}`);
+                });
+            } catch (e) {
+                error(`Get QR failed: ${e.message}`);
+            }
+        });
+
+    friend
+        .command("common-groups <friendIds...>")
+        .description("List the groups you share with one or more friends")
+        .action(async (friendIds) => {
+            try {
+                const result = await getApi().getRelatedFriendGroup(friendIds);
+                output(result, program.opts().json, () => {
+                    for (const [fid, groups] of Object.entries(result?.groupRelateds ?? {})) {
+                        info(`${fid}: ${groups.length} group(s)`);
+                        for (const g of groups) console.log(`  ${g}`);
+                    }
+                });
+            } catch (e) {
+                error(`Get shared groups failed: ${e.message}`);
+            }
+        });
+
+    friend
+        .command("biz <friendId>")
+        .description("Show the business account details of a user (category, address, website, email)")
+        .action(async (friendId) => {
+            try {
+                const result = await getApi().getBizAccount(friendId);
+                output(result, program.opts().json);
+            } catch (e) {
+                error(`Get business account failed: ${e.message}`);
+            }
+        });
+
+    friend
+        .command("block-feed <userId>")
+        .description("Hide a user's posts from your feed (or show them again with --unblock)")
+        .option("--unblock", "Show this user's feed again")
+        .action(async (userId, opts) => {
+            try {
+                const result = await getApi().blockViewFeed(!opts.unblock, userId);
+                output(result, program.opts().json, () => success(opts.unblock ? "Feed shown again" : "Feed hidden"));
+            } catch (e) {
+                error(`Block feed failed: ${e.message}`);
             }
         });
 }

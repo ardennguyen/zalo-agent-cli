@@ -40,6 +40,10 @@ const COMMAND_SURFACE = {
         "sticker-list",
         "sticker-detail",
         "sticker-category",
+        "typing",
+        "report",
+        "link-preview",
+        "scan-url",
         "react",
         "delete",
         "undo",
@@ -71,6 +75,10 @@ const COMMAND_SURFACE = {
         "close",
         "recommendations",
         "find-phones",
+        "qr",
+        "common-groups",
+        "biz",
+        "block-feed",
     ],
     group: [
         "list",
@@ -106,6 +114,8 @@ const COMMAND_SURFACE = {
         "delete-invite",
         "invite-to",
         "disperse",
+        "link-preview",
+        "invite-info",
     ],
     conv: [
         "forget",
@@ -128,6 +138,7 @@ const COMMAND_SURFACE = {
         "auto-delete-status",
         "auto-delete",
         "delete",
+        "muted",
     ],
     account: ["list", "login", "switch", "remove", "info", "export", "devices"],
     profile: [
@@ -142,12 +153,16 @@ const COMMAND_SURFACE = {
         "delete-avatar",
         "reuse-avatar",
         "set",
+        "active",
+        "lang",
+        "lost-focus",
     ],
     poll: ["create", "info", "vote", "unvote", "add-option", "lock", "share"],
     reminder: ["create", "list", "info", "responses", "edit", "remove"],
     "auto-reply": ["list", "create", "update", "delete"],
     "quick-msg": ["list", "add", "update", "remove"],
     label: ["list", "update"],
+    bank: ["list", "accounts", "add", "update", "remove"],
     catalog: [
         "list",
         "create",
@@ -158,8 +173,9 @@ const COMMAND_SURFACE = {
         "update-product",
         "delete-product",
         "upload-photo",
+        "register",
     ],
-    mcp: ["start"],
+    mcp: ["start", "wait", "mark-read"],
     oa: [
         "login",
         "refresh",
@@ -216,7 +232,6 @@ const FLAG_CONTRACT = {
         "--force",
         "--days",
         "--from",
-        "--legacy",
         "--wait",
         "--messages-only",
         "--shard-size",
@@ -279,6 +294,13 @@ const FLAG_CONTRACT = {
     "msg delete": ["--cli-msg-id", "--uid-from", "--everyone", "--type"],
     "msg history": ["--limit", "--scan", "--from-msg-id", "--timeout", "--no-cache", "--type"],
     "conv mute": ["--duration", "--type"],
+    "msg typing": ["--type"],
+    "msg report": ["--reason", "--content", "--type"],
+    "friend block-feed": ["--unblock"],
+    "bank list": ["--query"],
+    "bank accounts": ["--page", "--limit"],
+    "bank add": ["--bank", "--name"],
+    "bank update": ["--bank", "--name"],
     "conv recent": ["--limit", "--friends-only", "--groups-only"],
     // --type picks the payload: seenv2 and the conversation ids differ for a
     // group ("g<id>", type 1) and a DM ("u<id>", type 0).
@@ -288,6 +310,9 @@ const FLAG_CONTRACT = {
     "conv archive": ["--type"],
     "conv unarchive": ["--type"],
     "group list": ["--query"],
+    "group link-preview": ["--member-page"],
+    "group invite-info": ["--member-page", "--member-count"],
+    "group leave": ["--silent"],
     "group settings": [
         "--block-name",
         "--no-block-name",
@@ -319,6 +344,7 @@ const FLAG_CONTRACT = {
         "message,friend,group,reaction,read",
         "--filter",
         "--webhook",
+        "--webhook-secret",
         "--no-self",
         "--auto-accept",
         "--save",
@@ -340,12 +366,15 @@ const FLAG_CONTRACT = {
         "--client-secret",
         "--issuer-url",
         "--webhook",
+        "--webhook-secret",
         "--no-delivered-receipts",
         "--no-self-heal",
         "--daemon",
         "--stop",
         "--status",
     ],
+    "mcp wait": ["--account", "--since", "--thread", "--timeout", "--consumer"],
+    "mcp mark-read": ["--account", "--consumer"],
     "catalog add-product": ["--photos"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],
@@ -453,7 +482,7 @@ describe("flag contract", () => {
     // This used to be `helps[cmd].includes(flag)` — an unanchored substring
     // search over the entire help text, descriptions included. Commander
     // prose mentions other flags constantly: `sync-mobile`'s description
-    // names --transfer and --legacy, `--from`'s description says "Overrides
+    // names --socket, `--from`'s description says "Overrides
     // --days". So deleting the real `-t, --transfer` registration left this
     // contract green, which is the exact regression it exists to catch. A
     // listed `--prune` was also satisfied by `--prune-orphans`.

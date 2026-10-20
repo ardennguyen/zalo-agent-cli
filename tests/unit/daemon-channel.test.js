@@ -29,6 +29,8 @@ import {
     getDaemonStatus,
     stopViaDaemon,
     stopDaemon,
+    waitViaDaemon,
+    markReadViaDaemon,
 } from "../../src/core/daemon-channel.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-daemon-chan-"));
@@ -556,11 +558,18 @@ describe("daemon-channel.js stays a transport", () => {
 
     it("imports nothing from the sync, db or live-capture layers", () => {
         const imports = [...SRC.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
+        // utils/secrets.js masks secret flags in the daemon.log header. It is a leaf: pure string
+        // handling with no imports of its own (asserted below), so it costs a `msg` invocation nothing.
+        const LEAF_UTILS = ["../utils/secrets.js"];
         assert.deepEqual(
-            imports.filter((p) => !p.startsWith("node:")),
+            imports.filter((p) => !p.startsWith("node:") && !LEAF_UTILS.includes(p)),
             [],
             `daemon-channel.js may only import node builtins; found: ${imports.join(", ")}`,
         );
+        for (const p of LEAF_UTILS) {
+            const leaf = readFileSync(join(import.meta.dirname, "..", "..", "src", "core", p), "utf8");
+            assert.doesNotMatch(leaf, /^import\s/m, `${p} must stay import-free to be allowed in the transport`);
+        }
     });
 
     it("names no stage body of its own — every one arrives as a runner", () => {
@@ -718,5 +727,77 @@ describe("daemon status and graceful stop", () => {
         assert.equal(res.stopped, false);
         assert.equal(existsSync(join(dir, "daemon.lock")), false);
         assert.equal(existsSync(join(dir, "daemon-channel.json")), false);
+    });
+});
+
+describe("MCP buffer wait and mark-read over daemon channel", () => {
+    it("returns null when no daemon channel is published", async () => {
+        assert.equal(await waitViaDaemon(dir, { since: 0, timeoutSec: 1 }), null);
+        assert.equal(await markReadViaDaemon(dir, { cursor: 5 }), null);
+    });
+
+    it("answers 503 when the running daemon has no MCP buffer (e.g. listen)", async () => {
+        const d = fakeDaemon(dir);
+        const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir });
+        started.push(chan);
+
+        const w = await waitViaDaemon(dir, { since: 0, timeoutSec: 1 });
+        assert.equal(w.ok, false);
+        assert.equal(w.status, 503);
+        assert.match(w.error, /message buffer/);
+
+        const m = await markReadViaDaemon(dir, { cursor: 5 });
+        assert.equal(m.ok, false);
+        assert.equal(m.status, 503);
+        assert.match(m.error, /message buffer/);
+    });
+
+    it("serves waitViaDaemon and markReadViaDaemon and rejects bad tokens", async () => {
+        const d = fakeDaemon(dir);
+        const cursors = new Map();
+        const chan = await startDaemonChannel({
+            getApi: d.getApi,
+            accountDir: dir,
+            onWait: async (params) => ({
+                status: "message",
+                message: {
+                    id: "m1",
+                    threadId: params.threadId || "t1",
+                    text: "hello from buffer",
+                },
+                cursor: (Number(params.since) || 0) + 1,
+            }),
+            onMarkRead: async (params) => {
+                const c = params.consumer || "default";
+                cursors.set(c, Number(params.cursor));
+                return {
+                    marked: 2,
+                    readCursor: Number(params.cursor),
+                    consumer: c,
+                };
+            },
+        });
+        started.push(chan);
+
+        const badWait = await fetch(`http://127.0.0.1:${chan.port}/wait`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: "wrong" }),
+        });
+        assert.equal(badWait.status, 403);
+
+        const w = await waitViaDaemon(dir, { threadId: "t99", since: 41, timeoutSec: 5, consumer: "bot-a" });
+        assert.equal(w.ok, true);
+        assert.equal(w.status, "message");
+        assert.equal(w.cursor, 42);
+        assert.equal(w.message.threadId, "t99");
+        assert.equal(w.message.text, "hello from buffer");
+
+        const m = await markReadViaDaemon(dir, { cursor: 42, consumer: "bot-a" });
+        assert.equal(m.ok, true);
+        assert.equal(m.marked, 2);
+        assert.equal(m.readCursor, 42);
+        assert.equal(m.consumer, "bot-a");
+        assert.equal(cursors.get("bot-a"), 42);
     });
 });

@@ -671,11 +671,6 @@ describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
 // account, so running it will close a `listen` daemon or a browser Zalo Web
 // session on the same account.
 //
-// --legacy keeps the retired pull_mobile_msg path, and THAT still pings the
-// phone, so it keeps its own opt-in flag on top of ZALO_TEST_LIVE:
-//
-//     ZALO_TEST_LIVE=1 ZALO_TEST_SYNC_MOBILE=1 node --test tests/e2e/tier3-mutate-restore.test.js
-//
 // The rest of the surface (flag parsing, the no-account guard) is covered
 // offline in tests/cli/, and the backfill itself is unit-tested against a fake
 // listener in tests/unit/sync-backfill.test.js — both at zero cost.
@@ -716,9 +711,6 @@ describe("tier 3 · sync-mobile --socket (socket backfill — no phone contact)"
         assert.match(r.all, /one web session per account/i);
     });
 });
-
-const SYNC_MOBILE = process.env.ZALO_TEST_SYNC_MOBILE === "1";
-const syncSkip = skip || (SYNC_MOBILE ? false : "needs ZALO_TEST_SYNC_MOBILE=1 — --legacy pings a real phone");
 
 // The five newer top-level sync commands had ZERO live coverage — they
 // appeared only in the offline surface manifest. Three of them cannot write
@@ -854,34 +846,5 @@ describe("tier 3 · the read-only sync passes", { skip }, () => {
         const r = await runCli(["sync-reactions", "-p", "1", "-w", "15"], live(T, { timeout: 120_000 }));
         assert.equal(r.killed, false, "sync-reactions must cap its own wait");
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
-    });
-});
-
-describe("tier 3 · sync-mobile --legacy (opt-in: pings a real phone)", { skip: syncSkip }, () => {
-    // ONE invocation. The retired endpoint answers empty, and this now stops
-    // there instead of re-polling for two minutes.
-    let r;
-
-    before(async () => {
-        if (syncSkip) return;
-        r = await runCli(["sync-mobile", "--legacy"], live(T, { timeout: 90_000 }));
-    });
-
-    it("makes exactly one attempt and stops", () => {
-        assert.equal(r.killed, false, "--legacy must not loop");
-        assert.doesNotMatch(r.all, /Waiting for sync data/, "the retry loop is gone");
-    });
-
-    it("reports a recognizable outcome", () => {
-        assert.match(
-            r.all,
-            /Already synced|no longer serves it|nothing new to save|Synced \d+\/\d+ message|Sync failed/,
-            `no recognizable outcome: ${r.all.slice(-300)}`,
-        );
-    });
-
-    it("points at the working command when the endpoint is dead", () => {
-        if (!/no longer serves it/.test(r.all)) return;
-        assert.match(r.all, /without --legacy/, "a dead end must name the path that works");
     });
 });

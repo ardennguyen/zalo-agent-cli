@@ -1,6 +1,6 @@
 # Configuration cookbook — `.env`, `mcp-config.json` and the setups worth running
 
-> **Status:** verified against `zalo-agent-cli` `2.5.5`. Every file shown here exists, ready to copy, under [`docs/config-samples/`](config-samples/), and `tests/unit/config-samples.test.js` holds each one to the code: every `mcp-config.json` key is one the loader merges, every environment variable is one a source file reads, and the CRM receiver verifies a signature produced by the real webhook sender. Vietnamese: [`configuration.vi.md`](configuration.vi.md).
+> **Status:** verified against `zalo-agent-cli` `2.5.6`. Every file shown here exists, ready to copy, under [`docs/config-samples/`](config-samples/), and `tests/unit/config-samples.test.js` holds each one to the code: every `mcp-config.json` key is one the loader merges, every environment variable is one a source file reads, and the CRM receiver verifies a signature produced by the real webhook sender. Vietnamese: [`configuration.vi.md`](configuration.vi.md).
 
 Two kinds of file configure a server, and they answer different questions:
 

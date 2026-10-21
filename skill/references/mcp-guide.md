@@ -23,6 +23,8 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 | `--issuer-url <url>` | *(suy từ header Host)* | Ghi đè URL gốc OAuth 2.0 issuer (`ZALO_MCP_ISSUER_URL[_<ownId>]`) |
 | `-w, --webhook <url>` | `webhook` / `ZALO_WEBHOOK_URL[_<ownId>]` | POST mỗi tin nhắn mới (đã lọc theo `watchThreads`) dạng JSON tới URL này |
 | `--webhook-secret <secret>` | `webhookSecret` / `ZALO_WEBHOOK_SECRET[_<ownId>]` | Ký mỗi webhook POST bằng `Authorization: Bearer <secret>` và `X-Zalo-Signature: sha256=<hmac>`. Cờ được ưu tiên, rồi biến môi trường, rồi khóa trong cấu hình; cờ để trống bị từ chối. Nên dùng biến môi trường: cờ lộ trong danh sách tiến trình |
+| *(webhook bền vững)* | `webhookBatchSize` / `ZALO_WEBHOOK_BATCH_SIZE`, `webhookMaxAge` / `ZALO_WEBHOOK_MAX_AGE` | Mỗi sự kiện được ghi xuống `accounts/<ownId>/webhook-outbox.db` rồi mới gửi: đúng thứ tự, ít nhất một lần, thử lại 1 giây nhân đôi đến 5 phút, sống sót qua khởi động lại. Payload bị từ chối (400/413/422) hoặc sự kiện quá `webhookMaxAge` (24h) vào dead-letter. Gộp tối đa N sự kiện mỗi POST dạng `{"event":"batch","events":[…]}`. Xem tồn đọng: `zalo-agent mcp webhook status`; bên nhận trả 2xx ngay và loại trùng theo id |
+| `--log-level <level>` | `info` / `ZALO_LOG_LEVEL[_<ownId>]` | Mức log của `daemon.log`: `error`, `warn`, `info` hoặc `debug` (thêm một dòng cho mỗi HTTP request và mỗi tin nhắn). `ZALO_LOG_FORMAT=json`, `ZALO_LOG_MAX_SIZE` (50m) và `ZALO_LOG_KEEP` (3) cho định dạng và xoay vòng |
 | `--config <path>` | `~/.zalo-agent-cli/mcp-config.json` | File cấu hình tuỳ chỉnh |
 | `-d, --daemon` | `false` | Chạy ngầm trong nền (cần `--http <port>`; ghi log vào `accounts/<ownId>/daemon.log`) |
 | `--stop` | `false` | Dừng daemon chạy ngầm của tài khoản này một cách an toàn |

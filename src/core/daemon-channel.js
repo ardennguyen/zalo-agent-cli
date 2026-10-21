@@ -1178,7 +1178,7 @@ let foregroundFilter = null;
  * @param {string} logPath
  * @returns {number|null}
  */
-function trySpawnWin32JobBreakaway(execPath, args, logPath) {
+function trySpawnWin32JobBreakaway(execPath, args, logPath, extraEnv = {}) {
     if (process.platform !== "win32") return null;
     try {
         const cmdLine = [quoteWinArg(execPath), ...args.map(quoteWinArg)].join(" ");
@@ -1197,6 +1197,7 @@ function trySpawnWin32JobBreakaway(execPath, args, logPath) {
             timeout: 8000,
             env: {
                 ...process.env,
+                ...extraEnv,
                 ZALO_DAEMON_CHILD: "1",
                 ZALO_DAEMON_LOG: logPath,
                 ZALO_DAEMON_CMD: cmdLine,
@@ -1221,6 +1222,7 @@ function trySpawnWin32JobBreakaway(execPath, args, logPath) {
  * @param {string} opts.accountDir
  * @param {string[]} [opts.args] - CLI arguments (defaults to `process.argv.slice(1)`)
  * @param {number} [opts.timeoutMs=15000] - how long to wait for the channel to come up
+ * @param {Record<string, string>} [opts.env] - extra environment for this daemon only (a fleet gives each account its own token)
  * @returns {Promise<{
  *   ok: boolean,
  *   alreadyRunning?: boolean,
@@ -1230,7 +1232,7 @@ function trySpawnWin32JobBreakaway(execPath, args, logPath) {
  *   error?: string,
  * }>}
  */
-export async function spawnDaemonProcess({ accountDir, args = process.argv.slice(1), timeoutMs = 15_000 }) {
+export async function spawnDaemonProcess({ accountDir, args = process.argv.slice(1), timeoutMs = 15_000, env = {} }) {
     const status = getDaemonStatus(accountDir);
     if (status.running) {
         return {
@@ -1257,7 +1259,7 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
         /* ignore */
     }
 
-    let pid = trySpawnWin32JobBreakaway(process.execPath, filteredArgs, logPath);
+    let pid = trySpawnWin32JobBreakaway(process.execPath, filteredArgs, logPath, env);
     if (pid !== null) {
         try {
             fs.closeSync(logFd);
@@ -1269,7 +1271,7 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
             detached: true,
             windowsHide: true,
             stdio: ["ignore", logFd, logFd],
-            env: { ...process.env, ZALO_DAEMON_CHILD: "1", ZALO_DAEMON_LOG: logPath },
+            env: { ...process.env, ...env, ZALO_DAEMON_CHILD: "1", ZALO_DAEMON_LOG: logPath },
         });
         try {
             fs.closeSync(logFd);

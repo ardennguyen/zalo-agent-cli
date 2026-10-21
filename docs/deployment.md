@@ -549,7 +549,9 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
 
 ```
 ~/.zalo-agent-cli/
-├── accounts.json                  # registry                                  (0600)
+├── accounts.json                  # registry; changed under a lock, replaced atomically (0600)
+├── accounts.json.bak              # the registry as it was before the last change
+├── accounts.json.lock             # runtime, only while a change is in progress; exclude
 ├── credentials/cred_<ownId>.json  # saved login: imei, cookie, user agent     (0600)
 ├── mcp-config.json                # MCP config (optional)
 ├── qr.png                         # last login QR; transient, exclude
@@ -557,6 +559,7 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
     ├── zalo.db  zalo.db-wal  zalo.db-shm   # back up as one unit
     ├── media/                              # the large part (unless media.downloadDir moves it)
     ├── sync/                               # regenerable: zproto-cache/
+    ├── webhook-outbox.db (+ -wal, -shm)    # events queued for the webhook receiver; back up with the account (§4.7, `mcp webhook status`)
     ├── daemon.lock                         # runtime; exclude
     └── daemon-channel.json                 # runtime, 0600; exclude
 ```

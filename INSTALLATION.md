@@ -304,7 +304,8 @@ Default layout when no custom paths are set:
 
 ```
 ~/.zalo-agent-cli/
-├── accounts.json                  # Account registry (0600)
+├── accounts.json                  # Account registry (0600); changed under a lock, replaced atomically
+├── accounts.json.bak              # The registry as it was before the last change
 ├── credentials/cred_<ownId>.json  # Per-account session credentials (0600)
 ├── mcp-config.json                # Optional MCP config
 ├── accounts/<ownId>/

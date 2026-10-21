@@ -61,7 +61,8 @@ tests/                    # Test suite — see tests/README.md
 
 ```
 ~/.zalo-agent-cli/
-├── accounts.json                 # Registry (0600)
+├── accounts.json                 # Registry (0600); changed under accounts.json.lock, replaced atomically
+├── accounts.json.bak             # The registry before the last change
 ├── credentials/cred_<ownId>.json # Session credentials (0600)
 ├── mcp-config.json               # Optional MCP config
 ├── accounts/<ownId>/
@@ -83,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **23** containers — 15 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2327** as of 2026-10-21 (2323 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2363** as of 2026-10-21 (2358 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -739,6 +740,45 @@ later (webhook outbox, message buffer, pending gaps, stage lock).
   state (a duplicate-session close is fatal by design), so the down paths are covered by unit tests
   that emit the listener events; the live runs covered up, event counts, the webhook backlog and
   its recovery, and `--status` on both daemons.
+
+---
+
+## Shared files are written atomically, and a damaged registry is an error (2026-10-21)
+
+`accounts.json` is shared by every login, `account` command and name refresh, and a fleet of daemons
+refreshes names concurrently. It was read, edited in memory and written back with a plain
+`writeFileSync`. Measured with six processes: writers lost each other's changes, a reader could catch
+the file truncated and not yet refilled and take it for "no accounts", and a damaged file read as an
+empty list, so the next `login` replaced it with a registry of one. `src/utils/atomic-file.js` now
+holds the two guarantees, used by the registry (`src/core/accounts.js`), credentials, `mcp-config.json`
+and the OA credentials:
+
+- **`writeFileAtomic`**: a temp file beside the target, created exclusively at the final mode (a secret
+  is never readable by others, even for the moment `saveCredentials` used to leave between its write
+  and its `chmod`), flushed, renamed over the target. The `.bak` copy skips the flush
+  (`durable: false`): it is a convenience, not the record. On Windows a rename fails with `EPERM` while
+  a reader has the file open; a tight loop of readers made that exceed a quarter of a second, so it is
+  retried for a second or two with jitter.
+- **`withFileLock`**: an `O_EXCL` lock file holding the pid. A lock whose holder is dead, or older than
+  30 s, is taken over, after re-reading it to remove only what was judged stale. The release removes the
+  lock only if it is still the holder's own. The takeover has a window (two waiters judging the same
+  stale lock at once) that needs a crashed holder and a three-way race, and is accepted.
+- **A registry that exists but cannot be read is a `RegistryError`**, never `[]`. Reads fall back to
+  `accounts.json.bak` (once-only warning); the next change replaces the damaged file and keeps it as
+  `accounts.json.corrupt-<ms>`; with no good backup nothing is touched and the message says to fix it
+  or move it aside. `src/index.js` turns the error into a message instead of a stack trace.
+- **The name refresh must not take a daemon down.** `updateAccountName` is called from event handlers:
+  it answers a name it already has without taking the lock, waits at most 3 s for it, and on any
+  failure logs and returns `false`.
+- **What the tests prove.** `tests/unit/registry-safety.test.js` runs real processes and was red
+  against the old `accounts.js` (11 failures: lost renames, lost adds, every unreadable-file case, the
+  backup). Live, on a copy of the test home with a running daemon: 60 parallel adds, five writers and
+  two readers for 15 s alongside a daemon's own name refresh, then twelve rounds of hard-killing
+  writers: no lost rename, no bad read, no damaged file, a dead holder's lock taken over at once, no
+  leftover temp file (a sweep removes the ones a killed writer left, `sweepStaleTemps`).
+- **Not covered:** other writers in this tree still use plain writes where a torn file is cheap (logs,
+  the channel descriptor, `oa` token refresh outside `saveOACreds`). Several machines sharing one
+  config directory over a network file system is not supported: `O_EXCL` and rename are not reliable there.
 
 ---
 

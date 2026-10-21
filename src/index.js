@@ -154,4 +154,12 @@ registerOACommands(program);
 registerMCPCommands(program);
 registerSyncCommands(program);
 
-program.parse();
+// parseAsync, so a registry that exists but cannot be read (src/core/accounts.js) reaches the user as a
+// message, not as a stack trace from inside a command. Anything else is rethrown exactly as before.
+program.parseAsync().catch((e) => {
+    if (e?.name === "RegistryError") {
+        error(e.message);
+        process.exit(1);
+    }
+    throw e;
+});

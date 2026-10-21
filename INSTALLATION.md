@@ -70,12 +70,11 @@ Run from inside the installed `zalo-mcp/` folder:
 
 ### `.env` keys (inside `zalo-mcp/`)
 
-Keep `zalo-mcp/.env` **for port configuration only** (`ZALO_MCP_HTTP_PORT` and `ZALO_OA_WEBHOOK_PORT`). Put storage directory overrides (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) and engine settings in `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) so `zalo-mcp` and `zalo-agent` always share a single configuration and never drift.
+Keep `zalo-mcp/.env` **for port configuration only** (`ZALO_MCP_HTTP_PORT`). Put storage directory overrides (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) and engine settings in `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) so `zalo-mcp` and `zalo-agent` always share a single configuration and never drift.
 
 | Key | Default | Purpose |
 |:---|:---|:---|
 | `ZALO_MCP_HTTP_PORT` | `3847` | Port used when `mcp-server.js --http` is passed without an explicit port |
-| `ZALO_OA_WEBHOOK_PORT` | `3000` | Default port for the OA webhook listener |
 
 ### npm scripts inside the wrapper
 
@@ -383,7 +382,7 @@ Full reference: [skill/references/command-reference.md](skill/references/command
 3. `<CONFIG_DIR>/.env` (default `~/.zalo-agent-cli/.env`)
 
 > [!TIP]
-> **Recommended `.env` split:** Keep `zalo-mcp/.env` for **port settings only** (`ZALO_MCP_HTTP_PORT`, `ZALO_OA_WEBHOOK_PORT`), and put all storage directory overrides (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) and engine settings in `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`). That way both `zalo-mcp` and `zalo-agent` read the exact same paths from any directory without conflicting `.env` files.
+> **Recommended `.env` split:** Keep `zalo-mcp/.env` for **port settings only** (`ZALO_MCP_HTTP_PORT`), and put all storage directory overrides (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) and engine settings in `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`). That way both `zalo-mcp` and `zalo-agent` read the exact same paths from any directory without conflicting `.env` files.
 
 See [`.env.example`](.env.example) for a template.
 

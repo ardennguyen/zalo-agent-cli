@@ -1,0 +1,21 @@
+{
+    "watchThreads": ["dm:*", "group:*"],
+    "host": "127.0.0.1",
+    "httpPort": 3847,
+    "oauth": {
+        "clientId": "zalo-connector",
+        "clientSecret": null,
+        "issuerUrl": "https://zalo.example.com",
+        "clients": []
+    },
+    "limits": {
+        "maxMessagesPerPoll": 20,
+        "bufferMaxAge": "2h",
+        "bufferMaxSize": 500
+    },
+    "media": {
+        "downloadDir": null,
+        "autoOpen": false
+    },
+    "groupConfirm": true
+}

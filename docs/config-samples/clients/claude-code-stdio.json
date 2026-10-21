@@ -1,0 +1,8 @@
+{
+    "mcpServers": {
+        "zalo": {
+            "command": "zalo-mcp",
+            "args": ["--account", "1000000000000000001"]
+        }
+    }
+}

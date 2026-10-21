@@ -1,0 +1,62 @@
+# /etc/systemd/system/zalo-mcp@.service
+# One instance per Zalo account: the instance name IS the account id.
+#   systemctl enable --now zalo-mcp@1000000000000000001
+#   journalctl -u zalo-mcp@1000000000000000001 -f
+#
+# Each instance reads /etc/zalo-mcp/common.env, then /etc/zalo-mcp/accounts/<id>.env
+# (see ../env/account.env). The account's token and port come from that file,
+# so neither appears on the command line (`ps` shows only `mcp start --account <id>`).
+[Unit]
+Description=Zalo MCP server for account %i
+Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/configuration.md
+After=network-online.target
+Wants=network-online.target
+# A duplicate-session exit (close code 3000) means another web session took the
+# account; cap the restart loop and alert on `failed` instead of fighting it.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=zalo
+Group=zalo
+WorkingDirectory=/home/zalo
+UMask=0077
+EnvironmentFile=/etc/zalo-mcp/common.env
+EnvironmentFile=/etc/zalo-mcp/accounts/%i.env
+Environment=NODE_ENV=production
+Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
+
+# Refuse to start with no token (an empty one would serve unauthenticated).
+ExecStartPre=/usr/bin/test -n "${ZALO_MCP_AUTH_TOKEN}"
+# Spread the start-up of many instances over 30 seconds: every start logs in and
+# loads the account's friend and group lists, and a whole fleet restarting at once
+# is the heaviest moment of its life (see docs/deployment.md §1.4).
+ExecStartPre=/bin/bash -c 'sleep $((RANDOM % 30))'
+ExecStart=/usr/bin/zalo-agent mcp start --account %i
+
+# SIGINT is the shutdown signal mcp start handles; with the default SIGTERM the
+# daemon exits without stamping its last-connected time or releasing its lock.
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=always
+RestartSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zalo-mcp-%i
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/zalo/.zalo-agent-cli /var/lib/zalo-media
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# One instance's footprint is about 100 MB at rest; cap a runaway one.
+MemoryMax=600M
+
+[Install]
+WantedBy=multi-user.target

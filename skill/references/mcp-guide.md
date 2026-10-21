@@ -119,12 +119,11 @@ zalo-mcp --account <ID> msg list --json                  # Chuyển tiếp lện
 *(Hoặc dùng `"command": "node", "args": ["/absolute/path/to/zalo-mcp/mcp-server.js"]` nếu không thêm global bin vào `PATH`.)*
 
 > [!TIP]
-> **Phân tách `.env` khuyến nghị:** Chỉ giữ cấu hình port (`ZALO_MCP_HTTP_PORT`, `ZALO_OA_WEBHOOK_PORT`) trong `zalo-mcp/.env`, và đặt mọi đường dẫn lưu trữ (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) trong `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) để cả `zalo-mcp` và `zalo-agent` luôn đọc chung một nơi.
+> **Phân tách `.env` khuyến nghị:** Chỉ giữ cấu hình port (`ZALO_MCP_HTTP_PORT`) trong `zalo-mcp/.env`, và đặt mọi đường dẫn lưu trữ (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) trong `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) để cả `zalo-mcp` và `zalo-agent` luôn đọc chung một nơi.
 
 | Biến `.env` của `zalo-mcp` | Mặc định | Tác dụng |
 |------|----------|----------|
 | `ZALO_MCP_HTTP_PORT` | `3847` | Port fallback khi gọi `--http` không kèm số |
-| `ZALO_OA_WEBHOOK_PORT` | `3000` | Port mặc định cho `oa listen` |
 
 Nếu wrapper không tìm thấy `zalo-agent-cli` trong `node_modules/`, nó tự chạy `npm install` một lần rồi mới spawn.
 

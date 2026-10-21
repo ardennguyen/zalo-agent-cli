@@ -70,12 +70,11 @@ Chạy từ bên trong thư mục `zalo-mcp/` đã cài đặt:
 
 ### Các khóa `.env` (bên trong `zalo-mcp/`)
 
-Chỉ giữ `zalo-mcp/.env` **cho cấu hình cổng** (`ZALO_MCP_HTTP_PORT` và `ZALO_OA_WEBHOOK_PORT`). Đặt mọi cấu hình thư mục lưu trữ (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) và cấu hình engine vào `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) để `zalo-mcp` và `zalo-agent` luôn dùng chung một cấu hình thống nhất.
+Chỉ giữ `zalo-mcp/.env` **cho cấu hình cổng** (`ZALO_MCP_HTTP_PORT`). Đặt mọi cấu hình thư mục lưu trữ (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) và cấu hình engine vào `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`) để `zalo-mcp` và `zalo-agent` luôn dùng chung một cấu hình thống nhất.
 
 | Khóa | Mặc định | Mục đích |
 |:---|:---|:---|
 | `ZALO_MCP_HTTP_PORT` | `3847` | Cổng mặc định khi chạy `mcp-server.js --http` mà không truyền số cổng |
-| `ZALO_OA_WEBHOOK_PORT` | `3000` | Cổng mặc định cho webhook listener của OA |
 
 ### Các npm script bên trong wrapper
 
@@ -382,7 +381,7 @@ Tham chiếu đầy đủ: [skill/references/command-reference.md](skill/referen
 3. `<CONFIG_DIR>/.env` (mặc định `~/.zalo-agent-cli/.env`)
 
 > [!TIP]
-> **Cách phân tách `.env` khuyến nghị:** Chỉ giữ cấu hình cổng trong `zalo-mcp/.env` (`ZALO_MCP_HTTP_PORT`, `ZALO_OA_WEBHOOK_PORT`), và đặt mọi đường dẫn lưu trữ (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) cùng cấu hình engine trong `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`). Nhờ đó cả `zalo-mcp` và `zalo-agent` đều đọc đúng cùng một đường dẫn dù chạy từ bất kỳ thư mục nào.
+> **Cách phân tách `.env` khuyến nghị:** Chỉ giữ cấu hình cổng trong `zalo-mcp/.env` (`ZALO_MCP_HTTP_PORT`), và đặt mọi đường dẫn lưu trữ (`ZALO_CREDENTIALS_DIR`, `ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`, `ZALO_OA_DIR`) cùng cấu hình engine trong `~/.zalo-agent-cli/.env` (`<CONFIG_DIR>/.env`). Nhờ đó cả `zalo-mcp` và `zalo-agent` đều đọc đúng cùng một đường dẫn dù chạy từ bất kỳ thư mục nào.
 
 Xem file mẫu tại [`.env.example`](.env.example).
 

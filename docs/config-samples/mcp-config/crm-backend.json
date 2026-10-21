@@ -1,0 +1,23 @@
+{
+    "watchThreads": ["dm:*"],
+    "host": "127.0.0.1",
+    "httpPort": 3847,
+    "webhook": "https://crm.example.com/hooks/zalo",
+    "webhookSecret": null,
+    "limits": {
+        "maxMessagesPerPoll": 50,
+        "bufferMaxAge": "6h",
+        "bufferMaxSize": 2000
+    },
+    "media": {
+        "downloadDir": "/var/lib/zalo-media",
+        "autoOpen": false
+    },
+    "notify": {
+        "enabled": false,
+        "thread": null,
+        "on": ["dm"],
+        "cooldown": "5m"
+    },
+    "groupConfirm": false
+}

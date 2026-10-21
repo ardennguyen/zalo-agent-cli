@@ -462,6 +462,9 @@ ZALO_MCP_AUTH_TOKEN=<64 hex characters, from: openssl rand -hex 32>
 ### 4.3 Logs
 
 - Everything goes to stderr, and from there to the journal: `journalctl -u zalo-mcp -f`.
+- **Levels.** `--log-level` / `ZALO_LOG_LEVEL[_<ownId>]` is `error`, `warn`, `info` (the default) or `debug`. `debug` adds the lines that grow with traffic: one per HTTP request (with the caller's address and user agent), one per message the daemon handles (`[mcp] Buffered …`; in `listen`, every event line, which carries the message text). At `info` they are not written, so a busy daemon's log stays about state changes, and private message text stays out of it. The other lines are classed by their wording (a failure or refusal is `error`, `WARNING` / `⚠` is `warn`); that is a filter on free text, not a promise about each line. A background daemon writes through this filter into `daemon.log`; a foreground run filters its stderr only when a level or format is asked for. The process that merely *launches* `-d` is never filtered.
+- **Timestamps, JSON.** Each line of `daemon.log` starts with an ISO timestamp. `ZALO_LOG_FORMAT=json` writes one JSON object per line instead (`{"ts","level","account","msg"}`) for a log shipper.
+- **Rotation.** `daemon.log` rotates by size, `daemon.log` → `daemon.log.1` → … → `daemon.log.<keep>`: `ZALO_LOG_MAX_SIZE` (default `50m`, at least `4k`) and `ZALO_LOG_KEEP` (default 3; 0 just starts over). A new file begins with a `log rotated` line. On Windows a rename can be refused while something (a `tail`, an editor) has the file open; the daemon then keeps appending and tries again after another megabyte.
 - Cap it: `SystemMaxUse=2G` in `/etc/systemd/journald.conf`, or `RuntimeMaxUse=` for a volatile journal.
 - **Lines that mean something is wrong right now** (as `mcp start` prints them; `listen` reports the same events with a `[listen]` prefix or none, and in places different words):
 

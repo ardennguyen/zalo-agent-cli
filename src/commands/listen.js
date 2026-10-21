@@ -15,6 +15,7 @@ import { acquireLock, releaseLock } from "../core/lock.js";
 import {
     createStageLock,
     statusViaDaemon,
+    configureLogging,
     startDaemonChannel,
     getDaemonStatus,
     stopDaemon,
@@ -46,6 +47,7 @@ import { createDeliveredReceipts } from "../core/receipts.js";
 import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
@@ -102,11 +104,19 @@ export function registerListenCommand(program) {
             "--no-self-heal",
             "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
+        .option(
+            "--log-level <level>",
+            "Log level of daemon.log (and of stderr in the foreground): error, warn, info (default) or debug, which adds a line per HTTP request and per message. Env: ZALO_LOG_LEVEL[_<ownId>]; also ZALO_LOG_FORMAT=json, ZALO_LOG_MAX_SIZE (default 50m) and ZALO_LOG_KEEP (default 3) for rotation",
+        )
         .option("-d, --daemon", "Run in the background (logs to <accountDir>/daemon.log)")
         .option("--stop", "Stop the running background daemon for this account")
         .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
+            if (opts.logLevel !== undefined && !LOG_LEVELS.includes(String(opts.logLevel).trim().toLowerCase())) {
+                error(`Invalid --log-level "${opts.logLevel}": use one of ${LOG_LEVELS.join(", ")}.`);
+                process.exit(1);
+            }
             // An empty secret is refused before anything else: see resolveWebhookSecret().
             let cliWebhookSecret;
             try {
@@ -162,6 +172,16 @@ export function registerListenCommand(program) {
                 });
                 return;
             }
+
+            // Levels and rotation of the log, now that the account is known (src/core/log-sink.js).
+            const logging = configureLogging({
+                ownId: activeAcc.ownId,
+                levelFlag: opts.logLevel?.trim().toLowerCase() || null,
+                // The process that launches a background daemon talks to the user; only the daemon's own output is a log.
+                filterStderr: !(opts.daemon && !process.env.ZALO_DAEMON_CHILD),
+            });
+            if (!process.env.ZALO_DAEMON_CHILD)
+                for (const w of logging.warnings) console.error(`[listen] [logging] ${w}`);
 
             if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
                 const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
@@ -468,7 +488,10 @@ export function registerListenCommand(program) {
             /** Output event as JSON or human-readable, save locally, then post to webhook */
             function emitEvent(data, humanMsg) {
                 eventCount++;
-                if (jsonMode) {
+                if (process.env.ZALO_DAEMON_CHILD === "1") {
+                    // In daemon.log an event line is a per-message line: debug (it carries the message text).
+                    console.error(`${DEBUG_MARK}${jsonMode ? JSON.stringify(data) : humanMsg}`);
+                } else if (jsonMode) {
                     console.log(JSON.stringify(data));
                 } else {
                     info(humanMsg);

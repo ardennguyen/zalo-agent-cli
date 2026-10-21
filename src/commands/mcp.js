@@ -26,6 +26,8 @@ import {
 import { success, error, info, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
+import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.js";
+import { setUserInfoLogger } from "../core/user-info.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
@@ -462,9 +464,24 @@ export function registerMCPCommands(program) {
             // the server so the tools can hold it too.
             const onSelfName = (name) => updateAccountName(activeAcc.ownId, name);
             const stageLock = createStageLock();
+            // What daemon.log learns beyond one-line events: every stage's progress (the restore used to
+            // report only to the caller), the event loop's stalls (a blocked loop cannot answer the socket's
+            // pings, and a bare close 1006 says nothing else), and what Zalo said when a lookup was refused.
+            const daemonLog = (m) => console.error(`[mcp] ${m}`);
+            const loopMonitor = startEventLoopMonitor({
+                log: daemonLog,
+                context: () => {
+                    const held = stageLock.current();
+                    return held ? `the ${held.stage} stage was running` : "";
+                },
+            });
+            const socketContext = createSocketContext({ lock: stageLock, monitor: loopMonitor });
+            setUserInfoLogger(daemonLog);
             const syncRunners = createSyncRunners({
                 getApi,
                 accountName: activeAcc.ownId,
+                log: daemonLog,
+                monitor: loopMonitor,
                 onSelfName,
                 onMessagesRestored: () => {
                     for (const [tid, info] of getThreadNames()) {
@@ -790,6 +807,7 @@ export function registerMCPCommands(program) {
                 });
 
                 api.listener.on("connected", () => {
+                    socketContext.markUp();
                     if (reconnectCount > 0) {
                         console.error(`[mcp] Reconnected (#${reconnectCount})`);
                     }
@@ -798,7 +816,7 @@ export function registerMCPCommands(program) {
 
                 api.listener.on("disconnected", (code) => {
                     if (lifecycle.isStopping()) return;
-                    console.error(`[mcp] Disconnected (code: ${code}). Auto-retrying...`);
+                    console.error(`[mcp] Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);
                     lifecycle.noteDown();
                 });
 
@@ -812,7 +830,7 @@ export function registerMCPCommands(program) {
                     }
                     reconnectCount++;
                     console.error(
-                        `[mcp] Connection closed (code: ${code}). Re-login in 5s... (reconnect #${reconnectCount})`,
+                        `[mcp] Connection closed (code: ${code}). Re-login in 5s... (reconnect #${reconnectCount}; ${socketContext.describe()})`,
                     );
                     await new Promise((r) => setTimeout(r, 5000));
                     try {

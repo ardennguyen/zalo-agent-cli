@@ -2,7 +2,7 @@
 
 [Tiếng Việt](deployment.vi.md)
 
-**Status:** re-verified against `zalo-agent-cli` `2.5.1`, with the 2.5.3 additions (`zalo_friend`, `zalo_group`, `--webhook-secret`) checked against the code (25 MCP tools, native HTTPS `--cert`/`--key`, built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and `-d, --daemon` / `--stop` / `--status` background lifecycle) and `zalo-mcp` `2.2.0+`. First written 2026-09-29.
+**Status:** re-verified against `zalo-agent-cli` `2.5.1`, with the 2.5.3 additions (`zalo_friend`, `zalo_group`, `--webhook-secret`) and the 2.5.4 daemon logging (stage progress, event-loop stalls, lookup limits) checked against the code (25 MCP tools, native HTTPS `--cert`/`--key`, built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and `-d, --daemon` / `--stop` / `--status` background lifecycle) and `zalo-mcp` `2.2.0+`. First written 2026-09-29.
 **Licensing:** from 2.0.1 this software is licensed CC BY-NC-SA 4.0; use in a company's business operations needs a separate commercial license (see [NOTICE](../NOTICE)).
 **Audience:** whoever runs this on a server and gets paged when it stops.
 

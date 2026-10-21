@@ -79,11 +79,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **212** invokable leaves (180 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **22** containers — 15 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| CLI commands | **216** invokable leaves (184 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **23** containers — 15 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2244** as of 2026-10-21 (2240 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2293** as of 2026-10-21 (2289 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -115,10 +115,10 @@ guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-20): **212 leaves, 22 containers, 234 nodes**.
-By group: group 33, oa 32, friend 22, msg 20, conv 20, top-level 12, profile 11,
-catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, mcp 3,
-label 2. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
+Measured (2026-10-21): **216 leaves, 23 containers, 239 nodes**.
+By group: group 35, oa 32, friend 26, msg 24, conv 21, top-level 12, profile 14,
+catalog 10, account 7, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
+leaves), reminder 6, bank 5, auto-reply 4, quick-msg 4, label 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
 184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
@@ -676,6 +676,36 @@ reading zca-js actually posted) that only self-corrects once the listener catche
 §13 already says one db writer per account, while an audit found `msg.js` and `conv.js` writing
 without taking the lock — so "just write it" would have been a decision about an existing invariant
 violation, not a fresh one.
+
+---
+
+## The webhook outbox is its own file, and why (2026-10-21)
+
+`mcp start -w` and `listen -w` used to `fetch` once with a 5 second timeout and forget, so a receiver
+that was down lost the message and nothing said so. Both now write each event to
+`accounts/<ownId>/webhook-outbox.db` first and deliver from it (`src/core/webhook-outbox.js`, one
+implementation behind both entry points, as §13 requires).
+
+- **Separate file, not a table in `zalo.db`.** The cache's message rows have three writers by decision
+  (§13); an outbox in the same file would either be a fourth or blur what "writer" means. A damaged
+  outbox can be deleted without touching the cache, and `mcp webhook status|list|retry|purge` open it
+  directly (SQLite WAL) beside the daemon.
+- **At least once, in order.** A row is deleted only after a 2xx. The head's backoff holds the whole
+  queue, so a later message never overtakes an earlier one; the cost is that one sick event stalls
+  the rest until it is delivered or dead-lettered. 400, 413 and 422 dead-letter at once (the
+  receiver said the payload is malformed; retrying would only block), and a batch refused that way is
+  split so one bad event does not take its neighbors. 401, 403, 404, 429 and 5xx are retried: a wrong
+  secret or a sick receiver is the operator's to fix, not a reason to drop messages.
+- **Dedupe is only for rows still queued.** `UNIQUE(event_key)` keeps a live message and its
+  catch-up repeat from queuing twice, but a delivered row is deleted, so a repeat after delivery is
+  sent again. The receiver de-duplicates on the message id; the sample receivers do.
+- **Nothing wakes the dispatcher when another process changes the file**, so it looks at the queue
+  every 30 s (`pollMs`). Without that, `mcp webhook retry` would sit until the next message arrived.
+- **Live test shape.** The receiver in `agent/work/live-receiver.mjs` answers from a mode file
+  (`ok`, `503`, `422`, `hang`). `listen` includes the account's own messages, so a sent message
+  comes back as an event; `mcp start` skips them by design, so its enqueue path needs a message from
+  a second account (the test group has one). A hard kill (`Stop-Process -Force`) mid-backlog and a
+  restart is the crash test: the queued events were still delivered after it.
 
 ---
 

@@ -66,6 +66,8 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_MCP_ISSUER_URL` | yes | the public `https://` address OAuth metadata advertises | `--issuer-url` | `oauth.issuerUrl` |
 | `ZALO_WEBHOOK_URL` | yes | POST each incoming message here | `-w`, `--webhook` | `webhook` |
 | `ZALO_WEBHOOK_SECRET` | yes | sign the webhook (`Authorization: Bearer` + `X-Zalo-Signature: sha256=…`) | `--webhook-secret` (visible in `ps`) | `webhookSecret` |
+| `ZALO_WEBHOOK_BATCH_SIZE` | yes | events per webhook POST, 1–100. The default, 1, sends each event alone | | `webhookBatchSize` |
+| `ZALO_WEBHOOK_MAX_AGE` | yes | how long an undelivered event is retried before it is dead-lettered (`6h`, `24h`; at least `1m`). Default `24h` | | `webhookMaxAge` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | `0` lets `zalo_group` leave / remove members without `confirm: true` | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | non-friend DM names one sync restore may look up. Default 500 | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | any value: never run the `npm view` update check | | |
@@ -87,6 +89,8 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `media.autoOpen` | `true` | open downloaded media on this machine; set `false` on a server |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | off | notify a Zalo group when the agent is away |
 | `webhook`, `webhookSecret` | `null` | push each message to a URL, signed (prefer `ZALO_WEBHOOK_SECRET`) |
+| `webhookBatchSize` | `1` | events per webhook POST (1–100) |
+| `webhookMaxAge` | `"24h"` | an undelivered webhook event older than this is dead-lettered |
 | `httpPort`, `host` | `null` | HTTP port and bind address |
 | `tls.cert`, `tls.key` | `null` | HTTPS |
 | `oauth.clientId`, `.clientSecret`, `.issuerUrl`, `.clients[]` | | OAuth 2.0 consumers; `clients[]` is a list of `{clientId, clientSecret}` |
@@ -152,7 +156,9 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 
 - `mcp start` posts `{event: "message", accountId, id, threadId, threadType, senderId, senderName, text, timestamp, type, attachment, replyTo}` for each message that passes `watchThreads`. `listen -w` posts a different, richer shape (`{accountId, event, msgId, threadId, type, isSelf, uidFrom, dName, msgType, content, …}`) and also friend, group, reaction and read events. Pick one per account.
 - Every delivery carries `Authorization: Bearer <secret>` and `X-Zalo-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. Verify the signature over the **raw** bytes: [`clients/crm-webhook-receiver.mjs`](config-samples/clients/crm-webhook-receiver.mjs) (Node) and [`clients/crm_webhook_receiver.py`](config-samples/clients/crm_webhook_receiver.py) (Python) do.
-- **The sender does not retry, queue or order.** A delivery has 5 seconds; a slow or failing receiver loses that push (the message is still in the account's cache). Acknowledge with 2xx at once, do the work afterwards, and de-duplicate on the message id.
+- **Delivery is durable, ordered and at least once.** Each event is written to `webhook-outbox.db` in the account directory before anything sends it, so a receiver that is down, slow (a POST has 10 seconds) or answering anything but 2xx costs a backlog, not messages: the sender retries with waits of 1 s doubling to 5 min, holds everything behind a failing event so order is kept, and carries on after a restart or crash. A payload the receiver refuses as malformed (400, 413, 422) is parked as a **dead letter**, and so is any event still undelivered after `ZALO_WEBHOOK_MAX_AGE` (24 h). Watch it with `zalo-agent mcp webhook status`, look with `mcp webhook list --dead`, and put events back with `mcp webhook retry`.
+- **Acknowledge with 2xx at once, do the work afterwards, and de-duplicate on the message id.** At least once means a message can arrive twice (a crash after your reply, before the sender noted it). Every POST has `X-Zalo-Attempt`, and `X-Zalo-Delivery: <first>-<last>` (outbox numbers).
+- **Batching.** With `ZALO_WEBHOOK_BATCH_SIZE=10` up to ten queued events go in one POST as `{"event":"batch","accountId":…,"count":N,"events":[…]}`, signed over the whole body; a lone event is still the plain payload. The sample receivers handle both. Turn it on when a backlog or many accounts make one POST per message too many.
 
 **Hear: pull.** `GET /events/wait?timeout=55&since=<cursor>` returns **one** message per call, or `{"status":"timeout"}`, with a cursor to resume from. The buffer behind it holds up to `limits.bufferMaxSize` messages per thread for `limits.bufferMaxAge` (the CRM sample raises both to 2,000 and 6 h). Past that, read the cache with `zalo_get_history` / `zalo_get_messages`.
 

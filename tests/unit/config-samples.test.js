@@ -12,7 +12,9 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -23,7 +25,8 @@ import {
     resolveAccountMCPConfig,
 } from "../../src/mcp/mcp-config.js";
 import { postMCPWebhook } from "../../src/commands/mcp.js";
-import { verifyWebhook } from "../../docs/config-samples/clients/crm-webhook-receiver.mjs";
+import { eventsOf, verifyWebhook } from "../../docs/config-samples/clients/crm-webhook-receiver.mjs";
+import { createWebhookDispatcher, openOutbox } from "../../src/core/webhook-outbox.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -196,5 +199,73 @@ describe("client samples", () => {
         assert.equal(verifyWebhook(captured.body, headers, "CHANGE_ME_OTHER"), false);
         assert.equal(verifyWebhook(captured.body, {}, secret), false, "no signature header");
         assert.deepEqual(Object.keys(JSON.parse(captured.body)).slice(0, 2), ["event", "accountId"]);
+    });
+
+    it("the receivers read a real batch the dispatcher sends, and a lone event, alike", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "zalo-sample-batch-"));
+        const outbox = openOutbox(dir);
+        try {
+            for (const n of [1, 2, 3])
+                outbox.enqueue(null, JSON.stringify({ event: "message", accountId: "A", id: `m${n}` }));
+            const posts = [];
+            const dispatcher = createWebhookDispatcher({
+                outbox,
+                url: "https://crm.example.com/hooks/zalo",
+                secret: "CHANGE_ME_WEBHOOK_SIGNING_SECRET",
+                accountId: "A",
+                batchSize: 2,
+                fetchFn: async (_url, init) => (posts.push(init), { status: 200 }),
+                log: () => {},
+            });
+            await dispatcher.drain();
+            await dispatcher.stop();
+            assert.equal(posts.length, 2, "a batch of two, then the third alone");
+
+            const lower = (init) =>
+                Object.fromEntries(Object.entries(init.headers).map(([k, v]) => [k.toLowerCase(), v]));
+            for (const init of posts) {
+                assert.equal(verifyWebhook(init.body, lower(init), "CHANGE_ME_WEBHOOK_SIGNING_SECRET"), true);
+            }
+            assert.deepEqual(
+                eventsOf(JSON.parse(posts[0].body)).map((e) => e.id),
+                ["m1", "m2"],
+            );
+            assert.deepEqual(
+                eventsOf(JSON.parse(posts[1].body)).map((e) => e.id),
+                ["m3"],
+            );
+
+            // The Python receiver: same two bodies, same signatures, same answer.
+            const py = spawnSync(
+                "python",
+                [
+                    "-I",
+                    "-c",
+                    [
+                        "import json, sys, importlib.util",
+                        "spec = importlib.util.spec_from_file_location('r', sys.argv[1])",
+                        "r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)",
+                        "bodies = json.loads(sys.argv[2]); secret = sys.argv[3]",
+                        "out = []",
+                        "for b in bodies:",
+                        "    raw = b['body'].encode()",
+                        "    assert r.verify_webhook(raw, {'X-Zalo-Signature': b['sig']}, secret)",
+                        "    assert not r.verify_webhook(raw + b' ', {'X-Zalo-Signature': b['sig']}, secret)",
+                        "    out.append([e['id'] for e in r.events_of(json.loads(raw))])",
+                        "print(json.dumps(out))",
+                    ].join("\n"),
+                    join(SAMPLES, "clients", "crm_webhook_receiver.py"),
+                    JSON.stringify(posts.map((p) => ({ body: p.body, sig: p.headers["X-Zalo-Signature"] }))),
+                    "CHANGE_ME_WEBHOOK_SIGNING_SECRET",
+                ],
+                { encoding: "utf8" },
+            );
+            if (py.error?.code === "ENOENT") return; // no Python on this machine: the JS receiver above still ran
+            assert.equal(py.status, 0, py.stderr);
+            assert.deepEqual(JSON.parse(py.stdout), [["m1", "m2"], ["m3"]]);
+        } finally {
+            outbox.close();
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

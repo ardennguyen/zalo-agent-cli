@@ -21,6 +21,7 @@ import {
     envForAccount,
     saveMCPConfig,
     parseDuration,
+    resolveWebhookDelivery,
 } from "../../src/mcp/mcp-config.js";
 
 const CONFIG_FILE = join(SANDBOX_CONFIG_DIR, "mcp-config.json");
@@ -284,5 +285,46 @@ describe("envForAccount & resolveAccountMCPConfig — multi-account CRM readines
             explicitConfigPath: null,
         });
         assert.match(problem, /per-account config file .* is not valid JSON/);
+    });
+});
+
+describe("resolveWebhookDelivery", () => {
+    it("defaults to one event per POST and a 24 hour retention", () => {
+        const d = resolveWebhookDelivery("1001", getDefaultConfig(), {});
+        assert.deepEqual(d, { batchSize: 1, maxAgeMs: 24 * 3600_000, warnings: [] });
+        assert.equal(getDefaultConfig().webhookBatchSize, 1);
+        assert.equal(getDefaultConfig().webhookMaxAge, "24h");
+    });
+
+    it("takes the config file's values, and listen's no-config call gets the defaults", () => {
+        const d = resolveWebhookDelivery("1001", { webhookBatchSize: 20, webhookMaxAge: "6h" }, {});
+        assert.deepEqual([d.batchSize, d.maxAgeMs], [20, 6 * 3600_000]);
+        assert.deepEqual(resolveWebhookDelivery("1001", undefined, {}).batchSize, 1);
+    });
+
+    it("the environment beats the config, and the per-account name beats the plain one", () => {
+        const env = {
+            ZALO_WEBHOOK_BATCH_SIZE: "10",
+            ZALO_WEBHOOK_BATCH_SIZE_1001: "50",
+            ZALO_WEBHOOK_MAX_AGE: "12h",
+        };
+        const cfg = { webhookBatchSize: 2, webhookMaxAge: "1h" };
+        const mine = resolveWebhookDelivery("1001", cfg, env);
+        assert.deepEqual([mine.batchSize, mine.maxAgeMs], [50, 12 * 3600_000]);
+        assert.equal(resolveWebhookDelivery("1002", cfg, env).batchSize, 10);
+    });
+
+    it("an unusable value falls back to the default and says so", () => {
+        for (const bad of ["0", "101", "2.5", "many", "-3"]) {
+            const d = resolveWebhookDelivery("1001", {}, { ZALO_WEBHOOK_BATCH_SIZE: bad });
+            assert.equal(d.batchSize, 1, bad);
+            assert.equal(d.warnings.length, 1, bad);
+            assert.match(d.warnings[0], /batch size/);
+        }
+        for (const bad of ["soon", "30s", "0", "-1h"]) {
+            const d = resolveWebhookDelivery("1001", {}, { ZALO_WEBHOOK_MAX_AGE: bad });
+            assert.equal(d.maxAgeMs, 24 * 3600_000, bad);
+            assert.match(d.warnings[0], /max age/);
+        }
     });
 });

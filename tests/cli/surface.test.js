@@ -175,7 +175,7 @@ const COMMAND_SURFACE = {
         "upload-photo",
         "register",
     ],
-    mcp: ["start", "wait", "mark-read"],
+    mcp: ["start", "wait", "mark-read", "webhook"],
     oa: [
         "login",
         "refresh",
@@ -203,6 +203,11 @@ const OA_SUBGROUPS = {
     "oa conv": ["recent", "history"],
     "oa article": ["create", "list", "detail"],
     "oa store": ["product-create", "product-list", "product-info", "category-create", "category-list", "order-create"],
+};
+
+/** Nested subgroups of `mcp`: "mcp webhook" → its subcommands. */
+const MCP_SUBGROUPS = {
+    "mcp webhook": ["status", "list", "retry", "purge"],
 };
 
 /** Commands registered directly on the program, not inside a group. */
@@ -449,16 +454,17 @@ describe("command groups", () => {
     }
 });
 
-describe("oa nested subgroups", () => {
+describe("nested subgroups", () => {
     const helps = {};
+    const NESTED = { ...OA_SUBGROUPS, ...MCP_SUBGROUPS };
 
     before(async () => {
-        const keys = Object.keys(OA_SUBGROUPS);
+        const keys = Object.keys(NESTED);
         const results = await Promise.all(keys.map((k) => runCli([...k.split(" "), "--help"], opts)));
         keys.forEach((k, i) => (helps[k] = results[i].stdout));
     });
 
-    for (const [path, subs] of Object.entries(OA_SUBGROUPS)) {
+    for (const [path, subs] of Object.entries(NESTED)) {
         for (const sub of subs) {
             it(`registers ${path} ${sub}`, () => {
                 assert.match(helps[path], new RegExp(`^\\s+${sub.replace(/[-]/g, "\\-")}\\b`, "m"));

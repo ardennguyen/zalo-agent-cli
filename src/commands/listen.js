@@ -3,7 +3,6 @@
  * Production-ready with auto-reconnect and re-login.
  */
 
-import { createHmac } from "crypto";
 import { appendFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
@@ -43,7 +42,8 @@ import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
 import { describeGap } from "../core/sync-v2/gap-advice.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
-import { envForAccount } from "../mcp/mcp-config.js";
+import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
+import { startWebhookDelivery } from "../core/webhook-outbox.js";
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -408,25 +408,30 @@ export function registerListenCommand(program) {
                 warning("A webhook secret is set but no webhook URL: nothing will be signed or sent. Pass -w <url>.");
             }
 
-            /** Fire-and-forget webhook POST — never blocks event processing */
-            function postWebhook(data) {
-                if (!webhookUrl) return;
-                const payload = { accountId: activeAcc.ownId, ...data };
-                const body = JSON.stringify(payload);
-                const headers = { "Content-Type": "application/json" };
-                if (webhookSecret) {
-                    headers["Authorization"] = `Bearer ${webhookSecret}`;
-                    headers["X-Zalo-Signature"] =
-                        `sha256=${createHmac("sha256", webhookSecret).update(body).digest("hex")}`;
-                }
-                fetch(webhookUrl, {
-                    method: "POST",
-                    headers,
-                    body,
-                    signal: AbortSignal.timeout(5000),
-                }).catch((e) => {
-                    console.error(`[listen] Webhook failed: ${e.message}`);
+            // The same durable outbox `mcp start` uses (src/core/webhook-outbox.js): an event is
+            // written to disk first and delivered from there, so a receiver that is down costs a
+            // backlog (zalo-agent mcp webhook status), not events.
+            let webhookDelivery = null;
+            if (webhookUrl) {
+                const delivery = resolveWebhookDelivery(activeAcc.ownId);
+                for (const w of delivery.warnings) warning(w);
+                webhookDelivery = startWebhookDelivery({
+                    accountDir,
+                    accountId: activeAcc.ownId,
+                    url: webhookUrl,
+                    secret: webhookSecret,
+                    batchSize: delivery.batchSize,
+                    maxAgeMs: delivery.maxAgeMs,
+                    log: (line) => console.error(`[listen] ${line}`),
                 });
+            }
+
+            /** Queue an event for the webhook — never blocks event processing */
+            function postWebhook(data) {
+                // Only a message has an id that stays the same on a repeat (live, then catch-up);
+                // two reactions to one message must both be delivered.
+                const key = data.event === "message" && data.msgId ? `message:${data.msgId}` : null;
+                webhookDelivery?.enqueue(key, { accountId: activeAcc.ownId, ...data });
             }
 
             // Setup save directory if --save flag provided
@@ -953,6 +958,7 @@ export function registerListenCommand(program) {
                 // First, before anything can emit a close event.
                 stopping = true;
                 channel?.stop();
+                webhookDelivery?.stop();
                 deliveredReceipts.stop();
                 try {
                     getApi().listener.stop();

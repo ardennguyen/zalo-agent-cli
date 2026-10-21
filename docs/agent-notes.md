@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **23** containers — 15 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2363** as of 2026-10-21 (2358 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2387** as of 2026-10-21 (2382 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -779,6 +779,30 @@ and the OA credentials:
 - **Not covered:** other writers in this tree still use plain writes where a torn file is cheap (logs,
   the channel descriptor, `oa` token refresh outside `saveOACreds`). Several machines sharing one
   config directory over a network file system is not supported: `O_EXCL` and rename are not reliable there.
+
+---
+
+## Batch pull: `limit` and `settleMs` on every wait (2026-10-21)
+
+`GET /events/wait`, `zalo_wait_for_message` and `mcp wait` returned one message per call, so a bot
+behind a busy account made one round trip per message. All three now build their reply in one place
+(`src/mcp/wait-result.js`) from `MessageBuffer.waitForMessages`, so they cannot drift.
+
+- **Compatible by construction.** `limit` defaults to 1 and the old fields keep their meaning:
+  `message` is the first message, `cursor` is the last one returned (for one message, its own).
+  `messages`, `count` and `hasMore` are additions. A daemon from before batching answers the
+  channel with only `message`; `waitViaDaemon` reads that as a batch of one.
+- **`since=cursor` is the whole protocol.** The reply's `cursor` is the last message's, so the next
+  call continues exactly where the batch ended, and `hasMore` says whether to call again at once.
+  Measured live on 28 buffered messages: three calls at `limit=10`, every message once, in cursor order.
+- **Settling.** `settleMs` waits that long after the FIRST message (or after buffered ones, if fewer than
+  `limit`) so a burst lands in one reply; a full batch never waits, and an abort ends the wait at once.
+- **A buffer test needs a real timestamp.** `MessageBuffer` evicts anything older than its max age on
+  every push; a fixture message with `timestamp: 1` is gone before the test reads it, and so is one
+  with no timestamp. This cost an hour of "the buffer returns nothing".
+- **Live shape.** The test account is the owner's real account, so `mcp start` recovers real incoming
+  messages into the buffer at startup (28 in seven conversations in one run); that is what the live
+  batch tests drained, with nobody needing to send anything.
 
 ---
 

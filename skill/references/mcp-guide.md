@@ -599,12 +599,17 @@ Chờ tin nhắn mới tiếp theo trong buffer theo cơ chế long-poll (0% CPU
 | `threadId` | string (tuỳ chọn) | Chỉ chờ tin nhắn trong hội thoại này |
 | `since` | number (tuỳ chọn) | Cursor từ lần đọc trước; nếu đã có tin mới hơn `since` thì trả về ngay |
 | `timeoutSec` | number (mặc định 55, tối đa 300) | Thời gian chờ tối đa tính bằng giây trước khi trả về `status: "timeout"` |
+| `limit` | number (mặc định 1, tối đa 100) | Trả về tối đa chừng này tin trong một lần gọi, đúng thứ tự, trong `messages` (`message` là tin đầu, `cursor` là của tin cuối, `hasMore` cho biết còn tin đang chờ) |
+| `settleMs` | number (mặc định 0, tối đa 5000) | Sau tin đầu tiên, chờ thêm chừng này mili giây để gom nốt phần còn lại của một đợt tin |
 
 **Gọi trực tiếp qua CLI (không cần gọi qua MCP hay HTTP port):**
 Khi `mcp start` đang chạy (dù ở chế độ stdio hay HTTP/HTTPS), bất kỳ script/agent nào trên cùng máy đều có thể gọi trực tiếp qua kênh loopback cục bộ (`daemon-channel.json`):
 ```bash
 # Chờ tin nhắn mới (hoặc trả về ngay nếu có tin sau cursor của consumer "my-bot")
 zalo-agent mcp wait -c my-bot --timeout 55 --json
+
+# Lấy tối đa 50 tin một lần (xả đống tồn nhanh hơn 50 lần gọi), gom đợt tin trong 200 ms
+zalo-agent mcp wait -c my-bot -n 50 --settle 200 --json
 
 # Đánh dấu đã đọc tới cursor vừa nhận cho consumer "my-bot"
 zalo-agent mcp mark-read <cursor> -c my-bot --json

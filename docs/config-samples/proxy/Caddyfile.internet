@@ -1,0 +1,28 @@
+# Caddyfile: one account's MCP server on the internet, TLS terminated by Caddy.
+# The engine stays on 127.0.0.1:3847 (ZALO_MCP_HOST / ZALO_MCP_HTTP_PORT).
+zalo.example.com {
+	encode zstd gzip
+
+	# Optional: only your office or CRM addresses may connect at all.
+	# @blocked not remote_ip 203.0.113.0/24 198.51.100.7
+	# respond @blocked 403
+
+	# `/events/wait` holds the request open for up to 300 s and MCP replies are
+	# streamed: no response buffering, and a read timeout above 300 s.
+	reverse_proxy 127.0.0.1:3847 {
+		flush_interval -1
+		transport http {
+			read_timeout 310s
+		}
+	}
+
+	# The engine answers every origin with `Access-Control-Allow-Origin: *`
+	# (the bearer token, not the origin, is the credential). To narrow it, strip
+	# the header here and add your own.
+	# header -Access-Control-Allow-Origin
+
+	log {
+		output file /var/log/caddy/zalo-mcp.log
+		# Authorization headers are not logged by default; keep it that way.
+	}
+}

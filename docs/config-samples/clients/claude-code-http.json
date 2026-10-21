@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "zalo-shop-a": {
+            "type": "http",
+            "url": "https://zalo.example.com/mcp",
+            "headers": {
+                "Authorization": "Bearer ${ZALO_MCP_TOKEN}"
+            }
+        }
+    }
+}

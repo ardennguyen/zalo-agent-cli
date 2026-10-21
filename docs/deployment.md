@@ -393,8 +393,8 @@ WorkingDirectory=/home/zalo
 # created with the process umask, and they hold the account's messages.
 UMask=0077
 
-# EnvironmentFile keeps the token out of `systemctl cat` and out of git. It does
-# not keep it out of the process's argv; see the warning below this unit.
+# EnvironmentFile keeps the token out of `systemctl cat`, out of git and out of
+# the process's argv: mcp start reads ZALO_MCP_AUTH_TOKEN from its environment.
 EnvironmentFile=/etc/zalo-agent/mcp.env
 # Express's final error handler sends a stack trace in error responses unless
 # NODE_ENV=production, and express.json() runs before the bearer check
@@ -403,12 +403,12 @@ Environment=NODE_ENV=production
 # The update check already skips when stdout is not a TTY; this makes it explicit.
 Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
 
-# systemd passes an empty or unset ${ZALO_MCP_TOKEN} as an empty --auth
-# argument. mcp start refuses that since 2.0.0 (before 2.0.0 it served with no
-# auth, silently); this check fails the unit earlier, with a clearer reason.
-ExecStartPre=/usr/bin/test -n "${ZALO_MCP_TOKEN}"
+# An unset or empty ZALO_MCP_AUTH_TOKEN would serve /mcp with no auth at all,
+# and the log says only `WARNING: no --auth token`; this check fails the unit
+# instead.
+ExecStartPre=/usr/bin/test -n "${ZALO_MCP_AUTH_TOKEN}"
 # Adjust the path to what `command -v zalo-agent` printed.
-ExecStart=/usr/bin/zalo-agent mcp start --http ${ZALO_MCP_HTTP_PORT} --auth ${ZALO_MCP_TOKEN} --host 127.0.0.1
+ExecStart=/usr/bin/zalo-agent mcp start --http ${ZALO_MCP_HTTP_PORT} --host 127.0.0.1
 
 # LOAD-BEARING. SIGINT is the only shutdown signal `mcp start` and `listen`
 # handle (process.on("SIGINT") in src/commands/mcp.js and listen.js; only
@@ -448,11 +448,11 @@ WantedBy=multi-user.target
 
 ```
 ZALO_MCP_HTTP_PORT=3847
-ZALO_MCP_TOKEN=<64 hex characters, from: openssl rand -hex 32>
+ZALO_MCP_AUTH_TOKEN=<64 hex characters, from: openssl rand -hex 32>
 ```
 
 > [!WARNING]
-> **The bearer token is in the daemon's argv.** `--auth <token>` is the only way `mcp start` takes it; there is no environment-variable form. So `ps`, `/proc/<pid>/cmdline` and the process list that `systemctl status zalo-mcp` prints all show it to local users. On a shared host, mount `/proc` with `hidepid=2`, or give the daemon a host of its own.
+> **Pass the bearer token in the environment, never as `--auth <token>`.** A flag is part of the daemon's argv, so `ps`, `/proc/<pid>/cmdline` and the process list that `systemctl status zalo-mcp` prints show it to every local user. `ZALO_MCP_AUTH_TOKEN` (or `ZALO_MCP_AUTH_TOKEN_<ownId>` for one account) is read from the process environment, which only the service user and root can see. If you must use the flag, mount `/proc` with `hidepid=2`, or give the daemon a host of its own. A ready-made unit per account is in [`config-samples/systemd/`](config-samples/systemd/) (see [`configuration.md`](configuration.md) §3.6).
 
 > [!CAUTION]
 > **There is no second unit.** Do not also enable a `listen` unit for the same account. It would fail on `daemon.lock` at best, and race for the Zalo socket at worst. One account, one unit. If you want `listen`'s webhook or JSONL archive, run `listen` **instead of** `mcp start` and give up the MCP tools (§1.1). Gap tracking and self-heal are the same in both, so they are no longer a reason to choose.
@@ -600,7 +600,7 @@ curl -s http://127.0.0.1:3847/health
 > 6. **Pending coverage gaps**, which `listen` and `mcp start` both record: `select count(*) from sync_gaps where status='pending';`, or ask the running server, which also names the `sync` run that closes them:
 >    ```bash
 >    curl -s http://127.0.0.1:3847/mcp \
->      -H "Authorization: Bearer $ZALO_MCP_TOKEN" \
+>      -H "Authorization: Bearer $ZALO_MCP_AUTH_TOKEN" \
 >      -H 'Content-Type: application/json' \
 >      -H 'Accept: application/json, text/event-stream' \
 >      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"zalo_coverage","arguments":{}}}' \
@@ -652,7 +652,7 @@ Operational consequences, in order of importance:
 Therefore:
 
 - Generate it with a CSPRNG, at least 32 bytes (`openssl rand -hex 32`). It is the only thing between a caller and the ability to read the account's messages and send as the account.
-- Keep it in an `EnvironmentFile` at `0600`, not in the unit file (which `systemctl cat` prints) and not in a repo, and remember it is still visible in the daemon's argv (§4.2).
+- Keep it in an `EnvironmentFile` at `0600`, not in the unit file (which `systemctl cat` prints) and not in a repo, and pass it as `ZALO_MCP_AUTH_TOKEN`, not `--auth`: a flag is visible in the daemon's argv (§4.2).
 - An empty or whitespace-only token disables auth without a word in the log (§5.4); the `ExecStartPre=` line in §4.2 exists for that.
 - Rotating it means restarting the daemon, which opens a window. The self-heal normally closes it (§4.5); keep a phone tap in reserve for what it cannot reach.
 - The **channel** token is separate and self-managing: 24 random bytes, regenerated on every daemon start, published in `daemon-channel.json` at `0600`, only valid on loopback. You never configure it. Its security rests entirely on the file mode: **anyone who can read `daemon-channel.json` can send messages as the account.** That is one more reason the service user must own the config dir alone.

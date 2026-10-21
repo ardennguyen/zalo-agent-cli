@@ -228,6 +228,7 @@ Gửi tin nhắn văn bản, tệp/ảnh đính kèm (`filePath` hoặc `files`)
 | `cardUserId` | string (tuỳ chọn) | Gửi danh thiếp Zalo của user có ID này vào hội thoại |
 | `threadType` | number (tuỳ chọn) | 0 = DM (User), 1 = nhóm. Bỏ trống thì dùng loại thread đã lưu trong cache, giống CLI |
 | `quoteMsgId` | string (tuỳ chọn) | msgId của một tin văn bản trong thread này để trả lời trích dẫn |
+| `format` | enum "markdown"\|"plain" (tuỳ chọn, mặc định `markdown`) | Zalo hiển thị nguyên văn `**đậm**` và `- mục` vì định dạng chỉ được vẽ từ các khoảng style, nên với `markdown` công cụ chuyển Markdown thành định dạng của Zalo: `**đậm**`, `*nghiêng*`, `~~gạch~~`, `# tiêu đề` (in đậm), `- mục` thành gạch đầu dòng thật (lồng nhau thì thụt vào), `1.` giữ nguyên số, `> trích dẫn`, `` `mã` ``, `[chữ](url)` thành `chữ (url)`, và màu `{red:chữ}`. Văn bản không phải Markdown (`snake_case`, `2 * 3 * 4`) được giữ nguyên. `plain` gửi đúng như đã viết. `ZALO_SEND_FORMAT=markdown\|plain` đổi mặc định |
 | `urgency` | enum "normal"\|"important"\|"urgent" (tuỳ chọn) | Đánh dấu tin **Quan trọng** (`important`) hoặc **Khẩn cấp** (`urgent`) như tuỳ chọn trong app, ánh xạ y hệt `msg send --urgency`. Bỏ trống hoặc `normal` là tin thường |
 
 `threadId: "me"` được hiểu đúng như `msg send me`: tin đi vào My Documents, một thread 1-1 riêng có id là `send2me_id` của phiên đăng nhập (không phải uid của bạn — Zalo từ chối uid đó). Tool từ chối, không gửi gì, nếu kèm `threadType: 1` hoặc nếu phiên không báo `send2me_id`. Khi gửi vào My Documents, kết quả có thêm `threadId` thật và `notice`.

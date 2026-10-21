@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2507** as of 2026-10-21 (2502 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2554** as of 2026-10-21 (2549 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -899,6 +899,38 @@ doing, and neither exists for a daemon started by hand or by another supervisor.
   daemon logged `waiting for a login slot`, started when the holder exited (`got login slot 1 of 1 after
   9.9s`) and left no slot file behind. Six processes against two slots never had more than two inside
   (`tests/unit/startup-gate.test.js`, which also shows the same six overlapping without the cap).
+
+---
+
+## Markdown replies arrived raw (2026-10-21)
+
+A second account that replied through the MCP server sent Markdown (`**bold**`, `- item`) and Zalo showed
+it as typed. A Zalo message is plain text plus style ranges (`{ start, len, st }`, UTF-16 offsets); the apps
+draw bold, bullets and sizes only from those, and `zalo_send_message` sent plain text. `msg send --md`
+existed, but it was a Markdown-ish syntax of its own (`__x__` is underline there, bold in Markdown) with no
+bullets or headings, and the tool had no pass at all.
+
+- **The target shape was read from real messages**, not guessed: Zalo's own clients send a bullet as the
+  line's text with no marker, covered whole by `lst_1` (start at the line start, length of the line without
+  its newline), a heading as a bold line, and bold inside an item as a second overlapping range. The cached
+  `raw_data` of such a message is `action: "rtf"` with `params.styles`; a message we send with `styles`
+  comes back from Zalo in exactly that shape (checked live, both senders).
+- **`src/utils/markdown.js` is conservative where Markdown is ambiguous**, because most text is not
+  Markdown: `snake_case` (an underscore inside a word never opens emphasis), `2 * 3 * 4`, a lone `*`, an
+  unclosed `**` and `5 > 3` stay as written; an emphasis marker must hug its text. Ordered lists keep their
+  numbers as typed, as Zalo's clients do, instead of relying on `lst_2` numbering; links become
+  `text (url)` because Zalo links a bare URL itself. An `@[uid]` mention token passes through whole, so
+  `@[123](x)` is not read as a link.
+- **Order: Markdown, then mentions, then `shiftStyles`.** The ranges are counted before `@[uid]` expands
+  to a longer name, and `shiftStyles` (already used by `--md`) moves them across; a range spanning a
+  mention grows with it.
+- **Defaults differ on purpose.** The tool defaults to `markdown` (what calls it is a model); the CLI to
+  plain (what types into it is a person). `ZALO_SEND_FORMAT` moves either, an explicit `format` /
+  `--markdown` wins. `--md` is unchanged. Not converted: `link` captions (a different endpoint) and
+  `send-image`/`send-file` captions on the CLI; the tool converts a file's caption.
+- **Not verified by machine: how it looks.** The server accepts the ranges and echoes them back as
+  `rtf`, which is all a test can see. That the bullets, indent (`ind_10` for a nested item) and heading
+  size render as intended is for a person to confirm on a phone.
 
 ---
 

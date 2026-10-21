@@ -1,6 +1,6 @@
 # Sổ tay cấu hình — `.env`, `mcp-config.json` và các mô hình triển khai nên dùng
 
-> **Trạng thái:** đã đối chiếu với `zalo-agent-cli` `2.5.5`. Mọi tệp nêu ở đây đều có sẵn để sao chép trong [`docs/config-samples/`](config-samples/), và `tests/unit/config-samples.test.js` buộc từng tệp khớp với mã nguồn: mọi khóa `mcp-config.json` đều là khóa trình nạp thực sự gộp, mọi biến môi trường đều được một tệp nguồn đọc, và bộ nhận CRM xác minh được chữ ký do chính bộ gửi webhook tạo ra. Bản tiếng Anh: [`configuration.md`](configuration.md).
+> **Trạng thái:** đã đối chiếu với `zalo-agent-cli` `2.5.6`. Mọi tệp nêu ở đây đều có sẵn để sao chép trong [`docs/config-samples/`](config-samples/), và `tests/unit/config-samples.test.js` buộc từng tệp khớp với mã nguồn: mọi khóa `mcp-config.json` đều là khóa trình nạp thực sự gộp, mọi biến môi trường đều được một tệp nguồn đọc, và bộ nhận CRM xác minh được chữ ký do chính bộ gửi webhook tạo ra. Bản tiếng Anh: [`configuration.md`](configuration.md).
 
 Hai loại tệp cấu hình một máy chủ, trả lời hai câu hỏi khác nhau:
 

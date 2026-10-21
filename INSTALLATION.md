@@ -407,6 +407,10 @@ See [`.env.example`](.env.example) for a template.
 | `ZALO_MCP_ISSUER_URL` | Explicit OAuth 2.0 issuer base URL for `mcp start --http` (supports `ZALO_MCP_ISSUER_URL_<ownId>`) |
 | `ZALO_MCP_TLS_CERT` / `ZALO_MCP_TLS_KEY` | PEM certificate and private key paths for native HTTPS on `mcp start --http` (supports `_*_<ownId>`) |
 | `ZALO_WEBHOOK_URL` / `ZALO_WEBHOOK_SECRET` | Default webhook URL and signing secret (`Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>`) for `listen` and `mcp start` (supports `_*_<ownId>`) |
+| `ZALO_WEBHOOK_BATCH_SIZE` / `ZALO_WEBHOOK_MAX_AGE` | Events per webhook POST (1–100, default 1) and how long an undelivered event is retried before it is dead-lettered (default `24h`). Both support `_<ownId>`. The webhook is durable: see `zalo-agent mcp webhook status` |
+| `ZALO_LOG_LEVEL` / `ZALO_LOG_FORMAT` / `ZALO_LOG_MAX_SIZE` / `ZALO_LOG_KEEP` | `daemon.log` of `listen` and `mcp start`: level `error`, `warn`, `info` (default) or `debug` (adds a line per HTTP request and per message; also `--log-level`), `text` or `json` lines, and rotation at `50m` keeping 3 files |
+| `ZALO_START_JITTER` / `ZALO_LOGIN_SLOTS` / `ZALO_LOGIN_SLOT_WAIT` | Spread a fleet's start-up: wait a random 0–N seconds before logging in, and let at most N daemons on the machine be logging in at once (a daemon over the cap waits, then goes ahead after `ZALO_LOGIN_SLOT_WAIT` seconds). Off by default |
+| `ZALO_SEND_FORMAT` | `markdown` or `plain`: how text messages are sent. `zalo_send_message` converts Markdown to Zalo formatting by default; `msg send` sends plain unless `--markdown` (or this variable) says otherwise |
 
 ---
 

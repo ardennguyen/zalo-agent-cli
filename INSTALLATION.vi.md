@@ -405,6 +405,10 @@ Xem file mẫu tại [`.env.example`](.env.example).
 | `ZALO_MCP_ISSUER_URL` | URL gốc OAuth 2.0 issuer tường minh cho `mcp start --http` (hỗ trợ `ZALO_MCP_ISSUER_URL_<ownId>`) |
 | `ZALO_MCP_TLS_CERT` / `ZALO_MCP_TLS_KEY` | Đường dẫn chứng chỉ và khóa riêng PEM cho HTTPS gốc trên `mcp start --http` (hỗ trợ `_*_<ownId>`) |
 | `ZALO_WEBHOOK_URL` / `ZALO_WEBHOOK_SECRET` | URL webhook mặc định và khóa ký (`Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>`) cho `listen` và `mcp start` (hỗ trợ `_*_<ownId>`) |
+| `ZALO_WEBHOOK_BATCH_SIZE` / `ZALO_WEBHOOK_MAX_AGE` | Số sự kiện mỗi POST webhook (1–100, mặc định 1) và thời gian thử lại một sự kiện chưa giao được trước khi chuyển vào dead-letter (mặc định `24h`). Cả hai hỗ trợ `_<ownId>`. Webhook bền vững: xem `zalo-agent mcp webhook status` |
+| `ZALO_LOG_LEVEL` / `ZALO_LOG_FORMAT` / `ZALO_LOG_MAX_SIZE` / `ZALO_LOG_KEEP` | `daemon.log` của `listen` và `mcp start`: mức `error`, `warn`, `info` (mặc định) hoặc `debug` (thêm một dòng cho mỗi HTTP request và mỗi tin nhắn; cũng có `--log-level`), dòng `text` hoặc `json`, và xoay vòng ở `50m` giữ 3 file |
+| `ZALO_START_JITTER` / `ZALO_LOGIN_SLOTS` / `ZALO_LOGIN_SLOT_WAIT` | Rải thời điểm khởi động của một đội daemon: chờ ngẫu nhiên 0–N giây trước khi đăng nhập, và chỉ cho tối đa N daemon trên máy đăng nhập cùng lúc (daemon vượt giới hạn sẽ chờ, rồi cứ tiếp tục sau `ZALO_LOGIN_SLOT_WAIT` giây). Tắt theo mặc định |
+| `ZALO_SEND_FORMAT` | `markdown` hoặc `plain`: cách gửi tin nhắn văn bản. `zalo_send_message` mặc định chuyển Markdown thành định dạng của Zalo; `msg send` gửi nguyên văn trừ khi có `--markdown` (hoặc biến này) |
 
 ---
 

@@ -223,7 +223,14 @@ describe("delivery", () => {
             now,
             log: (l) => logs.push(l),
         });
-        await d.drain();
+        // The dispatcher's timers are unref'd (they must not hold a daemon open), and this fetch has no socket:
+        // without a ref'd handle the event loop drains while the test is still awaiting the timeout.
+        const keepAlive = setInterval(() => {}, 1000);
+        try {
+            await d.drain();
+        } finally {
+            clearInterval(keepAlive);
+        }
         assert.equal(outbox.stats().pending, 1);
         assert.match(outbox.stats().lastError, /timed out after 20 ms/);
         await d.stop();

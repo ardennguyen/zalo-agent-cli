@@ -1,0 +1,27 @@
+# Scrape each account's daemon (`mcp start --http`). /metrics sits behind the bearer token,
+# so Prometheus sends it; keep the token in a file at 0600, not in this config.
+#
+# One daemon per account means one target per account, and a token per account, so use one
+# job per token (or one job per group of accounts that share a token).
+global:
+  scrape_interval: 30s
+
+rule_files:
+  - alert-rules.yml
+
+scrape_configs:
+  - job_name: zalo-shop-a
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/zalo-shop-a.token
+    static_configs:
+      - targets: ["192.168.1.20:3901"]
+
+  - job_name: zalo-shop-b
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/zalo-shop-b.token
+    static_configs:
+      - targets: ["192.168.1.20:3902"]

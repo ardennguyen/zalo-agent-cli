@@ -1,6 +1,6 @@
 # Sổ tay cấu hình — `.env`, `mcp-config.json` và các mô hình triển khai nên dùng
 
-> **Trạng thái:** đã đối chiếu với `zalo-agent-cli` `2.5.5`. Mọi tệp nêu ở đây đều có sẵn để sao chép trong [`docs/config-samples/`](config-samples/), và `tests/unit/config-samples.test.js` buộc từng tệp khớp với mã nguồn: mọi khóa `mcp-config.json` đều là khóa trình nạp thực sự gộp, mọi biến môi trường đều được một tệp nguồn đọc, và bộ nhận CRM xác minh được chữ ký do chính bộ gửi webhook tạo ra. Bản tiếng Anh: [`configuration.md`](configuration.md).
+> **Trạng thái:** đã đối chiếu với `zalo-agent-cli` `2.5.6`. Mọi tệp nêu ở đây đều có sẵn để sao chép trong [`docs/config-samples/`](config-samples/), và `tests/unit/config-samples.test.js` buộc từng tệp khớp với mã nguồn: mọi khóa `mcp-config.json` đều là khóa trình nạp thực sự gộp, mọi biến môi trường đều được một tệp nguồn đọc, và bộ nhận CRM xác minh được chữ ký do chính bộ gửi webhook tạo ra. Bản tiếng Anh: [`configuration.md`](configuration.md).
 
 Hai loại tệp cấu hình một máy chủ, trả lời hai câu hỏi khác nhau:
 
@@ -66,8 +66,15 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_ISSUER_URL` | có | địa chỉ `https://` công khai mà metadata OAuth công bố | `--issuer-url` | `oauth.issuerUrl` |
 | `ZALO_WEBHOOK_URL` | có | POST mỗi tin nhắn đến tới đây | `-w`, `--webhook` | `webhook` |
 | `ZALO_WEBHOOK_SECRET` | có | ký webhook (`Authorization: Bearer` + `X-Zalo-Signature: sha256=…`) | `--webhook-secret` (hiện trong `ps`) | `webhookSecret` |
+| `ZALO_WEBHOOK_BATCH_SIZE` | có | số sự kiện mỗi POST webhook, 1–100. Mặc định 1: mỗi sự kiện một POST | | `webhookBatchSize` |
+| `ZALO_WEBHOOK_MAX_AGE` | có | thời gian thử lại một sự kiện chưa giao được trước khi chuyển vào dead-letter (`6h`, `24h`; tối thiểu `1m`). Mặc định `24h` | | `webhookMaxAge` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | `0` cho phép `zalo_group` rời nhóm / xóa thành viên mà không cần `confirm: true` | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | số tên DM không phải bạn bè mà một lần restore được tra. Mặc định 500 | | |
+| `ZALO_START_JITTER` | có | chờ một khoảng ngẫu nhiên tối đa chừng này giây (0–600, mặc định 0) trước khi đăng nhập, để một đội daemon khởi động lại cùng lúc không đăng nhập cùng lúc | | |
+| `ZALO_LOGIN_SLOTS` | có | tối đa chừng này daemon trên máy cùng đăng nhập và nạp danh sách một lúc (0–64; mặc định 0, không giới hạn); phần còn lại chờ một slot. `ZALO_LOGIN_SLOT_WAIT` (giây, mặc định 900) là thời gian chờ tối đa trước khi cứ tiếp tục | | |
+| `ZALO_LOG_LEVEL` | có | `error`, `warn`, `info` (mặc định) hoặc `debug` (thêm một dòng cho mỗi HTTP request và mỗi tin nhắn) | `--log-level` | |
+| `ZALO_LOG_FORMAT` |  | `text` (mặc định, mỗi dòng có thời gian) hoặc `json` (mỗi dòng một đối tượng) | | |
+| `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` |  | xoay `daemon.log` khi đạt dung lượng này (mặc định `50m`, tối thiểu `4k`) và giữ chừng này file (mặc định 3) | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | giá trị bất kỳ: không bao giờ chạy kiểm tra cập nhật `npm view` | | |
 | `ZALO_API_VERSION` |  | phiên bản giao thức báo cho Zalo. Mặc định 691 | | |
 
@@ -87,6 +94,8 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `media.autoOpen` | `true` | tự mở media đã tải trên máy này; đặt `false` trên máy chủ |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | tắt | báo vào một nhóm Zalo khi agent vắng mặt |
 | `webhook`, `webhookSecret` | `null` | đẩy mỗi tin tới một URL, có ký (nên dùng `ZALO_WEBHOOK_SECRET`) |
+| `webhookBatchSize` | `1` | số sự kiện mỗi POST webhook (1–100) |
+| `webhookMaxAge` | `"24h"` | sự kiện webhook chưa giao quá thời gian này sẽ chuyển vào dead-letter |
 | `httpPort`, `host` | `null` | port HTTP và địa chỉ bind |
 | `tls.cert`, `tls.key` | `null` | HTTPS |
 | `oauth.clientId`, `.clientSecret`, `.issuerUrl`, `.clients[]` | | các consumer OAuth 2.0; `clients[]` là danh sách `{clientId, clientSecret}` |
@@ -152,9 +161,11 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 
 - `mcp start` gửi `{event: "message", accountId, id, threadId, threadType, senderId, senderName, text, timestamp, type, attachment, replyTo}` cho mỗi tin qua được `watchThreads`. `listen -w` gửi dạng khác, phong phú hơn (`{accountId, event, msgId, threadId, type, isSelf, uidFrom, dName, msgType, content, …}`) và cả sự kiện bạn bè, nhóm, reaction, đã đọc. Chọn một cách cho mỗi tài khoản.
 - Mỗi lần gửi kèm `Authorization: Bearer <secret>` và `X-Zalo-Signature: sha256=<HMAC-SHA256 dạng hex của body gốc>`. Xác minh chữ ký trên **byte gốc**: [`clients/crm-webhook-receiver.mjs`](config-samples/clients/crm-webhook-receiver.mjs) (Node) và [`clients/crm_webhook_receiver.py`](config-samples/clients/crm_webhook_receiver.py) (Python) làm đúng việc đó.
-- **Bên gửi không thử lại, không xếp hàng, không đảm bảo thứ tự.** Mỗi lần gửi có 5 giây; bên nhận chậm hoặc lỗi sẽ mất lần đẩy đó (tin vẫn còn trong cache của tài khoản). Trả 2xx ngay, xử lý sau, và loại trùng theo id tin nhắn.
+- **Giao nhận bền vững, đúng thứ tự, ít nhất một lần.** Mỗi sự kiện được ghi vào `webhook-outbox.db` trong thư mục tài khoản trước khi gửi, nên bên nhận hỏng, chậm (mỗi POST có 10 giây) hoặc trả khác 2xx chỉ tạo ra tồn đọng chứ không mất tin: bên gửi thử lại với thời gian chờ 1 giây nhân đôi đến 5 phút, giữ mọi sự kiện phía sau sự kiện đang lỗi để không đảo thứ tự, và tiếp tục sau khi khởi động lại hoặc bị sập. Payload bị bên nhận từ chối vì sai định dạng (400, 413, 422) được chuyển vào **dead-letter**, sự kiện chưa giao quá `ZALO_WEBHOOK_MAX_AGE` (24 giờ) cũng vậy. Theo dõi bằng `zalo-agent mcp webhook status`, xem bằng `mcp webhook list --dead`, đưa trở lại hàng đợi bằng `mcp webhook retry`.
+- **Trả 2xx ngay, xử lý sau, và loại trùng theo id tin nhắn.** Ít nhất một lần nghĩa là một tin có thể đến hai lần (sập sau khi bạn trả lời nhưng trước khi bên gửi kịp ghi nhận). Mỗi POST có `X-Zalo-Attempt` và `X-Zalo-Delivery: <đầu>-<cuối>` (số thứ tự trong outbox).
+- **Gộp (batch).** Với `ZALO_WEBHOOK_BATCH_SIZE=10`, tối đa mười sự kiện đang chờ đi chung một POST dạng `{"event":"batch","accountId":…,"count":N,"events":[…]}`, chữ ký tính trên toàn bộ body; một sự kiện đơn lẻ vẫn là payload thường. Các bộ nhận mẫu xử lý được cả hai. Bật khi tồn đọng hoặc nhiều tài khoản khiến một POST mỗi tin là quá nhiều.
 
-**Nghe: kéo.** `GET /events/wait?timeout=55&since=<cursor>` trả về **một** tin mỗi lần gọi, hoặc `{"status":"timeout"}`, kèm cursor để tiếp tục. Bộ đệm phía sau giữ tối đa `limits.bufferMaxSize` tin cho mỗi thread trong `limits.bufferMaxAge` (mẫu CRM nâng cả hai lên 2.000 và 6 giờ). Quá mức đó, đọc cache bằng `zalo_get_history` / `zalo_get_messages`.
+**Nghe: kéo.** `GET /events/wait?timeout=55&since=<cursor>&limit=50` trả về tối đa `limit` tin đang có trong bộ đệm mỗi lần gọi (mặc định 1, tối đa 100), hoặc `{"status":"timeout"}`, kèm cursor để tiếp tục. Phản hồi có `messages` (đúng thứ tự), `count`, `hasMore` và `cursor` là của tin **cuối**, nên `since=<cursor>` tiếp tục đúng chỗ lô vừa kết thúc; `message` vẫn là tin đầu, nên client không gửi `limit` vẫn thấy đúng như trước. Để xả một đống tồn, gọi lại ngay khi `hasMore` còn true; `settle=200` (ms, tối đa 5000) chờ thêm chừng đó sau tin đầu tiên để một đợt tin đến dồn vào một phản hồi. `limit` và `settleMs` cũng có ở tool `zalo_wait_for_message` và ở `mcp wait --limit --settle`. Bộ đệm phía sau giữ tối đa `limits.bufferMaxSize` tin cho mỗi thread trong `limits.bufferMaxAge` (mẫu CRM nâng cả hai lên 2.000 và 6 giờ). Quá mức đó, đọc cache bằng `zalo_get_history` / `zalo_get_messages`.
 
 **Gửi.** Một lời gọi JSON-RPC tới `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Gửi `Accept: application/json, text/event-stream` (thiếu một trong hai, máy chủ trả 406); phản hồi là một dòng SSE `data:`, và gửi thành công trả về `{"success":true,"messageId":…,"cliMsgId":…,"threadType":…}`. `threadId` là id người dùng cho tin nhắn riêng hoặc id nhóm cho nhóm. Mỗi request `/mcp` dựng một máy chủ mới với đủ 25 tool, tốn vài mili giây CPU: ổn cho CRM, và là lý do một tài khoản chạm trần khoảng 60–170 request/giây (xem [`docs/deployment.vi.md`](deployment.vi.md) §1.4).
 
@@ -166,7 +177,8 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 
 - [`systemd/zalo-mcp@.service`](config-samples/systemd/zalo-mcp@.service): tên instance chính là id tài khoản; token và port lấy từ `/etc/zalo-mcp/accounts/<id>.env`, nên không có gì bí mật trên dòng lệnh. Các instance khởi động lệch nhau trong 30 giây (mỗi lần khởi động đều đăng nhập và nạp danh sách của tài khoản; cả đàn khởi động cùng lúc là thời điểm nặng nhất) và mỗi instance bị giới hạn 600 MB (instance nhàn rỗi khoảng 100 MB).
 - [`systemd/common.env`](config-samples/systemd/common.env) cho phần chung, [`env/account.env`](config-samples/env/account.env) cho từng tài khoản.
-- Một kế hoạch port, ví dụ `3900 + n`, ghi trong một bảng. Sau một tên miền: [`proxy/Caddyfile.multi-account`](config-samples/proxy/Caddyfile.multi-account) định tuyến `/a/<ownId>/…` tới đúng port; dùng bearer token, mỗi tài khoản một token.
+- **`zalo-agent fleet generate --out <dir>`** ghi toàn bộ những thứ trên cho mọi tài khoản đã đăng ký (unit, file env với token tự sinh cho từng tài khoản, bảng port, tuỳ chọn cả Caddyfile); `fleet status` cho xem mọi daemon trong một bảng, `fleet start` / `restart` khởi động theo từng lô được xáo trộn, và `fleet restart --unhealthy` chỉ khởi động lại những cái đang chết (xem [`docs/deployment.vi.md`](deployment.vi.md) §4.8).
+- Một kế hoạch port, ví dụ `3900 + n`, ghi trong một bảng (`fleet ports` giữ bảng đó giúp bạn). Sau một tên miền: [`proxy/Caddyfile.multi-account`](config-samples/proxy/Caddyfile.multi-account) định tuyến `/a/<ownId>/…` tới đúng port; dùng bearer token, mỗi tài khoản một token.
 - Cho mỗi tài khoản **proxy riêng** khi đăng nhập (`zalo-agent login --proxy …`) và dấu vân tay thiết bị riêng (tự động): hàng trăm tài khoản từ một địa chỉ là điều khiến tài khoản bị khóa.
 - Cài đặt chung trong `mcp-config.json`, khác biệt theo tài khoản trong khối `accounts` của nó ([`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json)).
 - Đọc §1.4 của [`docs/deployment.vi.md`](deployment.vi.md) trước khi vượt quá vài chục tài khoản.
@@ -182,7 +194,7 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 | `ZALO_MCP_HOST` là `127.0.0.1` sau proxy, hoặc một địa chỉ LAN cụ thể | `0.0.0.0` nghe trên mọi giao diện, kể cả giao diện công khai |
 | TLS kết thúc tại proxy, hoặc đã đặt `--cert`/`--key` | bearer token qua HTTP thường đọc được trên đường truyền |
 | proxy không ghi `Authorization` và không đệm `/events/wait` | token lọt vào log; long-poll bị cắt theo timeout của proxy |
-| `GET /health` là route duy nhất không cần xác thực | nó báo uptime và số thread đang đệm, không nói gì về tài khoản; nó **không** cho biết socket Zalo còn sống không |
+| `GET /health` và `GET /ready` là hai route duy nhất không cần xác thực | chúng chỉ cho biết tiến trình có trả lời không và socket Zalo có đang kết nối không, không nói gì về tài khoản. `/status` và `/metrics` nằm sau token: đừng công bố chúng qua proxy |
 | mỗi tài khoản một tiến trình, không bao giờ hai cho cùng tài khoản | phiên thứ hai đóng phiên thứ nhất (mã 3000) |
 
 ## 5. Kiểm tra một mô hình đã chạy đúng
@@ -190,6 +202,9 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 ```bash
 # lên rồi, và token được thực thi (mong đợi 200, 401, 401):
 curl -s -o /dev/null -w '%{http_code}\n' http://HOST:PORT/health
+# socket Zalo đang kết nối (200; 503 khi đang mất), chi tiết nằm sau token:
+curl -s -o /dev/null -w '%{http_code}\n' http://HOST:PORT/ready
+curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 

@@ -29,6 +29,7 @@ import { registerBankCommands } from "./commands/bank.js";
 import { registerListenCommand } from "./commands/listen.js";
 import { registerOACommands } from "./commands/oa.js";
 import { registerMCPCommands } from "./commands/mcp.js";
+import { registerFleetCommands } from "./commands/fleet.js";
 import { registerSyncCommands } from "./commands/sync.js";
 import { autoLogin } from "./core/zalo-client.js";
 import { getActive, setPinnedAccount } from "./core/accounts.js";
@@ -96,7 +97,7 @@ program
         const requestedAccount = actionCommand.opts()?.account ?? globalOpts.account ?? envAccount;
         if (
             requestedAccount !== undefined &&
-            !["mcp", "listen", "oa", "update", "help", "version", "login"].includes(cmdName)
+            !["mcp", "listen", "oa", "update", "help", "version", "login", "fleet"].includes(cmdName)
         ) {
             try {
                 const pinned = selectDaemonAccount(requestedAccount);
@@ -110,7 +111,7 @@ program
         // commands, and for a logout that will not call Zalo at all).
         // Daemons authenticate their pinned identity after acquiring its lock.
         const skipAutoLogin =
-            ["login", "account", "help", "version", "update", "oa", "mcp", "listen"].includes(cmdName) ||
+            ["login", "account", "help", "version", "update", "oa", "mcp", "listen", "fleet"].includes(cmdName) ||
             (cmdName === "logout" && !logoutNeedsSession(actionCommand.opts(), getActive()));
         if (!skipAutoLogin) {
             await autoLogin(program.opts().json);
@@ -152,6 +153,15 @@ registerBankCommands(program);
 registerListenCommand(program);
 registerOACommands(program);
 registerMCPCommands(program);
+registerFleetCommands(program);
 registerSyncCommands(program);
 
-program.parse();
+// parseAsync, so a registry that exists but cannot be read (src/core/accounts.js) reaches the user as a
+// message, not as a stack trace from inside a command. Anything else is rethrown exactly as before.
+program.parseAsync().catch((e) => {
+    if (e?.name === "RegistryError") {
+        error(e.message);
+        process.exit(1);
+    }
+    throw e;
+});

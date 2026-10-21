@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { withFileLock, writeFileAtomic } from "../utils/atomic-file.js";
 
 const V3_BASE = "https://openapi.zalo.me/v3.0/oa";
 const V2_BASE = "https://openapi.zalo.me/v2.0/oa";
@@ -36,12 +37,15 @@ const TOKEN_URL = "https://oauth.zaloapp.com/v4/oa/access_token";
 export function saveOACreds(data, oaId = "default") {
     ensureDir();
     const credsFile = getOACredsFile();
-    let creds = {};
-    if (fs.existsSync(credsFile)) {
-        creds = JSON.parse(fs.readFileSync(credsFile, "utf8"));
-    }
-    creds[oaId] = { ...creds[oaId], ...data, updatedAt: new Date().toISOString() };
-    fs.writeFileSync(credsFile, JSON.stringify(creds, null, 2), { mode: 0o600 });
+    // One file holds every OA: read-modify-write under a lock, replaced atomically.
+    withFileLock(`${credsFile}.lock`, () => {
+        let creds = {};
+        if (fs.existsSync(credsFile)) {
+            creds = JSON.parse(fs.readFileSync(credsFile, "utf8"));
+        }
+        creds[oaId] = { ...creds[oaId], ...data, updatedAt: new Date().toISOString() };
+        writeFileAtomic(credsFile, JSON.stringify(creds, null, 2));
+    });
 }
 
 /** Save OA access token to disk (backward compat). */

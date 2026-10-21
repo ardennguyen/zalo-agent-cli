@@ -80,6 +80,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createLogSink, createRotatingFile, resolveLogSettings } from "./log-sink.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { maskSecretArgs } from "../utils/secrets.js";
 
@@ -296,6 +297,8 @@ function readJsonBody(req, reply) {
  *   long-poll callback invoked by `POST /wait` (`zalo-agent mcp wait`).
  * @param {(params: object) => Promise<object>} [args.onMarkRead] -
  *   read-cursor callback invoked by `POST /mark-read` (`zalo-agent mcp mark-read`).
+ * @param {() => object} [args.onStatus] - health snapshot returned by `POST /status`
+ *   (`listen --status`, `mcp start --status`; see ./daemon-health.js).
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -307,6 +310,7 @@ export function startDaemonChannel({
     onStop = null,
     onWait = null,
     onMarkRead = null,
+    onStatus = null,
 }) {
     const token = randomBytes(24).toString("hex");
 
@@ -457,6 +461,17 @@ export function startDaemonChannel({
         }
     };
 
+    /** The daemon's health snapshot (`listen --status`, `mcp start --status`). */
+    const serveStatus = (body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof onStatus !== "function") return reply(503, { error: "this daemon does not report health" });
+        try {
+            reply(200, { ok: true, health: onStatus() });
+        } catch (e) {
+            reply(200, { ok: false, error: e?.message || String(e) });
+        }
+    };
+
     const server = http.createServer(async (req, res) => {
         const reply = (code, body) => {
             res.writeHead(code, { "content-type": "application/json" });
@@ -470,6 +485,7 @@ export function startDaemonChannel({
             req.url !== "/stop" &&
             req.url !== "/wait" &&
             req.url !== "/mark-read" &&
+            req.url !== "/status" &&
             !stage
         ) {
             return reply(404, { error: "not found" });
@@ -480,6 +496,7 @@ export function startDaemonChannel({
         if (req.url === "/stop") return serveStop(body, reply);
         if (req.url === "/wait") return serveWait(body, res, reply);
         if (req.url === "/mark-read") return serveMarkRead(body, reply);
+        if (req.url === "/status") return serveStatus(body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 
@@ -841,7 +858,10 @@ export function stopViaDaemon(accountDir, { timeoutMs = 3000 } = {}) {
  * @returns {Promise<{ok: boolean, status?: "message"|"timeout"|number, message?: object|null, cursor?: number, error?: string}|null>}
  *   null when no daemon channel is published
  */
-export function waitViaDaemon(accountDir, { threadId = null, since = undefined, timeoutSec = 55, consumer } = {}) {
+export function waitViaDaemon(
+    accountDir,
+    { threadId = null, since = undefined, timeoutSec = 55, consumer, limit = 1, settleMs = 0 } = {},
+) {
     const chan = getDaemonChannel(accountDir);
     if (!chan) return Promise.resolve(null);
 
@@ -851,6 +871,8 @@ export function waitViaDaemon(accountDir, { threadId = null, since = undefined, 
         ...(threadId ? { threadId: String(threadId) } : {}),
         ...(typeof since === "number" && Number.isFinite(since) ? { since } : {}),
         timeoutSec: clampedSec,
+        ...(limit > 1 ? { limit } : {}),
+        ...(settleMs > 0 ? { settleMs } : {}),
         ...(consumer ? { consumer: String(consumer) } : {}),
     });
 
@@ -881,6 +903,9 @@ export function waitViaDaemon(accountDir, { threadId = null, since = undefined, 
                             ok: true,
                             status: body.status,
                             message: body.message ?? null,
+                            messages: Array.isArray(body.messages) ? body.messages : body.message ? [body.message] : [],
+                            count: body.count ?? (body.message ? 1 : 0),
+                            hasMore: Boolean(body.hasMore),
                             cursor: body.cursor,
                         });
                     } else {
@@ -1065,32 +1090,81 @@ function quoteWinArg(arg) {
  */
 export function attachDaemonLogIfChild() {
     if (process.env.ZALO_DAEMON_CHILD !== "1" || !process.env.ZALO_DAEMON_LOG) return;
-    let logFd;
+    const logPath = process.env.ZALO_DAEMON_LOG;
+    // The account is the name of the directory the log lives in (<data dir>/<ownId>/daemon.log).
+    const ownId = path.basename(path.dirname(logPath));
+    const settings = resolveLogSettings({ env: process.env, ownId });
+
+    let file;
     try {
-        logFd = fs.openSync(process.env.ZALO_DAEMON_LOG, "a", 0o600);
+        file = createRotatingFile({ file: logPath, maxBytes: settings.maxBytes, keep: settings.keep });
+        file.write(""); // fail now, here, if the log cannot be opened
     } catch {
         return;
     }
-    const writeToLog = (chunk, encoding, cb) => {
-        try {
-            const buf = Buffer.isBuffer(chunk)
-                ? chunk
-                : Buffer.from(String(chunk), typeof encoding === "string" ? encoding : "utf8");
-            fs.writeSync(logFd, buf);
-        } catch {
-            /* ignore logging errors */
-        }
+    // Levels, timestamps (or JSON) and rotation in front of the file; see ./log-sink.js.
+    const sink = createLogSink({ write: file.write, level: settings.level, format: settings.format, accountId: ownId });
+    daemonSink = sink;
+    const done = (encoding, cb) => {
         if (typeof encoding === "function") encoding();
         else if (typeof cb === "function") cb();
         return true;
     };
-    process.stdout.write = writeToLog;
-    process.stderr.write = writeToLog;
+    process.stdout.write = (chunk, encoding, cb) => {
+        sink.write(chunk);
+        return done(encoding, cb);
+    };
+    process.stderr.write = (chunk, encoding, cb) => {
+        sink.write(chunk);
+        return done(encoding, cb);
+    };
+    for (const w of settings.warnings) sink.write(`[logging] ${w}\n`);
     process.on("uncaughtException", (err) => {
-        writeToLog(`${err?.stack || err}\n`);
+        sink.write(`${err?.stack || err}\n`);
+        sink.flush();
         process.exit(1);
     });
+    process.on("exit", () => sink.flush());
 }
+
+/** The daemon child's log sink, once attachDaemonLogIfChild has built it. */
+let daemonSink = null;
+
+/**
+ * Apply `--log-level` and the per-account settings once the account is known, and, for a run that is not a
+ * background daemon, filter stderr when a level or format was asked for.
+ *
+ * @param {object} args
+ * @param {string} args.ownId
+ * @param {string|null} [args.levelFlag] - Already validated
+ * @param {boolean} [args.filterStderr=true] - Filter stderr of a foreground run; false for the process that only launches a daemon
+ * @returns {{ level: string, format: string, warnings: string[] }}
+ */
+export function configureLogging({ ownId, levelFlag = null, filterStderr = true }) {
+    const settings = resolveLogSettings({ env: process.env, ownId, levelFlag });
+    if (daemonSink) {
+        daemonSink.setLevel(settings.level);
+        daemonSink.setFormat(settings.format);
+    } else if (filterStderr && settings.explicit && !foregroundFilter) {
+        // A foreground run writes to the terminal: filter stderr in place, keep stdout (the output) alone.
+        const original = process.stderr.write.bind(process.stderr);
+        foregroundFilter = createLogSink({
+            write: (text) => original(text),
+            level: settings.level,
+            format: settings.format,
+            accountId: ownId,
+        });
+        process.stderr.write = (chunk, encoding, cb) => {
+            foregroundFilter.write(chunk);
+            if (typeof encoding === "function") encoding();
+            else if (typeof cb === "function") cb();
+            return true;
+        };
+    }
+    return { level: settings.level, format: settings.format, warnings: settings.warnings };
+}
+
+let foregroundFilter = null;
 
 /**
  * On Windows, spawn via `Win32_Process.Create` (WMI) so the background daemon
@@ -1104,7 +1178,7 @@ export function attachDaemonLogIfChild() {
  * @param {string} logPath
  * @returns {number|null}
  */
-function trySpawnWin32JobBreakaway(execPath, args, logPath) {
+function trySpawnWin32JobBreakaway(execPath, args, logPath, extraEnv = {}) {
     if (process.platform !== "win32") return null;
     try {
         const cmdLine = [quoteWinArg(execPath), ...args.map(quoteWinArg)].join(" ");
@@ -1123,6 +1197,7 @@ function trySpawnWin32JobBreakaway(execPath, args, logPath) {
             timeout: 8000,
             env: {
                 ...process.env,
+                ...extraEnv,
                 ZALO_DAEMON_CHILD: "1",
                 ZALO_DAEMON_LOG: logPath,
                 ZALO_DAEMON_CMD: cmdLine,
@@ -1147,6 +1222,7 @@ function trySpawnWin32JobBreakaway(execPath, args, logPath) {
  * @param {string} opts.accountDir
  * @param {string[]} [opts.args] - CLI arguments (defaults to `process.argv.slice(1)`)
  * @param {number} [opts.timeoutMs=15000] - how long to wait for the channel to come up
+ * @param {Record<string, string>} [opts.env] - extra environment for this daemon only (a fleet gives each account its own token)
  * @returns {Promise<{
  *   ok: boolean,
  *   alreadyRunning?: boolean,
@@ -1156,7 +1232,7 @@ function trySpawnWin32JobBreakaway(execPath, args, logPath) {
  *   error?: string,
  * }>}
  */
-export async function spawnDaemonProcess({ accountDir, args = process.argv.slice(1), timeoutMs = 15_000 }) {
+export async function spawnDaemonProcess({ accountDir, args = process.argv.slice(1), timeoutMs = 15_000, env = {} }) {
     const status = getDaemonStatus(accountDir);
     if (status.running) {
         return {
@@ -1183,7 +1259,7 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
         /* ignore */
     }
 
-    let pid = trySpawnWin32JobBreakaway(process.execPath, filteredArgs, logPath);
+    let pid = trySpawnWin32JobBreakaway(process.execPath, filteredArgs, logPath, env);
     if (pid !== null) {
         try {
             fs.closeSync(logFd);
@@ -1195,7 +1271,7 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
             detached: true,
             windowsHide: true,
             stdio: ["ignore", logFd, logFd],
-            env: { ...process.env, ZALO_DAEMON_CHILD: "1" },
+            env: { ...process.env, ...env, ZALO_DAEMON_CHILD: "1", ZALO_DAEMON_LOG: logPath },
         });
         try {
             fs.closeSync(logFd);
@@ -1241,4 +1317,54 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
         logPath,
         error: "Timed out waiting for background daemon to finish starting.",
     };
+}
+
+/**
+ * Ask the running daemon for its health snapshot (`listen --status`, `mcp start --status`).
+ *
+ * @param {string} accountDir
+ * @returns {Promise<{ok: boolean, health?: object, error?: string}|null>} null when no daemon channel is published;
+ *   `ok: false` for a daemon too old to answer (it has the channel but not the route)
+ */
+export function statusViaDaemon(accountDir) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+    const payload = JSON.stringify({ token: chan.token });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/status",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: 5000,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    resolve(
+                        res.statusCode === 200 && body.ok
+                            ? { ok: true, health: body.health }
+                            : { ok: false, error: body.error || `HTTP ${res.statusCode}` },
+                    );
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout waiting for the daemon" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
 }

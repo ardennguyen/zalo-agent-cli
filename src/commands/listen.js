@@ -3,18 +3,20 @@
  * Production-ready with auto-reconnect and re-login.
  */
 
-import { createHmac } from "crypto";
-import { appendFileSync, mkdirSync, existsSync } from "fs";
+import { appendFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { updateAccountName } from "../core/accounts.js";
-import { getAccountDir } from "../core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
+import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import {
     createStageLock,
+    statusViaDaemon,
+    configureLogging,
     startDaemonChannel,
     getDaemonStatus,
     stopDaemon,
@@ -43,7 +45,12 @@ import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
 import { describeGap } from "../core/sync-v2/gap-advice.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
-import { envForAccount } from "../mcp/mcp-config.js";
+import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
+import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
+
+const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -98,11 +105,19 @@ export function registerListenCommand(program) {
             "--no-self-heal",
             "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
+        .option(
+            "--log-level <level>",
+            "Log level of daemon.log (and of stderr in the foreground): error, warn, info (default) or debug, which adds a line per HTTP request and per message. Env: ZALO_LOG_LEVEL[_<ownId>]; also ZALO_LOG_FORMAT=json, ZALO_LOG_MAX_SIZE (default 50m) and ZALO_LOG_KEEP (default 3) for rotation",
+        )
         .option("-d, --daemon", "Run in the background (logs to <accountDir>/daemon.log)")
         .option("--stop", "Stop the running background daemon for this account")
         .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
+            if (opts.logLevel !== undefined && !LOG_LEVELS.includes(String(opts.logLevel).trim().toLowerCase())) {
+                error(`Invalid --log-level "${opts.logLevel}": use one of ${LOG_LEVELS.join(", ")}.`);
+                process.exit(1);
+            }
             // An empty secret is refused before anything else: see resolveWebhookSecret().
             let cliWebhookSecret;
             try {
@@ -125,12 +140,18 @@ export function registerListenCommand(program) {
 
             if (opts.status) {
                 const status = getDaemonStatus(accountDir);
-                output({ accountId: activeAcc.ownId, ...status }, jsonMode, () => {
+                // What the daemon says about itself; an older daemon has the channel but not the route.
+                const reported = status.running ? await statusViaDaemon(accountDir) : null;
+                const health = reported?.ok ? reported.health : null;
+                output({ accountId: activeAcc.ownId, ...status, health }, jsonMode, () => {
                     if (status.running) {
                         success(
                             `Daemon running for account ${activeAcc.ownId} (PID ${status.pid}${status.channelPort ? `, channel 127.0.0.1:${status.channelPort}` : ""})`,
                         );
                         info(`Log file: ${status.logPath}`);
+                        if (health) for (const line of describeHealth(health)) info(line);
+                        else
+                            info("Health: not reported (this daemon predates the health route; restart it to see it).");
                     } else {
                         info(`No daemon running for account ${activeAcc.ownId}`);
                         info(`Log file: ${status.logPath}`);
@@ -152,6 +173,16 @@ export function registerListenCommand(program) {
                 });
                 return;
             }
+
+            // Levels and rotation of the log, now that the account is known (src/core/log-sink.js).
+            const logging = configureLogging({
+                ownId: activeAcc.ownId,
+                levelFlag: opts.logLevel?.trim().toLowerCase() || null,
+                // The process that launches a background daemon talks to the user; only the daemon's own output is a log.
+                filterStderr: !(opts.daemon && !process.env.ZALO_DAEMON_CHILD),
+            });
+            if (!process.env.ZALO_DAEMON_CHILD)
+                for (const w of logging.warnings) console.error(`[listen] [logging] ${w}`);
 
             if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
                 const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
@@ -205,9 +236,21 @@ export function registerListenCommand(program) {
                     console.error(`[listen] Failed to release lock: ${e.message}`);
                 }
             };
+            // Spread a fleet's start-up: a random delay and a cap on daemons logging in at once
+            // (ZALO_START_JITTER, ZALO_LOGIN_SLOTS; src/core/startup-gate.js). Both off by default.
+            const startup = resolveStartupSettings({ env: process.env, ownId: activeAcc.ownId });
+            for (const w of startup.warnings) console.error(`[listen] ${w}`);
+            const gate = createStartupGate({
+                configDir: CONFIG_DIR,
+                ownId: activeAcc.ownId,
+                settings: startup,
+                log: (m) => console.error(`[listen] ${m}`),
+            });
+            await gate.enter();
             try {
                 await loginDaemonAccount(activeAcc);
             } catch (e) {
+                gate.leave();
                 releaseLock(accountDir);
                 error(`Pinned account login failed: ${e.message}`);
                 process.exit(1);
@@ -215,7 +258,10 @@ export function registerListenCommand(program) {
             try {
                 initDb(join(accountDir, "zalo.db"));
                 info(`Local database initialized at ${accountDir}/zalo.db`);
+                // Logged in and the cache open: the heavy part of start-up is over.
+                gate.leave();
             } catch (err) {
+                gate.leave();
                 releaseLock(accountDir);
                 error(`Failed to initialize local DB: ${err.message}`);
                 process.exit(1);
@@ -408,25 +454,30 @@ export function registerListenCommand(program) {
                 warning("A webhook secret is set but no webhook URL: nothing will be signed or sent. Pass -w <url>.");
             }
 
-            /** Fire-and-forget webhook POST — never blocks event processing */
-            function postWebhook(data) {
-                if (!webhookUrl) return;
-                const payload = { accountId: activeAcc.ownId, ...data };
-                const body = JSON.stringify(payload);
-                const headers = { "Content-Type": "application/json" };
-                if (webhookSecret) {
-                    headers["Authorization"] = `Bearer ${webhookSecret}`;
-                    headers["X-Zalo-Signature"] =
-                        `sha256=${createHmac("sha256", webhookSecret).update(body).digest("hex")}`;
-                }
-                fetch(webhookUrl, {
-                    method: "POST",
-                    headers,
-                    body,
-                    signal: AbortSignal.timeout(5000),
-                }).catch((e) => {
-                    console.error(`[listen] Webhook failed: ${e.message}`);
+            // The same durable outbox `mcp start` uses (src/core/webhook-outbox.js): an event is
+            // written to disk first and delivered from there, so a receiver that is down costs a
+            // backlog (zalo-agent mcp webhook status), not events.
+            let webhookDelivery = null;
+            if (webhookUrl) {
+                const delivery = resolveWebhookDelivery(activeAcc.ownId);
+                for (const w of delivery.warnings) warning(w);
+                webhookDelivery = startWebhookDelivery({
+                    accountDir,
+                    accountId: activeAcc.ownId,
+                    url: webhookUrl,
+                    secret: webhookSecret,
+                    batchSize: delivery.batchSize,
+                    maxAgeMs: delivery.maxAgeMs,
+                    log: (line) => console.error(`[listen] ${line}`),
                 });
+            }
+
+            /** Queue an event for the webhook — never blocks event processing */
+            function postWebhook(data) {
+                // Only a message has an id that stays the same on a repeat (live, then catch-up);
+                // two reactions to one message must both be delivered.
+                const key = data.event === "message" && data.msgId ? `message:${data.msgId}` : null;
+                webhookDelivery?.enqueue(key, { accountId: activeAcc.ownId, ...data });
             }
 
             // Setup save directory if --save flag provided
@@ -453,7 +504,10 @@ export function registerListenCommand(program) {
             /** Output event as JSON or human-readable, save locally, then post to webhook */
             function emitEvent(data, humanMsg) {
                 eventCount++;
-                if (jsonMode) {
+                if (process.env.ZALO_DAEMON_CHILD === "1") {
+                    // In daemon.log an event line is a per-message line: debug (it carries the message text).
+                    console.error(`${DEBUG_MARK}${jsonMode ? JSON.stringify(data) : humanMsg}`);
+                } else if (jsonMode) {
                     console.log(JSON.stringify(data));
                 } else {
                     info(humanMsg);
@@ -534,6 +588,11 @@ export function registerListenCommand(program) {
             });
             const socketContext = createSocketContext({ lock: stageLock, monitor: loopMonitor });
             setUserInfoLogger(daemonLog);
+            // Same health object `mcp start` builds (src/core/daemon-health.js): `listen --status` prints it.
+            const health = createDaemonHealth({ kind: "listen", accountId: activeAcc.ownId, version: PKG_VERSION });
+            health.setSource("gaps", () => getPendingSyncGaps().length);
+            health.setSource("stage", () => stageLock.current());
+            health.setSource("webhook", () => webhookDelivery?.status() ?? null);
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
             // Read state other devices report -- a conversation read on the
             // phone, an unread mark set or cleared there -- which zca-js
@@ -567,6 +626,7 @@ export function registerListenCommand(program) {
 
             /** Attach ALL handlers (data + lifecycle) to current API listener */
             function attachAllHandlers(api) {
+                health.attach(api.listener);
                 // --- Message events ---
                 // Registered unconditionally. --events, --filter and --no-self
                 // decide what is PRINTED, forwarded and saved as JSONL -- never
@@ -952,7 +1012,9 @@ export function registerListenCommand(program) {
             const shutdown = () => {
                 // First, before anything can emit a close event.
                 stopping = true;
+                health.noteStopping();
                 channel?.stop();
+                webhookDelivery?.stop();
                 deliveredReceipts.stop();
                 try {
                     getApi().listener.stop();
@@ -998,6 +1060,7 @@ export function registerListenCommand(program) {
                     // The self-heal's lock: a stage and a catch-up never share the socket.
                     lock: stageLock,
                     onStop: shutdown,
+                    onStatus: () => health.snapshot(),
                 });
                 info(`Sync & upload channel ready on 127.0.0.1:${channel.port} — this socket is reused for both.`);
                 info("`zalo-agent sync` will run its socket stages here; it still needs your phone tap.");

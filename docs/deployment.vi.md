@@ -56,7 +56,7 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 > | Tính năng | `listen` | `mcp start` |
 > |---|---|---|
 > | Bề mặt 25 MCP tools (`src/mcp/mcp-tools.js`) | không | **có** |
-> | HTTP / HTTPS `/health`, `/events/wait`, các endpoint OAuth 2.0 | không | **có** (khi có `--http`) |
+> | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, các endpoint OAuth 2.0 | không | **có** (khi có `--http`) |
 > | Đẩy sự kiện qua `-w, --webhook <url>` + `--webhook-secret <secret>` | **có** | **có** |
 > | Lưu trữ JSONL (`--save <dir>`) | **có** | không |
 > | In sự kiện ra stdout (`--events`, `--filter`, `--no-self`), `--auto-accept` | **có** | không |
@@ -95,9 +95,9 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 
 | Cơ chế | Số consumer | Dùng được với `mcp start`? | Đánh giá thực tế |
 |---|---|---|---|
-| MCP tool `zalo_wait_for_message` hoặc `GET /events/wait?timeout=300&since=<cursor>` | N | **có** | Long-polling 0% CPU: trả về ngay lập tức (`0 ms`) nếu trong buffer đã có tin mới hơn `since`, hoặc chờ đến khi có tin nhắn tiếp theo |
+| MCP tool `zalo_wait_for_message` hoặc `GET /events/wait?timeout=300&since=<cursor>` | N | **có** | Long-polling 0% CPU: trả về ngay lập tức (`0 ms`) nếu trong buffer đã có tin mới hơn `since`, hoặc chờ đến khi có tin nhắn tiếp theo. `limit` (1–100, mặc định 1) trả về tối đa chừng đó tin trong một lần gọi và `settle` (ms) chờ nốt phần còn lại của một đợt tin: xả một đống tồn chỉ tốn một lần gọi cho mỗi `limit` tin thay vì mỗi tin một lần |
 | Polling `zalo_get_messages` qua `POST /mcp`, mỗi bot một tên `consumer` | N | **có** | Hoạt động tốt: mỗi consumer có con trỏ đọc riêng (§1.4a). Buffer nằm trong RAM và giới hạn bởi `limits.bufferMaxSize` / `limits.bufferMaxAge` |
-| `listen` hoặc `mcp start` `-w, --webhook <url> [--webhook-secret <secret>]` | **1** URL | **có** | Gửi `fetch` bất đồng bộ (timeout 5 giây), hỗ trợ ký `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>`. Các tin nhắn do self-heal khôi phục cũng được đẩy kèm `catchUp: true` |
+| `listen` hoặc `mcp start` `-w, --webhook <url> [--webhook-secret <secret>]` | **1** URL | **có** | Hộp thư đi bền vững (`webhook-outbox.db` trong thư mục tài khoản): ghi xuống đĩa trước, giao theo thứ tự và ít nhất một lần, 10 giây mỗi POST, thử lại với thời gian chờ tăng dần (1 giây nhân đôi đến 5 phút) khi bên nhận hỏng, chuyển vào dead-letter khi bên nhận trả 400 / 413 / 422 hoặc sau 24 giờ (`ZALO_WEBHOOK_MAX_AGE`), có thể gộp nhiều sự kiện mỗi POST (`ZALO_WEBHOOK_BATCH_SIZE`). Hỗ trợ ký `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>`. Các tin nhắn do self-heal khôi phục cũng được đẩy kèm `catchUp: true`. Xem tồn đọng: `zalo-agent mcp webhook status` |
 | `listen --save <dir>` JSONL | N trình đọc | **không** | Ghi nối tiếp từng sự kiện vào một file cho mỗi `threadId`. Rất tốt để lưu trữ kiểm toán (audit) |
 | Đọc trực tiếp `zalo.db` ở chế độ chỉ đọc (`readonly`) | N | **có** | SQLite WAL cho phép nhiều trình đọc đồng thời cùng với một trình ghi duy nhất, chứa toàn bộ lịch sử kể cả những tin đã rời khỏi buffer trong RAM |
 
@@ -136,7 +136,7 @@ flowchart TB
       direction TB
       subgraph holder["Tiến trình giữ socket — duy nhất một tiến trình"]
         proc["zalo-agent mcp start --http 3847 --auth TOKEN<br/>src/commands/mcp.js"]
-        http["Express + StreamableHTTP + OAuth 2.0<br/>src/mcp/mcp-http-transport.js<br/>POST /mcp · GET /events/wait · GET /health"]
+        http["Express + StreamableHTTP + OAuth 2.0<br/>src/mcp/mcp-http-transport.js<br/>POST /mcp · GET /events/wait · GET /health, /ready (không xác thực) · GET /status, /metrics (bearer)"]
         buf["MessageBuffer + ThreadFilter<br/>src/mcp/message-buffer.js<br/>mỗi consumer một con trỏ đọc — xem 1.4"]
         heal["gap tracker + self-heal<br/>src/core/listener-lifecycle.js · self-heal.js<br/>tự kéo hàng đợi ngoại tuyến mỗi lần kết nối"]
         chan["startDaemonChannel<br/>src/core/daemon-channel.js<br/>127.0.0.1:EPHEMERAL, token 24-byte"]
@@ -329,6 +329,10 @@ ZALO_MCP_AUTH_TOKEN=<64 ký tự hex từ lệnh: openssl rand -hex 32>
 
 ### 4.3 Nhật ký (Logs) và các dòng cần chú ý
 
+- **Mức log.** `--log-level` / `ZALO_LOG_LEVEL[_<ownId>]` là `error`, `warn`, `info` (mặc định) hoặc `debug`. `debug` thêm các dòng tăng theo lưu lượng: một dòng cho mỗi HTTP request (kèm địa chỉ và user agent của bên gọi), một dòng cho mỗi tin nhắn daemon xử lý (`[mcp] Buffered …`; ở `listen` là mọi dòng sự kiện, có cả nội dung tin nhắn). Ở mức `info` các dòng này không được ghi, nên log của một daemon bận chỉ nói về thay đổi trạng thái và nội dung tin nhắn riêng tư không lọt vào log. Các dòng còn lại được phân loại theo câu chữ (lỗi hoặc từ chối là `error`, `WARNING` / `⚠` là `warn`). Daemon chạy nền ghi qua bộ lọc này vào `daemon.log`; chạy foreground chỉ lọc stderr khi có yêu cầu mức hoặc định dạng. Tiến trình chỉ *khởi chạy* `-d` không bao giờ bị lọc.
+- **Dấu thời gian, JSON.** Mỗi dòng `daemon.log` bắt đầu bằng thời gian ISO. `ZALO_LOG_FORMAT=json` ghi mỗi dòng một đối tượng JSON (`{"ts","level","account","msg"}`) cho công cụ thu log.
+- **Xoay vòng (rotation).** `daemon.log` xoay theo dung lượng, `daemon.log` → `daemon.log.1` → … → `daemon.log.<keep>`: `ZALO_LOG_MAX_SIZE` (mặc định `50m`, tối thiểu `4k`) và `ZALO_LOG_KEEP` (mặc định 3; 0 là bắt đầu lại từ đầu). File mới mở đầu bằng dòng `log rotated`. Trên Windows việc đổi tên có thể bị từ chối khi có chương trình khác (`tail`, trình soạn thảo) đang mở file; daemon khi đó tiếp tục ghi vào file cũ và thử lại sau thêm một megabyte.
+
 | Dòng log | Ý nghĩa | Hành động cần làm |
 |---|---|---|
 | `[mcp] Duplicate Zalo Web session detected. Exiting.` (`listen`: `Another Zalo Web session opened. Listener stopped.`) | Có người mở Zalo Web trên trình duyệt hoặc một tiến trình khác chiếm phiên | Đóng phiên kia trước khi khởi động lại |
@@ -375,7 +379,7 @@ WantedBy=timers.target
 
 ### 4.6 Sao lưu (Backup)
 
-Sao lưu toàn bộ thư mục `~/.zalo-agent-cli/` và giữ nguyên phân quyền file (`0600` cho `accounts.json` và `credentials/cred_<ownId>.json`):
+Sao lưu toàn bộ thư mục `~/.zalo-agent-cli/` và giữ nguyên phân quyền file (`0600` cho `accounts.json` và `credentials/cred_<ownId>.json`). `accounts.json` được ghi nguyên tử dưới khóa `accounts.json.lock` (bỏ qua file khóa này khi sao lưu) và bản trước đó được giữ ở `accounts.json.bak`; `accounts/<ownId>/webhook-outbox.db` chứa các sự kiện đang chờ gửi tới webhook nên cần sao lưu cùng tài khoản:
 
 - Loại trừ `qr.png`, `daemon.lock` và `daemon-channel.json` (các file trạng thái runtime tạm thời).
 - Để sao lưu `zalo.db` an toàn khi daemon đang chạy, hãy dùng `sqlite3 zalo.db ".backup /path/out.db"` thay vì copy trực tiếp file đang ghi.
@@ -383,15 +387,33 @@ Sao lưu toàn bộ thư mục `~/.zalo-agent-cli/` và giữ nguyên phân quy�
 
 ### 4.7 Giám sát (Monitoring)
 
-Endpoint `GET /health` không yêu cầu xác thực:
+Một daemon tự báo cáo tình trạng theo bốn cách. Ba cách đầu là route HTTP của `mcp start --http`; cách xem bằng CLI dùng được cả cho `listen` (không có cổng HTTP) — `src/core/daemon-health.js`.
+
+| Route | Xác thực | Trả lời |
+|---|---|---|
+| `GET /health` | không | Còn sống hay không: `status` (luôn `"ok"` khi Express còn trả lời), `uptime`, `threads`, và socket: `socket` (`starting`, `up`, `down`, `stopping`) cùng `ready` |
+| `GET /ready` | không | **200 chỉ khi socket Zalo đang kết nối**, ngược lại 503 kèm `{ready, socket}`: dành cho load balancer hoặc bộ giám sát cần ngừng giao việc cho tài khoản đang offline |
+| `GET /status` | bearer | Toàn bộ thông tin dưới đây, dạng JSON |
+| `GET /metrics` | bearer | Cũng thông tin đó dạng văn bản Prometheus: `zalo_up`, `zalo_socket_*`, `zalo_last_event_age_seconds`, `zalo_webhook_*`, `zalo_coverage_gaps_pending`, `zalo_buffer_*`, `zalo_process_*`, `zalo_eventloop_lag_*` |
+| `zalo-agent mcp start --status` / `listen --status` | cục bộ | Cùng bản chụp đó, in ra (`--json` cho script) |
+
+`/status` gồm: socket (trạng thái, đã bao lâu, số lần kết nối lại, mã đóng gần nhất), tuổi của sự kiện và tin nhắn gần nhất, số tin đến và số sự kiện theo loại, số khoảng hở chưa khôi phục, stage đồng bộ đang chạy, hộp thư đi webhook (đang chờ, dead-letter, chờ lâu nhất, lỗi gần nhất, đã giao), bộ đệm live, bộ nhớ, độ trễ event loop, và danh sách `warnings` kèm `status: "degraded"` khi có điều cần chú ý (socket mất từ 2 phút, tồn đọng webhook quá 5 phút, có dead-letter, khoảng hở chưa khôi phục, treo từ 3 giây).
 
 ```bash
 curl -s http://127.0.0.1:3847/health
-# {"status":"ok","uptime":123,"threads":5}
+# {"status":"ok","uptime":123,"threads":5,"socket":"up","ready":true}
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3847/ready          # 200, hoặc 503 khi socket đang mất
+curl -s -H "Authorization: Bearer $ZALO_MCP_AUTH_TOKEN" http://127.0.0.1:3847/metrics | head
 ```
 
+Cấu hình scrape Prometheus và luật cảnh báo có trong [`config-samples/monitoring/`](config-samples/monitoring/): một job cho mỗi tài khoản (mỗi daemon có token riêng) và mười luật: không truy cập được, socket mất, kết nối lại liên tục, tài khoản đang kết nối nhưng im lặng, tồn đọng webhook, dead-letter, khoảng hở chưa khôi phục, event loop bị treo, bộ nhớ, và vừa khởi động lại. **Đừng công bố `/metrics` hay `/status` qua reverse proxy**; hãy scrape từ bên trong mạng.
+
+> [!NOTE]
+> **`status: "ok"` trong `/health` chỉ là liveness.** Nó vẫn `ok` khi socket đang mất. Hãy đọc `socket` / `ready`, hoặc dùng `/ready`.
+
 > [!WARNING]
-> **`/health` trả về `ok` chỉ có nghĩa là HTTP server đang chạy, không đảm bảo WebSocket Zalo đang thông suốt.** Hãy kết hợp giám sát:
+> **Daemon đang chạy chưa chắc là tài khoản khỏe.** Các route trên đã bao phủ socket, webhook và khoảng hở. Hãy cảnh báo thêm các điểm sau:
+>
 > 1. Trạng thái tiến trình (`systemctl is-active zalo-mcp` hoặc `zalo-agent mcp start --status`).
 > 2. Các dòng lỗi nghiêm trọng trong log (§4.3).
 > 3. Thời điểm tin nhắn mới nhất trong `zalo.db`:
@@ -400,6 +422,25 @@ curl -s http://127.0.0.1:3847/health
 >      "select (strftime('%s','now')*1000 - max(timestamp))/60000 from messages;"
 >    ```
 > 4. Số khoảng hở đang chờ xử lý (`zalo_coverage` hoặc `select count(*) from sync_gaps where status='pending';`).
+
+---
+
+### 4.8 Nhiều tài khoản: các lệnh fleet
+
+Một tài khoản là một daemon (§1), nên một trăm tài khoản là một trăm daemon, mỗi cái có port, token và unit riêng. `zalo-agent fleet` làm những việc người vận hành thường phải tự viết script (`src/core/fleet.js`, `src/commands/fleet.js`):
+
+| Lệnh | Tác dụng |
+|---|---|
+| `fleet generate --out <dir> [--base-port N] [--domain <host>] [--user --home --bin]` | Ghi systemd template unit, `common.env`, mỗi tài khoản một `accounts/<id>.env` chứa port và **token 256-bit tự sinh** (quyền `600`, không bao giờ in ra), bảng port, và nếu có `--domain` thì cả Caddyfile phục vụ mọi tài khoản dưới `/a/<id>/` và trả 404 cho `/metrics`, `/status`. File đã có không bị ghi đè (`--force` thay các file không chứa bí mật; token đang dùng được giữ trừ khi `--rotate-tokens`). Cùng các file với `docs/config-samples/`; một test giữ hai bên khớp nhau. |
+| `fleet ports [--base N]` | Port của từng tài khoản, lưu trong `fleet.json`. Port gán một lần và không bao giờ đổi; tài khoản mới lấy port trống thấp nhất. |
+| `fleet status [accounts…] [--check] [--json]` | Một bảng cho mọi tài khoản, hỏi qua kênh loopback của từng daemon (không cần port hay token): trạng thái, pid, socket và tuổi của nó, sự kiện gần nhất, hàng đợi webhook và dead-letter, khoảng hở, bộ nhớ. Trạng thái: `ok`, `degraded` (có cảnh báo: tồn đọng, dead-letter, khoảng hở), `starting`, `down` (socket mất từ 3 phút, `--down-for`), `unresponsive` (có daemon giữ khóa nhưng không trả lời), `stopped`. `--check` thoát mã 1 trừ khi mọi tài khoản đều `ok` hoặc `degraded`. |
+| `fleet start [accounts…] [--batch 5] [--stagger 15] [--env-dir <dir>] [--listen] [--dry-run]` | Khởi động các daemon chưa chạy, **theo từng lô được xáo trộn** và nghỉ giữa các lô, để các tài khoản được cài cùng lúc không đăng nhập cùng lúc. `--env-dir` cấp cho mỗi daemon file `<id>.env` riêng (token, webhook) mà không đặt bí mật lên dòng lệnh. |
+| `fleet restart [accounts…] [--unhealthy] [--all]` | Dừng rồi khởi động các tài khoản được nêu, hoặc với `--unhealthy` chỉ những tài khoản `down` hoặc `unresponsive` (khởi động lại không sửa được bên nhận webhook nên tồn đọng được để yên). `fleet restart` trần không khởi động lại gì cả. |
+| `fleet stop [accounts…]` | Tắt êm từng daemon. |
+
+**Rải thời điểm khởi động ngay trong daemon.** Mỗi lần khởi động đều đăng nhập và nạp danh sách bạn bè, nhóm, nên một đội daemon khởi động lại cùng lúc sẽ làm tất cả cùng một khoảnh khắc. `ZALO_START_JITTER=30` làm daemon chờ ngẫu nhiên 0–30 giây trước khi đăng nhập, và `ZALO_LOGIN_SLOTS=3` cho phép tối đa ba daemon trên máy nằm giữa "sắp đăng nhập" và "đã nạp xong danh sách" (slot là các file trong `<config dir>/login-slots/`; daemon vượt giới hạn sẽ chờ, và cứ tiếp tục sau `ZALO_LOGIN_SLOT_WAIT`, mặc định 900 giây, để một slot bị kẹt không giữ tài khoản offline; slot của daemon đã chết được thu hồi). Cả hai tắt theo mặc định và dùng được dưới bất kỳ trình giám sát nào. Log daemon ghi `start-up jitter: waiting …`, `waiting for a login slot` và `got login slot …`.
+
+Dưới systemd, unit đã rải thời điểm khởi động (`sleep $((RANDOM % 30))`) và tự khởi động lại daemon chết; `fleet start`/`restart` dành cho máy không có systemd (server Windows, container, laptop) và cho việc chủ động khởi động lại một phần đội tài khoản. `fleet status --check` hợp với cron; Prometheus (§4.7) hợp với cảnh báo.
 
 ---
 

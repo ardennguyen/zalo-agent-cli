@@ -72,7 +72,9 @@ Forward events to n8n, Make, Zapier, or custom endpoint:
 zalo-agent listen --webhook http://n8n.local/webhook/zalo --no-self
 ```
 
-Each event = 1 POST request with JSON body:
+Each event is queued on disk (`accounts/<ownId>/webhook-outbox.db`) and delivered from there, in order and at least once: a receiver that is down or slow costs a backlog, not events. Retries wait 1 s, doubling to 5 min, and survive a restart; a payload the receiver refuses (400, 413, 422) or an event older than `ZALO_WEBHOOK_MAX_AGE` (24h) is dead-lettered, never dropped. Watch it with `zalo-agent mcp webhook status`, look with `mcp webhook list --dead`, put events back with `mcp webhook retry`. `ZALO_WEBHOOK_BATCH_SIZE=10` sends up to ten events per POST as `{"event":"batch","accountId":…,"count":N,"events":[…]}` (signed over the whole body); a lone event is always the plain payload. Every POST has `X-Zalo-Delivery` and `X-Zalo-Attempt` headers, and the receiver answers 2xx at once and de-duplicates on the message id.
+
+Each event = 1 JSON body:
 ```json
 {"event":"message","msgId":"...","threadId":"...","content":"Hello","isSelf":false}
 {"event":"friend_request","threadId":"...","data":{"fromUid":"...","message":"Hi"}}
@@ -128,7 +130,7 @@ zalo-agent --account <ACCOUNT_ID> msg send <THREAD_ID> "reply"
 - **Auto-reconnect:** Reconnects on WebSocket drop
 - **Auto re-login:** Re-authenticates on session expiry
 - **1 WebSocket/account:** Cannot coexist with browser Zalo, or with `mcp start`, on the same account. `msg send-file`/`send-image` and `zalo-agent sync` do not need a second one — a running daemon does that work on this socket and keeps listening
-- **Event dedup:** in the cache only — `messages.msgId` is the primary key, so a redelivered message updates its row instead of duplicating it. The stdout/JSONL/webhook sinks have no dedup, so a webhook receiver must tolerate seeing the same `msgId` twice
+- **Event dedup:** in the cache only — `messages.msgId` is the primary key, so a redelivered message updates its row instead of duplicating it. The stdout/JSONL sinks have no dedup, and the webhook is at-least-once (a crash between the receiver's reply and the outbox's note repeats an event), so a webhook receiver must tolerate seeing the same `msgId` twice
 - **Gap recording:** Connection gaps are recorded in `sync_gaps`, and the daemon **heals what it can itself**: on every connect it pulls Zalo's offline message queues and resolves a gap for the window that catch-up actually covered (see Side Effects above). What it cannot reach — a queue Zalo dropped or reset, or anything from before this login — stays `pending`, printed with the `zalo-agent sync --from <date>` run that closes it; that run is phone-backed and is never started automatically. Don't tell a user a gap was filled unless it shows as resolved. A pending gap stays `pending` until a completed `sync` covering it resolves it
 
 ## `listen` vs `mcp start`

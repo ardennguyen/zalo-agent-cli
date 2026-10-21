@@ -1,0 +1,76 @@
+# Alerts for the metrics a daemon serves at /metrics (src/core/daemon-health.js).
+# `up == 0` (Prometheus cannot reach the daemon at all) is built in to Prometheus.
+groups:
+  - name: zalo
+    rules:
+      - alert: ZaloDaemonUnreachable
+        expr: up{job=~"zalo-.*"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.job }}: the daemon does not answer (crashed, stopped, or the host is down)"
+
+      - alert: ZaloSocketDown
+        expr: zalo_up == 0
+        for: 3m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.account }}: the Zalo socket has been down for 3 minutes"
+          description: "The daemon is running but the account is offline. See `zalo-agent mcp start --status` and daemon.log; a reconnect loop or a duplicate session (close code 3000) shows there."
+
+      - alert: ZaloReconnectLoop
+        expr: increase(zalo_socket_reconnects_total[15m]) > 5
+        labels: { severity: warn }
+        annotations:
+          summary: "{{ $labels.account }}: the socket reconnected more than 5 times in 15 minutes"
+
+      - alert: ZaloSilentAccount
+        # Events include delivery and read receipts, so a connected account is rarely this quiet.
+        # Tune the window to your quietest plausible period.
+        expr: zalo_up == 1 and zalo_last_event_age_seconds > 3600
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: "{{ $labels.account }}: connected, but nothing has arrived for over an hour"
+
+      - alert: ZaloWebhookBacklog
+        expr: zalo_webhook_oldest_pending_age_seconds > 300
+        for: 2m
+        labels: { severity: warn }
+        annotations:
+          summary: "{{ $labels.account }}: webhook events have waited more than 5 minutes ({{ $value }}s)"
+          description: "The receiver is down, slow or refusing. Nothing is lost: see `zalo-agent mcp webhook status`."
+
+      - alert: ZaloWebhookDeadLetters
+        expr: zalo_webhook_dead > 0
+        labels: { severity: warn }
+        annotations:
+          summary: "{{ $labels.account }}: {{ $value }} webhook event(s) were refused or expired"
+          description: "Look with `zalo-agent mcp webhook list --dead`, fix the receiver, then `mcp webhook retry`."
+
+      - alert: ZaloCoverageGap
+        expr: zalo_coverage_gaps_pending > 0
+        for: 30m
+        labels: { severity: warn }
+        annotations:
+          summary: "{{ $labels.account }}: messages from a past outage are still not recovered"
+          description: "Run `zalo-agent sync --from <date>`; it needs a tap on the phone."
+
+      - alert: ZaloEventLoopBlocked
+        expr: zalo_eventloop_lag_max_seconds > 5
+        labels: { severity: warn }
+        annotations:
+          summary: "{{ $labels.account }}: the daemon was blocked for {{ $value }}s (socket pings can be missed)"
+
+      - alert: ZaloMemoryHigh
+        expr: zalo_process_resident_memory_bytes > 500 * 1024 * 1024
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: "{{ $labels.account }}: the daemon uses more than 500 MB (a daemon idles near 100 MB)"
+
+      - alert: ZaloDaemonRestarted
+        expr: zalo_process_uptime_seconds < 300
+        labels: { severity: info }
+        annotations:
+          summary: "{{ $labels.account }}: the daemon restarted in the last 5 minutes"

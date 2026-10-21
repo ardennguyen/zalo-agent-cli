@@ -10,10 +10,11 @@
  * All credential files use 0600 permissions (owner read/write only).
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, chmodSync } from "fs";
+import { readFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import { parseEnv } from "node:util";
+import { writeFileAtomic } from "../utils/atomic-file.js";
 
 const defaultConfigDir = join(homedir(), ".zalo-agent-cli");
 
@@ -176,8 +177,9 @@ function credPath(ownId) {
 export function saveCredentials(ownId, creds) {
     ensureDirs();
     const target = credPath(ownId);
-    writeFileSync(target, JSON.stringify(creds, null, 2), "utf-8");
-    chmodSync(target, 0o600);
+    // Atomic and created at 0600: a login is never left half written, and the file is never readable
+    // by others, even for the moment between a write and a chmod.
+    writeFileAtomic(target, JSON.stringify(creds, null, 2));
     return target;
 }
 

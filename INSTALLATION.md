@@ -304,7 +304,8 @@ Default layout when no custom paths are set:
 
 ```
 ~/.zalo-agent-cli/
-├── accounts.json                  # Account registry (0600)
+├── accounts.json                  # Account registry (0600); changed under a lock, replaced atomically
+├── accounts.json.bak              # The registry as it was before the last change
 ├── credentials/cred_<ownId>.json  # Per-account session credentials (0600)
 ├── mcp-config.json                # Optional MCP config
 ├── accounts/<ownId>/
@@ -327,7 +328,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 212 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 222 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |
@@ -340,7 +341,7 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | `npx zalo-agent sync-mobile [-F] [-w <s>]` | Restore history from your phone — prompts the phone once. Add `--socket` for the old server probe, which contacts no phone and usually returns nothing |
 | `npx zalo-agent update` | Self-update to the latest published version |
 | `npx zalo-agent mcp start [--http <port>] [--auth <token>] [--host <addr>]` | Start the MCP server |
-| `npx zalo-agent mcp wait [since] [-t <threadId>] [--timeout <s>] [-c <name>]` | Long-poll the running `mcp start` daemon's buffer for the next message (`zalo_wait_for_message` CLI equivalent) |
+| `npx zalo-agent mcp wait [since] [-t <threadId>] [--timeout <s>] [-n <count>] [--settle <ms>] [-c <name>]` | Long-poll the running `mcp start` daemon's buffer for the next message (`zalo_wait_for_message` CLI equivalent) |
 | `npx zalo-agent mcp mark-read <cursor> [-c <name>]` | Advance the consumer read cursor in the running `mcp start` daemon's buffer (`zalo_mark_read` CLI equivalent) |
 
 ### Personal account
@@ -406,6 +407,10 @@ See [`.env.example`](.env.example) for a template.
 | `ZALO_MCP_ISSUER_URL` | Explicit OAuth 2.0 issuer base URL for `mcp start --http` (supports `ZALO_MCP_ISSUER_URL_<ownId>`) |
 | `ZALO_MCP_TLS_CERT` / `ZALO_MCP_TLS_KEY` | PEM certificate and private key paths for native HTTPS on `mcp start --http` (supports `_*_<ownId>`) |
 | `ZALO_WEBHOOK_URL` / `ZALO_WEBHOOK_SECRET` | Default webhook URL and signing secret (`Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>`) for `listen` and `mcp start` (supports `_*_<ownId>`) |
+| `ZALO_WEBHOOK_BATCH_SIZE` / `ZALO_WEBHOOK_MAX_AGE` | Events per webhook POST (1–100, default 1) and how long an undelivered event is retried before it is dead-lettered (default `24h`). Both support `_<ownId>`. The webhook is durable: see `zalo-agent mcp webhook status` |
+| `ZALO_LOG_LEVEL` / `ZALO_LOG_FORMAT` / `ZALO_LOG_MAX_SIZE` / `ZALO_LOG_KEEP` | `daemon.log` of `listen` and `mcp start`: level `error`, `warn`, `info` (default) or `debug` (adds a line per HTTP request and per message; also `--log-level`), `text` or `json` lines, and rotation at `50m` keeping 3 files |
+| `ZALO_START_JITTER` / `ZALO_LOGIN_SLOTS` / `ZALO_LOGIN_SLOT_WAIT` | Spread a fleet's start-up: wait a random 0–N seconds before logging in, and let at most N daemons on the machine be logging in at once (a daemon over the cap waits, then goes ahead after `ZALO_LOGIN_SLOT_WAIT` seconds). Off by default |
+| `ZALO_SEND_FORMAT` | `markdown` or `plain`: how text messages are sent. `zalo_send_message` converts Markdown to Zalo formatting by default; `msg send` sends plain unless `--markdown` (or this variable) says otherwise |
 
 ---
 

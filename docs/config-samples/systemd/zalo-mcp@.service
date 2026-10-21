@@ -1,11 +1,11 @@
 # /etc/systemd/system/zalo-mcp@.service
 # One instance per Zalo account: the instance name IS the account id.
-#   systemctl enable --now zalo-mcp@1000000000000000001
-#   journalctl -u zalo-mcp@1000000000000000001 -f
+#   systemctl enable --now zalo-mcp@<ownId>
+#   journalctl -u zalo-mcp@<ownId> -f
 #
 # Each instance reads /etc/zalo-mcp/common.env, then /etc/zalo-mcp/accounts/<id>.env
-# (see ../env/account.env). The account's token and port come from that file,
-# so neither appears on the command line (`ps` shows only `mcp start --account <id>`).
+# (`zalo-agent fleet generate` writes both). The account's token and port come from
+# that file, so neither appears on the command line (`ps` shows only `mcp start --account <id>`).
 [Unit]
 Description=Zalo MCP server for account %i
 Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/configuration.md

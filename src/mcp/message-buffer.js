@@ -9,6 +9,45 @@
  * (maxSize per thread, maxAge), which bounds memory as before.
  */
 
+import { batchParams } from "./wait-result.js";
+
+/** Sleep `ms`, or less if `signal` aborts. */
+function sleep(ms, signal) {
+    return new Promise((resolve) => {
+        if (signal?.aborted) return resolve();
+        const timer = setTimeout(done, ms);
+        function done() {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", done);
+            resolve();
+        }
+        signal?.addEventListener("abort", done, { once: true });
+    });
+}
+
+/** How often a settling wait looks at the buffer to see whether the batch is already full. */
+const SETTLE_POLL_MS = 20;
+
+/**
+ * Let a burst land: read, and keep reading for up to `settleMs`, but stop the moment `limit` messages
+ * are in hand (a full batch has nothing to wait for) or `signal` aborts.
+ *
+ * @param {() => { messages: object[], hasMore: boolean }} read
+ * @param {number} limit
+ * @param {number} settleMs
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{ messages: object[], hasMore: boolean }>}
+ */
+async function settleUntilFull(read, limit, settleMs, signal) {
+    const deadline = Date.now() + settleMs;
+    let r = read();
+    while (r.messages.length < limit && Date.now() < deadline && !signal?.aborted) {
+        await sleep(Math.min(SETTLE_POLL_MS, Math.max(1, deadline - Date.now())), signal);
+        r = read();
+    }
+    return r;
+}
+
 /** The consumer a caller that names none reads as. */
 export const DEFAULT_CONSUMER = "default";
 
@@ -78,13 +117,64 @@ export class MessageBuffer {
      * @param {AbortSignal} [opts.signal] - Optional abort signal (e.g. when HTTP client disconnects)
      * @returns {Promise<object|null>} The message object, or null on timeout/abort
      */
-    waitForMessage({ threadId = null, since = undefined, timeoutMs = 60000, signal = undefined } = {}) {
+    async waitForMessage(opts = {}) {
+        const { messages } = await this.waitForMessages({ ...opts, limit: 1, settleMs: 0 });
+        return messages[0] ?? null;
+    }
+
+    /**
+     * Wait for buffered messages and return up to `limit` of them at once, in cursor order.
+     *
+     * With `since`, messages already buffered after it are returned at once; otherwise the call waits for
+     * the next message to arrive. `settleMs` then gives a burst that long to land, so the reply holds it
+     * whole instead of the first message alone. Nothing is waited for once `limit` is reached.
+     *
+     * @param {object} [opts]
+     * @param {string} [opts.threadId] - Optional thread filter
+     * @param {number} [opts.since] - Optional cursor (exclusive)
+     * @param {number} [opts.timeoutMs=60000] - Max wait for the FIRST message
+     * @param {AbortSignal} [opts.signal]
+     * @param {number} [opts.limit=1] - Most messages to return (1-100)
+     * @param {number} [opts.settleMs=0] - After the first message, wait this long for more (0-5000)
+     * @returns {Promise<{ messages: object[], hasMore: boolean }>} `messages` is empty on timeout or abort
+     */
+    async waitForMessages({
+        threadId = null,
+        since = undefined,
+        timeoutMs = 60000,
+        signal = undefined,
+        limit = 1,
+        settleMs = 0,
+    } = {}) {
+        const { limit: max, settleMs: settle } = batchParams({ limit, settleMs });
+        const from = (cursor) => this.read(threadId || undefined, cursor, max);
+
         if (since !== undefined && since !== null && Number.isFinite(Number(since))) {
-            const existing = this.read(threadId || undefined, Number(since), 1);
-            if (existing.messages.length > 0) {
-                return Promise.resolve(existing.messages[0]);
+            let r = from(Number(since));
+            if (r.messages.length > 0) {
+                if (settle > 0 && r.messages.length < max) {
+                    r = await settleUntilFull(() => from(Number(since)), max, settle, signal);
+                }
+                return { messages: r.messages, hasMore: r.hasMore };
             }
         }
+        if (signal?.aborted) return { messages: [], hasMore: false };
+
+        const first = await this._waitNext({ threadId, timeoutMs, signal });
+        if (!first) return { messages: [], hasMore: false };
+        // From the first message on: it, and whatever arrived with it or while settling.
+        const r =
+            settle > 0 && max > 1
+                ? await settleUntilFull(() => from(first._cursor - 1), max, settle, signal)
+                : from(first._cursor - 1);
+        return r.messages.length ? { messages: r.messages, hasMore: r.hasMore } : { messages: [first], hasMore: false };
+    }
+
+    /**
+     * Resolve with the next message pushed (any thread, or `threadId`), or null on timeout or abort.
+     * @private
+     */
+    _waitNext({ threadId = null, timeoutMs = 60000, signal = undefined } = {}) {
         if (signal?.aborted) {
             return Promise.resolve(null);
         }

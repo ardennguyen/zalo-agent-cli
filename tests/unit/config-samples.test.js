@@ -241,6 +241,7 @@ describe("client samples", () => {
                 "python",
                 [
                     "-I",
+                    "-B", // no __pycache__ inside the checkout: no-real-ids reads every file there
                     "-c",
                     [
                         "import json, sys, importlib.util",

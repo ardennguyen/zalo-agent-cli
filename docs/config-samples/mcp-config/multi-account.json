@@ -1,0 +1,25 @@
+{
+    "watchThreads": ["dm:*"],
+    "host": "127.0.0.1",
+    "limits": {
+        "maxMessagesPerPoll": 50,
+        "bufferMaxAge": "6h",
+        "bufferMaxSize": 1000
+    },
+    "media": {
+        "downloadDir": null,
+        "autoOpen": false
+    },
+    "groupConfirm": false,
+    "accounts": {
+        "1000000000000000001": {
+            "httpPort": 3901,
+            "webhook": "https://crm.example.com/hooks/zalo/shop-a"
+        },
+        "1000000000000000002": {
+            "httpPort": 3902,
+            "webhook": "https://crm.example.com/hooks/zalo/shop-b",
+            "watchThreads": ["dm:*", "group:support"]
+        }
+    }
+}

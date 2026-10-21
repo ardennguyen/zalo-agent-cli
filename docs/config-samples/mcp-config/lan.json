@@ -1,0 +1,16 @@
+{
+    "watchThreads": ["dm:*", "group:*"],
+    "triggerKeywords": ["@bot"],
+    "host": "192.168.1.20",
+    "httpPort": 3847,
+    "limits": {
+        "maxMessagesPerPoll": 20,
+        "bufferMaxAge": "2h",
+        "bufferMaxSize": 500
+    },
+    "media": {
+        "downloadDir": null,
+        "autoOpen": false
+    },
+    "groupConfirm": true
+}

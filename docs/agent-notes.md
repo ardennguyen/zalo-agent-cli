@@ -80,11 +80,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **216** invokable leaves (184 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **23** containers — 15 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| CLI commands | **222** invokable leaves (190 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2431** as of 2026-10-21 (2426 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2491** as of 2026-10-21 (2486 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -116,10 +116,10 @@ guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-21): **216 leaves, 23 containers, 239 nodes**.
+Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**.
 By group: group 35, oa 32, friend 26, msg 24, conv 21, top-level 12, profile 14,
 catalog 10, account 7, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
-leaves), reminder 6, bank 5, auto-reply 4, quick-msg 4, label 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
+leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
 184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
@@ -834,6 +834,47 @@ sits between the daemon's stdout/stderr and the file (`attachDaemonLogIfChild`).
   is the output, never is.
 - **`mcp` commands write human output to stderr** (`ZALO_JSON_MODE` is set for them), so a test of the
   stdout path has to use a command outside `mcp`, such as `account list`.
+
+---
+
+## `fleet`: many accounts on one machine (2026-10-21)
+
+One account is one daemon, so a hundred accounts are a hundred of them. `src/core/fleet.js` and
+`src/commands/fleet.js` do what an operator scripted by hand: a port table, one status table, batched
+start/restart, and the supervisor files.
+
+- **Fleet commands must not log in.** Every command not on a short list auto-logs in as the active
+  account before it runs (`src/index.js`, `skipAutoLogin`), and `--account` pins the process to one
+  account. `fleet` acts on all of them and only reads files and each daemon's loopback channel, so it
+  is on both lists. The first live run found it logging in as the active account on every `fleet
+  status`; the offline suite had missed it because no sandbox account has credentials, so
+  `tests/cli/fleet.test.js` plants a saved login and asserts nothing logs in (red without the fix).
+- **The port table is `fleet.json`, assigned once.** A port never moves and a freed one is reused, so
+  adding an account cannot shift another's. `fleet status` only reads it; `ports`, `start`, `restart`
+  and `generate` assign. A table that exists but cannot be read is an error that changes nothing, the
+  same rule as the account registry.
+- **Health is asked over the loopback channel**, not over each port, so no token or port is needed and a
+  `listen` daemon (no HTTP) appears too. `unresponsive` is a lock held by a live process that does not
+  answer; `down` is a socket down at least `--down-for` (180 s). `restart --unhealthy` acts on those two
+  only: a webhook backlog is the receiver's problem and a restart does not fix it. A bare `restart`
+  restarts nothing, on purpose.
+- **Start-up is shuffled batches with a pause** (`planBatches`), the same idea as the unit's
+  `sleep $((RANDOM % 30))`, for hosts without systemd. Per-account secrets go to each daemon through
+  `--env-dir` into its own environment (`spawnDaemonProcess({ env })`, merged into the Windows WMI
+  spawn too), never onto a command line.
+- **The generated files are the documented samples.** The unit, `common.env` and the multi-account
+  Caddyfile are embedded in `src/core/fleet-templates.js` because `docs/` is not in the npm package,
+  and `tests/unit/fleet.test.js` asserts the embedded text equals the sample byte for byte. Edit one and
+  the other fails until it follows. The generated Caddy blocks answer 404 for `/metrics` and `/status`.
+- **Tokens:** 256 random bits per account, written at mode 600, never returned or printed; an existing
+  env file keeps its token even under `--force`, and only `--rotate-tokens` replaces one.
+- **Live run** (a copy of the test home with the real login plus three accounts that have none):
+  `fleet generate`, then `fleet start --batch 2 --stagger 4 --env-dir` started the real account on its
+  table port with its generated token and reported the three others as failed with the reason, in two
+  shuffled batches 4 s apart; `status` showed `ok`, `--check` exited 1 then 0 for the named account;
+  `restart <id>` replaced the pid and kept the kind; `stop` stopped it. Not exercised live: a daemon
+  that is `down` or `unresponsive` (it would need a real outage), so `restart --unhealthy` on one is
+  covered by the classification tests only.
 
 ---
 

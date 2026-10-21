@@ -1,11 +1,15 @@
 # Caddyfile: several accounts behind one hostname, one path prefix per account.
-# Each account is its own zalo-mcp@<id> instance on its own loopback port
-# (../env/account.env: ZALO_MCP_HTTP_PORT). Bearer-token auth per account;
-# OAuth issuer URLs are awkward behind a path prefix, so use tokens here.
+# Each account is its own zalo-mcp@<id> instance on its own loopback port. Bearer-token auth per
+# account; OAuth issuer URLs are awkward behind a path prefix, so use tokens here.
+# /metrics and /status are for Prometheus inside your network, so each block answers 404 for them
+# (only /mcp and /events/wait are meant for outside clients).
 zalo.example.com {
 	encode zstd gzip
 
 	handle_path /a/1000000000000000001/* {
+		@internal path /metrics /status
+		respond @internal 404
+
 		reverse_proxy 127.0.0.1:3901 {
 			flush_interval -1
 			transport http {
@@ -15,6 +19,9 @@ zalo.example.com {
 	}
 
 	handle_path /a/1000000000000000002/* {
+		@internal path /metrics /status
+		respond @internal 404
+
 		reverse_proxy 127.0.0.1:3902 {
 			flush_interval -1
 			transport http {
@@ -23,7 +30,6 @@ zalo.example.com {
 		}
 	}
 
-	# A client for account 1 talks to  https://zalo.example.com/a/1000000000000000001/mcp
-	# and  https://zalo.example.com/a/1000000000000000001/events/wait
+	# A client for an account talks to  https://zalo.example.com/a/<id>/mcp  and  https://zalo.example.com/a/<id>/events/wait
 	respond 404
 }

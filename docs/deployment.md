@@ -625,6 +625,21 @@ Prometheus scrape and alert rules are in [`config-samples/monitoring/`](config-s
 >    ```
 >    `zalo_coverage` is read-only and sends nothing to Zalo (`src/core/coverage.js`). The token in that command line is in `curl`'s argv; a job on a shared host should read the header from a file with `-H @<file>` instead.
 
+### 4.8 Many accounts: the fleet commands
+
+One account is one daemon (§1), so a hundred accounts are a hundred of them, each with a port, a token and a unit. `zalo-agent fleet` does what an operator would otherwise script (`src/core/fleet.js`, `src/commands/fleet.js`):
+
+| Command | What it does |
+|---|---|
+| `fleet generate --out <dir> [--base-port N] [--domain <host>] [--user --home --bin]` | Writes the systemd template unit, `common.env`, one `accounts/<id>.env` per account with its port and a **generated 256-bit token** (mode `600`, never printed), the port table, and with `--domain` a Caddyfile that serves every account under `/a/<id>/` and answers 404 for `/metrics` and `/status`. An existing file is never overwritten (`--force` replaces the plain ones; a token in use is kept unless `--rotate-tokens`). The same files as `docs/config-samples/`; a test holds the two together. |
+| `fleet ports [--base N]` | The port of each account, kept in `fleet.json`. A port is assigned once and never moves; a new account takes the lowest free one. |
+| `fleet status [accounts…] [--check] [--json]` | One table for every account, asked over each daemon's loopback channel (no port or token needed): state, pid, socket and its age, last event, webhook queue and dead letters, gaps, memory. States: `ok`, `degraded` (warnings: a backlog, dead letters, gaps), `starting`, `down` (socket down 3 minutes or more, `--down-for`), `unresponsive` (a daemon holds the lock but does not answer), `stopped`. `--check` exits 1 unless every account is `ok` or `degraded`. |
+| `fleet start [accounts…] [--batch 5] [--stagger 15] [--env-dir <dir>] [--listen] [--dry-run]` | Starts the daemons that are not running, **in shuffled batches** with a pause between them, so accounts set up together do not log in together. `--env-dir` gives each daemon its own `<id>.env` (token, webhook) without putting a secret on a command line. |
+| `fleet restart [accounts…] [--unhealthy] [--all]` | Stops and starts the named accounts, or with `--unhealthy` only the ones that are `down` or `unresponsive` (a restart does not fix a webhook receiver, so a backlog is left alone). A bare `fleet restart` restarts nothing. |
+| `fleet stop [accounts…]` | Each daemon's graceful shutdown. |
+
+Under systemd the unit already spreads start-up (`sleep $((RANDOM % 30))`) and restarts a dead daemon; `fleet start`/`restart` are for hosts without it (a Windows server, a container, a laptop) and for a deliberate restart of part of the fleet. `fleet status --check` suits a cron job; Prometheus (§4.7) suits alerting.
+
 ---
 
 ## 5. Security

@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2491** as of 2026-10-21 (2486 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2507** as of 2026-10-21 (2502 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -875,6 +875,30 @@ start/restart, and the supervisor files.
   `restart <id>` replaced the pid and kept the kind; `stop` stopped it. Not exercised live: a daemon
   that is `down` or `unresponsive` (it would need a real outage), so `restart --unhealthy` on one is
   covered by the classification tests only.
+
+---
+
+## Start-up spreading inside the daemon (2026-10-21)
+
+Every start logs in and loads the friend and group lists; a fleet that restarts together does all of it at
+once against Zalo. The unit's `sleep $((RANDOM % 30))` and `fleet start`'s batches are the supervisor's
+doing, and neither exists for a daemon started by hand or by another supervisor.
+`src/core/startup-gate.js` puts the protection in the engine, off by default.
+
+- **Order: lock, jitter, slot, login, lists, release.** `daemon.lock` is taken first, so a duplicate is still
+  refused at once; the random wait (`ZALO_START_JITTER`) comes next, then the slot (`ZALO_LOGIN_SLOTS`), so
+  arrivals are spread before they are capped. The slot is released after the thread-name cache has
+  loaded in `mcp start` and after the cache is open in `listen` (which loads no lists).
+- **A slot is a file, `O_EXCL`, holding the pid** — the same mechanism as every other lock here. Reclaimed
+  when its owner is dead or it has been held 300 s (a start-up is seconds). A daemon that exits holding one
+  gives it back through a `process.on("exit")` hook; `leave()` removes the file only if its content is
+  still its own, so a daemon that was stuck long enough to be replaced cannot free the new holder's slot.
+- **Waiting is bounded** (`ZALO_LOGIN_SLOT_WAIT`, 900 s) and then it goes ahead anyway, logging why. A
+  slot that never frees must not keep an account offline; the cost is that the cap is a soft one.
+- **Measured live** with the real daemon on the test account: another process held the only slot, the
+  daemon logged `waiting for a login slot`, started when the holder exited (`got login slot 1 of 1 after
+  9.9s`) and left no slot file behind. Six processes against two slots never had more than two inside
+  (`tests/unit/startup-gate.test.js`, which also shows the same six overlapping without the cap).
 
 ---
 

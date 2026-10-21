@@ -10,7 +10,8 @@ import { success, error, info, warning, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { updateAccountName } from "../core/accounts.js";
-import { getAccountDir } from "../core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
+import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import {
     createStageLock,
@@ -235,9 +236,21 @@ export function registerListenCommand(program) {
                     console.error(`[listen] Failed to release lock: ${e.message}`);
                 }
             };
+            // Spread a fleet's start-up: a random delay and a cap on daemons logging in at once
+            // (ZALO_START_JITTER, ZALO_LOGIN_SLOTS; src/core/startup-gate.js). Both off by default.
+            const startup = resolveStartupSettings({ env: process.env, ownId: activeAcc.ownId });
+            for (const w of startup.warnings) console.error(`[listen] ${w}`);
+            const gate = createStartupGate({
+                configDir: CONFIG_DIR,
+                ownId: activeAcc.ownId,
+                settings: startup,
+                log: (m) => console.error(`[listen] ${m}`),
+            });
+            await gate.enter();
             try {
                 await loginDaemonAccount(activeAcc);
             } catch (e) {
+                gate.leave();
                 releaseLock(accountDir);
                 error(`Pinned account login failed: ${e.message}`);
                 process.exit(1);
@@ -245,7 +258,10 @@ export function registerListenCommand(program) {
             try {
                 initDb(join(accountDir, "zalo.db"));
                 info(`Local database initialized at ${accountDir}/zalo.db`);
+                // Logged in and the cache open: the heavy part of start-up is over.
+                gate.leave();
             } catch (err) {
+                gate.leave();
                 releaseLock(accountDir);
                 error(`Failed to initialize local DB: ${err.message}`);
                 process.exit(1);

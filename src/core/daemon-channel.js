@@ -296,6 +296,8 @@ function readJsonBody(req, reply) {
  *   long-poll callback invoked by `POST /wait` (`zalo-agent mcp wait`).
  * @param {(params: object) => Promise<object>} [args.onMarkRead] -
  *   read-cursor callback invoked by `POST /mark-read` (`zalo-agent mcp mark-read`).
+ * @param {() => object} [args.onStatus] - health snapshot returned by `POST /status`
+ *   (`listen --status`, `mcp start --status`; see ./daemon-health.js).
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -307,6 +309,7 @@ export function startDaemonChannel({
     onStop = null,
     onWait = null,
     onMarkRead = null,
+    onStatus = null,
 }) {
     const token = randomBytes(24).toString("hex");
 
@@ -457,6 +460,17 @@ export function startDaemonChannel({
         }
     };
 
+    /** The daemon's health snapshot (`listen --status`, `mcp start --status`). */
+    const serveStatus = (body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof onStatus !== "function") return reply(503, { error: "this daemon does not report health" });
+        try {
+            reply(200, { ok: true, health: onStatus() });
+        } catch (e) {
+            reply(200, { ok: false, error: e?.message || String(e) });
+        }
+    };
+
     const server = http.createServer(async (req, res) => {
         const reply = (code, body) => {
             res.writeHead(code, { "content-type": "application/json" });
@@ -470,6 +484,7 @@ export function startDaemonChannel({
             req.url !== "/stop" &&
             req.url !== "/wait" &&
             req.url !== "/mark-read" &&
+            req.url !== "/status" &&
             !stage
         ) {
             return reply(404, { error: "not found" });
@@ -480,6 +495,7 @@ export function startDaemonChannel({
         if (req.url === "/stop") return serveStop(body, reply);
         if (req.url === "/wait") return serveWait(body, res, reply);
         if (req.url === "/mark-read") return serveMarkRead(body, reply);
+        if (req.url === "/status") return serveStatus(body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 
@@ -1241,4 +1257,54 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
         logPath,
         error: "Timed out waiting for background daemon to finish starting.",
     };
+}
+
+/**
+ * Ask the running daemon for its health snapshot (`listen --status`, `mcp start --status`).
+ *
+ * @param {string} accountDir
+ * @returns {Promise<{ok: boolean, health?: object, error?: string}|null>} null when no daemon channel is published;
+ *   `ok: false` for a daemon too old to answer (it has the channel but not the route)
+ */
+export function statusViaDaemon(accountDir) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+    const payload = JSON.stringify({ token: chan.token });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/status",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: 5000,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    resolve(
+                        res.statusCode === 200 && body.ok
+                            ? { ok: true, health: body.health }
+                            : { ok: false, error: body.error || `HTTP ${res.statusCode}` },
+                    );
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout waiting for the daemon" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
 }

@@ -22,6 +22,7 @@ import {
     spawnDaemonProcess,
     waitViaDaemon,
     markReadViaDaemon,
+    statusViaDaemon,
 } from "../core/daemon-channel.js";
 import { success, error, info, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
@@ -58,12 +59,15 @@ import {
     resolveWebhookDelivery,
 } from "../mcp/mcp-config.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
+
+const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
 /** Zalo close code for duplicate web session — fatal, do not retry */
 const CLOSE_DUPLICATE = 3000;
@@ -309,12 +313,18 @@ export function registerMCPCommands(program) {
 
             if (opts.status) {
                 const status = getDaemonStatus(accountDir);
-                output({ accountId: activeAcc.ownId, ...status }, jsonMode, () => {
+                // What the daemon says about itself; an older daemon has the channel but not the route.
+                const reported = status.running ? await statusViaDaemon(accountDir) : null;
+                const health = reported?.ok ? reported.health : null;
+                output({ accountId: activeAcc.ownId, ...status, health }, jsonMode, () => {
                     if (status.running) {
                         success(
                             `Daemon running for account ${activeAcc.ownId} (PID ${status.pid}${status.channelPort ? `, channel 127.0.0.1:${status.channelPort}` : ""})`,
                         );
                         info(`Log file: ${status.logPath}`);
+                        if (health) for (const line of describeHealth(health)) info(line);
+                        else
+                            info("Health: not reported (this daemon predates the health route; restart it to see it).");
                     } else {
                         info(`No daemon running for account ${activeAcc.ownId}`);
                         info(`Log file: ${status.logPath}`);
@@ -517,6 +527,17 @@ export function registerMCPCommands(program) {
             });
 
             // Start MCP server — stdio (default) or HTTP/HTTPS
+            // What this daemon can say about itself: /health, /ready, /status and /metrics over HTTP, and
+            // `mcp start --status` over the loopback channel (src/core/daemon-health.js). The sources that do not
+            // exist yet (the webhook outbox, below) are plugged in as they are built.
+            const health = createDaemonHealth({ kind: "mcp", accountId: activeAcc.ownId, version: PKG_VERSION });
+            health.setSource("buffer", () => {
+                const stats = buffer.getStats();
+                return { threads: stats.length, messages: stats.reduce((n, t) => n + t.total, 0) };
+            });
+            health.setSource("gaps", () => getPendingSyncGaps().length);
+            health.setSource("stage", () => stageLock.current());
+
             let httpServer = null;
             try {
                 if (effectiveHttpPort) {
@@ -537,6 +558,7 @@ export function registerMCPCommands(program) {
                         accountDir,
                         stageLock,
                         syncJobs,
+                        health,
                     };
                     const authToken =
                         opts.auth?.trim() ||
@@ -631,6 +653,7 @@ export function registerMCPCommands(program) {
                         `durable outbox, ${delivery.batchSize === 1 ? "one event per POST" : `up to ${delivery.batchSize} events per POST`}`,
                 );
             }
+            health.setSource("webhook", () => webhookDelivery?.status() ?? null);
             /** Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent. */
             const queueWebhook = (normalized) =>
                 webhookDelivery?.enqueue(
@@ -754,6 +777,7 @@ export function registerMCPCommands(program) {
              * @param {object} api - zca-js API instance
              */
             function attachListenerHandlers(api) {
+                health.attach(api.listener);
                 api.listener.on("message", (msg) => {
                     // Persist FIRST and unconditionally. The buffer is what an
                     // agent polls; the cache is the durable record, and it must
@@ -905,6 +929,7 @@ export function registerMCPCommands(program) {
                 // the shutdown is indistinguishable from a drop and files a gap
                 // for a window nothing was missed in.
                 lifecycle.setStopping();
+                health.noteStopping();
                 clearInterval(mcpHeartbeatTimer);
                 deliveredReceipts.stop();
                 const receipts = deliveredReceipts.stats();
@@ -951,6 +976,7 @@ export function registerMCPCommands(program) {
                         // The self-heal's lock: a stage and a catch-up never share the socket.
                         lock: stageLock,
                         onStop: shutdown,
+                        onStatus: () => health.snapshot(),
                         onWait: async (params, signal) => {
                             const cleanThreadId =
                                 typeof params?.threadId === "string" && params.threadId.trim()

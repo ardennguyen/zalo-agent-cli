@@ -188,7 +188,7 @@ One account is one process, one WebSocket, one SQLite file and one port: there i
 | `ZALO_MCP_HOST` is `127.0.0.1` behind a proxy, a specific LAN address otherwise | `0.0.0.0` listens on every interface, including a public one |
 | TLS terminates at the proxy, or `--cert`/`--key` are set | a bearer token over plain HTTP is readable on the wire |
 | the proxy does not log `Authorization` and does not buffer `/events/wait` | tokens in logs; long-polls cut at the proxy's timeout |
-| `GET /health` is the only unauthenticated route | it reports uptime and the number of buffered threads, nothing about the account; it does **not** say whether the Zalo socket is up |
+| `GET /health` and `GET /ready` are the only unauthenticated routes | they say whether the process answers and whether the Zalo socket is up, nothing about the account. `/status` and `/metrics` are behind the token: do not publish them through the proxy |
 | one process per account, never two for the same account | a second session closes the first (code 3000) |
 
 ## 5. Verify a setup
@@ -196,6 +196,9 @@ One account is one process, one WebSocket, one SQLite file and one port: there i
 ```bash
 # up, and the token is enforced (expect 200, 401, 401):
 curl -s -o /dev/null -w '%{http_code}\n' http://HOST:PORT/health
+# the Zalo socket is up (200; 503 while it is down), and the detail is behind the token:
+curl -s -o /dev/null -w '%{http_code}\n' http://HOST:PORT/ready
+curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 

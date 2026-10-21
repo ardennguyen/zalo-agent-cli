@@ -4,6 +4,7 @@
  */
 
 import express from "express";
+import { renderPrometheus } from "../core/daemon-health.js";
 import https from "https";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { readFileSync } from "fs";
@@ -143,7 +144,8 @@ function resolveIssuerOrigin(req, configuredIssuer, isTls) {
 /**
  * Create HTTP or HTTPS MCP server with optional bearer token and OAuth 2.0 auth.
  * @param {Function} registerToolsFn - Registers tools on a McpServer instance
- * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs }
+ * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs, health }
+ *   (`health` is the daemon's ./core/daemon-health.js object: behind /health, /ready, /status and /metrics)
  * @param {number} port
  * @param {string|null} authToken - Bearer token (null = no auth unless oauth.clientSecret or oauth.clients is set)
  * @param {string} [host="127.0.0.1"] - Bind address
@@ -503,7 +505,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     // ── Bearer / OAuth2 Auth Middleware — skips /health ─────────────────
     if (signingSecret) {
         app.use((req, res, next) => {
-            if (req.path === "/health") return next();
+            if (req.path === "/health" || req.path === "/ready") return next();
             const authHeader = req.headers.authorization || "";
             const token = /^bearer\s+/i.test(authHeader) ? authHeader.slice(7).trim() : "";
 
@@ -611,13 +613,36 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         }
     });
 
-    // Health check — no auth required
+    // Liveness — no auth required, and deliberately thin: that the process answers, and whether its socket is
+    // up. Everything else is behind the token (/status, /metrics).
     app.get("/health", (req, res) => {
         res.json({
             status: "ok",
             uptime: Math.floor(process.uptime()),
             threads: deps.buffer.getStats().length,
+            ...(deps.health ? { socket: deps.health.ready().socket, ready: deps.health.ready().ready } : {}),
         });
+    });
+
+    // Readiness — no auth required: 200 only while the Zalo socket is connected, so a load balancer or a
+    // supervisor can stop sending work to a daemon whose account is offline.
+    app.get("/ready", (req, res) => {
+        const r = deps.health ? deps.health.ready() : { ready: true, socket: "unknown" };
+        res.status(r.ready ? 200 : 503).json(r);
+    });
+
+    // Everything the daemon knows about itself (protected by the auth middleware above).
+    app.get("/status", (req, res) => {
+        if (!deps.health) return res.status(503).json({ error: "this server does not report health" });
+        res.json(deps.health.snapshot());
+    });
+
+    // The same, as Prometheus text (protected by the auth middleware above; Prometheus sends a bearer token).
+    app.get("/metrics", (req, res) => {
+        if (!deps.health) return res.status(503).type("text/plain").send("# this server does not report health\n");
+        res.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8").send(
+            renderPrometheus(deps.health.snapshot()),
+        );
     });
 
     if (isTls) {

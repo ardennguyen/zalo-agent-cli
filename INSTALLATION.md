@@ -341,7 +341,7 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | `npx zalo-agent sync-mobile [-F] [-w <s>]` | Restore history from your phone — prompts the phone once. Add `--socket` for the old server probe, which contacts no phone and usually returns nothing |
 | `npx zalo-agent update` | Self-update to the latest published version |
 | `npx zalo-agent mcp start [--http <port>] [--auth <token>] [--host <addr>]` | Start the MCP server |
-| `npx zalo-agent mcp wait [since] [-t <threadId>] [--timeout <s>] [-c <name>]` | Long-poll the running `mcp start` daemon's buffer for the next message (`zalo_wait_for_message` CLI equivalent) |
+| `npx zalo-agent mcp wait [since] [-t <threadId>] [--timeout <s>] [-n <count>] [--settle <ms>] [-c <name>]` | Long-poll the running `mcp start` daemon's buffer for the next message (`zalo_wait_for_message` CLI equivalent) |
 | `npx zalo-agent mcp mark-read <cursor> [-c <name>]` | Advance the consumer read cursor in the running `mcp start` daemon's buffer (`zalo_mark_read` CLI equivalent) |
 
 ### Personal account

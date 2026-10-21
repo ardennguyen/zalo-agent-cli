@@ -47,6 +47,7 @@ import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
 import {
     describeFriendAddError,
     extractErrorCode,
@@ -2347,7 +2348,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Long-poll the live MCP message buffer for the next incoming watched message without manual polling. " +
                 "Returns immediately if a buffered message newer than `since` is already waiting; otherwise waits up to " +
-                "`timeoutSec` seconds (default 55, max 300) for a new message to arrive. Mirrors GET /events/wait for " +
+                "`timeoutSec` seconds (default 55, max 300) for a new message to arrive. `limit` (default 1, max 100) returns " +
+                "up to that many buffered messages in one call, in order, in `messages` (`message` is the first and `cursor` " +
+                "the last, so `since: cursor` continues where the batch ended; `hasMore` says more are already waiting); " +
+                "`settleMs` waits that long after the first for the rest of a burst. Mirrors GET /events/wait for " +
                 "remote HTTPS/OAuth2 MCP clients.",
             inputSchema: z.object({
                 threadId: z
@@ -2371,48 +2375,61 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .max(300)
                     .default(55)
                     .describe("Maximum seconds to wait before returning `status: 'timeout'` (default 55, max 300)"),
+                limit: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(MAX_BATCH)
+                    .default(1)
+                    .describe(`Most messages to return in one call (default 1, max ${MAX_BATCH})`),
+                settleMs: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .max(MAX_SETTLE_MS)
+                    .default(0)
+                    .describe(
+                        `After the first message arrives, wait this many ms for the rest of a burst (default 0, max ${MAX_SETTLE_MS})`,
+                    ),
             }),
         },
-        async ({ threadId, since, timeoutSec = 55 }) => {
+        async ({ threadId, since, timeoutSec = 55, limit = 1, settleMs = 0 }) => {
             try {
-                if (typeof buffer?.waitForMessage !== "function") {
-                    return err("Live message buffer does not support waitForMessage in this context.");
+                if (typeof buffer?.waitForMessages !== "function") {
+                    return err("Live message buffer does not support waitForMessages in this context.");
                 }
                 const cleanThreadId = typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
                 const clampedSec = Math.max(1, Math.min(300, Number(timeoutSec) || 55));
-                const msg = await buffer.waitForMessage({
+                const batch = batchParams({ limit, settleMs });
+                const { messages, hasMore } = await buffer.waitForMessages({
                     threadId: cleanThreadId,
                     since: typeof since === "number" && Number.isFinite(since) ? since : undefined,
                     timeoutMs: clampedSec * 1000,
+                    ...batch,
                 });
-                if (msg) {
-                    const tid = String(msg.threadId || "");
-                    let threadName = nameCache?.get(tid)?.name || null;
-                    if (!threadName && tid) {
-                        try {
-                            threadName = getDisplayName(tid) || null;
-                        } catch {
-                            threadName = null;
-                        }
-                    }
-                    return ok({
-                        status: "message",
-                        message: {
-                            ...msg,
-                            ...(threadName ? { threadName } : {}),
+                return ok(
+                    waitResult({
+                        messages,
+                        hasMore,
+                        cursorWhenEmpty: Math.max(
+                            typeof since === "number" && Number.isFinite(since) ? since : 0,
+                            Number(buffer._globalCursor) || 0,
+                            typeof buffer.readCursor === "function" ? buffer.readCursor() : 0,
+                        ),
+                        decorate: (msg) => {
+                            const tid = String(msg.threadId || "");
+                            let threadName = nameCache?.get(tid)?.name || null;
+                            if (!threadName && tid) {
+                                try {
+                                    threadName = getDisplayName(tid) || null;
+                                } catch {
+                                    threadName = null;
+                                }
+                            }
+                            return { ...msg, ...(threadName ? { threadName } : {}) };
                         },
-                        cursor: msg._cursor,
-                    });
-                }
-                return ok({
-                    status: "timeout",
-                    message: null,
-                    cursor: Math.max(
-                        typeof since === "number" && Number.isFinite(since) ? since : 0,
-                        Number(buffer._globalCursor) || 0,
-                        typeof buffer.readCursor === "function" ? buffer.readCursor() : 0,
-                    ),
-                });
+                    }),
+                );
             } catch (e) {
                 console.error("[mcp-tools] zalo_wait_for_message error:", e.message);
                 return err(e.message);

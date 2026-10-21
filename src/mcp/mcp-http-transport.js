@@ -5,6 +5,7 @@
 
 import express from "express";
 import { renderPrometheus } from "../core/daemon-health.js";
+import { batchParams, waitResult } from "./wait-result.js";
 import https from "https";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { readFileSync } from "fs";
@@ -585,27 +586,19 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         const ac = new AbortController();
         res.on("close", () => ac.abort());
 
+        const { limit, settleMs } = batchParams({ limit: req.query.limit, settleMs: req.query.settle });
+
         try {
-            const msg = await deps.buffer.waitForMessage({
+            const { messages, hasMore } = await deps.buffer.waitForMessages({
                 threadId,
                 since,
                 timeoutMs: timeoutSec * 1000,
                 signal: ac.signal,
+                limit,
+                settleMs,
             });
             if (res.writableEnded) return;
-            if (msg) {
-                res.json({
-                    status: "message",
-                    message: msg,
-                    cursor: msg._cursor,
-                });
-            } else {
-                res.json({
-                    status: "timeout",
-                    message: null,
-                    cursor: deps.buffer.readCursor(),
-                });
-            }
+            res.json(waitResult({ messages, hasMore, cursorWhenEmpty: deps.buffer.readCursor() }));
         } catch (err) {
             if (!res.headersSent) {
                 res.status(500).json({ error: err.message });

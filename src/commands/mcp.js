@@ -59,6 +59,7 @@ import {
     resolveWebhookDelivery,
 } from "../mcp/mcp-config.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
@@ -997,33 +998,26 @@ export function registerMCPCommands(program) {
                                     : consumer
                                       ? buffer.readCursor(consumer)
                                       : undefined;
-                            const msg = await buffer.waitForMessage({
+                            const { messages, hasMore } = await buffer.waitForMessages({
                                 threadId: cleanThreadId,
                                 since: effectiveSince,
                                 timeoutMs: clampedSec * 1000,
                                 signal,
+                                ...batchParams({ limit: params?.limit, settleMs: params?.settleMs }),
                             });
-                            if (msg) {
-                                const tid = String(msg.threadId || "");
-                                const threadName = nameCache?.get(tid)?.name || null;
-                                return {
-                                    status: "message",
-                                    message: {
-                                        ...msg,
-                                        ...(threadName ? { threadName } : {}),
-                                    },
-                                    cursor: msg._cursor,
-                                };
-                            }
-                            return {
-                                status: "timeout",
-                                message: null,
-                                cursor: Math.max(
+                            return waitResult({
+                                messages,
+                                hasMore,
+                                cursorWhenEmpty: Math.max(
                                     effectiveSince ?? 0,
                                     Number(buffer._globalCursor) || 0,
                                     buffer.readCursor(consumer),
                                 ),
-                            };
+                                decorate: (msg) => {
+                                    const threadName = nameCache?.get(String(msg.threadId || ""))?.name || null;
+                                    return { ...msg, ...(threadName ? { threadName } : {}) };
+                                },
+                            });
                         },
                         onMarkRead: async (params) => {
                             const cursorNum = Number(params?.cursor);
@@ -1073,6 +1067,16 @@ export function registerMCPCommands(program) {
         .option("-t, --thread <threadId>", "Only wake on messages from this thread ID")
         .option("--timeout <seconds>", "Maximum seconds to wait before returning timeout (1-300, default: 55)", "55")
         .option(
+            "-n, --limit <count>",
+            `Return up to this many buffered messages in one call, in order (1-${MAX_BATCH}, default: 1)`,
+            "1",
+        )
+        .option(
+            "--settle <ms>",
+            `After the first message, wait this long for the rest of a burst (0-${MAX_SETTLE_MS}, default: 0)`,
+            "0",
+        )
+        .option(
             "-c, --consumer <name>",
             "Consumer name whose read cursor is used when --since is omitted (matches zalo_mark_read)",
         )
@@ -1098,6 +1102,16 @@ export function registerMCPCommands(program) {
                 error(`Invalid --consumer "${consumer}": must be 1-64 characters matching [A-Za-z0-9._:@-].`);
                 process.exit(1);
             }
+            const limit = Number(opts.limit);
+            if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BATCH) {
+                error(`Invalid --limit "${opts.limit}": must be an integer between 1 and ${MAX_BATCH}.`);
+                process.exit(1);
+            }
+            const settleMs = Number(opts.settle);
+            if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > MAX_SETTLE_MS) {
+                error(`Invalid --settle "${opts.settle}": must be an integer between 0 and ${MAX_SETTLE_MS} (ms).`);
+                process.exit(1);
+            }
 
             let activeAcc;
             try {
@@ -1110,6 +1124,8 @@ export function registerMCPCommands(program) {
             }
             const accountDir = getAccountDir(activeAcc.ownId);
             const res = await waitViaDaemon(accountDir, {
+                limit,
+                settleMs,
                 threadId: opts.thread?.trim() || null,
                 since: parsedSince,
                 timeoutSec: rawTimeout,
@@ -1129,16 +1145,21 @@ export function registerMCPCommands(program) {
                 {
                     status: res.status,
                     message: res.message,
+                    messages: res.messages,
+                    count: res.count,
+                    hasMore: res.hasMore,
                     cursor: res.cursor,
                 },
                 jsonMode,
                 () => {
-                    if (res.status === "message" && res.message) {
-                        const m = res.message;
-                        const label = m.threadName ? `${m.threadName} (${m.threadId})` : m.threadId;
-                        success(
-                            `[cursor ${res.cursor}] ${m.senderName || m.senderId} in ${label}: ${m.text || `(${m.type})`}`,
-                        );
+                    if (res.status === "message" && res.messages?.length) {
+                        for (const m of res.messages) {
+                            const label = m.threadName ? `${m.threadName} (${m.threadId})` : m.threadId;
+                            success(
+                                `[cursor ${m._cursor}] ${m.senderName || m.senderId} in ${label}: ${m.text || `(${m.type})`}`,
+                            );
+                        }
+                        if (res.hasMore) info(`More are waiting: run again with since ${res.cursor}`);
                     } else {
                         info(`Timeout after ${rawTimeout}s (cursor: ${res.cursor})`);
                     }

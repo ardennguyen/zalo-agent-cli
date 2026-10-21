@@ -857,7 +857,10 @@ export function stopViaDaemon(accountDir, { timeoutMs = 3000 } = {}) {
  * @returns {Promise<{ok: boolean, status?: "message"|"timeout"|number, message?: object|null, cursor?: number, error?: string}|null>}
  *   null when no daemon channel is published
  */
-export function waitViaDaemon(accountDir, { threadId = null, since = undefined, timeoutSec = 55, consumer } = {}) {
+export function waitViaDaemon(
+    accountDir,
+    { threadId = null, since = undefined, timeoutSec = 55, consumer, limit = 1, settleMs = 0 } = {},
+) {
     const chan = getDaemonChannel(accountDir);
     if (!chan) return Promise.resolve(null);
 
@@ -867,6 +870,8 @@ export function waitViaDaemon(accountDir, { threadId = null, since = undefined, 
         ...(threadId ? { threadId: String(threadId) } : {}),
         ...(typeof since === "number" && Number.isFinite(since) ? { since } : {}),
         timeoutSec: clampedSec,
+        ...(limit > 1 ? { limit } : {}),
+        ...(settleMs > 0 ? { settleMs } : {}),
         ...(consumer ? { consumer: String(consumer) } : {}),
     });
 
@@ -897,6 +902,9 @@ export function waitViaDaemon(accountDir, { threadId = null, since = undefined, 
                             ok: true,
                             status: body.status,
                             message: body.message ?? null,
+                            messages: Array.isArray(body.messages) ? body.messages : body.message ? [body.message] : [],
+                            count: body.count ?? (body.message ? 1 : 0),
+                            hasMore: Boolean(body.hasMore),
                             cursor: body.cursor,
                         });
                     } else {

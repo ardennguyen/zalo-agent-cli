@@ -43,10 +43,12 @@ import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readOnZalo } from "../core/read-state.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
-import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
+import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
+import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
 import {
     describeFriendAddError,
     extractErrorCode,
@@ -542,6 +544,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             "msgId of a cached TEXT message in this thread to quote-reply to. " +
                                 "Get it from zalo_get_messages or zalo_get_history.",
                         ),
+                    format: z
+                        .enum(["markdown", "plain"])
+                        .optional()
+                        .describe(
+                            "How `text` is sent. `markdown` (the default) turns Markdown into Zalo's own formatting, because Zalo " +
+                                "shows `**bold**` and `- item` as typed: **bold**, *italic*, ~~strike~~, # headings (bold), " +
+                                "- bullets (real bullets), 1. lists (numbers kept), > quotes, `code`, [text](url) (the URL stays in " +
+                                "the text), and {red:text}/{green:text}/{big:text} colors. `plain` sends the text exactly as written. " +
+                                "Text that is not Markdown (snake_case, 2 * 3 * 4) is left alone either way.",
+                        ),
                     urgency: z
                         .enum(["normal", "important", "urgent"])
                         .optional()
@@ -577,6 +589,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             threadType: threadTypeIn,
             quoteMsgId,
             urgency: urgencyIn,
+            format: formatIn,
         }) => {
             // `me` (or the own uid) is My Documents, always a 1-1 -- resolved
             // before anything else reads the thread id, as `msg send me` is.
@@ -625,8 +638,17 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     if (missing.length > 0) {
                         return err(`File not found: ${missing.join(", ")}`);
                     }
+                    // A caption is text too: Markdown in it is converted the same way.
+                    const caption =
+                        text && resolveSendFormat({ explicit: formatIn, fallback: "markdown" }) === "markdown"
+                            ? markdownToZalo(text)
+                            : { text: text || "", styles: [] };
                     const result = await api.sendMessage(
-                        { msg: text || "", attachments: absPaths },
+                        {
+                            msg: caption.text,
+                            attachments: absPaths,
+                            ...(caption.styles.length > 0 && { styles: caption.styles }),
+                        },
                         threadId,
                         Number(threadType),
                     );
@@ -667,13 +689,19 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // order against and nothing to move — if styles are ever added to
                 // this tool, they must be run through `shiftStyles(styles,
                 // expanded.edits)` the way `msg send` does.
+                // Markdown first, then mentions: a display name may itself contain `*` or `_`, whereas an
+                // `@[uid]` token contains no Markdown (the converter passes it through). The style ranges
+                // are counted before the names go in, so they move across the substitutions (`shiftStyles`).
+                const format = resolveSendFormat({ explicit: formatIn, fallback: "markdown" });
+                const converted = format === "markdown" ? markdownToZalo(text) : { text, styles: [] };
                 const unresolved = [];
-                const expanded = expandMentions(text, (uid) => {
+                const expanded = expandMentions(converted.text, (uid) => {
                     const name = cachedDisplayName(uid);
                     if (!name && uid !== ALL_MENTION_UID) unresolved.push(uid);
                     return name;
                 });
                 const mentions = expanded.mentions;
+                const styles = shiftStyles(converted.styles, expanded.edits);
 
                 // zca-js drops mentions outside a group, so a DM send would
                 // quietly arrive with the names as plain text and nobody tagged.
@@ -726,11 +754,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
                 // A plain send stays a plain string: the object form is only
                 // built when there is something to put in it.
-                const hasExtras = mentions.length > 0 || Boolean(quote) || Boolean(urgency);
+                const hasExtras = mentions.length > 0 || styles.length > 0 || Boolean(quote) || Boolean(urgency);
                 const content = hasExtras
                     ? {
                           msg: expanded.text,
                           ...(mentions.length > 0 && { mentions }),
+                          ...(styles.length > 0 && { styles }),
                           ...(quote && { quote }),
                           ...(urgency && { urgency }),
                       }
@@ -755,6 +784,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     // Only when it differs, so the common send keeps its shape:
                     // the agent wrote `@[123]` and needs to know what was sent.
                     ...(expanded.text !== text && { text: expanded.text }),
+                    ...(styles.length > 0 && { formatted: styles.length }),
                     ...(unresolved.length > 0 && { unresolvedMentions: unresolved }),
                     ...(warnings.length > 0 && { warnings }),
                 });
@@ -2347,7 +2377,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Long-poll the live MCP message buffer for the next incoming watched message without manual polling. " +
                 "Returns immediately if a buffered message newer than `since` is already waiting; otherwise waits up to " +
-                "`timeoutSec` seconds (default 55, max 300) for a new message to arrive. Mirrors GET /events/wait for " +
+                "`timeoutSec` seconds (default 55, max 300) for a new message to arrive. `limit` (default 1, max 100) returns " +
+                "up to that many buffered messages in one call, in order, in `messages` (`message` is the first and `cursor` " +
+                "the last, so `since: cursor` continues where the batch ended; `hasMore` says more are already waiting); " +
+                "`settleMs` waits that long after the first for the rest of a burst. Mirrors GET /events/wait for " +
                 "remote HTTPS/OAuth2 MCP clients.",
             inputSchema: z.object({
                 threadId: z
@@ -2371,48 +2404,61 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .max(300)
                     .default(55)
                     .describe("Maximum seconds to wait before returning `status: 'timeout'` (default 55, max 300)"),
+                limit: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(MAX_BATCH)
+                    .default(1)
+                    .describe(`Most messages to return in one call (default 1, max ${MAX_BATCH})`),
+                settleMs: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .max(MAX_SETTLE_MS)
+                    .default(0)
+                    .describe(
+                        `After the first message arrives, wait this many ms for the rest of a burst (default 0, max ${MAX_SETTLE_MS})`,
+                    ),
             }),
         },
-        async ({ threadId, since, timeoutSec = 55 }) => {
+        async ({ threadId, since, timeoutSec = 55, limit = 1, settleMs = 0 }) => {
             try {
-                if (typeof buffer?.waitForMessage !== "function") {
-                    return err("Live message buffer does not support waitForMessage in this context.");
+                if (typeof buffer?.waitForMessages !== "function") {
+                    return err("Live message buffer does not support waitForMessages in this context.");
                 }
                 const cleanThreadId = typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
                 const clampedSec = Math.max(1, Math.min(300, Number(timeoutSec) || 55));
-                const msg = await buffer.waitForMessage({
+                const batch = batchParams({ limit, settleMs });
+                const { messages, hasMore } = await buffer.waitForMessages({
                     threadId: cleanThreadId,
                     since: typeof since === "number" && Number.isFinite(since) ? since : undefined,
                     timeoutMs: clampedSec * 1000,
+                    ...batch,
                 });
-                if (msg) {
-                    const tid = String(msg.threadId || "");
-                    let threadName = nameCache?.get(tid)?.name || null;
-                    if (!threadName && tid) {
-                        try {
-                            threadName = getDisplayName(tid) || null;
-                        } catch {
-                            threadName = null;
-                        }
-                    }
-                    return ok({
-                        status: "message",
-                        message: {
-                            ...msg,
-                            ...(threadName ? { threadName } : {}),
+                return ok(
+                    waitResult({
+                        messages,
+                        hasMore,
+                        cursorWhenEmpty: Math.max(
+                            typeof since === "number" && Number.isFinite(since) ? since : 0,
+                            Number(buffer._globalCursor) || 0,
+                            typeof buffer.readCursor === "function" ? buffer.readCursor() : 0,
+                        ),
+                        decorate: (msg) => {
+                            const tid = String(msg.threadId || "");
+                            let threadName = nameCache?.get(tid)?.name || null;
+                            if (!threadName && tid) {
+                                try {
+                                    threadName = getDisplayName(tid) || null;
+                                } catch {
+                                    threadName = null;
+                                }
+                            }
+                            return { ...msg, ...(threadName ? { threadName } : {}) };
                         },
-                        cursor: msg._cursor,
-                    });
-                }
-                return ok({
-                    status: "timeout",
-                    message: null,
-                    cursor: Math.max(
-                        typeof since === "number" && Number.isFinite(since) ? since : 0,
-                        Number(buffer._globalCursor) || 0,
-                        typeof buffer.readCursor === "function" ? buffer.readCursor() : 0,
-                    ),
-                });
+                    }),
+                );
             } catch (e) {
                 console.error("[mcp-tools] zalo_wait_for_message error:", e.message);
                 return err(e.message);

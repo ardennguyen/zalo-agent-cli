@@ -34,6 +34,7 @@ import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from 
 import { applySelfThreadAlias } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
 
 /**
  * Open the active account's SQLite cache.
@@ -575,6 +576,10 @@ export function registerMsgCommands(program) {
         .option("--style <specs...>", "Text styles. Format: start:len:style (e.g. 0:5:bold 6:5:italic)")
         .option("--md", "Parse markdown-like formatting: **bold** *italic* __underline__ ~~strike~~ {red:text}")
         .option(
+            "--markdown",
+            "Send the message as Markdown, converted to Zalo's own formatting: **bold**, *italic*, ~~strike~~, # headings, - bullet lists, 1. lists, > quotes, `code`, [text](url), {red:text}. (Zalo shows typed Markdown as typed.) ZALO_SEND_FORMAT=markdown makes this the default.",
+        )
+        .option(
             "--react <icon>",
             "Auto-react to sent message. Codes: :> (haha), /-heart (heart), /-strong (like), :o (wow), :-(( (cry), :-h (angry)",
         )
@@ -594,7 +599,14 @@ export function registerMsgCommands(program) {
                 let styles = [];
                 let finalMsg = message;
 
-                if (opts.md) {
+                if (
+                    resolveSendFormat({ explicit: opts.markdown ? "markdown" : null, fallback: "plain" }) === "markdown"
+                ) {
+                    // Real Markdown: bullets, headings, bold and italic as Markdown means them.
+                    const converted = markdownToZalo(message);
+                    finalMsg = converted.text;
+                    styles = converted.styles;
+                } else if (opts.md) {
                     // Markdown-like parsing: **bold** *italic* __underline__ ~~strike~~
                     const parsed = parseMarkdownStyles(message);
                     finalMsg = parsed.plain;

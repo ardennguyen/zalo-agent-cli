@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **212 CLI commands** across 22 command containers (15 top-level groups + 7 OA subgroups) + **25 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **222 CLI commands** across 24 command containers (16 top-level groups + 7 OA subgroups + `mcp webhook`) + **25 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -78,7 +78,7 @@ zalo-agent msg history <ID> -n 50                       # History (from local ca
 zalo-agent msg history <ID> -n 50 --no-cache            # Force live fetch; caches only what it lacked
 ```
 Reactions: `:>` haha · `/-heart` heart · `/-strong` like · `:o` wow · `:-((` cry · `:-h` angry
-Also on `send`: `--md` (markdown formatting), `--style start:len:style`, `--react <icon>` (auto-react to the message just sent), `--quote <msgId>` (quote-reply), and `@[userId]` mention tokens in the message body.
+Also on `send`: `--markdown` (real Markdown: bold, italic, `#` headings, `-` bullets, `>` quotes, links — Zalo shows typed `**bold**` and `- item` as typed, so without a conversion an agent's Markdown arrives raw; `zalo_send_message` converts by default, `format: "plain"` opts out, `ZALO_SEND_FORMAT` sets the default), `--md` (the older markdown-like syntax), `--style start:len:style`, `--react <icon>` (auto-react to the message just sent), `--quote <msgId>` (quote-reply), and `@[userId]` mention tokens in the message body.
 
 **`--urgency important|urgent`** marks a message the way the apps' Important/Urgent option does. **`me`** works as a threadId on any `msg` subcommand (My Documents); `me` with `-t 1` is refused. `msg send` writes nothing to `zalo.db` — a message you just sent is not quotable, forwardable or recallable until the listener sees its echo or a `msg history` fetch returns it.
 
@@ -235,7 +235,7 @@ zalo-agent mcp start --http <port> --client-id <id> --client-secret <sec>  # Bui
 zalo-agent mcp start -w <url> --webhook-secret <sec>         # Signed outbound webhook on every watched message
 zalo-agent mcp start --http <port> --host 0.0.0.0   # Bind address (default 127.0.0.1)
 zalo-agent mcp start --config <path>                # Custom config (default ~/.zalo-agent-cli/mcp-config.json)
-zalo-agent mcp wait [since] -t <ID> --timeout 55 -c <bot> --json  # Zero-polling wait on the running MCP daemon's buffer
+zalo-agent mcp wait [since] -t <ID> --timeout 55 -n 50 -c <bot> --json  # Zero-polling wait on the running MCP daemon's buffer (-n: up to 50 messages per call)
 zalo-agent mcp mark-read <cursor> -c <bot> --json   # Advance consumer read cursor in the running MCP daemon's buffer
 ```
 The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `zalo-agent mcp start` when given no subcommand, and forwards any CLI subcommand (`zalo-mcp --account <ID> msg list --json`, `zalo-mcp login`, etc.) directly to `zalo-agent`. Both the **23-tool MCP surface** and the **flag surface** (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, plus global storage flags) are identical. Note that a deployed `zalo-mcp` folder serves the `@ardennguyen/zalo-agent-cli` version installed inside its `node_modules/` (update with `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).
@@ -315,7 +315,7 @@ Full commands: `references/command-reference.md`
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 212 commands + 25 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 222 commands + 25 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

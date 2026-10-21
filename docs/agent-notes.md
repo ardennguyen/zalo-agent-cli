@@ -61,7 +61,8 @@ tests/                    # Test suite — see tests/README.md
 
 ```
 ~/.zalo-agent-cli/
-├── accounts.json                 # Registry (0600)
+├── accounts.json                 # Registry (0600); changed under accounts.json.lock, replaced atomically
+├── accounts.json.bak             # The registry before the last change
 ├── credentials/cred_<ownId>.json # Session credentials (0600)
 ├── mcp-config.json               # Optional MCP config
 ├── accounts/<ownId>/
@@ -79,11 +80,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **212** invokable leaves (180 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **22** containers — 15 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| CLI commands | **222** invokable leaves (190 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2244** as of 2026-10-21 (2240 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2554** as of 2026-10-21 (2549 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -115,10 +116,10 @@ guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-20): **212 leaves, 22 containers, 234 nodes**.
-By group: group 33, oa 32, friend 22, msg 20, conv 20, top-level 12, profile 11,
-catalog 9, account 7, poll 7, reminder 6, auto-reply 4, quick-msg 4, mcp 3,
-label 2. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
+Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**.
+By group: group 35, oa 32, friend 26, msg 24, conv 21, top-level 12, profile 14,
+catalog 10, account 7, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
+leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
 184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
@@ -676,6 +677,260 @@ reading zca-js actually posted) that only self-corrects once the listener catche
 §13 already says one db writer per account, while an audit found `msg.js` and `conv.js` writing
 without taking the lock — so "just write it" would have been a decision about an existing invariant
 violation, not a fresh one.
+
+---
+
+## The webhook outbox is its own file, and why (2026-10-21)
+
+`mcp start -w` and `listen -w` used to `fetch` once with a 5 second timeout and forget, so a receiver
+that was down lost the message and nothing said so. Both now write each event to
+`accounts/<ownId>/webhook-outbox.db` first and deliver from it (`src/core/webhook-outbox.js`, one
+implementation behind both entry points, as §13 requires).
+
+- **Separate file, not a table in `zalo.db`.** The cache's message rows have three writers by decision
+  (§13); an outbox in the same file would either be a fourth or blur what "writer" means. A damaged
+  outbox can be deleted without touching the cache, and `mcp webhook status|list|retry|purge` open it
+  directly (SQLite WAL) beside the daemon.
+- **At least once, in order.** A row is deleted only after a 2xx. The head's backoff holds the whole
+  queue, so a later message never overtakes an earlier one; the cost is that one sick event stalls
+  the rest until it is delivered or dead-lettered. 400, 413 and 422 dead-letter at once (the
+  receiver said the payload is malformed; retrying would only block), and a batch refused that way is
+  split so one bad event does not take its neighbors. 401, 403, 404, 429 and 5xx are retried: a wrong
+  secret or a sick receiver is the operator's to fix, not a reason to drop messages.
+- **Dedupe is only for rows still queued.** `UNIQUE(event_key)` keeps a live message and its
+  catch-up repeat from queuing twice, but a delivered row is deleted, so a repeat after delivery is
+  sent again. The receiver de-duplicates on the message id; the sample receivers do.
+- **Nothing wakes the dispatcher when another process changes the file**, so it looks at the queue
+  every 30 s (`pollMs`). Without that, `mcp webhook retry` would sit until the next message arrived.
+- **Live test shape.** The receiver in `agent/work/live-receiver.mjs` answers from a mode file
+  (`ok`, `503`, `422`, `hang`). `listen` includes the account's own messages, so a sent message
+  comes back as an event; `mcp start` skips them by design, so its enqueue path needs a message from
+  a second account (the test group has one). A hard kill (`Stop-Process -Force`) mid-backlog and a
+  restart is the crash test: the queued events were still delivered after it.
+
+---
+
+## Health and metrics: one object, two entry points, and what stays unauthenticated (2026-10-21)
+
+`GET /health` used to answer `ok` with an uptime and a thread count whether the socket had been down
+for a minute or a week, so nothing outside the process could tell which account had gone quiet.
+`src/core/daemon-health.js` is now the one thing both `mcp start` and `listen` build (§13: no
+asymmetry between them): the socket state machine, event ages and counts, plus sources plugged in
+later (webhook outbox, message buffer, pending gaps, stage lock).
+
+- **Two surfaces.** `mcp start --http` serves `/health`, `/ready`, `/status`, `/metrics`; both
+  daemons answer `POST /status` on the loopback channel, which `--status` prints. `listen` has no
+  HTTP port, so the channel is the only way its health reaches anyone.
+- **What is unauthenticated, and why.** `/health` keeps its old fields and adds `socket` and
+  `ready`; `/ready` is 200/503 on the socket. Both reveal only "the process answers" and "the
+  socket is up". Everything with counts, account ids, backlog or error text (`/status`,
+  `/metrics`) is behind the bearer token. `/health` stays HTTP 200 whatever the socket does: it is
+  liveness, and a supervisor that restarts on a 503 there would restart a daemon that is already
+  reconnecting by itself. Readiness is `/ready`.
+- **An age with no value is omitted from `/metrics`, never 0.** 0 would read as "just now" to an
+  alert like `zalo_last_event_age_seconds > 3600`. The same for NaN and Infinity.
+- **`cipher_key` is never subscribed to.** `attach()` lists its events explicitly; a test fails if
+  that one ever appears, because the event carries the session's key material.
+- **The two ways a down socket is reported.** `noteDown` runs on both `disconnected` and `closed`
+  and keeps the first drop's clock (a repeat does not restart it); `stopping` is sticky, so a late
+  `connected` or `closed` during shutdown cannot flip it back. The 2-minute "socket down" warning
+  exists because a reconnect in progress is normal.
+- **Not live-tested: a socket that really drops.** Cutting a live account's network, or opening a
+  second session to force a close, would end the test account's daemon rather than show a `down`
+  state (a duplicate-session close is fatal by design), so the down paths are covered by unit tests
+  that emit the listener events; the live runs covered up, event counts, the webhook backlog and
+  its recovery, and `--status` on both daemons.
+
+---
+
+## Shared files are written atomically, and a damaged registry is an error (2026-10-21)
+
+`accounts.json` is shared by every login, `account` command and name refresh, and a fleet of daemons
+refreshes names concurrently. It was read, edited in memory and written back with a plain
+`writeFileSync`. Measured with six processes: writers lost each other's changes, a reader could catch
+the file truncated and not yet refilled and take it for "no accounts", and a damaged file read as an
+empty list, so the next `login` replaced it with a registry of one. `src/utils/atomic-file.js` now
+holds the two guarantees, used by the registry (`src/core/accounts.js`), credentials, `mcp-config.json`
+and the OA credentials:
+
+- **`writeFileAtomic`**: a temp file beside the target, created exclusively at the final mode (a secret
+  is never readable by others, even for the moment `saveCredentials` used to leave between its write
+  and its `chmod`), flushed, renamed over the target. The `.bak` copy skips the flush
+  (`durable: false`): it is a convenience, not the record. On Windows a rename fails with `EPERM` while
+  a reader has the file open; a tight loop of readers made that exceed a quarter of a second, so it is
+  retried for a second or two with jitter.
+- **`withFileLock`**: an `O_EXCL` lock file holding the pid. A lock whose holder is dead, or older than
+  30 s, is taken over, after re-reading it to remove only what was judged stale. The release removes the
+  lock only if it is still the holder's own. The takeover has a window (two waiters judging the same
+  stale lock at once) that needs a crashed holder and a three-way race, and is accepted.
+- **A registry that exists but cannot be read is a `RegistryError`**, never `[]`. Reads fall back to
+  `accounts.json.bak` (once-only warning); the next change replaces the damaged file and keeps it as
+  `accounts.json.corrupt-<ms>`; with no good backup nothing is touched and the message says to fix it
+  or move it aside. `src/index.js` turns the error into a message instead of a stack trace.
+- **The name refresh must not take a daemon down.** `updateAccountName` is called from event handlers:
+  it answers a name it already has without taking the lock, waits at most 3 s for it, and on any
+  failure logs and returns `false`.
+- **What the tests prove.** `tests/unit/registry-safety.test.js` runs real processes and was red
+  against the old `accounts.js` (11 failures: lost renames, lost adds, every unreadable-file case, the
+  backup). Live, on a copy of the test home with a running daemon: 60 parallel adds, five writers and
+  two readers for 15 s alongside a daemon's own name refresh, then twelve rounds of hard-killing
+  writers: no lost rename, no bad read, no damaged file, a dead holder's lock taken over at once, no
+  leftover temp file (a sweep removes the ones a killed writer left, `sweepStaleTemps`).
+- **Not covered:** other writers in this tree still use plain writes where a torn file is cheap (logs,
+  the channel descriptor, `oa` token refresh outside `saveOACreds`). Several machines sharing one
+  config directory over a network file system is not supported: `O_EXCL` and rename are not reliable there.
+
+---
+
+## Batch pull: `limit` and `settleMs` on every wait (2026-10-21)
+
+`GET /events/wait`, `zalo_wait_for_message` and `mcp wait` returned one message per call, so a bot
+behind a busy account made one round trip per message. All three now build their reply in one place
+(`src/mcp/wait-result.js`) from `MessageBuffer.waitForMessages`, so they cannot drift.
+
+- **Compatible by construction.** `limit` defaults to 1 and the old fields keep their meaning:
+  `message` is the first message, `cursor` is the last one returned (for one message, its own).
+  `messages`, `count` and `hasMore` are additions. A daemon from before batching answers the
+  channel with only `message`; `waitViaDaemon` reads that as a batch of one.
+- **`since=cursor` is the whole protocol.** The reply's `cursor` is the last message's, so the next
+  call continues exactly where the batch ended, and `hasMore` says whether to call again at once.
+  Measured live on 28 buffered messages: three calls at `limit=10`, every message once, in cursor order.
+- **Settling.** `settleMs` waits that long after the FIRST message (or after buffered ones, if fewer than
+  `limit`) so a burst lands in one reply; a full batch never waits, and an abort ends the wait at once.
+- **A buffer test needs a real timestamp.** `MessageBuffer` evicts anything older than its max age on
+  every push; a fixture message with `timestamp: 1` is gone before the test reads it, and so is one
+  with no timestamp. This cost an hour of "the buffer returns nothing".
+- **Live shape.** The test account is the owner's real account, so `mcp start` recovers real incoming
+  messages into the buffer at startup (28 in seven conversations in one run); that is what the live
+  batch tests drained, with nobody needing to send anything.
+
+---
+
+## Log levels: a filter on free text, applied where the file is written (2026-10-21)
+
+`daemon.log` was everything a daemon printed, forever: a line per HTTP request, a line per message with
+its text (`listen` prints every event), no timestamps, and a file that only grew. `src/core/log-sink.js`
+sits between the daemon's stdout/stderr and the file (`attachDaemonLogIfChild`).
+
+- **Only three kinds of line are explicitly `debug`**, marked with `DEBUG_MARK` at the call site: the
+  HTTP request line, `[mcp] Buffered …`, and `listen`'s event lines when running as a daemon child
+  (`emitEvent`). Everything else is classified by its wording (`classifyLine`): that is a filter on free
+  text, so a missed line is merely one written as plain text, and `error`/`warn` levels are best-effort.
+  Do not "fix" a misclassified line by adding more regexes; mark the noisy call site instead.
+- **Default `info`** drops those lines. That is a change for anyone who grepped `daemon.log` for received
+  messages; `--log-level debug` or `ZALO_LOG_LEVEL=debug` brings them back, and the message text no longer
+  sits in a log by default.
+- **The sink writes through its own fd, so rotation is a rename.** On POSIX the spawn now also sets
+  `ZALO_DAEMON_LOG` (it only did on the Windows WMI path), so the child owns the file there too; the
+  inherited stdio fd keeps pointing at the rotated file and only carries a native crash. A rename can
+  be refused on Windows while another process has the file open: the daemon keeps appending and
+  looks again after another megabyte (`rotateAt`).
+- **The account is the log's directory name** (`<data dir>/<ownId>/daemon.log`), which is how the child
+  resolves `ZALO_LOG_LEVEL_<ownId>` before the account is known; `--log-level` is applied later by
+  `configureLogging`.
+- **The launcher is never filtered.** `mcp start -d` and `listen -d` print their own result to the user;
+  an early version filtered that parent's stderr too and put a timestamp on "MCP server started". Only a
+  real foreground run (and only when a level or format is asked for) filters its stderr; stdout, which
+  is the output, never is.
+- **`mcp` commands write human output to stderr** (`ZALO_JSON_MODE` is set for them), so a test of the
+  stdout path has to use a command outside `mcp`, such as `account list`.
+
+---
+
+## `fleet`: many accounts on one machine (2026-10-21)
+
+One account is one daemon, so a hundred accounts are a hundred of them. `src/core/fleet.js` and
+`src/commands/fleet.js` do what an operator scripted by hand: a port table, one status table, batched
+start/restart, and the supervisor files.
+
+- **Fleet commands must not log in.** Every command not on a short list auto-logs in as the active
+  account before it runs (`src/index.js`, `skipAutoLogin`), and `--account` pins the process to one
+  account. `fleet` acts on all of them and only reads files and each daemon's loopback channel, so it
+  is on both lists. The first live run found it logging in as the active account on every `fleet
+  status`; the offline suite had missed it because no sandbox account has credentials, so
+  `tests/cli/fleet.test.js` plants a saved login and asserts nothing logs in (red without the fix).
+- **The port table is `fleet.json`, assigned once.** A port never moves and a freed one is reused, so
+  adding an account cannot shift another's. `fleet status` only reads it; `ports`, `start`, `restart`
+  and `generate` assign. A table that exists but cannot be read is an error that changes nothing, the
+  same rule as the account registry.
+- **Health is asked over the loopback channel**, not over each port, so no token or port is needed and a
+  `listen` daemon (no HTTP) appears too. `unresponsive` is a lock held by a live process that does not
+  answer; `down` is a socket down at least `--down-for` (180 s). `restart --unhealthy` acts on those two
+  only: a webhook backlog is the receiver's problem and a restart does not fix it. A bare `restart`
+  restarts nothing, on purpose.
+- **Start-up is shuffled batches with a pause** (`planBatches`), the same idea as the unit's
+  `sleep $((RANDOM % 30))`, for hosts without systemd. Per-account secrets go to each daemon through
+  `--env-dir` into its own environment (`spawnDaemonProcess({ env })`, merged into the Windows WMI
+  spawn too), never onto a command line.
+- **The generated files are the documented samples.** The unit, `common.env` and the multi-account
+  Caddyfile are embedded in `src/core/fleet-templates.js` because `docs/` is not in the npm package,
+  and `tests/unit/fleet.test.js` asserts the embedded text equals the sample byte for byte. Edit one and
+  the other fails until it follows. The generated Caddy blocks answer 404 for `/metrics` and `/status`.
+- **Tokens:** 256 random bits per account, written at mode 600, never returned or printed; an existing
+  env file keeps its token even under `--force`, and only `--rotate-tokens` replaces one.
+- **Live run** (a copy of the test home with the real login plus three accounts that have none):
+  `fleet generate`, then `fleet start --batch 2 --stagger 4 --env-dir` started the real account on its
+  table port with its generated token and reported the three others as failed with the reason, in two
+  shuffled batches 4 s apart; `status` showed `ok`, `--check` exited 1 then 0 for the named account;
+  `restart <id>` replaced the pid and kept the kind; `stop` stopped it. Not exercised live: a daemon
+  that is `down` or `unresponsive` (it would need a real outage), so `restart --unhealthy` on one is
+  covered by the classification tests only.
+
+---
+
+## Start-up spreading inside the daemon (2026-10-21)
+
+Every start logs in and loads the friend and group lists; a fleet that restarts together does all of it at
+once against Zalo. The unit's `sleep $((RANDOM % 30))` and `fleet start`'s batches are the supervisor's
+doing, and neither exists for a daemon started by hand or by another supervisor.
+`src/core/startup-gate.js` puts the protection in the engine, off by default.
+
+- **Order: lock, jitter, slot, login, lists, release.** `daemon.lock` is taken first, so a duplicate is still
+  refused at once; the random wait (`ZALO_START_JITTER`) comes next, then the slot (`ZALO_LOGIN_SLOTS`), so
+  arrivals are spread before they are capped. The slot is released after the thread-name cache has
+  loaded in `mcp start` and after the cache is open in `listen` (which loads no lists).
+- **A slot is a file, `O_EXCL`, holding the pid** — the same mechanism as every other lock here. Reclaimed
+  when its owner is dead or it has been held 300 s (a start-up is seconds). A daemon that exits holding one
+  gives it back through a `process.on("exit")` hook; `leave()` removes the file only if its content is
+  still its own, so a daemon that was stuck long enough to be replaced cannot free the new holder's slot.
+- **Waiting is bounded** (`ZALO_LOGIN_SLOT_WAIT`, 900 s) and then it goes ahead anyway, logging why. A
+  slot that never frees must not keep an account offline; the cost is that the cap is a soft one.
+- **Measured live** with the real daemon on the test account: another process held the only slot, the
+  daemon logged `waiting for a login slot`, started when the holder exited (`got login slot 1 of 1 after
+  9.9s`) and left no slot file behind. Six processes against two slots never had more than two inside
+  (`tests/unit/startup-gate.test.js`, which also shows the same six overlapping without the cap).
+
+---
+
+## Markdown replies arrived raw (2026-10-21)
+
+A second account that replied through the MCP server sent Markdown (`**bold**`, `- item`) and Zalo showed
+it as typed. A Zalo message is plain text plus style ranges (`{ start, len, st }`, UTF-16 offsets); the apps
+draw bold, bullets and sizes only from those, and `zalo_send_message` sent plain text. `msg send --md`
+existed, but it was a Markdown-ish syntax of its own (`__x__` is underline there, bold in Markdown) with no
+bullets or headings, and the tool had no pass at all.
+
+- **The target shape was read from real messages**, not guessed: Zalo's own clients send a bullet as the
+  line's text with no marker, covered whole by `lst_1` (start at the line start, length of the line without
+  its newline), a heading as a bold line, and bold inside an item as a second overlapping range. The cached
+  `raw_data` of such a message is `action: "rtf"` with `params.styles`; a message we send with `styles`
+  comes back from Zalo in exactly that shape (checked live, both senders).
+- **`src/utils/markdown.js` is conservative where Markdown is ambiguous**, because most text is not
+  Markdown: `snake_case` (an underscore inside a word never opens emphasis), `2 * 3 * 4`, a lone `*`, an
+  unclosed `**` and `5 > 3` stay as written; an emphasis marker must hug its text. Ordered lists keep their
+  numbers as typed, as Zalo's clients do, instead of relying on `lst_2` numbering; links become
+  `text (url)` because Zalo links a bare URL itself. An `@[uid]` mention token passes through whole, so
+  `@[123](x)` is not read as a link.
+- **Order: Markdown, then mentions, then `shiftStyles`.** The ranges are counted before `@[uid]` expands
+  to a longer name, and `shiftStyles` (already used by `--md`) moves them across; a range spanning a
+  mention grows with it.
+- **Defaults differ on purpose.** The tool defaults to `markdown` (what calls it is a model); the CLI to
+  plain (what types into it is a person). `ZALO_SEND_FORMAT` moves either, an explicit `format` /
+  `--markdown` wins. `--md` is unchanged. Not converted: `link` captions (a different endpoint) and
+  `send-image`/`send-file` captions on the CLI; the tool converts a file's caption.
+- **Not verified by machine: how it looks.** The server accepts the ranges and echoes them back as
+  `rtf`, which is all a test can see. That the bullets, indent (`ind_10` for a nested item) and heading
+  size render as intended is for a person to confirm on a phone.
 
 ---
 

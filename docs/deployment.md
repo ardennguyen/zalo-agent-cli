@@ -56,7 +56,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 > | | `listen` | `mcp start` |
 > |---|---|---|
 > | MCP tool surface (the 25 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
-> | HTTP / HTTPS `/health`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
+> | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
 > | `-w, --webhook <url>` + `--webhook-secret <secret>` outbound fan-out | **yes** | **yes** |
 > | `--save <dir>` JSONL archive | **yes** | no |
 > | Event printing (`--events`, `--filter`, `--no-self`), `--auto-accept` | **yes** | no |
@@ -109,9 +109,9 @@ What exists today for inbound, and what each costs:
 
 | Mechanism | Consumers | Works with `mcp start`? | Honest verdict |
 |---|---|---|---|
-| `zalo_wait_for_message` MCP tool or `GET /events/wait?timeout=300&since=<cursor>` | N | **yes** | Zero-CPU long-poll: returns immediately (`0 ms`) if a buffered message after `since` exists, otherwise blocks until the next watched message arrives |
+| `zalo_wait_for_message` MCP tool or `GET /events/wait?timeout=300&since=<cursor>` | N | **yes** | Zero-CPU long-poll: returns immediately (`0 ms`) if a buffered message after `since` exists, otherwise blocks until the next watched message arrives. `limit` (1–100, default 1) returns up to that many messages in one call and `settle` (ms) waits for the rest of a burst: draining a backlog takes one call per `limit` messages instead of one per message |
 | `zalo_get_messages` polling over `POST /mcp`, one `consumer` name per bot | N | **yes** | Works: each consumer has its own read cursor (§1.4a). The buffer is memory only and bounded by `limits.bufferMaxSize` and `limits.bufferMaxAge`; a restart empties it |
-| `listen` or `mcp start` `-w, --webhook <url> [--webhook-secret <secret>]` | **1** URL | **yes** | Fire-and-forget `fetch`, 5 s `AbortSignal.timeout`, optional `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` signing. Messages the self-heal recovers are posted too, with `catchUp: true` |
+| `listen` or `mcp start` `-w, --webhook <url> [--webhook-secret <secret>]` | **1** URL | **yes** | Durable outbox (`webhook-outbox.db` in the account directory): written to disk first, delivered in order and at least once, 10 s per POST, retried with backoff (1 s doubling to 5 min) while the receiver is down, dead-lettered on 400 / 413 / 422 or after 24 h (`ZALO_WEBHOOK_MAX_AGE`), optional batching (`ZALO_WEBHOOK_BATCH_SIZE`). Optional `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` signing. Messages the self-heal recovers are posted too, with `catchUp: true`. Backlog: `zalo-agent mcp webhook status` |
 | `listen --save <dir>` JSONL | N tailers | **no** | `appendFileSync` per event, one file per `threadId`, recovered messages included. A fine audit trail; a poor bus |
 | Read `zalo.db` directly, read-only | N | **yes** | SQLite WAL allows many concurrent readers alongside the one writer. Polling, not push, but it also holds everything the buffer has already evicted |
 
@@ -181,7 +181,7 @@ flowchart TB
       direction TB
       subgraph holder["THE socket holder — exactly one process"]
         proc["zalo-agent mcp start --http 3847 --auth TOKEN<br/>src/commands/mcp.js"]
-        http["Express + StreamableHTTP, stateless<br/>src/mcp/mcp-http-transport.js<br/>POST /mcp — bearer auth · GET /health — no auth"]
+        http["Express + StreamableHTTP, stateless<br/>src/mcp/mcp-http-transport.js<br/>POST /mcp — bearer auth · GET /health, /ready — no auth · GET /status, /metrics — bearer auth"]
         buf["MessageBuffer + ThreadFilter<br/>src/mcp/message-buffer.js<br/>one read cursor per consumer — see 1.4"]
         heal["gap tracker + self-heal<br/>src/core/listener-lifecycle.js · self-heal.js<br/>offline-queue pull on every connect, no phone"]
         chan["startDaemonChannel<br/>src/core/daemon-channel.js<br/>127.0.0.1:EPHEMERAL, 24-byte token"]
@@ -462,6 +462,9 @@ ZALO_MCP_AUTH_TOKEN=<64 hex characters, from: openssl rand -hex 32>
 ### 4.3 Logs
 
 - Everything goes to stderr, and from there to the journal: `journalctl -u zalo-mcp -f`.
+- **Levels.** `--log-level` / `ZALO_LOG_LEVEL[_<ownId>]` is `error`, `warn`, `info` (the default) or `debug`. `debug` adds the lines that grow with traffic: one per HTTP request (with the caller's address and user agent), one per message the daemon handles (`[mcp] Buffered …`; in `listen`, every event line, which carries the message text). At `info` they are not written, so a busy daemon's log stays about state changes, and private message text stays out of it. The other lines are classed by their wording (a failure or refusal is `error`, `WARNING` / `⚠` is `warn`); that is a filter on free text, not a promise about each line. A background daemon writes through this filter into `daemon.log`; a foreground run filters its stderr only when a level or format is asked for. The process that merely *launches* `-d` is never filtered.
+- **Timestamps, JSON.** Each line of `daemon.log` starts with an ISO timestamp. `ZALO_LOG_FORMAT=json` writes one JSON object per line instead (`{"ts","level","account","msg"}`) for a log shipper.
+- **Rotation.** `daemon.log` rotates by size, `daemon.log` → `daemon.log.1` → … → `daemon.log.<keep>`: `ZALO_LOG_MAX_SIZE` (default `50m`, at least `4k`) and `ZALO_LOG_KEEP` (default 3; 0 just starts over). A new file begins with a `log rotated` line. On Windows a rename can be refused while something (a `tail`, an editor) has the file open; the daemon then keeps appending and tries again after another megabyte.
 - Cap it: `SystemMaxUse=2G` in `/etc/systemd/journald.conf`, or `RuntimeMaxUse=` for a volatile journal.
 - **Lines that mean something is wrong right now** (as `mcp start` prints them; `listen` reports the same events with a `[listen]` prefix or none, and in places different words):
 
@@ -549,7 +552,9 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
 
 ```
 ~/.zalo-agent-cli/
-├── accounts.json                  # registry                                  (0600)
+├── accounts.json                  # registry; changed under a lock, replaced atomically (0600)
+├── accounts.json.bak              # the registry as it was before the last change
+├── accounts.json.lock             # runtime, only while a change is in progress; exclude
 ├── credentials/cred_<ownId>.json  # saved login: imei, cookie, user agent     (0600)
 ├── mcp-config.json                # MCP config (optional)
 ├── qr.png                         # last login QR; transient, exclude
@@ -557,6 +562,7 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
     ├── zalo.db  zalo.db-wal  zalo.db-shm   # back up as one unit
     ├── media/                              # the large part (unless media.downloadDir moves it)
     ├── sync/                               # regenerable: zproto-cache/
+    ├── webhook-outbox.db (+ -wal, -shm)    # events queued for the webhook receiver; back up with the account (§4.7, `mcp webhook status`)
     ├── daemon.lock                         # runtime; exclude
     └── daemon-channel.json                 # runtime, 0600; exclude
 ```
@@ -571,21 +577,32 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
 
 ### 4.7 Monitoring
 
-`/health` is the only built-in health endpoint and it is **exempt from auth** by design (`if (req.path === "/health") return next();`).
+A daemon reports on itself in four ways. The first three are HTTP routes of `mcp start --http`; the CLI view works for `listen` too, which has no HTTP port (`src/core/daemon-health.js`).
+
+| Route | Auth | What it answers |
+|---|---|---|
+| `GET /health` | none | Liveness: `status` (always `"ok"` while Express answers), `uptime`, `threads`, and the socket: `socket` (`starting`, `up`, `down`, `stopping`) and `ready` |
+| `GET /ready` | none | **200 only while the Zalo socket is up**, else 503 with `{ready, socket}`: for a load balancer or supervisor that should stop sending work to an offline account |
+| `GET /status` | bearer | Everything below, as JSON |
+| `GET /metrics` | bearer | The same as Prometheus text: `zalo_up`, `zalo_socket_*`, `zalo_last_event_age_seconds`, `zalo_webhook_*`, `zalo_coverage_gaps_pending`, `zalo_buffer_*`, `zalo_process_*`, `zalo_eventloop_lag_*` |
+| `zalo-agent mcp start --status` / `listen --status` | local | The same snapshot, printed (`--json` for scripts) |
+
+`/status` holds: the socket (state, how long, reconnects, last close code), the age of the last event and the last message, incoming message and per-kind event counts, pending coverage gaps, the running sync stage, the webhook outbox (queued, dead-lettered, oldest wait, last error, delivered), the live buffer, memory, event-loop delay, and a `warnings` list with `status: "degraded"` when something needs attention (socket down 2+ minutes, a webhook backlog older than 5 minutes, dead letters, unrecovered gaps, a 3+ second stall).
 
 ```bash
 curl -s http://127.0.0.1:3847/health
-# {"status":"ok","uptime":123,"threads":5}
+# {"status":"ok","uptime":123,"threads":5,"socket":"up","ready":true}
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3847/ready          # 200, or 503 while the socket is down
+curl -s -H "Authorization: Bearer $ZALO_MCP_AUTH_TOKEN" http://127.0.0.1:3847/metrics | head
 ```
 
-| Field | What it is | What it is **not** |
-|---|---|---|
-| `status` | Always `"ok"` if Express is answering | Not a WebSocket health check |
-| `uptime` | `process.uptime()` in seconds | — |
-| `threads` | `deps.buffer.getStats().length`: threads with buffered messages | Not a message count, not a Zalo connection state |
+Prometheus scrape and alert rules are in [`config-samples/monitoring/`](config-samples/monitoring/): a job per account (each daemon has its own token) and ten rules: unreachable, socket down, reconnect loop, a connected account that went silent, webhook backlog, dead letters, unrecovered gaps, a blocked event loop, memory, and a recent restart. **Do not publish `/metrics` or `/status` through the reverse proxy**; scrape them from inside the network.
+
+> [!NOTE]
+> **`status: "ok"` in `/health` is liveness only.** It stays `ok` while the socket is down. Read `socket` / `ready`, or use `/ready`. A daemon whose socket dropped and whose re-login keeps failing is `down` here until it exits.
 
 > [!WARNING]
-> **`/health` answering `ok` does not mean Zalo is connected.** The HTTP server and the WebSocket are independent. A daemon whose socket dropped and whose re-login is failing still returns `{"status":"ok"}` right up until `process.exit(1)`. Alert on **all** of these, not just `/health`:
+> **A running daemon is not necessarily a healthy account.** The routes above cover the socket, the webhook and the gaps. Alert on these as well:
 >
 > 1. `systemctl is-active zalo-mcp`: catches the fatal exits.
 > 2. `uptime` resetting: catches restart loops the unit's `StartLimitBurst` has not yet failed.
@@ -608,8 +625,22 @@ curl -s http://127.0.0.1:3847/health
 >    ```
 >    `zalo_coverage` is read-only and sends nothing to Zalo (`src/core/coverage.js`). The token in that command line is in `curl`'s argv; a job on a shared host should read the header from a file with `-H @<file>` instead.
 
-> [!NOTE]
-> **Proposal:** extend `/health` with `socketState` (from `api.listener.ws.readyState`, the same check `socketAlive()` in `daemon-sync.js` already makes), `lastEventAt`, and `pendingGaps` (which `zalo_coverage` has and `/health` does not). Three fields turn a liveness probe into a real health check. Not implemented.
+### 4.8 Many accounts: the fleet commands
+
+One account is one daemon (§1), so a hundred accounts are a hundred of them, each with a port, a token and a unit. `zalo-agent fleet` does what an operator would otherwise script (`src/core/fleet.js`, `src/commands/fleet.js`):
+
+| Command | What it does |
+|---|---|
+| `fleet generate --out <dir> [--base-port N] [--domain <host>] [--user --home --bin]` | Writes the systemd template unit, `common.env`, one `accounts/<id>.env` per account with its port and a **generated 256-bit token** (mode `600`, never printed), the port table, and with `--domain` a Caddyfile that serves every account under `/a/<id>/` and answers 404 for `/metrics` and `/status`. An existing file is never overwritten (`--force` replaces the plain ones; a token in use is kept unless `--rotate-tokens`). The same files as `docs/config-samples/`; a test holds the two together. |
+| `fleet ports [--base N]` | The port of each account, kept in `fleet.json`. A port is assigned once and never moves; a new account takes the lowest free one. |
+| `fleet status [accounts…] [--check] [--json]` | One table for every account, asked over each daemon's loopback channel (no port or token needed): state, pid, socket and its age, last event, webhook queue and dead letters, gaps, memory. States: `ok`, `degraded` (warnings: a backlog, dead letters, gaps), `starting`, `down` (socket down 3 minutes or more, `--down-for`), `unresponsive` (a daemon holds the lock but does not answer), `stopped`. `--check` exits 1 unless every account is `ok` or `degraded`. |
+| `fleet start [accounts…] [--batch 5] [--stagger 15] [--env-dir <dir>] [--listen] [--dry-run]` | Starts the daemons that are not running, **in shuffled batches** with a pause between them, so accounts set up together do not log in together. `--env-dir` gives each daemon its own `<id>.env` (token, webhook) without putting a secret on a command line. |
+| `fleet restart [accounts…] [--unhealthy] [--all]` | Stops and starts the named accounts, or with `--unhealthy` only the ones that are `down` or `unresponsive` (a restart does not fix a webhook receiver, so a backlog is left alone). A bare `fleet restart` restarts nothing. |
+| `fleet stop [accounts…]` | Each daemon's graceful shutdown. |
+
+**Start-up spreading inside the daemon.** Every start logs in and loads the friend and group lists, so a fleet restarting together does all of it at once. `ZALO_START_JITTER=30` makes a daemon wait a random 0–30 s before logging in, and `ZALO_LOGIN_SLOTS=3` lets at most three daemons on the machine be between "about to log in" and "lists loaded" (slots are files in `<config dir>/login-slots/`; a daemon over the cap waits, and goes ahead anyway after `ZALO_LOGIN_SLOT_WAIT`, 900 s by default, so a stuck slot never keeps an account offline; a slot whose daemon died is reclaimed). Both are off by default and work under any supervisor. The daemon log says `start-up jitter: waiting …`, `waiting for a login slot` and `got login slot …`.
+
+Under systemd the unit already spreads start-up (`sleep $((RANDOM % 30))`) and restarts a dead daemon; `fleet start`/`restart` are for hosts without it (a Windows server, a container, a laptop) and for a deliberate restart of part of the fleet. `fleet status --check` suits a cron job; Prometheus (§4.7) suits alerting.
 
 ---
 
@@ -646,7 +677,7 @@ Operational consequences, in order of importance:
 `--auth <token>` installs one Express middleware. What it does and does not do:
 
 - Compares with `timingSafeEqual` after a length check: constant-time, correct.
-- Guards every route except `GET /health`, which it exempts deliberately. The server has two routes: `POST /mcp` and `GET /health`.
+- Guards every route except `GET /health` and `GET /ready`, which it exempts deliberately: they say only whether the process answers and whether the Zalo socket is up. `GET /status` and `GET /metrics` (the detailed health, §4.7) are behind the token.
 - Is **one shared secret** for all clients. No rotation mechanism, no per-client identity, no revocation short of restarting with a new token. The `consumer` name a bot passes is not tied to it (§1.4).
 
 Therefore:

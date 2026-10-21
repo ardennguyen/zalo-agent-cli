@@ -31,6 +31,7 @@ import {
     stopDaemon,
     waitViaDaemon,
     markReadViaDaemon,
+    statusViaDaemon,
 } from "../../src/core/daemon-channel.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-daemon-chan-"));
@@ -560,7 +561,8 @@ describe("daemon-channel.js stays a transport", () => {
         const imports = [...SRC.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
         // utils/secrets.js masks secret flags in the daemon.log header. It is a leaf: pure string
         // handling with no imports of its own (asserted below), so it costs a `msg` invocation nothing.
-        const LEAF_UTILS = ["../utils/secrets.js"];
+        // log-sink.js is the daemon.log level filter and rotation: a leaf too, importing only node builtins.
+        const LEAF_UTILS = ["../utils/secrets.js", "./log-sink.js"];
         assert.deepEqual(
             imports.filter((p) => !p.startsWith("node:") && !LEAF_UTILS.includes(p)),
             [],
@@ -568,7 +570,12 @@ describe("daemon-channel.js stays a transport", () => {
         );
         for (const p of LEAF_UTILS) {
             const leaf = readFileSync(join(import.meta.dirname, "..", "..", "src", "core", p), "utf8");
-            assert.doesNotMatch(leaf, /^import\s/m, `${p} must stay import-free to be allowed in the transport`);
+            const own = [...leaf.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
+            assert.deepEqual(
+                own.filter((i) => !i.startsWith("node:")),
+                [],
+                `${p} may import only node builtins to be allowed in the transport`,
+            );
         }
     });
 
@@ -810,5 +817,54 @@ describe("MCP buffer wait and mark-read over daemon channel", () => {
         assert.equal(m.readCursor, 42);
         assert.equal(m.consumer, "bot-a");
         assert.equal(cursors.get("bot-a"), 42);
+    });
+});
+
+describe("health snapshot over the daemon channel", () => {
+    it("returns null when no daemon channel is published", async () => {
+        assert.equal(await statusViaDaemon(dir), null);
+    });
+
+    it("a daemon that wires no health callback answers 503, as a daemon older than the route would", async () => {
+        const d = fakeDaemon(dir);
+        started.push(await startDaemonChannel({ getApi: d.getApi, accountDir: dir }));
+        const r = await statusViaDaemon(dir);
+        assert.equal(r.ok, false);
+        assert.match(r.error, /does not report health/);
+    });
+
+    it("serves the callback's snapshot, and refuses a wrong token", async () => {
+        const d = fakeDaemon(dir);
+        const snapshot = { kind: "listen", socket: { state: "up" }, ready: true };
+        const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir, onStatus: () => snapshot });
+        started.push(chan);
+
+        const r = await statusViaDaemon(dir);
+        assert.deepEqual(r, { ok: true, health: snapshot });
+
+        const bad = await fetch(`http://127.0.0.1:${chan.port}/status`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: "wrong" }),
+        });
+        assert.equal(bad.status, 403);
+        const get = await fetch(`http://127.0.0.1:${chan.port}/status`);
+        assert.equal(get.status, 404, "only POST with the token, like every other route");
+    });
+
+    it("a callback that throws is an answer, not a dead channel", async () => {
+        const d = fakeDaemon(dir);
+        started.push(
+            await startDaemonChannel({
+                getApi: d.getApi,
+                accountDir: dir,
+                onStatus: () => {
+                    throw new Error("outbox closed");
+                },
+            }),
+        );
+        const r = await statusViaDaemon(dir);
+        assert.deepEqual(r, { ok: false, error: "outbox closed" });
+        assert.equal(getDaemonChannel(dir) !== null, true);
     });
 });

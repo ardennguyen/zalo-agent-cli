@@ -12,7 +12,8 @@ import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { updateAccountName } from "../core/accounts.js";
-import { getAccountDir, MEDIA_DIR } from "../core/credentials.js";
+import { CONFIG_DIR, getAccountDir, MEDIA_DIR } from "../core/credentials.js";
+import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import {
     createStageLock,
@@ -22,6 +23,8 @@ import {
     spawnDaemonProcess,
     waitViaDaemon,
     markReadViaDaemon,
+    statusViaDaemon,
+    configureLogging,
 } from "../core/daemon-channel.js";
 import { success, error, info, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
@@ -50,12 +53,25 @@ import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
-import { readMCPConfig, resolveAccountMCPConfig, envForAccount, parseDuration } from "../mcp/mcp-config.js";
+import {
+    readMCPConfig,
+    resolveAccountMCPConfig,
+    envForAccount,
+    parseDuration,
+    resolveWebhookDelivery,
+} from "../mcp/mcp-config.js";
+import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
+import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
+import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
+
+const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
 /** Zalo close code for duplicate web session — fatal, do not retry */
 const CLOSE_DUPLICATE = 3000;
@@ -107,6 +123,17 @@ export function normalizeMessage(msg, info = null) {
 }
 
 /**
+ * The JSON a webhook receiver gets for one buffered message.
+ *
+ * @param {object} message - Normalized message object
+ * @param {object} [extra] - Additional top-level fields (e.g. `{ accountId }`)
+ * @returns {object}
+ */
+export function buildMCPWebhookPayload(message, extra = {}) {
+    return { event: "message", ...extra, ...message };
+}
+
+/**
  * Fire-and-forget HTTP POST for an incoming buffered MCP message when a
  * webhook URL is configured (`-w, --webhook <url>` or `webhook` in
  * `mcp-config.json`). Never blocks or throws into the listener loop.
@@ -120,12 +147,7 @@ export function normalizeMessage(msg, info = null) {
  */
 export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = fetch, webhookSecret = null) {
     if (!webhookUrl) return false;
-    const payload = {
-        event: "message",
-        ...extra,
-        ...message,
-    };
-    const body = JSON.stringify(payload);
+    const body = JSON.stringify(buildMCPWebhookPayload(message, extra));
     const headers = { "Content-Type": "application/json" };
     if (typeof webhookSecret === "string" && webhookSecret.trim()) {
         const secret = webhookSecret.trim();
@@ -228,11 +250,19 @@ export function registerMCPCommands(program) {
             "--no-self-heal",
             "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
+        .option(
+            "--log-level <level>",
+            "Log level of daemon.log (and of stderr in the foreground): error, warn, info (default) or debug, which adds a line per HTTP request and per message. Env: ZALO_LOG_LEVEL[_<ownId>]; also ZALO_LOG_FORMAT=json, ZALO_LOG_MAX_SIZE (default 50m) and ZALO_LOG_KEEP (default 3) for rotation",
+        )
         .option("-d, --daemon", "Run in the background (requires --http <port>; logs to <accountDir>/daemon.log)")
         .option("--stop", "Stop the running background daemon for this account")
         .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
+            if (opts.logLevel !== undefined && !LOG_LEVELS.includes(String(opts.logLevel).trim().toLowerCase())) {
+                error(`Invalid --log-level "${opts.logLevel}": use one of ${LOG_LEVELS.join(", ")}.`);
+                process.exit(1);
+            }
             const isDaemonCli = Boolean(opts.status || opts.stop || (opts.daemon && !process.env.ZALO_DAEMON_CHILD));
             const failStart = (msg) => {
                 if (isDaemonCli) error(msg);
@@ -295,12 +325,18 @@ export function registerMCPCommands(program) {
 
             if (opts.status) {
                 const status = getDaemonStatus(accountDir);
-                output({ accountId: activeAcc.ownId, ...status }, jsonMode, () => {
+                // What the daemon says about itself; an older daemon has the channel but not the route.
+                const reported = status.running ? await statusViaDaemon(accountDir) : null;
+                const health = reported?.ok ? reported.health : null;
+                output({ accountId: activeAcc.ownId, ...status, health }, jsonMode, () => {
                     if (status.running) {
                         success(
                             `Daemon running for account ${activeAcc.ownId} (PID ${status.pid}${status.channelPort ? `, channel 127.0.0.1:${status.channelPort}` : ""})`,
                         );
                         info(`Log file: ${status.logPath}`);
+                        if (health) for (const line of describeHealth(health)) info(line);
+                        else
+                            info("Health: not reported (this daemon predates the health route; restart it to see it).");
                     } else {
                         info(`No daemon running for account ${activeAcc.ownId}`);
                         info(`Log file: ${status.logPath}`);
@@ -322,6 +358,15 @@ export function registerMCPCommands(program) {
                 });
                 return;
             }
+
+            // Levels and rotation of the log, now that the account is known (src/core/log-sink.js).
+            const logging = configureLogging({
+                ownId: activeAcc.ownId,
+                levelFlag: opts.logLevel?.trim().toLowerCase() || null,
+                // The process that launches a background daemon talks to the user; only the daemon's own output is a log.
+                filterStderr: !(opts.daemon && !process.env.ZALO_DAEMON_CHILD),
+            });
+            if (!process.env.ZALO_DAEMON_CHILD) for (const w of logging.warnings) console.error(`[mcp] [logging] ${w}`);
 
             // Merge per-account config (`config.accounts[ownId]` and `<accountDir>/mcp-config.json`)
             const { config: accountConfig, problem: accountProblem } = resolveAccountMCPConfig(config, {
@@ -427,9 +472,22 @@ export function registerMCPCommands(program) {
                 }
             };
 
+            // Spread a fleet's start-up: a random delay and a cap on daemons logging in at once
+            // (ZALO_START_JITTER, ZALO_LOGIN_SLOTS; src/core/startup-gate.js). Both off by default.
+            const startup = resolveStartupSettings({ env: process.env, ownId: activeAcc.ownId });
+            for (const w of startup.warnings) console.error(`[mcp] ${w}`);
+            const gate = createStartupGate({
+                configDir: CONFIG_DIR,
+                ownId: activeAcc.ownId,
+                settings: startup,
+                log: (m) => console.error(`[mcp] ${m}`),
+            });
+            await gate.enter();
+
             try {
                 await loginDaemonAccount(activeAcc);
             } catch (e) {
+                gate.leave();
                 dropLock();
                 console.error("[mcp] Pinned account login failed:", e.message);
                 process.exit(1);
@@ -438,6 +496,7 @@ export function registerMCPCommands(program) {
                 initDb(join(accountDir, "zalo.db"));
                 console.error(`[mcp] Local cache: ${join(accountDir, "zalo.db")}`);
             } catch (e) {
+                gate.leave();
                 dropLock();
                 console.error(`[mcp] Failed to initialize local DB: ${e.message}`);
                 process.exit(1);
@@ -458,6 +517,8 @@ export function registerMCPCommands(program) {
             } catch (e) {
                 console.error("[mcp] Thread name cache init failed (non-fatal):", e.message);
             }
+            // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
+            gate.leave();
 
             // One stage at a time on this socket, shared by the sync routes, the
             // self-heal catch-up and the tools' own history fetch. Created before
@@ -503,6 +564,17 @@ export function registerMCPCommands(program) {
             });
 
             // Start MCP server — stdio (default) or HTTP/HTTPS
+            // What this daemon can say about itself: /health, /ready, /status and /metrics over HTTP, and
+            // `mcp start --status` over the loopback channel (src/core/daemon-health.js). The sources that do not
+            // exist yet (the webhook outbox, below) are plugged in as they are built.
+            const health = createDaemonHealth({ kind: "mcp", accountId: activeAcc.ownId, version: PKG_VERSION });
+            health.setSource("buffer", () => {
+                const stats = buffer.getStats();
+                return { threads: stats.length, messages: stats.reduce((n, t) => n + t.total, 0) };
+            });
+            health.setSource("gaps", () => getPendingSyncGaps().length);
+            health.setSource("stage", () => stageLock.current());
+
             let httpServer = null;
             try {
                 if (effectiveHttpPort) {
@@ -523,6 +595,7 @@ export function registerMCPCommands(program) {
                         accountDir,
                         stageLock,
                         syncJobs,
+                        health,
                     };
                     const authToken =
                         opts.auth?.trim() ||
@@ -597,9 +670,33 @@ export function registerMCPCommands(program) {
             if (webhookSecret && !webhookUrl) {
                 console.error("[mcp] A webhook secret is set but no webhook URL: nothing will be signed or sent.");
             }
+            // Events are written to an on-disk outbox first and delivered from it, so a receiver
+            // that is down or slow costs a backlog (mcp webhook status), not messages.
+            let webhookDelivery = null;
             if (webhookUrl) {
-                console.error(`[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}`);
+                const delivery = resolveWebhookDelivery(activeAcc.ownId, config);
+                for (const w of delivery.warnings) console.error(`[mcp] ${w}`);
+                webhookDelivery = startWebhookDelivery({
+                    accountDir,
+                    accountId: activeAcc.ownId,
+                    url: webhookUrl,
+                    secret: webhookSecret,
+                    batchSize: delivery.batchSize,
+                    maxAgeMs: delivery.maxAgeMs,
+                    log: (line) => console.error(`[mcp] ${line}`),
+                });
+                console.error(
+                    `[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}, ` +
+                        `durable outbox, ${delivery.batchSize === 1 ? "one event per POST" : `up to ${delivery.batchSize} events per POST`}`,
+                );
             }
+            health.setSource("webhook", () => webhookDelivery?.status() ?? null);
+            /** Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent. */
+            const queueWebhook = (normalized) =>
+                webhookDelivery?.enqueue(
+                    `message:${normalized.id}`,
+                    buildMCPWebhookPayload(normalized, { accountId: activeAcc.ownId }),
+                );
 
             // Delivered receipts: the same shared implementation `listen` uses
             // (AGENTS.md §13 -- the two listeners must not differ). Diagnostics
@@ -685,7 +782,7 @@ export function registerMCPCommands(program) {
                         if (!filter.shouldKeep(normalized)) continue;
                         buffer.push(normalized.threadId, normalized);
                         notifier.onMessage(normalized);
-                        postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId }, fetch, webhookSecret);
+                        queueWebhook(normalized);
                     }
                 },
             });
@@ -717,6 +814,7 @@ export function registerMCPCommands(program) {
              * @param {object} api - zca-js API instance
              */
             function attachListenerHandlers(api) {
+                health.attach(api.listener);
                 api.listener.on("message", (msg) => {
                     // Persist FIRST and unconditionally. The buffer is what an
                     // agent polls; the cache is the durable record, and it must
@@ -759,8 +857,10 @@ export function registerMCPCommands(program) {
 
                     buffer.push(normalized.threadId, normalized);
                     notifier.onMessage(normalized);
-                    postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId }, fetch, webhookSecret);
-                    console.error(`[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`);
+                    queueWebhook(normalized);
+                    console.error(
+                        `${DEBUG_MARK}[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`,
+                    );
                 });
 
                 // After the storing handler, exactly as in `listen`: the write
@@ -868,6 +968,7 @@ export function registerMCPCommands(program) {
                 // the shutdown is indistinguishable from a drop and files a gap
                 // for a window nothing was missed in.
                 lifecycle.setStopping();
+                health.noteStopping();
                 clearInterval(mcpHeartbeatTimer);
                 deliveredReceipts.stop();
                 const receipts = deliveredReceipts.stats();
@@ -885,6 +986,7 @@ export function registerMCPCommands(program) {
                     /* already stopped */
                 }
                 notifier?.destroy();
+                webhookDelivery?.stop();
                 httpServer?.close();
                 dropLock();
                 process.exit(0);
@@ -913,6 +1015,7 @@ export function registerMCPCommands(program) {
                         // The self-heal's lock: a stage and a catch-up never share the socket.
                         lock: stageLock,
                         onStop: shutdown,
+                        onStatus: () => health.snapshot(),
                         onWait: async (params, signal) => {
                             const cleanThreadId =
                                 typeof params?.threadId === "string" && params.threadId.trim()
@@ -933,33 +1036,26 @@ export function registerMCPCommands(program) {
                                     : consumer
                                       ? buffer.readCursor(consumer)
                                       : undefined;
-                            const msg = await buffer.waitForMessage({
+                            const { messages, hasMore } = await buffer.waitForMessages({
                                 threadId: cleanThreadId,
                                 since: effectiveSince,
                                 timeoutMs: clampedSec * 1000,
                                 signal,
+                                ...batchParams({ limit: params?.limit, settleMs: params?.settleMs }),
                             });
-                            if (msg) {
-                                const tid = String(msg.threadId || "");
-                                const threadName = nameCache?.get(tid)?.name || null;
-                                return {
-                                    status: "message",
-                                    message: {
-                                        ...msg,
-                                        ...(threadName ? { threadName } : {}),
-                                    },
-                                    cursor: msg._cursor,
-                                };
-                            }
-                            return {
-                                status: "timeout",
-                                message: null,
-                                cursor: Math.max(
+                            return waitResult({
+                                messages,
+                                hasMore,
+                                cursorWhenEmpty: Math.max(
                                     effectiveSince ?? 0,
                                     Number(buffer._globalCursor) || 0,
                                     buffer.readCursor(consumer),
                                 ),
-                            };
+                                decorate: (msg) => {
+                                    const threadName = nameCache?.get(String(msg.threadId || ""))?.name || null;
+                                    return { ...msg, ...(threadName ? { threadName } : {}) };
+                                },
+                            });
                         },
                         onMarkRead: async (params) => {
                             const cursorNum = Number(params?.cursor);
@@ -1009,6 +1105,16 @@ export function registerMCPCommands(program) {
         .option("-t, --thread <threadId>", "Only wake on messages from this thread ID")
         .option("--timeout <seconds>", "Maximum seconds to wait before returning timeout (1-300, default: 55)", "55")
         .option(
+            "-n, --limit <count>",
+            `Return up to this many buffered messages in one call, in order (1-${MAX_BATCH}, default: 1)`,
+            "1",
+        )
+        .option(
+            "--settle <ms>",
+            `After the first message, wait this long for the rest of a burst (0-${MAX_SETTLE_MS}, default: 0)`,
+            "0",
+        )
+        .option(
             "-c, --consumer <name>",
             "Consumer name whose read cursor is used when --since is omitted (matches zalo_mark_read)",
         )
@@ -1034,6 +1140,16 @@ export function registerMCPCommands(program) {
                 error(`Invalid --consumer "${consumer}": must be 1-64 characters matching [A-Za-z0-9._:@-].`);
                 process.exit(1);
             }
+            const limit = Number(opts.limit);
+            if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BATCH) {
+                error(`Invalid --limit "${opts.limit}": must be an integer between 1 and ${MAX_BATCH}.`);
+                process.exit(1);
+            }
+            const settleMs = Number(opts.settle);
+            if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > MAX_SETTLE_MS) {
+                error(`Invalid --settle "${opts.settle}": must be an integer between 0 and ${MAX_SETTLE_MS} (ms).`);
+                process.exit(1);
+            }
 
             let activeAcc;
             try {
@@ -1046,6 +1162,8 @@ export function registerMCPCommands(program) {
             }
             const accountDir = getAccountDir(activeAcc.ownId);
             const res = await waitViaDaemon(accountDir, {
+                limit,
+                settleMs,
                 threadId: opts.thread?.trim() || null,
                 since: parsedSince,
                 timeoutSec: rawTimeout,
@@ -1065,16 +1183,21 @@ export function registerMCPCommands(program) {
                 {
                     status: res.status,
                     message: res.message,
+                    messages: res.messages,
+                    count: res.count,
+                    hasMore: res.hasMore,
                     cursor: res.cursor,
                 },
                 jsonMode,
                 () => {
-                    if (res.status === "message" && res.message) {
-                        const m = res.message;
-                        const label = m.threadName ? `${m.threadName} (${m.threadId})` : m.threadId;
-                        success(
-                            `[cursor ${res.cursor}] ${m.senderName || m.senderId} in ${label}: ${m.text || `(${m.type})`}`,
-                        );
+                    if (res.status === "message" && res.messages?.length) {
+                        for (const m of res.messages) {
+                            const label = m.threadName ? `${m.threadName} (${m.threadId})` : m.threadId;
+                            success(
+                                `[cursor ${m._cursor}] ${m.senderName || m.senderId} in ${label}: ${m.text || `(${m.type})`}`,
+                            );
+                        }
+                        if (res.hasMore) info(`More are waiting: run again with since ${res.cursor}`);
                     } else {
                         info(`Timeout after ${rawTimeout}s (cursor: ${res.cursor})`);
                     }
@@ -1144,4 +1267,6 @@ export function registerMCPCommands(program) {
                 },
             );
         });
+
+    registerMCPWebhookCommands(mcp, program);
 }

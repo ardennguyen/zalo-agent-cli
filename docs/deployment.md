@@ -638,6 +638,8 @@ One account is one daemon (§1), so a hundred accounts are a hundred of them, ea
 | `fleet restart [accounts…] [--unhealthy] [--all]` | Stops and starts the named accounts, or with `--unhealthy` only the ones that are `down` or `unresponsive` (a restart does not fix a webhook receiver, so a backlog is left alone). A bare `fleet restart` restarts nothing. |
 | `fleet stop [accounts…]` | Each daemon's graceful shutdown. |
 
+**Start-up spreading inside the daemon.** Every start logs in and loads the friend and group lists, so a fleet restarting together does all of it at once. `ZALO_START_JITTER=30` makes a daemon wait a random 0–30 s before logging in, and `ZALO_LOGIN_SLOTS=3` lets at most three daemons on the machine be between "about to log in" and "lists loaded" (slots are files in `<config dir>/login-slots/`; a daemon over the cap waits, and goes ahead anyway after `ZALO_LOGIN_SLOT_WAIT`, 900 s by default, so a stuck slot never keeps an account offline; a slot whose daemon died is reclaimed). Both are off by default and work under any supervisor. The daemon log says `start-up jitter: waiting …`, `waiting for a login slot` and `got login slot …`.
+
 Under systemd the unit already spreads start-up (`sleep $((RANDOM % 30))`) and restarts a dead daemon; `fleet start`/`restart` are for hosts without it (a Windows server, a container, a laptop) and for a deliberate restart of part of the fleet. `fleet status --check` suits a cron job; Prometheus (§4.7) suits alerting.
 
 ---

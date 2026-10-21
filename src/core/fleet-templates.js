@@ -110,6 +110,13 @@ ZALO_MEDIA_DIR=/var/lib/zalo-media
 # ZALO_LOG_FORMAT=json
 # ZALO_LOG_MAX_SIZE=50m
 # ZALO_LOG_KEEP=3
+
+# A fleet restarting together is the heaviest moment of each daemon's life (every start logs in and
+# loads the friend and group lists). The unit already sleeps a random 0-30 s before starting; these two
+# do the same inside the daemon, for any supervisor: wait up to this long before logging in, and let at
+# most this many daemons on the machine be logging in at once (the rest wait for a slot).
+# ZALO_START_JITTER=30
+# ZALO_LOGIN_SLOTS=3
 `;
 
 /**

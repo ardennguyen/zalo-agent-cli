@@ -308,7 +308,10 @@ describe("GET /events/wait", () => {
         const base = await start(buf);
         // limit 2 with a long settle: it returns when the second arrives, however late a loaded machine makes that.
         const p = get(base, "limit=2&settle=5000&timeout=3");
-        await delay(50);
+        // Push only once the server is actually waiting: on a loaded machine the request can arrive late,
+        // and a message pushed before it is not one it waits for.
+        for (let i = 0; i < 400 && buf._waiters.size === 0; i++) await delay(10);
+        assert.equal(buf._waiters.size, 1, "the request is waiting");
         buf.push("t1", msg(1));
         await delay(60);
         buf.push("t1", msg(2));

@@ -12,7 +12,8 @@ import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { updateAccountName } from "../core/accounts.js";
-import { getAccountDir, MEDIA_DIR } from "../core/credentials.js";
+import { CONFIG_DIR, getAccountDir, MEDIA_DIR } from "../core/credentials.js";
+import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import {
     createStageLock,
@@ -471,9 +472,22 @@ export function registerMCPCommands(program) {
                 }
             };
 
+            // Spread a fleet's start-up: a random delay and a cap on daemons logging in at once
+            // (ZALO_START_JITTER, ZALO_LOGIN_SLOTS; src/core/startup-gate.js). Both off by default.
+            const startup = resolveStartupSettings({ env: process.env, ownId: activeAcc.ownId });
+            for (const w of startup.warnings) console.error(`[mcp] ${w}`);
+            const gate = createStartupGate({
+                configDir: CONFIG_DIR,
+                ownId: activeAcc.ownId,
+                settings: startup,
+                log: (m) => console.error(`[mcp] ${m}`),
+            });
+            await gate.enter();
+
             try {
                 await loginDaemonAccount(activeAcc);
             } catch (e) {
+                gate.leave();
                 dropLock();
                 console.error("[mcp] Pinned account login failed:", e.message);
                 process.exit(1);
@@ -482,6 +496,7 @@ export function registerMCPCommands(program) {
                 initDb(join(accountDir, "zalo.db"));
                 console.error(`[mcp] Local cache: ${join(accountDir, "zalo.db")}`);
             } catch (e) {
+                gate.leave();
                 dropLock();
                 console.error(`[mcp] Failed to initialize local DB: ${e.message}`);
                 process.exit(1);
@@ -502,6 +517,8 @@ export function registerMCPCommands(program) {
             } catch (e) {
                 console.error("[mcp] Thread name cache init failed (non-fatal):", e.message);
             }
+            // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
+            gate.leave();
 
             // One stage at a time on this socket, shared by the sync routes, the
             // self-heal catch-up and the tools' own history fetch. Created before

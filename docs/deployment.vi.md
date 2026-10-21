@@ -438,6 +438,8 @@ Một tài khoản là một daemon (§1), nên một trăm tài khoản là m�
 | `fleet restart [accounts…] [--unhealthy] [--all]` | Dừng rồi khởi động các tài khoản được nêu, hoặc với `--unhealthy` chỉ những tài khoản `down` hoặc `unresponsive` (khởi động lại không sửa được bên nhận webhook nên tồn đọng được để yên). `fleet restart` trần không khởi động lại gì cả. |
 | `fleet stop [accounts…]` | Tắt êm từng daemon. |
 
+**Rải thời điểm khởi động ngay trong daemon.** Mỗi lần khởi động đều đăng nhập và nạp danh sách bạn bè, nhóm, nên một đội daemon khởi động lại cùng lúc sẽ làm tất cả cùng một khoảnh khắc. `ZALO_START_JITTER=30` làm daemon chờ ngẫu nhiên 0–30 giây trước khi đăng nhập, và `ZALO_LOGIN_SLOTS=3` cho phép tối đa ba daemon trên máy nằm giữa "sắp đăng nhập" và "đã nạp xong danh sách" (slot là các file trong `<config dir>/login-slots/`; daemon vượt giới hạn sẽ chờ, và cứ tiếp tục sau `ZALO_LOGIN_SLOT_WAIT`, mặc định 900 giây, để một slot bị kẹt không giữ tài khoản offline; slot của daemon đã chết được thu hồi). Cả hai tắt theo mặc định và dùng được dưới bất kỳ trình giám sát nào. Log daemon ghi `start-up jitter: waiting …`, `waiting for a login slot` và `got login slot …`.
+
 Dưới systemd, unit đã rải thời điểm khởi động (`sleep $((RANDOM % 30))`) và tự khởi động lại daemon chết; `fleet start`/`restart` dành cho máy không có systemd (server Windows, container, laptop) và cho việc chủ động khởi động lại một phần đội tài khoản. `fleet status --check` hợp với cron; Prometheus (§4.7) hợp với cảnh báo.
 
 ---

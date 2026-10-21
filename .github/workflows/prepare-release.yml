@@ -45,7 +45,7 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@11.6.1
+      - run: npm install -g npm@^12.2.0
 
       - name: Validate source package and published engine prerequisite
         env:
@@ -96,9 +96,14 @@ jobs:
 
       - name: Commit manifests to a new branch and open a reviewable PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          # The release commit is authored by whoever ran this workflow, not by github-actions[bot].
+          # A pull request opened with the default GITHUB_TOKEN is always attributed to github-actions[bot];
+          # to open it as yourself, add a personal access token (repo scope) as the RELEASE_PAT secret.
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
           GH_REPO: ${{ github.repository }}
           TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -euo pipefail
           branch="chore/release-$VERSION"
@@ -112,8 +117,8 @@ jobs:
             exit 0
           fi
           git switch -c "$branch"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name "$ACTOR"
+          git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
           gh auth setup-git
           git commit -m "chore: prepare release v$VERSION"
           git push --set-upstream origin "$branch"

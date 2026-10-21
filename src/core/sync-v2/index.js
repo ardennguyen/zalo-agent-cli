@@ -82,6 +82,18 @@ const DEFAULT_WAVE_SIZE = 4;
  * dying.
  */
 const MAX_RESUMES = 1;
+/** The most reconnects a caller may ask a single restore to attempt. */
+const MAX_RESUMES_CAP = 5;
+
+/**
+ * How many reconnects a restore may spend: the caller's `maxResumes` (a whole number, capped), else one.
+ *
+ * @param {unknown} requested
+ * @returns {number}
+ */
+export function resolveMaxResumes(requested) {
+    return Number.isInteger(requested) ? Math.min(MAX_RESUMES_CAP, Math.max(0, requested)) : MAX_RESUMES;
+}
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -275,6 +287,21 @@ export function resolveWaitBudget(budgetMs, fallbackMs) {
     if (Number.isFinite(budgetMs) && budgetMs > 0) return budgetMs;
     if (Number.isFinite(fallbackMs) && fallbackMs > 0) return fallbackMs;
     return 30000;
+}
+
+/**
+ * The api a `reconnect` callback handed back, if it handed one.
+ *
+ * `true` means "the same listener is live again" (the CLI re-opens the socket on
+ * the api it already has). `{api}` means the caller recovered by building a new
+ * api, as a daemon does after logging in again, and the restore has to carry on
+ * over that api's listener instead.
+ *
+ * @param {unknown} back - what `opts.reconnect()` resolved
+ * @returns {object|null} the new api, or null when the old one is still the one
+ */
+export function reconnectedApi(back) {
+    return back && typeof back === "object" && back.api?.listener ? back.api : null;
 }
 
 /**
@@ -481,17 +508,43 @@ export class SyncV2 {
         }
     }
 
-    /** Refresh existing DM peers outside the requested message window, including non-friends. */
-    async _refreshDmNames(threadMap) {
+    /**
+     * Refresh existing DM peers outside the requested message window, including non-friends.
+     *
+     * Every restore used to look up every non-friend DM peer in the cache: on a busy account that
+     * is thousands of ids, each restore, and Zalo answered with a limit. So the run asks for at most
+     * `maxLookups` of them (500 unless ZALO_SYNC_NAME_REFRESH_MAX says otherwise), peers whose
+     * cached title is missing or just their id first, because those are the ones a restore can
+     * actually improve. The rest keep the titles they have until a later restore reaches them.
+     *
+     * @param {Map<string, object>} threadMap
+     * @param {(message: string) => void} [log]
+     */
+    async _refreshDmNames(threadMap, log = () => {}) {
         const profiles = new Map(
             [...threadMap.values()]
                 .filter((t) => t.type === "dm" && t.zaloName)
                 .map((t) => [t.id, { zaloName: t.zaloName }]),
         );
+        const peers = getRecentThreads(-1, "dm");
+        const unknown = (t) => !t.name || String(t.name) === String(t.threadId);
+        const wanted = peers.filter((t) => !profiles.has(String(t.threadId)));
+        wanted.sort((a, b) => Number(unknown(b)) - Number(unknown(a)));
+        const envCap = Number.parseInt(process.env.ZALO_SYNC_NAME_REFRESH_MAX ?? "", 10);
+        const maxLookups = Number.isFinite(envCap) && envCap >= 0 ? envCap : 500;
+        const chosen = wanted.slice(0, maxLookups);
+        if (wanted.length) {
+            log(
+                `refreshing ${chosen.length} of ${wanted.length} non-friend DM peer name(s)` +
+                    (chosen.length < wanted.length
+                        ? ` (cap ${maxLookups}; the rest keep their cached titles until a later restore)`
+                        : ""),
+            );
+        }
         const names = await resolveCurrentUserNames(
             this.api,
-            getRecentThreads(-1, "dm").map((t) => String(t.threadId)),
-            { aliases: this.userAliases, profiles },
+            [...profiles.keys(), ...chosen.map((t) => String(t.threadId))],
+            { aliases: this.userAliases, profiles, log },
         );
         for (const [id, current] of names) {
             upsertThread({ threadId: id, type: "dm", name: current.name, lastUpdate: 0 });
@@ -561,9 +614,13 @@ export class SyncV2 {
      * @param {boolean} [opts.liveStore=true] false when the caller already taps live traffic
      * @param {number|false} [opts.keepAlive] heartbeat interval in ms, or false when the
      *   caller already pings this socket for the whole window it owns.
-     * @param {() => Promise<boolean>} [opts.reconnect] re-open the listener socket after a
-     *   drop and resolve true once it is live. Supplied by the caller because this class
+     * @param {number} [opts.maxResumes] reconnects this run may spend (default 1, at most 5); each one
+     *   that needs the phone's confirmation again costs the owner a tap.
+     * @param {() => Promise<boolean|{api: object}>} [opts.reconnect] re-open the listener socket
+     *   after a drop and resolve true once it is live. Supplied by the caller because this class
      *   never starts or stops the listener itself. Without it a dropped socket ends the run.
+     *   A caller that cannot reuse the old listener (a daemon, which re-logs-in and builds a new
+     *   api) resolves `{api}` instead: the restore carries on over that api's listener.
      * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string, days:number|null, from:number, confirmed:boolean, resumes:number, rePrompted:boolean}>}
      */
     async restore(opts = {}) {
@@ -586,10 +643,12 @@ export class SyncV2 {
 
         initDb(resolve(this.accountDir, "zalo.db"));
         this._refreshThreadNames(threadMap);
-        await this._refreshDmNames(threadMap);
+        await this._refreshDmNames(threadMap, log);
         await this._refreshSelfName(opts.onSelfName);
 
-        const L = this.api.listener;
+        // `let`: a daemon recovers a lost socket by logging in again, which builds a new api and a new
+        // listener, and `opts.reconnect` can hand that api back (see `reconnect` below).
+        let L = this.api.listener;
         const sessions = new Map(); // syncId -> {kind, batches:[], statuses:[], done, err}
         const onMsg = async (buf) => {
             if (!(buf instanceof Buffer) || buf.length < 4 || buf.readUInt16LE(1) !== 601) return;
@@ -734,7 +793,14 @@ export class SyncV2 {
             detachSocketTaps();
             let ok = false;
             try {
-                ok = Boolean(await opts.reconnect());
+                const back = await opts.reconnect();
+                ok = Boolean(back);
+                // A new api means a new listener: the old one's socket is gone for good.
+                const next = ok ? reconnectedApi(back) : null;
+                if (next) {
+                    this.api = next;
+                    L = next.listener;
+                }
             } catch (e) {
                 onStatus({ phase: "warn", detail: `reconnect failed: ${e?.message || e}` });
                 return false;
@@ -1072,7 +1138,7 @@ export class SyncV2 {
             // to reconnect -- this class never starts the listener itself.
             const schedule = createShardSchedule(shards.length, {
                 waveSize,
-                maxResumes: typeof opts.reconnect === "function" ? MAX_RESUMES : 0,
+                maxResumes: typeof opts.reconnect === "function" ? resolveMaxResumes(opts.maxResumes) : 0,
             });
 
             // ---- wave by wave: send, wait, decrypt, decode, store ----
@@ -1228,7 +1294,7 @@ export class SyncV2 {
                     runDeadline = Date.now() + shardBudget(schedule.remaining());
                     onStatus({
                         phase: "reconnect",
-                        detail: `reconnected — re-requesting the ${schedule.remaining()} batch(es) that never arrived (attempt ${schedule.resumes()} of ${MAX_RESUMES})`,
+                        detail: `reconnected — re-requesting the ${schedule.remaining()} batch(es) that never arrived (attempt ${schedule.resumes()} of ${resolveMaxResumes(opts.maxResumes)})`,
                     });
                     continue;
                 }

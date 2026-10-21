@@ -83,7 +83,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **22** containers — 15 top-level + 7 OA subgroups | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2183** as of 2026-10-20 (2179 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2210** as of 2026-10-20 (2206 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -433,6 +433,29 @@ Routing a sync through the daemon removes the second WebSocket, not the phone co
 daemon must never start a phone-backed stage on its own — see the "How the daemon self-heals"
 note in `src/commands/listen.js`: its own catch-up reads only Zalo's offline message queue, which
 needs no phone, and it never starts `transfer-sync-v2`, which does.
+
+### A stage that loses its socket inside a daemon (2026-10-20)
+
+A 100,000-message restore run by a daemon used to end as "partial" on any lost socket (close 1006 has
+no close frame and is not on the server's retry list), and the next run asked the phone again. The
+runner in `src/core/daemon-sync.js` now hands `SyncV2.restore()` a `reconnect` that **only
+waits**: `waitForDaemonSocket()` watches `getApi()` until the daemon's own re-login has an open
+socket that is not the one the stage lost, and the restore follows the new api
+(`reconnectedApi()`, `src/core/sync-v2/index.js`). The rule the old test pinned still holds and is
+still tested: a stage never starts, stops or logs in anything, because `listen` / `mcp` rebuild the
+api themselves and a stage opening a socket would race that. A daemon allows 3 resumes (the CLI
+allows 1); a resume can cost the owner one more phone tap, and the restore says so.
+
+Not measured live: the resume needs a restore that drops mid-run. Offline tests cover the waiting
+and the rebinding, not Zalo's behavior after a re-login.
+
+The same change made the daemon log say what a stage is doing. `src/core/daemon-log.js` writes
+each stage's parameters, phases (with elapsed time), a once-a-minute "still running" line, and its
+result or failure; an event-loop stall monitor (the restore decodes and stores on the thread that
+answers the socket's pings); and the socket's age plus the running stage on every drop. Profile
+lookups (`src/core/user-info.js`) are paced, retried on a rate limit, stopped when it persists, and
+log Zalo's own code and message, which had never been captured: the pattern that recognizes a rate
+limit (`isRateLimitError`) is a guess until a log shows the real text.
 
 ### One media downloader
 

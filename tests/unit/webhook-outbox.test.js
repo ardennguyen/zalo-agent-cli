@@ -416,10 +416,16 @@ describe("shutdown", () => {
             now,
             log: () => {},
         });
-        d.notify();
-        await new Promise((r) => setTimeout(r, 30));
+        // As above: this fetch has no socket and the dispatcher's timers are unref'd, so hold the loop open.
+        const keepAlive = setInterval(() => {}, 1000);
         const t0 = Date.now();
-        await d.stop({ graceMs: 50 });
+        try {
+            d.notify();
+            await new Promise((r) => setTimeout(r, 30));
+            await d.stop({ graceMs: 50 });
+        } finally {
+            clearInterval(keepAlive);
+        }
         assert.ok(Date.now() - t0 < 1500, "did not wait for the 10 s timeout");
         assert.equal(outbox.stats().pending, 1);
     });

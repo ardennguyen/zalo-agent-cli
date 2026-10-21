@@ -66,6 +66,8 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_ISSUER_URL` | có | địa chỉ `https://` công khai mà metadata OAuth công bố | `--issuer-url` | `oauth.issuerUrl` |
 | `ZALO_WEBHOOK_URL` | có | POST mỗi tin nhắn đến tới đây | `-w`, `--webhook` | `webhook` |
 | `ZALO_WEBHOOK_SECRET` | có | ký webhook (`Authorization: Bearer` + `X-Zalo-Signature: sha256=…`) | `--webhook-secret` (hiện trong `ps`) | `webhookSecret` |
+| `ZALO_WEBHOOK_BATCH_SIZE` | có | số sự kiện mỗi POST webhook, 1–100. Mặc định 1: mỗi sự kiện một POST | | `webhookBatchSize` |
+| `ZALO_WEBHOOK_MAX_AGE` | có | thời gian thử lại một sự kiện chưa giao được trước khi chuyển vào dead-letter (`6h`, `24h`; tối thiểu `1m`). Mặc định `24h` | | `webhookMaxAge` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | `0` cho phép `zalo_group` rời nhóm / xóa thành viên mà không cần `confirm: true` | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | số tên DM không phải bạn bè mà một lần restore được tra. Mặc định 500 | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | giá trị bất kỳ: không bao giờ chạy kiểm tra cập nhật `npm view` | | |
@@ -87,6 +89,8 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `media.autoOpen` | `true` | tự mở media đã tải trên máy này; đặt `false` trên máy chủ |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | tắt | báo vào một nhóm Zalo khi agent vắng mặt |
 | `webhook`, `webhookSecret` | `null` | đẩy mỗi tin tới một URL, có ký (nên dùng `ZALO_WEBHOOK_SECRET`) |
+| `webhookBatchSize` | `1` | số sự kiện mỗi POST webhook (1–100) |
+| `webhookMaxAge` | `"24h"` | sự kiện webhook chưa giao quá thời gian này sẽ chuyển vào dead-letter |
 | `httpPort`, `host` | `null` | port HTTP và địa chỉ bind |
 | `tls.cert`, `tls.key` | `null` | HTTPS |
 | `oauth.clientId`, `.clientSecret`, `.issuerUrl`, `.clients[]` | | các consumer OAuth 2.0; `clients[]` là danh sách `{clientId, clientSecret}` |
@@ -152,7 +156,9 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 
 - `mcp start` gửi `{event: "message", accountId, id, threadId, threadType, senderId, senderName, text, timestamp, type, attachment, replyTo}` cho mỗi tin qua được `watchThreads`. `listen -w` gửi dạng khác, phong phú hơn (`{accountId, event, msgId, threadId, type, isSelf, uidFrom, dName, msgType, content, …}`) và cả sự kiện bạn bè, nhóm, reaction, đã đọc. Chọn một cách cho mỗi tài khoản.
 - Mỗi lần gửi kèm `Authorization: Bearer <secret>` và `X-Zalo-Signature: sha256=<HMAC-SHA256 dạng hex của body gốc>`. Xác minh chữ ký trên **byte gốc**: [`clients/crm-webhook-receiver.mjs`](config-samples/clients/crm-webhook-receiver.mjs) (Node) và [`clients/crm_webhook_receiver.py`](config-samples/clients/crm_webhook_receiver.py) (Python) làm đúng việc đó.
-- **Bên gửi không thử lại, không xếp hàng, không đảm bảo thứ tự.** Mỗi lần gửi có 5 giây; bên nhận chậm hoặc lỗi sẽ mất lần đẩy đó (tin vẫn còn trong cache của tài khoản). Trả 2xx ngay, xử lý sau, và loại trùng theo id tin nhắn.
+- **Giao nhận bền vững, đúng thứ tự, ít nhất một lần.** Mỗi sự kiện được ghi vào `webhook-outbox.db` trong thư mục tài khoản trước khi gửi, nên bên nhận hỏng, chậm (mỗi POST có 10 giây) hoặc trả khác 2xx chỉ tạo ra tồn đọng chứ không mất tin: bên gửi thử lại với thời gian chờ 1 giây nhân đôi đến 5 phút, giữ mọi sự kiện phía sau sự kiện đang lỗi để không đảo thứ tự, và tiếp tục sau khi khởi động lại hoặc bị sập. Payload bị bên nhận từ chối vì sai định dạng (400, 413, 422) được chuyển vào **dead-letter**, sự kiện chưa giao quá `ZALO_WEBHOOK_MAX_AGE` (24 giờ) cũng vậy. Theo dõi bằng `zalo-agent mcp webhook status`, xem bằng `mcp webhook list --dead`, đưa trở lại hàng đợi bằng `mcp webhook retry`.
+- **Trả 2xx ngay, xử lý sau, và loại trùng theo id tin nhắn.** Ít nhất một lần nghĩa là một tin có thể đến hai lần (sập sau khi bạn trả lời nhưng trước khi bên gửi kịp ghi nhận). Mỗi POST có `X-Zalo-Attempt` và `X-Zalo-Delivery: <đầu>-<cuối>` (số thứ tự trong outbox).
+- **Gộp (batch).** Với `ZALO_WEBHOOK_BATCH_SIZE=10`, tối đa mười sự kiện đang chờ đi chung một POST dạng `{"event":"batch","accountId":…,"count":N,"events":[…]}`, chữ ký tính trên toàn bộ body; một sự kiện đơn lẻ vẫn là payload thường. Các bộ nhận mẫu xử lý được cả hai. Bật khi tồn đọng hoặc nhiều tài khoản khiến một POST mỗi tin là quá nhiều.
 
 **Nghe: kéo.** `GET /events/wait?timeout=55&since=<cursor>` trả về **một** tin mỗi lần gọi, hoặc `{"status":"timeout"}`, kèm cursor để tiếp tục. Bộ đệm phía sau giữ tối đa `limits.bufferMaxSize` tin cho mỗi thread trong `limits.bufferMaxAge` (mẫu CRM nâng cả hai lên 2.000 và 6 giờ). Quá mức đó, đọc cache bằng `zalo_get_history` / `zalo_get_messages`.
 

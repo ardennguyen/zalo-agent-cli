@@ -50,7 +50,15 @@ import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
-import { readMCPConfig, resolveAccountMCPConfig, envForAccount, parseDuration } from "../mcp/mcp-config.js";
+import {
+    readMCPConfig,
+    resolveAccountMCPConfig,
+    envForAccount,
+    parseDuration,
+    resolveWebhookDelivery,
+} from "../mcp/mcp-config.js";
+import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
@@ -107,6 +115,17 @@ export function normalizeMessage(msg, info = null) {
 }
 
 /**
+ * The JSON a webhook receiver gets for one buffered message.
+ *
+ * @param {object} message - Normalized message object
+ * @param {object} [extra] - Additional top-level fields (e.g. `{ accountId }`)
+ * @returns {object}
+ */
+export function buildMCPWebhookPayload(message, extra = {}) {
+    return { event: "message", ...extra, ...message };
+}
+
+/**
  * Fire-and-forget HTTP POST for an incoming buffered MCP message when a
  * webhook URL is configured (`-w, --webhook <url>` or `webhook` in
  * `mcp-config.json`). Never blocks or throws into the listener loop.
@@ -120,12 +139,7 @@ export function normalizeMessage(msg, info = null) {
  */
 export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = fetch, webhookSecret = null) {
     if (!webhookUrl) return false;
-    const payload = {
-        event: "message",
-        ...extra,
-        ...message,
-    };
-    const body = JSON.stringify(payload);
+    const body = JSON.stringify(buildMCPWebhookPayload(message, extra));
     const headers = { "Content-Type": "application/json" };
     if (typeof webhookSecret === "string" && webhookSecret.trim()) {
         const secret = webhookSecret.trim();
@@ -597,9 +611,32 @@ export function registerMCPCommands(program) {
             if (webhookSecret && !webhookUrl) {
                 console.error("[mcp] A webhook secret is set but no webhook URL: nothing will be signed or sent.");
             }
+            // Events are written to an on-disk outbox first and delivered from it, so a receiver
+            // that is down or slow costs a backlog (mcp webhook status), not messages.
+            let webhookDelivery = null;
             if (webhookUrl) {
-                console.error(`[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}`);
+                const delivery = resolveWebhookDelivery(activeAcc.ownId, config);
+                for (const w of delivery.warnings) console.error(`[mcp] ${w}`);
+                webhookDelivery = startWebhookDelivery({
+                    accountDir,
+                    accountId: activeAcc.ownId,
+                    url: webhookUrl,
+                    secret: webhookSecret,
+                    batchSize: delivery.batchSize,
+                    maxAgeMs: delivery.maxAgeMs,
+                    log: (line) => console.error(`[mcp] ${line}`),
+                });
+                console.error(
+                    `[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}, ` +
+                        `durable outbox, ${delivery.batchSize === 1 ? "one event per POST" : `up to ${delivery.batchSize} events per POST`}`,
+                );
             }
+            /** Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent. */
+            const queueWebhook = (normalized) =>
+                webhookDelivery?.enqueue(
+                    `message:${normalized.id}`,
+                    buildMCPWebhookPayload(normalized, { accountId: activeAcc.ownId }),
+                );
 
             // Delivered receipts: the same shared implementation `listen` uses
             // (AGENTS.md §13 -- the two listeners must not differ). Diagnostics
@@ -685,7 +722,7 @@ export function registerMCPCommands(program) {
                         if (!filter.shouldKeep(normalized)) continue;
                         buffer.push(normalized.threadId, normalized);
                         notifier.onMessage(normalized);
-                        postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId }, fetch, webhookSecret);
+                        queueWebhook(normalized);
                     }
                 },
             });
@@ -759,7 +796,7 @@ export function registerMCPCommands(program) {
 
                     buffer.push(normalized.threadId, normalized);
                     notifier.onMessage(normalized);
-                    postMCPWebhook(webhookUrl, normalized, { accountId: activeAcc.ownId }, fetch, webhookSecret);
+                    queueWebhook(normalized);
                     console.error(`[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`);
                 });
 
@@ -885,6 +922,7 @@ export function registerMCPCommands(program) {
                     /* already stopped */
                 }
                 notifier?.destroy();
+                webhookDelivery?.stop();
                 httpServer?.close();
                 dropLock();
                 process.exit(0);
@@ -1144,4 +1182,6 @@ export function registerMCPCommands(program) {
                 },
             );
         });
+
+    registerMCPWebhookCommands(mcp, program);
 }

@@ -2,12 +2,15 @@
 //
 //   WEBHOOK_SECRET=... node crm-webhook-receiver.mjs
 //
-// What matters here, because the sender does not retry:
+// What matters here, because delivery is at least once and in order:
 //   1. Verify the signature over the RAW body (not over re-serialized JSON).
-//   2. Answer 2xx immediately and do the real work afterwards. The sender gives a
-//      delivery 5 seconds and then forgets it; a slow CRM loses messages.
-//   3. De-duplicate on the message id: a message can reach you twice (a webhook
-//      plus a later catch-up through `/events/wait` or the tools).
+//   2. Answer 2xx immediately and do the real work afterwards. A POST has 10
+//      seconds; past that, or on anything but 2xx, the sender retries it (1 s
+//      doubling to 5 min) and holds every later event behind it.
+//   3. De-duplicate on the message id: a message can reach you twice (a retry
+//      after your reply was lost, or a later catch-up through `/events/wait`).
+//   4. A body with `event: "batch"` carries several events in `events`
+//      (ZALO_WEBHOOK_BATCH_SIZE > 1); `eventsOf()` flattens both shapes.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 
@@ -27,6 +30,15 @@ export function verifyWebhook(rawBody, headers, secret) {
     return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * The events in one webhook body: the body itself, or `events` of a batch.
+ * @param {object} body - Parsed JSON
+ * @returns {object[]}
+ */
+export function eventsOf(body) {
+    return body?.event === "batch" && Array.isArray(body.events) ? body.events : [body];
+}
+
 const seen = new Set(); // use your database in production
 
 export function startReceiver({ secret, port = 8080, onMessage = (m) => console.log("message", m.id ?? m.msgId, m.threadId) } = {}) {
@@ -41,13 +53,15 @@ export function startReceiver({ secret, port = 8080, onMessage = (m) => console.
                     return;
                 }
                 res.writeHead(200).end("ok"); // acknowledge first
-                const event = JSON.parse(raw.toString("utf8"));
+                const body = JSON.parse(raw.toString("utf8"));
                 // `mcp start` sends {event:"message", accountId, id, threadId, threadType, senderId, senderName, text, timestamp, type, attachment}
                 // `listen` sends   {accountId, event:"message"|..., msgId, threadId, type, isSelf, uidFrom, dName, msgType, content}
-                const id = event.id ?? event.msgId;
-                if (id && seen.has(`${event.accountId}:${id}`)) return;
-                if (id) seen.add(`${event.accountId}:${id}`);
-                queueMicrotask(() => onMessage(event));
+                for (const event of eventsOf(body)) {
+                    const id = event.id ?? event.msgId;
+                    if (id && seen.has(`${event.accountId}:${id}`)) continue;
+                    if (id) seen.add(`${event.accountId}:${id}`);
+                    queueMicrotask(() => onMessage(event));
+                }
             });
         })
         .listen(port);

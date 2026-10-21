@@ -44,6 +44,8 @@ export function getDefaultConfig() {
             clients: [],
         },
         webhookSecret: null,
+        webhookBatchSize: 1, // events per webhook POST; 1 = each event alone, exactly as before the outbox
+        webhookMaxAge: "24h", // an undelivered event older than this is dead-lettered, never silently dropped
         groupConfirm: true, // zalo_group asks for confirm: true before leave / remove_member
         httpPort: null,
         host: null,
@@ -206,6 +208,42 @@ export function resolveAccountMCPConfig(baseConfig, { accountId, accountDir, exp
 export function saveMCPConfig(config) {
     mkdirSync(CONFIG_DIR, { recursive: true });
     writeFileSync(mcpConfigFile(), JSON.stringify(config, null, 2), "utf-8");
+}
+
+/**
+ * The webhook delivery settings of one account: `ZALO_WEBHOOK_BATCH_SIZE[_<ownId>]` and
+ * `ZALO_WEBHOOK_MAX_AGE[_<ownId>]`, else `webhookBatchSize` / `webhookMaxAge` from the MCP config
+ * (`listen` has no config file and reads only the environment). A value that cannot be used falls
+ * back to the default and is reported, so a typo is not mistaken for a working setting.
+ *
+ * @param {string} accountId
+ * @param {object} [config] - Resolved MCP config, or none for `listen`
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{ batchSize: number, maxAgeMs: number, warnings: string[] }}
+ */
+export function resolveWebhookDelivery(accountId, config = {}, env = process.env) {
+    const warnings = [];
+    const defaults = getDefaultConfig();
+
+    const rawBatch = envForAccount("ZALO_WEBHOOK_BATCH_SIZE", accountId, env) ?? config?.webhookBatchSize;
+    let batchSize = defaults.webhookBatchSize;
+    if (rawBatch !== undefined && rawBatch !== null && rawBatch !== "") {
+        const n = Number(rawBatch);
+        if (Number.isInteger(n) && n >= 1 && n <= 100) batchSize = n;
+        else warnings.push(`webhook batch size "${rawBatch}" is not a whole number from 1 to 100; using ${batchSize}`);
+    }
+
+    const rawAge = envForAccount("ZALO_WEBHOOK_MAX_AGE", accountId, env) ?? config?.webhookMaxAge;
+    let maxAgeMs = parseDuration(defaults.webhookMaxAge);
+    if (rawAge !== undefined && rawAge !== null && rawAge !== "") {
+        const ms = parseDuration(rawAge);
+        if (ms >= 60_000) maxAgeMs = ms;
+        else
+            warnings.push(
+                `webhook max age "${rawAge}" is not a duration of at least 1m (e.g. 6h, 24h); using ${defaults.webhookMaxAge}`,
+            );
+    }
+    return { batchSize, maxAgeMs, warnings };
 }
 
 /**

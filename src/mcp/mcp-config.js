@@ -2,9 +2,10 @@
  * Load/save MCP-specific config from ~/.zalo-agent-cli/mcp-config.json.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR } from "../core/credentials.js";
+import { writeFileAtomic } from "../utils/atomic-file.js";
 
 function mcpConfigFile() {
     return join(CONFIG_DIR, "mcp-config.json");
@@ -207,7 +208,8 @@ export function resolveAccountMCPConfig(baseConfig, { accountId, accountDir, exp
  */
 export function saveMCPConfig(config) {
     mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(mcpConfigFile(), JSON.stringify(config, null, 2), "utf-8");
+    // Atomic, and 0600: the file can hold a webhook or OAuth secret.
+    writeFileAtomic(mcpConfigFile(), JSON.stringify(config, null, 2));
 }
 
 /**

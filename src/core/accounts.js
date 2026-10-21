@@ -1,12 +1,24 @@
 /**
  * Multi-account registry at ~/.zalo-agent-cli/accounts.json
  * Maps each account to its own proxy (1:1) and tracks active account.
+ *
+ * A fleet of daemons and the `account` / `login` commands share this one file, so it is written the
+ * way a shared file must be (src/utils/atomic-file.js):
+ *  - every change is read-modify-write under a lock file (`accounts.json.lock`), so two writers no
+ *    longer lose each other's change;
+ *  - every write is a temp file renamed over the target, so a reader never sees a half-written
+ *    registry and a crash leaves the previous one;
+ *  - the previous good registry is kept as `accounts.json.bak`;
+ *  - a file that exists but cannot be read is an ERROR, never "no accounts": the next `login` used
+ *    to replace it with a registry of one. Reads fall back to the `.bak`; with none, nothing is
+ *    touched and the message says what to do.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, rmSync } from "fs";
+import { readFileSync, existsSync, mkdirSync, rmSync, renameSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR, getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
+import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../utils/atomic-file.js";
 
 function accountsFile() {
     return join(CONFIG_DIR, "accounts.json");
@@ -16,21 +28,130 @@ function ensureDir() {
     mkdirSync(CONFIG_DIR, { recursive: true });
 }
 
-function load() {
-    const file = accountsFile();
-    if (!existsSync(file)) return [];
-    try {
-        return JSON.parse(readFileSync(file, "utf-8"));
-    } catch {
-        return [];
+/** The registry exists but cannot be used as the account list. Nothing has been changed. */
+export class RegistryError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "RegistryError";
     }
 }
 
+/** Errors a read can raise on Windows for the instant a writer's rename replaces the file. */
+const TRANSIENT_READ = new Set(["EPERM", "EBUSY", "EACCES", "ENOENT"]);
+
+/** @param {string} text @returns {object[]} */
+function parseRegistry(text) {
+    const data = JSON.parse(text);
+    if (!Array.isArray(data)) throw new Error("it is not a JSON array of accounts");
+    return data;
+}
+
+/** @param {string} file */
+function readFileRetrying(file) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return readFileSync(file, "utf-8");
+        } catch (e) {
+            if (!TRANSIENT_READ.has(e.code) || attempt >= 5) throw e;
+            sleepSync(10);
+        }
+    }
+}
+
+let _warnedBackup = false;
+
+/**
+ * Read the registry.
+ *
+ * @returns {{ accounts: object[], source: "missing"|"file"|"backup" }}
+ * @throws {RegistryError} when the file exists but is not a usable account list and there is no good backup
+ */
+function readRegistry() {
+    const file = accountsFile();
+    if (!existsSync(file)) return { accounts: [], source: "missing" };
+
+    let problem;
+    // A writer from before atomic writes can leave a half-written file for an instant: look again.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            return { accounts: parseRegistry(readFileRetrying(file)), source: "file" };
+        } catch (e) {
+            problem = e;
+            if (attempt < 2) sleepSync(20);
+        }
+    }
+
+    const backup = `${file}.bak`;
+    try {
+        const accounts = parseRegistry(readFileSync(backup, "utf-8"));
+        if (!_warnedBackup) {
+            _warnedBackup = true;
+            console.error(
+                `[accounts] ${file} is unreadable (${problem.message}); using its last good copy, ${backup}. ` +
+                    "The next change to the registry replaces the damaged file and keeps it as accounts.json.corrupt-*.",
+            );
+        }
+        return { accounts, source: "backup" };
+    } catch {
+        throw new RegistryError(
+            `${file} exists but cannot be read as the account list (${problem.message}). It was left untouched. ` +
+                "Fix it, or move it aside to start with no accounts.",
+        );
+    }
+}
+
+function load() {
+    return readRegistry().accounts;
+}
+
+/** Write the registry atomically, keeping the previous good one as accounts.json.bak. */
 function save(accounts) {
     ensureDir();
     const file = accountsFile();
-    writeFileSync(file, JSON.stringify(accounts, null, 2), "utf-8");
-    chmodSync(file, 0o600);
+    try {
+        const current = readFileSync(file, "utf-8");
+        parseRegistry(current);
+        writeFileAtomic(`${file}.bak`, current, { durable: false });
+    } catch {
+        /* no current registry worth keeping */
+    }
+    writeFileAtomic(file, JSON.stringify(accounts, null, 2));
+}
+
+/**
+ * Change the registry: lock, read the CURRENT contents, apply `fn`, write if it says it changed
+ * something. `fn` gets the account array and returns `{ changed, value }`.
+ *
+ * @template T
+ * @param {(accounts: object[]) => { changed: boolean, value: T }} fn
+ * @param {{ timeoutMs?: number }} [lockOptions]
+ * @returns {T}
+ */
+function mutate(fn, lockOptions) {
+    ensureDir();
+    return withFileLock(
+        `${accountsFile()}.lock`,
+        () => {
+            const { accounts, source } = readRegistry();
+            const result = fn(accounts);
+            if (result.changed) {
+                if (source === "backup") {
+                    // Keep the damaged file for whoever wants to know what happened to it.
+                    try {
+                        renameSync(accountsFile(), `${accountsFile()}.corrupt-${Date.now()}`);
+                    } catch {
+                        /* it is replaced either way */
+                    }
+                }
+                save(accounts);
+                // A writer killed between creating its temp file and renaming it leaves that file behind.
+                sweepStaleTemps(accountsFile());
+                sweepStaleTemps(`${accountsFile()}.bak`);
+            }
+            return result.value;
+        },
+        lockOptions,
+    );
 }
 
 let _pinnedAccountId = null;
@@ -68,18 +189,18 @@ export function getActive() {
 
 /** Set an account as active (deactivates others). Returns false if not found. */
 export function setActive(ownId) {
-    const accounts = load();
-    let found = false;
-    for (const a of accounts) {
-        if (a.ownId === ownId) {
-            a.active = true;
-            found = true;
-        } else {
-            a.active = false;
+    return mutate((accounts) => {
+        let found = false;
+        for (const a of accounts) {
+            if (a.ownId === ownId) {
+                a.active = true;
+                found = true;
+            } else {
+                a.active = false;
+            }
         }
-    }
-    if (found) save(accounts);
-    return found;
+        return { changed: found, value: found };
+    });
 }
 
 /**
@@ -98,16 +219,17 @@ export function setActive(ownId) {
  * in line with it.)
  */
 export function addAccount(ownId, name = "", proxy = null) {
-    const accounts = load();
-    const existing = accounts.find((a) => a.ownId === ownId);
-    for (const a of accounts) a.active = a.ownId === ownId;
-    if (existing) {
-        existing.name = name || existing.name || "";
-        existing.proxy = proxy;
-    } else {
-        accounts.push({ ownId, name, proxy, active: true });
-    }
-    save(accounts);
+    mutate((accounts) => {
+        const existing = accounts.find((a) => a.ownId === ownId);
+        for (const a of accounts) a.active = a.ownId === ownId;
+        if (existing) {
+            existing.name = name || existing.name || "";
+            existing.proxy = proxy;
+        } else {
+            accounts.push({ ownId, name, proxy, active: true });
+        }
+        return { changed: true, value: undefined };
+    });
 }
 
 /**
@@ -161,12 +283,16 @@ export function removeAccount(ownId) {
         return { removed: false, skippedLocked };
     }
 
-    const filtered = accounts.filter((a) => a.ownId !== ownId);
-    // If removed was active, activate first remaining
-    if (filtered.length && !filtered.some((a) => a.active)) {
-        filtered[0].active = true;
-    }
-    save(filtered);
+    mutate((current) => {
+        const filtered = current.filter((a) => a.ownId !== ownId);
+        // If removed was active, activate first remaining
+        if (filtered.length && !filtered.some((a) => a.active)) {
+            filtered[0].active = true;
+        }
+        // The array is edited in place: `mutate` writes the one it handed us.
+        current.splice(0, current.length, ...filtered);
+        return { changed: true, value: undefined };
+    });
     deleteCredentials(ownId);
     return { removed: true, wiped };
 }
@@ -183,12 +309,28 @@ export function updateAccountName(ownId, name) {
     const id = ownId ? String(ownId).trim() : "";
     const trimmed = typeof name === "string" ? name.trim() : "";
     if (!id || !trimmed) return false;
-    const accounts = load();
-    const existing = accounts.find((a) => a.ownId === id);
-    if (!existing || existing.name === trimmed) return false;
-    existing.name = trimmed;
-    save(accounts);
-    return true;
+    // The common case, a daemon re-reading a name it already has, takes no lock and writes nothing.
+    const unchanged = (accounts) => {
+        const existing = accounts.find((a) => a.ownId === id);
+        return !existing || existing.name === trimmed;
+    };
+    try {
+        if (unchanged(load())) return false;
+        return mutate(
+            (accounts) => {
+                if (unchanged(accounts)) return { changed: false, value: false };
+                accounts.find((a) => a.ownId === id).name = trimmed;
+                return { changed: true, value: true };
+            },
+            // Daemons call this from event handlers: a busy registry costs a missed cosmetic refresh,
+            // not seconds of a blocked event loop.
+            { timeoutMs: 3000 },
+        );
+    } catch (e) {
+        // A cached display name is not worth a daemon: say so and carry on.
+        console.error(`[accounts] could not update the cached name of ${id}: ${e.message}`);
+        return false;
+    }
 }
 
 /** Get account by ownId. */

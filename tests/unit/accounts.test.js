@@ -61,9 +61,12 @@ describe("registry CRUD", () => {
         assert.deepEqual(listAccounts(), []);
     });
 
-    it("listAccounts returns [] (does not throw) on a corrupt registry", () => {
+    it("listAccounts throws, and does not report 'no accounts', on a corrupt registry", () => {
+        // It used to return []: the next login then replaced the damaged file with a registry of one.
+        // Reads, refusals and recovery are in registry-safety.test.js.
         writeFileSync(ACCOUNTS_FILE, "]]not json[[", "utf-8");
-        assert.deepEqual(listAccounts(), []);
+        assert.throws(() => listAccounts(), /cannot be read as the account list/);
+        assert.equal(readFileSync(ACCOUNTS_FILE, "utf8"), "]]not json[[", "the file is left as it was");
     });
 
     it("getActive returns null on an empty registry", () => {

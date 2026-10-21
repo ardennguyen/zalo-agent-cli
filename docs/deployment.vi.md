@@ -375,7 +375,7 @@ WantedBy=timers.target
 
 ### 4.6 Sao lưu (Backup)
 
-Sao lưu toàn bộ thư mục `~/.zalo-agent-cli/` và giữ nguyên phân quyền file (`0600` cho `accounts.json` và `credentials/cred_<ownId>.json`):
+Sao lưu toàn bộ thư mục `~/.zalo-agent-cli/` và giữ nguyên phân quyền file (`0600` cho `accounts.json` và `credentials/cred_<ownId>.json`). `accounts.json` được ghi nguyên tử dưới khóa `accounts.json.lock` (bỏ qua file khóa này khi sao lưu) và bản trước đó được giữ ở `accounts.json.bak`; `accounts/<ownId>/webhook-outbox.db` chứa các sự kiện đang chờ gửi tới webhook nên cần sao lưu cùng tài khoản:
 
 - Loại trừ `qr.png`, `daemon.lock` và `daemon-channel.json` (các file trạng thái runtime tạm thời).
 - Để sao lưu `zalo.db` an toàn khi daemon đang chạy, hãy dùng `sqlite3 zalo.db ".backup /path/out.db"` thay vì copy trực tiếp file đang ghi.

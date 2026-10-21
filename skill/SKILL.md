@@ -78,7 +78,7 @@ zalo-agent msg history <ID> -n 50                       # History (from local ca
 zalo-agent msg history <ID> -n 50 --no-cache            # Force live fetch; caches only what it lacked
 ```
 Reactions: `:>` haha · `/-heart` heart · `/-strong` like · `:o` wow · `:-((` cry · `:-h` angry
-Also on `send`: `--md` (markdown formatting), `--style start:len:style`, `--react <icon>` (auto-react to the message just sent), `--quote <msgId>` (quote-reply), and `@[userId]` mention tokens in the message body.
+Also on `send`: `--markdown` (real Markdown: bold, italic, `#` headings, `-` bullets, `>` quotes, links — Zalo shows typed `**bold**` and `- item` as typed, so without a conversion an agent's Markdown arrives raw; `zalo_send_message` converts by default, `format: "plain"` opts out, `ZALO_SEND_FORMAT` sets the default), `--md` (the older markdown-like syntax), `--style start:len:style`, `--react <icon>` (auto-react to the message just sent), `--quote <msgId>` (quote-reply), and `@[userId]` mention tokens in the message body.
 
 **`--urgency important|urgent`** marks a message the way the apps' Important/Urgent option does. **`me`** works as a threadId on any `msg` subcommand (My Documents); `me` with `-t 1` is refused. `msg send` writes nothing to `zalo.db` — a message you just sent is not quotable, forwardable or recallable until the listener sees its echo or a `msg history` fetch returns it.
 

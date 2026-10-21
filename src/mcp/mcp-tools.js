@@ -43,10 +43,11 @@ import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readOnZalo } from "../core/read-state.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
-import { expandMentions, ALL_MENTION_UID } from "../utils/mentions.js";
+import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
 import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
 import {
     describeFriendAddError,
@@ -543,6 +544,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             "msgId of a cached TEXT message in this thread to quote-reply to. " +
                                 "Get it from zalo_get_messages or zalo_get_history.",
                         ),
+                    format: z
+                        .enum(["markdown", "plain"])
+                        .optional()
+                        .describe(
+                            "How `text` is sent. `markdown` (the default) turns Markdown into Zalo's own formatting, because Zalo " +
+                                "shows `**bold**` and `- item` as typed: **bold**, *italic*, ~~strike~~, # headings (bold), " +
+                                "- bullets (real bullets), 1. lists (numbers kept), > quotes, `code`, [text](url) (the URL stays in " +
+                                "the text), and {red:text}/{green:text}/{big:text} colors. `plain` sends the text exactly as written. " +
+                                "Text that is not Markdown (snake_case, 2 * 3 * 4) is left alone either way.",
+                        ),
                     urgency: z
                         .enum(["normal", "important", "urgent"])
                         .optional()
@@ -578,6 +589,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             threadType: threadTypeIn,
             quoteMsgId,
             urgency: urgencyIn,
+            format: formatIn,
         }) => {
             // `me` (or the own uid) is My Documents, always a 1-1 -- resolved
             // before anything else reads the thread id, as `msg send me` is.
@@ -626,8 +638,17 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     if (missing.length > 0) {
                         return err(`File not found: ${missing.join(", ")}`);
                     }
+                    // A caption is text too: Markdown in it is converted the same way.
+                    const caption =
+                        text && resolveSendFormat({ explicit: formatIn, fallback: "markdown" }) === "markdown"
+                            ? markdownToZalo(text)
+                            : { text: text || "", styles: [] };
                     const result = await api.sendMessage(
-                        { msg: text || "", attachments: absPaths },
+                        {
+                            msg: caption.text,
+                            attachments: absPaths,
+                            ...(caption.styles.length > 0 && { styles: caption.styles }),
+                        },
                         threadId,
                         Number(threadType),
                     );
@@ -668,13 +689,19 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // order against and nothing to move — if styles are ever added to
                 // this tool, they must be run through `shiftStyles(styles,
                 // expanded.edits)` the way `msg send` does.
+                // Markdown first, then mentions: a display name may itself contain `*` or `_`, whereas an
+                // `@[uid]` token contains no Markdown (the converter passes it through). The style ranges
+                // are counted before the names go in, so they move across the substitutions (`shiftStyles`).
+                const format = resolveSendFormat({ explicit: formatIn, fallback: "markdown" });
+                const converted = format === "markdown" ? markdownToZalo(text) : { text, styles: [] };
                 const unresolved = [];
-                const expanded = expandMentions(text, (uid) => {
+                const expanded = expandMentions(converted.text, (uid) => {
                     const name = cachedDisplayName(uid);
                     if (!name && uid !== ALL_MENTION_UID) unresolved.push(uid);
                     return name;
                 });
                 const mentions = expanded.mentions;
+                const styles = shiftStyles(converted.styles, expanded.edits);
 
                 // zca-js drops mentions outside a group, so a DM send would
                 // quietly arrive with the names as plain text and nobody tagged.
@@ -727,11 +754,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
                 // A plain send stays a plain string: the object form is only
                 // built when there is something to put in it.
-                const hasExtras = mentions.length > 0 || Boolean(quote) || Boolean(urgency);
+                const hasExtras = mentions.length > 0 || styles.length > 0 || Boolean(quote) || Boolean(urgency);
                 const content = hasExtras
                     ? {
                           msg: expanded.text,
                           ...(mentions.length > 0 && { mentions }),
+                          ...(styles.length > 0 && { styles }),
                           ...(quote && { quote }),
                           ...(urgency && { urgency }),
                       }
@@ -756,6 +784,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     // Only when it differs, so the common send keeps its shape:
                     // the agent wrote `@[123]` and needs to know what was sent.
                     ...(expanded.text !== text && { text: expanded.text }),
+                    ...(styles.length > 0 && { formatted: styles.length }),
                     ...(unresolved.length > 0 && { unresolvedMentions: unresolved }),
                     ...(warnings.length > 0 && { warnings }),
                 });

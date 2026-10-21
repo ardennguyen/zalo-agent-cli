@@ -80,6 +80,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createLogSink, createRotatingFile, resolveLogSettings } from "./log-sink.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { maskSecretArgs } from "../utils/secrets.js";
 
@@ -1089,32 +1090,81 @@ function quoteWinArg(arg) {
  */
 export function attachDaemonLogIfChild() {
     if (process.env.ZALO_DAEMON_CHILD !== "1" || !process.env.ZALO_DAEMON_LOG) return;
-    let logFd;
+    const logPath = process.env.ZALO_DAEMON_LOG;
+    // The account is the name of the directory the log lives in (<data dir>/<ownId>/daemon.log).
+    const ownId = path.basename(path.dirname(logPath));
+    const settings = resolveLogSettings({ env: process.env, ownId });
+
+    let file;
     try {
-        logFd = fs.openSync(process.env.ZALO_DAEMON_LOG, "a", 0o600);
+        file = createRotatingFile({ file: logPath, maxBytes: settings.maxBytes, keep: settings.keep });
+        file.write(""); // fail now, here, if the log cannot be opened
     } catch {
         return;
     }
-    const writeToLog = (chunk, encoding, cb) => {
-        try {
-            const buf = Buffer.isBuffer(chunk)
-                ? chunk
-                : Buffer.from(String(chunk), typeof encoding === "string" ? encoding : "utf8");
-            fs.writeSync(logFd, buf);
-        } catch {
-            /* ignore logging errors */
-        }
+    // Levels, timestamps (or JSON) and rotation in front of the file; see ./log-sink.js.
+    const sink = createLogSink({ write: file.write, level: settings.level, format: settings.format, accountId: ownId });
+    daemonSink = sink;
+    const done = (encoding, cb) => {
         if (typeof encoding === "function") encoding();
         else if (typeof cb === "function") cb();
         return true;
     };
-    process.stdout.write = writeToLog;
-    process.stderr.write = writeToLog;
+    process.stdout.write = (chunk, encoding, cb) => {
+        sink.write(chunk);
+        return done(encoding, cb);
+    };
+    process.stderr.write = (chunk, encoding, cb) => {
+        sink.write(chunk);
+        return done(encoding, cb);
+    };
+    for (const w of settings.warnings) sink.write(`[logging] ${w}\n`);
     process.on("uncaughtException", (err) => {
-        writeToLog(`${err?.stack || err}\n`);
+        sink.write(`${err?.stack || err}\n`);
+        sink.flush();
         process.exit(1);
     });
+    process.on("exit", () => sink.flush());
 }
+
+/** The daemon child's log sink, once attachDaemonLogIfChild has built it. */
+let daemonSink = null;
+
+/**
+ * Apply `--log-level` and the per-account settings once the account is known, and, for a run that is not a
+ * background daemon, filter stderr when a level or format was asked for.
+ *
+ * @param {object} args
+ * @param {string} args.ownId
+ * @param {string|null} [args.levelFlag] - Already validated
+ * @param {boolean} [args.filterStderr=true] - Filter stderr of a foreground run; false for the process that only launches a daemon
+ * @returns {{ level: string, format: string, warnings: string[] }}
+ */
+export function configureLogging({ ownId, levelFlag = null, filterStderr = true }) {
+    const settings = resolveLogSettings({ env: process.env, ownId, levelFlag });
+    if (daemonSink) {
+        daemonSink.setLevel(settings.level);
+        daemonSink.setFormat(settings.format);
+    } else if (filterStderr && settings.explicit && !foregroundFilter) {
+        // A foreground run writes to the terminal: filter stderr in place, keep stdout (the output) alone.
+        const original = process.stderr.write.bind(process.stderr);
+        foregroundFilter = createLogSink({
+            write: (text) => original(text),
+            level: settings.level,
+            format: settings.format,
+            accountId: ownId,
+        });
+        process.stderr.write = (chunk, encoding, cb) => {
+            foregroundFilter.write(chunk);
+            if (typeof encoding === "function") encoding();
+            else if (typeof cb === "function") cb();
+            return true;
+        };
+    }
+    return { level: settings.level, format: settings.format, warnings: settings.warnings };
+}
+
+let foregroundFilter = null;
 
 /**
  * On Windows, spawn via `Win32_Process.Create` (WMI) so the background daemon
@@ -1219,7 +1269,7 @@ export async function spawnDaemonProcess({ accountDir, args = process.argv.slice
             detached: true,
             windowsHide: true,
             stdio: ["ignore", logFd, logFd],
-            env: { ...process.env, ZALO_DAEMON_CHILD: "1" },
+            env: { ...process.env, ZALO_DAEMON_CHILD: "1", ZALO_DAEMON_LOG: logPath },
         });
         try {
             fs.closeSync(logFd);

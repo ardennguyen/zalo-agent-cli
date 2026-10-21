@@ -23,6 +23,7 @@ import {
     waitViaDaemon,
     markReadViaDaemon,
     statusViaDaemon,
+    configureLogging,
 } from "../core/daemon-channel.js";
 import { success, error, info, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
@@ -61,6 +62,7 @@ import {
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
@@ -247,11 +249,19 @@ export function registerMCPCommands(program) {
             "--no-self-heal",
             "Do not pull what a dropped socket missed from Zalo's offline queue on reconnect (the default does, as Zalo Web does, on this socket and with no phone tap)",
         )
+        .option(
+            "--log-level <level>",
+            "Log level of daemon.log (and of stderr in the foreground): error, warn, info (default) or debug, which adds a line per HTTP request and per message. Env: ZALO_LOG_LEVEL[_<ownId>]; also ZALO_LOG_FORMAT=json, ZALO_LOG_MAX_SIZE (default 50m) and ZALO_LOG_KEEP (default 3) for rotation",
+        )
         .option("-d, --daemon", "Run in the background (requires --http <port>; logs to <accountDir>/daemon.log)")
         .option("--stop", "Stop the running background daemon for this account")
         .option("--status", "Show background daemon status for this account")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
+            if (opts.logLevel !== undefined && !LOG_LEVELS.includes(String(opts.logLevel).trim().toLowerCase())) {
+                error(`Invalid --log-level "${opts.logLevel}": use one of ${LOG_LEVELS.join(", ")}.`);
+                process.exit(1);
+            }
             const isDaemonCli = Boolean(opts.status || opts.stop || (opts.daemon && !process.env.ZALO_DAEMON_CHILD));
             const failStart = (msg) => {
                 if (isDaemonCli) error(msg);
@@ -347,6 +357,15 @@ export function registerMCPCommands(program) {
                 });
                 return;
             }
+
+            // Levels and rotation of the log, now that the account is known (src/core/log-sink.js).
+            const logging = configureLogging({
+                ownId: activeAcc.ownId,
+                levelFlag: opts.logLevel?.trim().toLowerCase() || null,
+                // The process that launches a background daemon talks to the user; only the daemon's own output is a log.
+                filterStderr: !(opts.daemon && !process.env.ZALO_DAEMON_CHILD),
+            });
+            if (!process.env.ZALO_DAEMON_CHILD) for (const w of logging.warnings) console.error(`[mcp] [logging] ${w}`);
 
             // Merge per-account config (`config.accounts[ownId]` and `<accountDir>/mcp-config.json`)
             const { config: accountConfig, problem: accountProblem } = resolveAccountMCPConfig(config, {
@@ -822,7 +841,9 @@ export function registerMCPCommands(program) {
                     buffer.push(normalized.threadId, normalized);
                     notifier.onMessage(normalized);
                     queueWebhook(normalized);
-                    console.error(`[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`);
+                    console.error(
+                        `${DEBUG_MARK}[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`,
+                    );
                 });
 
                 // After the storing handler, exactly as in `listen`: the write

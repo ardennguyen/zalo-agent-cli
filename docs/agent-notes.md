@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **23** containers — 15 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2387** as of 2026-10-21 (2382 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2431** as of 2026-10-21 (2426 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -803,6 +803,37 @@ behind a busy account made one round trip per message. All three now build their
 - **Live shape.** The test account is the owner's real account, so `mcp start` recovers real incoming
   messages into the buffer at startup (28 in seven conversations in one run); that is what the live
   batch tests drained, with nobody needing to send anything.
+
+---
+
+## Log levels: a filter on free text, applied where the file is written (2026-10-21)
+
+`daemon.log` was everything a daemon printed, forever: a line per HTTP request, a line per message with
+its text (`listen` prints every event), no timestamps, and a file that only grew. `src/core/log-sink.js`
+sits between the daemon's stdout/stderr and the file (`attachDaemonLogIfChild`).
+
+- **Only three kinds of line are explicitly `debug`**, marked with `DEBUG_MARK` at the call site: the
+  HTTP request line, `[mcp] Buffered …`, and `listen`'s event lines when running as a daemon child
+  (`emitEvent`). Everything else is classified by its wording (`classifyLine`): that is a filter on free
+  text, so a missed line is merely one written as plain text, and `error`/`warn` levels are best-effort.
+  Do not "fix" a misclassified line by adding more regexes; mark the noisy call site instead.
+- **Default `info`** drops those lines. That is a change for anyone who grepped `daemon.log` for received
+  messages; `--log-level debug` or `ZALO_LOG_LEVEL=debug` brings them back, and the message text no longer
+  sits in a log by default.
+- **The sink writes through its own fd, so rotation is a rename.** On POSIX the spawn now also sets
+  `ZALO_DAEMON_LOG` (it only did on the Windows WMI path), so the child owns the file there too; the
+  inherited stdio fd keeps pointing at the rotated file and only carries a native crash. A rename can
+  be refused on Windows while another process has the file open: the daemon keeps appending and
+  looks again after another megabyte (`rotateAt`).
+- **The account is the log's directory name** (`<data dir>/<ownId>/daemon.log`), which is how the child
+  resolves `ZALO_LOG_LEVEL_<ownId>` before the account is known; `--log-level` is applied later by
+  `configureLogging`.
+- **The launcher is never filtered.** `mcp start -d` and `listen -d` print their own result to the user;
+  an early version filtered that parent's stderr too and put a timestamp on "MCP server started". Only a
+  real foreground run (and only when a level or format is asked for) filters its stderr; stdout, which
+  is the output, never is.
+- **`mcp` commands write human output to stderr** (`ZALO_JSON_MODE` is set for them), so a test of the
+  stdout path has to use a command outside `mcp`, such as `account list`.
 
 ---
 

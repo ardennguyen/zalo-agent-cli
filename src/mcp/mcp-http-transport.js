@@ -6,6 +6,7 @@
 import express from "express";
 import { renderPrometheus } from "../core/daemon-health.js";
 import { batchParams, waitResult } from "./wait-result.js";
+import { DEBUG_MARK } from "../core/log-sink.js";
 import https from "https";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { readFileSync } from "fs";
@@ -195,7 +196,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 const ua = String(req.headers["user-agent"] || "-").slice(0, 80);
                 const h = String(req.headers.host || "-");
                 console.error(
-                    `[mcp-http] ${req.method} ${req.originalUrl} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
+                    `${DEBUG_MARK}[mcp-http] ${req.method} ${req.originalUrl} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
                 );
             });
         }

@@ -561,7 +561,8 @@ describe("daemon-channel.js stays a transport", () => {
         const imports = [...SRC.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
         // utils/secrets.js masks secret flags in the daemon.log header. It is a leaf: pure string
         // handling with no imports of its own (asserted below), so it costs a `msg` invocation nothing.
-        const LEAF_UTILS = ["../utils/secrets.js"];
+        // log-sink.js is the daemon.log level filter and rotation: a leaf too, importing only node builtins.
+        const LEAF_UTILS = ["../utils/secrets.js", "./log-sink.js"];
         assert.deepEqual(
             imports.filter((p) => !p.startsWith("node:") && !LEAF_UTILS.includes(p)),
             [],
@@ -569,7 +570,12 @@ describe("daemon-channel.js stays a transport", () => {
         );
         for (const p of LEAF_UTILS) {
             const leaf = readFileSync(join(import.meta.dirname, "..", "..", "src", "core", p), "utf8");
-            assert.doesNotMatch(leaf, /^import\s/m, `${p} must stay import-free to be allowed in the transport`);
+            const own = [...leaf.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
+            assert.deepEqual(
+                own.filter((i) => !i.startsWith("node:")),
+                [],
+                `${p} may import only node builtins to be allowed in the transport`,
+            );
         }
     });
 

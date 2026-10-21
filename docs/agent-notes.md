@@ -83,7 +83,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **23** containers — 15 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **17** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2293** as of 2026-10-21 (2289 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2327** as of 2026-10-21 (2323 pass, 4 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -706,6 +706,39 @@ implementation behind both entry points, as §13 requires).
   comes back as an event; `mcp start` skips them by design, so its enqueue path needs a message from
   a second account (the test group has one). A hard kill (`Stop-Process -Force`) mid-backlog and a
   restart is the crash test: the queued events were still delivered after it.
+
+---
+
+## Health and metrics: one object, two entry points, and what stays unauthenticated (2026-10-21)
+
+`GET /health` used to answer `ok` with an uptime and a thread count whether the socket had been down
+for a minute or a week, so nothing outside the process could tell which account had gone quiet.
+`src/core/daemon-health.js` is now the one thing both `mcp start` and `listen` build (§13: no
+asymmetry between them): the socket state machine, event ages and counts, plus sources plugged in
+later (webhook outbox, message buffer, pending gaps, stage lock).
+
+- **Two surfaces.** `mcp start --http` serves `/health`, `/ready`, `/status`, `/metrics`; both
+  daemons answer `POST /status` on the loopback channel, which `--status` prints. `listen` has no
+  HTTP port, so the channel is the only way its health reaches anyone.
+- **What is unauthenticated, and why.** `/health` keeps its old fields and adds `socket` and
+  `ready`; `/ready` is 200/503 on the socket. Both reveal only "the process answers" and "the
+  socket is up". Everything with counts, account ids, backlog or error text (`/status`,
+  `/metrics`) is behind the bearer token. `/health` stays HTTP 200 whatever the socket does: it is
+  liveness, and a supervisor that restarts on a 503 there would restart a daemon that is already
+  reconnecting by itself. Readiness is `/ready`.
+- **An age with no value is omitted from `/metrics`, never 0.** 0 would read as "just now" to an
+  alert like `zalo_last_event_age_seconds > 3600`. The same for NaN and Infinity.
+- **`cipher_key` is never subscribed to.** `attach()` lists its events explicitly; a test fails if
+  that one ever appears, because the event carries the session's key material.
+- **The two ways a down socket is reported.** `noteDown` runs on both `disconnected` and `closed`
+  and keeps the first drop's clock (a repeat does not restart it); `stopping` is sticky, so a late
+  `connected` or `closed` during shutdown cannot flip it back. The 2-minute "socket down" warning
+  exists because a reconnect in progress is normal.
+- **Not live-tested: a socket that really drops.** Cutting a live account's network, or opening a
+  second session to force a close, would end the test account's daemon rather than show a `down`
+  state (a duplicate-session close is fatal by design), so the down paths are covered by unit tests
+  that emit the listener events; the live runs covered up, event counts, the webhook backlog and
+  its recovery, and `--status` on both daemons.
 
 ---
 

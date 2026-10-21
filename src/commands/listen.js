@@ -3,7 +3,7 @@
  * Production-ready with auto-reconnect and re-login.
  */
 
-import { appendFileSync, mkdirSync, existsSync } from "fs";
+import { appendFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { success, error, info, warning, output } from "../utils/output.js";
@@ -14,6 +14,7 @@ import { getAccountDir } from "../core/credentials.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import {
     createStageLock,
+    statusViaDaemon,
     startDaemonChannel,
     getDaemonStatus,
     stopDaemon,
@@ -44,6 +45,9 @@ import { describeGap } from "../core/sync-v2/gap-advice.js";
 import { createDeliveredReceipts } from "../core/receipts.js";
 import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+
+const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
 /** Thread types matching zca-js ThreadType enum */
 const THREAD_USER = 0;
@@ -125,12 +129,18 @@ export function registerListenCommand(program) {
 
             if (opts.status) {
                 const status = getDaemonStatus(accountDir);
-                output({ accountId: activeAcc.ownId, ...status }, jsonMode, () => {
+                // What the daemon says about itself; an older daemon has the channel but not the route.
+                const reported = status.running ? await statusViaDaemon(accountDir) : null;
+                const health = reported?.ok ? reported.health : null;
+                output({ accountId: activeAcc.ownId, ...status, health }, jsonMode, () => {
                     if (status.running) {
                         success(
                             `Daemon running for account ${activeAcc.ownId} (PID ${status.pid}${status.channelPort ? `, channel 127.0.0.1:${status.channelPort}` : ""})`,
                         );
                         info(`Log file: ${status.logPath}`);
+                        if (health) for (const line of describeHealth(health)) info(line);
+                        else
+                            info("Health: not reported (this daemon predates the health route; restart it to see it).");
                     } else {
                         info(`No daemon running for account ${activeAcc.ownId}`);
                         info(`Log file: ${status.logPath}`);
@@ -539,6 +549,11 @@ export function registerListenCommand(program) {
             });
             const socketContext = createSocketContext({ lock: stageLock, monitor: loopMonitor });
             setUserInfoLogger(daemonLog);
+            // Same health object `mcp start` builds (src/core/daemon-health.js): `listen --status` prints it.
+            const health = createDaemonHealth({ kind: "listen", accountId: activeAcc.ownId, version: PKG_VERSION });
+            health.setSource("gaps", () => getPendingSyncGaps().length);
+            health.setSource("stage", () => stageLock.current());
+            health.setSource("webhook", () => webhookDelivery?.status() ?? null);
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
             // Read state other devices report -- a conversation read on the
             // phone, an unread mark set or cleared there -- which zca-js
@@ -572,6 +587,7 @@ export function registerListenCommand(program) {
 
             /** Attach ALL handlers (data + lifecycle) to current API listener */
             function attachAllHandlers(api) {
+                health.attach(api.listener);
                 // --- Message events ---
                 // Registered unconditionally. --events, --filter and --no-self
                 // decide what is PRINTED, forwarded and saved as JSONL -- never
@@ -957,6 +973,7 @@ export function registerListenCommand(program) {
             const shutdown = () => {
                 // First, before anything can emit a close event.
                 stopping = true;
+                health.noteStopping();
                 channel?.stop();
                 webhookDelivery?.stop();
                 deliveredReceipts.stop();
@@ -1004,6 +1021,7 @@ export function registerListenCommand(program) {
                     // The self-heal's lock: a stage and a catch-up never share the socket.
                     lock: stageLock,
                     onStop: shutdown,
+                    onStatus: () => health.snapshot(),
                 });
                 info(`Sync & upload channel ready on 127.0.0.1:${channel.port} — this socket is reused for both.`);
                 info("`zalo-agent sync` will run its socket stages here; it still needs your phone tap.");

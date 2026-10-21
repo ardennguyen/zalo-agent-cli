@@ -56,7 +56,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 > | | `listen` | `mcp start` |
 > |---|---|---|
 > | MCP tool surface (the 25 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
-> | HTTP / HTTPS `/health`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
+> | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
 > | `-w, --webhook <url>` + `--webhook-secret <secret>` outbound fan-out | **yes** | **yes** |
 > | `--save <dir>` JSONL archive | **yes** | no |
 > | Event printing (`--events`, `--filter`, `--no-self`), `--auto-accept` | **yes** | no |
@@ -181,7 +181,7 @@ flowchart TB
       direction TB
       subgraph holder["THE socket holder — exactly one process"]
         proc["zalo-agent mcp start --http 3847 --auth TOKEN<br/>src/commands/mcp.js"]
-        http["Express + StreamableHTTP, stateless<br/>src/mcp/mcp-http-transport.js<br/>POST /mcp — bearer auth · GET /health — no auth"]
+        http["Express + StreamableHTTP, stateless<br/>src/mcp/mcp-http-transport.js<br/>POST /mcp — bearer auth · GET /health, /ready — no auth · GET /status, /metrics — bearer auth"]
         buf["MessageBuffer + ThreadFilter<br/>src/mcp/message-buffer.js<br/>one read cursor per consumer — see 1.4"]
         heal["gap tracker + self-heal<br/>src/core/listener-lifecycle.js · self-heal.js<br/>offline-queue pull on every connect, no phone"]
         chan["startDaemonChannel<br/>src/core/daemon-channel.js<br/>127.0.0.1:EPHEMERAL, 24-byte token"]
@@ -571,21 +571,32 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
 
 ### 4.7 Monitoring
 
-`/health` is the only built-in health endpoint and it is **exempt from auth** by design (`if (req.path === "/health") return next();`).
+A daemon reports on itself in four ways. The first three are HTTP routes of `mcp start --http`; the CLI view works for `listen` too, which has no HTTP port (`src/core/daemon-health.js`).
+
+| Route | Auth | What it answers |
+|---|---|---|
+| `GET /health` | none | Liveness: `status` (always `"ok"` while Express answers), `uptime`, `threads`, and the socket: `socket` (`starting`, `up`, `down`, `stopping`) and `ready` |
+| `GET /ready` | none | **200 only while the Zalo socket is up**, else 503 with `{ready, socket}`: for a load balancer or supervisor that should stop sending work to an offline account |
+| `GET /status` | bearer | Everything below, as JSON |
+| `GET /metrics` | bearer | The same as Prometheus text: `zalo_up`, `zalo_socket_*`, `zalo_last_event_age_seconds`, `zalo_webhook_*`, `zalo_coverage_gaps_pending`, `zalo_buffer_*`, `zalo_process_*`, `zalo_eventloop_lag_*` |
+| `zalo-agent mcp start --status` / `listen --status` | local | The same snapshot, printed (`--json` for scripts) |
+
+`/status` holds: the socket (state, how long, reconnects, last close code), the age of the last event and the last message, incoming message and per-kind event counts, pending coverage gaps, the running sync stage, the webhook outbox (queued, dead-lettered, oldest wait, last error, delivered), the live buffer, memory, event-loop delay, and a `warnings` list with `status: "degraded"` when something needs attention (socket down 2+ minutes, a webhook backlog older than 5 minutes, dead letters, unrecovered gaps, a 3+ second stall).
 
 ```bash
 curl -s http://127.0.0.1:3847/health
-# {"status":"ok","uptime":123,"threads":5}
+# {"status":"ok","uptime":123,"threads":5,"socket":"up","ready":true}
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3847/ready          # 200, or 503 while the socket is down
+curl -s -H "Authorization: Bearer $ZALO_MCP_AUTH_TOKEN" http://127.0.0.1:3847/metrics | head
 ```
 
-| Field | What it is | What it is **not** |
-|---|---|---|
-| `status` | Always `"ok"` if Express is answering | Not a WebSocket health check |
-| `uptime` | `process.uptime()` in seconds | — |
-| `threads` | `deps.buffer.getStats().length`: threads with buffered messages | Not a message count, not a Zalo connection state |
+Prometheus scrape and alert rules are in [`config-samples/monitoring/`](config-samples/monitoring/): a job per account (each daemon has its own token) and ten rules: unreachable, socket down, reconnect loop, a connected account that went silent, webhook backlog, dead letters, unrecovered gaps, a blocked event loop, memory, and a recent restart. **Do not publish `/metrics` or `/status` through the reverse proxy**; scrape them from inside the network.
+
+> [!NOTE]
+> **`status: "ok"` in `/health` is liveness only.** It stays `ok` while the socket is down. Read `socket` / `ready`, or use `/ready`. A daemon whose socket dropped and whose re-login keeps failing is `down` here until it exits.
 
 > [!WARNING]
-> **`/health` answering `ok` does not mean Zalo is connected.** The HTTP server and the WebSocket are independent. A daemon whose socket dropped and whose re-login is failing still returns `{"status":"ok"}` right up until `process.exit(1)`. Alert on **all** of these, not just `/health`:
+> **A running daemon is not necessarily a healthy account.** The routes above cover the socket, the webhook and the gaps. Alert on these as well:
 >
 > 1. `systemctl is-active zalo-mcp`: catches the fatal exits.
 > 2. `uptime` resetting: catches restart loops the unit's `StartLimitBurst` has not yet failed.
@@ -607,9 +618,6 @@ curl -s http://127.0.0.1:3847/health
 >      | sed -n 's/^data: //p' | jq -r '.result.content[0].text' | jq '{pendingCount, command}'
 >    ```
 >    `zalo_coverage` is read-only and sends nothing to Zalo (`src/core/coverage.js`). The token in that command line is in `curl`'s argv; a job on a shared host should read the header from a file with `-H @<file>` instead.
-
-> [!NOTE]
-> **Proposal:** extend `/health` with `socketState` (from `api.listener.ws.readyState`, the same check `socketAlive()` in `daemon-sync.js` already makes), `lastEventAt`, and `pendingGaps` (which `zalo_coverage` has and `/health` does not). Three fields turn a liveness probe into a real health check. Not implemented.
 
 ---
 
@@ -646,7 +654,7 @@ Operational consequences, in order of importance:
 `--auth <token>` installs one Express middleware. What it does and does not do:
 
 - Compares with `timingSafeEqual` after a length check: constant-time, correct.
-- Guards every route except `GET /health`, which it exempts deliberately. The server has two routes: `POST /mcp` and `GET /health`.
+- Guards every route except `GET /health` and `GET /ready`, which it exempts deliberately: they say only whether the process answers and whether the Zalo socket is up. `GET /status` and `GET /metrics` (the detailed health, §4.7) are behind the token.
 - Is **one shared secret** for all clients. No rotation mechanism, no per-client identity, no revocation short of restarting with a new token. The `consumer` name a bot passes is not tied to it (§1.4).
 
 Therefore:

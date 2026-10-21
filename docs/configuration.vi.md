@@ -188,7 +188,7 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 | `ZALO_MCP_HOST` là `127.0.0.1` sau proxy, hoặc một địa chỉ LAN cụ thể | `0.0.0.0` nghe trên mọi giao diện, kể cả giao diện công khai |
 | TLS kết thúc tại proxy, hoặc đã đặt `--cert`/`--key` | bearer token qua HTTP thường đọc được trên đường truyền |
 | proxy không ghi `Authorization` và không đệm `/events/wait` | token lọt vào log; long-poll bị cắt theo timeout của proxy |
-| `GET /health` là route duy nhất không cần xác thực | nó báo uptime và số thread đang đệm, không nói gì về tài khoản; nó **không** cho biết socket Zalo còn sống không |
+| `GET /health` và `GET /ready` là hai route duy nhất không cần xác thực | chúng chỉ cho biết tiến trình có trả lời không và socket Zalo có đang kết nối không, không nói gì về tài khoản. `/status` và `/metrics` nằm sau token: đừng công bố chúng qua proxy |
 | mỗi tài khoản một tiến trình, không bao giờ hai cho cùng tài khoản | phiên thứ hai đóng phiên thứ nhất (mã 3000) |
 
 ## 5. Kiểm tra một mô hình đã chạy đúng
@@ -196,6 +196,9 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 ```bash
 # lên rồi, và token được thực thi (mong đợi 200, 401, 401):
 curl -s -o /dev/null -w '%{http_code}\n' http://HOST:PORT/health
+# socket Zalo đang kết nối (200; 503 khi đang mất), chi tiết nằm sau token:
+curl -s -o /dev/null -w '%{http_code}\n' http://HOST:PORT/ready
+curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 

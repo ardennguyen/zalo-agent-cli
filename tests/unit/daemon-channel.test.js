@@ -31,6 +31,7 @@ import {
     stopDaemon,
     waitViaDaemon,
     markReadViaDaemon,
+    statusViaDaemon,
 } from "../../src/core/daemon-channel.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-daemon-chan-"));
@@ -810,5 +811,54 @@ describe("MCP buffer wait and mark-read over daemon channel", () => {
         assert.equal(m.readCursor, 42);
         assert.equal(m.consumer, "bot-a");
         assert.equal(cursors.get("bot-a"), 42);
+    });
+});
+
+describe("health snapshot over the daemon channel", () => {
+    it("returns null when no daemon channel is published", async () => {
+        assert.equal(await statusViaDaemon(dir), null);
+    });
+
+    it("a daemon that wires no health callback answers 503, as a daemon older than the route would", async () => {
+        const d = fakeDaemon(dir);
+        started.push(await startDaemonChannel({ getApi: d.getApi, accountDir: dir }));
+        const r = await statusViaDaemon(dir);
+        assert.equal(r.ok, false);
+        assert.match(r.error, /does not report health/);
+    });
+
+    it("serves the callback's snapshot, and refuses a wrong token", async () => {
+        const d = fakeDaemon(dir);
+        const snapshot = { kind: "listen", socket: { state: "up" }, ready: true };
+        const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir, onStatus: () => snapshot });
+        started.push(chan);
+
+        const r = await statusViaDaemon(dir);
+        assert.deepEqual(r, { ok: true, health: snapshot });
+
+        const bad = await fetch(`http://127.0.0.1:${chan.port}/status`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: "wrong" }),
+        });
+        assert.equal(bad.status, 403);
+        const get = await fetch(`http://127.0.0.1:${chan.port}/status`);
+        assert.equal(get.status, 404, "only POST with the token, like every other route");
+    });
+
+    it("a callback that throws is an answer, not a dead channel", async () => {
+        const d = fakeDaemon(dir);
+        started.push(
+            await startDaemonChannel({
+                getApi: d.getApi,
+                accountDir: dir,
+                onStatus: () => {
+                    throw new Error("outbox closed");
+                },
+            }),
+        );
+        const r = await statusViaDaemon(dir);
+        assert.deepEqual(r, { ok: false, error: "outbox closed" });
+        assert.equal(getDaemonChannel(dir) !== null, true);
     });
 });

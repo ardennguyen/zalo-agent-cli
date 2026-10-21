@@ -56,7 +56,7 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 > | Tính năng | `listen` | `mcp start` |
 > |---|---|---|
 > | Bề mặt 25 MCP tools (`src/mcp/mcp-tools.js`) | không | **có** |
-> | HTTP / HTTPS `/health`, `/events/wait`, các endpoint OAuth 2.0 | không | **có** (khi có `--http`) |
+> | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, các endpoint OAuth 2.0 | không | **có** (khi có `--http`) |
 > | Đẩy sự kiện qua `-w, --webhook <url>` + `--webhook-secret <secret>` | **có** | **có** |
 > | Lưu trữ JSONL (`--save <dir>`) | **có** | không |
 > | In sự kiện ra stdout (`--events`, `--filter`, `--no-self`), `--auto-accept` | **có** | không |
@@ -136,7 +136,7 @@ flowchart TB
       direction TB
       subgraph holder["Tiến trình giữ socket — duy nhất một tiến trình"]
         proc["zalo-agent mcp start --http 3847 --auth TOKEN<br/>src/commands/mcp.js"]
-        http["Express + StreamableHTTP + OAuth 2.0<br/>src/mcp/mcp-http-transport.js<br/>POST /mcp · GET /events/wait · GET /health"]
+        http["Express + StreamableHTTP + OAuth 2.0<br/>src/mcp/mcp-http-transport.js<br/>POST /mcp · GET /events/wait · GET /health, /ready (không xác thực) · GET /status, /metrics (bearer)"]
         buf["MessageBuffer + ThreadFilter<br/>src/mcp/message-buffer.js<br/>mỗi consumer một con trỏ đọc — xem 1.4"]
         heal["gap tracker + self-heal<br/>src/core/listener-lifecycle.js · self-heal.js<br/>tự kéo hàng đợi ngoại tuyến mỗi lần kết nối"]
         chan["startDaemonChannel<br/>src/core/daemon-channel.js<br/>127.0.0.1:EPHEMERAL, token 24-byte"]
@@ -383,15 +383,33 @@ Sao lưu toàn bộ thư mục `~/.zalo-agent-cli/` và giữ nguyên phân quy�
 
 ### 4.7 Giám sát (Monitoring)
 
-Endpoint `GET /health` không yêu cầu xác thực:
+Một daemon tự báo cáo tình trạng theo bốn cách. Ba cách đầu là route HTTP của `mcp start --http`; cách xem bằng CLI dùng được cả cho `listen` (không có cổng HTTP) — `src/core/daemon-health.js`.
+
+| Route | Xác thực | Trả lời |
+|---|---|---|
+| `GET /health` | không | Còn sống hay không: `status` (luôn `"ok"` khi Express còn trả lời), `uptime`, `threads`, và socket: `socket` (`starting`, `up`, `down`, `stopping`) cùng `ready` |
+| `GET /ready` | không | **200 chỉ khi socket Zalo đang kết nối**, ngược lại 503 kèm `{ready, socket}`: dành cho load balancer hoặc bộ giám sát cần ngừng giao việc cho tài khoản đang offline |
+| `GET /status` | bearer | Toàn bộ thông tin dưới đây, dạng JSON |
+| `GET /metrics` | bearer | Cũng thông tin đó dạng văn bản Prometheus: `zalo_up`, `zalo_socket_*`, `zalo_last_event_age_seconds`, `zalo_webhook_*`, `zalo_coverage_gaps_pending`, `zalo_buffer_*`, `zalo_process_*`, `zalo_eventloop_lag_*` |
+| `zalo-agent mcp start --status` / `listen --status` | cục bộ | Cùng bản chụp đó, in ra (`--json` cho script) |
+
+`/status` gồm: socket (trạng thái, đã bao lâu, số lần kết nối lại, mã đóng gần nhất), tuổi của sự kiện và tin nhắn gần nhất, số tin đến và số sự kiện theo loại, số khoảng hở chưa khôi phục, stage đồng bộ đang chạy, hộp thư đi webhook (đang chờ, dead-letter, chờ lâu nhất, lỗi gần nhất, đã giao), bộ đệm live, bộ nhớ, độ trễ event loop, và danh sách `warnings` kèm `status: "degraded"` khi có điều cần chú ý (socket mất từ 2 phút, tồn đọng webhook quá 5 phút, có dead-letter, khoảng hở chưa khôi phục, treo từ 3 giây).
 
 ```bash
 curl -s http://127.0.0.1:3847/health
-# {"status":"ok","uptime":123,"threads":5}
+# {"status":"ok","uptime":123,"threads":5,"socket":"up","ready":true}
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3847/ready          # 200, hoặc 503 khi socket đang mất
+curl -s -H "Authorization: Bearer $ZALO_MCP_AUTH_TOKEN" http://127.0.0.1:3847/metrics | head
 ```
 
+Cấu hình scrape Prometheus và luật cảnh báo có trong [`config-samples/monitoring/`](config-samples/monitoring/): một job cho mỗi tài khoản (mỗi daemon có token riêng) và mười luật: không truy cập được, socket mất, kết nối lại liên tục, tài khoản đang kết nối nhưng im lặng, tồn đọng webhook, dead-letter, khoảng hở chưa khôi phục, event loop bị treo, bộ nhớ, và vừa khởi động lại. **Đừng công bố `/metrics` hay `/status` qua reverse proxy**; hãy scrape từ bên trong mạng.
+
+> [!NOTE]
+> **`status: "ok"` trong `/health` chỉ là liveness.** Nó vẫn `ok` khi socket đang mất. Hãy đọc `socket` / `ready`, hoặc dùng `/ready`.
+
 > [!WARNING]
-> **`/health` trả về `ok` chỉ có nghĩa là HTTP server đang chạy, không đảm bảo WebSocket Zalo đang thông suốt.** Hãy kết hợp giám sát:
+> **Daemon đang chạy chưa chắc là tài khoản khỏe.** Các route trên đã bao phủ socket, webhook và khoảng hở. Hãy cảnh báo thêm các điểm sau:
+>
 > 1. Trạng thái tiến trình (`systemctl is-active zalo-mcp` hoặc `zalo-agent mcp start --status`).
 > 2. Các dòng lỗi nghiêm trọng trong log (§4.3).
 > 3. Thời điểm tin nhắn mới nhất trong `zalo.db`:

@@ -27,6 +27,7 @@ import {
 import { postMCPWebhook } from "../../src/commands/mcp.js";
 import { eventsOf, verifyWebhook } from "../../docs/config-samples/clients/crm-webhook-receiver.mjs";
 import { createWebhookDispatcher, openOutbox } from "../../src/core/webhook-outbox.js";
+import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -267,5 +268,58 @@ describe("client samples", () => {
             outbox.close();
             rmSync(dir, { recursive: true, force: true });
         }
+    });
+});
+
+describe("monitoring samples", () => {
+    const rules = read("monitoring", "alert-rules.yml");
+
+    /** Every metric a daemon can expose, once it has seen a close, an event, a stage and a webhook. */
+    function emittedMetrics() {
+        const health = createDaemonHealth({ kind: "mcp", accountId: "A1", version: "1" });
+        health.noteUp();
+        health.noteDown(1006);
+        health.noteUp();
+        health.noteEvent("message");
+        health.setSource("webhook", () => ({
+            pending: 1,
+            dead: 0,
+            oldestPendingAgeMs: 1000,
+            deliveredTotal: 1,
+            consecutiveFailures: 0,
+            lastSuccessAt: Date.now() - 1000,
+        }));
+        health.setSource("buffer", () => ({ threads: 1, messages: 1 }));
+        health.setSource("stage", () => ({ stage: "messages", startedAt: Date.now() }));
+        const text = renderPrometheus(health.snapshot());
+        health.stop();
+        return new Set(text.match(/^zalo_[a-z_]+/gm));
+    }
+
+    it("every metric an alert rule reads is one the daemon exposes", () => {
+        const emitted = emittedMetrics();
+        const used = new Set(rules.match(/\bzalo_[a-z_]+/g));
+        assert.ok(used.size >= 8, "the rules read the daemon's own metrics");
+        for (const name of used)
+            assert.ok(emitted.has(name), `alert-rules.yml reads ${name}, which /metrics does not expose`);
+    });
+
+    it("the ten documented alerts are all there, each with an expression, a severity and a summary", () => {
+        const blocks = rules.split(/^\s+- alert: /m).slice(1);
+        assert.equal(blocks.length, 10);
+        for (const b of blocks) {
+            assert.match(b, /\n\s+expr: \S/, `${b.split("\n")[0]} has no expr`);
+            assert.match(b, /severity: (page|warn|info)/);
+            assert.match(b, /summary: "/);
+        }
+    });
+
+    it("the scrape config sends the bearer token from a file, never inline", () => {
+        const scrape = read("monitoring", "prometheus.yml");
+        assert.match(scrape, /metrics_path: \/metrics/);
+        assert.match(scrape, /type: Bearer/);
+        assert.match(scrape, /credentials_file: /);
+        assert.doesNotMatch(scrape, /^\s+credentials: /m);
+        assert.ok(!scrape.includes("\t") && !rules.includes("\t"), "YAML does not allow tabs");
     });
 });

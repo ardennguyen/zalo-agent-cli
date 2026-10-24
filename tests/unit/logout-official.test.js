@@ -80,6 +80,13 @@ describe("the official logout", () => {
         serveOfficialLogout(fake);
         await serverLogout(api, { probeLogin: async () => "revoked" });
         const by = (path) => fake.requests.find((r) => r.path === path);
+        // zca-js merges headers by key: one spelling each, or a real fetch would join two values into one
+        assert.equal(by("/jr/logout-token").headers.origin, "https://chat.zalo.me");
+        assert.equal(by("/jr/logout-token").headers.referer, "https://chat.zalo.me/");
+        assert.equal(by("/jr/logout-token").headers.accept, "application/json, text/plain, */*");
+        assert.equal(by("/account/logout").headers.origin, "https://id.zalo.me");
+        assert.equal(by("/account/logout").headers.referer, "https://id.zalo.me/");
+        assert.ok(!by("/account/logout").headers.accept.includes("application/json"), "a page load asks for a page");
         assert.equal(by("/jr/logout-token").headers["sec-fetch-mode"], "cors");
         assert.equal(by("/jr/logout-token").headers["sec-fetch-dest"], "empty");
         for (const path of ["/account/logout", "/jr/setsid", "/account"]) {

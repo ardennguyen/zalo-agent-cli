@@ -66,6 +66,27 @@ export function resolveApiVersion(env = process.env) {
     return n;
 }
 
+/** Marks a bad ZALO_QR_FLOW, so callers can tell it from a failed login. */
+export const QR_FLOW_INVALID = "ZALO_QR_FLOW_INVALID";
+
+/**
+ * Which QR login runs: `legacy` (zca-js's own, the default) or `official` (the verified Web sequence,
+ * src/zalo/qr-login.js). The official one becomes the default once a login with it has been seen to work live.
+ *
+ * @param {object} [env] - the environment to read, `process.env` by default
+ * @returns {"legacy"|"official"}
+ * @throws {Error} with `.code === QR_FLOW_INVALID` for any other value
+ */
+export function resolveQrFlow(env = process.env) {
+    const raw = env.ZALO_QR_FLOW;
+    const value = raw === undefined ? "" : String(raw).trim().toLowerCase();
+    if (value === "") return "legacy";
+    if (value === "legacy" || value === "official") return value;
+    const err = new Error(`ZALO_QR_FLOW must be "legacy" or "official", but it is "${raw}". Fix or unset it.`);
+    err.code = QR_FLOW_INVALID;
+    throw err;
+}
+
 /** Chrome builds the QR-login fingerprint may announce. Newest first: the current stable and the three before it. */
 export const CHROME_VERSIONS = Object.freeze(["155.0.0.0", "154.0.0.0", "153.0.0.0", "152.0.0.0"]);
 

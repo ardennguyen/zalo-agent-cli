@@ -200,7 +200,25 @@ export function installFakeZalo({
         return reply(step.body);
     }
 
+    /**
+     * What a real fetch does with a redirect unless told `redirect: "manual"`: follow it itself, hop by hop,
+     * and hand back only the last answer, so the cookies the earlier hops set never reach the caller.
+     */
     async function handle(input, init = {}) {
+        let res = await handleOnce(input, init);
+        for (
+            let hops = 0;
+            hops < 10 && init.redirect !== "manual" && [301, 302, 303, 307, 308].includes(res.status);
+            hops++
+        ) {
+            const next = new URL(res.headers.get("location"), String(input));
+            res = await handleOnce(next, { ...init, method: "GET", body: undefined });
+            input = next;
+        }
+        return res;
+    }
+
+    async function handleOnce(input, init = {}) {
         const url = new URL(String(input));
         const req = {
             method: String(init.method || "GET").toUpperCase(),
@@ -211,6 +229,7 @@ export function installFakeZalo({
             headers: Object.fromEntries(new Headers(init.headers ?? {})),
             form: init.body instanceof URLSearchParams ? Object.fromEntries(init.body) : null,
         };
+        Object.defineProperty(req, "signal", { value: init.signal, enumerable: false });
         requests.push(req);
 
         for (const raw of rawRoutes) if (raw.match(req)) return raw.handler(req);
@@ -329,6 +348,73 @@ export function serveOfficialLogout(
     fake.route("/api/social/profile/deactive", () => ({}));
     fake.route("/api/v2/login/logOut", () => ({}));
     return { token, setsid };
+}
+
+/**
+ * Make the fake answer the id.zalo.me QR login the way Zalo does: the login page with its build number, the
+ * QR, the two long polls, and the three-hop redirect that ends in the `zpw_sek` cookie.
+ *
+ * @param {ReturnType<typeof installFakeZalo>} fake
+ * @param {object} [opts]
+ * @param {Array<number|"hang">} [opts.scan] - answers of successive waiting-scan calls: an `error_code`
+ *   (8 = not yet, 0 = scanned) or `"hang"` (never answers until aborted); the last one repeats
+ * @param {Array<number|"hang">} [opts.confirm] - the same for waiting-confirm (0 = confirmed, -13 = declined)
+ * @returns {{generated: number}} how many QR codes were generated
+ */
+export function serveQrLogin(fake, { scan = [8, 0], confirm = [0] } = {}) {
+    const state = { generated: 0 };
+    const json = (body) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const redirect = (location, extra = {}) => new Response(null, { status: 302, headers: { location, ...extra } });
+    const poll = (script, data) => {
+        let i = 0;
+        return async (req) => {
+            const step = script[Math.min(i++, script.length - 1)];
+            if (step === "hang") {
+                await new Promise((_, reject) => {
+                    req.signal?.addEventListener("abort", () => reject(req.signal.reason));
+                });
+            }
+            return json(step === 0 ? { error_code: 0, data } : { error_code: step, data: null });
+        };
+    };
+    const route = (method, host, path, handler) =>
+        fake.rawRoute((r) => r.method === method && r.host === host && r.path === path, handler);
+
+    route(
+        "GET",
+        "id.zalo.me",
+        "/account",
+        () => new Response('<script src="https://stc-zlogin.zdn.vn/main-2606161423.js"></script>', { status: 200 }),
+    );
+    route("POST", "id.zalo.me", "/account/logininfo", () => json({ error_code: 0, data: {} }));
+    route("POST", "id.zalo.me", "/account/authen/qr/generate", () => {
+        state.generated++;
+        return json({
+            error_code: 0,
+            data: { code: `qr-code-${state.generated}`, image: "data:image/png;base64,iVBORw0KGgo=" },
+        });
+    });
+    route(
+        "POST",
+        "id.zalo.me",
+        "/account/authen/qr/waiting-scan",
+        poll(scan, { display_name: "Fake Person", avatar: "https://avatar.invalid/a.png" }),
+    );
+    route("POST", "id.zalo.me", "/account/authen/qr/waiting-confirm", poll(confirm, {}));
+    route("GET", "id.zalo.me", "/account/checksession", () =>
+        redirect("https://jr.zaloapp.com/jr/syncsession?token=fake-t1&continue=https%3A%2F%2Fchat.zalo.me%2F"),
+    );
+    route("GET", "jr.zaloapp.com", "/jr/syncsession", () =>
+        redirect("https://jr.chat.zalo.me/jr/pushsession?token=fake-t2&continue=https%3A%2F%2Fchat.zalo.me%2F"),
+    );
+    route("GET", "jr.chat.zalo.me", "/jr/pushsession", () =>
+        redirect("https://chat.zalo.me/", {
+            "set-cookie": "zpw_sek=fake-sek-from-pushsession; Domain=chat.zalo.me; Path=/; HttpOnly; Secure",
+        }),
+    );
+    route("GET", "chat.zalo.me", "/", () => new Response("<html></html>", { status: 200 }));
+    return state;
 }
 
 /**

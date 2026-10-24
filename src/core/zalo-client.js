@@ -13,7 +13,8 @@ import { getActive } from "./accounts.js";
 import { getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
 import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
-import { API_TYPE, API_VERSION_INVALID, resolveApiVersion } from "../zalo/profile.js";
+import { API_TYPE, API_VERSION_INVALID, resolveApiVersion, resolveQrFlow } from "../zalo/profile.js";
+import { qrLogin } from "../zalo/qr-login.js";
 import { createDrStore, loginWithSession, stopUpkeep } from "../zalo/login.js";
 
 /**
@@ -259,6 +260,7 @@ export async function probeSavedLogin(creds, proxyUrl = null, { ownId = null } =
  * @returns {object} - {api, ownId}
  */
 export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
+    const flow = resolveQrFlow();
     const zalo = createZalo(proxyUrl);
 
     // Zalo's server reads the sec-ch-ua Client Hints headers (not the
@@ -274,6 +276,30 @@ export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
     // field — see extractCredentials()/loginWithCredentials() below.
     const fingerprint = generateDeviceFingerprint();
     info(`Using device fingerprint: Chrome (${fingerprint.secChUaPlatform.replace(/"/g, "")})`);
+
+    if (flow === "official") {
+        // The verified Web sequence (src/zalo/qr-login.js), then our own login with the session it produced.
+        const zaloOptions = buildOptions(proxyUrl);
+        const session = await qrLogin({
+            userAgent: fingerprint.userAgent,
+            zaloOptions,
+            apiType: zaloOptions.apiType,
+            apiVersion: zaloOptions.apiVersion,
+            onEvent: onQrEvent,
+        });
+        const api = await loginWithSession(
+            { imei: session.imei, cookie: session.cookies, userAgent: session.userAgent, language: session.language },
+            {
+                apiType: zaloOptions.apiType,
+                apiVersion: zaloOptions.apiVersion,
+                zaloOptions,
+                drStoreFor: (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null),
+            },
+        );
+        const ownId = api.getOwnId?.() || null;
+        setSession(api, ownId);
+        return { api, ownId };
+    }
 
     const api = await zalo.loginQR(
         {

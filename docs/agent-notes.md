@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2554** as of 2026-10-21 (2549 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2853** as of 2026-10-25 (2847 pass, 5 skipped, 1 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1044,6 +1044,28 @@ only success line; a login that works is a warning; anything else (no network, a
 
 **Left for the release:** the public wiki still describes the old logout. It is updated with the v3.0 release,
 not before: a wiki push is public immediately.
+
+## The official QR login exists, and is not the default yet (v3.0, 2026-10-25)
+
+`src/zalo/qr-login.js` is the QR login the captured Web client makes, and `ZALO_QR_FLOW=official` selects it. zca-js's
+flow stays the default until someone has scanned a QR with the official one and seen it work. The two differ: zca-js
+announces `continue=https://zalo.me/pc` to three calls, calls `verify-client` (which the official client never does),
+leaves out `cliGenQR`, and ends with a `jr/userinfo` request. The official sequence is the login page (whose script
+name carries the build `v`), `logininfo`, `generate` with `cliGenQR`, the `waiting-scan` and `waiting-confirm` long polls
+(asked again while the answer is 8), then `checksession` and the redirects it starts: `syncsession`, `pushsession` (which
+sets `zpw_sek`) and the chat page.
+
+**What it cannot do.** The official `waiting-confirm` also sends `bundle`, the trusted-device module's proof (it needs
+the key work that was ruled out). The new flow leaves it out, as the September login did, and the replay harness pins
+that as its one known difference. Whether Zalo accepts a login without it is exactly what the first live scan decides;
+an earlier attempt (2026-09-19) to move zca-js's flow to `continue=https://chat.zalo.me/` made the phone report the
+QR invalid, and nothing in the offline tests can say whether this one avoids that.
+
+**A header trap that cost a real bug.** zca-js's request helper merges headers by key, case-sensitively, and spells its
+own defaults `Accept`, `Origin` and `Referer`. A caller that passes `origin` besides it sends both, and a real fetch
+joins them into one value (`https://chat.zalo.me, https://id.zalo.me`). The fake records headers through `Headers`, which
+joins the same way, so the tests assert the exact value. The fake also follows a redirect itself unless the caller said
+`redirect: "manual"`, as fetch does, so a flow that forgets it loses the cookie each hop sets and a test fails.
 
 ## `npm run format` covers `src/` and `tests/` only
 

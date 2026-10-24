@@ -36,11 +36,15 @@ const V2_LOGOUT_URL = "https://stg-wpa.chat.zalo.me/api/v2/login/logOut";
 /** The only hosts whose `setsid` URLs are followed: an address read out of a page is not trusted further. */
 const SETSID_HOSTS = new Set(["jr.zaloapp.com", "jr.chat.zalo.me"]);
 
-/** Headers of a call the page's script makes (XHR/fetch). */
+/**
+ * Headers of a call the page's script makes (XHR/fetch). `Accept`, `Origin` and `Referer` are spelled exactly as
+ * zca-js's request helper spells its own defaults: it merges by key, so a second spelling would be sent besides
+ * the default and a real fetch joins the two into one garbled value.
+ */
 const SCRIPT_HEADERS = {
-    accept: "application/json, text/plain, */*",
-    origin: CHAT_ORIGIN,
-    referer: `${CHAT_ORIGIN}/`,
+    Accept: "application/json, text/plain, */*",
+    Origin: CHAT_ORIGIN,
+    Referer: `${CHAT_ORIGIN}/`,
     "sec-fetch-site": "same-site",
     "sec-fetch-mode": "cors",
     "sec-fetch-dest": "empty",
@@ -48,7 +52,7 @@ const SCRIPT_HEADERS = {
 
 /** Headers of a page load the browser makes itself. */
 const NAVIGATION_HEADERS = {
-    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     priority: "u=0, i",
     "upgrade-insecure-requests": "1",
     "sec-fetch-mode": "navigate",
@@ -179,8 +183,8 @@ export async function officialLogout(api) {
                 headers: {
                     ...NAVIGATION_HEADERS,
                     "content-type": "application/x-www-form-urlencoded",
-                    origin: ID_ORIGIN,
-                    referer: `${ID_ORIGIN}/`,
+                    Origin: ID_ORIGIN,
+                    Referer: `${ID_ORIGIN}/`,
                     "sec-fetch-site": "same-origin",
                 },
                 body: new URLSearchParams({ token }),
@@ -199,7 +203,7 @@ export async function officialLogout(api) {
                 method: "GET",
                 headers: {
                     ...NAVIGATION_HEADERS,
-                    referer: `${ID_ORIGIN}/`,
+                    Referer: `${ID_ORIGIN}/`,
                     "sec-fetch-site": "cross-site",
                     "sec-fetch-dest": "iframe",
                 },
@@ -212,7 +216,7 @@ export async function officialLogout(api) {
     await run("login page", async () => {
         const { status } = await send(ctx, `${ID_ORIGIN}/account?continue=${encodeURIComponent(`${CHAT_ORIGIN}/`)}`, {
             method: "GET",
-            headers: { ...NAVIGATION_HEADERS, referer: `${ID_ORIGIN}/`, "sec-fetch-site": "same-origin" },
+            headers: { ...NAVIGATION_HEADERS, Referer: `${ID_ORIGIN}/`, "sec-fetch-site": "same-origin" },
         });
         return status < 400 ? { ok: true, status } : { ok: false, status, error: `HTTP ${status}` };
     });

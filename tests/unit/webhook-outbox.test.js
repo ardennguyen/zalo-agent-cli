@@ -42,7 +42,14 @@ beforeEach(() => {
 });
 afterEach(() => {
     outbox.close();
-    rmSync(dir, { recursive: true, force: true });
+    // A delivery still finishing a poll (under load) or Windows (antivirus, the indexer) can hold a SQLite file for a
+    // moment after the test is over. A temp directory that cannot be removed yet is not a test failure: retry,
+    // and leave it for the OS rather than fail the suite on it.
+    try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+        /* left in the OS temp directory */
+    }
 });
 
 const ev = (n, extra = {}) => JSON.stringify({ event: "message", accountId: "A", id: `m${n}`, ...extra });

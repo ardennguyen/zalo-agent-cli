@@ -112,13 +112,38 @@ const SETTINGS = {
     keepalive: { alway_keepalive: 0, keepalive_duration: 0, time_deactive: 0 },
 };
 
+/** Deep-merge plain objects; arrays and scalars in `over` replace the base value. */
+function mergeSettings(base, over) {
+    const out = structuredClone(base);
+    for (const [k, v] of Object.entries(over ?? {})) {
+        out[k] =
+            v &&
+            typeof v === "object" &&
+            !Array.isArray(v) &&
+            out[k] &&
+            typeof out[k] === "object" &&
+            !Array.isArray(out[k])
+                ? mergeSettings(out[k], v)
+                : structuredClone(v);
+    }
+    return out;
+}
+
 /**
  * Install the fake server as globalThis.fetch.
  *
  * @param {object} [opts]
  * @param {string[]} [opts.omit] - service keys to leave out of the login's service map
+ * @param {string[]} [opts.wsUrls] - the WebSocket endpoints handed out at login. The default is a
+ *   reserved `.invalid` host nothing can reach; tests/helpers/fake-zalo passes the URL of a real
+ *   local socket here.
+ * @param {object} [opts.settings] - merged (objects deep, everything else replaced) over the
+ *   server settings getServerInfo returns, e.g. `{features: {socket: {retries: {...}}}}`
+ * @param {{error_code: number, error_message?: string}} [opts.loginError] - answer getLoginInfo
+ *   with this error instead of a session
  * @returns {{
- *   requests: Array<{method: string, host: string, path: string, query: object, params: object|null}>,
+ *   requests: Array<{method: string, host: string, path: string, query: object, params: object|null,
+ *     headers: object, form: object|null}>,
  *   calls: (pathPart: string) => Array<object>,
  *   route: (pathSuffix: string, handler: (req: object) => unknown) => void,
  *   clearRoutes: () => void,
@@ -127,7 +152,12 @@ const SETTINGS = {
  *   `requests` records EVERY request, the npm probe included, with `params`
  *   decrypted. A route handler's return value becomes the response's `data`.
  */
-export function installFakeZalo({ omit = [] } = {}) {
+export function installFakeZalo({
+    omit = [],
+    wsUrls = ["wss://ws.zalo.invalid/"],
+    settings = {},
+    loginError = null,
+} = {}) {
     const requests = [];
     const routes = new Map();
     const previous = globalThis.fetch;
@@ -152,6 +182,8 @@ export function installFakeZalo({ omit = [] } = {}) {
             path: url.pathname,
             query: Object.fromEntries(url.searchParams),
             params: null,
+            headers: Object.fromEntries(new Headers(init.headers ?? {})),
+            form: init.body instanceof URLSearchParams ? Object.fromEntries(init.body) : null,
         };
         requests.push(req);
 
@@ -159,6 +191,13 @@ export function installFakeZalo({ omit = [] } = {}) {
         if (url.host === "registry.npmjs.org") return reply({}, 404);
 
         if (url.pathname === "/api/login/getLoginInfo") {
+            if (loginError) {
+                return reply({
+                    error_code: loginError.error_code,
+                    error_message: loginError.error_message ?? "",
+                    data: null,
+                });
+            }
             const keyer = new zu.ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
             keyer.zcid = url.searchParams.get("zcid");
             keyer.zcid_ext = url.searchParams.get("zcid_ext");
@@ -167,7 +206,7 @@ export function installFakeZalo({ omit = [] } = {}) {
                 uid: FAKE.ownId,
                 zpw_enk: FAKE.sessionKey,
                 zpw_service_map_v3: serviceMap,
-                zpw_ws: ["wss://ws.zalo.invalid/"],
+                zpw_ws: wsUrls,
                 send2me_id: "1000000000000000001",
             };
             const payload = JSON.stringify({ error_code: 0, error_message: "", data: loginInfo });
@@ -179,7 +218,11 @@ export function installFakeZalo({ omit = [] } = {}) {
         }
 
         if (url.pathname === "/api/login/getServerInfo") {
-            return reply({ error_code: 0, error_message: "", data: { settings: SETTINGS, extra_ver: {} } });
+            return reply({
+                error_code: 0,
+                error_message: "",
+                data: { settings: mergeSettings(SETTINGS, settings), extra_ver: {} },
+            });
         }
 
         const enc =

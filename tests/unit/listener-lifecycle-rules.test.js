@@ -47,15 +47,16 @@ describe("listen: a reconnect must file a coverage gap", () => {
         assert.match(connectedHandler, /reportGap\(\s*downSince/, "the gap must span from when the socket went down");
     });
 
-    it("marks the socket down in both paths that take it down", () => {
-        // A drop reaches us as EITHER `disconnected` (zca-js retries) or
-        // `closed` (we re-login). Both must record it or the other path files
-        // a gap starting from null.
-        for (const handler of ["disconnected", "closed"]) {
+    it("marks the socket down in the path that takes it down", () => {
+        // Every drop reaches us as `disconnected`: the socket supervisor does the
+        // retrying, so there is no `closed` path any more (a rule below keeps it
+        // that way). It must record the start of the outage or the gap is filed
+        // from null.
+        for (const handler of ["disconnected"]) {
             const body = listen.slice(listen.indexOf(`listener.on("${handler}"`));
             assert.match(
                 body.slice(0, 900),
-                /downSince === null\) downSince = Date\.now\(\)/,
+                /downSince === null\) \{?\s*downSince = Date\.now\(\)/,
                 `the ${handler} handler must record when the outage started`,
             );
         }
@@ -83,14 +84,14 @@ describe("listen: Ctrl-C must not resurrect the socket", () => {
         assert.match(sigint.slice(0, 400), /stopping = true;/, "SIGINT must set stopping first");
     });
 
-    it("both lifecycle handlers bail out when stopping", () => {
+    it("the lifecycle handler bails out when stopping", () => {
         // listener.stop() emits closed(1000), which is indistinguishable from a
         // real drop. Without this the shutdown ran the RECOVERY path: ~5s after
         // the user saw "Stopped", the process re-logged in and opened a fresh
         // socket — with daemon.lock already released and daemon-channel.json
         // already deleted, so the next listen/mcp/sync took the free lock and
         // the two sessions flapped over code 3000.
-        for (const handler of ["disconnected", "closed"]) {
+        for (const handler of ["disconnected"]) {
             const body = listen.slice(listen.indexOf(`listener.on("${handler}"`));
             assert.match(body.slice(0, 400), /if \(stopping\) return;/, `${handler} must bail out when stopping`);
         }
@@ -161,7 +162,7 @@ describe("listen and mcp start must track coverage the same way", () => {
     it("mcp start bails out of its lifecycle handlers when stopping", () => {
         // listener.stop() closes with 1000; without this the shutdown files a
         // gap for a window in which nothing was missed.
-        for (const handler of ["disconnected", "closed"]) {
+        for (const handler of ["disconnected"]) {
             const body = mcp.slice(mcp.indexOf(`listener.on("${handler}"`));
             assert.match(
                 body.slice(0, 400),
@@ -172,27 +173,84 @@ describe("listen and mcp start must track coverage the same way", () => {
     });
 });
 
-describe("a duplicate-session exit leaves no lock behind, in either listener", () => {
+describe("a kick ends the daemon cleanly, in either listener", () => {
     const mcp = read("commands/mcp.js");
-    /** The `if (code === CLOSE_DUPLICATE) { ... }` block of one file. */
-    const duplicateBranch = (src) => {
-        const at = src.indexOf("if (code === CLOSE_DUPLICATE)");
-        assert.ok(at > 0, "could not find the duplicate-session branch -- this guard has drifted");
-        return src.slice(at, src.indexOf("process.exit(1)", at));
+    /** The `onKicked: () => { ... }` callback of one file. */
+    const kickedCallback = (src) => {
+        const at = src.indexOf("onKicked: () => {");
+        assert.ok(at > 0, "could not find the kicked callback -- this guard has drifted");
+        return src.slice(at, src.indexOf("},", at));
     };
 
     it("listen releases the lock and stops its channel before exiting, as mcp start does", () => {
-        // Red if listen goes back to a bare process.exit(1): daemon.lock and
+        // Red if listen goes back to a bare process.exit: daemon.lock and
         // daemon-channel.json stay behind until a stale-PID check reclaims them.
         for (const [name, src] of [
             ["listen", listen],
             ["mcp start", mcp],
         ]) {
-            assert.match(duplicateBranch(src), /dropLock\(\)/, `${name}'s duplicate branch must call dropLock()`);
+            const cb = kickedCallback(src);
+            assert.match(cb, /dropLock\(\)/, `${name}'s kicked callback must call dropLock()`);
+            assert.match(cb, /process\.exit\(EXIT_CODE\.KICKED\)/, `${name} must exit with the kicked code`);
             const helper = src.slice(src.indexOf("const dropLock = () => {"));
             const body = helper.slice(0, helper.indexOf("\n            };"));
             assert.match(body, /releaseLock\(accountDir\)/, `${name}'s dropLock() releases the lock`);
             assert.match(body, /channel\?\.stop\(\)/, `${name}'s dropLock() stops the channel`);
+        }
+    });
+
+    it("the other ending, a login Zalo keeps refusing, does the same", () => {
+        for (const [name, src] of [
+            ["listen", listen],
+            ["mcp start", mcp],
+        ]) {
+            const at = src.indexOf("onRevoked: (e) => {");
+            assert.ok(at > 0, `${name}: could not find the revoked callback`);
+            const cb = src.slice(at, src.indexOf("},", at + 60) + 2);
+            assert.match(cb, /dropLock\(\)/, `${name}'s revoked callback must call dropLock()`);
+            assert.match(cb, /process\.exit\(EXIT_CODE\.SESSION_REVOKED\)/, `${name} must exit with the revoked code`);
+        }
+    });
+});
+
+describe("listen and mcp start: the socket host keeps the socket alive", () => {
+    const mcp = read("commands/mcp.js");
+
+    it("neither has a `closed` ladder, and neither lets zca-js retry on its own", () => {
+        // The ladder (re-login after 5 s, again after 30 s, then exit) reconnected on a duplicate
+        // session until its retries ran out, evicting the other session again each time, and ran the
+        // same way for every cause. The supervisor retries by Zalo's own rules instead.
+        for (const [name, src] of [
+            ["listen.js", listen],
+            ["mcp.js", mcp],
+        ]) {
+            assert.doesNotMatch(src, /listener\.on\("closed"/, `${name} must not handle \`closed\` itself`);
+            assert.doesNotMatch(src, /retryOnClose: true/, `${name} must not let zca-js retry on its own`);
+            assert.doesNotMatch(src, /Re-login in 5s/, `${name} must not carry the old recovery ladder`);
+        }
+    });
+
+    it("both start the socket through the host, and stop it before the listener at shutdown", () => {
+        for (const [name, src] of [
+            ["listen.js", listen],
+            ["mcp.js", mcp],
+        ]) {
+            assert.match(src, /createSocketHost\(/, `${name} must build the socket host`);
+            assert.match(src, /socketHost\.start\(api\)/, `${name} must start the socket through the host`);
+            const stopAt = src.indexOf("socketHost.stop()");
+            const listenerStopAt = src.indexOf("getApi().listener.stop()");
+            assert.ok(stopAt > 0 && listenerStopAt > stopAt, `${name} must stop the supervisor before the listener`);
+        }
+    });
+
+    it("both give the host the same four callbacks, so they cannot differ", () => {
+        for (const [name, src] of [
+            ["listen.js", listen],
+            ["mcp.js", mcp],
+        ]) {
+            for (const key of ["relogin:", "onKicked:", "onRevoked:", "isStopping:"]) {
+                assert.ok(src.includes(key), `${name} must pass ${key} to the socket host`);
+            }
         }
     });
 });

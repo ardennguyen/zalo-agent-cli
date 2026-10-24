@@ -63,6 +63,7 @@ import {
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
@@ -72,9 +73,6 @@ import { ZaloNotifier } from "../mcp/notifier.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
-
-/** Zalo close code for duplicate web session — fatal, do not retry */
-const CLOSE_DUPLICATE = 3000;
 
 /** Sync2.Message.MessageStatus values carried by live receipts. */
 const STATUS_RECEIVED = 4;
@@ -917,46 +915,12 @@ export function registerMCPCommands(program) {
                 api.listener.on("disconnected", (code) => {
                     if (lifecycle.isStopping()) return;
                     console.error(`[mcp] Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);
+                    if (!lifecycle.isDown()) reconnectCount++;
                     lifecycle.noteDown();
                 });
 
-                api.listener.on("closed", async (code) => {
-                    if (lifecycle.isStopping()) return;
-                    lifecycle.noteDown();
-                    if (code === CLOSE_DUPLICATE) {
-                        dropLock();
-                        console.error("[mcp] Duplicate Zalo Web session detected. Exiting.");
-                        process.exit(1);
-                    }
-                    reconnectCount++;
-                    console.error(
-                        `[mcp] Connection closed (code: ${code}). Re-login in 5s... (reconnect #${reconnectCount}; ${socketContext.describe()})`,
-                    );
-                    await new Promise((r) => setTimeout(r, 5000));
-                    try {
-                        clearSession();
-                        await loginDaemonAccount(activeAcc);
-                        console.error("[mcp] Re-login successful. Restarting listener...");
-                        const newApi = getApi();
-                        attachListenerHandlers(newApi);
-                        newApi.listener.start({ retryOnClose: true });
-                    } catch (e) {
-                        console.error(`[mcp] Re-login failed: ${e.message}. Retrying in 30s...`);
-                        await new Promise((r) => setTimeout(r, 30000));
-                        try {
-                            clearSession();
-                            await loginDaemonAccount(activeAcc);
-                            const retryApi = getApi();
-                            attachListenerHandlers(retryApi);
-                            retryApi.listener.start({ retryOnClose: true });
-                            console.error("[mcp] Re-login successful on retry.");
-                        } catch (e2) {
-                            dropLock();
-                            console.error(`[mcp] Re-login retry failed: ${e2.message}. Exiting.`);
-                            process.exit(1);
-                        }
-                    }
-                });
+                // There is no `closed` handler on purpose; see the same place in `listen`. The socket
+                // host (src/core/socket-host.js) keeps this socket alive and ends the daemon on a kick.
 
                 api.listener.on("error", () => {
                     // WS errors are followed by close/disconnect — suppress to avoid noise
@@ -980,6 +944,8 @@ export function registerMCPCommands(program) {
                 } catch (e) {
                     console.error(`[mcp] Failed to stamp shutdown state: ${e.message}`);
                 }
+                // The supervisor first, so the close that follows is read as a stop and not as a drop.
+                socketHost.stop().catch(() => {});
                 try {
                     getApi().listener.stop();
                 } catch {
@@ -992,11 +958,37 @@ export function registerMCPCommands(program) {
                 process.exit(0);
             };
 
+            // The one place that keeps the socket alive, shared with `listen`.
+            const socketHost = createSocketHost({
+                log: (_level, message) => console.error(`[mcp] ${message}`),
+                health,
+                isStopping: () => lifecycle.isStopping(),
+                anomalyFile: join(accountDir, "sock-anomaly.json"),
+                relogin: async () => {
+                    clearSession();
+                    await loginDaemonAccount(activeAcc);
+                    const newApi = getApi();
+                    attachListenerHandlers(newApi);
+                    return newApi;
+                },
+                onKicked: () => {
+                    dropLock();
+                    process.exit(EXIT_CODE.KICKED);
+                },
+                onRevoked: (e) => {
+                    console.error(
+                        `[mcp] Zalo keeps refusing the saved login (${e?.message ?? e}). Run \`zalo-agent login\` again.`,
+                    );
+                    dropLock();
+                    process.exit(EXIT_CODE.SESSION_REVOKED);
+                },
+            });
+
             // Wire listener and start
             try {
                 const api = getApi();
                 attachListenerHandlers(api);
-                api.listener.start({ retryOnClose: true });
+                socketHost.start(api);
                 console.error("[mcp] Zalo listener started. MCP server ready.");
                 // This process holds the account's one permitted socket, so it
                 // performs the work that needs one on behalf of the CLI:

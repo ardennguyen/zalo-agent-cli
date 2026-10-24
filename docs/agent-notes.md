@@ -952,6 +952,39 @@ never edited by v3.0 work. What differs while v3.0 is in progress:
 - **Identity values live in `src/zalo/profile.js`**: the announced version and type, the computer
   name, the device label and the browser presets. Change one there, never at a call site.
 
+## The socket supervisor, and what a phone's "no" looks like (v3.0, 2026-10-24)
+
+**Where it lives.** `src/zalo/socket.js` keeps one socket alive (it drives a zca-js `Listener` that is started
+with no retry of its own); `src/zalo/retry.js` is the arithmetic of "when do I try again";
+`src/core/socket-host.js` is what `listen` and `mcp start` do around it, written once so the two cannot differ.
+
+**A duplicate session ends the daemon.** The old recovery ladder (zca-js retries, then a login after 5 s, again after
+30 s, then exit) reconnected on a duplicate-session close until its retries ran out. Each reconnect evicted the
+other session, which reconnected and evicted this one: the flapping §13 describes, produced by the daemon itself.
+Now the duplicate frame (`cmd 3000`), a frame with `error_code 600` or an HTTP 600 puts the supervisor in a terminal
+`kicked` state; the daemon releases its lock and exits with code **3**, and only a person taking the account back
+(`takeover()`) leaves that state. A saved login that Zalo refuses three times in a row exits with code **4**. A
+login that fails for lack of a network is asked again, slowly, for as long as it takes. The shipped systemd unit
+has `RestartPreventExitStatus=3 4`, so neither is restarted into the same state.
+
+**Retries follow the server's table.** `settings.features.socket` carries a per-key `{times, max}`; every close is
+mapped to a key by the official client's rules (1006 asks the network first, 1001-1015 is `internal`, Zalo's own
+codes keep their number), the delay is spread by `retry_noise_factor` and a week of persisted error history, a
+spent key rotates to the next endpoint, and after that the delay is Fibonacci and never ends. A key the server did
+not describe waits the last default delay; zca-js threw a TypeError there.
+Differences, all on the slow side: the counters start over only after a connection has stayed authenticated for a
+minute, and a close that nobody asked for is brought back by the 10 s interval check.
+
+**A phone's "no" is not an empty window.** The restore decided that the phone had confirmed with `status >= 4`.
+Statuses 6 to 10 (rejected, cancelled, busy, low storage, signed out) are all above 4, so a rejection read as
+"confirmed, and this window has nothing", and the run recorded success and closed the coverage gap it was meant to
+repair. Only 4 and 5 confirm now; 6 to 10 end the run with the phone's reason, release the session with reason 2
+(0 for a cancel) and record nothing. Batches that fail are failed per partition, not per shard, a batch the phone
+sends twice is one batch, a session with an `isLast` batch is finished only when every earlier index has arrived,
+and a run stops after ten failed batches or when more than half of ten or more have failed. The wait for a
+confirmation is ten minutes. The rules are in `src/core/sync-v2/transfer.js` as pure functions, so they are tested
+without a phone or the decryption assets.
+
 ## `npm run format` covers `src/` and `tests/` only
 
 A session ran `npx prettier --write` on `skill/SKILL.md` and

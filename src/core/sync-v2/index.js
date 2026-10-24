@@ -42,6 +42,18 @@ import { createSenderResolver } from "./senders.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
 import { startKeepAlive } from "./keepalive.js";
 import { DEVICE_LABEL } from "../../zalo/profile.js";
+import {
+    CONFIRM_WAIT_MS,
+    applyControl,
+    createTransferSession,
+    declineError,
+    isConfirmed,
+    isIdleTooLong,
+    isTransferSessionComplete,
+    judgeConversationRound,
+    readTransferControls,
+    shouldAbortOnFailures,
+} from "./transfer.js";
 import { attachLiveStore } from "../live-store.js";
 
 /**
@@ -385,11 +397,22 @@ export function createShardSchedule(shardCount, opts = {}) {
  * @param {number} st.total - shards requested
  * @param {number} [st.resumes=0] - reconnects used
  * @param {number} [st.waitMs] - the budget, for the timeout wording
+ * @param {number} [st.failedBatches] - batches the phone could not serve
+ * @param {boolean} [st.tooManyFailures] - the run was stopped because too many batches failed
  * @returns {{reason: string, error: string|null}}
  */
 export function describeRestoreOutcome(st) {
     const resumes = st.resumes || 0;
     const secs = Number.isFinite(st.waitMs) ? Math.round(st.waitMs / 1000) : null;
+
+    if (st.tooManyFailures) {
+        return {
+            reason: "too-many-failures",
+            error: st.messagesSaved
+                ? null
+                : "the phone could not serve most of the batches and none arrived — nothing was restored; try again later",
+        };
+    }
 
     if (st.socketDied && !st.messagesSaved) {
         return {
@@ -411,15 +434,13 @@ export function describeRestoreOutcome(st) {
         };
     }
     if (st.finished < st.total) return { reason: st.socketDied ? "socket-lost" : "partial", error: null };
+    // Every shard came back, but some of what the phone was asked for did not: that is not complete.
+    if (st.failedBatches > 0) return { reason: "partial", error: null };
     return { reason: "complete", error: null };
 }
 
 export function isSessionComplete(state) {
-    if (!state) return false;
-    if (state.sawLast) return true;
-    const want = state.want?.size ?? 0;
-    if (!want) return false; // conversation round: only isLast can end it
-    return (state.covered?.size ?? 0) >= want;
+    return isTransferSessionComplete(state);
 }
 
 /**
@@ -593,9 +614,13 @@ export class SyncV2 {
             false,
         );
     }
-    _dispose(listener, syncId) {
+    /**
+     * Release one sync session. `reason`: 0 the person cancelled, 1 it finished (the default), 2 it failed,
+     * 3 it is outdated.
+     */
+    _dispose(listener, syncId, reason = 1) {
         listener.sendWs(
-            { version: 1, cmd: 591, subCmd: 0, data: { data: { syncId, toDevice: 0, reason: 1 }, reqId: "req_disp" } },
+            { version: 1, cmd: 591, subCmd: 0, data: { data: { syncId, toDevice: 0, reason }, reqId: "req_disp" } },
             false,
         );
     }
@@ -627,7 +652,7 @@ export class SyncV2 {
     async restore(opts = {}) {
         const shardSize = Math.min(30, Math.max(1, opts.shardSize || 30));
         const waveSize = Math.min(30, Math.max(1, opts.waveSize || DEFAULT_WAVE_SIZE));
-        const waitMs = Math.max(30000, opts.waitMs || 120000);
+        const waitMs = Math.max(30000, opts.waitMs || CONFIRM_WAIT_MS);
         const onStatus = typeof opts.onStatus === "function" ? opts.onStatus : () => {};
         const log = (m) => onStatus({ phase: "info", detail: m });
         // The caller announces the window (it also decides the debounce on it);
@@ -652,44 +677,26 @@ export class SyncV2 {
         let L = this.api.listener;
         const sessions = new Map(); // syncId -> {kind, batches:[], statuses:[], done, err}
         const onMsg = async (buf) => {
-            if (!(buf instanceof Buffer) || buf.length < 4 || buf.readUInt16LE(1) !== 601) return;
-            let parsed;
-            try {
-                parsed = JSON.parse(buf.subarray(4).toString("utf8"));
-            } catch {
-                return;
-            }
-            let d;
-            try {
-                d =
-                    typeof parsed.data === "string" && typeof parsed.encrypt === "number"
-                        ? decodeFrame(parsed, L.cipherKey)
-                        : parsed;
-            } catch {
-                return;
-            }
-            for (const c of d?.data?.controls || []) {
-                if (c?.content?.act_type !== "transfer_sync2") continue;
-                let dj = c.content.data;
-                try {
-                    dj = JSON.parse(dj);
-                } catch {}
-                const s = sessions.get(dj?.syncId);
+            for (const ctl of readTransferControls(buf, (parsed) => decodeFrame(parsed, L.cipherKey))) {
+                const s = sessions.get(ctl.syncId);
                 if (!s) continue;
-                if (c.content.act === "transfer_status") {
-                    s.statuses.push(dj.status);
-                    if (dj.status === 3)
+                const ev = applyControl(s, { act: ctl.act, data: ctl.data });
+                if (ev.type === "status") {
+                    if (ev.cls.status === 3) {
                         onStatus({
                             phase: "confirm",
                             detail: "Confirm the sync request on your phone (tap ĐỒNG BỘ NGAY)",
                         });
-                } else if (c.content.act === "upload_batch") {
-                    s.batches.push(dj);
-                    for (const sc of dj.scopes || []) if (sc?.partition) s.covered.add(sc.partition);
-                    if (dj.isLast) s.sawLast = true;
-                    s.done = isSessionComplete(s);
-                } else if (/error/i.test(c.content.act)) {
-                    s.err = dj;
+                    } else if (ev.cls.fatal) {
+                        onStatus({ phase: "warn", detail: `your phone ended the sync: ${ev.cls.message}` });
+                    }
+                } else if (ev.type === "failure") {
+                    onStatus({
+                        phase: "warn",
+                        detail:
+                            `the phone could not serve ${ev.partitions.length} partition(s)` +
+                            (ev.code !== null ? ` (error ${ev.code})` : ""),
+                    });
                 }
             }
         };
@@ -814,19 +821,9 @@ export class SyncV2 {
 
         const newSession = (kind, wantPartitions = []) => {
             const id = randId();
-            sessions.set(id, {
-                kind,
-                batches: [],
-                statuses: [],
-                done: false,
-                sawLast: false,
-                err: null,
-                disposed: false,
-                // Completion is measured by coverage: every partition asked for
-                // has to come back in some batch's `scopes`.
-                want: new Set(wantPartitions.filter(Boolean)),
-                covered: new Set(),
-            });
+            // Completion is measured by coverage: every partition asked for has to come back in some
+            // batch's `scopes`, or be reported as failed (see ./transfer.js).
+            sessions.set(id, createTransferSession({ kind, want: wantPartitions }));
             return id;
         };
 
@@ -846,7 +843,9 @@ export class SyncV2 {
         const waitDone = async (id, budgetMs) => {
             const dl = Date.now() + resolveWaitBudget(budgetMs, waitMs);
             const s = sessions.get(id);
-            while (!s.done && !s.err && Date.now() < dl) {
+            while (!s.done && !s.err && !s.fatal && Date.now() < dl) {
+                // A phone that says it is idle and stays so is not coming back.
+                if (isIdleTooLong(s)) return "idle-timeout";
                 // A closed socket can never deliver the rest, so stop now
                 // instead of burning the whole budget waiting on a dead wire.
                 // zca-js sets `this.ws = null` on close, so an absent socket is
@@ -855,6 +854,8 @@ export class SyncV2 {
                 if (!L.ws || L.ws.readyState > 1) return "socket-closed";
                 await new Promise((r) => setTimeout(r, 300));
             }
+            // The phone ended the sync (rejected, cancelled, busy, low on storage, signed out).
+            if (s.fatal) return "declined";
             if (s.err) return "error";
             if (s.done) return "done";
             return "timeout";
@@ -966,7 +967,7 @@ export class SyncV2 {
             });
             let convWhy = await waitDone(convId, waitMs);
             let convSession = sessions.get(convId);
-            confirmed = convSession.statuses.some((st) => Number(st) >= 4);
+            confirmed = isConfirmed(convSession.statuses);
 
             // A socket that dies here loses the conversation list outright --
             // it only ever arrives on the socket that asked for it. Reconnect
@@ -992,22 +993,13 @@ export class SyncV2 {
                 convWhy = await waitDone(retryId, waitMs);
                 convSession = sessions.get(retryId);
                 convId = retryId;
-                confirmed = confirmed || convSession.statuses.some((st) => Number(st) >= 4);
+                confirmed = confirmed || isConfirmed(convSession.statuses);
             }
 
-            if (convSession.err) throw new Error(`conversation round failed: ${JSON.stringify(convSession.err)}`);
-            if (convWhy === "socket-closed") {
-                throw new Error(
-                    confirmed
-                        ? "the connection dropped after your phone confirmed, before the conversation list arrived"
-                        : "the connection dropped while waiting for your phone to confirm — re-run and you will be prompted again",
-                );
-            }
-            if (convWhy === "timeout" && !confirmed) {
-                throw new Error(
-                    `your phone did not answer the sync prompt within ${Math.round(waitMs / 1000)}s — the connection stayed up, so nothing was lost; re-run and confirm the prompt`,
-                );
-            }
+            // What the conversation round ended in (see judgeConversationRound): a phone that said no is
+            // not a window that was settled, so it ends here and nothing is recorded.
+            const verdict = judgeConversationRound({ why: convWhy, session: convSession, waitMs, confirmed });
+            if (verdict.error) throw verdict.error;
 
             const convs = [];
             await eachChunkObj(convSession, ekConv, C.SyncChunk, (obj) => {
@@ -1134,6 +1126,10 @@ export class SyncV2 {
             let socketDied = false;
             let timedOut = false;
             let stop = false;
+            let declined = null;
+            let failedBatches = 0;
+            let tooManyFailures = false;
+            const batchStats = { failed: 0, total: 0 };
             let rePrompted = false;
             // A reconnect is only on the table when the caller handed us a way
             // to reconnect -- this class never starts the listener itself.
@@ -1157,7 +1153,13 @@ export class SyncV2 {
                         lostSocket = true;
                         break;
                     }
-                    if (why === "timeout") {
+                    if (why === "declined") {
+                        // Same rule as the conversation round: the phone's no ends the run.
+                        declined = sessions.get(m.sid).fatal;
+                        stop = true;
+                        break;
+                    }
+                    if (why === "idle-timeout" || why === "timeout") {
                         stop = true;
                         timedOut = true;
                         onStatus({
@@ -1174,9 +1176,25 @@ export class SyncV2 {
                     if (schedule.resumes() && sessions.get(m.sid).statuses.some((st) => Number(st) === 3)) {
                         rePrompted = true;
                     }
+                    const served = sessions.get(m.sid);
                     if (why === "error") {
-                        onStatus({ phase: "warn", detail: `batch failed: ${JSON.stringify(sessions.get(m.sid).err)}` });
-                        continue;
+                        // Keep the part that did arrive: one bad frame must not drop a whole shard.
+                        onStatus({
+                            phase: "warn",
+                            detail: `batch failed: ${JSON.stringify(served.err)} — keeping the part that arrived`,
+                        });
+                    }
+                    const failedHere = served.failures.length + (served.err ? 1 : 0);
+                    failedBatches += failedHere;
+                    batchStats.failed += failedHere;
+                    batchStats.total += served.batches.length + failedHere;
+                    if (shouldAbortOnFailures(batchStats)) {
+                        stop = true;
+                        tooManyFailures = true;
+                        onStatus({
+                            phase: "warn",
+                            detail: `${batchStats.failed} of ${batchStats.total} batches failed — stopping and keeping what arrived`,
+                        });
                     }
 
                     const before = messagesSaved;
@@ -1310,7 +1328,10 @@ export class SyncV2 {
                 });
             }
             resumeInfo = { resumes: schedule.resumes(), rePrompted };
+            if (declined) throw declineError(declined);
             const outcome = describeRestoreOutcome({
+                failedBatches,
+                tooManyFailures,
                 socketDied,
                 timedOut,
                 confirmed,
@@ -1326,9 +1347,10 @@ export class SyncV2 {
             // within the hour is skipped unless --force -- but it settles no gap.
             recordRestoreSuccess(win, { resolveGaps: reason === "complete" });
         } finally {
-            for (const id of sessions.keys()) {
+            for (const [id, s] of sessions) {
                 try {
-                    this._dispose(L, id);
+                    // A session the phone ended is released with the reason that says so.
+                    this._dispose(L, id, s.disposeReason ?? 1);
                 } catch {}
             }
             await new Promise((r) => setTimeout(r, 1500));

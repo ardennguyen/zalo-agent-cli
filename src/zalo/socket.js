@@ -58,6 +58,12 @@ export const DEFAULT_TIMING = Object.freeze({
     stableMs: 60_000,
     /** The size above which a frame is not parsed just to look for an error code. */
     peekLimitBytes: 4096,
+    /**
+     * After this many retries in a row without a usable socket the supervisor says it is `stuck`
+     * (and again at every multiple). The owner may then try a fresh login: a refused session looks,
+     * from the socket's side, exactly like a network that never comes back.
+     */
+    stuckAfterAttempts: 8,
 });
 
 /** The wait between two questions to the maintenance gate is the poller's own; this only adapts `setTimeout`. */
@@ -120,6 +126,7 @@ const globalClock = Object.freeze({
  *
  * Events: `state` `{state, previous}`; `connected` (the key frame arrived: the socket is usable);
  * `disconnected` `{code, reason, wasConnected, requested}`; `retrying` `{key, delayMs, round, rotate, attempt}`;
+ * `stuck` `{attempts}` (no usable socket after that many retries in a row);
  * `kicked` `{via}`; `kickout-info` `{info}` (the reason, when it could be fetched); `session-invalid` `{kind, code}`;
  * `maintenance` `{state}`; `resume`; `fault` `{message}` (a problem inside the supervisor that did not stop it).
  */
@@ -568,6 +575,8 @@ export class SocketSupervisor extends EventEmitter {
             rotate: next.rotate,
             attempt: this._retryAttempts,
         });
+        const every = this.timing.stuckAfterAttempts;
+        if (every > 0 && this._retryAttempts % every === 0) this.emit("stuck", { attempts: this._retryAttempts });
         this._timers.retry = this.clock.setTimeout(() => {
             this._timers.retry = null;
             this._connect();

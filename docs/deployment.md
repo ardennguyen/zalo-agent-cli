@@ -26,7 +26,7 @@ Two conventions used throughout:
 
 **Topology.** Run exactly **one** socket-holding process per Zalo account: `zalo-agent mcp start --http <port> --auth <token>`. That process owns the account's one permitted WebSocket, holds `daemon.lock`, publishes `daemon-channel.json`, and is the only process that adds message rows to `zalo.db` while it runs: live traffic, its own catch-up from Zalo's offline queue, a `zalo-agent sync` restore and a `msg history` fetch all run inside it. Every bot workload is a **client** of that process: MCP clients over `POST /mcp` (the HTTP transport is stateless, so concurrent clients work, and each bot keeps its own read cursor by passing a `consumer` name), and CLI one-shots that hand anything needing the socket to the daemon over its loopback channel. No bot opens its own WebSocket.
 
-**Biggest constraint.** Zalo permits one web session per account; a duplicate is closed with code `3000`, and both `listen` and `mcp start` treat that as fatal and `process.exit(1)`. A browser tab running Zalo Web counts. This is not a tunable.
+**Biggest constraint.** Zalo permits one web session per account; a duplicate is closed with code `3000`, and both `listen` and `mcp start` treat that as final: they release the lock and exit with code `3`, and do not reconnect, because two clients that each reconnect evict each other forever. A login Zalo keeps refusing (three refused logins in a row) ends the daemon with code `4`. A browser tab running Zalo Web counts. This is not a tunable.
 
 **What several bots get today.** They can share one server safely for reading as well as sending: `zalo_mark_read` moves only the calling consumer's cursor and deletes nothing. What does not exist: push delivery of inbound events (bots poll), any per-bot identity or scope (one bearer token, self-declared consumer names, one thread filter per process), and any limit on outbound sends. See §1.4.
 
@@ -42,9 +42,10 @@ Two conventions used throughout:
 
 | Fact | Where |
 |---|---|
-| One web session per account; a duplicate closes with `3000` | `AGENTS.md` §13; `const CLOSE_DUPLICATE = 3000;` in both entry points, commented "fatal, do not retry" in `src/commands/mcp.js` |
-| `listen` exits on `3000` | `src/commands/listen.js`, the `closed` handler in `attachAllHandlers`: `error("Another Zalo Web session opened. Listener stopped."); process.exit(1);`. It does not release `daemon.lock` first; the next start reclaims it through the stale-PID check |
-| `mcp start` exits on `3000` | `src/commands/mcp.js`, the `closed` handler in `attachListenerHandlers`: `dropLock();` (stops the channel, releases the lock), then `[mcp] Duplicate Zalo Web session detected. Exiting.` and `process.exit(1);` |
+| One web session per account; a duplicate (the `cmd 3000` frame, an `error_code 600` frame or an HTTP 600) is final | `AGENTS.md` §13; the socket supervisor (`src/zalo/socket.js`) enters its terminal `kicked` state and reconnects nothing |
+| `listen` exits with code `3` on a kick | `src/commands/listen.js`, the `onKicked` callback it hands to the socket host (`src/core/socket-host.js`): `dropLock()` (stops the channel, releases the lock), then `process.exit(EXIT_CODE.KICKED)` |
+| `mcp start` exits with code `3` on a kick | `src/commands/mcp.js`, the same `onKicked` callback: `dropLock();` then `process.exit(EXIT_CODE.KICKED);` |
+| Both exit with code `4` when Zalo keeps refusing the saved login | the socket host's `onRevoked` callback, after three refused logins in a row; a login that fails for lack of a network is asked again, slowly, for as long as it takes |
 | `listen` and `mcp start` are mutually exclusive | Both call `acquireLock(accountDir)` before opening the database (`listen.js:86`, `mcp.js:136`) and exit when it fails |
 | The lock is a PID file with an atomic create | `src/core/lock.js` `acquireLock`: `fs.writeFileSync(lockPath, process.pid.toString(), { flag: "wx" })`, with a stale-PID reclaim through `isProcessAlive` (`process.kill(pid, 0)`) |
 
@@ -71,7 +72,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 > `tests/unit/listener-lifecycle-rules.test.js` holds both to the same gap rules (each builds a `SyncManager` and files a startup gap), and `tests/unit/self-heal-wiring.test.js` runs its wiring checks against both files. Loss detection is therefore no longer a reason to pick one over the other: pick `mcp start` for MCP bots (and webhook push / long-polling), `listen` for a CLI-only webhook or JSONL consumer.
 
 > [!NOTE]
-> **`mcp start`'s tools follow a re-login.** A socket that closes for good (a `closed` event with any code except `3000`; zca-js retries some drops itself) is handled inside the process: `clearSession()`, then `autoLogin()`, which builds a new zca-js API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 25 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
+> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new zca-js API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 25 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 What `daemon-channel.js` actually is
 
@@ -175,7 +176,7 @@ That was a bulk restore. A side writer can cause the same class of stall, capped
 ```mermaid
 flowchart TB
     phone["Owner's phone — Zalo app<br/>one 'ĐỒNG BỘ NGAY' tap per phone-backed restore"]
-    zalo[("Zalo servers<br/>ONE web session per account<br/>duplicate ⇒ close 3000, fatal<br/>offline queues 510_1 · 511_1")]
+    zalo[("Zalo servers<br/>ONE web session per account<br/>duplicate ⇒ kicked, exit 3<br/>offline queues 510_1 · 511_1")]
 
     subgraph host["Production host — one account"]
       direction TB
@@ -375,10 +376,11 @@ Description=Zalo MCP server (socket holder for one Zalo account)
 Documentation=https://github.com/ardennguyen/zalo-agent-cli
 After=network-online.target
 Wants=network-online.target
-# A duplicate-session exit (close code 3000 -> exit 1) means another web session
-# took the account. A restart takes it back and evicts that session, which evicts
-# this one again if it reconnects. Exit codes do not tell that apart from a failed
-# re-login, so cap the loop and alert on the unit entering `failed`.
+# A duplicate-session exit (exit code 3) means another web session took the
+# account. A restart takes it back and evicts that session, which evicts this one
+# again if it reconnects. Exit 3 is that case and exit 4 is a login Zalo keeps
+# refusing; RestartPreventExitStatus below keeps both down, and the unit enters
+# `failed` for your alert to catch.
 # These two keys belong in [Unit] (systemd.unit(5)), not in [Service].
 StartLimitIntervalSec=600
 StartLimitBurst=5
@@ -422,6 +424,9 @@ TimeoutStopSec=30
 
 Restart=always
 RestartSec=15
+# Exit 3: another session took the account. Exit 4: Zalo keeps refusing the saved login.
+# A restart fixes neither, so keep the unit down.
+RestartPreventExitStatus=3 4
 
 # mcp start writes every diagnostic with console.error() and reassigns
 # console.log to console.error, because stdout is the stdio JSON-RPC channel.

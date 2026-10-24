@@ -104,6 +104,27 @@ describe("fake Zalo", () => {
             assert.equal(gotKey, false);
         });
 
+        it("can start sending the key frame later: the next connection gets it", async () => {
+            zalo = await startFakeZalo({ autoAuth: false });
+            api = await zalo.login();
+            let keys = 0;
+            api.listener.on("cipher_key", () => keys++);
+            let connected = once(api.listener, "connected");
+            api.listener.start();
+            await connected;
+            await new Promise((r) => setTimeout(r, 100));
+            assert.equal(keys, 0);
+            const closed = once(api.listener, "closed");
+            zalo.sock.drop(undefined, 1000);
+            await closed;
+            zalo.sock.setAutoAuth(true);
+            connected = once(api.listener, "connected");
+            api.listener.start();
+            await connected;
+            for (let i = 0; i < 100 && keys !== 1; i++) await new Promise((r) => setTimeout(r, 10));
+            assert.equal(keys, 1, "the key frame did not come after setAutoAuth(true)");
+        });
+
         it("makes getLoginInfo fail on request: zca-js refuses the session", async () => {
             zalo = await startFakeZalo({ loginError: { error_code: 70, error_message: "maintenance" } });
             await assert.rejects(zalo.login(), /Đăng nhập thất bại/);

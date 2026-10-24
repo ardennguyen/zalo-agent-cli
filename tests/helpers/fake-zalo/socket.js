@@ -53,6 +53,7 @@ import { decodeClientFrame, ok, serverFrame } from "./frames.js";
  *   push: (cmd: number, sub: number, body: object, o?: {conn?: FakeConnection, top?: object}) => boolean,
  *   respond: (cmd: number, sub: number, fn: Function) => void,
  *   setPong: (on: boolean) => void,
+ *   setAutoAuth: (on: boolean) => void,
  *   kick: (conn?: FakeConnection) => boolean,
  *   drop: (conn?: FakeConnection, code?: number, reason?: string) => void,
  *   terminate: (conn?: FakeConnection) => void,
@@ -74,7 +75,7 @@ export async function startFakeSocket({ autoAuth = true, autoPong = true } = {})
     const received = [];
     const responders = new Map();
     const watchers = new Set();
-    const state = { pong: autoPong };
+    const state = { pong: autoPong, auth: autoAuth };
     const cipherKey = Buffer.alloc(32, 9).toString("base64");
 
     const notify = () => {
@@ -138,7 +139,7 @@ export async function startFakeSocket({ autoAuth = true, autoPong = true } = {})
             notify();
         });
 
-        if (autoAuth) send(conn, 1, 1, ok({}), { key: cipherKey });
+        if (state.auth) send(conn, 1, 1, ok({}), { key: cipherKey });
         notify();
     });
 
@@ -170,6 +171,9 @@ export async function startFakeSocket({ autoAuth = true, autoPong = true } = {})
         respond: (cmd, sub, fn) => responders.set(`${cmd}/${sub}`, fn),
         setPong: (on) => {
             state.pong = on;
+        },
+        setAutoAuth: (on) => {
+            state.auth = on;
         },
         kick: (conn = latest()) => send(conn, 3000, 0, ok({})),
         drop: (conn = latest(), code = 1001, reason = "") => conn?.ws.close(code, reason),

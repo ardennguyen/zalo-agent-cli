@@ -11,7 +11,7 @@ Description=Zalo MCP server for account %i
 Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/configuration.md
 After=network-online.target
 Wants=network-online.target
-# A duplicate-session exit (close code 3000) means another web session took the
+# A duplicate-session exit (exit code 3) means another web session took the
 # account; cap the restart loop and alert on `failed` instead of fighting it.
 StartLimitIntervalSec=600
 StartLimitBurst=5
@@ -41,6 +41,10 @@ KillSignal=SIGINT
 TimeoutStopSec=30
 Restart=always
 RestartSec=15
+# Exit 3 means another session took the account; exit 4 means Zalo keeps refusing the saved
+# login. A restart fixes neither (it would evict the other session again, or be refused
+# again), so the unit stays down and enters `failed` for your alert to catch.
+RestartPreventExitStatus=3 4
 
 StandardOutput=journal
 StandardError=journal

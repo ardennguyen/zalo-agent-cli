@@ -35,12 +35,15 @@ const FAST = {
         4002: { times: 10 },
     },
     retries_round_2: { default: { multiple: 15, max: 60 } },
-    establish_timeout: 150,
-    timeout_authen: 150,
+    establish_timeout: 1500, // generous: only the tests about these timeouts shorten them
+    timeout_authen: 1500,
     close_timeout: 100,
     reset_endpoint: 60_000,
 };
-const TIMING = { pingTimeoutMs: 60, intervalCheckMs: 30, stableMs: 10_000, resumeGapMs: 500 };
+// The ping timeout is generous here: only the tests about pings shorten it. A timeout of a few milliseconds
+// turns any scheduling hiccup of a loaded machine into a reconnect and fails tests that are about something else.
+const TIMING = { pingTimeoutMs: 2000, intervalCheckMs: 30, stableMs: 10_000, resumeGapMs: 500 };
+const PING_FAST = { pingTimeoutMs: 60 };
 
 /** Poll until `check()` is truthy or the time is up. */
 async function until(check, what, ms = 3000) {
@@ -149,7 +152,7 @@ describe("socket supervisor", () => {
 
     describe("dead-socket detection", () => {
         it("asks again after a missed echo, and closes and retries under 5011 only when the asks run out", async () => {
-            await rig({ server: { ping_interval: 30 } });
+            await rig({ server: { ping_interval: 30 }, timing: PING_FAST });
             sup.start();
             await until(() => sup.state === "connected", "connected");
             await until(() => sup.status().lastPongAt, "the first echo");
@@ -162,7 +165,7 @@ describe("socket supervisor", () => {
         });
 
         it("does not take an echo of some other ping for the answer", async () => {
-            await rig({ server: { ping_interval: 30 } });
+            await rig({ server: { ping_interval: 30 }, timing: PING_FAST });
             sup.start();
             await until(() => sup.state === "connected", "connected");
             await until(() => sup.status().lastPongAt, "the first echo");
@@ -173,7 +176,7 @@ describe("socket supervisor", () => {
         });
 
         it("reads the echo's id from the top of the frame as well as from its data", async () => {
-            await rig({ server: { ping_interval: 30 } });
+            await rig({ server: { ping_interval: 30 }, timing: { pingTimeoutMs: 500 } });
             sup.start();
             await until(() => sup.state === "connected", "connected");
             await until(() => sup.status().lastPongAt, "the first echo");
@@ -207,7 +210,7 @@ describe("socket supervisor", () => {
             });
             await new Promise((r) => hung.listen(0, "127.0.0.1", r));
             try {
-                await rig();
+                await rig({ settings: { establish_timeout: 150 } });
                 const url = `ws://127.0.0.1:${hung.address().port}/`;
                 api.listener.urls = [url];
                 api.listener.wsURL = url;
@@ -224,7 +227,7 @@ describe("socket supervisor", () => {
         });
 
         it("closes and retries under 5015 when the key frame never comes", async () => {
-            await rig({ fake: { autoAuth: false } });
+            await rig({ fake: { autoAuth: false }, settings: { timeout_authen: 150 } });
             sup.start();
             const retry = await until(() => named("retrying")[0], "a retry", 4000);
             assert.equal(retry.key, 5015);
@@ -303,7 +306,7 @@ describe("socket supervisor", () => {
         });
 
         it("a socket the supervisor closed on purpose is retried under the key that asked, not read as 1000", async () => {
-            await rig({ server: { ping_interval: 30 } });
+            await rig({ server: { ping_interval: 30 }, timing: PING_FAST });
             sup.start();
             await until(() => sup.state === "connected", "connected");
             await until(() => sup.status().lastPongAt, "the first echo");

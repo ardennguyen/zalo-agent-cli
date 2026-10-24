@@ -46,6 +46,10 @@ cloud index and bulk media remain CLI operations.
 `partial`, `timeout`, `socket-lost` or unconfirmed result must be reported as
 such. The runner preserves received data; the job tracker adds no database writes.
 Failure produces `state: "failed"` with `error`; the stage lock is always released.
+A phone that rejects the request, cancels it, is busy, is low on storage or is
+signed out also fails the job, with that reason in `error`: nothing is restored
+and nothing is recorded as synced. Only the phone's confirmations count as
+`confirmed`, and the wait for one is ten minutes.
 
 Use a unique 1–64 character `requestId` (`A-Z a-z 0-9 . _ : -`) for a new run.
 Retry the same key **and arguments** after a client timeout: while retained, it

@@ -7,6 +7,7 @@ import { error, info, success, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow, FULL_HISTORY_FROM } from "../core/sync-v2/index.js";
+import { CONFIRM_WAIT_MS } from "../core/sync-v2/transfer.js";
 import {
     downloadSyncedMedia,
     pruneDownloadedMedia,
@@ -81,9 +82,9 @@ export function registerSyncCommands(program) {
         .option("--from <date>", "Restore messages from this date onward (YYYY-MM-DD); overrides --days")
         .option(
             "-w, --wait <seconds>",
-            "How long to wait for the phone confirmation (floored at 180)",
+            "How long to wait for the phone confirmation (floored at 600, as Zalo's own clients wait)",
             parseIntOption,
-            180,
+            600,
         )
         .option("--no-messages", "Skip the message restore (no phone prompt)")
         .option("--no-reactions", "Skip the reaction backlog")
@@ -1016,7 +1017,7 @@ async function runTransferSync(activeAcc, opts) {
     }
 
     // Transfer sync needs time for the phone confirmation; use a generous window.
-    const waitMs = Math.max(180, Number(opts.wait) || 0) * 1000;
+    const waitMs = Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000;
     let exitCode = 1;
 
     // A running daemon holds the account's one web session and can run the
@@ -1579,7 +1580,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                     days: opts.days ?? null,
                     from: opts.from,
                     shardSize: opts.shardSize,
-                    waitMs: Math.max(180, Number(opts.wait) || 0) * 1000,
+                    waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
                 },
                 onEvent: ({ phase, detail }) => {
                     if (phase === "confirm") warning(detail);
@@ -1677,7 +1678,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                             days: opts.days,
                             from: opts.from,
                             shardSize: opts.shardSize,
-                            waitMs: Math.max(180, Number(opts.wait) || 0) * 1000,
+                            waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
                             // The window-level heartbeat above covers this stage.
                             keepAlive: false,
                             reconnect: () => reconnectListener(api),

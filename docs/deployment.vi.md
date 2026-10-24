@@ -26,7 +26,7 @@ Hai quy ước dùng xuyên suốt tài liệu:
 
 **Mô hình triển khai (Topology).** Chỉ chạy **đúng một** tiến trình giữ kết nối WebSocket cho mỗi tài khoản Zalo: `zalo-agent mcp start --http <port> --auth <token>` (hoặc kèm `--cert`/`--key` cho HTTPS). Tiến trình đó giữ WebSocket duy nhất được phép của tài khoản, giữ `daemon.lock`, công bố `daemon-channel.json`, và là tiến trình duy nhất ghi thêm dòng tin nhắn vào `zalo.db` khi đang chạy: tin nhắn trực tiếp (live), luồng tự bù khoảng hở (self-heal) từ hàng đợi ngoại tuyến của Zalo, tiến trình khôi phục `zalo-agent sync` và lệnh `msg history` đều chạy bên trong nó. Mọi tác vụ bot là **client** của tiến trình này: các MCP client gọi qua `POST /mcp` (giao thức HTTP/HTTPS hoàn toàn phi trạng thái cho phép nhiều client gọi đồng thời, và mỗi bot giữ con trỏ đọc riêng bằng tham số `consumer`), và các lệnh CLI ngắn hạn chuyển tiếp những tác vụ cần socket vào daemon qua kênh loopback. Không có bot nào tự mở WebSocket thứ hai.
 
-**Ràng buộc lớn nhất.** Zalo chỉ cho phép một phiên web trên mỗi tài khoản; phiên trùng lặp sẽ bị đóng với mã `3000`, và cả `listen` lẫn `mcp start` đều coi đó là lỗi nghiêm trọng và thoát (`process.exit(1)`). Mở một tab trình duyệt Zalo Web cũng tính là một phiên. Đây là quy tắc từ phía máy chủ Zalo, không thể cấu hình bỏ qua.
+**Ràng buộc lớn nhất.** Zalo chỉ cho phép một phiên web trên mỗi tài khoản; phiên trùng lặp sẽ bị đóng với mã `3000`, và cả `listen` lẫn `mcp start` đều coi đó là điểm kết thúc: chúng nhả lock và thoát với mã `3`, không kết nối lại, vì hai client cùng kết nối lại sẽ đá nhau mãi. Một phiên đăng nhập mà Zalo liên tục từ chối (ba lần bị từ chối liên tiếp) kết thúc daemon với mã `4`. Mở một tab trình duyệt Zalo Web cũng tính là một phiên. Đây là quy tắc từ phía máy chủ Zalo, không thể cấu hình bỏ qua.
 
 **Những gì nhiều bot dùng chung một server có sẵn hôm nay.** Nhiều bot có thể dùng chung một server an toàn cho cả việc đọc lẫn gửi: `zalo_mark_read` chỉ dịch chuyển con trỏ của đúng `consumer` đang gọi và không xóa bất kỳ tin nhắn nào khỏi bộ đệm. Về chiều nhận tin (inbound), bot có thể dùng long-polling 0% CPU (`zalo_wait_for_message` hoặc `GET /events/wait`), nhận webhook đẩy (`-w, --webhook <url>` kèm `--webhook-secret`), hoặc polling theo con trỏ (`zalo_get_messages`). Hỗ trợ xác thực đa client qua OAuth 2.0 (`oauth.clients[]`) và Bearer token. Xem §1.4.
 
@@ -42,9 +42,10 @@ Hai quy ước dùng xuyên suốt tài liệu:
 
 | Thực tế | Vị trí trong code |
 |---|---|
-| Một phiên web mỗi tài khoản; phiên trùng bị đóng với mã `3000` | `AGENTS.md` §13; `const CLOSE_DUPLICATE = 3000;` ở cả hai điểm vào, chú thích "fatal, do not retry" trong `src/commands/mcp.js` |
-| `listen` thoát khi gặp `3000` | `src/commands/listen.js`, handler `closed` trong `attachAllHandlers`: `error("Another Zalo Web session opened. Listener stopped."); process.exit(1);` |
-| `mcp start` thoát khi gặp `3000` | `src/commands/mcp.js`, handler `closed` trong `attachListenerHandlers`: `dropLock();` (dừng channel, nhả lock), in `[mcp] Duplicate Zalo Web session detected. Exiting.` rồi `process.exit(1);` |
+| Một phiên web mỗi tài khoản; phiên trùng (khung `cmd 3000`, khung `error_code 600` hoặc HTTP 600) là điểm kết thúc | `AGENTS.md` §13; bộ giám sát socket (`src/zalo/socket.js`) vào trạng thái cuối `kicked` và không kết nối lại gì |
+| `listen` thoát với mã `3` khi bị đá | `src/commands/listen.js`, callback `onKicked` đưa cho socket host (`src/core/socket-host.js`): `dropLock()` (dừng channel, nhả lock), rồi `process.exit(EXIT_CODE.KICKED)` |
+| `mcp start` thoát với mã `3` khi bị đá | `src/commands/mcp.js`, cùng callback `onKicked`: `dropLock();` rồi `process.exit(EXIT_CODE.KICKED);` |
+| Cả hai thoát với mã `4` khi Zalo liên tục từ chối phiên đã lưu | callback `onRevoked` của socket host, sau ba lần đăng nhập bị từ chối liên tiếp; đăng nhập thất bại vì không có mạng thì được hỏi lại, chậm dần, bao lâu cũng được |
 | `listen` và `mcp start` loại trừ lẫn nhau | Cả hai đều gọi `acquireLock(accountDir)` trước khi mở cơ sở dữ liệu và thoát ngay nếu không lấy được khóa |
 | Khóa là file PID được tạo nguyên tử (atomic) | `src/core/lock.js` `acquireLock`: `fs.writeFileSync(lockPath, process.pid.toString(), { flag: "wx" })`, tự thu hồi khóa cũ nếu kiểm tra `isProcessAlive` (`process.kill(pid, 0)`) thấy tiến trình đã chết |
 
@@ -71,7 +72,7 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 > Chọn `mcp start` khi dùng MCP bots (kèm hỗ trợ webhook và long-polling), hoặc chọn `listen` khi chỉ cần đẩy toàn bộ các loại sự kiện ra webhook/JSONL thuần CLI.
 
 > [!NOTE]
-> **Các MCP tools của `mcp start` tự động đi theo phiên đăng nhập mới sau khi re-login.** Khi socket đóng (với bất kỳ mã nào khác `3000`), tiến trình tự xử lý bên trong: `clearSession()`, sau đó `autoLogin()` tạo đối tượng API `zca-js` mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, daemon channel, trình tải media và cả 25 MCP tools đều đi qua `liveApi(getApi)` (`src/core/live-api.js`) nên luôn gọi đúng phiên hiện hành. Trong vài giây đang re-login, lệnh gọi tool sẽ báo `"The Zalo session is logging in again after a dropped connection; try again in a few seconds."`
+> **Các MCP tools của `mcp start` tự động đi theo phiên đăng nhập mới sau khi re-login.** Khi bộ giám sát không giữ được socket trên phiên hiện tại (Zalo từ chối phiên, hoặc sau 8 lần thử liên tiếp vẫn không có socket dùng được), socket host tự xử lý bên trong tiến trình: `clearSession()`, sau đó đăng nhập, tạo đối tượng API `zca-js` mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, daemon channel, trình tải media và cả 25 MCP tools đều đi qua `liveApi(getApi)` (`src/core/live-api.js`) nên luôn gọi đúng phiên hiện hành. Trong vài giây đang re-login, lệnh gọi tool sẽ báo `"The Zalo session is logging in again after a dropped connection; try again in a few seconds."`
 
 ### 1.2 Bản chất của `daemon-channel.js`
 
@@ -130,7 +131,7 @@ Những điểm cần lưu ý:
 ```mermaid
 flowchart TB
     phone["Điện thoại của chủ tài khoản — ứng dụng Zalo<br/>bấm 'ĐỒNG BỘ NGAY' một lần khi khôi phục lịch sử từ điện thoại"]
-    zalo[("Máy chủ Zalo<br/>MỘT phiên web mỗi tài khoản<br/>trùng phiên ⇒ đóng 3000<br/>hàng đợi ngoại tuyến 510_1 · 511_1")]
+    zalo[("Máy chủ Zalo<br/>MỘT phiên web mỗi tài khoản<br/>trùng phiên ⇒ kicked, thoát mã 3<br/>hàng đợi ngoại tuyến 510_1 · 511_1")]
 
     subgraph host["Máy chủ Production — một tài khoản"]
       direction TB
@@ -298,6 +299,9 @@ TimeoutStopSec=30
 
 Restart=always
 RestartSec=15
+# Exit 3: một phiên khác đã lấy tài khoản. Exit 4: Zalo liên tục từ chối phiên đã lưu.
+# Khởi động lại không sửa được cả hai, nên giữ unit ở trạng thái dừng.
+RestartPreventExitStatus=3 4
 
 StandardOutput=journal
 StandardError=journal

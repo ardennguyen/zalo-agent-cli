@@ -47,6 +47,10 @@ Kiểm tra `result.reason`, `confirmed`, số tin đã lưu và `zalo_coverage` 
 Phải báo đúng kết quả `partial`, `timeout`, `socket-lost` hoặc chưa xác nhận.
 Runner giữ dữ liệu đã nhận; bộ theo dõi job không thêm thao tác ghi database.
 Lỗi trả `state: "failed"` và `error`; luôn nhả khóa stage.
+Điện thoại từ chối yêu cầu, hủy, đang bận, thiếu dung lượng hoặc đã đăng xuất
+cũng làm job thất bại, với lý do đó trong `error`: không khôi phục gì và không
+ghi nhận là đã đồng bộ. Chỉ các xác nhận từ điện thoại mới tính là `confirmed`,
+và thời gian chờ xác nhận là mười phút.
 
 Dùng `requestId` riêng dài 1–64 ký tự (`A-Z a-z 0-9 . _ : -`) cho lần chạy mới.
 Sau timeout phía client, thử lại cùng khóa **và tham số**: khi job còn được giữ,

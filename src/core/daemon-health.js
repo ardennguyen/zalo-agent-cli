@@ -54,6 +54,7 @@ const ageSec = (since, now) => (typeof since === "number" ? Math.max(0, Math.rou
  *   noteUp: () => void,
  *   noteDown: (code?: number|string|null) => void,
  *   noteStopping: () => void,
+ *   noteSocketState: (state: string) => void,
  *   noteEvent: (kind: string, info?: {self?: boolean}) => void,
  *   setSource: (name: 'webhook'|'buffer'|'gaps'|'stage', fn: () => any) => void,
  *   snapshot: () => object,
@@ -109,6 +110,20 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
         noteStopping() {
             setState("stopping");
         },
+        /**
+         * What the socket supervisor says it is doing (src/zalo/socket.js). Up and down are still decided by
+         * the listener's own events; this adds the states a person must be able to see from outside:
+         * Zalo in maintenance, the account taken by another session, and a login being redone.
+         *
+         * @param {string} state - a supervisor state
+         */
+        noteSocketState(state) {
+            if (socketState === "stopping") return;
+            const named = { maintenance: "maintenance", kicked: "kicked", "session-invalid": "relogin" }[state];
+            if (named) return setState(named);
+            // Any other supervisor state ends a hold, but leaves up and down to the listener's events.
+            if (["maintenance", "kicked", "relogin"].includes(socketState)) setState("down");
+        },
         noteEvent(eventKind, { self = false } = {}) {
             lastEventAt = now();
             if (eventKind in counts) counts[eventKind]++;
@@ -162,6 +177,10 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
                     `socket down for ${ageSec(socketSince, t)}s (last close code ${lastClose?.code ?? "unknown"})`,
                 );
             }
+            if (socketState === "maintenance") warnings.push("Zalo is in maintenance; the daemon is waiting for it");
+            if (socketState === "kicked")
+                warnings.push("another Zalo session took this account; the daemon does not reconnect");
+            if (socketState === "relogin") warnings.push("Zalo refused the session; the daemon is logging in again");
             if (webhook && webhook.pending && webhook.oldestPendingAgeMs >= WEBHOOK_AGE_WARN_MS) {
                 warnings.push(
                     `webhook backlog: ${webhook.pending} queued, oldest ${Math.round(webhook.oldestPendingAgeMs / 1000)}s` +

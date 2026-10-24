@@ -48,6 +48,7 @@ import { createDeliveredReceipts } from "../core/receipts.js";
 import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
@@ -68,9 +69,6 @@ const FRIEND_EVENT_LABELS = {
     7: "unblocked",
 };
 const FRIEND_REQUEST_TYPE = 2;
-
-/** Zalo close code for duplicate web session */
-const CLOSE_DUPLICATE = 3000;
 
 export function registerListenCommand(program) {
     program
@@ -912,65 +910,57 @@ export function registerListenCommand(program) {
                     // First drop wins: a flapping socket that emits several
                     // `disconnected` before one `connected` is ONE outage, and the
                     // gap must span from the start of it.
-                    if (downSince === null) downSince = Date.now();
+                    if (downSince === null) {
+                        downSince = Date.now();
+                        reconnectCount++;
+                    }
                     syncManager.markDisconnected();
                 });
 
-                api.listener.on("closed", async (code, _reason) => {
-                    // A deliberate stop closes with 1000 and must not be treated
-                    // as a failure to recover from.
-                    if (stopping) return;
-                    if (code === CLOSE_DUPLICATE) {
-                        error("Another Zalo Web session opened. Listener stopped.");
-                        dropLock();
-                        process.exit(1);
-                    }
-                    reconnectCount++;
-                    if (downSince === null) downSince = Date.now();
-                    syncManager.markDisconnected();
-                    warning(
-                        `Connection closed (code: ${code}). Re-login in 5s... (uptime: ${uptime()}; ${socketContext.describe()})`,
-                    );
-                    await new Promise((r) => setTimeout(r, 5000));
-                    try {
-                        clearSession();
-                        await loginDaemonAccount(activeAcc);
-                        info("Re-login successful. Restarting listener...");
-                        // Attach ALL handlers to the NEW api (including lifecycle),
-                        // and repoint the SyncManager at it so its bookkeeping
-                        // runs against a live, authenticated client.
-                        const newApi = getApi();
-                        syncManager.api = newApi;
-                        attachAllHandlers(newApi);
-                        newApi.listener.start({ retryOnClose: true });
-                    } catch (e) {
-                        error(`Re-login failed: ${e.message}. Retrying in 30s...`);
-                        await new Promise((r) => setTimeout(r, 30000));
-                        try {
-                            clearSession();
-                            await loginDaemonAccount(activeAcc);
-                            const retryApi = getApi();
-                            syncManager.api = retryApi;
-                            attachAllHandlers(retryApi);
-                            retryApi.listener.start({ retryOnClose: true });
-                            info("Re-login successful on retry.");
-                        } catch (e2) {
-                            error(`Re-login retry failed: ${e2.message}. Exiting.`);
-                            process.exit(1);
-                        }
-                    }
-                });
+                // There is no `closed` handler on purpose. Keeping this socket alive is the socket
+                // host's job (src/core/socket-host.js, shared with `mcp start`): it retries by Zalo's own
+                // rules, treats a duplicate session as the end, and logs in again only when the session
+                // was refused. The `closed` ladder this replaced reconnected on a duplicate session and
+                // so evicted the other one again and again.
 
                 api.listener.on("error", (_err) => {
                     // WS errors are followed by close/disconnect — don't crash
                 });
             }
 
+            // The one place that keeps the socket alive, shared with `mcp start`.
+            const socketHost = createSocketHost({
+                log: (level, message) =>
+                    level === "error" ? error(message) : level === "warn" ? warning(message) : info(message),
+                health,
+                isStopping: () => stopping,
+                anomalyFile: join(accountDir, "sock-anomaly.json"),
+                relogin: async () => {
+                    clearSession();
+                    await loginDaemonAccount(activeAcc);
+                    const newApi = getApi();
+                    // Attach ALL handlers to the NEW api (including lifecycle), and repoint the
+                    // SyncManager at it so its bookkeeping runs against a live, authenticated client.
+                    syncManager.api = newApi;
+                    attachAllHandlers(newApi);
+                    return newApi;
+                },
+                onKicked: () => {
+                    dropLock();
+                    process.exit(EXIT_CODE.KICKED);
+                },
+                onRevoked: (e) => {
+                    error(`Zalo keeps refusing the saved login (${e?.message ?? e}). Run \`zalo-agent login\` again.`);
+                    dropLock();
+                    process.exit(EXIT_CODE.SESSION_REVOKED);
+                },
+            });
+
             // --- Initial start ---
             try {
                 const api = getApi();
                 attachAllHandlers(api);
-                api.listener.start({ retryOnClose: true });
+                socketHost.start(api);
 
                 info("Listening for Zalo events... Press Ctrl+C to stop.");
                 info(`Events: ${opts.events}`);
@@ -1016,6 +1006,8 @@ export function registerListenCommand(program) {
                 channel?.stop();
                 webhookDelivery?.stop();
                 deliveredReceipts.stop();
+                // The supervisor first, so the close that follows is read as a stop and not as a drop.
+                socketHost.stop().catch(() => {});
                 try {
                     getApi().listener.stop();
                 } catch (e) {

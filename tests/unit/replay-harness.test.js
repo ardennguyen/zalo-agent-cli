@@ -283,20 +283,21 @@ describe("replay harness: today's code against the official Web client", () => {
             assertConforms(diffBody(dispose.data, WEB_FRAMES["591"], "591"), "the 591 request");
         });
 
-        it("sends the old-message pull (510) differing in exactly one key: req_id for reqId", async () => {
+        it("sends the old-message pull (510) the official way: reqId, not zca-js's req_id (X5)", async () => {
             api.listener.requestOldMessages(0, null);
             const frame = await zalo.sock.waitFor((f) => f.cmd === 510);
-            assert.deepEqual(diffBody(frame.data, WEB_FRAMES.pull, "510"), ['510: key "reqId" is missing']);
-            assert.match(frame.data.req_id, /^req_\d+$/, "zca-js's own key is gone: this pin needs a second look");
+            assertConforms(diffBody(frame.data, WEB_FRAMES.pull, "510"), "the 510 pull");
+            assert.equal("req_id" in frame.data, false, "zca-js's own key is gone");
+            assert.match(frame.data.reqId, /^req_\d+$/);
         });
 
-        it(
-            "sends the old-message pull the official way",
-            { todo: "X5 (P3): our own socket layer sends reqId" },
-            async () => {
-                const frame = zalo.sock.framesOf(510, 1).at(-1);
-                assertConforms(diffBody(frame.data, WEB_FRAMES.pull, "510"), "the 510 pull");
-            },
-        );
+        it("sends the old-reaction pulls (610, 611) the official way too", async () => {
+            api.listener.requestOldReactions(0, null);
+            api.listener.requestOldReactions(1, null);
+            for (const cmd of [610, 611]) {
+                const frame = await zalo.sock.waitFor((f) => f.cmd === cmd);
+                assertConforms(diffBody(frame.data, WEB_FRAMES.pull, String(cmd)), `the ${cmd} pull`);
+            }
+        });
     });
 });

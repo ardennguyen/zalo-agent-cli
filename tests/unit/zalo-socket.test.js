@@ -134,7 +134,8 @@ describe("socket supervisor", () => {
             await rig();
             sup.start();
             await until(() => sup.state === "connected", "connected");
-            api.listener.requestOldMessages(0, null);
+            // a frame sent the plain zca-js way (requireId defaulting to true), through the wrapper
+            api.listener.sendWs({ version: 1, cmd: 510, subCmd: 1, data: { first: true, lastId: null, preIds: [] } });
             const frame = await zalo.sock.waitFor((f) => f.cmd === 510);
             assert.match(frame.data.req_id, /^req_\d+$/);
         });

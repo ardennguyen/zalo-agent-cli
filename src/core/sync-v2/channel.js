@@ -22,6 +22,7 @@
  */
 import { readFileSync } from "node:fs";
 import { writeFileAtomic } from "../../utils/atomic-file.js";
+import { nextReqId as sharedNextReqId } from "../../zalo/req-id.js";
 import { DISPOSE_REASON } from "./transfer.js";
 
 /** How long a request waits for its ack. */
@@ -144,6 +145,7 @@ export class SyncRequestError extends Error {
  * @param {number} [p.disposeAckMs]
  * @param {readonly number[]} [p.retryDelaysMs]
  * @param {(message: string) => void} [p.log]
+ * @param {() => string} [p.nextReqId] - the request id source; the process-wide counter by default
  * @returns {{
  *   handleFrame: (buf: Buffer) => boolean,
  *   nextUssidx: () => number,
@@ -163,8 +165,8 @@ export function createSyncChannel({
     disposeAckMs = DISPOSE_ACK_MS,
     retryDelaysMs = RETRY_DELAYS_MS,
     log = () => {},
+    nextReqId = sharedNextReqId,
 }) {
-    let reqCounter = 0;
     let ussidx = 0;
     /** reqId -> resolver of the ack */
     const waiting = new Map();
@@ -172,8 +174,6 @@ export function createSyncChannel({
     const sessions = new Map();
     /** syncIds whose request has gone out and whose ack is still awaited */
     const inFlight = new Set();
-
-    const nextReqId = () => `req_${++reqCounter}`;
 
     const persist = () => {
         if (!store) return;

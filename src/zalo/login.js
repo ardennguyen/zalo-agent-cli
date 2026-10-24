@@ -26,6 +26,7 @@ import { errorCodeOf } from "./errors.js";
 import { AVATAR_SIZE, COMPUTER_NAME, browserCodeOf, osCodeOf } from "./profile.js";
 import { withBrowserHeaders } from "./headers.js";
 import { startUpkeep } from "./upkeep.js";
+import { installOfficialPulls } from "./pulls.js";
 
 const require = createRequire(import.meta.url);
 const zcaDir = dirname(require.resolve("zca-js"));
@@ -358,6 +359,7 @@ export async function loginWithSession(
 
     const api = new API(ctx, loginInfo.zpw_service_map_v3, loginInfo.zpw_ws);
     installOfficialProfileCall(api, ctx);
+    installOfficialPulls(api.listener);
     if (upkeep) {
         const uid = String(loginInfo.uid ?? ownId ?? "");
         upkeeps.set(

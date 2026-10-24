@@ -291,7 +291,9 @@ export async function refreshLiveMessageIdentities(api, msg, opts = {}) {
  * @param {string} [opts.src="history"] - the provenance written to `raw_data.src`:
  *   "history" for `msg history`'s fetch, "offline" for the daemon's catch-up
  *   from Zalo's offline queue (./self-heal.js). The rule is the same for both.
- * @returns {{stored: boolean, info?: object, reason?: string}} `stored` is true only for a new row
+ * @returns {{stored: boolean, info?: object, reason?: string, failed?: boolean}} `stored` is true only for a new row;
+ *   `failed` is true when the write itself went wrong (the row may be fine and the database is not), as against a
+ *   row that is deliberately not written (a removal, no content, already cached)
  */
 export function storeHistoryMessage(msg, opts = {}) {
     const data = msg?.data;
@@ -337,7 +339,7 @@ export function storeHistoryMessage(msg, opts = {}) {
         });
         return inserted ? { stored: true, info } : { stored: false, reason: "already stored" };
     } catch (e) {
-        return { stored: false, reason: e.message };
+        return { stored: false, failed: true, reason: e.message };
     }
 }
 

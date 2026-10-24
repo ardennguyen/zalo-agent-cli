@@ -130,6 +130,7 @@ function daemon({
     lock = createStageLock(),
     now,
     store = storeLiveMessage,
+    acks,
 } = {}) {
     const listener = fakeListener({ respond });
     const tap = createSocketTap();
@@ -146,6 +147,7 @@ function daemon({
         timeoutMs: 150,
         maxPages: 4,
         now,
+        acks,
     });
     listener.on("message", (m) => store(m));
     tap.attach(listener);
@@ -583,5 +585,249 @@ describe("M2: the server saying it dropped or reset a queue is a gap, not covera
             getPendingSyncGaps().some((g) => g.reason === "reconnect-gap" || g.reason.startsWith("queue-reset")),
             "a reset queue cannot vouch for the window it was asked about",
         );
+    });
+});
+
+describe("Y10: queue items are acknowledged (532) only after their rows are stored", () => {
+    before(() => assertSandboxed(CONFIG_DIR));
+
+    /** The 532 frames sent so far. */
+    const acksOf = (listener) => listener.sent.filter((p) => p.cmd === 532);
+    const idsIn = (frame) => frame.data.ids.map((i) => i.actionId);
+
+    /** A live push envelope for one group message, as the server sends it (ids as the queue names them). */
+    const envelope = (r, queueIds = [r.msgId]) => ({
+        error_code: 0,
+        error_message: "",
+        data: {
+            msgs: [],
+            groupMsgs: [r],
+            pageMsgs: [],
+            queueStatus: { "511_1": { ids: queueIds, lastId: r.msgId, evict: 0 } },
+        },
+    });
+
+    it("a live push is acknowledged once its message is stored", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        d.listener.push(521, 0, envelope(r));
+        assert.equal(d.heal.flushAcks(), 0, "nothing is stored yet, so nothing may be acknowledged");
+        live(d.listener, r);
+        assert.ok(getMessageById(id), "seed: the listener stored it");
+        assert.equal(d.heal.flushAcks(), 1);
+        const [ack] = acksOf(d.listener);
+        assert.equal(ack.data.queueName, "511_1");
+        assert.deepEqual(idsIn(ack), [id]);
+        assert.equal(ack.data.nretry, 0);
+        assert.match(ack.data.reqId, /^req_\d+$/);
+    });
+
+    it("a live push whose message was already stored when its frame was read is acknowledged at once", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        live(d.listener, r);
+        d.listener.push(521, 0, envelope(r));
+        assert.equal(d.heal.flushAcks(), 1);
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]), [id]);
+    });
+
+    it("a push whose message the writer failed to store is never acknowledged: the server must send it again", async () => {
+        const lost = nextId();
+        const d = daemon({ store: () => ({ stored: false }) });
+        const r = row(lost);
+        d.listener.push(521, 0, envelope(r));
+        live(d.listener, r);
+        assert.equal(getMessageById(lost), null, "seed: that write failed");
+        assert.equal(d.heal.flushAcks(), 0);
+        assert.equal(acksOf(d.listener).length, 0);
+        assert.equal(d.heal.queueAcks().pending, 0);
+    });
+
+    it("a push naming several items waits for every one of its messages", async () => {
+        const a = nextId();
+        const b = nextId();
+        const d = daemon();
+        const ra = row(a);
+        const rb = row(b);
+        d.listener.push(521, 0, {
+            ...envelope(ra, [a, b]),
+            data: { ...envelope(ra, [a, b]).data, groupMsgs: [ra, rb] },
+        });
+        live(d.listener, ra);
+        assert.equal(d.heal.flushAcks(), 0, "one of two is stored: not yet");
+        live(d.listener, rb);
+        assert.equal(d.heal.flushAcks(), 1);
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]).sort(), [a, b].sort());
+    });
+
+    it("an offline page is acknowledged after its rows were written, with the ids the page named", async () => {
+        const g1 = nextId();
+        const next = nextId();
+        const d = daemon({ respond: scripted({ 511: [page(511, [row(next)])] }) });
+        live(d.listener, row(g1));
+        await connectAndSettle(d);
+        assert.ok(getMessageById(next), "seed: the page's row was written");
+        assert.equal(d.heal.flushAcks(), 1);
+        const [ack] = acksOf(d.listener);
+        assert.equal(ack.data.queueName, "511_1");
+        assert.deepEqual(idsIn(ack), [next]);
+    });
+
+    it("an offline page whose rows could not be written is not acknowledged: the server must deliver it again", async () => {
+        const g1 = nextId();
+        const next = nextId();
+        const db = initDb(join(ROOT, `db-fail-${dbSeq++}.sqlite`));
+        const d = daemon({ respond: scripted({ 511: [page(511, [row(next)])] }) });
+        live(d.listener, row(g1));
+        // the writer breaks after the cursor exists: every insert now throws, while reads still work, so the
+        // failure is the write's own and nothing else in the run can account for it
+        db.exec("CREATE TRIGGER no_inserts BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+        await connectAndSettle(d);
+        assert.equal(d.heal.flushAcks(), 0, "a failed write holds back the acknowledgement");
+        assert.equal(acksOf(d.listener).length, 0);
+    });
+
+    it("a re-sent message (534) whose write failed is neither handed on nor acknowledged", async () => {
+        const db = initDb(join(ROOT, `db-fail-${dbSeq++}.sqlite`));
+        const d = daemon();
+        db.exec("CREATE TRIGGER no_inserts BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+        const id = nextId();
+        d.listener.push(534, 0, envelope(row(id)));
+        await sleep(0);
+        assert.equal(getMessageById(id), null);
+        assert.deepEqual(d.recovered, []);
+        assert.equal(d.heal.flushAcks(), 0);
+    });
+
+    it("a row that is deliberately not written (already cached, no content) is still acknowledged: it is handled", async () => {
+        const g1 = nextId();
+        const cached = nextId();
+        const d = daemon({
+            respond: scripted({
+                511: [page(511, [row(cached), row(nextId(), { content: "" })], { lastActionId: cached })],
+            }),
+        });
+        live(d.listener, row(g1));
+        live(d.listener, row(cached));
+        await connectAndSettle(d);
+        assert.equal(d.heal.flushAcks(), 1);
+    });
+
+    it("a message the server re-sends (534) is stored, handed on, and then acknowledged", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        d.listener.push(534, 0, envelope(r));
+        await sleep(0);
+        assert.ok(getMessageById(id), "the re-sent message is in zalo.db");
+        assert.deepEqual(
+            d.recovered.map((x) => x.msg.data.msgId),
+            [id],
+        );
+        assert.equal(d.heal.flushAcks(), 1);
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]), [id]);
+        assert.ok(d.logs.some((l) => /Zalo re-sent 1 message/.test(l)));
+    });
+
+    it("a new connection forgets what was waiting on the old one", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        live(d.listener, r);
+        d.listener.push(521, 0, envelope(r));
+        assert.equal(d.heal.queueAcks().pending, 1);
+        d.listener.reconnect();
+        await connectAndSettle(d);
+        assert.equal(d.heal.queueAcks().pending, 0);
+        assert.equal(d.heal.flushAcks(), 0);
+    });
+
+    it("the server's answer is read: done, and then the count shows it", async () => {
+        const d = daemon();
+        const id = nextId();
+        const r = row(id);
+        live(d.listener, r);
+        d.listener.push(521, 0, envelope(r));
+        d.heal.flushAcks();
+        const [ack] = acksOf(d.listener);
+        d.listener.push(532, 0, { error_code: 0, error_message: "", data: { reqId: ack.data.reqId, error: 0 } });
+        const stats = d.heal.queueAcks();
+        assert.equal(stats.acked, 1);
+        assert.equal(stats.inFlight, 0);
+    });
+
+    it("sends nothing of the kind with acks off or self-heal off", async () => {
+        for (const opts of [{ acks: false }, { enabled: false }]) {
+            const d = daemon(opts);
+            const id = nextId();
+            const r = row(id);
+            d.listener.push(521, 0, envelope(r));
+            live(d.listener, r);
+            assert.equal(d.heal.queueAcks(), null);
+            assert.equal(d.heal.flushAcks(), 0);
+            assert.equal(acksOf(d.listener).length, 0);
+        }
+    });
+});
+
+describe("X4: the 601 control queues", () => {
+    before(() => assertSandboxed(CONFIG_DIR));
+
+    const controlFrame = (controls, queueStatus) => ({
+        error_code: 0,
+        error_message: "",
+        data: { lastActionId: "0", more: 0, controls, reacts: [], reactGroups: [], queueStatus },
+    });
+    const ctl = (id, act_type, act) => ({ actionId: id, controlId: id, content: { act, act_type, data: "{}" } });
+
+    it("keeps the control queues' cursors, forward only, for the pull that will use them", async () => {
+        const d = daemon();
+        d.listener.push(
+            601,
+            0,
+            controlFrame([], { "603_1": { ids: [], lastId: "500" }, "603_0": { ids: [], lastId: "40" } }),
+        );
+        await sleep(0);
+        assert.equal(d.heal.cursor("603_1").id, "500");
+        assert.equal(d.heal.cursor("603_0").id, "40");
+        assert.equal(JSON.parse(getSyncState("offlineCursor:603_1")).id, "500", "persisted, like the message queues'");
+
+        d.listener.push(601, 0, controlFrame([], { "603_1": { ids: [], lastId: "300" } }));
+        await sleep(0);
+        assert.equal(d.heal.cursor("603_1").id, "500", "never back");
+        d.listener.push(601, 0, controlFrame([], { "603_1": { ids: [], lastId: "900" } }));
+        await sleep(0);
+        assert.equal(d.heal.cursor("603_1").id, "900");
+    });
+
+    it("names a control it has no handler for once, and says nothing of one it handles", async () => {
+        const d = daemon();
+        d.listener.push(
+            601,
+            0,
+            controlFrame(
+                [ctl("1", "transfer_sync2", "transfer_status"), ctl("2", "board_update", "topic_changed")],
+                {},
+            ),
+        );
+        d.listener.push(601, 0, controlFrame([ctl("3", "board_update", "topic_changed")], {}));
+        await sleep(0);
+        const lines = d.logs.filter((l) => /no handler for/.test(l));
+        assert.equal(lines.length, 1, "once, however often it comes");
+        assert.match(lines[0], /act_type "board_update", act "topic_changed"/);
+        assert.ok(!d.logs.some((l) => /transfer_sync2/.test(l)));
+    });
+
+    it("sends nothing in answer to a control frame", async () => {
+        const d = daemon();
+        d.listener.push(
+            601,
+            0,
+            controlFrame([ctl("2", "board_update", "x")], { "603_1": { ids: ["1"], lastId: "5" } }),
+        );
+        await sleep(0);
+        assert.deepEqual(d.listener.sent, []);
     });
 });

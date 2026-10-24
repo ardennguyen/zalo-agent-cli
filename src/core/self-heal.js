@@ -47,10 +47,16 @@
  *   covered window is resolved, and its uncovered remainder is recorded again
  *   as a pending gap, named with the `zalo-agent sync` command that closes it.
  *
- * Out of scope here, on purpose: the 532 VERIFY_MSG acks and the 534/533/570
- * resend path. They repair a push lost in transit on a live socket; the
- * catch-up above is a cursor pull and does not depend on them -- Zalo Web does
- * not even verify offline batches (`skip_offline_verify`, bundle @~13896600).
+ * - **Items are acknowledged after the write, never before** (Y10, D7). Zalo wants to be told which queue
+ *   items a client holds (a `532`, see ./queue-verify.js), and repairs what it was not told about. A live push
+ *   is acknowledged once every message in it is committed; an offline page once its rows were written without a
+ *   failure; a message the server re-sends as a `534` is stored first and acknowledged after. An item whose row
+ *   did not commit is not acknowledged, so the server delivers it again.
+ *
+ * Out of scope here, on purpose: the 533/570 resend path (the server asking us for ids it says we hold). It
+ * repairs a push lost in transit on a live socket; the catch-up above is a cursor pull and does not depend on
+ * it. Zalo Web does not verify offline batches either (`skip_offline_verify`, bundle @~13896600): acknowledging
+ * them is this client's own choice, so the server can drop what it delivered.
  */
 import { GroupMessage, UserMessage, Undo } from "zca-js";
 import {
@@ -67,6 +73,8 @@ import {
 import { isRemovalMessage, storeHistoryMessage, storeLiveDelete, storeLiveUndo } from "./live-store.js";
 import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_TIMEOUT_MS, drainOfflineQueue, messageQueuesFrom } from "./offline-queue.js";
 import { CMD_AUTHEN } from "./socket-tap.js";
+import { CMD_VERIFY, createQueueVerifier, idsOf } from "./queue-verify.js";
+import { controlCursorsOf, readControls } from "./control-queue.js";
 import { describeGap } from "./sync-v2/gap-advice.js";
 
 /** zca-js ThreadType.Group; anything else is a 1-1. */
@@ -77,6 +85,16 @@ const PUSH_QUEUE = new Map([
     [501, { queueName: "510_1", rows: "msgs" }],
     [521, { queueName: "511_1", rows: "groupMsgs" }],
 ]);
+
+/** The control frame: transfer-sync statuses and batches, unread marks, group and friend events. */
+const CMD_CONTROL = 601;
+
+/** A server re-push of a message it noticed we never confirmed (534), in the envelope of 501/521. */
+const CMD_PUSH_MISS = 534;
+
+/** How long a live push waits for its rows to be stored before it is forgotten (never acknowledged). */
+const AWAIT_MS = 10 * 60 * 1000;
+const AWAIT_MAX = 500;
 
 /** recordGap's own floor: shorter than this is not a gap worth naming. */
 const MIN_GAP_MS = 1000;
@@ -122,6 +140,7 @@ const baseReason = (reason) => String(reason || "gap").replace(/^(uncovered:)+/,
  * @param {() => number} [args.now]
  * @param {number} [args.timeoutMs] - wait per page
  * @param {number} [args.maxPages] - pages per queue
+ * @param {boolean} [args.acks=true] - acknowledge stored queue items to Zalo (`532`); false sends nothing of the kind
  * @returns {{attach: (listener: object) => void, run: (reason?: string) => Promise<object>,
  *   settled: () => Promise<void>, noteDelivered: (msg: object) => void,
  *   cursor: (queueName: string) => {id: string, ts: number}|null}}
@@ -136,8 +155,20 @@ export function createSelfHeal({
     now = () => Date.now(),
     timeoutMs = DEFAULT_PAGE_TIMEOUT_MS,
     maxPages = DEFAULT_MAX_PAGES,
+    acks = true,
 } = {}) {
     const cursors = new Map();
+    // Tells Zalo which queue items are safely stored (Y10). Nothing is handed to it before the commit.
+    const verifier =
+        enabled && acks
+            ? createQueueVerifier({
+                  getListener: () => getApi?.()?.listener ?? null,
+                  settings: () => getApi?.()?.getContext?.()?.settings?.features?.socket ?? {},
+                  log: (line) => say(line),
+              })
+            : null;
+    /** Live pushes whose rows are not all stored yet: {queueName, ids, msgIds: Set, at}. */
+    const awaiting = [];
     const attached = new WeakSet();
     let running = null;
     let again = false;
@@ -194,9 +225,35 @@ export function createSelfHeal({
             if (!getMessageById(String(id))) return;
             const queueName = msg.type === THREAD_GROUP ? "511_1" : "510_1";
             advance(queueName, { id: String(id), ts: Number(msg.data.ts) || now() });
+            settle(String(id));
         } catch (e) {
             say(`could not record the queue position: ${e?.message || e}`);
         }
+    }
+
+    /** A row is committed: acknowledge every live push whose rows are now all committed. */
+    function settle(msgId) {
+        if (!verifier) return;
+        for (let i = awaiting.length - 1; i >= 0; i--) {
+            const entry = awaiting[i];
+            if (!entry.msgIds.delete(msgId) || entry.msgIds.size > 0) continue;
+            awaiting.splice(i, 1);
+            verifier.confirm(entry.queueName, entry.ids);
+        }
+    }
+
+    /** A live push named queue items: acknowledge them once its rows are committed. */
+    function trackPush(queueName, d, rowsKey) {
+        if (!verifier) return;
+        const ids = idsOf(d.queueStatus, queueName);
+        if (!ids.length) return;
+        const cutoff = now() - AWAIT_MS;
+        while (awaiting.length && (awaiting[0].at < cutoff || awaiting.length >= AWAIT_MAX)) awaiting.shift();
+        const rows = Array.isArray(d[rowsKey]) ? d[rowsKey] : [];
+        // Rows the storing handler committed before this frame was read are already safe.
+        const msgIds = new Set(rows.map((r) => String(r?.msgId ?? "")).filter((id) => isId(id) && !getMessageById(id)));
+        if (msgIds.size === 0) verifier.confirm(queueName, ids);
+        else awaiting.push({ queueName, ids, msgIds, at: now() });
     }
 
     /** True when some pending gap already spans part of [fromTs, toTs]. */
@@ -235,6 +292,7 @@ export function createSelfHeal({
                 if (cur) recordLoss(cur.ts, now(), `queue-reset:${push.queueName}`);
                 writeCursor(push.queueName, { id: String(reset), ts: now() });
             }
+            trackPush(push.queueName, d, push.rows);
         } catch (e) {
             say(`could not read a live queue status: ${e?.message || e}`);
         }
@@ -243,7 +301,7 @@ export function createSelfHeal({
     /** Write one page's rows as the listener would have, had it seen them live. */
     function storeRows(queue, rows, ownId, cursorId) {
         const isGroup = queue.threadType === THREAD_GROUP;
-        const out = { added: [], untouched: 0, removals: 0, newest: null, oldestTs: null, older: 0 };
+        const out = { added: [], untouched: 0, removals: 0, newest: null, oldestTs: null, older: 0, failed: 0 };
         for (const raw of rows) {
             if (!raw || typeof raw !== "object") continue;
             const row = { ...raw }; // zca-js's models rewrite their data in place
@@ -271,7 +329,11 @@ export function createSelfHeal({
                 }
                 const r = storeHistoryMessage(msg, { src: "offline" });
                 if (r.stored) out.added.push({ msg, info: r.info });
-                else out.untouched++;
+                else {
+                    out.untouched++;
+                    // A row deliberately not written is handled; one whose write failed is not.
+                    if (r.failed) out.failed++;
+                }
                 // The cursor may pass this row only because it is in zalo.db now.
                 const id = String(row.msgId ?? "");
                 if (isId(id) && getMessageById(id) && (!out.newest || idGreater(id, out.newest.id))) {
@@ -279,6 +341,7 @@ export function createSelfHeal({
                 }
             } catch (e) {
                 out.untouched++;
+                out.failed++;
                 say(`a recovered row was not stored: ${e?.message || e}`);
             }
         }
@@ -359,6 +422,9 @@ export function createSelfHeal({
             });
             const s = storeRows(p.queue, r.rows, ownId, p.cursor.id);
             if (s.newest) advance(p.queue.queueName, s.newest);
+            // The rows are written: the items they came in may be acknowledged. A page with a row that failed
+            // is not, so the server delivers its items again.
+            if (verifier && r.ids?.length && s.failed === 0) verifier.confirm(p.queue.queueName, r.ids);
             if (r.resetTo) writeCursor(p.queue.queueName, { id: r.resetTo, ts: now() });
             if (s.older) {
                 say(
@@ -495,9 +561,73 @@ export function createSelfHeal({
         })();
     }
 
+    /** Control kinds already reported as unhandled, so each is named once. */
+    const unhandled = new Set();
+
+    /**
+     * A 601: keep the control queues' cursors (forward only) for the pull that will use them, and name any
+     * control this client has no handler for, once, instead of letting it pass unseen (X4).
+     */
+    function noteControls(frame) {
+        const d = frame.data;
+        if (!d) return;
+        try {
+            for (const { queueName, id } of controlCursorsOf(d)) advance(queueName, { id, ts: now() });
+            for (const c of readControls(d)) {
+                if (c.handled) continue;
+                const key = `${c.actType}/${c.act}`;
+                if (unhandled.has(key)) continue;
+                unhandled.add(key);
+                say(`a control this client has no handler for: act_type "${c.actType}", act "${c.act}"`);
+            }
+        } catch (e) {
+            say(`could not read a control frame: ${e?.message || e}`);
+        }
+    }
+
+    /** The server re-sends a message it noticed we never confirmed: store it, then acknowledge it. */
+    function noteMissedPush(frame) {
+        const d = frame.data;
+        if (!d) return;
+        try {
+            const api = getApi?.();
+            const ownId = String(api?.getOwnId?.() ?? api?.getContext?.()?.uid ?? "");
+            const kinds = [
+                { queueName: "510_1", rows: "msgs", threadType: 0 },
+                { queueName: "511_1", rows: "groupMsgs", threadType: THREAD_GROUP },
+            ];
+            const added = [];
+            for (const kind of kinds) {
+                const rows = Array.isArray(d[kind.rows]) ? d[kind.rows] : [];
+                if (!rows.length) continue;
+                const s = storeRows(kind, rows, ownId, "0");
+                added.push(...s.added);
+                if (s.newest) advance(kind.queueName, s.newest);
+                const ids = idsOf(d.queueStatus, kind.queueName);
+                if (verifier && s.failed === 0 && ids.length) verifier.confirm(kind.queueName, ids);
+            }
+            if (added.length) {
+                say(`Zalo re-sent ${added.length} message(s) it noticed this client never confirmed; stored`);
+                onRecovered(added);
+            }
+        } catch (e) {
+            say(`could not store a re-sent message: ${e?.message || e}`);
+        }
+    }
+
     if (enabled && tap) {
-        tap.on(CMD_AUTHEN, () => trigger("connect"));
+        tap.on(CMD_AUTHEN, () => {
+            // A new connection: what was waiting to be acknowledged belonged to the old one.
+            verifier?.reset();
+            awaiting.length = 0;
+            trigger("connect");
+        });
         for (const cmd of PUSH_QUEUE.keys()) tap.on(cmd, noteEnvelope);
+        tap.on(CMD_CONTROL, noteControls);
+        if (verifier) {
+            tap.on(CMD_VERIFY, (frame) => verifier.handleReply(frame));
+            tap.on(CMD_PUSH_MISS, noteMissedPush);
+        }
     }
 
     return {
@@ -518,5 +648,9 @@ export function createSelfHeal({
         },
         noteDelivered,
         cursor: (queueName) => readCursor(queueName),
+        /** The queue acknowledgements so far, or null when they are off. */
+        queueAcks: () => verifier?.stats() ?? null,
+        /** Send the pending acknowledgements now (a test and shutdown seam). */
+        flushAcks: () => verifier?.flush() ?? 0,
     };
 }

@@ -33,6 +33,9 @@
  * the answers off the raw socket (./socket-tap.js).
  */
 
+import { nextReqId } from "../zalo/req-id.js";
+import { idsOf } from "./queue-verify.js";
+
 /** zca-js ThreadType values. */
 const THREAD_USER = 0;
 const THREAD_GROUP = 1;
@@ -59,10 +62,6 @@ export const DEFAULT_PAGE_TIMEOUT_MS = 10_000;
 
 /** Pages per queue: the runaway stop, as in the reaction drain. */
 export const DEFAULT_MAX_PAGES = 20;
-
-let reqSeq = 0;
-/** Zalo Web's `reqId` shape, `req_<n>`; answers echo it. */
-const nextReqId = () => `req_${1_000_000 + ++reqSeq}`;
 
 /**
  * The message queues a handshake names, in its order.
@@ -134,10 +133,11 @@ function request({ listener, tap, queue, data, timeoutMs }) {
  * @param {string} args.lastId - the cursor: the last queue id this session holds
  * @param {number} [args.timeoutMs]
  * @param {number} [args.maxPages]
- * @returns {Promise<{rows: object[], pages: number, complete: boolean,
+ * @returns {Promise<{rows: object[], ids: string[], pages: number, complete: boolean,
  *   reason: "drained"|"timeout"|"stalled"|"page-cap"|"reset"|"error",
  *   evicted: boolean, resetTo: string|null, lastActionId: string|null}>}
- *   `rows` are the server's raw message rows, oldest page first. `complete`
+ *   `rows` are the server's raw message rows, oldest page first; `ids` the queue items the pages named
+ *   (`queueStatus[queue].ids`), for the acknowledgement that follows once the rows are stored. `complete`
  *   is true only when the server said there is nothing more; `evicted` is
  *   its word that it dropped queued items, `resetTo` a cursor it told us to
  *   start over from (`resetLastActionId`).
@@ -154,6 +154,7 @@ export async function drainOfflineQueue({
     const rowsKey = kind?.rows || "msgs";
     const out = {
         rows: [],
+        ids: [],
         pages: 0,
         complete: false,
         reason: "page-cap",
@@ -180,6 +181,7 @@ export async function drainOfflineQueue({
         }
 
         if (Array.isArray(d[rowsKey])) out.rows.push(...d[rowsKey]);
+        out.ids.push(...idsOf(d.queueStatus, queue.queueName));
         if (Number(d.queueStatus?.[queue.queueName]?.evict) === 1) out.evicted = true;
         if (d.lastActionId !== undefined && d.lastActionId !== null) out.lastActionId = String(d.lastActionId);
 

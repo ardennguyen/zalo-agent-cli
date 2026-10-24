@@ -58,6 +58,7 @@ describe("the sync channel", () => {
 
     /** Connect the listener and build a channel whose acks come from the real socket. */
     async function open(over = {}) {
+        let n = 0;
         const connected = once(api.listener, "connected");
         api.listener.start();
         await connected;
@@ -65,6 +66,7 @@ describe("the sync channel", () => {
             getListener: () => api.listener,
             decode,
             sleep: async (ms) => void sleeps.push(ms),
+            nextReqId: () => `req_${++n}`,
             ackTimeoutMs: 400,
             disposeAckMs: 400,
             ...over,

@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2902** as of 2026-10-25 (2896 pass, 5 skipped, 1 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2960** as of 2026-10-25 (2955 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1112,6 +1112,33 @@ asked for twice more after 0.5 s and 1.5 s. The restore's own heartbeat now defa
 at login (180 s), where it was a third of it: a live socket held 274 s on the server's interval alone. A daemon's
 restore still runs it besides the supervisor's pings (same cadence); that is redundant, and left alone because two guard
 tests pin it.
+
+## Queue items are acknowledged after the write, and the Web-shaped pulls (v3.0, 2026-10-25)
+
+**The acks (Y10, D7).** Zalo wants to be told which queue items a client holds, and repairs what it was not told
+about. `src/core/queue-verify.js` sends the `532` frame `{queueName, ids: [{actionId}], nretry, reqId}` once
+`max_msg_verify + 2` ids are pending or `interval_verify` (30 s in a capture) has passed, and reads the answer
+(`error` 0 done, 1 some items never reached us and follow as `534` pushes, -1 stop verifying on this connection). The
+rule is the order: **an id is acknowledged only after the row it names is committed to zalo.db.** A live push is
+acknowledged when every message in it is stored (`noteDelivered`, after the storing handler), an offline page when
+its rows were written without a failed write, a `534` re-push after it is stored and handed on. A write that failed
+(`storeHistoryMessage` now says `failed: true`, as against a row it deliberately skips) holds the acknowledgement
+back, so the server delivers the item again. A new connection forgets what was waiting on the old one. Zalo Web does
+not verify offline batches (`skip_offline_verify`); acknowledging them is our choice, so the server can let go of
+what it delivered. **Not yet seen live:** the element shape of `ids` (`[{actionId}]` is what the bundle builds), the
+server's own settings for our identity, and the `534` payload. The first message to a test account settles them.
+
+**One request counter, and `reqId` on every pull (X5, Y7).** `src/zalo/req-id.js` is the process-wide `req_<n>` counter
+the sync channel, the offline-queue drain and the pulls share. `installOfficialPulls` makes the listener's old-message
+and old-reaction pulls (510, 511, 610, 611) send `{first, reqId, lastId, preIds}`: zca-js sent `req_id`, a key Web never
+sends. `src/zalo/pulls.js` also has builders for the connect-time requests we do not send (the pulls of 515, 517, 518
+and 603, the key-id request 564, the conversation-state request 577, the paged action list 537). They are not wired
+to anything: what the server answers to them has not been decoded in a session of ours, and a pull may consume what it
+returns, so sending them blind could lose items. A controlled live session is the next step.
+
+**The control queues (X4).** Every `601` names the cursors of `603_1`, `603_0` and `604_0`. They are now kept (forward
+only, in `sync_state` like the message queues') for the pull that will use them, and a control this client has no
+handler for is named once in the log. Nothing acknowledges a control: they are acted on in memory, not stored.
 
 ## `npm run format` covers `src/` and `tests/` only
 

@@ -247,7 +247,8 @@ describe("fake Zalo", () => {
             const [messages] = await old;
             assert.deepEqual(messages, []);
             const sent = zalo.sock.framesOf(510, 1).at(-1);
-            assert.deepEqual(Object.keys(sent.data).sort(), ["first", "lastId", "preIds", "req_id"]);
+            // the Web's key (reqId), not zca-js's own (req_id): see src/zalo/pulls.js
+            assert.deepEqual(Object.keys(sent.data).sort(), ["first", "lastId", "preIds", "reqId"]);
         });
 
         it("answers every connect-time pull with the verified queueStatus shape", async () => {

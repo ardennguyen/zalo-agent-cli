@@ -42,8 +42,11 @@ import { createSenderResolver } from "./senders.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
 import { startKeepAlive } from "./keepalive.js";
 import { DEVICE_LABEL } from "../../zalo/profile.js";
+import { REQUEST_FAILURE, SyncRequestError, createSessionStore, createSyncChannel } from "./channel.js";
+import { createBatchDownloader } from "./download.js";
 import {
     CONFIRM_WAIT_MS,
+    DISPOSE_REASON,
     applyControl,
     createTransferSession,
     declineError,
@@ -51,6 +54,7 @@ import {
     isIdleTooLong,
     isTransferSessionComplete,
     judgeConversationRound,
+    recordDownloadFailure,
     readTransferControls,
     shouldAbortOnFailures,
 } from "./transfer.js";
@@ -81,8 +85,12 @@ const MAX_TS = 9007199254740991;
  */
 const PER_SHARD_BUDGET_MS = 30000;
 /**
- * How many message sessions may be open on the phone at once. Zalo Web
- * opens four; fifty at once got the socket dropped with no error frame.
+ * How many message sessions are asked for before the first of them has been served.
+ *
+ * This cap is ours, not Zalo Web's. Web sends every session of a run (98 partitions at 30 each is four of them,
+ * which is why a capture shows four) one after the other, each after the previous one was acknowledged. Fifty
+ * at once, with no waiting for acks, once got our socket dropped with no error frame; the requests are ack-paced
+ * now, and the cap stays until a full-history run on the test account shows the socket survives without it.
  */
 const DEFAULT_WAVE_SIZE = 4;
 /**
@@ -589,42 +597,6 @@ export class SyncV2 {
         }
     }
 
-    _send590(listener, kind, syncId, ek, ik, req) {
-        listener.sendWs(
-            {
-                version: 1,
-                cmd: 590,
-                subCmd: 0,
-                data: {
-                    data: {
-                        syncId,
-                        syncType: 0,
-                        ek: b64(ek.publicKey),
-                        ik: b64(ik.publicKey),
-                        toDevice: 0,
-                        tempKey: "",
-                        deviceName: DEVICE_LABEL,
-                        req,
-                        ver: 1,
-                        ussidx: 0,
-                    },
-                    reqId: `req_${kind}_${syncId.slice(0, 6)}`,
-                },
-            },
-            false,
-        );
-    }
-    /**
-     * Release one sync session. `reason`: 0 the person cancelled, 1 it finished (the default), 2 it failed,
-     * 3 it is outdated.
-     */
-    _dispose(listener, syncId, reason = 1) {
-        listener.sendWs(
-            { version: 1, cmd: 591, subCmd: 0, data: { data: { syncId, toDevice: 0, reason }, reqId: "req_disp" } },
-            false,
-        );
-    }
-
     /**
      * Run the full restore. Assumes the caller holds the account lock AND has
      * already started the listener: this adds and removes its own socket taps,
@@ -676,11 +648,24 @@ export class SyncV2 {
         // listener, and `opts.reconnect` can hand that api back (see `reconnect` below).
         let L = this.api.listener;
         const sessions = new Map(); // syncId -> {kind, batches:[], statuses:[], done, err}
+        // Sending a request, reading its ack, releasing a session and remembering the open ones (Y4a, Y6, Y7).
+        // It follows `L`, so a reconnect that replaces the listener is followed too.
+        const channel = createSyncChannel({
+            getListener: () => L,
+            decode: (parsed) => decodeFrame(parsed, L.cipherKey),
+            store: createSessionStore(resolve(this.accountDir, "sync", "open-sessions.json")),
+            log,
+        });
+        // A batch is fetched the moment the phone announces it, two at a time (Y3), not when its turn to be
+        // decoded comes.
+        const downloader = createBatchDownloader();
         const onMsg = async (buf) => {
+            channel.handleFrame(buf);
             for (const ctl of readTransferControls(buf, (parsed) => decodeFrame(parsed, L.cipherKey))) {
                 const s = sessions.get(ctl.syncId);
                 if (!s) continue;
                 const ev = applyControl(s, { act: ctl.act, data: ctl.data });
+                if (ev.type === "batch" && ev.batch.msgUrl) downloader.start(ev.batch.msgUrl);
                 if (ev.type === "status") {
                     if (ev.cls.status === 3) {
                         onStatus({
@@ -764,6 +749,8 @@ export class SyncV2 {
             if (opts.keepAlive !== false) {
                 keeper = startKeepAlive(L, {
                     intervalMs: typeof opts.keepAlive === "number" ? opts.keepAlive : undefined,
+                    // The interval the server gave this session at login, as Web uses it.
+                    advisedMs: Number(this.api.getContext?.()?.settings?.features?.socket?.ping_interval),
                 });
             }
         };
@@ -861,15 +848,46 @@ export class SyncV2 {
             return "timeout";
         };
 
-        /** Dispose one session the moment it finishes, as Zalo Web does. */
+        /** Release one session the moment it finishes, as Zalo Web does (the ack is awaited in the background). */
         const disposeOne = (id) => {
             const s = sessions.get(id);
             if (!s || s.disposed) return;
             s.disposed = true;
+            void channel.release(id, s.disposeReason ?? DISPOSE_REASON.SUCCESS);
+        };
+
+        /**
+         * Send one cmd 590 and wait until Zalo acknowledges it (Y4a): requests are paced by their acks, so a
+         * request is never sent into a queue that has not taken the one before it.
+         *
+         * @returns {Promise<{socketClosed: boolean}>} `socketClosed` when the wire died before the ack; any other
+         *   failure throws with words the person can act on
+         */
+        const sendRequest = async (kind, id, ek, req) => {
             try {
-                this._dispose(L, id);
-            } catch {
-                /* the socket may already be gone; nothing to release */
+                await channel.request({
+                    kind,
+                    syncId: id,
+                    ek: b64(ek.publicKey),
+                    ik: b64(ik.publicKey),
+                    req,
+                    deviceName: DEVICE_LABEL,
+                });
+                return { socketClosed: false };
+            } catch (e) {
+                if (!(e instanceof SyncRequestError)) throw e;
+                if (e.failure === REQUEST_FAILURE.SOCKET_CLOSED) return { socketClosed: true };
+                if (e.failure === REQUEST_FAILURE.NOT_SUPPORTED) {
+                    throw Object.assign(
+                        new Error(
+                            `Zalo refused the sync request: this client's protocol version is not supported (${e.message})`,
+                        ),
+                        { reason: "client-not-supported" },
+                    );
+                }
+                throw Object.assign(new Error(`Zalo did not take the sync request: ${e.message}`), {
+                    reason: e.failure,
+                });
             }
         };
 
@@ -882,6 +900,8 @@ export class SyncV2 {
         /** type name -> count, for the command's summary line. */
         const typeCounts = Object.create(null);
         let reason = "complete";
+        /** What ended the run, when it threw: decides the reason sessions are released with. */
+        let runError = null;
         // Did the phone actually answer? transfer_status 4 = Confirmed,
         // 5 = Authorized. Needed to tell "empty window" from "never tapped".
         let confirmed = false;
@@ -900,8 +920,10 @@ export class SyncV2 {
                 liveThreadIds: [...mappedThreads, ...unmappedThreads],
             });
 
-        // decrypt one session's batches -> decoded proto objects
+        // decrypt one session's batches -> decoded proto objects. A batch that cannot be downloaded fails its
+        // scopes (Y3) instead of being skipped: they are returned, so the caller can count them.
         const eachChunkObj = async (s, ek, protoClass, onObj) => {
+            const downloadFailures = [];
             let sessionRecord = null;
             const ordered = s.batches
                 .slice()
@@ -911,10 +933,14 @@ export class SyncV2 {
                 await new Promise((r) => setImmediate(r));
                 let blob;
                 try {
-                    const r = await fetch(bt.msgUrl);
-                    if (!r.ok) continue;
-                    blob = Buffer.from(await r.arrayBuffer());
-                } catch {
+                    blob = await downloader.get(bt.msgUrl);
+                } catch (e) {
+                    recordDownloadFailure(s, bt, e);
+                    downloadFailures.push({ batch: bt, error: e });
+                    onStatus({
+                        phase: "warn",
+                        detail: `could not download a batch (${e.kind ?? "error"}: ${e.message}) — its conversations are marked failed`,
+                    });
                     continue;
                 }
                 for (const chunk of splitChunks(blob)) {
@@ -947,10 +973,16 @@ export class SyncV2 {
                     }
                 }
             }
+            return { downloadFailures };
         };
 
         try {
             await new Promise((r) => setTimeout(r, 1200));
+
+            // A run that died left its sessions open on the phone; release them (reason 3) before starting
+            // anything, so the phone's banner and its queue start clean (Y6b).
+            const leftover = await channel.cleanLeftovers();
+            if (leftover) log(`released ${leftover} sync session(s) an earlier run left open`);
 
             // ---- conversation round ----
             // `ek` is fresh per session and `ik` is stable across them (see
@@ -959,13 +991,14 @@ export class SyncV2 {
             let ekConv = zproto.generateKeyPair();
             let convId = newSession("conv");
             onStatus({ phase: "conversation", detail: "requesting your conversation list" });
-            this._send590(L, "conv", convId, ekConv, ik, {
+            const convRequest = {
                 type: "conversation",
                 priority: 0,
                 batchSize: 2000,
                 queries: [{ partition: "", from: win.from, to: win.to, limit: 2147483647 }],
-            });
-            let convWhy = await waitDone(convId, waitMs);
+            };
+            const convSent = await sendRequest("conv", convId, ekConv, convRequest);
+            let convWhy = convSent.socketClosed ? "socket-closed" : await waitDone(convId, waitMs);
             let convSession = sessions.get(convId);
             confirmed = isConfirmed(convSession.statuses);
 
@@ -984,13 +1017,8 @@ export class SyncV2 {
                 });
                 const retryId = newSession("conv");
                 ekConv = zproto.generateKeyPair();
-                this._send590(L, "conv", retryId, ekConv, ik, {
-                    type: "conversation",
-                    priority: 0,
-                    batchSize: 2000,
-                    queries: [{ partition: "", from: win.from, to: win.to, limit: 2147483647 }],
-                });
-                convWhy = await waitDone(retryId, waitMs);
+                const retrySent = await sendRequest("conv", retryId, ekConv, convRequest);
+                convWhy = retrySent.socketClosed ? "socket-closed" : await waitDone(retryId, waitMs);
                 convSession = sessions.get(retryId);
                 convId = retryId;
                 confirmed = confirmed || isConfirmed(convSession.statuses);
@@ -1002,9 +1030,19 @@ export class SyncV2 {
             if (verdict.error) throw verdict.error;
 
             const convs = [];
-            await eachChunkObj(convSession, ekConv, C.SyncChunk, (obj) => {
+            const convRead = await eachChunkObj(convSession, ekConv, C.SyncChunk, (obj) => {
                 for (const c of obj.conversationsList || []) convs.push(c);
             });
+            // A conversation list with a hole in it is not a list: say so rather than restore a part of it.
+            if (convRead.downloadFailures.length) {
+                const first = convRead.downloadFailures[0].error;
+                throw Object.assign(
+                    new Error(
+                        `your conversation list could not be downloaded (${first.kind ?? "error"}: ${first.message}) — nothing was restored`,
+                    ),
+                    { reason: "download-failed" },
+                );
+            }
             // Zalo Web releases the conversation session as soon as it has the
             // list, before asking for any messages. Match that: it clears the
             // phone's banner for that round instead of holding it open.
@@ -1098,13 +1136,17 @@ export class SyncV2 {
                         shard.map((q) => q.partition),
                     );
                     meta.push({ sid, ek });
-                    this._send590(L, "msg", sid, ek, ik, {
+                    // Each request goes out after the one before it was acknowledged, not on a timer (Y4b).
+                    const sent = await sendRequest("msg", sid, ek, {
                         type: "message",
                         priority: 2,
                         batchSize: 2000,
                         queries: shard,
                     });
-                    await new Promise((r) => setTimeout(r, 600));
+                    if (sent.socketClosed) {
+                        meta.socketClosed = true;
+                        break;
+                    }
                 }
                 return meta;
             };
@@ -1144,8 +1186,9 @@ export class SyncV2 {
             while (!schedule.done() && !stop) {
                 const wave = schedule.nextWave();
                 const waveMeta = await sendWave(wave.map((i) => shards[i]));
-                let lostSocket = false;
-                for (let k = 0; k < waveMeta.length; k++) {
+                // A wire that died while the requests were going out loses the rest of the wave with it.
+                let lostSocket = Boolean(waveMeta.socketClosed);
+                for (let k = 0; !lostSocket && k < waveMeta.length; k++) {
                     const m = waveMeta[k];
                     const left = runDeadline - Date.now();
                     const why = left > 0 ? await waitDone(m.sid, left) : "timeout";
@@ -1198,7 +1241,7 @@ export class SyncV2 {
                     }
 
                     const before = messagesSaved;
-                    await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, async (obj) => {
+                    const read = await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, async (obj) => {
                         // Network identity lookups must finish before opening
                         // the synchronous SQLite transaction for this chunk.
                         await senders.prepare((obj.partitionsList || []).flatMap((p) => p.messagesList || []));
@@ -1280,6 +1323,20 @@ export class SyncV2 {
                         });
                     });
 
+                    // Batches that could not be downloaded count as failed ones, and can stop the run like any other.
+                    if (read.downloadFailures.length) {
+                        failedBatches += read.downloadFailures.length;
+                        batchStats.failed += read.downloadFailures.length;
+                        if (shouldAbortOnFailures(batchStats) && !tooManyFailures) {
+                            stop = true;
+                            tooManyFailures = true;
+                            onStatus({
+                                phase: "warn",
+                                detail: `${batchStats.failed} of ${batchStats.total} batches failed — stopping and keeping what arrived`,
+                            });
+                        }
+                    }
+
                     finished++;
                     // Per-shard progress: without it a 50-shard run prints nothing
                     // between "50 batch(es)" and the final total, so a stall looks
@@ -1346,14 +1403,17 @@ export class SyncV2 {
             // A partial run still records success (unchanged), so the next run
             // within the hour is skipped unless --force -- but it settles no gap.
             recordRestoreSuccess(win, { resolveGaps: reason === "complete" });
+        } catch (e) {
+            runError = e;
+            throw e;
         } finally {
-            for (const [id, s] of sessions) {
-                try {
-                    // A session the phone ended is released with the reason that says so.
-                    this._dispose(L, id, s.disposeReason ?? 1);
-                } catch {}
-            }
-            await new Promise((r) => setTimeout(r, 1500));
+            // Every session still open is released with the reason that fits how the run ended: the phone's own
+            // reason when it ended the session (a "no" has one), finished for a run that settled its window,
+            // failed for one that did not (Y6a). The acks are awaited; on a dead wire this fails fast.
+            const settled = !runError && (reason === "complete" || reason === "empty-window");
+            await channel.releaseAll(
+                (id) => sessions.get(id)?.disposeReason ?? (settled ? undefined : DISPOSE_REASON.ERROR),
+            );
             detachSocketTaps();
             try {
                 detachLive();

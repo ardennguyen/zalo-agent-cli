@@ -20,7 +20,8 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { serverLogout } from "../../src/core/logout.js";
-import { SyncV2 } from "../../src/core/sync-v2/index.js";
+import { decodeFrame } from "../../src/core/sync-v2/index.js";
+import { createSyncChannel } from "../../src/core/sync-v2/channel.js";
 import { assertConforms, diffBody, diffSequence } from "../helpers/replay/replay.js";
 import {
     WEB_BOOT,
@@ -30,7 +31,7 @@ import {
     WEB_QR_LOGIN,
     WEB_QR_LOGIN_FORBIDDEN,
 } from "../helpers/replay/shapes.js";
-import { installQueuePulls, startFakeZalo } from "../helpers/fake-zalo/index.js";
+import { installQueuePulls, ok, startFakeZalo } from "../helpers/fake-zalo/index.js";
 import { serveOfficialLogout, serviceHost } from "./fake-zalo-session.js";
 
 /** A call that satisfies a shape, built from the shape itself. */
@@ -252,22 +253,34 @@ describe("replay harness: today's code against the official Web client", () => {
             await connected;
         });
 
+        /** The sync channel on this session, its acks answered by the fake socket. */
+        function syncChannel() {
+            for (const cmd of [590, 591]) {
+                zalo.sock.respond(cmd, 0, (frame) => ok({ reqId: frame.data.reqId, err: 0, ts: 1 }));
+            }
+            const channel = createSyncChannel({
+                getListener: () => api.listener,
+                decode: (p) => decodeFrame(p, undefined),
+            });
+            api.listener.ws.on("message", (buf) => channel.handleFrame(buf));
+            return channel;
+        }
+
         it("sends a transfer-sync request (590) of the official shape", async () => {
-            const key = { publicKey: Buffer.alloc(32, 1) };
-            SyncV2.prototype._send590.call({}, api.listener, "msg", "abcdef123456", key, key, {
-                type: "message",
-                priority: 2,
-                queries: [{}],
-                batchSize: 2000,
+            const channel = syncChannel();
+            await channel.request({
+                kind: "msg",
+                syncId: "abcdef123456",
+                ek: "e",
+                ik: "i",
+                req: { type: "message", priority: 2, queries: [{}], batchSize: 2000 },
+                deviceName: "zalo-agent-cli",
             });
             const frame = await zalo.sock.waitFor((f) => f.cmd === 590);
             assertConforms(diffBody(frame.data, WEB_FRAMES["590"], "590"), "the 590 request");
-        });
-
-        it("sends a transfer-sync dispose (591) of the official shape", async () => {
-            SyncV2.prototype._dispose.call({}, api.listener, "abcdef123456");
-            const frame = await zalo.sock.waitFor((f) => f.cmd === 591);
-            assertConforms(diffBody(frame.data, WEB_FRAMES["591"], "591"), "the 591 request");
+            await channel.release("abcdef123456");
+            const dispose = await zalo.sock.waitFor((f) => f.cmd === 591);
+            assertConforms(diffBody(dispose.data, WEB_FRAMES["591"], "591"), "the 591 request");
         });
 
         it("sends the old-message pull (510) differing in exactly one key: req_id for reqId", async () => {

@@ -19,7 +19,7 @@
  */
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { runPacedBatches } from "../user-info.js";
+import { isRateLimitError, runPacedBatches } from "../user-info.js";
 
 const require = createRequire(import.meta.url);
 
@@ -29,6 +29,34 @@ function zcaUtils() {
     if (_utils) return _utils;
     _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
     return _utils;
+}
+
+/** A failed `gid/decrypt` batch is asked for twice more, after these pauses, before it counts as failed (Y9). */
+export const GID_RETRY_DELAYS_MS = Object.freeze([500, 1500]);
+
+/**
+ * Run `fn`, and again after each pause while it throws. A rate limit is not retried here: the paced batches back
+ * off for those, and asking again at once would only make it worse.
+ *
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @param {(ms: number) => Promise<void>} [sleep]
+ * @param {readonly number[]} [delays]
+ * @returns {Promise<T>}
+ */
+export async function retrying(
+    fn,
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    delays = GID_RETRY_DELAYS_MS,
+) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await fn();
+        } catch (e) {
+            if (isRateLimitError(e) || attempt >= delays.length) throw e;
+            await sleep(delays[attempt]);
+        }
+    }
 }
 
 const GID_BATCH = 50;
@@ -73,7 +101,7 @@ export async function resolveNonFriendDms(api, globalIds, log = () => {}) {
         batchSize: GID_BATCH,
         label: "gid/decrypt",
         log,
-        call: (batch) => gidDecrypt(batch),
+        call: (batch) => retrying(() => gidDecrypt(batch)),
     });
     for (const map of decrypted.results) {
         for (const [gid, uid] of Object.entries(map || {})) if (uid) idToUser.set(gid, String(uid));

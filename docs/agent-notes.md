@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2857** as of 2026-10-25 (2851 pass, 5 skipped, 1 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2902** as of 2026-10-25 (2896 pass, 5 skipped, 1 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1078,6 +1078,40 @@ own defaults `Accept`, `Origin` and `Referer`. A caller that passes `origin` bes
 joins them into one value (`https://chat.zalo.me, https://id.zalo.me`). The fake records headers through `Headers`, which
 joins the same way, so the tests assert the exact value. The fake also follows a redirect itself unless the caller said
 `redirect: "manual"`, as fetch does, so a flow that forgets it loses the cookie each hop sets and a test fails.
+
+## The sync request channel, and what a restore now waits for (v3.0, 2026-10-25)
+
+**Where it lives.** `src/core/sync-v2/channel.js` sends the `590` request and the `591` release and reads their
+acknowledgements; `download.js` fetches the batches. `SyncV2.restore()` no longer builds frames itself.
+
+**Every request is acknowledged, and the restore waits for it.** The ack is `{reqId, err, ts}` on the same command.
+It is awaited for 10 s; a refused request (`err` not 0) is sent again after 1 s and 2 s, three attempts in all; a
+timeout is not retried (the answer may only be late, and the phone may already be preparing), nor is error 211 ("this
+client is not supported", reported as such). A timeout on a socket that has closed meanwhile is reported as a closed
+socket, which the restore then answers with its one reconnect. Requests are ack-paced: each goes out after the one
+before it was acknowledged, instead of on a 600 ms timer. The cap of four sessions in flight stays: it is ours, Web
+sends all of them, and a full-history run on the test account has not yet shown the socket survives without it.
+
+**Counters.** `reqId` is `req_<n>` from one counter; `ussidx` counts the sessions of a run from 0 (it was 0 for every
+session, and `reqId` carried the session id). `deviceName` stays the honest label (decision D4).
+
+**A release names why.** 0 cancelled, 1 finished, 2 failed, 3 outdated, acknowledged within 3 s and three attempts. The
+phone's own "no" releases with its reason; a run that did not settle its window releases with 2 (it always sent 1
+before, and twice for a session already released). A session released before its request was acknowledged is released
+the moment the ack lands. Sessions are written to `accounts/<ownId>/sync/open-sessions.json` when requested and
+forgotten when their release is acknowledged; a run that died leaves them there, and the next run releases them with
+reason 3 before it starts. On a dead wire releasing fails at once rather than waiting out each ack.
+
+**Downloads.** A batch starts downloading when the phone announces it, two at a time, 60 s each, three retries one
+second apart; 404 and other refusals are not retried. One that cannot be downloaded fails its scopes (they count among
+the failed batches and can stop the run) instead of being skipped without a word; a conversation list with a missing
+batch ends the run, because a list with a hole in it is not a list.
+
+**Smaller parts.** A sender that does not resolve, and a `gid/decrypt` batch that fails (a rate limit excepted), are
+asked for twice more after 0.5 s and 1.5 s. The restore's own heartbeat now defaults to the interval the server advised
+at login (180 s), where it was a third of it: a live socket held 274 s on the server's interval alone. A daemon's
+restore still runs it besides the supervisor's pings (same cadence); that is redundant, and left alone because two guard
+tests pin it.
 
 ## `npm run format` covers `src/` and `tests/` only
 

@@ -278,6 +278,28 @@ function recordFailure(session, data, code) {
 }
 
 /**
+ * Record that a batch could not be downloaded: the scopes it carried fail, as if the phone had reported the failure
+ * itself (Y3). A batch that names no scope fails the session.
+ *
+ * @param {object} session
+ * @param {{scopes?: Array<{partition?: string}>, partition?: string, idx?: number}} batch
+ * @param {{kind?: string, message?: string}} error - a BatchDownloadError
+ * @returns {string[]} the partitions that failed
+ */
+export function recordDownloadFailure(session, batch, error) {
+    const partitions = partitionsOf(batch);
+    if (!partitions.length) {
+        session.err ??= { download: error?.kind ?? "error", message: error?.message ?? "" };
+        return [];
+    }
+    for (const p of partitions) {
+        session.failures.push({ partition: p, code: null, idx: Number(batch?.idx), download: error?.kind ?? "error" });
+        session.failed.add(p);
+    }
+    return partitions;
+}
+
+/**
  * Is this session finished?
  *
  * A session with an `isLast` batch is finished once every index up to it has

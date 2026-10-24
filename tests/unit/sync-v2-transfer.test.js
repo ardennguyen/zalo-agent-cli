@@ -28,6 +28,7 @@ import {
     judgeConversationRound,
     readTransferControls,
     shouldAbortOnFailures,
+    recordDownloadFailure,
 } from "../../src/core/sync-v2/transfer.js";
 import { installTransferSync, startFakeZalo } from "../helpers/fake-zalo/index.js";
 
@@ -289,6 +290,45 @@ describe("isTransferSessionComplete, and the exported isSessionComplete that del
     it("counts a failed partition as accounted for", () => {
         assert.equal(isTransferSessionComplete(S(["a", "b"], ["a"], false, { failed: new Set(["b"]) })), true);
         assert.equal(isTransferSessionComplete(S(["a", "b"], [], false, { failed: new Set(["b"]) })), false);
+    });
+});
+
+describe("recordDownloadFailure (Y3)", () => {
+    const err = { kind: "not-found", message: "the batch is no longer there (404)" };
+
+    it("fails the scopes the batch carried, with the reason, as if the phone had reported them", () => {
+        const s = createTransferSession({ kind: "msg", want: ["oneone/a", "group/b", "group/c"] });
+        const failed = recordDownloadFailure(
+            s,
+            { idx: 4, scopes: [{ partition: "oneone/a" }, { partition: "group/b" }] },
+            err,
+        );
+        assert.deepEqual(failed, ["oneone/a", "group/b"]);
+        assert.deepEqual([...s.failed].sort(), ["group/b", "oneone/a"]);
+        assert.deepEqual(s.failures[0], { partition: "oneone/a", code: null, idx: 4, download: "not-found" });
+        assert.equal(s.err, null, "the session itself did not fail: the other scopes may still arrive");
+    });
+
+    it("lets a session finish when every scope has either come back or failed", () => {
+        const s = createTransferSession({ kind: "msg", want: ["oneone/a", "group/b"] });
+        applyControl(s, { act: "upload_batch", data: { err: 0, idx: 0, scopes: [{ partition: "oneone/a" }] } });
+        assert.equal(s.done, false);
+        recordDownloadFailure(s, { idx: 1, scopes: [{ partition: "group/b" }] }, err);
+        s.done = isTransferSessionComplete(s);
+        assert.equal(s.done, true);
+    });
+
+    it("fails the session when the batch names no scope (a conversation-list batch)", () => {
+        const s = createTransferSession({ kind: "conv" });
+        assert.deepEqual(recordDownloadFailure(s, { idx: 0 }, err), []);
+        assert.deepEqual(s.err, { download: "not-found", message: err.message });
+    });
+
+    it("keeps the first failure of a session when a second one follows", () => {
+        const s = createTransferSession({ kind: "conv" });
+        recordDownloadFailure(s, { idx: 0 }, err);
+        recordDownloadFailure(s, { idx: 1 }, { kind: "server", message: "later" });
+        assert.equal(s.err.download, "not-found");
     });
 });
 

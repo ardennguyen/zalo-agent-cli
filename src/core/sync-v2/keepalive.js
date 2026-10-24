@@ -40,10 +40,14 @@ export const PING_SUBCMD = 1;
 export const SERVER_PING_INTERVAL_MS = 180000;
 
 /**
- * A third of the server's own interval: three chances to keep the flow warm
- * inside the window the server itself still considers alive, instead of one.
+ * The interval used when the caller names none: the one the server advises, as Zalo Web does (Y11).
+ *
+ * This used to be a third of it (60 s), on the argument that one late ping meant six silent minutes. A live
+ * `listen` on the test account then held its socket for 274 s on the server's own interval alone, and Web
+ * waits the same 180 s, so the extra frames bought no safety and made this client's traffic unlike Web's.
+ * The echo count stays, so a caller can still say how long the socket had been silent when it dropped.
  */
-export const DEFAULT_KEEPALIVE_MS = 60000;
+export const DEFAULT_KEEPALIVE_MS = SERVER_PING_INTERVAL_MS;
 
 /** Never ping faster than this, whatever a caller asks for. */
 export const MIN_KEEPALIVE_MS = 15000;
@@ -52,11 +56,14 @@ export const MIN_KEEPALIVE_MS = 15000;
  * Clamp a requested heartbeat interval into a sane range.
  *
  * @param {number|undefined} ms - requested interval
+ * @param {number} [advisedMs] - the interval the server advised for this session (`ping_interval`); the default
+ *   when `ms` is not usable, and the most it may be
  * @returns {number} a finite interval between MIN_KEEPALIVE_MS and the server's own
  */
-export function resolveKeepAliveInterval(ms) {
-    if (!Number.isFinite(ms) || ms <= 0) return DEFAULT_KEEPALIVE_MS;
-    return Math.min(SERVER_PING_INTERVAL_MS, Math.max(MIN_KEEPALIVE_MS, ms));
+export function resolveKeepAliveInterval(ms, advisedMs) {
+    const advised = Number.isFinite(advisedMs) && advisedMs >= MIN_KEEPALIVE_MS ? advisedMs : SERVER_PING_INTERVAL_MS;
+    if (!Number.isFinite(ms) || ms <= 0) return advised;
+    return Math.min(advised, Math.max(MIN_KEEPALIVE_MS, ms));
 }
 
 /**
@@ -89,13 +96,14 @@ export function isPingEcho(buf) {
  * @param {object} listener - a zca-js Listener (needs `sendWs` and `ws`)
  * @param {object} [opts]
  * @param {number} [opts.intervalMs] - heartbeat interval; clamped
+ * @param {number} [opts.advisedMs] - the server's advised interval, the default and the ceiling
  * @param {(info: {sent: number, echoed: number}) => void} [opts.onPing] - called after each ping
  * @param {() => number} [opts.now=Date.now] - injectable clock
  * @param {{setTimeout: Function, clearTimeout: Function}} [opts.timers] - injectable scheduler
  * @returns {{stop: () => void, stats: () => {sent: number, echoed: number, intervalMs: number, silentMs: number}}}
  */
 export function startKeepAlive(listener, opts = {}) {
-    const intervalMs = resolveKeepAliveInterval(opts.intervalMs);
+    const intervalMs = resolveKeepAliveInterval(opts.intervalMs, opts.advisedMs);
     const now = typeof opts.now === "function" ? opts.now : Date.now;
     const timers = opts.timers || { setTimeout, clearTimeout };
     const onPing = typeof opts.onPing === "function" ? opts.onPing : () => {};

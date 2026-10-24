@@ -107,18 +107,34 @@ describe("keepalive frame shape", () => {
 });
 
 describe("resolveKeepAliveInterval", () => {
-    it("defaults to a third of the interval the server advises", () => {
-        assert.equal(DEFAULT_KEEPALIVE_MS * 3, SERVER_PING_INTERVAL_MS);
-        assert.equal(resolveKeepAliveInterval(undefined), DEFAULT_KEEPALIVE_MS);
-        assert.equal(resolveKeepAliveInterval(0), DEFAULT_KEEPALIVE_MS);
-        assert.equal(resolveKeepAliveInterval(NaN), DEFAULT_KEEPALIVE_MS);
-        assert.equal(resolveKeepAliveInterval(-5), DEFAULT_KEEPALIVE_MS);
+    it("defaults to the interval the server advises, as Zalo Web does (Y11)", () => {
+        assert.equal(DEFAULT_KEEPALIVE_MS, SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(undefined), SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(0), SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(NaN), SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(-5), SERVER_PING_INTERVAL_MS);
     });
 
     it("never pings faster than the floor, nor slower than the server's own interval", () => {
         assert.equal(resolveKeepAliveInterval(10), MIN_KEEPALIVE_MS);
         assert.equal(resolveKeepAliveInterval(600000), SERVER_PING_INTERVAL_MS);
         assert.equal(resolveKeepAliveInterval(30000), 30000);
+    });
+
+    it("takes the interval this session was advised, as the default and as the ceiling", () => {
+        assert.equal(resolveKeepAliveInterval(undefined, 120000), 120000);
+        assert.equal(resolveKeepAliveInterval(600000, 120000), 120000);
+        assert.equal(resolveKeepAliveInterval(30000, 120000), 30000);
+    });
+
+    it("ignores an advised interval that is not usable", () => {
+        assert.equal(resolveKeepAliveInterval(undefined, NaN), SERVER_PING_INTERVAL_MS);
+        assert.equal(resolveKeepAliveInterval(undefined, 0), SERVER_PING_INTERVAL_MS);
+        assert.equal(
+            resolveKeepAliveInterval(undefined, 100),
+            SERVER_PING_INTERVAL_MS,
+            "below the floor is not advice",
+        );
     });
 });
 

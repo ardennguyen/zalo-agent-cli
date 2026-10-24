@@ -3,7 +3,7 @@ import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { createSenderResolver } from "../../src/core/sync-v2/senders.js";
+import { SENDER_RETRY_DELAYS_MS, createSenderResolver } from "../../src/core/sync-v2/senders.js";
 import { initDb, insertMessage, getMessages } from "../../src/core/db.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 
@@ -14,6 +14,12 @@ const UNKNOWN = "VNOISED0000000000000000000000004";
 
 before(() => assertSandboxed(CONFIG_DIR));
 
+/** No waiting between attempts; records the pauses a resolver asked for. */
+const quick = () => {
+    const pauses = [];
+    return { pauses, sleep: async (ms) => void pauses.push(ms) };
+};
+
 describe("sync sender identity resolution", () => {
     it("uses only user mappings, batches unknown group senders, and caches results across chunks", async () => {
         const calls = [];
@@ -22,19 +28,25 @@ describe("sync sender identity resolution", () => {
             [GROUP, { id: "303", name: "Example Group", type: "group" }],
         ]);
         const resolver = createSenderResolver({}, map, {
+            ...quick(),
             resolveUsers: async (_api, ids) => {
                 calls.push(ids);
                 return new Map([[MEMBER, { id: "202", name: "Example Member" }]]);
             },
         });
         await resolver.prepare([FRIEND, MEMBER, MEMBER, GROUP, UNKNOWN].map((senderId) => ({ senderId })));
-        assert.deepEqual(calls, [[MEMBER, GROUP, UNKNOWN]]);
+        // what resolved is not asked for again; what did not is asked for twice more (Y9)
+        assert.deepEqual(calls, [
+            [MEMBER, GROUP, UNKNOWN],
+            [GROUP, UNKNOWN],
+            [GROUP, UNKNOWN],
+        ]);
         assert.deepEqual(resolver.get(FRIEND), { id: "101", name: "Example Friend" });
         assert.deepEqual(resolver.get(MEMBER), { id: "202", name: "Example Member" });
         assert.deepEqual(resolver.get(GROUP), { id: GROUP, name: "" }, "a group name is never a person's name");
         assert.deepEqual(resolver.get(UNKNOWN), { id: UNKNOWN, name: "" });
         await resolver.prepare([{ senderId: MEMBER }, { senderId: UNKNOWN }]);
-        assert.equal(calls.length, 1);
+        assert.equal(calls.length, 3, "an id asked for in this restore is not asked for again in a later chunk");
     });
 
     it("uses user mappings added by conversation resolution after construction", async () => {
@@ -57,9 +69,10 @@ describe("sync sender identity resolution", () => {
         assert.deepEqual(resolver.get("0"), { id: "0", name: "" });
     });
 
-    it("keeps unresolved IDs on lookup failure without retrying every message", async () => {
+    it("keeps unresolved IDs on lookup failure, after three tries and without retrying every message", async () => {
         let calls = 0;
         const resolver = createSenderResolver({}, new Map(), {
+            ...quick(),
             resolveUsers: async () => {
                 calls++;
                 throw new Error("profile service unavailable");
@@ -67,12 +80,41 @@ describe("sync sender identity resolution", () => {
         });
         await resolver.prepare([{ senderId: MEMBER }]);
         await resolver.prepare([{ senderId: MEMBER }]);
-        assert.equal(calls, 1);
+        assert.equal(calls, 3, "the first try and two retries, once per restore");
         assert.deepEqual(resolver.get(MEMBER), { id: MEMBER, name: "" });
+    });
+
+    it("asks again after 0.5 s and 1.5 s, and stops as soon as the sender resolves (Y9)", async () => {
+        const wait = quick();
+        let calls = 0;
+        const resolver = createSenderResolver({}, new Map(), {
+            ...wait,
+            resolveUsers: async () => {
+                calls++;
+                if (calls < 2) throw new Error("profile service unavailable");
+                return new Map([[MEMBER, { id: "202", name: "Example Member" }]]);
+            },
+        });
+        await resolver.prepare([{ senderId: MEMBER }]);
+        assert.equal(calls, 2);
+        assert.deepEqual(wait.pauses, [500], "one pause, before the second try");
+        assert.deepEqual(resolver.get(MEMBER), { id: "202", name: "Example Member" });
+        assert.deepEqual(SENDER_RETRY_DELAYS_MS, [500, 1500]);
+    });
+
+    it("pauses 0.5 s, then 1.5 s, when nothing ever resolves", async () => {
+        const wait = quick();
+        const resolver = createSenderResolver({}, new Map(), {
+            ...wait,
+            resolveUsers: async () => new Map(),
+        });
+        await resolver.prepare([{ senderId: MEMBER }]);
+        assert.deepEqual(wait.pauses, [500, 1500]);
     });
 
     it("rejects a purported resolution that is not a canonical user ID", async () => {
         const resolver = createSenderResolver({}, new Map(), {
+            ...quick(),
             resolveUsers: async () => new Map([[MEMBER, { id: UNKNOWN, name: "Wrong Identity" }]]),
         });
         await resolver.prepare([{ senderId: MEMBER }]);

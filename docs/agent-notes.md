@@ -985,6 +985,43 @@ and a run stops after ten failed batches or when more than half of ten or more h
 confirmation is ten minutes. The rules are in `src/core/sync-v2/transfer.js` as pure functions, so they are tested
 without a phone or the decryption assets.
 
+## The saved-session login is ours, and what it sends (v3.0, 2026-10-25)
+
+**Where it lives.** `src/zalo/login.js` logs in with a saved session and hands the result to zca-js's own `API`
+class, so every API factory, the listener and the patched calls are unchanged. `Zalo.login()` is no longer used for
+this (the QR login still is). `src/zalo/headers.js` adds the browser headers, `src/zalo/upkeep.js` the two timers.
+
+**What the official Web client does, and we now do:** `getServerInfo`, then `getLoginInfo`, then `getServerInfo`
+again. Both server-info calls carry `sp_mtn` and `bkt`: the `settings.features.dr_config` values the last answer
+held (`supportMaintenance`, `bucketId`), kept in `accounts/<ownId>/dr-config.json`, or -1 and -1 when none are
+stored. The first adds `viewerKey` when one is stored, the second `floatMenuPos` (sent as the text `null`), and the
+`signkey` covers every field of its own call. `getLoginInfo` announces the version as `client_version` only: no
+`zpw_ver`, no `zpw_type`. Parameters are encrypted unless the server's `authen.encryption.enable` says otherwise,
+and an answer of error 19000 means "not encrypted, please": we ask once more without encryption. HTTP 500-504 on
+`getLoginInfo` is asked again every 10 s for up to 120 s; every login call has a 10 s timeout; the npm registry
+is not asked whether zca-js is current. The server's key is `setttings` (three t's) in some answers; both spellings
+are read.
+
+**Cookies are written back.** When a login changed the cookie jar (name, value, domain, path or expiry; access times
+are ignored) the saved credentials are rewritten atomically at 0600. Whether Zalo rotates cookies is unverified; the
+write is harmless when it does not. A login that does not know its account (a first QR login) saves nothing.
+
+**Browser headers.** `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `priority: u=1, i` and
+`sec-fetch-dest/mode/site` are derived from the saved User-Agent, so a session shows one coherent browser. A
+User-Agent that is not Chromium (an old login made with a Firefox one) gets the `sec-fetch-*` headers only. The
+capture's `cache-control`, `pragma` and `dnt` were DevTools and user settings, and are not sent.
+
+**Upkeep.** Settings are asked again every hour. A keepalive runs only when the server's `settings.keepalive` asks
+for one (`alway_keepalive`, or a `keepalive_duration`; 120 s when 0), is reset by other requests and stops after
+`time_deactive` seconds (300) without one. The captured session's settings asked for neither, so by default we add no
+keepalive traffic. (The official client's code defaults the duration to 120 s when it is 0; whether it then really
+sends one was not seen in the capture. This is the more cautious reading.)
+
+**The offline CLI preload stubs the login calls, not `Zalo.prototype.login`.** `tests/unit/support/offline-session.js`
+used to replace that method; our login never calls it, so the preload now answers `getServerInfo` and
+`getLoginInfo` at the fetch level and the real login code runs in every offline CLI test. An unpatched
+`sendMessage` (`ZALO_OFFLINE_UNPATCHED`) is reproduced by a setter on `API.prototype`.
+
 ## `npm run format` covers `src/` and `tests/` only
 
 A session ran `npx prettier --write` on `skill/SKILL.md` and

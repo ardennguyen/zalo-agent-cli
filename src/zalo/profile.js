@@ -13,9 +13,8 @@
  * maintenance switch) are read from `getServerInfo` by the items that use
  * them and are not duplicated here.
  *
- * The announced version is {@link DEFAULT_API_VERSION}. v3.0 moves it to the
- * official Web client's current version as its own step (plan item L1), behind
- * the replay harness, so this module changes nothing on the wire by itself.
+ * The announced version is {@link DEFAULT_API_VERSION}, the Zalo Web client's own
+ * current version.
  */
 
 /** The Web client class this CLI announces as: `zpw_type` and `type`. */
@@ -24,10 +23,10 @@ export const API_TYPE = 30;
 /**
  * The protocol version announced when `ZALO_API_VERSION` is not set:
  * `zpw_ver` on every HTTP and WebSocket URL and `client_version` in the login
- * calls. zca-js defaults to 685; the live Zalo Web client was on 691 when this
+ * calls. zca-js defaults to 685; the live Zalo Web client was on 694 when this
  * was last moved.
  */
-export const DEFAULT_API_VERSION = 691;
+export const DEFAULT_API_VERSION = 694;
 
 /** The `computer_name` Zalo Web sends in its login, server-info and logout calls. */
 export const COMPUTER_NAME = "Web";
@@ -67,8 +66,8 @@ export function resolveApiVersion(env = process.env) {
     return n;
 }
 
-/** Chrome builds the QR-login fingerprint may announce. Newest first. */
-export const CHROME_VERSIONS = Object.freeze(["131.0.0.0", "130.0.0.0", "129.0.0.0", "128.0.0.0"]);
+/** Chrome builds the QR-login fingerprint may announce. Newest first: the current stable and the three before it. */
+export const CHROME_VERSIONS = Object.freeze(["155.0.0.0", "154.0.0.0", "153.0.0.0", "152.0.0.0"]);
 
 /**
  * Operating systems the fingerprint may claim. Chrome only, on purpose: other
@@ -91,6 +90,45 @@ export const UA_PLATFORMS = Object.freeze([
 export function buildUserAgent(platform, chromeVersion) {
     return `Mozilla/5.0 (${platform.token}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
 }
+
+/**
+ * Zalo's number for the browser a User-Agent names (the `browser` parameter of the profile call).
+ *
+ * @param {string} userAgent
+ * @returns {number} 1 Opera, 2 Firefox, 3 Safari, 4 Internet Explorer, 5 Edge, 6 Chrome, 0 anything else
+ */
+export function browserCodeOf(userAgent) {
+    const ua = String(userAgent ?? "");
+    if (/OPR\/|Opera/.test(ua)) return 1;
+    if (/Edg(e|A|iOS)?\//.test(ua)) return 5;
+    if (/MSIE |Trident\//.test(ua)) return 4;
+    if (/Firefox\//.test(ua)) return 2;
+    if (/Chrome\/|Chromium\//.test(ua)) return 6;
+    if (/Safari\//.test(ua)) return 3;
+    return 0;
+}
+
+/**
+ * Zalo's number for the operating system a User-Agent names (the `os` parameter of the profile call).
+ *
+ * @param {string} userAgent
+ * @returns {number} 1 Windows Phone, 2 Android, 3 iPad, 4 iPhone, 5 iPod, 6 macOS, 7 Windows, 8 Linux, 0 anything else
+ */
+export function osCodeOf(userAgent) {
+    const ua = String(userAgent ?? "");
+    if (/windows phone/i.test(ua)) return 1;
+    if (/android/i.test(ua)) return 2;
+    if (/iPad/i.test(ua)) return 3;
+    if (/iPhone/i.test(ua)) return 4;
+    if (/iPod/i.test(ua)) return 5;
+    if (/Macintosh|Mac OS X/i.test(ua)) return 6;
+    if (/Windows/i.test(ua)) return 7;
+    if (/Linux/i.test(ua)) return 8;
+    return 0;
+}
+
+/** The `avatar_size` the Web client asks every profile and list call for. */
+export const AVATAR_SIZE = 160;
 
 /**
  * The profile as one frozen object, for callers that want to log or assert

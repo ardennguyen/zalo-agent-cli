@@ -141,6 +141,11 @@ function mergeSettings(base, over) {
  *   server settings getServerInfo returns, e.g. `{features: {socket: {retries: {...}}}}`
  * @param {{error_code: number, error_message?: string}} [opts.loginError] - answer getLoginInfo
  *   with this error instead of a session
+ * @param {Array<object>} [opts.loginScript] - answers for the next getLoginInfo calls, consumed in order
+ *   (see `scripted` below); once it runs out the normal answer is given
+ * @param {Array<object>} [opts.serverInfoScript] - the same for getServerInfo
+ * @param {Record<string, string>} [opts.serverInfoHeaders] - response headers of every getServerInfo answer
+ *   (e.g. a `set-cookie`)
  * @returns {{
  *   requests: Array<{method: string, host: string, path: string, query: object, params: object|null,
  *     headers: object, form: object|null}>,
@@ -157,6 +162,9 @@ export function installFakeZalo({
     wsUrls = ["wss://ws.zalo.invalid/"],
     settings = {},
     loginError = null,
+    loginScript = [],
+    serverInfoScript = [],
+    serverInfoHeaders = {},
 } = {}) {
     const requests = [];
     const routes = new Map();
@@ -173,6 +181,20 @@ export function installFakeZalo({
             error_message: "Successful.",
             data: zu.encodeAES(FAKE.sessionKey, JSON.stringify({ error_code: 0, error_message: "Successful.", data })),
         });
+
+    /**
+     * One scripted answer: `{status}` an HTTP status with an empty body, `{body}` a JSON body, `{hang: true}`
+     * never answers (until the request is aborted, as a stuck server would).
+     */
+    async function scripted(step, init) {
+        if (step.hang) {
+            await new Promise((_, reject) => {
+                init.signal?.addEventListener("abort", () => reject(init.signal.reason));
+            });
+        }
+        if (step.status) return reply({}, step.status);
+        return reply(step.body);
+    }
 
     async function handle(input, init = {}) {
         const url = new URL(String(input));
@@ -191,6 +213,8 @@ export function installFakeZalo({
         if (url.host === "registry.npmjs.org") return reply({}, 404);
 
         if (url.pathname === "/api/login/getLoginInfo") {
+            const step = loginScript.shift();
+            if (step) return scripted(step, init);
             if (loginError) {
                 return reply({
                     error_code: loginError.error_code,
@@ -198,10 +222,6 @@ export function installFakeZalo({
                     data: null,
                 });
             }
-            const keyer = new zu.ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
-            keyer.zcid = url.searchParams.get("zcid");
-            keyer.zcid_ext = url.searchParams.get("zcid_ext");
-            keyer.createEncryptKey();
             const loginInfo = {
                 uid: FAKE.ownId,
                 zpw_enk: FAKE.sessionKey,
@@ -209,6 +229,12 @@ export function installFakeZalo({
                 zpw_ws: wsUrls,
                 send2me_id: "1000000000000000001",
             };
+            // A request without zcid was sent unencrypted: answer it the same way.
+            if (!url.searchParams.get("zcid")) return reply({ error_code: 0, error_message: "", data: loginInfo });
+            const keyer = new zu.ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
+            keyer.zcid = url.searchParams.get("zcid");
+            keyer.zcid_ext = url.searchParams.get("zcid_ext");
+            keyer.createEncryptKey();
             const payload = JSON.stringify({ error_code: 0, error_message: "", data: loginInfo });
             return reply({
                 error_code: 0,
@@ -218,11 +244,16 @@ export function installFakeZalo({
         }
 
         if (url.pathname === "/api/login/getServerInfo") {
-            return reply({
-                error_code: 0,
-                error_message: "",
-                data: { settings: mergeSettings(SETTINGS, settings), extra_ver: {} },
-            });
+            const step = serverInfoScript.shift();
+            if (step) return scripted(step, init);
+            return new Response(
+                JSON.stringify({
+                    error_code: 0,
+                    error_message: "",
+                    data: { settings: mergeSettings(SETTINGS, settings), extra_ver: {} },
+                }),
+                { status: 200, headers: { "content-type": "application/json", ...serverInfoHeaders } },
+            );
         }
 
         const enc =

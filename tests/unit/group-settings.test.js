@@ -146,7 +146,7 @@ function harness({ setting = CURRENT, groupInfo, readError, afterWrite, readBack
         secretKey: SECRET_KEY,
         imei: IMEI,
         userAgent: "zalo-agent-cli-offline-test",
-        API_VERSION: 691,
+        API_VERSION: 694,
         API_TYPE: 30,
         options: {
             logging: false,
@@ -295,7 +295,7 @@ describe("group settings changes only what was named", () => {
         assert.equal(w.method, "GET");
         assert.equal(`${w.url.origin}${w.url.pathname}`, `${GROUP_HOST}/api/group/setting/update`);
         assert.equal(w.body, null, "no request body");
-        assert.equal(w.url.searchParams.get("zpw_ver"), "691", "the common params ride along");
+        assert.equal(w.url.searchParams.get("zpw_ver"), "694", "the common params ride along");
         assert.equal(w.url.searchParams.get("zpw_type"), "30");
     });
 

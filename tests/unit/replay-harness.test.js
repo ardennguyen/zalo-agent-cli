@@ -207,25 +207,16 @@ describe("replay harness: today's code against the official Web client", () => {
     });
 
     describe("login", () => {
-        it("differs from the official boot in exactly these ways (L2a-L2b move this to none)", () => {
-            const loginCalls = zalo.http.requests.slice();
-            assert.deepEqual(diffSequence(loginCalls, WEB_BOOT), [
-                'server-info (first): query key "sp_mtn" is missing',
-                'server-info (first): query key "bkt" is missing',
-                "login-info: made out of order (call #2, before its place in the sequence)",
-                'login-info: query key "zpw_ver" must not be sent',
-                'login-info: query key "zpw_type" must not be sent',
-                "server-info (second): the call was never made",
-            ]);
+        it("conforms to the official boot: server info, login info, server info (L2a-L2b)", () => {
+            assertConforms(diffSequence(zalo.http.requests.slice(), WEB_BOOT), "our login calls");
         });
 
-        it(
-            "conforms to the official boot",
-            { todo: "L2a-L2b (P2): getServerInfo twice, getLoginInfo without zpw_ver/zpw_type" },
-            () => {
-                assertConforms(diffSequence(zalo.http.requests.slice(), WEB_BOOT), "today's login calls");
-            },
-        );
+        it("asks nobody whether zca-js is current (L5): no npm registry call", () => {
+            assert.deepEqual(
+                zalo.http.requests.filter((r) => r.host === "registry.npmjs.org"),
+                [],
+            );
+        });
     });
 
     describe("logout", () => {

@@ -121,7 +121,7 @@ function harness({ loginInfo = { zcloud: { viewer_key: VK_LOGIN, enk: ENK } }, r
         userAgent: "zalo-agent-cli-offline-test",
         language: "vi",
         uid: OWN,
-        API_VERSION: 691,
+        API_VERSION: 694,
         API_TYPE: 30,
         loginInfo,
         options: {
@@ -217,7 +217,7 @@ describe("zCloud requests go out the way Zalo Web sends them", () => {
         assert.equal(v.method, "GET");
         assert.equal(v.body, undefined, "a GET carries no body");
         assert.equal(v.headers["cloud-viewer-key"], VK_LOGIN);
-        assert.equal(v.query.zpw_ver, "691");
+        assert.equal(v.query.zpw_ver, "694");
         assert.equal(v.query.zpw_type, "30");
     });
 

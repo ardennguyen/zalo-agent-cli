@@ -27,6 +27,7 @@
  */
 
 import { CHROME_VERSIONS, UA_PLATFORMS, buildUserAgent } from "../zalo/profile.js";
+import { secChUaFor } from "../zalo/headers.js";
 
 /**
  * Windows-first, Chrome-only presets, built from the protocol profile
@@ -42,25 +43,17 @@ const PRESETS = UA_PLATFORMS.flatMap((platform) =>
     CHROME_VERSIONS.map((v) => ({ userAgent: buildUserAgent(platform, v), secChUaPlatform: platform.hint })),
 );
 
-function buildSecChUa(chromeVersion) {
-    const major = chromeVersion.split(".")[0];
-    // Matches the brand-list shape real Chrome sends (order, quoting, the
-    // "Not?A_Brand" filler entry — all part of Chrome's actual GREASE
-    // pattern for this header, not something we're inventing).
-    return `"Chromium";v="${major}", "Google Chrome";v="${major}", "Not?A_Brand";v="99"`;
-}
-
 /**
  * Pick a random, internally-consistent fingerprint for a fresh QR login.
  * @returns {{userAgent: string, secChUa: string, secChUaPlatform: string, secChUaMobile: string}}
  */
 export function generateDeviceFingerprint() {
     const preset = PRESETS[Math.floor(Math.random() * PRESETS.length)];
-    const versionMatch = preset.userAgent.match(/Chrome\/([\d.]+)/);
-    const chromeVersion = versionMatch ? versionMatch[1] : CHROME_VERSIONS[0];
+    // The brand list comes from src/zalo/headers.js, which also derives the hints of every later request from
+    // the saved User-Agent, so the QR login and the session after it present the same browser.
     return {
         userAgent: preset.userAgent,
-        secChUa: buildSecChUa(chromeVersion),
+        secChUa: secChUaFor(preset.userAgent).secChUa,
         secChUaPlatform: preset.secChUaPlatform,
         secChUaMobile: "?0",
     };

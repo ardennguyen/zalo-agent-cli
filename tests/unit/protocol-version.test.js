@@ -2,14 +2,15 @@
  * The protocol version this CLI announces to Zalo.
  *
  * zca-js defaults to zpw_ver=685 (`createContext(apiType = 30, apiVersion =
- * 685)`, zca-js dist/context.js); the live Zalo Web client sends 691 on every
+ * 685)`, zca-js dist/context.js); the live Zalo Web client sent 691 on every
  * URL (agent/work/zalo-web-capture-2026-09-29: FINDINGS.md §7, comparison
- * §3g). `createZalo()` now asks for 691, overridable with ZALO_API_VERSION so
+ * §3g). `createZalo()` now asks for 694, overridable with ZALO_API_VERSION so
  * a bad bump can be rolled back without a release.
  *
  * Asserted on the wire, through a real login against ./fake-zalo-session.js --
  * never by reading the options object back:
- *   - getLoginInfo carries it as zpw_ver AND client_version,
+ *   - getLoginInfo carries it as client_version, and no zpw_ver / zpw_type (the
+ *     official client announces those on API calls only),
  *   - getServerInfo carries it as client_version,
  *   - an ordinary API call carries it as zpw_ver,
  *   - the WebSocket URL the listener would dial carries it as zpw_ver
@@ -43,8 +44,8 @@ async function announced(fake) {
 }
 
 const everywhere = (v) => ({
-    loginZpwVer: v,
-    loginZpwType: "30",
+    loginZpwVer: undefined,
+    loginZpwType: undefined,
     loginClientVersion: v,
     serverClientVersion: v,
     apiZpwVer: v,
@@ -75,8 +76,8 @@ describe("protocol version (zpw_ver / client_version)", () => {
         else process.env.ZALO_API_VERSION = saved;
     });
 
-    it("announces 691, the live Zalo Web version, by default", async () => {
-        assert.deepEqual(await announced(fake), everywhere("691"));
+    it("announces 694, the live Zalo Web version, by default", async () => {
+        assert.deepEqual(await announced(fake), everywhere("694"));
     });
 
     it("announces ZALO_API_VERSION instead when it is set", async () => {
@@ -91,7 +92,7 @@ describe("protocol version (zpw_ver / client_version)", () => {
 
     it("treats an empty ZALO_API_VERSION as unset", async () => {
         process.env.ZALO_API_VERSION = "  ";
-        assert.deepEqual(await announced(fake), everywhere("691"));
+        assert.deepEqual(await announced(fake), everywhere("694"));
     });
 
     it("refuses anything but a positive whole number, naming the variable, before any request", async () => {

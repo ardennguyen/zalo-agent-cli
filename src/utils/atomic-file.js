@@ -35,6 +35,9 @@ import { basename, dirname, join } from "node:path";
 /** Errors a rename can raise on Windows while another process has the target open for reading. */
 const TRANSIENT = new Set(["EPERM", "EBUSY", "EACCES"]);
 
+/** How long a rename keeps being retried before the error is surfaced (antivirus and indexers can hold a file for seconds). */
+const RENAME_RETRY_MS = 5000;
+
 /**
  * Block this thread for `ms` without spinning.
  * @param {number} ms
@@ -48,8 +51,8 @@ export function sleepSync(ms) {
  *
  * The temp file is created exclusively with `mode` (so a secret is never readable by others, not
  * even briefly), flushed to disk, then renamed over the target. On Windows a rename can fail while a
- * reader has the target open, so it is retried for a second or two (a reader holds the file for
- * microseconds, but a tight loop of them can keep one in the way for a while).
+ * reader (or an antivirus scan) has the target open, so it is retried with a growing pause for up to
+ * five seconds (a reader holds the file for microseconds, but a tight loop of them can keep one in the way).
  *
  * @param {string} file
  * @param {string|Buffer} data
@@ -74,12 +77,13 @@ export function writeFileAtomic(file, data, { mode = 0o600, durable = true } = {
     }
     closeSync(fd);
 
+    const giveUpAt = Date.now() + RENAME_RETRY_MS;
     for (let attempt = 0; ; attempt++) {
         try {
             renameSync(tmp, file);
             return;
         } catch (e) {
-            if (!TRANSIENT.has(e.code) || attempt >= 60) {
+            if (!TRANSIENT.has(e.code) || Date.now() >= giveUpAt) {
                 try {
                     unlinkSync(tmp);
                 } catch {
@@ -87,7 +91,7 @@ export function writeFileAtomic(file, data, { mode = 0o600, durable = true } = {
                 }
                 throw e;
             }
-            sleepSync(10 + Math.floor(Math.random() * 40));
+            sleepSync(Math.min(250, 10 * 2 ** Math.min(attempt, 5)) + Math.floor(Math.random() * 40));
         }
     }
 }

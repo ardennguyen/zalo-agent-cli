@@ -115,7 +115,7 @@ export function registerAccountCommands(program) {
 
             clearSession();
             try {
-                await loginWithCredentials(creds, acc?.proxy || null);
+                await loginWithCredentials(creds, acc?.proxy || null, { ownId: ownerId });
                 setActive(ownerId);
                 success(`Switched to ${ownerId}`);
             } catch (e) {

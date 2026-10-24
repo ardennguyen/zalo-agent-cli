@@ -4,16 +4,17 @@
  */
 
 import fs from "fs";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { imageSizeFromFile } from "image-size/fromFile";
 import { Zalo } from "zca-js";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { ProxyAgent } from "undici";
 import { getActive } from "./accounts.js";
-import { loadCredentials } from "./credentials.js";
+import { getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
 import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
 import { API_TYPE, API_VERSION_INVALID, resolveApiVersion } from "../zalo/profile.js";
+import { createDrStore, loginWithSession, stopUpkeep } from "../zalo/login.js";
 
 /**
  * Read image dimensions for zca-js's `imageMetadataGetter`.
@@ -108,11 +109,14 @@ function createProxyFetch(proxyUrl) {
 }
 
 /**
- * Create a Zalo instance with optional proxy. Suppress logs in JSON mode.
+ * The zca-js options every session of this process is built with: what Zalo Web announces, how we log, what
+ * we deliver, and the proxy when there is one. Suppresses logs in JSON mode.
  *
+ * @param {string|null} proxyUrl
+ * @returns {object}
  * @throws {Error} when ZALO_API_VERSION is invalid -- before any request is made
  */
-function createZalo(proxyUrl) {
+function buildOptions(proxyUrl) {
     const opts = {
         // What Zalo Web announces, from the protocol profile (src/zalo/profile.js).
         // zca-js builds every URL's zpw_ver and the login calls' client_version
@@ -138,7 +142,54 @@ function createZalo(proxyUrl) {
         opts.agent = new HttpsProxyAgent(proxyUrl);
         opts.polyfill = createProxyFetch(proxyUrl);
     }
-    return new Zalo(opts);
+    return opts;
+}
+
+/** A zca-js instance, for the QR login (the saved-session login is our own, src/zalo/login.js). */
+function createZalo(proxyUrl) {
+    return new Zalo(buildOptions(proxyUrl));
+}
+
+/**
+ * Whether two serialized cookie jars hold the same cookies: name, value, domain, path and expiry. Access
+ * times are ignored, they change on every use.
+ */
+function sameCookies(a, b) {
+    const flat = (jar) =>
+        JSON.stringify(
+            (jar?.cookies ?? (Array.isArray(jar) ? jar : []))
+                .map((c) => [
+                    c.key ?? c.name,
+                    c.value,
+                    String(c.domain ?? "").replace(/^./, ""),
+                    c.path,
+                    c.expires ?? null,
+                ])
+                .sort(),
+        );
+    return flat(a) === flat(b);
+}
+
+/**
+ * Write the session's cookie jar back to the saved credentials when the login changed it (plan item L8).
+ * Zalo may rotate cookies; a login that kept the rotated ones would otherwise be repeated with stale ones.
+ * Never fatal, and never writes when nothing changed.
+ *
+ * @param {string|null} ownId
+ * @param {object} creds - the credentials the login started from
+ * @param {object} api - the session
+ * @returns {boolean} whether credentials were rewritten
+ */
+function persistCookies(ownId, creds, api) {
+    if (!ownId || !creds?.cookie) return false;
+    try {
+        const jar = JSON.parse(JSON.stringify(api.getContext().cookie));
+        if (sameCookies(jar, creds.cookie)) return false;
+        saveCredentials(ownId, { ...creds, cookie: jar });
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /** Set the active API + ownId (used after login). */
@@ -149,6 +200,7 @@ function setSession(api, ownId) {
 
 /** Clear current session. */
 export function clearSession() {
+    stopUpkeep(_api);
     _api = null;
     _ownId = null;
 }
@@ -157,13 +209,23 @@ export function clearSession() {
  * Login with saved credentials + proxy.
  * @param {object} creds - {imei, cookie, userAgent, language?}
  * @param {string|null} proxyUrl
+ * @param {{ownId?: string|null}} [opts] - the account the credentials belong to, when the caller knows it: it
+ *   locates the stored server settings the first server-info call carries, and the credentials that are
+ *   rewritten when the login changed the cookies
  * @returns {object} - {api, ownId}
  */
-export async function loginWithCredentials(creds, proxyUrl = null) {
-    const zalo = createZalo(proxyUrl);
-    const api = await zalo.login(creds);
+export async function loginWithCredentials(creds, proxyUrl = null, { ownId: knownId = null } = {}) {
+    const zaloOptions = buildOptions(proxyUrl);
+    const api = await loginWithSession(creds, {
+        apiType: zaloOptions.apiType,
+        apiVersion: zaloOptions.apiVersion,
+        zaloOptions,
+        ownId: knownId,
+        drStoreFor: (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null),
+    });
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
+    persistCookies(knownId, creds, api);
     return { api, ownId };
 }
 
@@ -246,7 +308,7 @@ export async function autoLogin(jsonMode = false) {
     if (!creds) return;
 
     try {
-        await loginWithCredentials(creds, active.proxy || null);
+        await loginWithCredentials(creds, active.proxy || null, { ownId: active.ownId });
         if (!jsonMode) {
             info(`Auto-login: ${active.name || active.ownId}`);
         }

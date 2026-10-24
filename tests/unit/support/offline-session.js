@@ -3,18 +3,21 @@
  *
  * Preloaded into a child `node src/index.js …` through
  * `NODE_OPTIONS=--import=<this file's URL>` (see ./offline-cli.js). It replaces
- * `Zalo.prototype.login` with one that builds zca-js's real `API` on a stub
- * context, so the CLI runs its actual action code and zca-js builds its actual
- * requests. Every request -- zca-js's own and the custom calls this repo builds
- * on zca-js's `apiFactory` -- goes through `ctx.options.polyfill`, which here:
+ * `globalThis.fetch` with a stub server that answers the two login calls
+ * (`getServerInfo`, `getLoginInfo`), so the CLI's own login (src/zalo/login.js)
+ * runs for real and builds zca-js's real `API`; the CLI then runs its actual
+ * action code and zca-js builds its actual requests. Every request -- zca-js's
+ * own and the custom calls this repo builds on zca-js's `apiFactory` -- goes
+ * through `ctx.options.polyfill`, which here:
  *
  *   1. decrypts `params` with a throwaway session key, exactly as the server would,
  *   2. appends `{method, service, path, params}` as one JSON line to ZALO_OFFLINE_LOG,
  *   3. answers with a canned success (overridable per path).
  *
- * `globalThis.fetch` is replaced with a function that throws, so no code path
- * can reach the real network even by accident. Nothing here logs in, opens a
- * socket, or reads real credentials; the ids and key are made up.
+ * Any request to a host that is not the stub's own throws, so no code path can
+ * reach the real network even by accident. Nothing here opens a socket or
+ * reads real credentials; the ids and key are made up. The login calls are
+ * answered but not logged: the log holds the commands' own requests.
  *
  * Environment:
  *   ZALO_OFFLINE_LOG        file that receives one JSON line per request (required)
@@ -30,11 +33,10 @@
  *                           {msgId})
  */
 import { appendFileSync, readFileSync } from "node:fs";
-import { Zalo, API } from "zca-js";
+import { API } from "zca-js";
 
 const DIST = new URL(".", import.meta.resolve("zca-js"));
-const { createContext } = await import(new URL("context.js", DIST).href);
-const { encodeAES, decodeAES } = await import(new URL("utils.js", DIST).href);
+const { encodeAES, decodeAES, ParamsEncryptor } = await import(new URL("utils.js", DIST).href);
 
 /** Throwaway 128-bit session key. Only this process and its log ever see it. */
 const KEY = Buffer.alloc(16, 7).toString("base64");
@@ -171,47 +173,63 @@ async function offlineFetch(url, init = {}) {
 /** How many times each path has been called in this process, for `__sequence`. */
 const calls = new Map();
 
-globalThis.fetch = async (url) => {
+/** Only what zca-js reads while constructing the API: the Listener walks `socket.retries` in its constructor, send/upload read `sharefile`. */
+const SETTINGS = {
+    features: {
+        sharefile: { max_file: 10, max_size_share_file_v3: 1024, chunk_size_file: 3145728, restricted_ext_file: [] },
+        socket: { retries: {}, close_and_retry_codes: [], rotate_error_codes: [], ping_interval: 60000 },
+    },
+};
+
+const json = (body) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+
+/** The stub server: the login calls, then the stub services; anything else is refused. */
+globalThis.fetch = async (url, init) => {
+    const u = new URL(String(url));
+    if (u.pathname === "/api/login/getServerInfo") {
+        return json({ error_code: 0, error_message: "", data: { settings: SETTINGS, extra_ver: {} } });
+    }
+    if (u.pathname === "/api/login/getLoginInfo") {
+        // zca-js seals the answer with a key derived from zcid and zcid_ext: derive the same one.
+        const keyer = new ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
+        keyer.zcid = u.searchParams.get("zcid");
+        keyer.zcid_ext = u.searchParams.get("zcid_ext");
+        keyer.createEncryptKey();
+        const loginInfo = {
+            uid: UID,
+            zpw_enk: KEY,
+            zpw_service_map_v3: SERVICE_MAP,
+            zpw_ws: ["wss://ws.offline.invalid/"],
+            ...(SEND2ME && SEND2ME !== "none" ? { send2me_id: SEND2ME } : {}),
+        };
+        const payload = JSON.stringify({ error_code: 0, error_message: "", data: loginInfo });
+        return json({
+            error_code: 0,
+            error_message: "",
+            data: ParamsEncryptor.encodeAES(keyer.getEncryptKey(), payload, "base64", false),
+        });
+    }
+    if (u.hostname.endsWith(".offline.invalid")) return offlineFetch(url, init);
     throw new Error(`offline test session: refusing to fetch ${url}`);
 };
 
-Zalo.prototype.login = async function offlineLogin(credentials) {
-    const ctx = createContext(this.options.apiType, this.options.apiVersion);
-    Object.assign(ctx.options, this.options);
-    ctx.options.polyfill = offlineFetch;
-    ctx.options.checkUpdate = false;
-    ctx.imei = credentials.imei;
-    ctx.userAgent = credentials.userAgent;
-    ctx.language = credentials.language || "vi";
-    ctx.cookie = { getCookieString: async () => "", getCookieStringSync: () => "", setCookie: async () => {} };
-    ctx.secretKey = KEY;
-    ctx.uid = UID;
-    // Only what zca-js reads while constructing the API: the Listener walks
-    // `socket.retries` in its constructor, send/upload read `sharefile`.
-    ctx.settings = {
-        features: {
-            sharefile: {
-                max_file: 10,
-                max_size_share_file_v3: 1024,
-                chunk_size_file: 3145728,
-                restricted_ext_file: [],
-            },
-            socket: { retries: {}, close_and_retry_codes: [], rotate_error_codes: [], ping_interval: 60000 },
+// Reproduce an install where the cliMsgId patch did not apply: every API object assigns its `sendMessage`
+// in its constructor, so a setter on the prototype sees the assignment and can wrap it.
+if (process.env.ZALO_OFFLINE_UNPATCHED === "1") {
+    Object.defineProperty(API.prototype, "sendMessage", {
+        configurable: true,
+        set(patchedSend) {
+            Object.defineProperty(this, "sendMessage", {
+                configurable: true,
+                writable: true,
+                enumerable: true,
+                value: async (...args) => {
+                    const result = await patchedSend(...args);
+                    if (result?.message) delete result.message.cliMsgId;
+                    return result;
+                },
+            });
         },
-    };
-    ctx.loginInfo = {
-        uid: UID,
-        zpw_service_map_v3: SERVICE_MAP,
-        ...(SEND2ME && SEND2ME !== "none" ? { send2me_id: SEND2ME } : {}),
-    };
-    const api = new API(ctx, SERVICE_MAP, ["wss://ws.offline.invalid/"]);
-    if (process.env.ZALO_OFFLINE_UNPATCHED === "1") {
-        const patchedSend = api.sendMessage;
-        api.sendMessage = async (...args) => {
-            const result = await patchedSend(...args);
-            if (result?.message) delete result.message.cliMsgId;
-            return result;
-        };
-    }
-    return api;
-};
+    });
+}

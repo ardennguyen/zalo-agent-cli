@@ -58,7 +58,7 @@ function harness({
         imei: "test-imei-0000",
         uid: OWN,
         userAgent: "zalo-agent-cli-offline-test",
-        API_VERSION: 691,
+        API_VERSION: 694,
         API_TYPE: 30,
         options: {
             logging: false,
@@ -117,11 +117,11 @@ describe("serverLogout sends Zalo Web's production logout", () => {
         const time = Number(q.get("time"));
         // Red if `time` is milliseconds, which is what logoutV2 sends.
         assert.ok(time >= before && time <= after, `time must be unix SECONDS, got ${q.get("time")}`);
-        assert.equal(q.get("client_version"), "691");
+        assert.equal(q.get("client_version"), "694");
         assert.equal(q.get("type"), "30");
         assert.equal(q.get("imei"), "test-imei-0000");
         assert.equal(q.get("computer_name"), "Web");
-        assert.equal(q.get("zpw_ver"), "691", "the common params ride along");
+        assert.equal(q.get("zpw_ver"), "694", "the common params ride along");
         assert.equal(q.get("zpw_type"), "30");
     });
 

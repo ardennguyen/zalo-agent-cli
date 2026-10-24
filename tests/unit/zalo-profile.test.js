@@ -6,9 +6,8 @@
  *   - the environment rules of `ZALO_API_VERSION`, on an injected environment;
  *   - the browser presets, through the real fingerprint generator that consumes
  *     them (every platform and Chrome build, not a random sample);
- *   - agreement with the wire: zca-js writes the computer name into
- *     `getServerInfo` itself, so a login through the fake server shows whether
- *     the profile and zca-js still say the same thing.
+ *   - agreement with the wire: a login through the fake server shows that
+ *     `getServerInfo` carries the profile's computer name, type and version.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
@@ -22,7 +21,9 @@ import {
     DEFAULT_API_VERSION,
     DEVICE_LABEL,
     UA_PLATFORMS,
+    browserCodeOf,
     buildUserAgent,
+    osCodeOf,
     getProfile,
     resolveApiVersion,
 } from "../../src/zalo/profile.js";
@@ -138,5 +139,48 @@ describe("the profile against the wire", () => {
         assert.equal(serverInfo.query.computer_name, COMPUTER_NAME);
         assert.equal(serverInfo.query.type, String(API_TYPE));
         assert.equal(serverInfo.query.client_version, String(DEFAULT_API_VERSION));
+    });
+});
+
+describe("the numbers Zalo's profile call takes for a User-Agent", () => {
+    const UA = {
+        chromeWin: buildUserAgent(UA_PLATFORMS[0], CHROME_VERSIONS[0]),
+        chromeMac: buildUserAgent(UA_PLATFORMS[1], CHROME_VERSIONS[0]),
+        edgeWin: `${buildUserAgent(UA_PLATFORMS[0], CHROME_VERSIONS[0])} Edg/155.0.0.0`,
+        firefoxWin: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+        safariMac:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        operaWin: `${buildUserAgent(UA_PLATFORMS[0], CHROME_VERSIONS[0])} OPR/120.0.0.0`,
+        linux: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36",
+        android: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/155.0.0.0 Mobile Safari/537.36",
+        iphone: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Safari/604.1",
+    };
+
+    it("name the browser: Edge before Chrome, Opera before both, Safari only when it is not Chrome", () => {
+        assert.equal(browserCodeOf(UA.chromeWin), 6);
+        assert.equal(browserCodeOf(UA.edgeWin), 5);
+        assert.equal(browserCodeOf(UA.operaWin), 1);
+        assert.equal(browserCodeOf(UA.firefoxWin), 2);
+        assert.equal(browserCodeOf(UA.safariMac), 3);
+        assert.equal(browserCodeOf("Mozilla/4.0 (compatible; MSIE 9.0; Windows NT 6.1; Trident/5.0)"), 4);
+        assert.equal(browserCodeOf("curl/8"), 0);
+        assert.equal(browserCodeOf(undefined), 0);
+    });
+
+    it("name the operating system", () => {
+        assert.equal(osCodeOf(UA.chromeWin), 7);
+        assert.equal(osCodeOf(UA.chromeMac), 6);
+        assert.equal(osCodeOf(UA.linux), 8);
+        assert.equal(osCodeOf(UA.android), 2);
+        assert.equal(osCodeOf(UA.iphone), 4);
+        assert.equal(osCodeOf("curl/8"), 0);
+    });
+
+    it("know every preset the fingerprint generator can produce", () => {
+        for (const platform of UA_PLATFORMS) {
+            const ua = buildUserAgent(platform, CHROME_VERSIONS[0]);
+            assert.equal(browserCodeOf(ua), 6, ua);
+            assert.ok([6, 7].includes(osCodeOf(ua)), ua);
+        }
     });
 });

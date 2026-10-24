@@ -13,6 +13,7 @@ import { getActive } from "./accounts.js";
 import { loadCredentials } from "./credentials.js";
 import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
+import { API_TYPE, API_VERSION_INVALID, resolveApiVersion } from "../zalo/profile.js";
 
 /**
  * Read image dimensions for zca-js's `imageMetadataGetter`.
@@ -107,53 +108,18 @@ function createProxyFetch(proxyUrl) {
 }
 
 /**
- * The Zalo Web protocol this client announces: `zpw_type` / `zpw_ver` on every
- * HTTP and WebSocket URL, and `type` / `client_version` in the login calls.
- * zca-js defaults to 30 / 685; the live Zalo Web client sends 30 / 691
- * (agent/work/zalo-web-capture-2026-09-29, FINDINGS §7).
- */
-const API_TYPE = 30;
-const DEFAULT_API_VERSION = 691;
-
-/** Marks a bad ZALO_API_VERSION, so autoLogin() does not mistake it for a revoked session. */
-const API_VERSION_INVALID = "ZALO_API_VERSION_INVALID";
-
-/**
- * The protocol version to announce: ZALO_API_VERSION when set -- a rollback
- * switch, e.g. 685 for zca-js's own default -- otherwise 691. An empty value
- * counts as unset.
- *
- * @returns {number}
- * @throws {Error} when ZALO_API_VERSION is set to anything but a positive whole number
- */
-function apiVersion() {
-    const raw = process.env.ZALO_API_VERSION;
-    const value = raw === undefined ? "" : String(raw).trim();
-    if (value === "") return DEFAULT_API_VERSION;
-    const n = Number(value);
-    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(n)) {
-        const err = new Error(
-            `ZALO_API_VERSION must be a positive whole number -- the protocol version to announce, ` +
-                `e.g. 685 to roll back from ${DEFAULT_API_VERSION} -- but it is "${raw}". Fix or unset it.`,
-        );
-        err.code = API_VERSION_INVALID;
-        throw err;
-    }
-    return n;
-}
-
-/**
  * Create a Zalo instance with optional proxy. Suppress logs in JSON mode.
  *
  * @throws {Error} when ZALO_API_VERSION is invalid -- before any request is made
  */
 function createZalo(proxyUrl) {
     const opts = {
-        // What Zalo Web announces. zca-js builds every URL's zpw_ver and the
-        // login calls' client_version from these (createContext in its
-        // dist/context.js); left unset, it announces 685.
+        // What Zalo Web announces, from the protocol profile (src/zalo/profile.js).
+        // zca-js builds every URL's zpw_ver and the login calls' client_version
+        // from these (createContext in its dist/context.js); left unset, it
+        // announces 685.
         apiType: API_TYPE,
-        apiVersion: apiVersion(),
+        apiVersion: resolveApiVersion(),
         // Suppress zca-js internal INFO logs when --json to keep stdout clean
         logging: !process.env.ZALO_JSON_MODE,
         imageMetadataGetter: readImageMetadata,

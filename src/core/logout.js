@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
 import { getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
+import { COMPUTER_NAME } from "../zalo/profile.js";
 
 const require = createRequire(import.meta.url);
 
@@ -60,7 +61,7 @@ async function productionLogout(api) {
             client_version: ctx.API_VERSION,
             type: ctx.API_TYPE,
             imei: ctx.imei,
-            computer_name: "Web",
+            computer_name: COMPUTER_NAME,
         });
         const resp = await utils.request(url, { method: "GET" });
         // Nobody has captured this call's response. logoutV2 answered in plain

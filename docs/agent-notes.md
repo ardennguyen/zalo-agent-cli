@@ -934,6 +934,24 @@ bullets or headings, and the tool had no pass at all.
 
 ---
 
+## v3.0 development: rules that differ from v2.5 (2026-10-24)
+
+`v3.0-dev` is a long-lived branch in its own worktree; `v2.5-dev` stays shippable and is
+never edited by v3.0 work. What differs while v3.0 is in progress:
+
+- **Nothing observed from Zalo's own clients is committed.** Capture files, bundles, build
+  manifests, reports, redacted samples and the scripts that make them live under `agent/`
+  (gitignored). Git receives product code, tests and rules. A test that needs to know what the
+  official client does uses a shape written by hand (`tests/helpers/replay/shapes.js`), with
+  names and fixed values only.
+- **No npm release, and no release candidate, until the v3.0 work is finished and approved.**
+  The branch is pushed after green commits as a backup; that is not a release.
+- **Compare with the official client through the harness, not by eye.** The fake Zalo
+  (`tests/helpers/fake-zalo/`) and the replay harness (`tests/helpers/replay/`) exist for that;
+  see the "Checking requests against the official client" section of `tests/README.md`.
+- **Identity values live in `src/zalo/profile.js`**: the announced version and type, the computer
+  name, the device label and the browser presets. Change one there, never at a call site.
+
 ## `npm run format` covers `src/` and `tests/` only
 
 A session ran `npx prettier --write` on `skill/SKILL.md` and

@@ -56,8 +56,10 @@ tests/
 │   ├── sandbox.js               # throwaway HOME for offline tests
 │   ├── cli.js                   # subprocess harness (runCli / runJson)
 │   ├── targets.js               # disposable-target registry + blast-radius guard
-│   └── live.js                  # session probe, tier gates, write helpers
-├── unit/                        # offline, pure logic + filesystem (107 files)
+│   ├── live.js                  # session probe, tier gates, write helpers
+│   ├── fake-zalo/               # an offline Zalo: HTTP via fetch, plus a real local WebSocket server
+│   └── replay/                  # replay harness: our requests diffed against hand-written official shapes
+├── unit/                        # offline, pure logic + filesystem (110 files)
 │   ├── accounts.test.js              credentials.test.js           daemon-channel.test.js
 │   ├── db.test.js                    image-metadata.test.js        listener-lifecycle-rules.test.js
 │   ├── live-store.test.js            lock.test.js                  mcp-config.test.js
@@ -225,6 +227,9 @@ bare `ETIMEDOUT`, and keeps the original error as its `cause`.
 | `unit/output-latch.test.js`                                                                                                                           | the once-only JSON error latch — first `error()` is the payload on stdout, every later one goes to stderr so `\| jq` keeps working. Only reachable in-process, which is why the `_resetErrorLatch` seam existed for a test nobody had written                                                                                                                                                                                                      |
 | `unit/security-surfaces.test.js`                                                                                                                      | the three surfaces that sat at 0% function coverage: `openFile()` refusing a shell metacharacter (the path is built from a Zalo-supplied filename and the Windows branch uses a shell), the QR server's `0.0.0.0` bind guard, and MCP bearer auth incl. `--auth ""` starting an UNAUTHENTICATED server                                                                                                                                             |
 | `cli/sandbox-discipline.test.js`                                                                                                                      | static guard: no offline test may reach `credentials.js` without importing `helpers/sandbox.js` **first**. `CONFIG_DIR` is frozen at module-eval from `os.homedir()`, so a later import is too late and fails silently                                                                                                                                                                                                                             |
+| `unit/fake-zalo.test.js`                                                                                                                              | the fake Zalo itself, through the real zca-js login and listener over a real local socket: handshake and key frame, ping echo (and silence), kick, server close codes, abrupt drop, connect-time queue pulls, a completed, declined and waiting transfer sync                                                                                                                                                                                      |
+| `unit/replay-harness.test.js`                                                                                                                         | the replay harness goes red on each kind of drift (missing key, forbidden key, wrong value, missing, out-of-order, repeated, wrong-host, forbidden call); today's login, logout and socket requests pinned against the official shapes, with the target as `todo`                                                                                                                                                                                  |
+| `unit/zalo-profile.test.js`                                                                                                                           | the protocol profile: the `ZALO_API_VERSION` rules, every browser preset through the real fingerprint generator, and agreement with what zca-js sends on the wire                                                                                                                                                                                                                                                                                  |
 | `unit/sync-*.test.js`, `unit/live-store`, `unit/daemon-channel`, `unit/msg-forward`, `unit/send-client-id`, `unit/quote-sender`, `unit/mcp-normalize` | the sync-v2 / daemon / live-capture suites, added alongside that surface. Sixteen files not individually described here — read the docblock at the top of each; they are written to be read in that order                                                                                                                                                                                                                                          |
 
 `cli/surface.test.js` is the machine-checkable twin of
@@ -654,6 +659,20 @@ it("CHARACTERIZATION: currently does the wrong thing", async () => {
 `todo` reports without failing CI. The characterization test fails the moment
 the behavior changes, which is the prompt to promote the todo. Add a row to
 **Known issues** above.
+
+### Checking requests against the official client (v3.0)
+
+`tests/helpers/fake-zalo/` answers HTTP through `fetch` and runs a real WebSocket
+server on 127.0.0.1, so the real zca-js login and listener, and later our own
+socket layer, talk to it over real transports. `tests/helpers/replay/` compares
+what our code sent with shapes written by hand in `replay/shapes.js`.
+
+- A comparison between our code and the official client is a pair: a **pin**
+  that lists today's differences exactly (it fails when one appears or goes
+  away), and a `todo` test that asserts the target. The phase that closes the
+  gap deletes the pin and the `todo`.
+- Shapes hold names and fixed values only: no ids, tokens, cookies or payloads.
+- The fake plays plain frames (`encrypt: 0`); it does not play real downloads.
 
 ### Security rules for tests
 

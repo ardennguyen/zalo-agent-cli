@@ -156,7 +156,13 @@ export function registerAccountCommands(program) {
             if (getActive()?.ownId === ownerId) {
                 await autoLogin(program.opts().json);
                 if (isLoggedIn()) {
-                    reportLogout(await serverLogout(getApi()), { success, warning, info });
+                    const saved = loadCredentials(ownerId);
+                    reportLogout(
+                        await serverLogout(getApi(), {
+                            savedLogin: saved ? { creds: saved, proxy: acc.proxy || null, ownId: ownerId } : null,
+                        }),
+                        { success, warning, info },
+                    );
                 } else {
                     warning(
                         `Could not establish a session to invalidate remotely for ${ownerId} (continuing with local removal)`,

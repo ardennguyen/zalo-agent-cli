@@ -1022,6 +1022,29 @@ used to replace that method; our login never calls it, so the preload now answer
 `getLoginInfo` at the fetch level and the real login code runs in every offline CLI test. An unpatched
 `sendMessage` (`ZALO_OFFLINE_UNPATCHED`) is reproduced by a setter on `API.prototype`.
 
+## `logout` signs the device out, and says so only after looking (v3.0, 2026-10-25)
+
+**Why it changed.** The old logout (the production `GET api/login/logOut`, then `logoutV2`) ended only the session
+*key*. The saved cookie kept logging in and the phone kept listing the device (measured 2026-09-30). Zalo Web's own
+sign-out is six calls, and on a test account the saved cookie was refused after them. `src/zalo/official-logout.js`
+makes those calls in the official order: a token from `id.zalo.me/jr/logout-token`, `profile/deactive`, the `v2`
+logout on `stg-wpa` (time in unix seconds), `id.zalo.me/account/logout` with the token, each `setsid` URL the answer
+lists, and the login page. The same six run whether local data is kept or deleted; that choice is local.
+
+**What the code does not trust.** The `setsid` URLs come out of a page Zalo served, so only `https` URLs on
+`jr.zaloapp.com` and `jr.chat.zalo.me`, path `/jr/setsid`, are followed. A failing step does not stop the others (the
+key can be ended without the token); steps that need the token are skipped without one.
+
+**"Signed out" is claimed after a look.** `serverLogout` probes the session key (as before) and, when the caller gives
+it the saved login, tries that login once in a login of its own (`probeSavedLogin` in `src/core/zalo-client.js`:
+no session is set, no timers run, nothing is rewritten). Zalo refusing it (error 600, or a login that fails) is the
+only success line; a login that works is a warning; anything else (no network, a timeout, nothing saved to try) is
+"unverified". `--keep-session` is the pre-v3.0 key-only logout, unchanged, and still deletes the credentials locally.
+`account remove` uses the official sequence too.
+
+**Left for the release:** the public wiki still describes the old logout. It is updated with the v3.0 release,
+not before: a wiki push is public immediately.
+
 ## `npm run format` covers `src/` and `tests/` only
 
 A session ran `npx prettier --write` on `skill/SKILL.md` and

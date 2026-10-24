@@ -336,7 +336,7 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | `npx zalo-agent status` | Check login status |
 | `npx zalo-agent whoami` | Show the logged-in user's full profile |
 | `npx zalo-agent login [--qr-url] [--credentials <path>] [-p <proxy>]` | QR login, or restore from an exported credentials file |
-| `npx zalo-agent logout [--delete-history] [--purge] [--no-remote]` | End the session and delete the saved credentials — the login ends at Zalo only when the device is signed out from the phone; optionally delete the local cache or wipe the account entirely |
+| `npx zalo-agent logout [--delete-history] [--purge] [--no-remote] [--keep-session]` | Sign the device out at Zalo (as Zalo Web does) and delete the saved credentials; `--keep-session` only ends the session key (the pre-v3.0 behavior, after which the login ends at Zalo only when the device is removed from the phone's list); optionally delete the local cache or wipe the account entirely |
 | `npx zalo-agent sync-mobile --transfer [-d <days>]` | **Restore message history from your phone** into the local cache (one confirmation on the phone). Full history by default; `-d/--days <n>` limits it to the last *n* days and finishes much sooner |
 | `npx zalo-agent sync-mobile [-F] [-w <s>]` | Restore history from your phone — prompts the phone once. Add `--socket` for the old server probe, which contacts no phone and usually returns nothing |
 | `npx zalo-agent update` | Self-update to the latest published version |

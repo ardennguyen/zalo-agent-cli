@@ -17,6 +17,11 @@
  * `fetchAccountInfo`, the same call `whoami` makes — with the session error Zalo
  * answered right after a proven logout on 2026-09-19. Anything else is reported
  * as what it is.
+ *
+ * v3.0 (plan items L13a-c, X1): the default logout is now the official client's six steps
+ * (src/zalo/official-logout.js), which sign the DEVICE out: afterwards the saved cookie is rejected
+ * and the phone stops listing it. What is described above is the `keepSession` path
+ * (`logout --keep-session`): it ends the session key and nothing more, as before.
  */
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -24,6 +29,8 @@ import { existsSync, rmSync } from "node:fs";
 import { getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
 import { COMPUTER_NAME } from "../zalo/profile.js";
+import { errorCodeOf } from "../zalo/errors.js";
+import { officialLogout } from "../zalo/official-logout.js";
 
 const require = createRequire(import.meta.url);
 
@@ -85,8 +92,81 @@ async function productionLogout(api) {
     return call();
 }
 
+/** Whether a failed login attempt is Zalo saying "this login is no longer valid". */
+function loginRefused(e) {
+    return errorCodeOf(e) === 600 || /đăng nhập thất bại|login failed|zpw_sek/i.test(String(e?.message ?? ""));
+}
+
 /**
- * End this session at Zalo's servers.
+ * Try the saved login once, in a new login of its own.
+ *
+ * @param {{creds: object, proxy?: string|null, ownId?: string|null}} saved
+ * @returns {Promise<"revoked"|"still-valid"|"unverified">} revoked: Zalo refused the saved login; still-valid: it
+ *   logged in; unverified: the attempt failed for another reason (no network, a timeout), which proves nothing
+ */
+async function probeSavedLogin(saved) {
+    try {
+        const { probeSavedLogin: login } = await import("./zalo-client.js");
+        await login(saved.creds, saved.proxy ?? null, { ownId: saved.ownId ?? null });
+        return "still-valid";
+    } catch (e) {
+        return loginRefused(e) ? "revoked" : "unverified";
+    }
+}
+
+/**
+ * Probe the session key with the call `whoami` makes, with zca-js's logging off for this one call.
+ *
+ * @param {object} api
+ * @returns {Promise<{verdict: "ended"|"still-answers"|"unverified", probeError?: string}>}
+ */
+async function probeSessionKey(api) {
+    // The probe is expected to fail after a working logout, and zca-js logs
+    // that failure with a raw stack trace (measured 2026-09-30: an empty reply,
+    // "Failed to parse response data", every time). Its logger reads
+    // ctx.options.logging on each call, so silence it for this call only.
+    const options = typeof api.getContext === "function" ? api.getContext()?.options : null;
+    const logging = options?.logging;
+    if (options) options.logging = false;
+    try {
+        await api.fetchAccountInfo();
+        return { verdict: "still-answers" };
+    } catch (e) {
+        if (SESSION_REJECTED.has(Number(e?.code))) return { verdict: "ended" };
+        return { verdict: "unverified", probeError: e.message };
+    } finally {
+        if (options) options.logging = logging;
+    }
+}
+
+/**
+ * Sign this device out at Zalo, the way the official client does (plan items L13a-c, X1).
+ *
+ * Runs the six steps of src/zalo/official-logout.js, then looks: the session key is probed with
+ * `fetchAccountInfo`, and, when the saved login is given, it is tried in a new login. "Signed out" is claimed
+ * only for a saved login Zalo then refuses. With `keepSession` it is the old key-only logout instead.
+ *
+ * @param {object} api - a logged-in zca-js API
+ * @param {object} [opts]
+ * @param {boolean} [opts.keepSession] - only end this session's key (the pre-v3.0 behavior)
+ * @param {{creds: object, proxy?: string|null, ownId?: string|null}|null} [opts.savedLogin] - the saved login to
+ *   test afterwards; without it the result says the device sign-out could not be verified
+ * @param {(saved: object) => Promise<"revoked"|"still-valid"|"unverified">} [opts.probeLogin] - replaces the
+ *   default login attempt (tests)
+ * @returns {Promise<object>} `{mode: "official", steps, key, login}` -- or the key-only result of
+ *   {@link keySessionLogout} with `mode: "key-only"`
+ */
+export async function serverLogout(api, { keepSession = false, savedLogin = null, probeLogin = probeSavedLogin } = {}) {
+    if (keepSession) return { mode: "key-only", ...(await keySessionLogout(api)) };
+
+    const { steps } = await officialLogout(api);
+    const key = await probeSessionKey(api);
+    const login = savedLogin ? await probeLogin(savedLogin) : "unverified";
+    return { mode: "official", steps, key, login };
+}
+
+/**
+ * End this session's KEY at Zalo's servers (the pre-v3.0 logout, `--keep-session`).
  *
  * The production logout runs FIRST, while the session key is still valid, then
  * the optional staging `logoutV2` (best-effort), then a `fetchAccountInfo`
@@ -110,7 +190,7 @@ async function productionLogout(api) {
  *   probeError?: string,
  * }>}
  */
-export async function serverLogout(api) {
+export async function keySessionLogout(api) {
     const result = { v2: null, production: null, verdict: "unverified" };
 
     try {
@@ -131,23 +211,7 @@ export async function serverLogout(api) {
         result.v2 = { ok: false, error: "logoutV2 is not available (unpatched zca-js)" };
     }
 
-    // The probe is expected to fail after a working logout, and zca-js logs
-    // that failure with a raw stack trace (measured 2026-09-30: an empty reply,
-    // "Failed to parse response data", every time). Its logger reads
-    // ctx.options.logging on each call, so silence it for this call only.
-    const options = typeof api.getContext === "function" ? api.getContext()?.options : null;
-    const logging = options?.logging;
-    if (options) options.logging = false;
-    try {
-        await api.fetchAccountInfo();
-        result.verdict = "still-answers";
-    } catch (e) {
-        if (SESSION_REJECTED.has(Number(e?.code))) result.verdict = "ended";
-        else result.probeError = e.message;
-    } finally {
-        if (options) options.logging = logging;
-    }
-
+    Object.assign(result, await probeSessionKey(api));
     return result;
 }
 
@@ -251,6 +315,7 @@ export function finishLocalLogout(ownId, { deleteHistory = false } = {}) {
  * @returns {{level: "success"|"warning"|"info", text: string}[]}
  */
 export function describeLogout(r) {
+    if (r.mode === "official") return describeOfficialLogout(r);
     const lines = [];
     if (!r.production.ok) {
         lines.push({ level: "warning", text: `Zalo's logout call failed: ${r.production.error}` });
@@ -275,6 +340,48 @@ export function describeLogout(r) {
         });
     } else {
         lines.push({ level: "info", text: `Logout sent; could not confirm the session key died: ${r.probeError}` });
+    }
+    return lines;
+}
+
+/**
+ * The lines for an official logout: what failed, then what was found out. "Signed out" is a success line only
+ * for a saved login that Zalo then refused.
+ *
+ * @param {{steps: Array<{id: string, ok: boolean, error?: string}>, key: {verdict: string, probeError?: string},
+ *   login: "revoked"|"still-valid"|"unverified"}} r
+ * @returns {{level: "success"|"warning"|"info", text: string}[]}
+ */
+function describeOfficialLogout(r) {
+    const lines = [];
+    for (const s of r.steps.filter((x) => !x.ok)) {
+        lines.push({ level: "warning", text: `Logout step "${s.id}" failed: ${s.error ?? "no answer"}` });
+    }
+    if (r.login === "revoked") {
+        lines.push({
+            level: "success",
+            text: "Signed this device out at Zalo — a new login with the saved session was refused.",
+        });
+    } else if (r.login === "still-valid") {
+        lines.push({
+            level: "warning",
+            text: "Zalo accepted the logout calls, but the saved login still works — this device may still be signed in. Remove it from your phone's list of logged-in devices.",
+        });
+    } else if (r.key.verdict === "ended") {
+        lines.push({
+            level: "info",
+            text: "Zalo ended this session's key — the next call on it was rejected. Whether the saved login was refused could not be checked.",
+        });
+    } else if (r.key.verdict === "still-answers") {
+        lines.push({
+            level: "warning",
+            text: "Zalo accepted the logout calls, but this session still answers — it may still be valid at Zalo.",
+        });
+    } else {
+        lines.push({
+            level: "info",
+            text: `Logout sent; could not confirm that Zalo signed this device out${r.key.probeError ? `: ${r.key.probeError}` : ""}.`,
+        });
     }
     return lines;
 }

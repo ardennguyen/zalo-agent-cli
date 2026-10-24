@@ -230,6 +230,29 @@ export async function loginWithCredentials(creds, proxyUrl = null, { ownId: know
 }
 
 /**
+ * Try a saved login once and keep nothing of it: no session is set, no timers run, no credentials are
+ * rewritten. `logout` uses it to find out whether Zalo still accepts the login it has just signed out.
+ *
+ * @param {object} creds - {imei, cookie, userAgent, language?}
+ * @param {string|null} [proxyUrl]
+ * @param {{ownId?: string|null}} [opts]
+ * @returns {Promise<{ownId: string|null}>} when Zalo accepted the login
+ * @throws {Error} when Zalo (or the network) did not
+ */
+export async function probeSavedLogin(creds, proxyUrl = null, { ownId = null } = {}) {
+    const zaloOptions = buildOptions(proxyUrl);
+    const api = await loginWithSession(creds, {
+        apiType: zaloOptions.apiType,
+        apiVersion: zaloOptions.apiVersion,
+        zaloOptions,
+        ownId,
+        drStoreFor: (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null),
+        upkeep: false,
+    });
+    return { ownId: api.getOwnId?.() || null };
+}
+
+/**
  * Login via QR code with optional proxy.
  * @param {string|null} proxyUrl
  * @param {function} onQrGenerated - callback(qrData) when QR is ready

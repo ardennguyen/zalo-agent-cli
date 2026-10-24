@@ -30,11 +30,11 @@
  *       purge code works without costing a QR re-scan.
  *
  *   5e  real logout / real purge         ZALO_TEST_END_SESSION=1
- *       Runs the server logout and deletes the credentials. NOTHING
- *       RESTORES THIS: the account needs a QR re-scan on the phone. (The
- *       server calls end only this device's session key, measured
- *       2026-09-30; the login itself ends at Zalo only when the web session
- *       is removed from the phone's device list.) Runs last, behind its own
+ *       Runs the server logout (Zalo Web's six sign-out calls, then one try
+ *       of the saved login) and deletes the credentials. NOTHING RESTORES
+ *       THIS: the account needs a QR re-scan on the phone. (Before v3.0 the
+ *       calls ended only this device's session key, measured 2026-09-30;
+ *       `logout --keep-session` still does.) Runs last, behind its own
  *       flag, and every test after it would fail by design.
  *
  * Gates: ZALO_TEST_LIVE=1 + ZALO_TEST_DESTRUCTIVE=1 (+ ZALO_TEST_END_SESSION=1 for 5e)
@@ -527,10 +527,12 @@ describe("tier 5d · purge (server session preserved)", { skip }, () => {
 
 const endSkip = skip || (END_SESSION ? false : "tier 5e needs ZALO_TEST_END_SESSION=1 — ends the session for real");
 
-describe("tier 5e · REAL logout (invalidates the server session)", { skip: endSkip }, () => {
-    it("logoutV2 invalidates the session at Zalo's servers", async () => {
+describe("tier 5e · REAL logout (signs the device out at Zalo)", { skip: endSkip }, () => {
+    it("signs the device out: Zalo then refuses the saved login", async () => {
         const r = await runCli(["logout"], live(T, { timeout: 120_000 }));
-        assert.match(r.all, /Server session invalidated for imei/, r.all.slice(0, 400));
+        // Red if the sign-out is only claimed: the success line is printed after the saved login was tried.
+        assert.match(r.all, /Signed this device out at Zalo/, r.all.slice(0, 600));
+        assert.doesNotMatch(r.all, /Logout step ".*" failed/, r.all.slice(0, 600));
     });
 
     it("the stored credential no longer authenticates", async () => {

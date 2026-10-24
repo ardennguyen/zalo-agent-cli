@@ -37,7 +37,8 @@ Use `--account <ID>` (or `ZALO_ACCOUNT=<ID>`) on any personal-account CLI comman
 ```bash
 zalo-agent status                # Logged in? which account?
 zalo-agent whoami                # Full profile of the logged-in user
-zalo-agent logout                # Real logout: delete the saved credentials (next use needs a QR)
+zalo-agent logout                # Real logout: sign the device out at Zalo, delete the saved credentials (next use needs a QR)
+zalo-agent logout --keep-session # ...only end this session's key (pre-v3.0 behavior); the saved login stays valid at Zalo
 zalo-agent logout --delete-history  # ...and delete the local chat cache (zalo.db + media)
 zalo-agent logout --purge        # ...and wipe all local data + the registry entry
 zalo-agent sync                  # Restore everything from the phone into zalo.db (one confirm)
@@ -45,7 +46,7 @@ zalo-agent sync-media             # Re-run/resume the media fetch on its own (no
 zalo-agent sync-media --prune 90  # Free disk: delete downloaded media older than 90 days (keeps text)
 zalo-agent update                # Self-update to the latest published version
 ```
-Every `logout` and `account remove` refuse, changing nothing, while a `listen`/`mcp` daemon holds the account's `daemon.lock`. Zalo's logout calls end only this device's session key: the login ends at Zalo when the web session is removed from the phone's list of logged-in devices. Stopping a daemon is not a logout — it keeps the credentials, logs back in on the next start, and self-heals.
+Every `logout` and `account remove` refuse, changing nothing, while a `listen`/`mcp` daemon holds the account's `daemon.lock`. `logout` signs the device out at Zalo the way Zalo Web does and says "signed out" only after Zalo refuses the saved login; with `--keep-session` only the session key ends, and the login ends at Zalo when the web session is removed from the phone's list of logged-in devices. Stopping a daemon is not a logout — it keeps the credentials, logs back in on the next start, and self-heals.
 
 ### Login
 ```bash

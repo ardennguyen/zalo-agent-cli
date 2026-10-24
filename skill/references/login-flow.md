@@ -96,18 +96,19 @@ Pick by how much you want gone. All four are distinct:
 
 | Command | Zalo session | Saved credentials | Local cache (`zalo.db`, `media/`) | Registry entry |
 |---------|:---:|:---:|:---:|:---:|
-| `logout` | key ended | **deleted** | kept | kept |
+| `logout` | device signed out | **deleted** | kept | kept |
+| `logout --keep-session` | key ended only | **deleted** | kept | kept |
 | `logout --no-remote` | not contacted | **deleted** | kept | kept |
-| `logout --delete-history` | key ended | **deleted** | **deleted** | kept |
-| `logout --purge` | key ended | **deleted** | **deleted** | **removed** |
-| `account remove <ownerId>` | key ended (if that account is active) | **deleted** | **deleted** | **removed** |
+| `logout --delete-history` | device signed out | **deleted** | **deleted** | kept |
+| `logout --purge` | device signed out | **deleted** | **deleted** | **removed** |
+| `account remove <ownerId>` | device signed out (if that account is active) | **deleted** | **deleted** | **removed** |
 
 - **Every `logout` is a real logout on this device**: the saved credentials are deleted, so the next command needs a new QR login. The chat cache is kept for that next login unless `--delete-history` or `--purge` removes it.
-- **What a logout does at Zalo** (measured live 2026-09-30): Zalo's logout calls — the production `GET /api/login/logOut`, sent first, then `logoutV2` — end only this device's session *key*. They do not end the login: with the credentials kept, the next command logged straight back in, and the phone kept listing the web session as signed in. **The login ends at Zalo only when the web session is removed from the phone's list of logged-in devices** — that revoked the saved cookie immediately. `logout` says so rather than claiming the login ended.
+- **What a logout does at Zalo**: it runs the six calls Zalo Web makes when you sign out (a one-time token from `id.zalo.me`, the profile `deactive` call, the `v2` logout, `id.zalo.me`'s own logout, the `setsid` hops, the login page), then tries the saved login once. "Signed out" is printed only when Zalo refuses that login; a login that still works is a warning, and a check that could not be made (no network, no saved login) is said to be unverified. Before v3.0 the calls were the production `GET /api/login/logOut` and `logoutV2`, which end only the session *key* (measured 2026-09-30: with the credentials kept, the next command logged straight back in); `--keep-session` keeps that behavior, and then the login ends at Zalo only when the web session is removed from the phone's list of logged-in devices.
 - **A new web login signs the previous web session out** — Zalo allows one per account (see below).
 - **Stopping a daemon is not a logout.** Ctrl+C on `listen`/`mcp start` is the "close the browser and reopen" case: the credentials stay, the next start logs back in, and self-heal catches up what arrived meanwhile from Zalo's offline queue.
 - `logout` (every form) and `account remove` **refuse before changing anything** while a `listen`/`mcp` daemon holds that account's `daemon.lock`, naming the PID. Stop the daemon first.
-- `zalo-agent account devices` lists the sessions Zalo currently has linked to the active account (read-only). A CLI logout leaves this session listed until it is removed from the phone.
+- `zalo-agent account devices` lists the sessions Zalo currently has linked to the active account (read-only). After a default logout, check that this session is gone; a `--keep-session` logout leaves it listed until it is removed from the phone.
 
 After a purge, `~/.zalo-agent-cli/credentials/` is empty, `accounts.json` is `[]`, and `accounts/<ownId>/` is gone.
 

@@ -460,7 +460,7 @@ Dưới systemd, unit đã rải thời điểm khởi động (`sleep $((RANDOM
 
 - Giữ quyền `0600` cho `accounts.json`, `credentials/cred_<ownId>.json` và `daemon-channel.json`; đặt `UMask=0077` cho tiến trình dịch vụ.
 - Bật mã hóa toàn bộ ổ đĩa (Full-Disk Encryption) trên máy chủ và mã hóa các bản sao lưu.
-- Để kết thúc hoàn toàn một phiên đăng nhập từ phía máy chủ Zalo khi ngừng sử dụng máy chủ, ngoài việc chạy `zalo-agent logout --purge`, hãy mở ứng dụng Zalo trên điện thoại và gỡ phiên Web khỏi danh sách thiết bị đã đăng nhập.
+- `zalo-agent logout` (kể cả `--purge`) đăng xuất thiết bị khỏi Zalo đúng như Zalo Web: sáu lệnh gọi, rồi thử đăng nhập lại bằng phiên đã lưu một lần; chỉ khi Zalo từ chối phiên đó mới báo "đã đăng xuất". Nếu dùng `--keep-session` (cách cũ trước v3.0) thì chỉ khóa phiên bị kết thúc; khi đó, để kết thúc hoàn toàn phiên đăng nhập từ phía máy chủ Zalo, hãy mở ứng dụng Zalo trên điện thoại và gỡ phiên Web khỏi danh sách thiết bị đã đăng nhập.
 
 ### 5.3 Xác thực MCP (Bearer Token, OAuth 2.0 / 2.1 và TLS/HTTPS)
 

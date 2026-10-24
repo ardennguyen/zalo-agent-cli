@@ -151,11 +151,14 @@ function mergeSettings(base, over) {
  *     headers: object, form: object|null}>,
  *   calls: (pathPart: string) => Array<object>,
  *   route: (pathSuffix: string, handler: (req: object) => unknown) => void,
+ *   rawRoute: (match: (req: object) => boolean, handler: (req: object) => Response) => void,
  *   clearRoutes: () => void,
  *   uninstall: () => void,
  * }}
  *   `requests` records EVERY request, the npm probe included, with `params`
- *   decrypted. A route handler's return value becomes the response's `data`.
+ *   decrypted. A route handler's return value becomes the response's `data`. A raw route answers the
+ *   requests its `match` accepts with the `Response` its handler returns, unsealed: for the id.zalo.me
+ *   and jr.* pages, which are not Zalo API calls.
  */
 export function installFakeZalo({
     omit = [],
@@ -168,6 +171,7 @@ export function installFakeZalo({
 } = {}) {
     const requests = [];
     const routes = new Map();
+    const rawRoutes = [];
     const previous = globalThis.fetch;
     const serviceMap = Object.fromEntries(
         SERVICES.filter((k) => !omit.includes(k)).map((k) => [k, [`https://${serviceHost(k)}`]]),
@@ -208,6 +212,8 @@ export function installFakeZalo({
             form: init.body instanceof URLSearchParams ? Object.fromEntries(init.body) : null,
         };
         requests.push(req);
+
+        for (const raw of rawRoutes) if (raw.match(req)) return raw.handler(req);
 
         // zca-js asks npm whether it is current on every login.
         if (url.host === "registry.npmjs.org") return reply({}, 404);
@@ -271,11 +277,58 @@ export function installFakeZalo({
         requests,
         calls: (pathPart) => requests.filter((r) => r.path.includes(pathPart)),
         route: (pathSuffix, handler) => routes.set(pathSuffix, handler),
-        clearRoutes: () => routes.clear(),
+        rawRoute: (match, handler) => rawRoutes.push({ match, handler }),
+        clearRoutes: () => {
+            routes.clear();
+            rawRoutes.length = 0;
+        },
         uninstall: () => {
             globalThis.fetch = previous;
         },
     };
+}
+
+/**
+ * Make the fake answer the official logout's calls the way Zalo does: a token, the page that lists the
+ * `setsid` URLs, and plain 200s for everything else on the id and jr domains. Returns what it served so a test
+ * can say what it expects.
+ *
+ * @param {ReturnType<typeof installFakeZalo>} fake
+ * @param {{token?: string, setsid?: string[]|null}} [opts] - `token: null` makes step 1 fail; `setsid` is the
+ *   list the logout page names
+ * @returns {{token: string|null, setsid: string[]}}
+ */
+export function serveOfficialLogout(
+    fake,
+    {
+        token = "tok-offline-1",
+        setsid = ["https://jr.zaloapp.com/jr/setsid?token=t1", "https://jr.chat.zalo.me/jr/setsid?token=t1"],
+    } = {},
+) {
+    const html = (body) => new Response(body, { status: 200, headers: { "content-type": "text/html" } });
+    fake.rawRoute(
+        (r) => r.host === "id.zalo.me" && r.path === "/jr/logout-token",
+        () =>
+            new Response(JSON.stringify(token ? { error_code: 0, data: { token } } : { error_code: 1, data: null }), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            }),
+    );
+    fake.rawRoute(
+        (r) => r.host === "id.zalo.me" && r.path === "/account/logout",
+        () => {
+            // Zalo's page writes the slashes escaped, as a script literal does.
+            const listed = setsid.map((u) => `"${u.replaceAll("/", "\\/")}"`).join(",");
+            return html(`<script>window.__d = { listSetSidUrls: [${listed}] };</script>`);
+        },
+    );
+    fake.rawRoute(
+        (r) => r.host === "id.zalo.me" || r.host === "jr.zaloapp.com" || r.host === "jr.chat.zalo.me",
+        () => html("ok"),
+    );
+    fake.route("/api/social/profile/deactive", () => ({}));
+    fake.route("/api/v2/login/logOut", () => ({}));
+    return { token, setsid };
 }
 
 /**

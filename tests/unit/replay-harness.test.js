@@ -31,7 +31,7 @@ import {
     WEB_QR_LOGIN_FORBIDDEN,
 } from "../helpers/replay/shapes.js";
 import { installQueuePulls, startFakeZalo } from "../helpers/fake-zalo/index.js";
-import { serviceHost } from "./fake-zalo-session.js";
+import { serveOfficialLogout, serviceHost } from "./fake-zalo-session.js";
 
 /** A call that satisfies a shape, built from the shape itself. */
 function conformingCall(shape) {
@@ -222,44 +222,27 @@ describe("replay harness: today's code against the official Web client", () => {
     describe("logout", () => {
         let calls;
         before(async () => {
+            serveOfficialLogout(zalo.http);
             zalo.http.requests.length = 0;
-            await serverLogout(api); // the fake answers 404 to all of it: only what is SENT matters here
-            calls = zalo.http.requests.slice();
+            await serverLogout(api, { probeLogin: async () => "revoked" });
+            // the key probe that follows is not part of the logout
+            calls = zalo.http.requests.filter((c) => !c.path.endsWith("/profile/me-v2"));
         });
 
-        it("differs from the official sequence in exactly these ways (L13a-c / X1 move this to none)", () => {
-            assert.deepEqual(
+        it("conforms to the official logout, and never sends the production GET logOut (L13a-c / X1)", () => {
+            assertConforms(
                 diffSequence(calls, WEB_LOGOUT, { hostOf: serviceHost, forbidden: WEB_LOGOUT_FORBIDDEN }),
-                [
-                    "logout-token: the call was never made",
-                    "profile deactive: the call was never made",
-                    "account logout: the call was never made",
-                    "setsid (zaloapp): the call was never made",
-                    "setsid (chat): the call was never made",
-                    "login page: the call was never made",
-                    "forbidden call wpa.chat.zalo.me/api/login/logOut was made 1 time(s)",
-                ],
+                "our logout calls",
             );
         });
 
-        it("sends the v2 logout the way the official client does (this part already conforms)", () => {
+        it("sends the v2 logout the way the official client does", () => {
             const v2 = calls.filter((c) => c.path === "/api/v2/login/logOut");
             assert.equal(v2.length, 1);
             assert.equal(v2[0].host, "stg-wpa.chat.zalo.me");
             assert.equal(v2[0].method, "POST");
             assert.deepEqual(Object.keys(v2[0].form), ["params"]);
         });
-
-        it(
-            "conforms to the official logout",
-            { todo: "L13a-c / X1 (P2): the verified 6-step sequence, no production GET logOut" },
-            () => {
-                assertConforms(
-                    diffSequence(calls, WEB_LOGOUT, { hostOf: serviceHost, forbidden: WEB_LOGOUT_FORBIDDEN }),
-                    "today's logout calls",
-                );
-            },
-        );
     });
 
     describe("socket frames", () => {

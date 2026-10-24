@@ -173,7 +173,11 @@ export function registerLoginCommands(program) {
     program
         .command("logout")
         .description(
-            "Log out: end the session and delete this device's saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
+            "Log out: sign this device out at Zalo (as Zalo Web does) and delete its saved credentials, so the next command needs a new QR login. Chat history is kept unless --delete-history or --purge.",
+        )
+        .option(
+            "--keep-session",
+            "Only end this process's session key, as before v3.0: the saved login stays valid at Zalo and the device stays in the phone's list (local credentials are still deleted)",
         )
         .option(
             "--purge",
@@ -198,15 +202,21 @@ export function registerLoginCommands(program) {
                 return;
             }
 
-            // Ask Zalo to end the session (production logout first, then the
-            // optional logoutV2) and report honestly — src/core/logout.js.
-            // Measured live 2026-09-30: these calls end only this device's
-            // session KEY, never the login. The saved credentials would
-            // auto-log-in on the next command, so a real logout deletes them
-            // too (below); the web session is revoked at Zalo only from the
-            // phone's device list.
+            // Sign this device out at Zalo the way Zalo Web does (the six steps in
+            // src/zalo/official-logout.js), then check that the saved login is
+            // refused, and report honestly — src/core/logout.js. Measured
+            // 2026-09-30: the older calls (kept behind --keep-session) end only the
+            // session KEY, never the login; the official steps do end it.
+            // The saved credentials are deleted below either way.
             if (opts.remote !== false && isLoggedIn()) {
-                reportLogout(await serverLogout(getApi()), { success, warning, info });
+                const creds = active ? loadCredentials(active.ownId) : null;
+                reportLogout(
+                    await serverLogout(getApi(), {
+                        keepSession: Boolean(opts.keepSession),
+                        savedLogin: creds ? { creds, proxy: active.proxy || null, ownId: active.ownId } : null,
+                    }),
+                    { success, warning, info },
+                );
             }
 
             clearSession();
@@ -270,9 +280,11 @@ export function registerLoginCommands(program) {
                     `Logged out ${who} — ${historyGone ? "local chat history deleted; " : ""}no saved credentials were found to delete.`,
                 );
             }
-            info(
-                "This ends the session on this device only. To sign it out at Zalo, remove it from your phone's list of logged-in devices.",
-            );
+            if (opts.keepSession || opts.remote === false) {
+                info(
+                    "This ended the session on this device only. To sign it out at Zalo, remove it from your phone's list of logged-in devices.",
+                );
+            }
         });
 
     program

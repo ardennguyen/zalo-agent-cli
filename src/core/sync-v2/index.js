@@ -41,6 +41,7 @@ import { resolveNonFriendDms } from "./gid.js";
 import { createSenderResolver } from "./senders.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
 import { startKeepAlive } from "./keepalive.js";
+import { DEVICE_LABEL } from "../../zalo/profile.js";
 import { attachLiveStore } from "../live-store.js";
 
 /**
@@ -581,7 +582,7 @@ export class SyncV2 {
                         ik: b64(ik.publicKey),
                         toDevice: 0,
                         tempKey: "",
-                        deviceName: "zalo-agent-cli",
+                        deviceName: DEVICE_LABEL,
                         req,
                         ver: 1,
                         ussidx: 0,

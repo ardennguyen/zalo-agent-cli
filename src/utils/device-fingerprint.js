@@ -26,26 +26,21 @@
  * updating their browser — that's expected, not a bug.
  */
 
-const CHROME_VERSIONS = ["131.0.0.0", "130.0.0.0", "129.0.0.0", "128.0.0.0"];
+import { CHROME_VERSIONS, UA_PLATFORMS, buildUserAgent } from "../zalo/profile.js";
 
 /**
- * Windows-first, Chrome-only presets. Deliberately not branching into
- * Firefox/Safari: those browsers don't send sec-ch-ua headers at all, and
- * Zalo's own device-label rendering already appears tuned for Chrome/Chromium
- * (see the hardcoded literals this patch replaces) — straying from Chrome
- * would trade one kind of oddity for another. Varying version + OS build is
- * enough to avoid every install presenting an identical fingerprint.
+ * Windows-first, Chrome-only presets, built from the protocol profile
+ * (src/zalo/profile.js), which owns the Chrome builds and platforms.
+ * Deliberately not branching into Firefox/Safari: those browsers don't send
+ * sec-ch-ua headers at all, and Zalo's own device-label rendering already
+ * appears tuned for Chrome/Chromium (see the hardcoded literals this patch
+ * replaces) -- straying from Chrome would trade one kind of oddity for
+ * another. Varying version + OS build is enough to avoid every install
+ * presenting an identical fingerprint.
  */
-const PRESETS = [
-    ...CHROME_VERSIONS.map((v) => ({
-        userAgent: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v} Safari/537.36`,
-        secChUaPlatform: '"Windows"',
-    })),
-    ...CHROME_VERSIONS.map((v) => ({
-        userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v} Safari/537.36`,
-        secChUaPlatform: '"macOS"',
-    })),
-];
+const PRESETS = UA_PLATFORMS.flatMap((platform) =>
+    CHROME_VERSIONS.map((v) => ({ userAgent: buildUserAgent(platform, v), secChUaPlatform: platform.hint })),
+);
 
 function buildSecChUa(chromeVersion) {
     const major = chromeVersion.split(".")[0];

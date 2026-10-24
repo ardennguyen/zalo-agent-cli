@@ -1055,6 +1055,11 @@ name carries the build `v`), `logininfo`, `generate` with `cliGenQR`, the `waiti
 (asked again while the answer is 8), then `checksession` and the redirects it starts: `syncsession`, `pushsession` (which
 sets `zpw_sek`) and the chat page.
 
+**`cliGenQR` must be 0 here (found live, 2026-10-25).** The first live scan with `cliGenQR=1` ended with the phone saying
+"QR is not valid". In the login page's script the flag is 1 only when its key helper (the trusted-device module, the
+same one that produces `bundle`) started: the page then draws the QR itself. A server-made image with 1 is not valid
+for the phone, which also explains the failed September attempt. This client has no such helper and sends 0.
+
 **What it cannot do.** The official `waiting-confirm` also sends `bundle`, the trusted-device module's proof (it needs
 the key work that was ruled out). The new flow leaves it out, as the September login did, and the replay harness pins
 that as its one known difference. Whether Zalo accepts a login without it is exactly what the first live scan decides;

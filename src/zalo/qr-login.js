@@ -9,6 +9,9 @@
  *  1. `GET /account?continue=https://chat.zalo.me/`: the login page; its script name carries the build `v`.
  *  2. `POST /account/logininfo`, form `{continue, v}`.
  *  3. `POST /account/authen/qr/generate`, form `{continue, cliGenQR, v}`: the QR image and its `code`.
+ *     `cliGenQR` is 1 only when the page's own key helper (the trusted-device module) started: the page then
+ *     draws the QR itself and a server-made image is not valid for the phone. This client has no such helper,
+ *     so it sends 0, as the page does without one. (Sending 1 made the phone say "QR is not valid".)
  *  4. `POST /account/authen/qr/waiting-scan`, form `{continue, code, v}`: a long poll, asked again until the
  *     phone scans (error 8 means "not yet").
  *  5. `POST /account/authen/qr/waiting-confirm`, form `{continue, code, v}`: a long poll, asked again until the
@@ -150,7 +153,7 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
 
     // 2 and 3: what the page asks before it shows a QR, and the QR.
     await post(ctx, "/account/logininfo", { continue: CHAT, v }, signal);
-    const generated = await post(ctx, "/account/authen/qr/generate", { continue: CHAT, cliGenQR: "1", v }, signal);
+    const generated = await post(ctx, "/account/authen/qr/generate", { continue: CHAT, cliGenQR: "0", v }, signal);
     const qr = generated?.data;
     if (!qr?.code || !qr?.image) {
         throw new ZaloApiError(`Unable to generate QRCode\nResponse: ${JSON.stringify(generated, null, 2)}`);

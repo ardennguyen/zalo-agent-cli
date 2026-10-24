@@ -66,11 +66,12 @@ describe("the QR login", () => {
         }
     });
 
-    it("asks for a QR the way the page does: cliGenQR, and the code on both long polls", async () => {
+    it("asks for a QR the way a page without its key helper does: cliGenQR 0, and the code on both long polls", async () => {
         serveQrLogin(fake);
         await qrLogin({ ...BASE });
         const form = (suffix) => fake.requests.find((r) => r.path.endsWith(suffix)).form;
-        assert.equal(form("/qr/generate").cliGenQR, "1");
+        // 1 means "the client draws the QR itself": a server-made image is then not valid for the phone (seen live)
+        assert.equal(form("/qr/generate").cliGenQR, "0");
         assert.equal(form("/qr/waiting-scan").code, "qr-code-1");
         assert.equal(form("/qr/waiting-confirm").code, "qr-code-1");
         assert.equal(form("/qr/waiting-confirm").bundle, undefined, "the trusted-device bundle is not produced");

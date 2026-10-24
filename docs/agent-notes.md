@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2853** as of 2026-10-25 (2847 pass, 5 skipped, 1 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2857** as of 2026-10-25 (2851 pass, 5 skipped, 1 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1041,6 +1041,13 @@ no session is set, no timers run, nothing is rewritten). Zalo refusing it (error
 only success line; a login that works is a warning; anything else (no network, a timeout, nothing saved to try) is
 "unverified". `--keep-session` is the pre-v3.0 key-only logout, unchanged, and still deletes the credentials locally.
 `account remove` uses the official sequence too.
+
+**Seen live, 2026-10-25.** On the test account: a QR login with the official flow, `whoami`, a 274 s `listen` with no
+drop, then `logout --delete-history`. All six steps answered; the same saved cookie, tried again afterwards, was refused
+with error **102** ("the session key was improperly submitted or has reached its timeout"), where the old logout left it
+valid. Zalo wraps that refusal in a *sealed envelope* (`{error_code, error_message, data: null}` inside the encrypted
+`data`), and the first version read the envelope as login data, which printed "context init failed" and an
+"unverified" verdict. `unseal` in `src/zalo/login.js` now tells the two apart; 102 and 600 both count as a refusal.
 
 **Left for the release:** the public wiki still describes the old logout. It is updated with the v3.0 release,
 not before: a wiki push is public immediately.

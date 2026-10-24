@@ -142,7 +142,8 @@ function mergeSettings(base, over) {
  * @param {{error_code: number, error_message?: string}} [opts.loginError] - answer getLoginInfo
  *   with this error instead of a session
  * @param {Array<object>} [opts.loginScript] - answers for the next getLoginInfo calls, consumed in order
- *   (see `scripted` below); once it runs out the normal answer is given
+ *   (see `scripted` below, plus `{sealedEnvelope}`: that envelope, sealed as a real answer is); once it runs
+ *   out the normal answer is given
  * @param {Array<object>} [opts.serverInfoScript] - the same for getServerInfo
  * @param {Record<string, string>} [opts.serverInfoHeaders] - response headers of every getServerInfo answer
  *   (e.g. a `set-cookie`)
@@ -239,6 +240,23 @@ export function installFakeZalo({
 
         if (url.pathname === "/api/login/getLoginInfo") {
             const step = loginScript.shift();
+            if (step?.sealedEnvelope) {
+                // an envelope sealed with the key the request asked for, as Zalo answers a login it refuses
+                const keyer = new zu.ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
+                keyer.zcid = url.searchParams.get("zcid");
+                keyer.zcid_ext = url.searchParams.get("zcid_ext");
+                keyer.createEncryptKey();
+                return reply({
+                    error_code: 0,
+                    error_message: "",
+                    data: zu.ParamsEncryptor.encodeAES(
+                        keyer.getEncryptKey(),
+                        JSON.stringify(step.sealedEnvelope),
+                        "base64",
+                        false,
+                    ),
+                });
+            }
             if (step) return scripted(step, init);
             if (loginError) {
                 return reply({

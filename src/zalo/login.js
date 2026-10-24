@@ -244,10 +244,13 @@ async function fetchLoginInfo(ctx, { encrypt, sleep, timeoutMs, retryEveryMs, re
             encrypted = false;
             continue;
         }
-        const login = unseal(body, enk);
+        const { login, inner } = unseal(body, enk);
         if (!login) {
-            const msg = body?.error_message ? `: ${body.error_message}` : "";
-            throw new ZaloApiError(`Đăng nhập thất bại${msg}`, errorCodeOf(body));
+            const said = inner?.error_message || body?.error_message;
+            throw new ZaloApiError(
+                `Đăng nhập thất bại${said ? `: ${said}` : ""}`,
+                errorCodeOf(inner) ?? errorCodeOf(body),
+            );
         }
         return login;
     }
@@ -256,25 +259,34 @@ async function fetchLoginInfo(ctx, { encrypt, sleep, timeoutMs, retryEveryMs, re
 /**
  * The login data inside an answer, decrypted when it was asked for encrypted.
  *
+ * What is inside is either the login data itself or an envelope `{error_code, error_message, data}`. A saved
+ * login Zalo refuses comes back as an envelope with an error and no data: that is a refusal with its own code,
+ * never login data.
+ *
  * @param {{data?: unknown}} body
  * @param {string|null} enk
- * @returns {object|null}
+ * @returns {{login: object|null, inner: {error_code?: number, error_message?: string}|null}} `inner` is the
+ *   envelope when there was one
  */
 function unseal(body, enk) {
-    let data = body?.data;
-    if (data === undefined || data === null) return null;
+    const none = { login: null, inner: null };
+    let opened = body?.data;
+    if (opened === undefined || opened === null) return none;
     if (enk) {
-        const opened = zu.decryptResp(enk, data);
-        return opened !== undefined && opened !== null && typeof opened !== "string" ? (opened.data ?? opened) : null;
-    }
-    if (typeof data === "string") {
+        opened = zu.decryptResp(enk, opened);
+        if (opened === undefined || opened === null || typeof opened === "string") return none;
+    } else if (typeof opened === "string") {
         try {
-            data = JSON.parse(data);
+            opened = JSON.parse(opened);
         } catch {
-            return null;
+            return none;
         }
     }
-    return typeof data === "object" ? (data.data ?? data) : null;
+    if (typeof opened !== "object") return none;
+    if ("data" in opened || "error_code" in opened) {
+        return opened.data ? { login: opened.data, inner: opened } : { login: null, inner: opened };
+    }
+    return { login: opened, inner: null };
 }
 
 /**

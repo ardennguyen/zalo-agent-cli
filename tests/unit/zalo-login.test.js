@@ -238,6 +238,21 @@ describe("the login against the fake Zalo", () => {
         assert.equal(fake.calls("getLoginInfo").length, 2);
     });
 
+    it("a refused login arrives as a sealed error envelope: it is a refusal with the server's code, not login data", async () => {
+        fake = installFakeZalo({
+            loginScript: [{ sealedEnvelope: { error_code: 600, error_message: "zpw_sek is wrong", data: null } }],
+        });
+        await assert.rejects(
+            loginWithSession(creds(), { ...OPTIONS, upkeep: false }),
+            (e) => /Đăng nhập thất bại: zpw_sek is wrong/.test(e.message) && e.code === 600,
+        );
+    });
+
+    it("a sealed envelope with an error and no code is still a refusal, never 'context init failed'", async () => {
+        fake = installFakeZalo({ loginScript: [{ sealedEnvelope: { error_message: "nope", data: null } }] });
+        await assert.rejects(loginWithSession(creds(), { ...OPTIONS, upkeep: false }), /Đăng nhập thất bại: nope/);
+    });
+
     it("asks getLoginInfo again every 10 s while the server answers 500-504", async () => {
         fake = installFakeZalo({ loginScript: [{ status: 503 }, { status: 502 }, { status: 500 }] });
         const waits = [];

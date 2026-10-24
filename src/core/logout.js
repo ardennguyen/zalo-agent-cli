@@ -92,9 +92,18 @@ async function productionLogout(api) {
     return call();
 }
 
+/**
+ * Codes with which Zalo refuses a login that is no longer valid: 600 (another session took it) and 102 ("the
+ * session key was improperly submitted or has timed out", what the saved cookie got right after an official
+ * logout, observed live 2026-10-25).
+ */
+const LOGIN_REFUSED = new Set([600, 102]);
+
 /** Whether a failed login attempt is Zalo saying "this login is no longer valid". */
 function loginRefused(e) {
-    return errorCodeOf(e) === 600 || /đăng nhập thất bại|login failed|zpw_sek/i.test(String(e?.message ?? ""));
+    return (
+        LOGIN_REFUSED.has(errorCodeOf(e)) || /đăng nhập thất bại|login failed|zpw_sek/i.test(String(e?.message ?? ""))
+    );
 }
 
 /**

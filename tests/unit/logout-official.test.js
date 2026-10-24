@@ -256,6 +256,36 @@ describe("the official logout", () => {
             assert.equal(r.login, "revoked");
         });
 
+        it("error 102 from the login, as Zalo answered the saved cookie after a real logout, is a refusal", async () => {
+            serveOfficialLogout(fake);
+            fake.uninstall();
+            fake = installFakeZalo({
+                loginScript: [
+                    {
+                        sealedEnvelope: {
+                            error_code: 102,
+                            error_message: "The session key was improperly submitted or has reached its timeout.",
+                            data: null,
+                        },
+                    },
+                ],
+            });
+            serveOfficialLogout(fake);
+            const r = await serverLogout(api, { savedLogin: saved() });
+            assert.equal(r.login, "revoked");
+        });
+
+        it("error 102 from server info is a refusal too, whatever its wording", async () => {
+            serveOfficialLogout(fake);
+            fake.uninstall();
+            fake = installFakeZalo({
+                serverInfoScript: [{ body: { error_code: 102, error_message: "x", data: null } }],
+            });
+            serveOfficialLogout(fake);
+            const r = await serverLogout(api, { savedLogin: saved() });
+            assert.equal(r.login, "revoked");
+        });
+
         it("an accepted login is 'still-valid', and leaves no session behind", async () => {
             serveOfficialLogout(fake);
             const r = await serverLogout(api, { savedLogin: saved() });

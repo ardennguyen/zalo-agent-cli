@@ -103,12 +103,16 @@ export function registerSyncCommands(program) {
                 "more sync sessions. The server rejects a batch of more than 30",
             parseIntAtLeast(1),
         )
+        .option(
+            "--full-resync",
+            "Ask the phone for every conversation in full, ignoring what earlier runs settled (by default a run asks only for conversations an earlier run did not finish, or that have new messages since)",
+        )
         .option("--plan", "Print which stages would run, in what order and why, then exit. Sends nothing")
         .action(async (opts) => {
             // Only the message restore carries a window; accepting one with the
             // restore switched off would silently mean nothing.
-            if ((opts.days !== undefined || opts.from !== undefined) && opts.messages === false) {
-                error("--days/--from apply to the message restore, which --no-messages switches off.");
+            if ((opts.days !== undefined || opts.from !== undefined || opts.fullResync) && opts.messages === false) {
+                error("--days/--from/--full-resync apply to the message restore, which --no-messages switches off.");
                 process.exit(1);
             }
             await runUnifiedSync(requireAccount(), opts, Boolean(program.opts().json));
@@ -161,6 +165,10 @@ export function registerSyncCommands(program) {
                 "drops, at the cost of more sync sessions. The server rejects a batch of more than 30",
             parseIntAtLeast(1),
         )
+        .option(
+            "--full-resync",
+            "Ask the phone for every conversation in full, ignoring what earlier runs settled (by default a run asks only for conversations an earlier run did not finish, or that have new messages since)",
+        )
         .action(async (opts) => {
             // --days is a property of the cmd 590 query the phone answers, so
             // it only means anything on the transfer path. Say so instead of
@@ -174,6 +182,7 @@ export function registerSyncCommands(program) {
                 [opts.from !== undefined, "--from"],
                 [opts.days !== undefined, "--days"],
                 [opts.shardSize !== undefined, "--shard-size"],
+                [opts.fullResync, "--full-resync"],
             ]
                 .filter(([passed]) => passed)
                 .map(([, flag]) => flag);
@@ -1038,7 +1047,13 @@ async function runTransferSync(activeAcc, opts) {
         const startedAt = Date.now();
         const r = await syncViaDaemon(accountDir, {
             stage: "messages",
-            params: { days: opts.days ?? null, from: opts.from, shardSize: opts.shardSize, waitMs },
+            params: {
+                days: opts.days ?? null,
+                from: opts.from,
+                shardSize: opts.shardSize,
+                fullResync: Boolean(opts.fullResync),
+                waitMs,
+            },
             onEvent: ({ phase, detail }) => {
                 if (phase === "confirm") warning(detail);
                 else if (detail) info(`  ${detail}`);
@@ -1086,6 +1101,7 @@ async function runTransferSync(activeAcc, opts) {
                     days: opts.days,
                     from: opts.from,
                     shardSize: opts.shardSize,
+                    fullResync: Boolean(opts.fullResync),
                     waitMs,
                     // This command owns the socket for the whole run, so it owns
                     // the heartbeat too -- see runUnifiedSync for why.
@@ -1580,6 +1596,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                     days: opts.days ?? null,
                     from: opts.from,
                     shardSize: opts.shardSize,
+                    fullResync: Boolean(opts.fullResync),
                     waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
                 },
                 onEvent: ({ phase, detail }) => {
@@ -1678,6 +1695,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                             days: opts.days,
                             from: opts.from,
                             shardSize: opts.shardSize,
+                            fullResync: Boolean(opts.fullResync),
                             waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
                             // The window-level heartbeat above covers this stage.
                             keepAlive: false,

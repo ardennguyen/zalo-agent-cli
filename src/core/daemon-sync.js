@@ -184,7 +184,7 @@ export function createSyncRunners({
          * sync request authorized by the owner reaches it.
          *
          * @param {{days?: number|null, from?: string|number, waitMs?: number,
-         *   shardSize?: number, waveSize?: number}} params
+         *   shardSize?: number, waveSize?: number, fullResync?: boolean}} params
          * @param {(e: {phase: string, detail?: string}) => void} onEvent
          * @returns {Promise<object>} SyncV2.restore() result, as-is
          */
@@ -198,6 +198,7 @@ export function createSyncRunners({
                 waitMs: Number(params.waitMs) || undefined,
                 shardSize: Number(params.shardSize) || undefined,
                 waveSize: Number(params.waveSize) || undefined,
+                fullResync: params.fullResync === true,
                 // See rule 1 in this file's header: the daemon is the tap.
                 liveStore: false,
                 // Explicit, not left to the default: a CLI that owns the

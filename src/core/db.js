@@ -74,6 +74,21 @@ export function initDb(dbPath) {
       resolvedAt INTEGER
     );
 
+    -- What the phone-backed restore has settled, per conversation partition (oneone/<id> or group/<id>):
+    -- the window [fromTs, toTs] it asked for, and whether that is done, failed or still pending. This is
+    -- what lets a run that was killed pick up where it stopped, lets a later run ask only for what came
+    -- after the last one, and keeps a partly failed run from counting as a success. The ids are the phone's
+    -- opaque conversation ids, never a real thread id.
+    CREATE TABLE IF NOT EXISTS sync_ranges (
+      partition TEXT PRIMARY KEY,
+      fromTs INTEGER NOT NULL,
+      toTs INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      updatedAt INTEGER NOT NULL
+    );
+
     -- Board items: notes ("Ghi chú"), pinned messages and polls. These are NOT
     -- in the transfer-sync message stream at all — Zalo keeps them behind
     -- /api/board/list, one call per thread — so they are synced separately and
@@ -424,6 +439,79 @@ export function countSyncGaps() {
         )
         .get();
     return { pending: Number(row?.pending) || 0, resolved: Number(row?.resolved) || 0 };
+}
+
+/**
+ * Record the ranges a restore is about to ask for, as pending. An existing row for the partition is replaced and
+ * its attempt count goes up by one.
+ *
+ * @param {Array<{partition: string, fromTs: number, toTs: number}>} ranges
+ */
+export function markSyncRangesPending(ranges) {
+    if (!db) throw new Error("Database not initialized");
+    const stmt = db.prepare(`
+    INSERT INTO sync_ranges (partition, fromTs, toTs, status, reason, attempts, updatedAt)
+    VALUES (@partition, @fromTs, @toTs, 'pending', NULL, 1, @now)
+    ON CONFLICT(partition) DO UPDATE SET
+      fromTs = excluded.fromTs, toTs = excluded.toTs, status = 'pending', reason = NULL,
+      attempts = sync_ranges.attempts + 1, updatedAt = excluded.updatedAt
+  `);
+    const now = Date.now();
+    db.transaction(() => {
+        for (const r of ranges) stmt.run({ partition: r.partition, fromTs: r.fromTs, toTs: r.toTs, now });
+    })();
+}
+
+/**
+ * Settle one range: done (the window it covers), failed (with why), or back to pending.
+ *
+ * @param {string} partition
+ * @param {"done"|"failed"|"pending"} status
+ * @param {{fromTs?: number, toTs?: number, reason?: string|null}} [extra] - for `done`, the window now covered
+ */
+export function setSyncRangeStatus(partition, status, { fromTs, toTs, reason = null } = {}) {
+    if (!db) throw new Error("Database not initialized");
+    db.prepare(
+        `INSERT INTO sync_ranges (partition, fromTs, toTs, status, reason, attempts, updatedAt)
+     VALUES (@partition, COALESCE(@fromTs, 0), COALESCE(@toTs, 0), @status, @reason, 1, @now)
+     ON CONFLICT(partition) DO UPDATE SET
+       fromTs = COALESCE(@fromTs, sync_ranges.fromTs), toTs = COALESCE(@toTs, sync_ranges.toTs),
+       status = @status, reason = @reason, updatedAt = @now`,
+    ).run({ partition, fromTs: fromTs ?? null, toTs: toTs ?? null, status, reason, now: Date.now() });
+}
+
+/**
+ * The recorded ranges, optionally of one status.
+ *
+ * @param {"done"|"failed"|"pending"} [status]
+ * @returns {Array<{partition: string, fromTs: number, toTs: number, status: string, reason: string|null, attempts: number, updatedAt: number}>}
+ */
+export function getSyncRanges(status) {
+    if (!db) throw new Error("Database not initialized");
+    return status
+        ? db.prepare("SELECT * FROM sync_ranges WHERE status = ? ORDER BY partition").all(status)
+        : db.prepare("SELECT * FROM sync_ranges ORDER BY partition").all();
+}
+
+/** How many ranges are in each state. */
+export function countSyncRanges() {
+    if (!db) throw new Error("Database not initialized");
+    const row = db
+        .prepare(
+            "SELECT SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending, " +
+                "SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed, " +
+                "SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done FROM sync_ranges",
+        )
+        .get();
+    return { pending: Number(row?.pending) || 0, failed: Number(row?.failed) || 0, done: Number(row?.done) || 0 };
+}
+
+/** Forget the given ranges (or every range, with no argument). */
+export function deleteSyncRanges(partitions) {
+    if (!db) throw new Error("Database not initialized");
+    if (partitions === undefined) return db.prepare("DELETE FROM sync_ranges").run().changes;
+    const stmt = db.prepare("DELETE FROM sync_ranges WHERE partition = ?");
+    return db.transaction(() => partitions.reduce((n, p) => n + stmt.run(p).changes, 0))();
 }
 
 /**

@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2960** as of 2026-10-25 (2955 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3002** as of 2026-10-25 (2997 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1139,6 +1139,32 @@ returns, so sending them blind could lose items. A controlled live session is th
 **The control queues (X4).** Every `601` names the cursors of `603_1`, `603_0` and `604_0`. They are now kept (forward
 only, in `sync_state` like the message queues') for the pull that will use them, and a control this client has no
 handler for is named once in the log. Nothing acknowledges a control: they are acted on in memory, not stored.
+
+## A restore remembers what it settled, and a partial run is not a success (v3.0, 2026-10-25)
+
+**The table.** `sync_ranges` (in `zalo.db`, `src/core/db.js`) holds, per conversation partition (the phone's opaque
+`oneone/<id>` or `group/<id>`), the window a restore settled for it and whether that is `done`, `failed` (with why) or
+`pending`. `src/core/sync-v2/ranges.js` is the arithmetic: a partition settled for a window that covers this one, up to
+its last message, is skipped; one settled only up to an earlier last message is asked for from there (incremental); the
+rest in full; an unfinished range for a conversation that is gone is dropped (an orphan). `--full-resync` ignores it all.
+
+**What changed in a run.** Each shard's partitions are settled after the shard is stored: done when the phone served
+them (or the session finished), failed when it reported them failed or a batch could not be downloaded, pending when
+the session ended early (a resume asks for those). A failed partition is asked for once more in the same run, in
+sessions of its own; if it fails again it stays failed for the next run. **Only a run that settled its whole window
+records success** (`lastSyncOkAt`); a partial one used to, so the "synced recently" shortcut could hide the rest of
+the work. `checkSyncFreshness` also refuses to skip while a range is pending or failed (`unfinished-ranges`).
+
+**Not done.** Y2b's "a missing partition deletes its range" needs the phone's numeric error code for it, which is not
+known; a failed range simply stays failed. Y5d is implemented as dropping orphans: what the official client means by
+"promoting" them is not clear from its code. The shortcut's one-hour age rule stays (readiness from ranges alone would
+let `sync` never ping the phone again, a change of behavior nobody asked for); only unfinished work overrides it.
+The resume asks the phone to confirm again: the conversation round is always sent first, as in Web.
+
+**The test harness.** `tests/helpers/fake-zalo/phone.js` plays a phone (acks, statuses, batches, failures, a decline)
+and serves the batches from a fake download host; `SyncV2.restore` takes `opts.codecs` (the decryption and decoding),
+so `tests/unit/sync-v2-restore-flow.test.js` runs the whole restore, request to released session, against it. It is
+the only test that runs the real restore; the unit tests of the parts cannot see how they are put together.
 
 ## `npm run format` covers `src/` and `tests/` only
 

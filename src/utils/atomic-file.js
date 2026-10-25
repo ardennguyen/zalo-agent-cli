@@ -35,8 +35,12 @@ import { basename, dirname, join } from "node:path";
 /** Errors a rename can raise on Windows while another process has the target open for reading. */
 const TRANSIENT = new Set(["EPERM", "EBUSY", "EACCES"]);
 
-/** How long a rename keeps being retried before the error is surfaced (antivirus and indexers can hold a file for seconds). */
-const RENAME_RETRY_MS = 5000;
+/**
+ * How long a rename keeps being retried before the error is surfaced (antivirus and indexers can hold a file for a
+ * moment). Kept under the 3 s a registry name refresh waits for the lock: a write that retries inside the lock for
+ * longer than that makes every other writer give up.
+ */
+const RENAME_RETRY_MS = 2000;
 
 /**
  * Block this thread for `ms` without spinning.
@@ -52,7 +56,7 @@ export function sleepSync(ms) {
  * The temp file is created exclusively with `mode` (so a secret is never readable by others, not
  * even briefly), flushed to disk, then renamed over the target. On Windows a rename can fail while a
  * reader (or an antivirus scan) has the target open, so it is retried with a growing pause for up to
- * five seconds (a reader holds the file for microseconds, but a tight loop of them can keep one in the way).
+ * two seconds (a reader holds the file for microseconds, but a tight loop of them can keep one in the way).
  *
  * @param {string} file
  * @param {string|Buffer} data

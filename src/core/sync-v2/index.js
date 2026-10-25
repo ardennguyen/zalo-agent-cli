@@ -34,6 +34,11 @@ import {
     getThreadType,
     getRecentThreads,
     findMessageByClientId,
+    countSyncRanges,
+    deleteSyncRanges,
+    getSyncRanges,
+    markSyncRangesPending,
+    setSyncRangeStatus,
 } from "../db.js";
 import { ensureAssets, loadCodecs } from "./assets.js";
 import { classifySyncMessage } from "./message-types.js";
@@ -44,6 +49,7 @@ import { startKeepAlive } from "./keepalive.js";
 import { DEVICE_LABEL } from "../../zalo/profile.js";
 import { REQUEST_FAILURE, SyncRequestError, createSessionStore, createSyncChannel } from "./channel.js";
 import { createBatchDownloader } from "./download.js";
+import { coveredAfter, planRanges, rangeStatusAfter } from "./ranges.js";
 import {
     CONFIRM_WAIT_MS,
     DISPOSE_REASON,
@@ -612,6 +618,10 @@ export class SyncV2 {
      * @param {boolean} [opts.liveStore=true] false when the caller already taps live traffic
      * @param {number|false} [opts.keepAlive] heartbeat interval in ms, or false when the
      *   caller already pings this socket for the whole window it owns.
+     * @param {number} [opts.settleMs] pause before the first request (default 1200; tests only)
+     * @param {number} [opts.pollMs] how often a wait looks at its session (default 300; tests only)
+     * @param {boolean} [opts.fullResync] forget what earlier runs settled and ask for every conversation in full
+     * @param {{zproto: object, M: object, C: object}} [opts.codecs] decryption and decoding stand-ins (tests only)
      * @param {number} [opts.maxResumes] reconnects this run may spend (default 1, at most 5); each one
      *   that needs the phone's confirmation again costs the owner a tap.
      * @param {() => Promise<boolean|{api: object}>} [opts.reconnect] re-open the listener socket
@@ -625,21 +635,33 @@ export class SyncV2 {
         const shardSize = Math.min(30, Math.max(1, opts.shardSize || 30));
         const waveSize = Math.min(30, Math.max(1, opts.waveSize || DEFAULT_WAVE_SIZE));
         const waitMs = Math.max(30000, opts.waitMs || CONFIRM_WAIT_MS);
+        // How long the socket is given to settle before the first request, and how often a wait looks at its session.
+        // Both only ever change in a test.
+        const settleMs = Number.isFinite(opts.settleMs) ? opts.settleMs : 1200;
+        const pollMs = Number.isFinite(opts.pollMs) ? opts.pollMs : 300;
         const onStatus = typeof opts.onStatus === "function" ? opts.onStatus : () => {};
         const log = (m) => onStatus({ phase: "info", detail: m });
         // The caller announces the window (it also decides the debounce on it);
         // it comes back on the result too, so no status line is emitted here.
         const win = resolveSyncWindow(opts.days, Date.now(), opts.from);
 
-        onStatus({ phase: "assets", detail: "loading decryption assets" });
-        const assets = await ensureAssets(resolve(this.accountDir, "sync", "zproto-cache"), log);
-        const { zproto, M, C } = await loadCodecs(assets);
+        // `opts.codecs` stands in for the decryption assets: a test runs the whole restore against a fake phone
+        // with codecs of its own. The product never passes it.
+        let codecs = opts.codecs;
+        if (!codecs) {
+            onStatus({ phase: "assets", detail: "loading decryption assets" });
+            const assets = await ensureAssets(resolve(this.accountDir, "sync", "zproto-cache"), log);
+            codecs = await loadCodecs(assets);
+        }
+        const { zproto, M, C } = codecs;
 
         onStatus({ phase: "contacts", detail: "reading friend/group lists for thread mapping" });
         const threadMap = await this._buildThreadMap(log);
         const senders = createSenderResolver(this.api, threadMap, { log });
 
         initDb(resolve(this.accountDir, "zalo.db"));
+        // A full resync trusts nothing an earlier run settled (Y5c).
+        if (opts.fullResync) deleteSyncRanges();
         this._refreshThreadNames(threadMap);
         await this._refreshDmNames(threadMap, log);
         await this._refreshSelfName(opts.onSelfName);
@@ -839,7 +861,7 @@ export class SyncV2 {
                 // just as dead as one reporting CLOSING/CLOSED -- checking only
                 // readyState missed every real disconnect.
                 if (!L.ws || L.ws.readyState > 1) return "socket-closed";
-                await new Promise((r) => setTimeout(r, 300));
+                await new Promise((r) => setTimeout(r, pollMs));
             }
             // The phone ended the sync (rejected, cancelled, busy, low on storage, signed out).
             if (s.fatal) return "declined";
@@ -977,7 +999,7 @@ export class SyncV2 {
         };
 
         try {
-            await new Promise((r) => setTimeout(r, 1200));
+            await new Promise((r) => setTimeout(r, settleMs));
 
             // A run that died left its sessions open on the phone; release them (reason 3) before starting
             // anything, so the phone's banner and its queue start clean (Y6b).
@@ -1116,9 +1138,80 @@ export class SyncV2 {
                     limit: 2147483647,
                 };
             });
+            // What earlier runs settled is not asked for again, and what they got part of is asked for from
+            // there (Y5): a killed run resumes, and a later run only fetches what came after the last one.
+            const plan = planRanges({
+                asked: partitions.map(({ partition, from, to }) => ({ partition, from, to })),
+                prior: getSyncRanges(),
+                fullResync: Boolean(opts.fullResync),
+            });
+            if (plan.orphans.length) deleteSyncRanges(plan.orphans);
+            const askOf = new Map(partitions.map((q) => [q.partition, q]));
+            const priorOf = new Map(getSyncRanges().map((r) => [r.partition, r]));
+            const incrementalOf = new Map(plan.todo.map((q) => [q.partition, q.incremental]));
+            const todo = plan.todo.map((q) => ({
+                partition: q.partition,
+                from: q.from,
+                to: q.to,
+                limit: askOf.get(q.partition).limit,
+            }));
+            markSyncRangesPending(
+                plan.todo
+                    .filter((q) => !q.incremental)
+                    .map((q) => ({ partition: q.partition, fromTs: q.from, toTs: q.to })),
+            );
+            const rangeInfo = {
+                skipped: plan.skipped.length,
+                incremental: plan.todo.filter((q) => q.incremental).length,
+                retried: 0,
+                recovered: 0,
+            };
+            /** partition -> why it failed, for the ranges that stand failed right now in this run */
+            const failedRanges = new Map();
+            if (plan.skipped.length || rangeInfo.incremental) {
+                onStatus({
+                    phase: "messages",
+                    detail:
+                        `${plan.skipped.length} conversation(s) already settled by an earlier run are not asked for again` +
+                        (rangeInfo.incremental
+                            ? `; ${rangeInfo.incremental} are asked for only from where that run stopped`
+                            : ""),
+                });
+            }
+            // Settle each partition of a served shard: done, failed (with why), or still pending (the session ended early).
+            const settleRanges = (queries, session) => {
+                for (const q of queries) {
+                    const status = rangeStatusAfter(q.partition, session);
+                    if (status === "done") {
+                        setSyncRangeStatus(
+                            q.partition,
+                            "done",
+                            coveredAfter(
+                                askOf.get(q.partition),
+                                priorOf.get(q.partition),
+                                incrementalOf.get(q.partition),
+                            ),
+                        );
+                        failedRanges.delete(q.partition);
+                    } else if (status === "failed") {
+                        const f = session.failures.find((x) => x.partition === q.partition);
+                        const why = f?.download ? `download:${f.download}` : `error:${f?.code ?? "unknown"}`;
+                        setSyncRangeStatus(q.partition, "failed", { reason: why });
+                        failedRanges.set(q.partition, why);
+                    }
+                }
+            };
+            if (!todo.length) {
+                // Everything was settled by earlier runs: nothing to ask, and nothing left unfinished.
+                onStatus({ phase: "messages", detail: "every conversation was already settled by an earlier run" });
+                reason = "complete";
+                recordRestoreSuccess(win, { resolveGaps: true });
+                resumeInfo = { resumes: 0, rePrompted: false, ranges: { ...rangeInfo, ...countSyncRanges() } };
+                return done(reason);
+            }
             const shards = [];
-            for (let i = 0; i < partitions.length; i += shardSize) shards.push(partitions.slice(i, i + shardSize));
-            onStatus({ phase: "messages", detail: `${conversations} conversations in ${shards.length} batch(es)` });
+            for (let i = 0; i < todo.length; i += shardSize) shards.push(todo.slice(i, i + shardSize));
+            onStatus({ phase: "messages", detail: `${todo.length} conversations in ${shards.length} batch(es)` });
 
             // ---- message rounds (sharded) ----
             // Requests go out in waves. Zalo Web opens at most FOUR message
@@ -1173,12 +1266,97 @@ export class SyncV2 {
             let tooManyFailures = false;
             const batchStats = { failed: 0, total: 0 };
             let rePrompted = false;
+            /** batches that failed as a whole (no scope named): they are not a range to ask for again */
+            let sessionErrors = 0;
             // A reconnect is only on the table when the caller handed us a way
             // to reconnect -- this class never starts the listener itself.
             const schedule = createShardSchedule(shards.length, {
                 waveSize,
                 maxResumes: typeof opts.reconnect === "function" ? resolveMaxResumes(opts.maxResumes) : 0,
             });
+
+            // Store one decoded chunk: the same for a first ask and for the one retry.
+            const storeChunk = async (obj) => {
+                // Network identity lookups must finish before opening
+                // the synchronous SQLite transaction for this chunk.
+                await senders.prepare((obj.partitionsList || []).flatMap((p) => p.messagesList || []));
+                // One transaction per decoded chunk rather than one per
+                // row: thousands of individual WAL commits is both slow
+                // and a long block on the event loop.
+                runInTransaction(() => {
+                    for (const part of obj.partitionsList || []) {
+                        const gid = /^(?:oneone|group)\/(.+)$/.exec(part.id)?.[1];
+                        const hit = gid && threadMap.get(gid);
+                        const isGroup = part.id.startsWith("group/");
+                        const threadId = hit ? hit.id : part.id;
+                        (hit ? mappedThreads : unmappedThreads).add(threadId);
+                        const cm = (gid && convMeta.get(gid)) || {};
+                        for (const msg of part.messagesList || []) {
+                            // The payload's numeric msgType + meta decide the row;
+                            // `content` is always a string, so it cannot.
+                            const info = classifySyncMessage(msg);
+                            const threadType = hit ? hit.type : isGroup ? "group" : "dm";
+                            try {
+                                upsertThread({
+                                    threadId,
+                                    type: threadType,
+                                    // The partition prefix is the phone's own
+                                    // classification: authoritative when the
+                                    // thread map agrees, so it can heal a 1-1 a
+                                    // pin notice once turned into a "group".
+                                    authoritative: threadType === (isGroup ? "group" : "dm"),
+                                    name: hit ? hit.name : "",
+                                    lastUpdate: Number(msg.timestamp) || 0,
+                                    sync_timestamp: Date.now(),
+                                    respondedByMe: cm.respondedByMe,
+                                    lastGlobalId: cm.lastGlobalId,
+                                    lastClientId: cm.lastClientId,
+                                });
+                                // The listener stored this system line under a
+                                // placeholder id (a group event carries no
+                                // message id); the phone's row replaces it.
+                                if (info.type === "group_event") {
+                                    replaceLiveGroupEventPlaceholder(threadId, Number(msg.timestamp) || 0);
+                                }
+                                insertMessage({
+                                    // jspb renders an unset uint64 as
+                                    // the STRING "0", which is truthy,
+                                    // so `globalId || clientId` kept it
+                                    // and every message without a
+                                    // global id collided on the primary
+                                    // key "0", overwriting each other.
+                                    // 0 means absent here, exactly as
+                                    // it does in a removal's
+                                    // globalDelMsgId and a reaction's
+                                    // gMsgID.
+                                    msgId: syncMsgId(msg, threadId),
+                                    threadId,
+                                    senderId: senders.get(msg.senderId).id,
+                                    senderName: senders.get(msg.senderId).name,
+                                    text: info.text,
+                                    timestamp: Number(msg.timestamp) || 0,
+                                    type: info.type,
+                                    raw_data: info.raw,
+                                    has_attachment: info.hasAttachment,
+                                    // The phone is the only source of
+                                    // delivery/read state, and this was
+                                    // parsed and then dropped on the way
+                                    // to the column: 87k rows carried a
+                                    // real status inside raw_data while
+                                    // the column stayed NULL on all of
+                                    // them.
+                                    msgStatus: info.raw?.msgStatus,
+                                });
+                                messagesSaved++;
+                                if (info.hasAttachment) attachmentsSaved++;
+                                typeCounts[info.type] = (typeCounts[info.type] || 0) + 1;
+                            } catch {
+                                /* dedupe/constraint — keep going */
+                            }
+                        }
+                    }
+                });
+            };
 
             // ---- wave by wave: send, wait, decrypt, decode, store ----
             // Storing per shard rather than after all of them means an
@@ -1241,87 +1419,7 @@ export class SyncV2 {
                     }
 
                     const before = messagesSaved;
-                    const read = await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, async (obj) => {
-                        // Network identity lookups must finish before opening
-                        // the synchronous SQLite transaction for this chunk.
-                        await senders.prepare((obj.partitionsList || []).flatMap((p) => p.messagesList || []));
-                        // One transaction per decoded chunk rather than one per
-                        // row: thousands of individual WAL commits is both slow
-                        // and a long block on the event loop.
-                        runInTransaction(() => {
-                            for (const part of obj.partitionsList || []) {
-                                const gid = /^(?:oneone|group)\/(.+)$/.exec(part.id)?.[1];
-                                const hit = gid && threadMap.get(gid);
-                                const isGroup = part.id.startsWith("group/");
-                                const threadId = hit ? hit.id : part.id;
-                                (hit ? mappedThreads : unmappedThreads).add(threadId);
-                                const cm = (gid && convMeta.get(gid)) || {};
-                                for (const msg of part.messagesList || []) {
-                                    // The payload's numeric msgType + meta decide the row;
-                                    // `content` is always a string, so it cannot.
-                                    const info = classifySyncMessage(msg);
-                                    const threadType = hit ? hit.type : isGroup ? "group" : "dm";
-                                    try {
-                                        upsertThread({
-                                            threadId,
-                                            type: threadType,
-                                            // The partition prefix is the phone's own
-                                            // classification: authoritative when the
-                                            // thread map agrees, so it can heal a 1-1 a
-                                            // pin notice once turned into a "group".
-                                            authoritative: threadType === (isGroup ? "group" : "dm"),
-                                            name: hit ? hit.name : "",
-                                            lastUpdate: Number(msg.timestamp) || 0,
-                                            sync_timestamp: Date.now(),
-                                            respondedByMe: cm.respondedByMe,
-                                            lastGlobalId: cm.lastGlobalId,
-                                            lastClientId: cm.lastClientId,
-                                        });
-                                        // The listener stored this system line under a
-                                        // placeholder id (a group event carries no
-                                        // message id); the phone's row replaces it.
-                                        if (info.type === "group_event") {
-                                            replaceLiveGroupEventPlaceholder(threadId, Number(msg.timestamp) || 0);
-                                        }
-                                        insertMessage({
-                                            // jspb renders an unset uint64 as
-                                            // the STRING "0", which is truthy,
-                                            // so `globalId || clientId` kept it
-                                            // and every message without a
-                                            // global id collided on the primary
-                                            // key "0", overwriting each other.
-                                            // 0 means absent here, exactly as
-                                            // it does in a removal's
-                                            // globalDelMsgId and a reaction's
-                                            // gMsgID.
-                                            msgId: syncMsgId(msg, threadId),
-                                            threadId,
-                                            senderId: senders.get(msg.senderId).id,
-                                            senderName: senders.get(msg.senderId).name,
-                                            text: info.text,
-                                            timestamp: Number(msg.timestamp) || 0,
-                                            type: info.type,
-                                            raw_data: info.raw,
-                                            has_attachment: info.hasAttachment,
-                                            // The phone is the only source of
-                                            // delivery/read state, and this was
-                                            // parsed and then dropped on the way
-                                            // to the column: 87k rows carried a
-                                            // real status inside raw_data while
-                                            // the column stayed NULL on all of
-                                            // them.
-                                            msgStatus: info.raw?.msgStatus,
-                                        });
-                                        messagesSaved++;
-                                        if (info.hasAttachment) attachmentsSaved++;
-                                        typeCounts[info.type] = (typeCounts[info.type] || 0) + 1;
-                                    } catch {
-                                        /* dedupe/constraint — keep going */
-                                    }
-                                }
-                            }
-                        });
-                    });
+                    const read = await eachChunkObj(sessions.get(m.sid), m.ek, M.SyncChunk, storeChunk);
 
                     // Batches that could not be downloaded count as failed ones, and can stop the run like any other.
                     if (read.downloadFailures.length) {
@@ -1336,6 +1434,10 @@ export class SyncV2 {
                             });
                         }
                     }
+
+                    // The partitions of this shard now stand done, failed, or (a session that ended early) pending.
+                    if (served.err) sessionErrors++;
+                    settleRanges(shards[wave[k]], served);
 
                     finished++;
                     // Per-shard progress: without it a 50-shard run prints nothing
@@ -1376,6 +1478,43 @@ export class SyncV2 {
                 }
                 stop = true;
             }
+            // A range the phone could not serve is asked for once more, in sessions of its own (Y2b). One that
+            // fails again stays failed for the next run: the phone may simply not have it ready.
+            if (!stop && !declined && failedRanges.size) {
+                const again = todo.filter((q) => failedRanges.has(q.partition));
+                runDeadline = Date.now() + shardBudget(Math.ceil(again.length / shardSize));
+                onStatus({
+                    phase: "messages",
+                    detail: `asking once more for ${again.length} conversation(s) the phone could not serve`,
+                });
+                for (let i = 0; i < again.length; i += shardSize) {
+                    const queries = again.slice(i, i + shardSize);
+                    const ek = zproto.generateKeyPair();
+                    const sid = newSession(
+                        "msg",
+                        queries.map((q) => q.partition),
+                    );
+                    const sent = await sendRequest("msg", sid, ek, {
+                        type: "message",
+                        priority: 2,
+                        batchSize: 2000,
+                        queries,
+                    });
+                    if (sent.socketClosed) break;
+                    rangeInfo.retried += queries.length;
+                    const left = runDeadline - Date.now();
+                    const why = left > 0 ? await waitDone(sid, left) : "timeout";
+                    if (why === "socket-closed" || why === "declined" || why === "idle-timeout" || why === "timeout")
+                        break;
+                    const retried = sessions.get(sid);
+                    await eachChunkObj(retried, ek, M.SyncChunk, storeChunk);
+                    const had = new Set(failedRanges.keys());
+                    settleRanges(queries, retried);
+                    rangeInfo.recovered += queries.filter(
+                        (q) => had.has(q.partition) && !failedRanges.has(q.partition),
+                    ).length;
+                }
+            }
             if (rePrompted) {
                 onStatus({
                     phase: "warn",
@@ -1384,10 +1523,11 @@ export class SyncV2 {
                         "the reconnect did not inherit the first one",
                 });
             }
-            resumeInfo = { resumes: schedule.resumes(), rePrompted };
+            resumeInfo = { resumes: schedule.resumes(), rePrompted, ranges: { ...rangeInfo, ...countSyncRanges() } };
             if (declined) throw declineError(declined);
             const outcome = describeRestoreOutcome({
-                failedBatches,
+                // A range that failed and was recovered by the retry is not a failed batch any more.
+                failedBatches: failedRanges.size || sessionErrors || tooManyFailures ? failedBatches : 0,
                 tooManyFailures,
                 socketDied,
                 timedOut,
@@ -1400,9 +1540,9 @@ export class SyncV2 {
             });
             if (outcome.error) throw new Error(outcome.error);
             reason = outcome.reason;
-            // A partial run still records success (unchanged), so the next run
-            // within the hour is skipped unless --force -- but it settles no gap.
-            recordRestoreSuccess(win, { resolveGaps: reason === "complete" });
+            // Only a run that settled its window counts as a success (Y5a). A partial one records none: the
+            // next run asks again, and (with the ranges kept above) only for what it did not get.
+            if (reason === "complete") recordRestoreSuccess(win, { resolveGaps: true });
         } catch (e) {
             runError = e;
             throw e;

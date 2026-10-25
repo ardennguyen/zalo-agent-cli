@@ -5,6 +5,7 @@ import {
     getSyncState,
     setSyncState,
     recordSyncGap,
+    countSyncRanges,
     getPendingSyncGaps,
     resolveAllPendingSyncGaps,
 } from "./db.js";
@@ -163,7 +164,8 @@ export class SyncManager {
      * don't spam the socket or, for the phone-waking transfer-sync path, the
      * owner's phone.
      *
-     * A pending coverage gap always forces a sync, and so does `force`.
+     * A pending coverage gap always forces a sync, and so does an unfinished conversation range (a restore that
+     * settled only part of its window), and so does `force`.
      * Otherwise we skip when the last success is younger than `freshnessMs` —
      * unless the caller is asking for a WIDER window than the last success
      * covered (`coversFrom` older than the recorded `lastSyncOkFrom`). A
@@ -186,6 +188,10 @@ export class SyncManager {
 
         if (force) return out(false, "forced");
         if (getPendingSyncGaps().length > 0) return out(false, "pending-gap");
+        // A restore that settled only part of its window left ranges behind: that is work to finish, however
+        // recently the last run ended (Y5b).
+        const ranges = countSyncRanges();
+        if (ranges.pending + ranges.failed > 0) return out(false, "unfinished-ranges");
         if (lastSyncAt === null) return out(false, "never-synced");
         if (ageMs < freshnessMs) {
             const widening = Number.isFinite(opts.coversFrom) && coveredFrom !== null && coveredFrom > opts.coversFrom;

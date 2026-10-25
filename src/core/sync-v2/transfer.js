@@ -39,6 +39,12 @@ export const MAX_FAILED_BATCHES = 10;
 /** A run in which more than this share of batches failed is stopped, once enough batches have been seen. */
 export const MAX_FAILED_RATIO = 0.5;
 
+/**
+ * The phone's error code for "I no longer have this partition" (the conversation was deleted there). Read from the
+ * Web sync worker's error table (`PartitionNotFound: 502`); not yet seen on the wire. Such a range is dropped, not retried.
+ */
+export const PARTITION_NOT_FOUND = 502;
+
 /** Release reasons for a sync session (cmd 591): cancelled by the person, finished, failed, outdated. */
 export const DISPOSE_REASON = Object.freeze({ CANCELLED: 0, SUCCESS: 1, ERROR: 2, OUTDATED: 3 });
 

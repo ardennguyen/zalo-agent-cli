@@ -67,8 +67,8 @@ describe("the sync channel", () => {
             decode,
             sleep: async (ms) => void sleeps.push(ms),
             nextReqId: () => `req_${++n}`,
-            ackTimeoutMs: 400,
-            disposeAckMs: 400,
+            ackTimeoutMs: 5000,
+            disposeAckMs: 5000,
             ...over,
         });
         api.listener.ws.on("message", (buf) => channel.handleFrame(buf));

@@ -334,6 +334,19 @@ describe("a restore against the fake phone", () => {
             assert.ok(getSyncState("lastSyncOkAt"), "now the window is settled");
         });
 
+        it("a conversation the phone no longer has (error 502) is dropped, not retried, and is no failure", async () => {
+            const { result, phone } = await run({ failPartition: (p) => p.endsWith("/CONVB"), failCode: 502 });
+            assert.equal(result.reason, "complete");
+            assert.equal(phone.asked("message").length, 1, "no retry: there is nothing to ask for");
+            assert.deepEqual(
+                getSyncRanges().map((r) => [r.partition, r.status]),
+                [["oneone/CONVA", "done"]],
+                "its range is gone, not failed",
+            );
+            assert.equal(result.ranges.gone, 1);
+            assert.ok(getSyncState("lastSyncOkAt"), "the window counts as settled");
+        });
+
         it("a batch that cannot be downloaded marks its conversation failed, with the download's reason", async () => {
             let convSync = null;
             await run({

@@ -74,6 +74,7 @@ export function fakeCodecs() {
  * @param {"complete"|"decline"|"silent"} [opts.outcome] - `decline`: status 3 then 6; `silent`: status 3 only
  * @param {(request: object) => number} [opts.ackError] - the `err` of the ack of a 590 request, 0 by default
  * @param {number} [opts.ackDelayMs] - how long the phone takes to acknowledge a 590 request (0: at once)
+ * @param {number} [opts.failCode] - the `err` the phone gives a failed partition (default 1)
  * @param {(partition: string, attempt: number) => boolean} [opts.failPartition] - the phone reports this partition as
  *   failed; `attempt` counts the times it has been asked for, from 1
  * @param {(path: string, phone: object) => number|null} [opts.downloadStatus] - an HTTP status to answer a batch
@@ -123,12 +124,12 @@ export function installFakePhone(zalo, opts = {}) {
             },
         };
     };
-    const failureControl = (syncId, partition) => ({
+    const failureControl = (syncId, partition, code = 1) => ({
         actionId: String(++t),
         controlId: String(t),
         content: {
             act: "upload_batch",
-            data: { err: 1, fromDevice: 0, syncId, scopes: [{ partition }], idx: 9 },
+            data: { err: code, fromDevice: 0, syncId, scopes: [{ partition }], idx: 9 },
             act_type: "transfer_sync2",
         },
     });
@@ -215,7 +216,7 @@ export function installFakePhone(zalo, opts = {}) {
                     served.map((partition) => ({ partition })),
                     blobOf({ partitionsList: parts }),
                 ),
-                ...failed.map((p) => failureControl(inner.syncId, p)),
+                ...failed.map((p) => failureControl(inner.syncId, p, opts.failCode)),
             ]);
         });
         const ack = ok({ reqId, err, ts: Date.now() });

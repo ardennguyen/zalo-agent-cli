@@ -56,6 +56,7 @@ import {
     applyControl,
     createTransferSession,
     declineError,
+    PARTITION_NOT_FOUND,
     isConfirmed,
     isIdleTooLong,
     isTransferSessionComplete,
@@ -1195,6 +1196,13 @@ export class SyncV2 {
                         failedRanges.delete(q.partition);
                     } else if (status === "failed") {
                         const f = session.failures.find((x) => x.partition === q.partition);
+                        if (Number(f?.code) === PARTITION_NOT_FOUND) {
+                            // The phone no longer has this conversation: there is nothing to ask for again.
+                            deleteSyncRanges([q.partition]);
+                            failedRanges.delete(q.partition);
+                            rangeInfo.gone = (rangeInfo.gone ?? 0) + 1;
+                            continue;
+                        }
                         const why = f?.download ? `download:${f.download}` : `error:${f?.code ?? "unknown"}`;
                         setSyncRangeStatus(q.partition, "failed", { reason: why });
                         failedRanges.set(q.partition, why);

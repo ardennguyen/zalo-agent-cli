@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3002** as of 2026-10-25 (2997 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3003** as of 2026-10-25 (2998 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1155,8 +1155,10 @@ sessions of its own; if it fails again it stays failed for the next run. **Only 
 records success** (`lastSyncOkAt`); a partial one used to, so the "synced recently" shortcut could hide the rest of
 the work. `checkSyncFreshness` also refuses to skip while a range is pending or failed (`unfinished-ranges`).
 
-**Not done.** Y2b's "a missing partition deletes its range" needs the phone's numeric error code for it, which is not
-known; a failed range simply stays failed. Y5d is implemented as dropping orphans: what the official client means by
+**A conversation the phone no longer has** (error **502**, `PartitionNotFound` in the Web sync worker's error table; not
+yet seen on the wire) has its range dropped and is not asked for again, and it is no failure. **Not done.** The client-side
+`MSG_IMPORT_FAILED` (keep the range for the next run) has no equivalent here: a row that cannot be written is skipped
+without a word, as it always was. Y5d is implemented as dropping orphans: what the official client means by
 "promoting" them is not clear from its code. The shortcut's one-hour age rule stays (readiness from ranges alone would
 let `sync` never ping the phone again, a change of behavior nobody asked for); only unfinished work overrides it.
 The resume asks the phone to confirm again: the conversation round is always sent first, as in Web.

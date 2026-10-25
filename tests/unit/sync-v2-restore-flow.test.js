@@ -160,6 +160,69 @@ describe("a restore against the fake phone", () => {
         assert.equal(getSyncState("lastSyncOkAt"), null);
     });
 
+    describe("open sessions", () => {
+        const many = Array.from({ length: 8 }, (_, i) => ({
+            id: `CONV${i}`,
+            kind: "oneone",
+            lastTs: T + 1000 + i,
+            messages: [{ id: `${3000 + i}`, text: `hello ${i}`, ts: T + 1000 + i }],
+        }));
+
+        it("never holds more than a wave of them: each session is released as soon as its shard is stored", async () => {
+            const { result, error, phone } = await run({ conversations: many }, { shardSize: 1, waveSize: 2 });
+            assert.equal(error, null);
+            assert.equal(result.reason, "complete");
+            assert.equal(result.messagesSaved, 8);
+            // The phone's count of open sessions after every request and release, in the order they happened.
+            let open = 0;
+            let peak = 0;
+            for (const o of phone.order) {
+                open += o.cmd === 590 ? 1 : -1;
+                peak = Math.max(peak, open);
+            }
+            assert.equal(open, 0, "every session ended released");
+            assert.ok(peak <= 3, `at most a wave and a straggler were open at once, but ${peak} were`);
+            assert.equal(phone.releases.length, phone.requests.length, "and each was released exactly once");
+        });
+
+        it("the retry round lets go of its sessions too: a window with many failed ranges does not pile them up", async () => {
+            // Every conversation fails its first ask and is served on the retry, one conversation per session.
+            const { result, error, phone } = await run(
+                { conversations: many, failPartition: (_partition, attempt) => attempt === 1 },
+                { shardSize: 1, waveSize: 2 },
+            );
+            assert.equal(error, null);
+            assert.equal(result.messagesSaved, 8, "the retry served what the first ask could not");
+            let open = 0;
+            let peak = 0;
+            for (const o of phone.order) {
+                open += o.cmd === 590 ? 1 : -1;
+                peak = Math.max(peak, open);
+            }
+            assert.ok(phone.requests.length >= 16, "the retry round did ask again, session by session");
+            assert.ok(peak <= 3, `${peak} sessions were open at once`);
+        });
+
+        it("a session that failed is released as failed, at once, and the others as finished", async () => {
+            const { phone } = await run(
+                { conversations: many, failPartition: (p, attempt) => p.includes("CONV3") && attempt >= 0 },
+                { shardSize: 1, waveSize: 2 },
+            );
+            const reasons = phone.releases.map((r) => r.reason);
+            assert.ok(reasons.includes(1), "finished sessions are released as finished");
+            // The first round's session for the failing conversation, and its release.
+            const firstAsk = phone.requests.find(
+                (r) => r.type === "message" && r.queries.some((q) => q.partition.includes("CONV3")),
+            );
+            const release = phone.releases.find((r) => r.syncId === firstAsk.syncId);
+            assert.equal(release.reason, 2, "the session that failed is released as failed");
+            const at = phone.order.findIndex((o) => o.cmd === 591 && phone.releases[o.at - 1] === release);
+            const asksAfter = phone.order.slice(at).filter((o) => o.cmd === 590).length;
+            assert.ok(asksAfter > 0, "it was released while the run still had more to ask for, not at the very end");
+            assert.equal(new Set(phone.releases.map((r) => r.syncId)).size, phone.requests.length, "each once");
+        });
+    });
+
     describe("Ctrl+C (an AbortSignal)", () => {
         it("a stop while the phone has not answered ends the run as cancelled, releases the session with reason 0, and records nothing", async () => {
             const ctl = new AbortController();

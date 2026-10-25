@@ -1467,6 +1467,10 @@ export class SyncV2 {
                     // The partitions of this shard now stand done, failed, or (a session that ended early) pending.
                     if (served.err) sessionErrors++;
                     settleRanges(shards[wave[k]], served);
+                    // Let go of the session now, as Zalo Web does. The phone keeps every open session and stopped
+                    // serving at about 32 (live, 2026-10-25: 29 finished and 3 in flight, none released until the end).
+                    if (served.err || served.failures.length) served.disposeReason ??= DISPOSE_REASON.ERROR;
+                    disposeOne(m.sid);
 
                     finished++;
                     // Per-shard progress: without it a 50-shard run prints nothing
@@ -1546,6 +1550,8 @@ export class SyncV2 {
                     await eachChunkObj(retried, ek, M.SyncChunk, storeChunk);
                     const had = new Set(failedRanges.keys());
                     settleRanges(queries, retried);
+                    if (retried.err || retried.failures.length) retried.disposeReason ??= DISPOSE_REASON.ERROR;
+                    disposeOne(sid);
                     rangeInfo.recovered += queries.filter(
                         (q) => had.has(q.partition) && !failedRanges.has(q.partition),
                     ).length;

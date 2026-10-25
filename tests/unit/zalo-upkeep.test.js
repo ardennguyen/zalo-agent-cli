@@ -115,6 +115,44 @@ describe("session upkeep", () => {
         assert.equal(clock.live(), 0);
     });
 
+    describe("the configuration version a keepalive answers (L2e)", () => {
+        /** Run keepalives that answer the given versions in turn, and report how often the settings were asked for. */
+        async function run(answers) {
+            const clock = fakeClock();
+            const { ctx } = session({
+                keepalive: { alway_keepalive: 1, keepalive_duration: 120, time_deactive: 100_000 },
+            });
+            let refreshes = 0;
+            let i = 0;
+            const up = startUpkeep(ctx, {
+                keepAlive: async () => answers[Math.min(i++, answers.length - 1)],
+                refreshSettings: async () => void refreshes++,
+                now: clock.now,
+                timers: clock.timers,
+            });
+            await clock.advance(120_000 * answers.length + 1000);
+            up.stop();
+            return refreshes;
+        }
+
+        it("asks for the settings again, at once, when the version changes", async () => {
+            assert.equal(await run([{ config_vesion: 2 }, { config_vesion: 3 }]), 1);
+        });
+
+        it("does not, while the version stays the same: the first answer is only the baseline", async () => {
+            assert.equal(await run([{ config_vesion: 2 }, { config_vesion: 2 }, { config_vesion: 2 }]), 0);
+        });
+
+        it("asks once per change, not once per keepalive after it", async () => {
+            assert.equal(await run([{ config_vesion: 2 }, { config_vesion: 3 }, { config_vesion: 3 }]), 1);
+            assert.equal(await run([{ config_vesion: 2 }, { config_vesion: 3 }, { config_vesion: 4 }]), 2);
+        });
+
+        it("ignores an answer that carries no version, or none a number", async () => {
+            assert.equal(await run([{ config_vesion: 2 }, {}, null, { config_vesion: "x" }, { config_vesion: 2 }]), 0);
+        });
+    });
+
     it("a real request resets the idle clock", async () => {
         const clock = fakeClock();
         const { ctx } = session({ keepalive: { alway_keepalive: 1, keepalive_duration: 100, time_deactive: 250 } });

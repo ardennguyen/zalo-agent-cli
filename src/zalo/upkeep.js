@@ -62,17 +62,37 @@ export function startUpkeep(ctx, { keepAlive, refreshSettings, now = Date.now, t
         keepTimer = null;
     };
 
+    // The version of the server's configuration, as the last keepalive answered it. A change means the settings
+    // this session holds are out of date, so they are asked for again at once instead of at the next hour.
+    let configVersion = null;
+
+    const refresh = () =>
+        refreshSettings()
+            .then(() => {
+                // A new schedule applies from the next start of the keepalive timer.
+                stopKeepAlive();
+                startKeepAlive();
+            })
+            .catch(() => {});
+
     const tick = async () => {
         if (stopped) return;
         if (now() - lastRequest >= keepAliveSchedule(ctx.settings).idleMs) return stopKeepAlive();
         quiet = true;
+        let changed = false;
         try {
-            await keepAlive();
+            const answer = await keepAlive();
+            const seen = Number(answer?.config_vesion);
+            if (Number.isFinite(seen)) {
+                changed = configVersion !== null && seen !== configVersion;
+                configVersion = seen;
+            }
         } catch {
             /* the next tick tries again */
         } finally {
             quiet = false;
         }
+        if (changed && !stopped) await refresh();
     };
 
     const startKeepAlive = () => {
@@ -92,14 +112,7 @@ export function startUpkeep(ctx, { keepAlive, refreshSettings, now = Date.now, t
 
     const refreshTimer = unref(
         timers.setInterval(() => {
-            if (stopped) return;
-            // A new schedule applies from the next start of the keepalive timer.
-            refreshSettings()
-                .then(() => {
-                    stopKeepAlive();
-                    startKeepAlive();
-                })
-                .catch(() => {});
+            if (!stopped) void refresh();
         }, HOUR_MS),
     );
     startKeepAlive();

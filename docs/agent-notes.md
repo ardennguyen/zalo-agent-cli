@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3021** as of 2026-10-25 (3016 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3036** as of 2026-10-25 (3031 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1296,3 +1296,34 @@ What 71 means is still an inference (an announced window; it does not block).
 run outside the test home and refuses the consuming pulls without `--i-accept-consuming`. Also open: a full-history
 restore past the four-session cap (Y4b), a `532` ack with a real message (Y10), automatic sync (Y8), and the keepalive
 question (L9).
+
+## What the first live full-history restore found (v3.0, 2026-10-25)
+
+Measured on an account with 2,367 conversations and about 750,000 messages; two defects, both old, neither seen by an
+offline test because the fake phone's conversations are tiny.
+
+**The restore stalled its own event loop (`findMessageByClientId`).** A synced message without a server id is stored
+under the id of an already-stored live row with the same client id, found by `json_extract(raw_data, '$.cliMsgId')`.
+That read and parsed the JSON of every row of the thread, once per message: 190 ms per lookup on a 42,000-row thread.
+A CPU profile of the daemon (46 of 113 s in that one function, 9.6 s more re-preparing its statement) showed the
+event loop blocked for 5 to 77 s at a time; pings went unanswered and Zalo closed the socket (1006). The same cause is
+the likeliest reading of the September "1006 at batch 0" runs. There is now an index on the client id (`idx_messages_cli`,
+with the same `json_valid` guard, so a lookup must use `CLIENT_ID_EXPR` to use it), the lookup sorts its few matches
+itself because an `ORDER BY` made SQLite walk the timestamp index instead, and the statements are prepared once per
+connection. 20,000 lookups take 150 ms. The index builds in 0.3 s per 57,000 rows, once, at the first open.
+
+**The phone serves about 32 open sessions and then stops.** Message sessions were released only at the end of the run
+(only the conversation session was released at once). The first full run stored 29 shards, had 3 in flight, and went
+silent; the phone then showed no sync status, and the next start found 32 sessions open to release as outdated. Zalo
+Web lets go of a session when it has what it asked for, and so does the restore now: each shard's session is released
+as soon as it is stored (finished, or failed when it had an error), in the retry round too. The channel sends one
+release per session however many callers ask.
+
+**What the phone does while Zalo is in use.** Zalo open and in use on the phone seems to pause the transfer; leave it
+idle for a long restore. This is not proven (the run that went silent also had 32 sessions open).
+
+**Other live results.** A window of 30 days (13,910 messages) restores in under a minute; a full restore stores 90,000
+messages in its first shard. Every 590 and 591 is acknowledged with `err 0`; a `532` for a live push is answered
+`{error: 0}`; the pulls 515, 517 and 518 answer in the shape of the old-message queues; 603/0 and 603/1 answer pages
+of 50 `transfer_sync2` controls with `more`; the keepalive answers `{config_vesion}`, and a change in it now refreshes
+the settings at once.

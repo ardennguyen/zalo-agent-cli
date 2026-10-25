@@ -4,6 +4,14 @@ import Database from "better-sqlite3";
 
 let db;
 
+/**
+ * The client-side id a message's sender generated, read out of raw_data. Guarded with json_valid() because an older
+ * writer stored the bare content string in raw_data on six figures of rows, and an unguarded json_extract over this
+ * table raises "malformed JSON". Indexed (idx_messages_cli): a lookup by this expression must be written exactly
+ * this way to use the index.
+ */
+const CLIENT_ID_EXPR = "CASE WHEN json_valid(raw_data) THEN json_extract(raw_data, '$.cliMsgId') END";
+
 export function initDb(dbPath) {
     // A fresh login has no accounts/<ownId>/ yet: only a daemon taking its
     // lock (lock.js) used to create it, so every command that opened the
@@ -201,6 +209,10 @@ export function initDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_cloud_msg ON cloud_items(msgId);
     CREATE INDEX IF NOT EXISTS idx_messages_thread_ts ON messages(threadId, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_attach ON messages(has_attachment) WHERE has_attachment = 1;
+    -- Without this, every lookup by client id read and parsed the JSON of every row of the thread: 190 ms per
+    -- message on a 42,000-row thread, which stalled the event loop for minutes during a restore and got the
+    -- socket closed (1006).
+    CREATE INDEX IF NOT EXISTS idx_messages_cli ON messages((${CLIENT_ID_EXPR}), threadId);
     CREATE INDEX IF NOT EXISTS idx_board_thread ON board_items(threadId, boardType);
     CREATE INDEX IF NOT EXISTS idx_reminders_thread ON reminders(threadId);
   `);
@@ -1627,27 +1639,25 @@ export function markMessageRecalled(msgId, at = Date.now(), opts = {}) {
 export function findMessageByClientId(cliMsgId, threadId = null) {
     if (!db) throw new Error("Database not initialized");
     if (cliMsgId === undefined || cliMsgId === null || cliMsgId === "") return null;
-    if (threadId !== undefined && threadId !== null && threadId !== "") {
-        return (
-            db
-                .prepare(
-                    `SELECT * FROM messages
-             WHERE threadId = ? AND json_valid(raw_data) AND json_extract(raw_data, '$.cliMsgId') = ?
-             ORDER BY timestamp DESC LIMIT 1`,
-                )
-                .get(String(threadId), String(cliMsgId)) || null
-        );
-    }
-    return (
-        db
-            .prepare(
-                `SELECT * FROM messages
-         WHERE json_valid(raw_data) AND json_extract(raw_data, '$.cliMsgId') = ?
-         ORDER BY timestamp DESC LIMIT 1`,
-            )
-            .get(String(cliMsgId)) || null
+    const scoped = threadId !== undefined && threadId !== null && threadId !== "";
+    // Every match, newest first, sorted here: an ORDER BY in the query made SQLite walk the thread's timestamp
+    // index instead of the client-id one, which is the whole cost this lookup used to have.
+    const statements = cliLookups.get(db) ?? cliLookups.set(db, {}).get(db);
+    const key = scoped ? "scoped" : "any";
+    statements[key] ??= db.prepare(
+        scoped
+            ? `SELECT * FROM messages WHERE (${CLIENT_ID_EXPR}) = ? AND threadId = ?`
+            : `SELECT * FROM messages WHERE (${CLIENT_ID_EXPR}) = ?`,
     );
+    const rows = scoped
+        ? statements[key].all(String(cliMsgId), String(threadId))
+        : statements[key].all(String(cliMsgId));
+    if (!rows.length) return null;
+    return rows.reduce((newest, row) => (Number(row.timestamp) > Number(newest.timestamp) ? row : newest));
 }
+
+/** Prepared client-id lookups, one set per open database (a new initDb makes a new connection). */
+const cliLookups = new WeakMap();
 
 /** Pinned / unread-marked state for a conversation. Applies to DMs too. */
 export function upsertConvState(st) {

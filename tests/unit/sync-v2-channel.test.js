@@ -226,6 +226,20 @@ describe("the sync channel", () => {
             assert.equal(got.disp.length, 1);
         });
 
+        it("sends one release for a session however many callers ask while it is on its way", async () => {
+            const got = answer(ackWith(0));
+            await open();
+            await send(channel, "sync-a");
+            const [first, second] = await Promise.all([
+                channel.release("sync-a", DISPOSE_REASON.SUCCESS),
+                channel.release("sync-a", DISPOSE_REASON.ERROR),
+            ]);
+            assert.deepEqual(first, { acked: true });
+            assert.deepEqual(second, { acked: true });
+            assert.equal(got.disp.length, 1, "one 591, with the reason of the first caller");
+            assert.equal(got.disp[0].data.reason, 1);
+        });
+
         it("waits for the ack three times, 1 s and 2 s apart, and keeps the session when none comes", async () => {
             const got = answer((data) =>
                 data.data?.reason === undefined ? ok({ reqId: data.reqId, err: 0 }) : ok({ reqId: data.reqId, err: 9 }),
@@ -237,6 +251,23 @@ describe("the sync channel", () => {
             assert.equal(got.disp.length, 3);
             assert.deepEqual(sleeps, [1000, 2000]);
             assert.deepEqual(channel.open(), ["sync-a"], "an unacknowledged release leaves the session open");
+        });
+
+        it("tries a release again later when the first one was never acknowledged", async () => {
+            let healthy = false;
+            const got = answer((data) =>
+                data.data?.reason === undefined || healthy
+                    ? ok({ reqId: data.reqId, err: 0 })
+                    : ok({ reqId: data.reqId, err: 9 }),
+            );
+            await open();
+            await send(channel, "sync-a");
+            assert.equal((await channel.release("sync-a", 1)).acked, false);
+            healthy = true;
+            const again = await channel.release("sync-a", 1);
+            assert.equal(again.acked, true, "the session was not stuck with its failed release");
+            assert.equal(got.disp.length, 4, "three tries, then a fourth that was answered");
+            assert.deepEqual(channel.open(), []);
         });
 
         it("releases a session whose request was still unanswered the moment the answer lands (late release)", async () => {

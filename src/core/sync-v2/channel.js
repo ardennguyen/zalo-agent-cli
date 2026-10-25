@@ -337,6 +337,19 @@ export function createSyncChannel({
                 s.late = reason;
                 return { acked: false, late: true };
             }
+            // A release already on its way (a session let go of as soon as it finished) is the release: the end
+            // of the run must not send a second one for the same session.
+            if (s.releasing) return s.releasing;
+            const going = channel.releaseNow(syncId, reason);
+            s.releasing = going;
+            const result = await going;
+            // One that was not acknowledged may be tried again (by the end of the run).
+            if (!result.acked) s.releasing = null;
+            return result;
+        },
+
+        /** Send the release and wait for its ack. Use {@link release}, which does not send one twice. */
+        async releaseNow(syncId, reason) {
             try {
                 await exchange({
                     label: `sync release (reason ${reason})`,

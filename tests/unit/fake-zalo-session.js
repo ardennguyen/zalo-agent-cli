@@ -145,6 +145,9 @@ function mergeSettings(base, over) {
  *   (see `scripted` below, plus `{sealedEnvelope}`: that envelope, sealed as a real answer is); once it runs
  *   out the normal answer is given
  * @param {Array<object>} [opts.serverInfoScript] - the same for getServerInfo
+ * @param {{viewer_key: string, enk: string}|null} [opts.zcloud] - the `zcloud` keys getServerInfo carries (the
+ *   viewer key and cipher of the kickout lookup); none by default
+ * @param {{viewer_key: string, enk: string}|null} [opts.loginZcloud] - the same, carried by getLoginInfo instead
  * @param {Record<string, string>} [opts.serverInfoHeaders] - response headers of every getServerInfo answer
  *   (e.g. a `set-cookie`)
  * @returns {{
@@ -169,6 +172,8 @@ export function installFakeZalo({
     loginScript = [],
     serverInfoScript = [],
     serverInfoHeaders = {},
+    zcloud = null,
+    loginZcloud = null,
 } = {}) {
     const requests = [];
     const routes = new Map();
@@ -271,6 +276,7 @@ export function installFakeZalo({
                 zpw_service_map_v3: serviceMap,
                 zpw_ws: wsUrls,
                 send2me_id: "1000000000000000001",
+                ...(loginZcloud ? { zcloud: loginZcloud } : {}),
             };
             // A request without zcid was sent unencrypted: answer it the same way.
             if (!url.searchParams.get("zcid")) return reply({ error_code: 0, error_message: "", data: loginInfo });
@@ -293,7 +299,7 @@ export function installFakeZalo({
                 JSON.stringify({
                     error_code: 0,
                     error_message: "",
-                    data: { settings: mergeSettings(SETTINGS, settings), extra_ver: {} },
+                    data: { settings: mergeSettings(SETTINGS, settings), extra_ver: {}, ...(zcloud ? { zcloud } : {}) },
                 }),
                 { status: 200, headers: { "content-type": "application/json", ...serverInfoHeaders } },
             );

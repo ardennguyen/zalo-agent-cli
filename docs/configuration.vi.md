@@ -77,7 +77,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` |  | xoay `daemon.log` khi đạt dung lượng này (mặc định `50m`, tối thiểu `4k`) và giữ chừng này file (mặc định 3) | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | giá trị bất kỳ: không bao giờ chạy kiểm tra cập nhật `npm view` | | |
 | `ZALO_API_VERSION` |  | phiên bản giao thức báo cho Zalo. Mặc định 694 | | |
-| `ZALO_QR_FLOW` |  | cách `login` đăng nhập bằng QR: `legacy` (mặc định, của zca-js) hoặc `official` (đúng trình tự Zalo Web: không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng qua `jr.zaloapp.com` và `jr.chat.zalo.me`). Giá trị khác bị từ chối trước khi liên hệ Zalo | | |
+| `ZALO_QR_FLOW` |  | cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự Zalo Web, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng qua `jr.zaloapp.com` và `jr.chat.zalo.me`) hoặc `legacy` (của zca-js, để quay lại). Giá trị khác bị từ chối trước khi liên hệ Zalo | | |
 | `ZALO_NET_PROBE` |  | thứ daemon hỏi để biết mạng còn hoạt động hay không khi socket đang đứt (mỗi 10 giây): một URL, mặc định là một trang nhẹ của công cụ tìm kiếm toàn cầu, hoặc `off` để coi như mạng luôn hoạt động và không liên hệ nơi nào ngoài Zalo | | |
 
 `oa listen` lấy port từ `--port` (mặc định 3000). Engine không đọc `ZALO_OA_WEBHOOK_PORT`, dù các bản cũ của `.env.example` trong wrapper có ghi biến này.

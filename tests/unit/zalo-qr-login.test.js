@@ -259,19 +259,19 @@ describe("the QR login", () => {
     });
 
     describe("the switch", () => {
-        it("ZALO_QR_FLOW defaults to the zca-js flow, and takes only legacy or official", () => {
-            assert.equal(resolveQrFlow({}), "legacy");
-            assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "  " }), "legacy");
+        it("ZALO_QR_FLOW defaults to the official flow, and takes only legacy or official", () => {
+            assert.equal(resolveQrFlow({}), "official");
+            assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "  " }), "official");
             assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "official" }), "official");
             assert.equal(resolveQrFlow({ ZALO_QR_FLOW: " Legacy " }), "legacy");
+            assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "legacy" }), "legacy");
             assert.throws(
                 () => resolveQrFlow({ ZALO_QR_FLOW: "new" }),
                 (e) => e.code === QR_FLOW_INVALID && /ZALO_QR_FLOW/.test(e.message) && /"new"/.test(e.message),
             );
         });
 
-        it("loginWithQR with ZALO_QR_FLOW=official runs this flow, then our own login, and returns a session", async () => {
-            process.env.ZALO_QR_FLOW = "official";
+        it("loginWithQR with no switch runs this flow, then our own login, and returns a session", async () => {
             serveQrLogin(fake);
             const { api, ownId } = await loginWithQR(null, () => {});
             assert.equal(ownId, FAKE.ownId);

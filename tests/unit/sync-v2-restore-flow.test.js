@@ -160,6 +160,69 @@ describe("a restore against the fake phone", () => {
         assert.equal(getSyncState("lastSyncOkAt"), null);
     });
 
+    describe("Ctrl+C (an AbortSignal)", () => {
+        it("a stop while the phone has not answered ends the run as cancelled, releases the session with reason 0, and records nothing", async () => {
+            const ctl = new AbortController();
+            const started = Date.now();
+            const { result, error, phone } = await run(
+                { outcome: "silent" },
+                {
+                    signal: ctl.signal,
+                    waitMs: 600_000,
+                    // The phone has seen the request and says "waiting for the tap": that is when Ctrl+C comes.
+                    onStatus: (e) => {
+                        if (e.phase === "confirm") ctl.abort();
+                    },
+                },
+            );
+            assert.equal(error, null, "a stop is not a failure");
+            assert.equal(result.reason, "cancelled");
+            assert.ok(Date.now() - started < 10_000, "it did not wait out the budget");
+            assert.deepEqual(
+                phone.releases.map((r) => r.reason),
+                [0],
+                "the open session is released as cancelled",
+            );
+            assert.equal(getSyncState("lastSyncOkAt"), null, "a cut-short run settled nothing");
+        });
+
+        it("a signal that was already stopped asks for nothing at all", async () => {
+            const ctl = new AbortController();
+            ctl.abort();
+            const { result, error, phone } = await run({}, { signal: ctl.signal });
+            assert.equal(error, null);
+            assert.equal(result.reason, "cancelled");
+            assert.equal(phone.requests.length, 0);
+            assert.equal(phone.releases.length, 0);
+            assert.equal(getSyncState("lastSyncOkAt"), null);
+        });
+
+        it("a stop between shards keeps what already arrived, does not ask for the rest, and records nothing", async () => {
+            const ctl = new AbortController();
+            const { result, error, phone } = await run(
+                {},
+                {
+                    signal: ctl.signal,
+                    shardSize: 1,
+                    waveSize: 1,
+                    onStatus: (e) => {
+                        if (e.phase === "progress") ctl.abort();
+                    },
+                },
+            );
+            assert.equal(error, null);
+            assert.equal(result.reason, "cancelled");
+            assert.equal(phone.asked("message").length, 1, "the second shard was never requested");
+            assert.ok(result.messagesSaved > 0, "the first shard's messages are kept");
+            assert.deepEqual(
+                phone.releases.map((r) => r.reason),
+                [1, 1],
+                "sessions that had finished were released as finished; none is left open",
+            );
+            assert.equal(getSyncState("lastSyncOkAt"), null);
+        });
+    });
+
     it("releases, with reason 3, the sessions an earlier run left open, before it asks for anything", async () => {
         const { phone } = await run(
             {},

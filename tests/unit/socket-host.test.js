@@ -129,6 +129,20 @@ describe("socket host", () => {
             assert.equal(h.current(), sup);
         });
 
+        it("gives every supervisor a kickout lookup that asks with the keys its own login kept (L12b)", async () => {
+            const seen = [];
+            const h = host([], {
+                supervise: (api, opts) => {
+                    seen.push(opts);
+                    return new FakeSupervisor(api);
+                },
+            });
+            // An api that has no keys cannot ask: the lookup answers null without any call out.
+            h.start({ getContext: () => ({}) });
+            assert.equal(typeof seen[0].kickoutInfo, "function");
+            assert.equal(await seen[0].kickoutInfo(), null);
+        });
+
         it("closes the old supervisor, then lets go of it, when a new api takes over", async () => {
             const h = host();
             const first = h.start({ id: 1 });
@@ -270,6 +284,36 @@ describe("socket host", () => {
             assert.equal(answers.length, 0, "the gate was not polled until it answered ok");
             assert.equal(made.length, 1);
             assert.ok(sleeps.includes(60_000), "the gate is asked every minute");
+        });
+
+        it("asks the maintenance gate with the numbers the last session's login learned, for the supervisor and for a failed login alike (L3)", async () => {
+            const asked = [];
+            const apiWith = (bkt) => ({
+                getContext: () => ({ settings: { features: { dr_config: { supportMaintenance: 1, bucketId: bkt } } } }),
+            });
+            let supOpts;
+            const answers = [
+                { state: "maintenance", code: 70 },
+                { state: "ok", code: 0 },
+            ];
+            const h = host([loginError("down for maintenance", 70)], {
+                checkGate: async (keys) => {
+                    asked.push(keys);
+                    return answers.shift() ?? { state: "ok", code: 0 };
+                },
+                supervise: (api, opts) => {
+                    supOpts = opts;
+                    return new FakeSupervisor(api);
+                },
+            });
+            h.start(apiWith(9));
+            await supOpts.maintenance.check();
+            assert.deepEqual(asked.pop(), { bkt: 9, sptMtn: 1 }, "the supervisor's question");
+            await h.reloginNow("test");
+            assert.deepEqual(asked[0], { bkt: 9, sptMtn: 1 }, "the question while a login fails for maintenance");
+            h.start(apiWith(10));
+            await supOpts.maintenance.check();
+            assert.deepEqual(asked.pop(), { bkt: 10, sptMtn: 1 }, "a new login's numbers replace the old ones");
         });
 
         it("runs one login at a time", async () => {

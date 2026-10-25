@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3003** as of 2026-10-25 (2998 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3021** as of 2026-10-25 (3016 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -985,6 +985,13 @@ and a run stops after ten failed batches or when more than half of ten or more h
 confirmation is ten minutes. The rules are in `src/core/sync-v2/transfer.js` as pure functions, so they are tested
 without a phone or the decryption assets.
 
+**Why a kick happened (L12b).** After a kick the Web client asks `POST {aext}/api/session/kickout-info` (form
+`token=<viewer_key>`). The `{viewer_key, enk}` pair comes from the login answers' `zcloud`; `login.js` keeps it in
+the context and `src/zalo/kickout.js` reads it, so the socket host can hand every supervisor a `kickoutInfo` that
+needs no key from the caller. The reply is sealed with `enk`, not the session key a kick has just ended. Not seen on
+the wire yet: which cipher `enk` drives. zCloud's (random IV in front) is tried first, then the session cipher's
+shape; both are tested. The lookup returns null for any failure and never raises: the kick is already handled.
+
 ## The saved-session login is ours, and what it sends (v3.0, 2026-10-25)
 
 **Where it lives.** `src/zalo/login.js` logs in with a saved session and hands the result to zca-js's own `API`
@@ -1052,10 +1059,10 @@ valid. Zalo wraps that refusal in a *sealed envelope* (`{error_code, error_messa
 **Left for the release:** the public wiki still describes the old logout. It is updated with the v3.0 release,
 not before: a wiki push is public immediately.
 
-## The official QR login exists, and is not the default yet (v3.0, 2026-10-25)
+## The official QR login is the default (v3.0, 2026-10-25)
 
-`src/zalo/qr-login.js` is the QR login the captured Web client makes, and `ZALO_QR_FLOW=official` selects it. zca-js's
-flow stays the default until someone has scanned a QR with the official one and seen it work. The two differ: zca-js
+`src/zalo/qr-login.js` is the QR login the captured Web client makes. A scan with it worked live on 2026-10-25, so it
+is the default; `ZALO_QR_FLOW=legacy` brings zca-js's flow back. The two differ: zca-js
 announces `continue=https://zalo.me/pc` to three calls, calls `verify-client` (which the official client never does),
 leaves out `cliGenQR`, and ends with a `jr/userinfo` request. The official sequence is the login page (whose script
 name carries the build `v`), `logininfo`, `generate` with `cliGenQR`, the `waiting-scan` and `waiting-confirm` long polls
@@ -1069,9 +1076,9 @@ for the phone, which also explains the failed September attempt. This client has
 
 **What it cannot do.** The official `waiting-confirm` also sends `bundle`, the trusted-device module's proof (it needs
 the key work that was ruled out). The new flow leaves it out, as the September login did, and the replay harness pins
-that as its one known difference. Whether Zalo accepts a login without it is exactly what the first live scan decides;
-an earlier attempt (2026-09-19) to move zca-js's flow to `continue=https://chat.zalo.me/` made the phone report the
-QR invalid, and nothing in the offline tests can say whether this one avoids that.
+that as its one known difference. The live scan of 2026-10-25 settled it: Zalo accepts the login without `bundle`, with
+`cliGenQR=0`. An earlier attempt (2026-09-19) to move zca-js's flow to `continue=https://chat.zalo.me/` made the phone
+report the QR invalid; that was the `cliGenQR=1` problem above, not the redirect.
 
 **A header trap that cost a real bug.** zca-js's request helper merges headers by key, case-sensitively, and spells its
 own defaults `Accept`, `Origin` and `Referer`. A caller that passes `origin` besides it sends both, and a real fetch
@@ -1251,3 +1258,41 @@ The fix is never to push or merge such a branch. Take its diff, apply it onto th
 (where the leaked files are already fake), let `tests/unit/no-real-ids.test.js` prove the result
 is clean, and delete the old branch. Merging it instead would put every scrubbed value straight
 back on GitHub — exactly what the rewrite undid.
+
+## Finishing P0 to P3: what was closed, and what was decided against (v3.0, 2026-10-25)
+
+**Ctrl+C in a restore (Y6b).** `SyncV2.restore()` takes `opts.signal`. An abort is looked at between waits: while a
+session waits for the phone, before each wave, and before the one retry round. A stopped run keeps every shard it
+already stored, asks for nothing more, releases the sessions still waiting with reason 0 (cancelled) and the ones that
+had finished with reason 1, records no success, and resolves `reason: "cancelled"` (not an error, so `sync` can say
+what was kept). `src/utils/interrupt.js` wires SIGINT to it for `sync` and `sync-mobile`; a second Ctrl+C exits 130.
+A restore routed through a daemon is not stopped by the CLI's Ctrl+C: the daemon's stage runs on, and stopping it from
+the channel is a separate change.
+
+**The maintenance question carries the stored numbers (L3).** `GET {maintenance}/api/chk?bkt=..&spt_mtn=..` takes the
+`bucketId` and `supportMaintenance` of the `dr_config` the session's login learned (`maintenanceKeysOf`), for the
+supervisor and for the wait after a login that failed with 70. The names `bkt` and `spt_mtn` are the Web bundle's.
+What 71 means is still an inference (an announced window; it does not block).
+
+**Official QR is the default.** See the section above; `ZALO_QR_FLOW=legacy` is the way back.
+
+**Decided against, with the reason.**
+- *Copy-then-delete when a Windows rename keeps failing (X7).* Not added. A copy over the target is not atomic: a
+  reader or a crash can see half a file, and these files hold credentials and the account registry. After the
+  2 s retry window the write fails loudly and the old file is intact, which is the better failure. The retry never ran
+  out in any measurement.
+- *Re-reading `archivedchat` and `recentsearch` on recovery (X2).* Not applicable: this client keeps no copy of
+  either list (`conv archive` reads the list from Zalo each time it needs the version), so there is nothing to refresh.
+- *Domain rotation and the `config_vesion` refresh (L2d, L2e).* The login has one host, and the refresh needs the
+  keepalive answer, which has not been seen. Left until a live capture shows it.
+- *A red-first reproduction of zca-js's TypeError on a missing `retries` entry (L11a).* The supervisor never lets
+  zca-js retry (`retryOnClose: false`), and the retry engine's tests pin the replacement (an undescribed key waits the
+  last default delay, key 3003 included). A test of the upstream defect itself would only test zca-js.
+- *Encrypt 2 and 3 on the fake socket (P0).* The fake plays plain frames. The cipher path our own code reads
+  (`decodeFrame`, used by the restore and the socket tap) has unit tests for both; zca-js decodes the live frames.
+
+**Still needs a live session (a QR login).** `agent/work/probe-pulls.mjs` (local, not committed) sends the pulls 564, 537,
+577, 515, 517, 518 and 603 one at a time to the test account and prints only the shape of each answer; it refuses to
+run outside the test home and refuses the consuming pulls without `--i-accept-consuming`. Also open: a full-history
+restore past the four-session cap (Y4b), a `532` ack with a real message (Y10), automatic sync (Y8), and the keepalive
+question (L9).

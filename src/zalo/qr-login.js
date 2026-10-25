@@ -24,8 +24,8 @@
  * The session this returns is a cookie jar; {@link loginWithSession} turns it into a logged-in API. Events
  * keep the shape zca-js's callbacks had, so the commands that show the QR did not change.
  *
- * Until a QR login with this sequence has been seen to work live, `ZALO_QR_FLOW=official` selects it and
- * the zca-js flow stays the default (see `loginWithQR` in src/core/zalo-client.js).
+ * A QR login with this sequence was seen to work live on 2026-10-25, so it is the default; `ZALO_QR_FLOW=legacy`
+ * selects the zca-js flow again (see `loginWithQR` in src/core/zalo-client.js).
  */
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";

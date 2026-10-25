@@ -621,6 +621,8 @@ export class SyncV2 {
      *   caller already pings this socket for the whole window it owns.
      * @param {number} [opts.settleMs] pause before the first request (default 1200; tests only)
      * @param {number} [opts.pollMs] how often a wait looks at its session (default 300; tests only)
+     * @param {AbortSignal} [opts.signal] cancel the run: it stops asking, keeps what already arrived, releases every
+     *   open session with reason 0 (cancelled) and resolves with `reason: "cancelled"`
      * @param {boolean} [opts.fullResync] forget what earlier runs settled and ask for every conversation in full
      * @param {{zproto: object, M: object, C: object}} [opts.codecs] decryption and decoding stand-ins (tests only)
      * @param {number} [opts.maxResumes] reconnects this run may spend (default 1, at most 5); each one
@@ -642,6 +644,11 @@ export class SyncV2 {
         const pollMs = Number.isFinite(opts.pollMs) ? opts.pollMs : 300;
         const onStatus = typeof opts.onStatus === "function" ? opts.onStatus : () => {};
         const log = (m) => onStatus({ phase: "info", detail: m });
+        /** Has the caller asked to stop? Looked at between waits, never inside one request. */
+        const aborted = () => opts.signal?.aborted === true;
+        /** Set once the run was cut short on purpose: decides the reason sessions are released with. */
+        let cancelled = false;
+        const cancelError = () => Object.assign(new Error("cancelled"), { reason: "cancelled", cancelled: true });
         // The caller announces the window (it also decides the debounce on it);
         // it comes back on the result too, so no status line is emitted here.
         const win = resolveSyncWindow(opts.days, Date.now(), opts.from);
@@ -854,6 +861,7 @@ export class SyncV2 {
             const dl = Date.now() + resolveWaitBudget(budgetMs, waitMs);
             const s = sessions.get(id);
             while (!s.done && !s.err && !s.fatal && Date.now() < dl) {
+                if (aborted()) return "cancelled";
                 // A phone that says it is idle and stays so is not coming back.
                 if (isIdleTooLong(s)) return "idle-timeout";
                 // A closed socket can never deliver the rest, so stop now
@@ -1001,6 +1009,7 @@ export class SyncV2 {
 
         try {
             await new Promise((r) => setTimeout(r, settleMs));
+            if (aborted()) throw cancelError();
 
             // A run that died left its sessions open on the phone; release them (reason 3) before starting
             // anything, so the phone's banner and its queue start clean (Y6b).
@@ -1022,6 +1031,7 @@ export class SyncV2 {
             };
             const convSent = await sendRequest("conv", convId, ekConv, convRequest);
             let convWhy = convSent.socketClosed ? "socket-closed" : await waitDone(convId, waitMs);
+            if (convWhy === "cancelled") throw cancelError();
             let convSession = sessions.get(convId);
             confirmed = isConfirmed(convSession.statuses);
 
@@ -1042,6 +1052,7 @@ export class SyncV2 {
                 ekConv = zproto.generateKeyPair();
                 const retrySent = await sendRequest("conv", retryId, ekConv, convRequest);
                 convWhy = retrySent.socketClosed ? "socket-closed" : await waitDone(retryId, waitMs);
+                if (convWhy === "cancelled") throw cancelError();
                 convSession = sessions.get(retryId);
                 convId = retryId;
                 confirmed = confirmed || isConfirmed(convSession.statuses);
@@ -1370,6 +1381,11 @@ export class SyncV2 {
             // Storing per shard rather than after all of them means an
             // interrupted run keeps what it already pulled.
             while (!schedule.done() && !stop) {
+                if (aborted()) {
+                    cancelled = true;
+                    stop = true;
+                    break;
+                }
                 const wave = schedule.nextWave();
                 const waveMeta = await sendWave(wave.map((i) => shards[i]));
                 // A wire that died while the requests were going out loses the rest of the wave with it.
@@ -1380,6 +1396,11 @@ export class SyncV2 {
                     const why = left > 0 ? await waitDone(m.sid, left) : "timeout";
                     if (why === "socket-closed") {
                         lostSocket = true;
+                        break;
+                    }
+                    if (why === "cancelled") {
+                        cancelled = true;
+                        stop = true;
                         break;
                     }
                     if (why === "declined") {
@@ -1512,7 +1533,14 @@ export class SyncV2 {
                     rangeInfo.retried += queries.length;
                     const left = runDeadline - Date.now();
                     const why = left > 0 ? await waitDone(sid, left) : "timeout";
-                    if (why === "socket-closed" || why === "declined" || why === "idle-timeout" || why === "timeout")
+                    if (why === "cancelled") cancelled = true;
+                    if (
+                        why === "cancelled" ||
+                        why === "socket-closed" ||
+                        why === "declined" ||
+                        why === "idle-timeout" ||
+                        why === "timeout"
+                    )
                         break;
                     const retried = sessions.get(sid);
                     await eachChunkObj(retried, ek, M.SyncChunk, storeChunk);
@@ -1533,6 +1561,8 @@ export class SyncV2 {
             }
             resumeInfo = { resumes: schedule.resumes(), rePrompted, ranges: { ...rangeInfo, ...countSyncRanges() } };
             if (declined) throw declineError(declined);
+            // A cut-short run is not a failure and not a settled window: what arrived is kept, nothing is recorded.
+            if (cancelled) throw cancelError();
             const outcome = describeRestoreOutcome({
                 // A range that failed and was recovered by the retry is not a failed batch any more.
                 failedBatches: failedRanges.size || sessionErrors || tooManyFailures ? failedBatches : 0,
@@ -1552,16 +1582,26 @@ export class SyncV2 {
             // next run asks again, and (with the ranges kept above) only for what it did not get.
             if (reason === "complete") recordRestoreSuccess(win, { resolveGaps: true });
         } catch (e) {
-            runError = e;
-            throw e;
+            if (e?.cancelled) {
+                cancelled = true;
+                reason = "cancelled";
+            } else {
+                runError = e;
+                throw e;
+            }
         } finally {
             // Every session still open is released with the reason that fits how the run ended: the phone's own
-            // reason when it ended the session (a "no" has one), finished for a run that settled its window,
-            // failed for one that did not (Y6a). The acks are awaited; on a dead wire this fails fast.
+            // reason when it ended the session (a "no" has one), cancelled for a run the person stopped, finished
+            // for a run that settled its window, failed for one that did not (Y6a). The acks are awaited; on a
+            // dead wire this fails fast.
             const settled = !runError && (reason === "complete" || reason === "empty-window");
-            await channel.releaseAll(
-                (id) => sessions.get(id)?.disposeReason ?? (settled ? undefined : DISPOSE_REASON.ERROR),
-            );
+            await channel.releaseAll((id) => {
+                const s = sessions.get(id);
+                if (Number.isInteger(s?.disposeReason)) return s.disposeReason;
+                // A stop leaves finished sessions finished: only the ones still waiting are cancelled.
+                if (cancelled) return s?.done ? DISPOSE_REASON.SUCCESS : DISPOSE_REASON.CANCELLED;
+                return settled ? undefined : DISPOSE_REASON.ERROR;
+            });
             detachSocketTaps();
             try {
                 detachLive();

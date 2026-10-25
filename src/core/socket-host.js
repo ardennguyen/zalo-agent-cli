@@ -23,7 +23,8 @@
  *  - everything else (drops, silence, sleep) is the supervisor's.
  */
 import { EXIT_CODE, classifyServerError, errorCodeOf } from "../zalo/errors.js";
-import { checkMaintenance, waitOutMaintenance } from "../zalo/maintenance.js";
+import { checkMaintenance, maintenanceKeysOf, waitOutMaintenance } from "../zalo/maintenance.js";
+import { fetchKickoutInfo, kickoutKeysOf } from "../zalo/kickout.js";
 import { loadAnomalyState, saveAnomalyState } from "../zalo/anomaly-store.js";
 import { createAnomalyHistory, createRetryEngine, resolveSocketSettings } from "../zalo/retry.js";
 import { superviseListener } from "../zalo/socket.js";
@@ -80,7 +81,8 @@ const sleepFor = (ms, signal) =>
  * @param {object} [opts.supervisorOptions] - extra options for every supervisor (timing, probe, clock)
  * @param {Function} [opts.supervise] - `(api, options) => supervisor`; replaceable for tests
  * @param {(ms: number, signal?: AbortSignal) => Promise<void>} [opts.sleep]
- * @param {() => Promise<{state: string, code: number|null}>} [opts.checkGate] - the maintenance question
+ * @param {(keys: {bkt?: number, sptMtn?: number}) => Promise<{state: string, code: number|null}>} [opts.checkGate] -
+ *   the maintenance question, given the disaster-recovery numbers the last session's login learned
  * @returns {{start: (api: object) => object, stop: () => Promise<void>, current: () => object|null,
  *   reloginNow: (why: string) => Promise<void>}}
  */
@@ -95,9 +97,11 @@ export function createSocketHost({
     supervisorOptions = {},
     supervise = superviseListener,
     sleep = sleepFor,
-    checkGate = () => checkMaintenance(),
+    checkGate = (keys) => checkMaintenance(keys),
 }) {
     let supervisor = null;
+    // What the last session's login learned about maintenance; the question carries it, as the official client's does.
+    let gateKeys = {};
     let reloginRunning = false;
     const abort = new AbortController();
 
@@ -156,7 +160,14 @@ export function createSocketHost({
                 .catch(() => {})
                 .finally(() => old.dispose());
         }
-        supervisor = supervise(api, { anomaly, ...supervisorOptions });
+        gateKeys = maintenanceKeysOf(api);
+        supervisor = supervise(api, {
+            anomaly,
+            maintenance: { check: () => checkGate(gateKeys) },
+            // Why a kick happened: the lookup needs the keys this session's login kept (L12b).
+            kickoutInfo: () => fetchKickoutInfo(api, kickoutKeysOf(api)),
+            ...supervisorOptions,
+        });
         wire(supervisor);
         supervisor.start();
         return supervisor;
@@ -193,7 +204,7 @@ export function createSocketHost({
                     if (kind === "maintenance") {
                         log("warn", "Zalo is in maintenance: waiting for it instead of retrying.");
                         health?.noteSocketState?.("maintenance");
-                        await waitOutMaintenance({ check: checkGate, sleep, signal: abort.signal });
+                        await waitOutMaintenance({ check: () => checkGate(gateKeys), sleep, signal: abort.signal });
                         loginEngine.resetAll();
                         continue;
                     }

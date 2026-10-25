@@ -29,6 +29,26 @@ export const MAINTENANCE_POLL_MS = Object.freeze({
 });
 
 /**
+ * The two numbers the question carries, as the session's login learned them: the disaster-recovery settings the
+ * server sent (`features.dr_config`). The official client sends what it stored the same way; -1 and -1 is what a
+ * client that has stored nothing sends, so a session without them asks exactly that.
+ *
+ * @param {object} [api] - a zca-js API from {@link loginWithSession}
+ * @returns {{bkt?: number, sptMtn?: number}} empty when the session holds none
+ */
+export function maintenanceKeysOf(api) {
+    let dr;
+    try {
+        dr = api?.getContext?.()?.settings?.features?.dr_config;
+    } catch {
+        return {};
+    }
+    const bkt = Number(dr?.bucketId);
+    const sptMtn = Number(dr?.supportMaintenance);
+    return Number.isFinite(bkt) && Number.isFinite(sptMtn) ? { bkt, sptMtn } : {};
+}
+
+/**
  * Ask once.
  *
  * @param {object} [opts]

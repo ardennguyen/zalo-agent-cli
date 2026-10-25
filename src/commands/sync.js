@@ -5,6 +5,7 @@ import { getAccountDir } from "../core/credentials.js";
 import { acquireLock, releaseLock, checkLock } from "../core/lock.js";
 import { error, info, success, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
+import { whileInterruptible } from "../utils/interrupt.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow, FULL_HISTORY_FROM } from "../core/sync-v2/index.js";
 import { CONFIRM_WAIT_MS } from "../core/sync-v2/transfer.js";
@@ -965,6 +966,11 @@ function connectListener(api, waitMs) {
     });
 }
 
+/** What Ctrl+C says while a restore lets go of the sessions it opened on the phone. */
+function stoppingNotice() {
+    warning("Stopping: releasing the sync on your phone. Press Ctrl+C again to quit at once.");
+}
+
 /**
  * Re-open the socket after it dropped mid-stage.
  *
@@ -1097,22 +1103,27 @@ async function runTransferSync(activeAcc, opts) {
                 );
                 const sv = new SyncV2(api, activeAcc.ownId);
                 const startedAt = Date.now();
-                const res = await sv.restore({
-                    days: opts.days,
-                    from: opts.from,
-                    shardSize: opts.shardSize,
-                    fullResync: Boolean(opts.fullResync),
-                    waitMs,
-                    // This command owns the socket for the whole run, so it owns
-                    // the heartbeat too -- see runUnifiedSync for why.
-                    keepAlive: false,
-                    reconnect: () => reconnectListener(api),
-                    onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
-                    onStatus: ({ phase, detail }) => {
-                        if (phase === "confirm") warning(detail);
-                        else if (detail) info(`  ${detail}`);
-                    },
-                });
+                const res = await whileInterruptible(
+                    (signal) =>
+                        sv.restore({
+                            days: opts.days,
+                            from: opts.from,
+                            shardSize: opts.shardSize,
+                            fullResync: Boolean(opts.fullResync),
+                            waitMs,
+                            signal,
+                            // This command owns the socket for the whole run, so it owns
+                            // the heartbeat too -- see runUnifiedSync for why.
+                            keepAlive: false,
+                            reconnect: () => reconnectListener(api),
+                            onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
+                            onStatus: ({ phase, detail }) => {
+                                if (phase === "confirm") warning(detail);
+                                else if (detail) info(`  ${detail}`);
+                            },
+                        }),
+                    { onStop: stoppingNotice },
+                );
                 reportRestore(res, win, { startedAt, keep: ownThreadIds(api, activeAcc.ownId) });
                 exitCode = 0;
             }
@@ -1260,7 +1271,7 @@ function recordRestoreList(res, win, ctx) {
  * @param {{startedAt?: number, keep?: string[]}} [ctx] - see recordRestoreList
  * @returns {{status: "ok"|"partial"|"unconfirmed", reason: string}}
  */
-function reportRestore(res, win, ctx = {}) {
+export function reportRestore(res, win, ctx = {}) {
     // Before the early returns: a thread IN a partial list is still present.
     let list = null;
     try {
@@ -1274,6 +1285,11 @@ function reportRestore(res, win, ctx = {}) {
         success(`Nothing to restore — no conversation activity in ${win.label}.`);
         if (win.days) info("Pass a larger --days, or drop --days for full history.");
         return { status: "ok", reason: "phone confirmed: nothing missed in this window" };
+    }
+    if (res.reason === "cancelled") {
+        warning(`Cancelled: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) were stored.`);
+        info("The sync was released on your phone. Run it again to fetch the rest.");
+        return { status: "partial", reason: "cancelled by you" };
     }
     if (res.reason === "partial" || res.reason === "socket-lost") {
         const how = res.reason === "socket-lost" ? "the connection dropped" : "the run was cut short";
@@ -1691,21 +1707,26 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                     );
                     try {
                         const startedAt = Date.now();
-                        const res = await new SyncV2(api, activeAcc.ownId).restore({
-                            days: opts.days,
-                            from: opts.from,
-                            shardSize: opts.shardSize,
-                            fullResync: Boolean(opts.fullResync),
-                            waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
-                            // The window-level heartbeat above covers this stage.
-                            keepAlive: false,
-                            reconnect: () => reconnectListener(api),
-                            onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
-                            onStatus: ({ phase, detail }) => {
-                                if (phase === "confirm") warning(detail);
-                                else if (detail) info(`  ${detail}`);
-                            },
-                        });
+                        const res = await whileInterruptible(
+                            (signal) =>
+                                new SyncV2(api, activeAcc.ownId).restore({
+                                    days: opts.days,
+                                    from: opts.from,
+                                    shardSize: opts.shardSize,
+                                    fullResync: Boolean(opts.fullResync),
+                                    waitMs: Math.max(CONFIRM_WAIT_MS / 1000, Number(opts.wait) || 0) * 1000,
+                                    signal,
+                                    // The window-level heartbeat above covers this stage.
+                                    keepAlive: false,
+                                    reconnect: () => reconnectListener(api),
+                                    onSelfName: (name) => updateAccountName(activeAcc.ownId, name),
+                                    onStatus: ({ phase, detail }) => {
+                                        if (phase === "confirm") warning(detail);
+                                        else if (detail) info(`  ${detail}`);
+                                    },
+                                }),
+                            { onStop: stoppingNotice },
+                        );
                         const r = reportRestore(res, win, { startedAt, keep: ownThreadIds(api, activeAcc.ownId) });
                         record("messages", r.status, r.reason, {
                             conversations: res.conversations,

@@ -11,6 +11,7 @@ import {
     MAINTENANCE_POLL_MS,
     MAINTENANCE_URL,
     checkMaintenance,
+    maintenanceKeysOf,
     waitOutMaintenance,
 } from "../../src/zalo/maintenance.js";
 import { loadAnomalyState, saveAnomalyState } from "../../src/zalo/anomaly-store.js";
@@ -18,6 +19,37 @@ import { loadAnomalyState, saveAnomalyState } from "../../src/zalo/anomaly-store
 const answer =
     (body, ok = true) =>
     async () => ({ ok, json: async () => body });
+
+describe("maintenanceKeysOf", () => {
+    const apiWith = (dr) => ({ getContext: () => ({ settings: { features: { dr_config: dr } } }) });
+
+    it("reads the disaster-recovery numbers the session's login learned, under the names the question uses", () => {
+        assert.deepEqual(maintenanceKeysOf(apiWith({ supportMaintenance: 1, bucketId: 4 })), { bkt: 4, sptMtn: 1 });
+        assert.deepEqual(maintenanceKeysOf(apiWith({ supportMaintenance: "0", bucketId: "12" })), {
+            bkt: 12,
+            sptMtn: 0,
+        });
+    });
+
+    it("gives nothing, so the question asks -1 and -1, when the session holds none or only one", () => {
+        for (const api of [
+            undefined,
+            {},
+            apiWith(undefined),
+            apiWith({ bucketId: 4 }),
+            apiWith({ supportMaintenance: 1 }),
+            apiWith({ supportMaintenance: "x", bucketId: 4 }),
+            { getContext: () => ({}) },
+            {
+                getContext: () => {
+                    throw new Error("no session");
+                },
+            },
+        ]) {
+            assert.deepEqual(maintenanceKeysOf(api), {});
+        }
+    });
+});
 
 describe("checkMaintenance", () => {
     it("asks the maintenance host, carrying the two stored numbers and nothing else", async () => {

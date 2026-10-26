@@ -1319,6 +1319,16 @@ Web lets go of a session when it has what it asked for, and so does the restore 
 as soon as it is stored (finished, or failed when it had an error), in the retry round too. The channel sends one
 release per session however many callers ask.
 
+**A live kick (L12b), 2026-10-26.** Opening Zalo Web on the account while the daemon ran: the socket closed with code
+**3003 and the reason `KICKOUT_BY_WORKER`**; the supervisor, treating 3003 as retryable, reconnected 2 s later and the
+new socket was refused at once with error 600, which ended the daemon (exit 3, "Another Zalo session took this account").
+The newcomer is the one the server refuses, so the extra reconnect evicts nobody. The saved login was then refused (102):
+a kick by Zalo Web ends the saved session, and the next start needs a QR. The `kickout-info` lookup answered HTTP 200
+`{error_code: 112, data: null}` with this session's viewer key both before and after the kick, so it returned no reason:
+either 112 means "nothing recorded for that key" or the token is not this key. Left as it is (best effort, null on
+anything but a reason). Treating 3003 `KICKOUT_BY_WORKER` as terminal at once was considered and not done: 3003 is also in
+Zalo's retry list, and a wrong guess would end a healthy daemon.
+
 **What the phone does while Zalo is in use.** Zalo open and in use on the phone seems to pause the transfer; leave it
 idle for a long restore. This is not proven (the run that went silent also had 32 sessions open).
 

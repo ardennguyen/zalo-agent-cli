@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **225 CLI commands** across 25 command containers (17 top-level groups + 7 OA subgroups + `mcp webhook`) + **26 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **227 CLI commands** across 26 command containers (18 top-level groups + 7 OA subgroups + `mcp webhook`) + **27 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ Use `--account <ID>` (or `ZALO_ACCOUNT=<ID>`) on any personal-account CLI comman
 3. Execute command (Quick Reference below or `references/command-reference.md`)
 4. Append `--json` for machine-readable output
 5. For continuous monitoring → `listen --webhook` (`references/listen-mode-guide.md`)
-6. When running as an MCP server inside an AI client → use the 26 MCP tools for messages, long-poll waiting (`zalo_wait_for_message` or CLI `mcp wait` / `mcp mark-read`), search, user lookup, labels (`zalo_label`), reactions, recalls, forwards, deletes, reminders, notes/pins, polls, group members, recent conversations and cache coverage; shell out to the CLI for everything else (`references/mcp-guide.md`)
+6. When running as an MCP server inside an AI client → use the 27 MCP tools for messages, long-poll waiting (`zalo_wait_for_message` or CLI `mcp wait` / `mcp mark-read`), search, user lookup, labels (`zalo_label`), reactions, recalls, forwards, deletes, reminders, notes/pins, polls, group members, recent conversations and cache coverage; shell out to the CLI for everything else (`references/mcp-guide.md`)
 
 ## Quick Reference
 
@@ -274,6 +274,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_group` | Leave, inspect, create and change the membership of a group (`zalo_get_group_members` lists who is in one) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`), `groupId?`, `name?`, `userIds?`, `userId?`, `silent?`, `confirm?` (must be `true` for `leave` and `remove_member`) |
 | `zalo_friend` | Friend requests and friends: relationship status, sent and received requests, send / accept / reject / cancel a request, list friends | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`), `userId?`, `message?`, `limit?` |
 | `zalo_read` | Run one of Zalo Web's read-only endpoints that no other tool covers (sticker and GIF catalogs and search, profile rank, block list, nicknames, status…), or list them with their arguments | `name?` (omit to list), `args?` (by the read's argument names; ids are strings) |
+| `zalo_write` | Make one of Zalo Web's state-changing calls that no other tool covers (reminder RSVP, group notes/reminders with repeat rules, pins, todos, multi-recall, close friends, …), or list them with their `risk`. A real call needs `confirm: true`; `dryRun: true` shows the request | `name?` (omit to list), `args?`, `dryRun?`, `confirm?` |
 
 Sync requests share the daemon socket and lock. Reuse requestId and arguments after a timeout; keep polling the same job. Ten jobs are held in RAM, lost on restart. No safe cancellation is exposed. Never initiate restore merely because coverage reports a gap. [Details](../docs/mcp-sync.md) / [Tiếng Việt](../docs/mcp-sync.vi.md).
 
@@ -297,6 +298,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Reminders, group notes & pins, group polls, labels | `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_label` | `zalo-agent --json reminder\|poll\|group note-*\|msg pin\|label` |
 | Group details, create a group, add / remove a member, leave a group | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
 | Sticker/GIF catalogs and search, profile rank, block list, nicknames, other web reads | `zalo_read` | `zalo-agent --json read list\|run <name>` |
+| Reminder RSVP, group note/reminder with repeat rule, pins, todos, multi-recall, close friends, other state changes | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
 | Friend requests, friend list | `zalo_friend` | `zalo-agent --json friend add\|accept\|reject\|undo-request\|sent-requests\|request-status\|list` |
 | Is the cache complete? (coverage gaps) | `zalo_coverage` | — (`listen`/`mcp start` print each gap as it is filed) |
 | Owner-requested message/reaction sync | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-reactions` |
@@ -323,11 +325,19 @@ zalo-agent read run profile-rank --args '{"id":"<userId>"}'
 ```
 Reads only: nothing is sent, marked or changed. MCP: `zalo_read` (omit `name` to list).
 
+### Write: Zalo Web's state-changing endpoints with no command of their own
+```bash
+zalo-agent write list                                  # what each touches (private / visible / destructive)
+zalo-agent write run topic-remove --args '{"groupId":"<id>","topicId":"<id>"}' --dry-run   # show the request, send nothing
+zalo-agent write run todo-status --arg id=<id> --arg status=2 --yes                          # a real call needs --yes
+```
+Every write changes something and none has been answered by a live account yet: dry-run first, and try a first real call on something disposable. MCP: `zalo_write` (`dryRun: true`, or `confirm: true` for a real call).
+
 ## References
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 225 commands + 26 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 227 commands + 27 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

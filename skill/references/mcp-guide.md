@@ -1,6 +1,6 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **26 tools**.
+Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **27 tools**.
 
 Mọi tính năng khác của CLI — Official Account (`oa …`), gửi voice/video (từ URL)/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
@@ -187,7 +187,7 @@ Mỗi tài khoản Zalo cá nhân có cơ sở dữ liệu (`<DATA_DIR>/<ownId>/
 
 ---
 
-## Tham chiếu Tools (26 tools)
+## Tham chiếu Tools (27 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -675,6 +675,21 @@ Chạy một trong các endpoint **chỉ-đọc** của Zalo Web mà không tool
 
 Kết quả: `{reads: [{name, what, host, path, verified, args}]}` khi không có `name`; `{name, data}` với `data` là phần trả lời của Zalo khi có `name`. Các read chưa `verified` có yêu cầu dựng theo client web nhưng chưa thấy được trả lời thật.
 
+### `zalo_write`
+Thực hiện một trong các lời gọi **thay đổi trạng thái** của Zalo Web mà không tool nào khác phủ tới — RSVP nhắc hẹn, tạo/sửa ghi chú và nhắc hẹn nhóm (có quy tắc lặp lại và chế độ chỉ mình tôi), ghim/bỏ ghim/sắp xếp lại ghim, xóa topic, todo cá nhân, thu hồi nhiều tin cùng lúc, bạn thân, dọn gợi ý kết bạn, chặn OA, chế độ hiện diện, xóa một tài khoản khỏi nhiều nhóm, lịch sử tìm kiếm — tương đương `write list` và `write run`.
+
+**Mọi write đều thay đổi gì đó trên tài khoản và chưa cái nào được một tài khoản thật trả lời.** Vì vậy một lời gọi thật cần `confirm: true` (chỉ là một tham số, không có hộp thoại), và `dryRun: true` trả về yêu cầu sẽ gửi (phương thức, host, đường dẫn, nội dung đã giải mã) mà không gửi gì. Hãy dùng `dryRun` trước, và thử lần gọi thật đầu tiên trên thứ có thể bỏ đi.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `name` | enum (tuỳ chọn) | Tên một write trong bảng của `write list`. Bỏ trống: tool liệt kê mọi write kèm tham số, mức `risk` (`private`, `visible`, `destructive`) và việc đã được trả lời thật chưa (`verified`) |
+| `args` | object (tuỳ chọn) | Tham số của write theo đúng tên (id là chuỗi); thiếu tham số bắt buộc thì tool báo lỗi và không gọi Zalo |
+| `dryRun` | boolean (tuỳ chọn) | Trả về yêu cầu sẽ gửi và không gửi gì; không cần `confirm` |
+| `confirm` | boolean (tuỳ chọn) | Phải là `true` cho một lời gọi thật; thiếu thì tool báo lỗi và không gọi Zalo |
+
+Kết quả: `{writes: [...]}` khi không có `name`; `{dryRun: true, request: {method, host, path, body}}` với `dryRun`; `{name, data}` với `data` là phần trả lời của Zalo khi gửi thật. Những thứ cố ý không có ở đây (luồng tải lên/gửi lại nội dung, nhãn `convlabel/manage`, chặn chia sẻ, `voice2text`, biên nhận kiểu cũ) và lý do nằm trong `skill/references/command-reference.md`, mục `write`.
+
 ### `zalo_friend`
 Kiểm tra, liệt kê và xử lý lời mời kết bạn, và liệt kê bạn bè — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request` và `list`.
 
@@ -724,6 +739,7 @@ MCP server expose **25 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Nhãn hội thoại (Label) | `zalo_label` | `zalo-agent --json label …` |
 | Thông tin nhóm, tạo nhóm, thêm/xóa thành viên, rời nhóm | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
 | Danh mục sticker/GIF, tìm GIF, hạng hồ sơ, danh sách chặn, biệt danh và các read khác của Zalo Web | `zalo_read` | `zalo-agent --json read list\|run <name>` |
+| RSVP nhắc hẹn, ghi chú/nhắc hẹn nhóm có lặp lại, ghim, todo, thu hồi nhiều tin, bạn thân và các thay đổi khác | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
 | Bạn bè: trạng thái, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè | `zalo_friend` | `zalo-agent --json friend request-status\|sent-requests\|recommendations\|add\|accept\|reject\|undo-request\|list` |
 | Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
 | Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |
@@ -822,7 +838,7 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 26 tools
+MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 27 tools
      ↓
 Claude Code / Gemini / MCP Client
 ```

@@ -1,10 +1,10 @@
 /**
  * MCP tool registrations for Zalo message access, sending, user lookup, and group productivity.
- * Registers 26 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * Registers 27 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
  * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status, zalo_search_messages,
  * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll,
- * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group, zalo_read.
+ * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group, zalo_read, zalo_write.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
@@ -43,6 +43,7 @@ import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { callRead, describeReads, READ_NAMES, ReadUsageError } from "../zalo/reads.js";
+import { callWrite, describeWrites, WRITE_NAMES } from "../zalo/writes.js";
 import { describeReadState, readOnZalo } from "../core/read-state.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
@@ -2996,6 +2997,57 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return ok({ name, data: data ?? null });
             } catch (e) {
                 if (!(e instanceof ReadUsageError)) console.error("[mcp-tools] zalo_read error:", e.message);
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_write ---
+    server.registerTool(
+        "zalo_write",
+        {
+            title: "Change Something Through Zalo's Web API",
+            description:
+                "Make one of the state-changing calls Zalo Web makes that no other tool covers: reminder RSVP, creating " +
+                "or changing a group note or reminder with a repeat rule, pinning and unpinning board items, removing a " +
+                "topic, personal todos, recalling several messages at once, close friends, suggested-friend cleanup, " +
+                "blocking an Official Account, presence mode, removing one account from several groups, the search " +
+                "history. Omit `name` to list every write with what it touches (`risk`: private, visible to others, or " +
+                "destructive), what it takes and whether a live account has answered it. EVERY write changes something " +
+                "and none has been answered by a live account yet, so a real call needs `confirm: true` (a plain " +
+                "parameter, no prompt), and `dryRun: true` returns the request that would be sent without sending " +
+                "anything: use it first, and try a first real call on something disposable. `args` is an object named " +
+                "by the write's own argument list (ids are strings).",
+            inputSchema: z.object({
+                name: z
+                    .enum(WRITE_NAMES)
+                    .optional()
+                    .describe("The write to make (omit to list them all, with their arguments and risk)"),
+                args: z
+                    .record(z.string(), z.any())
+                    .optional()
+                    .describe('The write\'s arguments by name, e.g. {"groupId": "123", "topicId": "45"}'),
+                dryRun: z
+                    .boolean()
+                    .optional()
+                    .describe("Return the request that would be sent, with its body decrypted, and send nothing"),
+                confirm: z.boolean().optional().describe("Must be true for a real call (not needed with dryRun)"),
+            }),
+            annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+        },
+        async ({ name, args, dryRun, confirm }) => {
+            if (!name) return ok({ writes: describeWrites() });
+            if (!dryRun && confirm !== true) {
+                return err(
+                    `"${name}" changes something on the account and no live account has answered it yet. ` +
+                        "Pass dryRun: true to see the request, or confirm: true to send it.",
+                );
+            }
+            try {
+                const data = await callWrite(api, name, args || {}, { dryRun: dryRun === true });
+                return ok(dryRun ? data : { name, data: data ?? null });
+            } catch (e) {
+                if (!(e instanceof ReadUsageError)) console.error("[mcp-tools] zalo_write error:", e.message);
                 return err(e.message);
             }
         },

@@ -51,6 +51,7 @@ const EXPECTED_TOOLS = [
     "zalo_friend",
     "zalo_group",
     "zalo_read",
+    "zalo_write",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -2044,5 +2045,112 @@ describe("zalo_read", () => {
         assert.equal(res.isError, true);
         assert.match(res.content[0].text, /needs "id"/);
         assert.equal(ra.calls.length, 0);
+    });
+});
+
+describe("zalo_write", () => {
+    const require = createRequire(import.meta.url);
+    const { encodeAES, decodeAES } = createRequire(require.resolve("zca-js"))("./utils.cjs");
+    const KEY = Buffer.alloc(16, 0x22).toString("base64");
+
+    /** An api whose requests land in `calls`. */
+    function writeApi() {
+        const calls = [];
+        const ctx = {
+            secretKey: KEY,
+            imei: "test-imei-0000",
+            userAgent: "offline-test",
+            language: "vi",
+            API_VERSION: 694,
+            API_TYPE: 30,
+            options: {
+                logging: false,
+                async polyfill(url, init = {}) {
+                    calls.push({ url, method: init.method || "GET", form: init.body });
+                    return {
+                        ok: true,
+                        status: 200,
+                        headers: { get: () => null },
+                        json: async () => ({
+                            error_code: 0,
+                            data: encodeAES(KEY, JSON.stringify({ error_code: 0, data: { done: true } })),
+                        }),
+                    };
+                },
+            },
+        };
+        return {
+            calls,
+            api: { zpwServiceMap: { group_board: ["https://board.test.invalid"] }, getContext: () => ctx },
+        };
+    }
+    const run = (wa, args) => register({ api: wa.api }).server.call("zalo_write", args);
+
+    it("takes a name from the table, or none, and is declared as a change, not a read", () => {
+        const { meta } = register().server.tools.get("zalo_write");
+        assert.doesNotThrow(() => meta.inputSchema.parse({}));
+        assert.doesNotThrow(() =>
+            meta.inputSchema.parse({ name: "topic-remove", args: { groupId: "1" }, confirm: true }),
+        );
+        assert.throws(
+            () => meta.inputSchema.parse({ name: "delete-everything" }),
+            "a name outside the table is refused",
+        );
+        assert.equal(meta.annotations.readOnlyHint, false);
+        assert.equal(meta.annotations.destructiveHint, true);
+    });
+
+    it("lists every write with its risk when given no name, and asks Zalo nothing", async () => {
+        const wa = writeApi();
+        const out = payloadOf(await run(wa, {}));
+        assert.ok(out.writes.length > 20);
+        assert.equal(out.writes.find((w) => w.name === "topic-remove").risk, "destructive");
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("refuses a real call without confirm: true, and says how to see the request", async () => {
+        const wa = writeApi();
+        const res = await run(wa, { name: "topic-remove", args: { groupId: "555", topicId: "t9" } });
+        assert.equal(res.isError, true);
+        assert.match(res.content[0].text, /confirm: true/);
+        assert.match(res.content[0].text, /dryRun: true/);
+        assert.equal(wa.calls.length, 0, "nothing is sent without the confirmation");
+        const no = await run(wa, { name: "topic-remove", args: { groupId: "555", topicId: "t9" }, confirm: false });
+        assert.equal(no.isError, true);
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("a dry run needs no confirmation, sends nothing and returns the request", async () => {
+        const wa = writeApi();
+        const out = payloadOf(
+            await run(wa, { name: "topic-remove", args: { groupId: "g555", topicId: "t9" }, dryRun: true }),
+        );
+        assert.equal(out.dryRun, true);
+        assert.deepEqual(out.request.body, { grid: "555", topicId: "t9", imei: "test-imei-0000" });
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("sends the call when confirmed, and returns Zalo's answer", async () => {
+        const wa = writeApi();
+        const out = payloadOf(
+            await run(wa, { name: "topic-remove", args: { groupId: "g555", topicId: "t9" }, confirm: true }),
+        );
+        assert.deepEqual(out, { name: "topic-remove", data: { done: true } });
+        assert.equal(wa.calls.length, 1);
+        assert.match(wa.calls[0].url, /^https:\/\/board\.test\.invalid\/api\/board\/topic\/remove\?/);
+        assert.equal(wa.calls[0].method, "POST");
+        assert.deepEqual(JSON.parse(decodeAES(KEY, wa.calls[0].form.get("params"))), {
+            grid: "555",
+            topicId: "t9",
+            imei: "test-imei-0000",
+        });
+    });
+
+    it("refuses a missing argument as an error result, even when confirmed", async () => {
+        const wa = writeApi();
+        const res = await run(wa, { name: "topic-remove", args: { groupId: "555" }, confirm: true });
+        assert.equal(res.isError, true);
+        assert.match(res.content[0].text, /needs "topicId"/);
+        assert.equal(wa.calls.length, 0);
     });
 });

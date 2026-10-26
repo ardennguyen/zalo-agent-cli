@@ -80,11 +80,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **225** invokable leaves (193 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **25** containers — 17 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **19** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
-| MCP tools | **26** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
+| CLI commands | **227** invokable leaves (195 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3266** as of 2026-10-26 (3261 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3324** as of 2026-10-26 (3319 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -116,10 +116,10 @@ guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**. Measured again 2026-10-26, after `msg search`: **223 leaves, 24 containers, 247 nodes**; after `read`: **225 leaves, 25 containers, 250 nodes**.
+Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**. Measured again 2026-10-26, after `msg search`: **223 leaves, 24 containers, 247 nodes**; after `read`: **225 leaves, 25 containers, 250 nodes**; after `write`: **227 leaves, 26 containers, 253 nodes**.
 By group: group 35, oa 32, friend 26, msg 25, conv 21, top-level 12, profile 14,
 catalog 10, account 7, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
-leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, read 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
+leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, read 2, write 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
 184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
@@ -1482,3 +1482,37 @@ argument; its answer is queue-shaped, with message arrays, so it is a read of wh
 owner's approval. AI translate (`translate/v1/setting` and the rest) is dropped for now (D5): its GET goes through a transport
 this pass did not trace. The emoji-status pair carries `{imei}` as its body, which the live account accepted; the bundle's own
 call site was not read.
+
+## Writes: the web client's state-changing endpoints (v3.0, 2026-10-26)
+
+**What it is.** `src/zalo/writes.js` is a table of 28 writes on the same request path as the reads (`src/zalo/web-call.js`,
+which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's
+method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`.
+**All 28 are unverified: none has been sent to a live account.** The owner approved building all four groups of plan 6.2 and
+said live tests wait for a separate word, so the guards carry the risk instead: each entry has a `risk` (`private`,
+`visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted;
+`write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); the
+tests keep every entry `verified: false` until a live run changes that on purpose, and keep the table's endpoints and names
+disjoint from the reads, which a test holds to reads only.
+
+**Built, with what the body is.** The multi-recall (`multi_undo`, `multi_undomsg`) sends, per message, a fresh client id,
+the original's client id (`cliMsgIdUndo`) and its global id. The group note and reminder writes (`topic/createv2`,
+`updatev2`) are the revamp builder's v2 branch: `pinAct` instead of `needPin`, `repeatRule` and `onlyMe` when given, `params`
+as a JSON string, or `{}` (not an empty string) when absent. Pins use `pinv2` and `unpinv2` (GET), `pin/update` (POST) and
+`multi_unpin` (GET). The todos are `board/personal/todo/*` and `board/personal/delete`; several of them are GETs that change
+state, which is why the table carries the method per entry and `risk` does not follow it. `group/kickout/multi` removes ONE
+account from several groups (`grids`, `member`), not several members from one.
+
+**Left out, and what would be needed.** (1) The sending flows that upload or re-send content: `photo_url` is a re-send path
+whose request goes through a helper (`transformParams`, then `_postSendMsg`) that adds fields; `sendpt`, `sharefile`,
+`sendmp3`/`voicemp3`, the GIF and video chunk uploads and `upthumb` are multi-step uploads; zca-js already sends images,
+files and videos. A local mp3 as a voice message can be had by uploading the file the way `msg send-file` does and sending
+the URL with `msg send-voice`. Building them needs a capture of the web client sending each. (2) `convlabel/manage/*` and
+`blocksharing/*`: only their paths and command ids are in the bundle files read; the callers are in lazily loaded modules,
+and block sharing is a zBusiness feature (error 829 when not allowed). `label update` still takes a raw label payload.
+(3) `voice2text`: the build has no method for it. (4) The receipts: the legacy `seen`/`delivered` forms and `subtab/seen`
+change what other people see, and the v2 forms are already sent.
+
+**Values not known.** A topic type, a pin type, a todo status, a presence mode, a close-friend action, a suggestion source
+and type, the `srcInteraction` of a multi-group removal and the RSVP answer are numbers the web client sends from enums
+defined in modules this pass did not trace; they are passed through as given, and `write list` does not claim a meaning.

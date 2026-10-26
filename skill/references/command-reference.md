@@ -309,6 +309,21 @@ The 39 reads (35 answered by a live account on 2026-10-26; `offline-check` and t
 
 ---
 
+## Write — `write` (2 commands)
+
+The state-changing endpoints of Zalo Web's API that have no command of their own (plan track S, 6.2). **Every one changes something on the account**, and **none has been answered by a live account yet**: each is built from the web client's own API method (`src/zalo/writes.js` lists host, path and body beside it) and tested on the wire, so a first run of any of them belongs on something disposable, and a failure says "not accepted", not "broken". `write list` says what each touches: `private` (this account's own data), `visible` (other people see it) or `destructive` (it removes something that cannot be put back from here).
+
+| Command | Description |
+|---------|-------------|
+| `list [-r, --risk <risk>]` | List the writes, what each touches (`risk`) and what it takes (`[x]` is optional). `--risk private\|visible\|destructive` narrows it. Reads a local table: no login needed. `--json` gives `name`, `what`, `risk`, `host`, `path`, `verified` and `args`. |
+| `run <name> [--args <json>] [-a, --arg <key=value>…] [--dry-run] [-y, --yes]` | Show or send one write. **`--dry-run` prints the request that would be sent (method, host, path, body) and sends nothing; a real call needs `--yes`** and is refused without it (exit 1), saying so. Arguments come as a JSON object and/or repeated `--arg key=value`, typed by what the write declares (a string stays a string, a number a number, a boolean `true`/`false`/`1`/`0`, `json` is parsed). An unknown write or argument, a missing required one or a bad value is refused before Zalo is contacted (exit 1). HTTP only: no socket, so it works beside a running `listen` or `mcp start`. |
+
+The 28 writes: **messages** `multi-undo`, `multi-undo-group` (recall several of your messages at once), `sync-action-media`; **boards** `topic-response` (reminder RSVP), `topic-create` and `topic-update` (a group note or reminder, with the repeat rule and only-me options of this build), `topic-remove` (destructive), `pin`, `unpin`, `pin-reorder`, `unpin-many`; **todos** `todo-create`, `todo-update`, `todo-status`, `todo-ding`, `todo-ding-ack`, `todo-delete` (destructive); **friends and profile** `close-friend`, `contact-tab-read`, `recommend-remove`, `recommend-seen`, `oa-block`, `oa-unblock`, `profile-mode`, `recent-search-update`; **groups** `group-kickout-multi` (remove one account from several groups, destructive). `write list` is the source of truth for each one's arguments; enum-like values (a topic type, a pin type, a status, a mode) are sent as the number the web client sends, and `write list` does not claim to know their meaning where the bundle does not say.
+
+Not offered, and why: the sending flows that upload or re-send content (`photo_url`, `sendpt`, `sharefile`, `sendmp3`/`voicemp3`, the GIF and video chunk uploads, `upthumb`) carry parameters the web client adds in a helper that was not traced, and zca-js already sends images, files and videos by its own flows; `convlabel/manage/*` and `blocksharing/*` are driven from lazily loaded modules whose request bodies are not in the bundle files read (`label update` still takes a raw label payload); `voice2text` has no client method in this build; the legacy receipts and `subtab/seen` change what other people see, and the v2 forms are already sent.
+
+---
+
 ## Catalog / zBusiness — `catalog` (10 commands)
 
 Requires a Zalo Shop / zBusiness account.
@@ -376,7 +391,7 @@ Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-q
 
 **Via the `zalo-mcp` wrapper (`v2.0.0+`):** `zalo-mcp` (or `node mcp-server.js`) forwards **all** `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-delivered-receipts`, `--no-self-heal`, `-d`/`--daemon`, `--stop`, `--status`), all global storage/`.env` flags (`--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`), and any CLI subcommand (`zalo-mcp --account <id> msg send ...`). (Older `zalo-mcp` `1.x` releases forwarded only `--http` and `--auth`.) The wrapper runs the `@ardennguyen/zalo-agent-cli` version installed in its `node_modules/`.
 
-**26 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools", "7 tools", or "14 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
+**27 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools", "7 tools", or "14 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -406,6 +421,7 @@ Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-q
 | `zalo_group` | Leave, inspect, create and change the membership of a group, matching `group leave [-s]`, `info`, `create`, `add-member` and `remove-member` (`zalo_get_group_members` still lists the members): `info` (name, description, creator, admins, member count and limit, creation time, settings), `create` (`name` + `userIds`; replies with `groupId` and which members were added or refused), `add_members` (`groupId` + `userIds`; says which members Zalo refused, and is an error when it took none), `remove_member` (`groupId` + one `userId`; an error if Zalo refused, and a non-member is explained: Zalo answers code 165), `leave` (`groupId`, optional `silent`; leaving a group you are not in is explained: Zalo answers code 167, measured live). `leave` and `remove_member` cannot be undone, so they need `confirm: true` (a plain parameter, never a prompt; `groupConfirm: false` in `mcp-config.json` or `ZALO_MCP_GROUP_CONFIRM=0` switches the check off for an automatic deployment) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`), `groupId?` (numeric; required except for `create`), `name?` (`create`), `userIds?` (1–100 numeric ids; `create`, `add_members`), `userId?` (`remove_member`), `silent?` (`leave`, default false), `confirm?` (`leave`, `remove_member`) |
 | `zalo_friend` | Friend requests and friends, matching `friend request-status`, `sent-requests`, `recommendations` (received requests are its type-2 items), `add`, `accept`, `reject`, `undo-request` and `list`: `status` (`is_friend`, `is_requested`, `is_requesting` as booleans), `sent_requests`, `received_requests` (newest first, with the sender's message), `send`, `accept`, `reject`, `undo`, `list`. A refused `send` explains Zalo's code in the CLI's words | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`), `userId?` (numeric; required except for the lists), `message?`, `limit?` (for `list`, default 200) |
 | `zalo_read` | Run one of the read-only reads of `read run` (sticker and GIF catalogs and GIF search, profile rank and extras, block list, nicknames, search history, message status, group quotas, emoji statuses, server settings, …), or list them all with their arguments when `name` is omitted. Reads only: nothing is sent, marked or changed | `name?` (one of the reads of `read list`), `args?` (object by the read's own argument names; ids are strings) |
+| `zalo_write` | Make one of the state-changing calls of `write run` (reminder RSVP, group note/reminder with a repeat rule, pins, topic removal, personal todos, multi-recall, close friends, suggested-friend cleanup, OA block, presence mode, removing one account from several groups, the search history), or list them all with their `risk` when `name` is omitted. **Every write changes something and none has been answered by a live account yet**: a real call needs `confirm: true`, and `dryRun: true` returns the request without sending it | `name?` (one of the writes of `write list`), `args?` (object by the write's own argument names; ids are strings), `dryRun?`, `confirm?` |
 
 See [MCP sync](../../docs/mcp-sync.md) / [Tiếng Việt](../../docs/mcp-sync.vi.md) for examples, retention and release prerequisites. Only the owner's explicit request authorizes `zalo_sync`; coverage reads never start it. Bulk media, boards, cloud and conversation-state sync remain CLI-only.
 
@@ -536,13 +552,14 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `quick-msg` | 4 |
 | `label` | 2 |
 | `read` | 2 |
+| `write` | 2 |
 | `catalog` | 10 |
 | `bank` | 5 |
 | `listen` | 1 |
-| `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 26 MCP tools) |
+| `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 27 MCP tools) |
 | `fleet` | 6 (`ports`, `status`, `start`, `stop`, `restart`, `generate`) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **225 CLI commands** + 26 MCP tools |
+| **Total** | **227 CLI commands** + 27 MCP tools |
 
 ## Provenance
 

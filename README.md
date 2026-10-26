@@ -28,7 +28,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > clawhub install zalo-agent          # OpenClaw (từ ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/   # Claude Code
 > ```
-> 19 nhóm lệnh · 225 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
+> 20 nhóm lệnh · 227 lệnh · listen mode + webhook · 55+ ngân hàng VN · đa tài khoản + proxy
 > Xem [skill/SKILL.md](skill/SKILL.md) · [Tham chiếu lệnh đầy đủ](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
@@ -52,7 +52,7 @@ Xây dựng trên [zca-js](https://github.com/RFS-ADRENO/zca-js).
 > zalo-agent mcp wait -c my-bot --timeout 55 --json     # Zero-polling chờ tin nhắn mới qua CLI
 > zalo-agent mcp mark-read <cursor> -c my-bot --json    # Đánh dấu đã đọc tới cursor qua CLI
 > ```
-> 26 tools: `zalo_get_messages` · `zalo_send_message` · `zalo_list_threads` · `zalo_search_threads` · `zalo_mark_read` · `zalo_get_history` · `zalo_view_media` · `zalo_react` · `zalo_undo` · `zalo_get_group_members` · `zalo_list_conversations` · `zalo_coverage` · `zalo_sync` · `zalo_sync_status` · `zalo_search_messages` · `zalo_lookup_user` · `zalo_forward_message` · `zalo_delete_message` · `zalo_reminder` · `zalo_note` · `zalo_poll` · `zalo_wait_for_message` · `zalo_label` · `zalo_friend` · `zalo_group` · `zalo_read`
+> 27 tools: `zalo_get_messages` · `zalo_send_message` · `zalo_list_threads` · `zalo_search_threads` · `zalo_mark_read` · `zalo_get_history` · `zalo_view_media` · `zalo_react` · `zalo_undo` · `zalo_get_group_members` · `zalo_list_conversations` · `zalo_coverage` · `zalo_sync` · `zalo_sync_status` · `zalo_search_messages` · `zalo_lookup_user` · `zalo_forward_message` · `zalo_delete_message` · `zalo_reminder` · `zalo_note` · `zalo_poll` · `zalo_wait_for_message` · `zalo_label` · `zalo_friend` · `zalo_group` · `zalo_read` · `zalo_write`
 
 [Sync qua MCP](docs/mcp-sync.vi.md) · [Ghim đa tài khoản live](docs/account-pinning.vi.md) · [Triển khai Production](docs/deployment.vi.md).
 > Auto-reconnect · thread filter · noise reduction · tự tải media · thông báo qua nhóm Zalo · chạy song song nhiều tài khoản (`--account <ID>`)
@@ -124,11 +124,12 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `auto-reply` | 4 | Quản lý trả lời tự động | [Trả lời tự động](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tr%E1%BA%A3-L%E1%BB%9Di-T%E1%BB%B1-%C4%90%E1%BB%99ng) |
 | `quick-msg` | 4 | Tin nhắn nhanh đã lưu | [Tin nhắn nhanh](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tin-Nh%E1%BA%AFn-Nhanh) |
 | `read` | 2 | Các endpoint chỉ-đọc của Zalo Web chưa có lệnh riêng: sticker, GIF, hạng hồ sơ, danh sách chặn, biệt danh… (chỉ đọc, không thay đổi gì) | [Tham chiếu lệnh](skill/references/command-reference.md) |
+| `write` | 2 | Các endpoint thay đổi trạng thái của Zalo Web chưa có lệnh riêng: ghim, todo, RSVP nhắc hẹn, thu hồi nhiều tin… (`--dry-run` để xem yêu cầu, `--yes` mới gửi thật) | [Tham chiếu lệnh](skill/references/command-reference.md) |
 | `label` | 2 | Nhãn hội thoại | [Nhãn](https://github.com/ardennguyen/zalo-agent-cli/wiki/Nh%C3%A3n) |
 | `catalog` | 10 | zBusiness — danh mục sản phẩm | [zBusiness](https://github.com/ardennguyen/zalo-agent-cli/wiki/zBusiness) |
 | `bank` | 5 | Tài khoản ngân hàng đã lưu, danh sách ngân hàng được hỗ trợ | [Ngân hàng](https://github.com/ardennguyen/zalo-agent-cli/wiki/Ng%C3%A2n-H%C3%A0ng) |
 | `listen` | 1 | Lắng nghe real-time, webhook, JSONL, ghi vào cache cục bộ | [Lắng nghe](https://github.com/ardennguyen/zalo-agent-cli/wiki/L%E1%BA%AFng-Nghe) |
-| `mcp` | 3 | MCP server (`start`, `wait`, `mark-read`) — 26 tools cho AI agent + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server-(VN)) |
+| `mcp` | 3 | MCP server (`start`, `wait`, `mark-read`) — 27 tools cho AI agent + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server-(VN)) |
 | **`oa`** | **32** | **Zalo Official Account API v3.0 — OAuth, tin nhắn, follower, tag, bài viết, cửa hàng, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))** |
 
 Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/%C4%90a-T%C3%A0i-Kho%E1%BA%A3n-&-Proxy) · [Cài đặt VPS](https://github.com/ardennguyen/zalo-agent-cli/wiki/C%C3%A0i-%C4%90%E1%BA%B7t-VPS) · [Thẻ chuyển khoản & QR](https://github.com/ardennguyen/zalo-agent-cli/wiki/Th%E1%BA%BB-Chuy%E1%BB%83n-Kho%E1%BA%A3n-&-QR) · [Bộ nhớ đệm & Đồng bộ](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BB%99-Nh%E1%BB%9B-%C4%90%E1%BB%87m-&-%C4%90%E1%BB%93ng-B%E1%BB%99) · [Bảo mật](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BA%A3o-M%E1%BA%ADt)
@@ -139,9 +140,9 @@ Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-
 
 - Đăng nhập QR qua HTTP server tự động (browser + terminal), báo ngay khi bị **từ chối trên điện thoại** thay vì treo tới hết 60s
 - Đa tài khoản với proxy riêng biệt (1:1), device fingerprint riêng cho từng tài khoản; chạy **nhiều tài khoản live đồng thời** (mỗi tài khoản một tiến trình `mcp start` hoặc `listen` kèm `--account <ID>`, và truyền `--account <ID>` / `ZALO_ACCOUNT` trên mọi lệnh CLI mà không ghi đè `accounts.json`)
-- **225 lệnh** phủ hết tính năng Zalo cá nhân
+- **227 lệnh** phủ hết tính năng Zalo cá nhân
 - **Zalo Official Account (OA) API v3.0** — OAuth login, gửi tin nhắn, follower, tag, bài viết, cửa hàng, webhook listener, multi-OA
-- **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 26 tools cho Claude Code, Gemini và các MCP client: đọc, chờ tin nhắn đến (`zalo_wait_for_message`), gửi (văn bản, link preview, danh thiếp, vào My Documents, đánh dấu Quan trọng/Khẩn cấp), tìm kiếm tin nhắn trong cache, tra cứu người dùng, gắn/gỡ nhãn hội thoại (`zalo_label`), xem bạn bè và xử lý lời mời kết bạn (`zalo_friend`), xem thông tin nhóm, tạo nhóm, thêm/xóa thành viên và rời nhóm (`zalo_group`), thả cảm xúc, thu hồi, chuyển tiếp, xóa tin, nhắc hẹn, ghi chú/ghim tin, bình chọn, xem thành viên nhóm, liệt kê hội thoại gần đây và kiểm tra độ đầy đủ của cache
+- **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 27 tools cho Claude Code, Gemini và các MCP client: đọc, chờ tin nhắn đến (`zalo_wait_for_message`), gửi (văn bản, link preview, danh thiếp, vào My Documents, đánh dấu Quan trọng/Khẩn cấp), tìm kiếm tin nhắn trong cache, tra cứu người dùng, gắn/gỡ nhãn hội thoại (`zalo_label`), xem bạn bè và xử lý lời mời kết bạn (`zalo_friend`), xem thông tin nhóm, tạo nhóm, thêm/xóa thành viên và rời nhóm (`zalo_group`), thả cảm xúc, thu hồi, chuyển tiếp, xóa tin, nhắc hẹn, ghi chú/ghim tin, bình chọn, xem thành viên nhóm, liệt kê hội thoại gần đây và kiểm tra độ đầy đủ của cache
 - **Bộ nhớ đệm cục bộ (SQLite)** — `listen` ghi mọi tin nhắn vào `zalo.db`, `msg history` đọc từ cache, `sync` (hoặc `sync-mobile`) khôi phục toàn bộ lịch sử từ điện thoại vào `zalo.db` (giải mã transfer-sync-v2; xác nhận một lần trên điện thoại), mặc định lấy **toàn bộ** lịch sử (không còn mốc chặn 2024-01-01); thêm `--days <n>` hoặc `--from <YYYY-MM-DD>` nếu chỉ cần một khoảng. Dọn dẹp: `sync-media --prune <days|all>` giải phóng dung lượng nhưng giữ nguyên nội dung tin nhắn, `--prune-orphans` nhắm vào hội thoại tài khoản không còn, và `conv forget` xoá hẳn bản sao cục bộ của một hội thoại — không cái nào gửi gì tới Zalo. Luồng đồng bộ chỉ mang **liên kết** media chứ không mang file, nên sau khi lưu tin nhắn, `sync-mobile` **tự động tải media về** (thêm `--messages-only` nếu chỉ muốn tin nhắn); `sync-media` chạy lại/tiếp tục bước tải này, không cần xác nhận trên điện thoại. Ghi chú, tin ghim, bình chọn và nhắc hẹn nằm ngoài luồng tin nhắn — dùng `sync-boards`
 - Tự động tải media (ảnh/audio/video) — một downloader duy nhất cho `listen`, `msg history`, `mcp start` và các lệnh sync, lưu vào `~/.zalo-agent-cli/accounts/<id>/media/<threadId>/` (hoặc tách riêng credentials, database `zalo.db`, media và OA sang các ổ đĩa/mount khác nhau qua `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir` / biến môi trường `ZALO_*_DIR` trong `~/.zalo-agent-cli/.env`; nếu dùng kèm `zalo-mcp`, chỉ nên giữ cấu hình PORT trong `zalo-mcp/.env` và đặt toàn bộ đường dẫn lưu trữ vào `<CONFIG_DIR>/.env`)
 - Thẻ chuyển khoản (55+ ngân hàng VN) & QR VietQR
@@ -200,7 +201,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > clawhub install zalo-agent                    # OpenClaw (from ClawHub registry)
 > cp -r skill/ ~/.claude/skills/zalo-agent/     # Claude Code
 > ```
-> 19 command groups · 225 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
+> 20 command groups · 227 commands · listen mode + webhook · 55+ VN banks · multi-account + proxy
 > See [skill/SKILL.md](skill/SKILL.md) · [Full command reference](skill/references/command-reference.md) · [Eval scenarios](skill/evals/)
 
 > [!NOTE]
@@ -224,7 +225,7 @@ CLI tool for Zalo automation — multi-account, proxy support, bank transfers, Q
 > zalo-agent mcp wait -c my-bot --timeout 55 --json     # Zero-polling wait for next message via CLI
 > zalo-agent mcp mark-read <cursor> -c my-bot --json    # Advance consumer read cursor via CLI
 > ```
-> 26 tools: `zalo_get_messages` · `zalo_send_message` · `zalo_list_threads` · `zalo_search_threads` · `zalo_mark_read` · `zalo_get_history` · `zalo_view_media` · `zalo_react` · `zalo_undo` · `zalo_get_group_members` · `zalo_list_conversations` · `zalo_coverage` · `zalo_sync` · `zalo_sync_status` · `zalo_search_messages` · `zalo_lookup_user` · `zalo_forward_message` · `zalo_delete_message` · `zalo_reminder` · `zalo_note` · `zalo_poll` · `zalo_wait_for_message` · `zalo_label` · `zalo_friend` · `zalo_group` · `zalo_read`
+> 27 tools: `zalo_get_messages` · `zalo_send_message` · `zalo_list_threads` · `zalo_search_threads` · `zalo_mark_read` · `zalo_get_history` · `zalo_view_media` · `zalo_react` · `zalo_undo` · `zalo_get_group_members` · `zalo_list_conversations` · `zalo_coverage` · `zalo_sync` · `zalo_sync_status` · `zalo_search_messages` · `zalo_lookup_user` · `zalo_forward_message` · `zalo_delete_message` · `zalo_reminder` · `zalo_note` · `zalo_poll` · `zalo_wait_for_message` · `zalo_label` · `zalo_friend` · `zalo_group` · `zalo_read` · `zalo_write`
 
 [MCP sync](docs/mcp-sync.md) · [Multi-account pinning](docs/account-pinning.md) · [Production deployment](docs/deployment.md).
 > Auto-reconnect · thread filter · noise reduction · media auto-download · Zalo-group notifications · concurrent multi-account (`--account <ID>`)
@@ -262,11 +263,12 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)** · [Fu
 | `auto-reply` | 4 | Auto-reply rules | [Auto-Reply](https://github.com/ardennguyen/zalo-agent-cli/wiki/Auto-Reply) |
 | `quick-msg` | 4 | Saved quick messages | [Quick Messages](https://github.com/ardennguyen/zalo-agent-cli/wiki/Quick-Messages) |
 | `read` | 2 | Zalo Web's read-only endpoints with no command of their own: stickers, GIFs, profile rank, block list, nicknames… (reads only, changes nothing) | [Command reference](skill/references/command-reference.md) |
+| `write` | 2 | Zalo Web's state-changing endpoints with no command of their own: pins, todos, reminder RSVP, multi-recall… (`--dry-run` shows the request, `--yes` sends it) | [Command reference](skill/references/command-reference.md) |
 | `label` | 2 | Conversation labels | [Labels](https://github.com/ardennguyen/zalo-agent-cli/wiki/Labels) |
 | `catalog` | 10 | zBusiness catalogs & products | [Catalog](https://github.com/ardennguyen/zalo-agent-cli/wiki/Catalog) |
 | `bank` | 5 | Saved bank accounts, supported banks | [Bank](https://github.com/ardennguyen/zalo-agent-cli/wiki/Bank) |
 | `listen` | 1 | Real-time listener, webhook, JSONL, local cache writes | [Listener](https://github.com/ardennguyen/zalo-agent-cli/wiki/Listener) |
-| `mcp` | 3 | MCP server (`start`, `wait`, `mark-read`) — 26 tools for AI agents + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server) |
+| `mcp` | 3 | MCP server (`start`, `wait`, `mark-read`) — 27 tools for AI agents + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server) |
 | **`oa`** | **32** | **Zalo Official Account API v3.0 — OAuth, messaging, followers, tags, articles, store, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
 
 See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/Multi-Account-&-Proxy) · [VPS Setup](https://github.com/ardennguyen/zalo-agent-cli/wiki/VPS-Setup) · [Bank Card & QR Payments](https://github.com/ardennguyen/zalo-agent-cli/wiki/Bank-Card-&-QR-Payments) · [Local Cache & Sync](https://github.com/ardennguyen/zalo-agent-cli/wiki/Local-Cache-&-Sync) · [Security](https://github.com/ardennguyen/zalo-agent-cli/wiki/Security)
@@ -275,9 +277,9 @@ See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/
 
 - QR login over an auto-started HTTP server (browser + terminal), reporting a **decline on the phone** immediately instead of hanging until the 60s timeout
 - Multi-account with a dedicated proxy (1:1) and a per-account device fingerprint; run **multiple live accounts simultaneously** (one `mcp start` or `listen` process per account with `--account <ID>`, plus `--account <ID>` / `ZALO_ACCOUNT` on any CLI command without mutating `accounts.json`)
-- **225 commands** covering the personal-account Zalo surface
+- **227 commands** covering the personal-account Zalo surface
 - **Zalo Official Account (OA) API v3.0** — OAuth login, messaging, followers, tags, articles, store, webhook listener, multi-OA
-- **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 26 tools for Claude Code, Gemini and other MCP clients: read, wait for incoming messages (`zalo_wait_for_message`), send (text, local file/image attachments, link previews, contact cards, to My Documents too, marked Important/Urgent), search cached messages, look up users, manage conversation labels (`zalo_label`), list friends and handle friend requests (`zalo_friend`), inspect, create and manage groups and leave them (`zalo_group`), react, recall, forward, delete, reminders, group notes/pins, group polls, list a group's members, list recent conversations, and check how complete the cache is
+- **MCP server** (stdio + HTTP/HTTPS + OAuth 2.0) — 27 tools for Claude Code, Gemini and other MCP clients: read, wait for incoming messages (`zalo_wait_for_message`), send (text, local file/image attachments, link previews, contact cards, to My Documents too, marked Important/Urgent), search cached messages, look up users, manage conversation labels (`zalo_label`), list friends and handle friend requests (`zalo_friend`), inspect, create and manage groups and leave them (`zalo_group`), react, recall, forward, delete, reminders, group notes/pins, group polls, list a group's members, list recent conversations, and check how complete the cache is
 - **Local SQLite cache** — `listen` writes every message to `zalo.db`, `msg history` reads from it, and `sync` (or `sync-mobile`) restores full history from the phone into `zalo.db` (transfer-sync-v2 decrypt; one confirmation on the phone), defaulting to **all** history (the old 2024-01-01 floor is gone), with `--days <n>` or `--from <YYYY-MM-DD>` to narrow it. Housekeeping: `sync-media --prune <days|all>` reclaims disk while keeping message text, `--prune-orphans` targets conversations the account no longer has, and `conv forget` removes a conversation's local copy entirely — none of which contact Zalo. The sync stream carries media **links**, not files, so a `sync-mobile` run **downloads its attachments automatically** once the messages are stored (`--messages-only` skips it); `sync-media` re-runs or resumes that fetch on its own, with no phone confirmation. Notes, pinned messages, polls and reminders live outside the message stream — `sync-boards` fetches those
 - Automatic media download — one downloader shared by `listen`, `msg history`, `mcp start` and the sync commands, saving to `~/.zalo-agent-cli/accounts/<id>/media/<threadId>/` (or separate credentials, `zalo.db`, media, and OA credentials onto independent volumes/mounts via `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir` / `ZALO_*_DIR` in `~/.zalo-agent-cli/.env`; when using `zalo-mcp`, keep `zalo-mcp/.env` for PORT settings only and place all storage/engine settings in `<CONFIG_DIR>/.env`)
 - Bank cards (55+ VN banks) and VietQR payment images

@@ -8,25 +8,15 @@
  * ordinary session envelope. `check-update` is the exception, a plain query with no encryption.
  *
  * Reads only. A call here changes nothing on the account: no entry sends a message, a receipt, a seen mark or a
- * setting. The state-changing endpoints of the same web client (plan 6.2) are not here and are added one at a time
- * with the owner's approval.
+ * setting. The state-changing endpoints of the same web client (plan 6.2) are in ./writes.js, behind a dry run and a
+ * confirmation.
  *
  * `verified` says whether the entry's reply has been seen on a live account. An entry that is not verified has its
  * request shape from the bundle (or, for the emoji-status pair, only its path and the presence of `params` from a
  * capture), so a failure of it says "not accepted", not "broken".
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { CallError, CallUsageError, arg, buildCall, list, num, runCall } from "./web-call.js";
 
-const require = createRequire(import.meta.url);
-let utilsCache = null;
-function zcaUtils() {
-    if (!utilsCache) utilsCache = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return utilsCache;
-}
-
-/** Where login and settings questions go: Zalo Web's `authDomain`. */
-const AUTH_DOMAIN = "https://wpa.chat.zalo.me";
 /** The avatar size the web client asks profile endpoints for. */
 const AVATAR_SIZE = 160;
 /** `TODO_TYPE` of the web client: 0 all, 1 open, 2 finished. */
@@ -34,9 +24,6 @@ const TODO_TYPE = { all: 0, open: 1, finished: 2 };
 
 /** The largest signed 64-bit id, past every real message id: a "page back from" read then starts at the newest. */
 const NEWEST_PAGE_ID = String(2n ** 63n - 1n);
-
-const list = (v) => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]);
-const num = (v, d) => (v === undefined || v === null || v === "" ? d : Number(v));
 
 /**
  * @typedef {object} ReadDef
@@ -53,8 +40,6 @@ const num = (v, d) => (v === undefined || v === null || v === "" ? d : Number(v)
  * @property {(a: object) => Record<string,string>} [extraQuery]
  * @property {boolean} verified - whether a live account has answered it
  */
-
-const arg = (name, type, desc, required = false) => ({ name, type, desc, required });
 
 /** @type {Record<string, ReadDef>} */
 export const READS = {
@@ -492,35 +477,10 @@ export const READS = {
 export const READ_NAMES = Object.keys(READS).sort();
 
 /** Raised for an unknown read name or a missing argument, before any request is made. */
-export class ReadUsageError extends Error {
-    /** @param {string} message */
-    constructor(message) {
-        super(message);
-        this.name = "ReadUsageError";
-    }
-}
+export const ReadUsageError = CallUsageError;
 
 /** Zalo's own error, from a plain reply. */
-export class ReadError extends Error {
-    /**
-     * @param {string} message
-     * @param {number} code - Zalo's error_code
-     */
-    constructor(message, code) {
-        super(message);
-        this.name = "ReadError";
-        this.code = code;
-    }
-}
-
-/** The service-map base URL of a host. */
-function baseOf(api, host) {
-    if (host === "auth") return AUTH_DOMAIN;
-    const v = api?.zpwServiceMap?.[host];
-    const url = Array.isArray(v) ? v[0] : v;
-    if (!url) throw new ReadUsageError(`this account's service map has no "${host}" host`);
-    return String(url).replace(/\/+$/, "");
-}
+export const ReadError = CallError;
 
 /**
  * Build the request for a read without sending it (what {@link callRead} sends; the tests read it).
@@ -528,46 +488,12 @@ function baseOf(api, host) {
  * @param {object} api - logged-in zca-js api
  * @param {string} name - a key of {@link READS}
  * @param {object} [args]
- * @returns {{method: "GET"|"POST", url: string, body?: URLSearchParams, headers: Record<string,string>, def: ReadDef}}
+ * @returns {ReturnType<typeof buildCall>}
  */
 export function buildRead(api, name, args = {}) {
     const def = READS[name];
     if (!def) throw new ReadUsageError(`unknown read "${name}"; known: ${READ_NAMES.join(", ")}`);
-    for (const a of def.args) {
-        if (a.required && (args[a.name] === undefined || args[a.name] === null || args[a.name] === "")) {
-            throw new ReadUsageError(`"${name}" needs "${a.name}" (${a.desc})`);
-        }
-    }
-    return withZca(api, (ctx, utils) => {
-        const base = `${baseOf(api, def.host)}${def.path}`;
-        const body = def.body ? def.body(args, ctx) : null;
-        const headers = def.headers ? def.headers(args) : {};
-        if (def.method === "query") {
-            const query = {};
-            for (const [k, v] of Object.entries(body || {})) query[k] = String(v);
-            return { method: "GET", url: utils.makeURL(base, query), headers, def };
-        }
-        const extra = def.extraQuery ? def.extraQuery(args) : {};
-        if (body === null) return { method: "GET", url: utils.makeURL(base, extra), headers, def };
-        const text = typeof body === "string" ? body : JSON.stringify(body);
-        const params = utils.encodeAES(text);
-        if (params === null || params === undefined) throw new Error("could not encrypt the request's params");
-        if (def.method === "post") {
-            return {
-                method: "POST",
-                url: utils.makeURL(base, extra),
-                body: new URLSearchParams({ params }),
-                headers,
-                def,
-            };
-        }
-        return { method: "GET", url: utils.makeURL(base, { ...extra, params }), headers, def };
-    });
-}
-
-/** Run `fn(ctx, utils)` inside zca-js's authenticated envelope, synchronously for a builder. */
-function withZca(api, fn) {
-    return zcaUtils().apiFactory()((_api, ctx, utils) => fn(ctx, utils))(api.getContext(), api);
+    return buildCall(api, def, name, args);
 }
 
 /**
@@ -581,21 +507,7 @@ function withZca(api, fn) {
  * @throws {Error} Zalo's own error (code in `.code`) when the reply is an error
  */
 export async function callRead(api, name, args = {}) {
-    const req = buildRead(api, name, args);
-    const init = { method: req.method };
-    if (req.body) init.body = req.body;
-    if (Object.keys(req.headers).length) init.headers = req.headers;
-    return withZca(api, async (_ctx, utils) => {
-        const resp = await utils.request(req.url, init);
-        if (req.def.reply !== "plain") return utils.resolve(resp);
-        // A plain reply: `{error_code, error_message, data}` with `data` unencrypted (the login host's questions).
-        const body = await resp.json();
-        const code = Number(body?.error_code ?? 0);
-        if (code !== 0 && !(req.def.okCodes || []).includes(code)) {
-            throw new ReadError(body?.error_message || `error ${code}`, code);
-        }
-        return body?.data ?? null;
-    });
+    return runCall(api, buildRead(api, name, args));
 }
 
 /**

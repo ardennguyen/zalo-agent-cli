@@ -1,6 +1,6 @@
 # AGENTS.md — zalo-agent-cli Project Rules
 
-Rules for any AI coding agent working in this repository (Claude Code/Cowork, Antigravity, Cursor, Cline, Codex, …).
+Rules for any AI coding agent working in this repository (Claude Code, Antigravity, Cursor, Cline, Codex, …).
 
 **This file is the instructor: it states rules, not reasons.** Every rule that has a story behind it — the incident that produced it, how to recover, the measured numbers, the lookup tables — lives in **[`docs/agent-notes.md`](docs/agent-notes.md)**, which is committed, has **no size limit**, and is read on demand. Read it when a rule here surprises you, when you are about to work around one, or when you need the detail a rule points at. It is not optional background; it is where this file's evidence went.
 
@@ -211,9 +211,9 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**225**), command groups (**25** containers), MCP tools (**26**), OA commands (**32**), offline tests (**3266** as of 2026-10-26). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**227**), command groups (**26** containers), MCP tools (**27**), OA commands (**32**), offline tests (**3324** as of 2026-10-26). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
-**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`.
+**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`.
 
 `tests/cli/surface.test.js` is the **machine-checkable twin** of `command-reference.md`. For the wiki, the authoritative EN⇄VN pairing is `_Sidebar.md` in that checkout.
 

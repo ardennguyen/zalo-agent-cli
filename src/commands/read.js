@@ -11,18 +11,17 @@ import { callRead, describeReads, READS, ReadUsageError } from "../zalo/reads.js
 import { error, info, output } from "../utils/output.js";
 
 /**
- * Turn what a person typed into the arguments of a read: `--args` as JSON, then each `--arg key=value` coerced by the
- * type the read declares. A string stays a string (a Zalo id has 19 digits, more than a number keeps exactly), a
- * number is a number, and "json" is parsed.
+ * Turn what a person typed into the arguments of a read or a write: `--args` as JSON, then each `--arg key=value`
+ * coerced by the type the entry declares. A string stays a string (a Zalo id has 19 digits, more than a number keeps
+ * exactly), a number is a number, a boolean is true/false/1/0, and "json" is parsed.
  *
- * @param {string} name - a key of READS
+ * @param {{args: Array<{name: string, type: string}>}} def - the table entry
+ * @param {string} name - its name, for messages
  * @param {{args?: string, arg?: string[]}} opts
  * @returns {Record<string, any>}
  * @throws {ReadUsageError} for JSON that is not JSON, an `--arg` with no `=`, or a number that is not one
  */
-export function argsFromOptions(name, opts) {
-    const def = READS[name];
-    if (!def) throw new ReadUsageError(`unknown read "${name}"; \`read list\` shows them`);
+export function argsFromDef(def, name, opts) {
     let args = {};
     if (opts.args !== undefined) {
         try {
@@ -50,6 +49,10 @@ export function argsFromOptions(name, opts) {
             if (raw.trim() === "" || !Number.isFinite(n))
                 throw new ReadUsageError(`--arg ${key}: "${raw}" is not a number`);
             args[key] = n;
+        } else if (spec.type === "boolean") {
+            if (!["true", "false", "1", "0"].includes(raw))
+                throw new ReadUsageError(`--arg ${key}: "${raw}" is not true or false`);
+            args[key] = raw === "true" || raw === "1";
         } else if (spec.type === "json") {
             try {
                 args[key] = JSON.parse(raw);
@@ -61,6 +64,19 @@ export function argsFromOptions(name, opts) {
         }
     }
     return args;
+}
+
+/**
+ * {@link argsFromDef} for a read, by name.
+ *
+ * @param {string} name - a key of READS
+ * @param {{args?: string, arg?: string[]}} opts
+ * @returns {Record<string, any>}
+ */
+export function argsFromOptions(name, opts) {
+    const def = READS[name];
+    if (!def) throw new ReadUsageError(`unknown read "${name}"; \`read list\` shows them`);
+    return argsFromDef(def, name, opts);
 }
 
 /** One line per read, for a person. */
@@ -116,6 +132,6 @@ export function registerReadCommands(program) {
 }
 
 /** commander: gather a repeatable option into an array. */
-function collect(value, previous) {
+export function collect(value, previous) {
     return [...previous, value];
 }

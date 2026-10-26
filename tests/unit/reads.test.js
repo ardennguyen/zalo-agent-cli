@@ -12,8 +12,18 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import {
+    IMEI,
+    SERVICE_KEYS,
+    SESSION_KEY,
+    decodeAES,
+    harness,
+    host,
+    response,
+    sessionOk,
+    sent,
+} from "../helpers/web-call.js";
 import {
     READS,
     READ_NAMES,
@@ -23,89 +33,6 @@ import {
     callRead,
     describeReads,
 } from "../../src/zalo/reads.js";
-
-const require = createRequire(import.meta.url);
-const zcaRequire = createRequire(require.resolve("zca-js"));
-const { encodeAES, decodeAES } = zcaRequire("./utils.cjs");
-
-const SESSION_KEY = Buffer.alloc(16, 0x11).toString("base64");
-const IMEI = "test-imei-0000";
-
-/** The service-map keys the web client's domain manager knows (module `pUq9`), plus the ones this table uses. */
-const SERVICE_KEYS = new Set([
-    "alias",
-    "chat",
-    "conversation",
-    "file",
-    "friend",
-    "group",
-    "group_cloud_message",
-    "boards",
-    "profile",
-    "reaction",
-    "recent_search",
-    "sticker",
-    "emoji_stt",
-    "banner",
-]);
-
-function host(key) {
-    return `https://${key.replace(/_/g, "-")}.test.invalid`;
-}
-
-const response = (body, status = 200) => ({
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: () => null },
-    json: async () => body,
-    text: async () => JSON.stringify(body),
-});
-const sessionOk = (data) =>
-    response({
-        error_code: 0,
-        error_message: "Successful.",
-        data: encodeAES(SESSION_KEY, JSON.stringify({ error_code: 0, error_message: "", data })),
-    });
-
-/** A logged-in-looking api whose every request lands in `calls`; `reply` answers them. */
-function harness(reply = () => sessionOk({ ok: true })) {
-    const calls = [];
-    const ctx = {
-        secretKey: SESSION_KEY,
-        imei: IMEI,
-        userAgent: "zalo-agent-cli-offline-test",
-        language: "vi",
-        uid: "1001",
-        API_VERSION: 694,
-        API_TYPE: 30,
-        options: {
-            logging: false,
-            agent: undefined,
-            async polyfill(url, init = {}) {
-                const u = new URL(url);
-                const call = {
-                    origin: u.origin,
-                    path: u.pathname,
-                    method: init.method || "GET",
-                    headers: { ...(init.headers || {}) },
-                    query: Object.fromEntries(u.searchParams),
-                    form: init.body instanceof URLSearchParams ? Object.fromEntries(init.body) : null,
-                };
-                calls.push(call);
-                return reply(call);
-            },
-        },
-    };
-    const zpwServiceMap = Object.fromEntries([...SERVICE_KEYS].map((k) => [k, [host(k)]]));
-    return { api: { zpwServiceMap, getContext: () => ctx }, calls };
-}
-
-/** The JSON a request encrypted into `params`, wherever it sent it. */
-function sent(call) {
-    const enc = call.method === "POST" ? call.form?.params : call.query.params;
-    assert.equal(typeof enc, "string", "the call carries params");
-    return JSON.parse(decodeAES(SESSION_KEY, enc));
-}
 
 // [name, args, host key, path, method, what the web client encrypts (null: no params)]
 const CASES = [

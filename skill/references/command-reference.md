@@ -37,7 +37,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 
 ---
 
-## Messages — `msg` (24 commands)
+## Messages — `msg` (25 commands)
 
 | Command | Description |
 |---------|-------------|
@@ -296,6 +296,19 @@ Multi-account management, each account bound 1:1 to its own dedicated proxy.
 
 ---
 
+## Read — `read` (2 commands)
+
+Read-only endpoints of Zalo Web's API that have no command of their own (plan track S, 6.1): the sticker and GIF catalogs and GIF search, a profile's rank and extra fields, the block list, the nickname list, the search history Zalo keeps, delivery and seen status, group quotas and the account's role in a group, friend profile checks, friends' emoji statuses, the server's client settings, and a few boot reads of the web client. Each is one request the web client sends, with its host, path and request body written out beside the web client method it comes from in `src/zalo/reads.js`. **Nothing here changes anything on the account** — no message, receipt, seen mark or setting — and a test keeps the table reads-only. The state-changing endpoints of the same client are added one at a time with the owner's approval, not here.
+
+| Command | Description |
+|---------|-------------|
+| `list [-v, --verified]` | List the reads, what each takes (`[x]` is optional) and whether a live account has answered it (`✓`) or only the request shape comes from the web client (`?`). `--verified` shows only the answered ones. Reads a local table: no login needed. `--json` gives `name`, `what`, `host`, `path`, `verified` and `args` for each. |
+| `run <name> [--args <json>] [-a, --arg <key=value>…]` | Ask Zalo one read and print the answer as JSON. Arguments come as a JSON object (`--args '{"id":"123"}'`) and/or repeated `--arg key=value`, each typed by what the read declares: a string stays a string (a Zalo id has 19 digits, more than a number keeps exactly), a number is a number, a `json` argument is parsed. An unknown read, an unknown or malformed argument, or a missing required one is refused before Zalo is contacted (exit 1). HTTP only: it needs no socket and works beside a running `listen` or `mcp start`. |
+
+The 39 reads (35 answered by a live account on 2026-10-26; `offline-check` and the three `todo-*` reads are built from the web client only): `aliases`, `banner-info`, `blocklist`, `check-update` (1001 means Zalo has no update information for the announced version), `contact-tab-last-read`, `emoji-status-config`, `emoji-status-friends`, `friend-context`, `friend-verify`, `gif-categories`, `gif-search`, `gif-trending`, `group-message-status`, `group-quota-community`, `group-quota-members`, `group-user-context`, `important-messages`, `last-messages`, `last-seen`, `last-seen-react`, `message-status`, `mini-profiles`, `noise-ids`, `noised-uids`, `offline-check`, `phonebook`, `profile-extra`, `profile-rank`, `recent-searches`, `server-settings`, `sticker-category`, `sticker-effects`, `sticker-hello`, `sticker-keywords`, `sticker-personalized`, `sticker-tenor-map`, `todo-get`, `todo-list`, `todo-verify`. `read list` is the source of truth for each one's arguments. Not offered, because Zalo answers them with 404 or an error on this build: `cm/getpath`, `group/analyse`, `message/get_backupmsginfo`, the sticker category list and recommended list, and the GIF-by-category and by-dictionary reads. The todo reads answer `-69` ("stop retry") on the test account, so they are not yet seen working; `offline-check` is the web client's own boot probe and needs queue ids this client does not keep.
+
+---
+
 ## Catalog / zBusiness — `catalog` (10 commands)
 
 Requires a Zalo Shop / zBusiness account.
@@ -363,7 +376,7 @@ Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-q
 
 **Via the `zalo-mcp` wrapper (`v2.0.0+`):** `zalo-mcp` (or `node mcp-server.js`) forwards **all** `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-delivered-receipts`, `--no-self-heal`, `-d`/`--daemon`, `--stop`, `--status`), all global storage/`.env` flags (`--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`), and any CLI subcommand (`zalo-mcp --account <id> msg send ...`). (Older `zalo-mcp` `1.x` releases forwarded only `--http` and `--auth`.) The wrapper runs the `@ardennguyen/zalo-agent-cli` version installed in its `node_modules/`.
 
-**25 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools", "7 tools", or "14 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
+**26 MCP tools exposed** (registered via `registerTools()` in `src/mcp/mcp-tools.js` — this count and list is the ground truth; anything claiming "4 tools", "7 tools", or "14 tools" is stale). A tool that mirrors a CLI command calls the same code the command does, so its lookups and refusals are the command's:
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -392,6 +405,7 @@ Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-q
 | `zalo_label` | List, assign, unassign, or raw-update Zalo conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`), matching `label list` and `label update` | `action` (`list`｜`assign`｜`unassign`｜`update`), `labelId?`, `labelText?`, `threadId?`, `threadIds?`, `labelData?`, `version?` |
 | `zalo_group` | Leave, inspect, create and change the membership of a group, matching `group leave [-s]`, `info`, `create`, `add-member` and `remove-member` (`zalo_get_group_members` still lists the members): `info` (name, description, creator, admins, member count and limit, creation time, settings), `create` (`name` + `userIds`; replies with `groupId` and which members were added or refused), `add_members` (`groupId` + `userIds`; says which members Zalo refused, and is an error when it took none), `remove_member` (`groupId` + one `userId`; an error if Zalo refused, and a non-member is explained: Zalo answers code 165), `leave` (`groupId`, optional `silent`; leaving a group you are not in is explained: Zalo answers code 167, measured live). `leave` and `remove_member` cannot be undone, so they need `confirm: true` (a plain parameter, never a prompt; `groupConfirm: false` in `mcp-config.json` or `ZALO_MCP_GROUP_CONFIRM=0` switches the check off for an automatic deployment) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`), `groupId?` (numeric; required except for `create`), `name?` (`create`), `userIds?` (1–100 numeric ids; `create`, `add_members`), `userId?` (`remove_member`), `silent?` (`leave`, default false), `confirm?` (`leave`, `remove_member`) |
 | `zalo_friend` | Friend requests and friends, matching `friend request-status`, `sent-requests`, `recommendations` (received requests are its type-2 items), `add`, `accept`, `reject`, `undo-request` and `list`: `status` (`is_friend`, `is_requested`, `is_requesting` as booleans), `sent_requests`, `received_requests` (newest first, with the sender's message), `send`, `accept`, `reject`, `undo`, `list`. A refused `send` explains Zalo's code in the CLI's words | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`), `userId?` (numeric; required except for the lists), `message?`, `limit?` (for `list`, default 200) |
+| `zalo_read` | Run one of the read-only reads of `read run` (sticker and GIF catalogs and GIF search, profile rank and extras, block list, nicknames, search history, message status, group quotas, emoji statuses, server settings, …), or list them all with their arguments when `name` is omitted. Reads only: nothing is sent, marked or changed | `name?` (one of the reads of `read list`), `args?` (object by the read's own argument names; ids are strings) |
 
 See [MCP sync](../../docs/mcp-sync.md) / [Tiếng Việt](../../docs/mcp-sync.vi.md) for examples, retention and release prerequisites. Only the owner's explicit request authorizes `zalo_sync`; coverage reads never start it. Bulk media, boards, cloud and conversation-state sync remain CLI-only.
 
@@ -521,13 +535,14 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `auto-reply` | 4 |
 | `quick-msg` | 4 |
 | `label` | 2 |
+| `read` | 2 |
 | `catalog` | 10 |
 | `bank` | 5 |
 | `listen` | 1 |
-| `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 25 MCP tools) |
+| `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 26 MCP tools) |
 | `fleet` | 6 (`ports`, `status`, `start`, `stop`, `restart`, `generate`) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **223 CLI commands** + 25 MCP tools |
+| **Total** | **225 CLI commands** + 26 MCP tools |
 
 ## Provenance
 

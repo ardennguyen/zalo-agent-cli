@@ -80,11 +80,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **223** invokable leaves (191 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
-| Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
-| MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
+| CLI commands | **225** invokable leaves (193 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| Command groups | **25** containers — 17 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **19** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
+| MCP tools | **26** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3193** as of 2026-10-26 (3188 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3266** as of 2026-10-26 (3261 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -116,10 +116,10 @@ guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**. Measured again 2026-10-26, after `msg search`: **223 leaves, 24 containers, 247 nodes**.
-By group: group 35, oa 32, friend 26, msg 24, conv 21, top-level 12, profile 14,
+Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**. Measured again 2026-10-26, after `msg search`: **223 leaves, 24 containers, 247 nodes**; after `read`: **225 leaves, 25 containers, 250 nodes**.
+By group: group 35, oa 32, friend 26, msg 25, conv 21, top-level 12, profile 14,
 catalog 10, account 7, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
-leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
+leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, read 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
 184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the
 manifest in `tests/cli/surface.test.js`, in both directions, so the manifest is
@@ -1451,3 +1451,34 @@ user approves, and the key arrives on the chat socket as a `personal_cloud` cont
 addressed to the account's own E2EE session. Taking part needs a registered E2EE device identity, a state-changing step on
 the account whose effect on other devices is unknown, plus secure storage, key-version and `correct_cloud_key` handling and
 free-plan removal. None of it is built, and no live request for it was made.
+
+## Reads: the web client's read-only endpoints (v3.0, 2026-10-26)
+
+**What it is.** `src/zalo/reads.js` is a table of 39 reads: for each, the service-map host, the path, the web client's
+command id and the body it encrypts into `params`, taken from the web API module (`fBUP`, 2026-10-23 bundle) method of
+the same purpose. They all use the session cipher (a GET with `params` in the query, or a POST with `params` in the form
+body); the two login-host reads (`check-update`, `server-settings`) have plain replies, with `data` unencrypted.
+`callRead` sends one; `buildRead` shows the request without sending it. Surfaces: `read list` and `read run`
+(`src/commands/read.js`) and the MCP tool `zalo_read` (`src/mcp/mcp-tools.js`). A test keeps the table to reads: no path
+of it names an update, removal, send, seen mark or the like.
+
+**Live check.** All but one were run on the test account, with shapes printed and values not. 35 answered. The other four:
+`offline-check` is the client's own boot probe and needs queue ids this client does not keep (not run), and the three
+`todo-*` reads answer `-69` ("stop retry"), which the zCloud report reads as a server refusal, so the account probably has
+no todos feature (their request shape is untested). Nine more were in the first table and are **not offered** because Zalo
+answers them with 404 or an error on this build: `cm/getpath`, `cm/mget`, `cm/rgetv2`, `group/analyse`,
+`message/get_backupmsginfo`, the sticker `category/list` and `recommended`, and the GIF by-category and by-dictionary
+reads. The web client's code still has methods for them, so a method in the bundle is not evidence that an endpoint is alive.
+The group-history reads we use (`getrecentv2`, `getoldv2`) are the ones the client's real traffic shows.
+
+**What the live check corrected.** `check-update` answers 1001 ("Item not found") to this client's version, which is an
+answer (no update information), not a failure. `server-settings` replies with plain JSON, not the session envelope, which
+`resolve` cannot read, hence the `reply: "plain"` flag. `friend-verify` takes an array of `userId_version` strings, not a
+map. A group's `message-status` needs `{tId, ids}`, with the message ids. `important-messages` pages back from a `lastId`;
+a `newestId` of 0 is refused, so the newest page is a `lastId` past every id. `last-messages` accepted both shapes of its
+argument; its answer is queue-shaped, with message arrays, so it is a read of what Zalo holds, never printed in tests.
+
+**Not done, on purpose.** The state-changing endpoints (plan 6.2) are not in the table and are added one at a time with the
+owner's approval. AI translate (`translate/v1/setting` and the rest) is dropped for now (D5): its GET goes through a transport
+this pass did not trace. The emoji-status pair carries `{imei}` as its body, which the live account accepted; the bundle's own
+call site was not read.

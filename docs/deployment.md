@@ -56,7 +56,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 >
 > | | `listen` | `mcp start` |
 > |---|---|---|
-> | MCP tool surface (the 25 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
+> | MCP tool surface (the 26 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
 > | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
 > | `-w, --webhook <url>` + `--webhook-secret <secret>` outbound fan-out | **yes** | **yes** |
 > | `--save <dir>` JSONL archive | **yes** | no |

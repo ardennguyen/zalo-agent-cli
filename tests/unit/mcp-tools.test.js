@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
@@ -49,6 +50,7 @@ const EXPECTED_TOOLS = [
     "zalo_label",
     "zalo_friend",
     "zalo_group",
+    "zalo_read",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -1968,5 +1970,79 @@ describe("zalo_group confirm guard", () => {
     it("the default config ships the check on", async () => {
         const { getDefaultConfig } = await import("../../src/mcp/mcp-config.js");
         assert.equal(getDefaultConfig().groupConfirm, true);
+    });
+});
+
+describe("zalo_read", () => {
+    const require = createRequire(import.meta.url);
+    const { encodeAES } = createRequire(require.resolve("zca-js"))("./utils.cjs");
+    const KEY = Buffer.alloc(16, 0x22).toString("base64");
+
+    /** An api whose requests land in `calls`; the reply is a session envelope around `data`. */
+    function readApi(data = { rank: "gold" }) {
+        const calls = [];
+        const ctx = {
+            secretKey: KEY,
+            imei: "test-imei-0000",
+            userAgent: "offline-test",
+            language: "vi",
+            API_VERSION: 694,
+            API_TYPE: 30,
+            options: {
+                logging: false,
+                async polyfill(url, init = {}) {
+                    calls.push({ url, method: init.method || "GET" });
+                    return {
+                        ok: true,
+                        status: 200,
+                        headers: { get: () => null },
+                        json: async () => ({
+                            error_code: 0,
+                            data: encodeAES(KEY, JSON.stringify({ error_code: 0, data })),
+                        }),
+                    };
+                },
+            },
+        };
+        return { calls, api: { zpwServiceMap: { profile: ["https://profile.test.invalid"] }, getContext: () => ctx } };
+    }
+    const run = (ra, args) => register({ api: ra.api }).server.call("zalo_read", args);
+
+    it("takes a name from the table, or none", () => {
+        const schema = register().server.tools.get("zalo_read").meta.inputSchema;
+        assert.doesNotThrow(() => schema.parse({}));
+        assert.doesNotThrow(() => schema.parse({ name: "profile-rank", args: { id: "u1" } }));
+        assert.throws(() => schema.parse({ name: "send-everything" }), "a name outside the table is refused");
+    });
+
+    it("is declared read-only", () => {
+        const { annotations } = register().server.tools.get("zalo_read").meta;
+        assert.equal(annotations.readOnlyHint, true);
+        assert.equal(annotations.destructiveHint, false);
+    });
+
+    it("lists every read with its arguments when given no name", async () => {
+        const ra = readApi();
+        const out = payloadOf(await run(ra, {}));
+        assert.ok(out.reads.length > 30);
+        const rank = out.reads.find((r) => r.name === "profile-rank");
+        assert.deepEqual(rank.args, [{ name: "id", type: "string", required: true, desc: "user id" }]);
+        assert.equal(ra.calls.length, 0, "listing asks Zalo nothing");
+    });
+
+    it("runs one read and returns Zalo's answer", async () => {
+        const ra = readApi({ userRank: "gold" });
+        const out = payloadOf(await run(ra, { name: "profile-rank", args: { id: "u1" } }));
+        assert.deepEqual(out, { name: "profile-rank", data: { userRank: "gold" } });
+        assert.equal(ra.calls.length, 1);
+        assert.match(ra.calls[0].url, /^https:\/\/profile\.test\.invalid\/api\/social\/profile\/getrank\?/);
+    });
+
+    it("refuses a missing argument as an error result, before asking Zalo", async () => {
+        const ra = readApi();
+        const res = await run(ra, { name: "profile-rank", args: {} });
+        assert.equal(res.isError, true);
+        assert.match(res.content[0].text, /needs "id"/);
+        assert.equal(ra.calls.length, 0);
     });
 });

@@ -233,9 +233,9 @@ Mỗi tài khoản cá nhân đã đăng ký có cơ sở dữ liệu SQLite (`<
    zalo-mcp --account 202 sync --days 7
    ```
 
-### Danh sách 25 MCP tools
+### Danh sách 26 MCP tools
 
-Engine này đăng ký **25 MCP tools** trong `src/mcp/mcp-tools.js`, phục vụ cho **tài khoản cá nhân**:
+Engine này đăng ký **26 MCP tools** trong `src/mcp/mcp-tools.js`, phục vụ cho **tài khoản cá nhân**:
 
 | Tool | Công dụng |
 |:---|:---|
@@ -264,6 +264,7 @@ Engine này đăng ký **25 MCP tools** trong `src/mcp/mcp-tools.js`, phục v�
 | `zalo_label` | Liệt kê, gắn, gỡ hoặc cập nhật nhãn hội thoại (ví dụ `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) |
 | `zalo_group` | Rời nhóm (có thể rời im lặng), xem thông tin nhóm, tạo nhóm, thêm hoặc xóa thành viên |
 | `zalo_friend` | Trạng thái kết bạn, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè |
+| `zalo_read` | Chạy một endpoint chỉ-đọc của Zalo Web mà không tool nào khác phủ tới (danh mục sticker và GIF, tìm GIF, hạng hồ sơ, danh sách chặn, biệt danh, trạng thái…), hoặc liệt kê chúng |
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 
@@ -327,7 +328,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 223 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 225 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |

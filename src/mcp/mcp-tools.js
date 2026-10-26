@@ -1,10 +1,10 @@
 /**
  * MCP tool registrations for Zalo message access, sending, user lookup, and group productivity.
- * Registers 25 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * Registers 26 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
  * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status, zalo_search_messages,
  * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll,
- * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group.
+ * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group, zalo_read.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
@@ -42,6 +42,7 @@ import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
 import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
+import { callRead, describeReads, READ_NAMES, ReadUsageError } from "../zalo/reads.js";
 import { describeReadState, readOnZalo } from "../core/read-state.js";
 import { extractMessageText } from "../utils/extract-message-text.js";
 import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
@@ -2958,6 +2959,43 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         `Zalo says ${target} is not in group ${gid} ("${e.message}", code ${REMOVE_NOT_IN_GROUP}).`,
                     );
                 }
+                return err(e.message);
+            }
+        },
+    );
+
+    // --- zalo_read ---
+    server.registerTool(
+        "zalo_read",
+        {
+            title: "Read From Zalo's Web API",
+            description:
+                "Ask Zalo one of the read-only endpoints Zalo Web calls that no other tool covers: the sticker and GIF " +
+                "catalogs and GIF search, a profile's rank and extra fields, the block list, the nickname list, the " +
+                "search history Zalo keeps, delivery and seen status, the group quota and the account's role in a " +
+                "group, friend profile checks, the emoji statuses of friends, the server's client settings, and " +
+                "more. Omit `name` to list every read with what it takes and whether a live account has answered it; " +
+                "give `name` and `args` to run one. It only reads: nothing here sends, marks, changes or removes " +
+                "anything. `args` is an object named by the read's own argument list (ids are strings).",
+            inputSchema: z.object({
+                name: z
+                    .enum(READ_NAMES)
+                    .optional()
+                    .describe("The read to run (omit to list them all, with their arguments)"),
+                args: z
+                    .record(z.string(), z.any())
+                    .optional()
+                    .describe('The read\'s arguments by name, e.g. {"id": "123"} for profile-rank'),
+            }),
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        },
+        async ({ name, args }) => {
+            if (!name) return ok({ reads: describeReads() });
+            try {
+                const data = await callRead(api, name, args || {});
+                return ok({ name, data: data ?? null });
+            } catch (e) {
+                if (!(e instanceof ReadUsageError)) console.error("[mcp-tools] zalo_read error:", e.message);
                 return err(e.message);
             }
         },

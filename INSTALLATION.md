@@ -235,7 +235,7 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
 
 ### MCP tools exposed
 
-This engine source registers **25 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+This engine source registers **26 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
 
 | Tool | Purpose |
 |:---|:---|
@@ -264,6 +264,7 @@ This engine source registers **25 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) |
 | `zalo_group` | Leave (optionally silently), inspect, create a group, add or remove a member |
 | `zalo_friend` | Friend status, sent and received requests, send / accept / reject / cancel a request, list friends |
+| `zalo_read` | Run one of Zalo Web's read-only endpoints that no other tool covers (sticker and GIF catalogs and search, profile rank, block list, nicknames, status…), or list them |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
@@ -328,7 +329,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 223 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 225 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |

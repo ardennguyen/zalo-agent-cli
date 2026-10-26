@@ -1,6 +1,6 @@
 # Hướng dẫn Zalo MCP Server
 
-Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **25 tools**.
+Model Context Protocol (MCP) cho phép Claude Code, Google Gemini và các MCP client tương tác với Zalo (tài khoản cá nhân) trực tiếp qua **26 tools**.
 
 Mọi tính năng khác của CLI — Official Account (`oa …`), gửi voice/video (từ URL)/sticker, quản lý bạn bè (kết bạn/chặn), quản trị nhóm nâng cao (tạo nhóm/mời/duyệt/giải tán), cài đặt hội thoại, profile, auto-reply, quick-msg, catalog, quản lý đa tài khoản — **chưa có MCP tool riêng**. Agent vẫn dùng được bằng cách gọi CLI với `--json`. Sync tin nhắn/phản ứng có `zalo_sync` và `zalo_sync_status`; các stage khác vẫn dùng CLI. Xem bảng [Phạm vi tool](#phạm-vi-tool--cái-gì-có-cái-gì-phải-gọi-cli).
 
@@ -187,7 +187,7 @@ Mỗi tài khoản Zalo cá nhân có cơ sở dữ liệu (`<DATA_DIR>/<ownId>/
 
 ---
 
-## Tham chiếu Tools (25 tools)
+## Tham chiếu Tools (26 tools)
 
 ### `zalo_get_messages`
 Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (xem `zalo_mark_read`), hỗ trợ cursor để đọc tăng dần (incremental polling).
@@ -664,6 +664,17 @@ Kết quả theo từng `action`:
 
 Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên cần `confirm: true`; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Luồng tự động/headless/backend không bị chặn: gửi `confirm: true` trong lệnh gọi, hoặc tắt hẳn bước kiểm tra bằng `"groupConfirm": false` trong `mcp-config.json` hay biến môi trường `ZALO_MCP_GROUP_CONFIRM=0` (biến môi trường được ưu tiên; `1`/`true` bật lại). Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool đã được chạy thử trên tài khoản thật (nhóm tạm thời): tạo nhóm, xem thông tin, thêm/xóa thành viên, rời nhóm với `silent`. Đã kiểm chứng trên tài khoản thật: với `silent: true`, các thành viên thường không thấy thông báo "đã rời nhóm", nhưng chủ nhóm vẫn thấy. Chủ nhóm rời nhóm thì quyền chủ nhóm được chuyển cho người khác trước, nên người đó thấy thông báo — muốn rời im lặng hoàn toàn với các thành viên, hãy chuyển quyền chủ nhóm (`group transfer-owner`) rồi mới rời.
 
+### `zalo_read`
+Chạy một trong các endpoint **chỉ-đọc** của Zalo Web mà không tool nào khác phủ tới — danh mục sticker và GIF, tìm GIF, hạng và trường phụ của hồ sơ, danh sách chặn, biệt danh, lịch sử tìm kiếm Zalo giữ, trạng thái gửi/đã xem, hạn mức nhóm và vai trò của tài khoản trong nhóm, trạng thái emoji của bạn bè, cài đặt phía máy chủ… — tương đương `read list` và `read run`. Không gửi, đánh dấu, đổi hay xóa gì.
+
+**Tham số:**
+| Tên | Kiểu | Mô tả |
+|-----|------|--------|
+| `name` | enum (tuỳ chọn) | Tên một read trong bảng của `read list`. Bỏ trống: tool liệt kê mọi read kèm tham số và việc một tài khoản thật đã trả lời nó chưa (`verified`) |
+| `args` | object (tuỳ chọn) | Tham số của read theo đúng tên (id là chuỗi); thiếu tham số bắt buộc thì tool báo lỗi và không gọi Zalo |
+
+Kết quả: `{reads: [{name, what, host, path, verified, args}]}` khi không có `name`; `{name, data}` với `data` là phần trả lời của Zalo khi có `name`. Các read chưa `verified` có yêu cầu dựng theo client web nhưng chưa thấy được trả lời thật.
+
 ### `zalo_friend`
 Kiểm tra, liệt kê và xử lý lời mời kết bạn, và liệt kê bạn bè — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request` và `list`.
 
@@ -712,6 +723,7 @@ MCP server expose **25 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Khảo sát nhóm (Poll) | `zalo_poll` | `zalo-agent --json poll …` |
 | Nhãn hội thoại (Label) | `zalo_label` | `zalo-agent --json label …` |
 | Thông tin nhóm, tạo nhóm, thêm/xóa thành viên, rời nhóm | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
+| Danh mục sticker/GIF, tìm GIF, hạng hồ sơ, danh sách chặn, biệt danh và các read khác của Zalo Web | `zalo_read` | `zalo-agent --json read list\|run <name>` |
 | Bạn bè: trạng thái, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè | `zalo_friend` | `zalo-agent --json friend request-status\|sent-requests\|recommendations\|add\|accept\|reject\|undo-request\|list` |
 | Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
 | Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |
@@ -810,7 +822,7 @@ Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự d�
      ↓
 Thread Filter (watchThreads) + Thread Name Cache (groups/friends, fuzzy search)
      ↓
-MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 25 tools
+MCP Server (stdio hoặc HTTP/HTTPS + OAuth 2.0) — registerTools() đăng ký cả 26 tools
      ↓
 Claude Code / Gemini / MCP Client
 ```

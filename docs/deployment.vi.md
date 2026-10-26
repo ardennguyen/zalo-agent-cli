@@ -56,7 +56,7 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 >
 > | Tính năng | `listen` | `mcp start` |
 > |---|---|---|
-> | Bề mặt 25 MCP tools (`src/mcp/mcp-tools.js`) | không | **có** |
+> | Bề mặt 26 MCP tools (`src/mcp/mcp-tools.js`) | không | **có** |
 > | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, các endpoint OAuth 2.0 | không | **có** (khi có `--http`) |
 > | Đẩy sự kiện qua `-w, --webhook <url>` + `--webhook-secret <secret>` | **có** | **có** |
 > | Lưu trữ JSONL (`--save <dir>`) | **có** | không |

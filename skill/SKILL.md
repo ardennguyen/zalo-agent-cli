@@ -146,7 +146,7 @@ zalo-agent sync-mobile --messages-only       # ...history only, skip the media f
 zalo-agent sync-media                        # Re-run/resume the media fetch on its own — no phone needed
 zalo-agent sync-media --kind photo,video --dry-run   # ...plan the fetch without touching the network
 zalo-agent sync-boards                       # Notes, pinned messages, polls, reminders — NOT in the message stream
-zalo-agent sync-cloud                        # Walk the zCloud media index (records where backups live)
+zalo-agent sync-cloud                        # Walk the zCloud media index (records where backups live; follows removals; --full sweeps)
 
 # Cleanup. Always preview with --dry-run; none of these contact Zalo.
 zalo-agent sync-media --prune 90 --dry-run   # Delete downloaded media older than N days (message text kept)

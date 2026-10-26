@@ -34,6 +34,7 @@ import { setUserInfoLogger } from "../core/user-info.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
+import { createCloudVerifier } from "../core/cloud-verify.js";
 import { createReadStateSync } from "../core/read-state.js";
 import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
@@ -763,6 +764,14 @@ export function registerMCPCommands(program) {
             // stores it, so a thread the human read on the phone stops
             // looking unread (src/core/read-state.js).
             createReadStateSync({ tap: socketTap, log: (line) => console.error(`[mcp] ${line}`) });
+            // The cloud queue, kept current when the server says it may be stale (cmd 621): bounded, read-only,
+            // never beside another stage (src/core/cloud-verify.js). Same in `listen` and `mcp start`.
+            createCloudVerifier({
+                tap: socketTap,
+                getApi,
+                lock: stageLock,
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
             const selfHeal = createSelfHeal({
                 getApi,
                 tap: socketTap,

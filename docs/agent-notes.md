@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3129** as of 2026-10-26 (3124 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3193** as of 2026-10-26 (3188 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1397,3 +1397,57 @@ A tombstone's text is `[deleted]`, which stays in the index and is never returne
 `ensureSearchIndex` is not run by a daemon at start, because a slice per search needs no coordination; a daemon that
 searches little would finish the build on its first dozen searches. The wiki pages (EN and VN) are updated with the
 release, like the logout pages.
+
+## zCloud: what the web client does with the queue, and what we do (v3.0, 2026-10-26)
+
+**What Zalo Web does** (bundle modules `_EZi` for the walker, `bWos` for the keys, `MNOV` for the batch form, `tP1L` for
+the transport): on each cmd 621 `mycloudMedia` push it walks the verify queue from its saved last noise id and applies
+every page, newest reset first. An `add` entry is stored. A `remove` entry carries the messages it removes in
+`msgInfo.extInfo.orgMsgs[{type, uidFrom, uidTo, clientDelMsgId}]`, and each becomes the key `cliMsgId_conversation_sender`
+(a 0 standing for the account, a DM's conversation being the other side, a group's id carrying a `g` prefix in the web
+only). A `del_thread` entry clears a conversation's items older than its client timestamp (the first `orgMsgs` entry's
+`uidTo`, or the group for a `group.leave`). A `reset_cloud` entry empties the store except the self chat (`send2me_id`),
+and drops the page's entries that are older than it. `temp` and `duplicate` do nothing. The id of the last page is
+saved, and the push is acted on at most once in 30 minutes. The old `sync-cloud` recorded `add` entries and only counted
+the rest, so a recall, a cleared chat or a reset left items in the index for good.
+
+**What we do.** `applyQueuePage` in `src/core/sync-v2/zcloud.js` is that page logic; `syncCloudIndex` applies each page
+as it arrives and calls `onPage` with the place to resume from, which `sync-cloud` saves after every page and keeps when
+the walk is complete (the old code threw it away then, so every run started from the top). The keys are computed the same
+way (`cloudKeyOf`, `removalKeysOf`, `threadClearOf`), in this database's own conversation spelling (a group's id without
+the `g`). `cloud_items` gained `zKey`, `seenAt`, `keyVersion` and `algoVersion`; rows written before get their key
+from `raw_data` at the start of a walk. `--full` walks from the top and, only when the server has said it is done and
+nothing failed, deletes every row no page of that walk stamped: the mark-and-sweep for an index the incremental walks left
+stale. It never deletes before the end, so an interrupted full walk loses nothing. The web client wipes the store first
+("verify from nothing"); we do not, because a failed walk would then leave nothing.
+
+**cmd 621 in the daemon** (`src/core/cloud-verify.js`, built identically in `listen` and `mcp start`). The live payload is
+`{"mycloudMedia": {pageSize, lastNoiseId, forceVerify, onboardingCompleted, auditLocalCloudQueue, correctCloudKey}}`
+as plain JSON in the frame's `data.data`. Rules: only after a person has run `sync-cloud` once (the first walk reads
+the whole queue, megabytes for an old account); nothing when the push's `lastNoiseId` equals the saved place; at most
+once in 30 minutes; never while another stage holds the lock (it takes the lock with `tryAcquire`, never waits); at most
+20 pages, the next push continues; the four forcing fields are read and ignored (`sync-cloud --full` is the explicit
+form); and **never an acknowledgment**: the onboarding ack the web client sends after its first verify, `submitMediaExtInfo`,
+`reset`, the QoS and migration calls all change what Zalo does with the account's cloud, and none of them is ours to send.
+
+**Transport rules** (`zcloudGet`). A refused viewer key (-1, -205) is dropped. The web client then fails that request; we
+fetch a new key once and repeat the GET, which is one extra request, so a stale key from the login does not fail the first
+call of a run. After a refusal the login's key is never used again (it is known stale), which a first version got wrong:
+the dropped key fell back to the login's. Server code 112, a dropped connection, an unreadable reply and an HTTP 4xx/5xx
+are retried after 0, 5, 5 and 10 s; a 4xx/5xx moves to the next zCloud domain of the service map; every other code,
+-201 included, fails at once. An error reply's own payload is decrypted and kept on the error (`error.payload`). Download
+URLs are asked for through a 500 ms window (ended early by 50 waiting callers or 100 waiting ids), 100 to a request, and
+reused for 60 s. The web client also keeps them 24 h; we do not, because a signed URL is not something to write down.
+`usage-mycloud`, `family-usage` and the family viewer key are read-only reads (`getMyCloudUsage`, `getFamilyUsage`,
+`getFamilyViewerKey`); nothing calls them yet, and which key the family reads want is not measured.
+
+**Item shape.** The blob's key and versions are the item's top-level `encryptInfo {encryptKey, keyVersion, algoVersion,
+cloudUrl}`. `mediaInfo.mediaExtInfo {data, encryptInfo {encryptKey, encryptVer}}` is the file-name and thumbnail
+metadata under a different key; it stays in `raw_data` and is never taken for the blob's key. Nothing is decrypted.
+
+**The key is out of scope (decision D8), and this is why it is a decision.** Reading names, thumbnails or blobs needs the
+account's RSA private key, which the web client gets from the phone: `GET req_cloud_key` opens a pending transfer, the phone
+user approves, and the key arrives on the chat socket as a `personal_cloud` control, wrapped in a Signal-style message
+addressed to the account's own E2EE session. Taking part needs a registered E2EE device identity, a state-changing step on
+the account whose effect on other devices is unknown, plus secure storage, key-version and `correct_cloud_key` handling and
+free-plan removal. None of it is built, and no live request for it was made.

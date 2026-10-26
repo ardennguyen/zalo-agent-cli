@@ -182,6 +182,9 @@ let n = 0;
 
 beforeEach(() => {
     opened.push(initDb(join(ROOT, `db${n++}.sqlite`)));
+    // No real waiting: retries are immediate, and download URLs are asked for at once and not reused.
+    zcloud.configureZCloudRetry({ delaysMs: [0, 0, 0, 0] });
+    zcloud.configureZCloudDownloads({ windowMs: 0, cacheMs: 60_000 });
 });
 
 after(() => {
@@ -504,7 +507,13 @@ describe("zCloud is a partial source", () => {
         });
         const stats = await zcloud.syncCloudIndex({
             verify: async () => ({
-                items: [addItem("nz-add"), undo, addItem("nz-del", { action: 3 }), addItem("nz-reset", { action: 5 })],
+                // The reset is older than the add: only what came after a reset survives it.
+                items: [
+                    addItem("nz-add"),
+                    undo,
+                    addItem("nz-del", { action: 3 }),
+                    addItem("nz-reset", { action: 5, ts: 1_790_000_000_050 }),
+                ],
             }),
         });
         assert.deepEqual(
@@ -550,5 +559,247 @@ describe("zCloud is a partial source", () => {
         const hit = zcloud.lookupCloudBackup("glb-nz-hit");
         assert.equal(hit.found, true);
         assert.equal(hit.item.noiseId, "nz-hit");
+    });
+});
+
+describe("zCloud transport failures follow the web client's rules", () => {
+    const ok = () => cloudOk(page([addItem("nz-ok")]));
+
+    it("retries server code 112 and succeeds once the server does", async () => {
+        let calls = 0;
+        const h = harness({ routes: { [P.verify]: () => (++calls < 3 ? cloudErr(112, "busy") : ok()) } });
+        const stats = await zcloud.syncCloudIndex({ api: h.api });
+        assert.equal(h.to(P.verify).length, 3);
+        assert.equal(stats.failed, 0);
+        assert.equal(stats.items, 1);
+    });
+
+    it("retries a dropped connection, and a reply that is not valid data", async () => {
+        let calls = 0;
+        const h = harness({
+            routes: {
+                [P.verify]: () => {
+                    calls++;
+                    if (calls === 1) throw new Error("socket hang up");
+                    if (calls === 2)
+                        return {
+                            ok: true,
+                            status: 200,
+                            headers: { get: () => null },
+                            json: async () => {
+                                throw new Error("not json");
+                            },
+                        };
+                    if (calls === 3) return response({ error_code: 0, data: "!!!not-base64-iv-and-ciphertext!!!" });
+                    return ok();
+                },
+            },
+        });
+        const stats = await zcloud.syncCloudIndex({ api: h.api });
+        assert.equal(h.to(P.verify).length, 4);
+        assert.equal(stats.items, 1);
+    });
+
+    it("gives up after four retries, and says why", async () => {
+        const h = harness({ routes: { [P.verify]: () => cloudErr(112, "busy") } });
+        const stats = await zcloud.syncCloudIndex({ api: h.api });
+        assert.equal(h.to(P.verify).length, 5, "the first try and four retries");
+        assert.equal(stats.failed, 1);
+        assert.match(stats.failures[0].reason, /112/);
+    });
+
+    it("waits between retries by the delays it was given", async () => {
+        zcloud.configureZCloudRetry({ delaysMs: [30, 30] });
+        const h = harness({ routes: { [P.verify]: () => cloudErr(112, "busy") } });
+        const t0 = Date.now();
+        await zcloud.syncCloudIndex({ api: h.api });
+        assert.equal(h.to(P.verify).length, 3);
+        assert.ok(Date.now() - t0 >= 55, `the two waits happened (${Date.now() - t0} ms)`);
+    });
+
+    it("fails at once on -201, and on any code that is not a retry code", async () => {
+        const a = harness({ routes: { [P.verify]: () => cloudErr(-201, "quota") } });
+        await zcloud.syncCloudIndex({ api: a.api });
+        assert.equal(a.to(P.verify).length, 1);
+        const b = harness({ routes: { [P.verify]: () => cloudErr(-7, "no") } });
+        await zcloud.syncCloudIndex({ api: b.api });
+        assert.equal(b.to(P.verify).length, 1);
+    });
+
+    it("on an HTTP error moves to the next zCloud domain of the service map", async () => {
+        const second = "https://zcld2.chat.zalo.me";
+        const h = harness({
+            routes: { [P.verify]: (c) => (c.origin === ZCLD ? response({}, 503) : ok()) },
+        });
+        h.api.zpwServiceMap = { zcloud: [ZCLD, second] };
+        const stats = await zcloud.syncCloudIndex({ api: h.api });
+        assert.deepEqual(
+            h.to(P.verify).map((c) => c.origin),
+            [ZCLD, second],
+        );
+        assert.equal(stats.items, 1);
+    });
+
+    it("hands back the decrypted payload of an error reply", async () => {
+        const h = harness({
+            routes: {
+                [P.usage]: () =>
+                    response({
+                        error_code: -5,
+                        error_message: "nope",
+                        data: webEncryptAES(JSON.stringify({ reason: "over-quota" }), ENK),
+                    }),
+            },
+        });
+        const e = await zcloud.getCloudUsage(h.api).catch((err) => err);
+        assert.ok(e instanceof zcloud.ZCloudError);
+        assert.equal(e.code, -5);
+        assert.deepEqual(e.payload, { reason: "over-quota" });
+    });
+
+    it("keeps a refreshed key for later calls, and drops a key the server rejected", async () => {
+        let rejecting = false;
+        const h = harness({
+            loginInfo: { zcloud: { viewer_key: VK_STALE, enk: ENK } },
+            routes: {
+                [P.key]: () => sessionOk({ viewer_key: VK_FRESH, enk: ENK_FRESH }),
+                [P.verify]: (c) =>
+                    !rejecting && c.headers["cloud-viewer-key"] === VK_FRESH
+                        ? cloudOk(page([]), ENK_FRESH)
+                        : cloudErr(-205, "Invalid CloudViewerKey"),
+            },
+        });
+        await zcloud.syncCloudIndex({ api: h.api });
+        await zcloud.syncCloudIndex({ api: h.api });
+        assert.equal(h.to(P.key).length, 1, "the refreshed key is reused");
+        rejecting = true;
+        await zcloud.syncCloudIndex({ api: h.api });
+        const before = h.calls.length;
+        await zcloud.syncCloudIndex({ api: h.api });
+        assert.equal(h.to(P.key).length, 3, "a rejected key is fetched again on the next call, not kept");
+        assert.equal(
+            h.calls[before].path,
+            P.key,
+            "and fetched before the request, not after it failed with the old one",
+        );
+    });
+
+    it("does not count a viewer-key refresh against the four retries", async () => {
+        let calls = 0;
+        const h = harness({
+            loginInfo: { zcloud: { viewer_key: VK_STALE, enk: ENK } },
+            routes: {
+                [P.key]: () => sessionOk({ viewer_key: VK_FRESH, enk: ENK_FRESH }),
+                [P.verify]: () => {
+                    calls++;
+                    if (calls === 1) return cloudErr(-205, "Invalid CloudViewerKey");
+                    return calls <= 5 ? cloudErr(112, "busy") : cloudOk(page([addItem("nz-ok")]), ENK_FRESH);
+                },
+            },
+        });
+        const stats = await zcloud.syncCloudIndex({ api: h.api });
+        assert.equal(stats.failed, 0, stats.failures[0]?.reason);
+        assert.equal(stats.items, 1);
+    });
+});
+
+describe("download URLs are batched and reused like the web client's", () => {
+    const urls = (c) => {
+        const idsAsked = plain(c).list_noise_ids;
+        return cloudOk({ download_urls: Object.fromEntries(idsAsked.map((id) => [id, `https://cdn.invalid/${id}`])) });
+    };
+
+    it("callers within the window share one request", async () => {
+        zcloud.configureZCloudDownloads({ windowMs: 40 });
+        const h = harness({ routes: { [P.urls]: urls } });
+        const [a, b] = await Promise.all([
+            zcloud.fetchCloudDownloadUrl(h.api, ["nz-a"]),
+            zcloud.fetchCloudDownloadUrl(h.api, ["nz-b", "nz-a"]),
+        ]);
+        assert.equal(h.to(P.urls).length, 1);
+        assert.deepEqual(plain(h.to(P.urls)[0]).list_noise_ids.sort(), ["nz-a", "nz-b"]);
+        assert.equal(a.urls["nz-a"], "https://cdn.invalid/nz-a");
+        assert.equal(b.urls["nz-b"], "https://cdn.invalid/nz-b");
+    });
+
+    it("fifty waiting callers do not wait out the window", { timeout: 5000 }, async () => {
+        zcloud.configureZCloudDownloads({ windowMs: 60_000 });
+        const h = harness({ routes: { [P.urls]: urls } });
+        const all = await Promise.all(
+            Array.from({ length: 50 }, (_, i) => zcloud.fetchCloudDownloadUrl(h.api, [`nz-${i}`])),
+        );
+        assert.equal(all.length, 50);
+        assert.equal(h.to(P.urls).length, 1);
+    });
+
+    it("reuses a URL for the cache time and asks again after it", async () => {
+        const h = harness({ routes: { [P.urls]: urls } });
+        await zcloud.fetchCloudDownloadUrl(h.api, ["nz-a"]);
+        const again = await zcloud.fetchCloudDownloadUrl(h.api, ["nz-a"]);
+        assert.equal(h.to(P.urls).length, 1);
+        assert.equal(again.urls["nz-a"], "https://cdn.invalid/nz-a");
+        zcloud.configureZCloudDownloads({ cacheMs: 0 });
+        await zcloud.fetchCloudDownloadUrl(h.api, ["nz-a"]);
+        assert.equal(h.to(P.urls).length, 2);
+    });
+
+    it("does not remember an id Zalo had no URL for", async () => {
+        const h = harness({ routes: { [P.urls]: () => cloudOk({ download_urls: {} }) } });
+        const a = await zcloud.fetchCloudDownloadUrl(h.api, ["nz-x"]);
+        await zcloud.fetchCloudDownloadUrl(h.api, ["nz-x"]);
+        assert.deepEqual(a.unresolved, ["nz-x"]);
+        assert.equal(h.to(P.urls).length, 2);
+    });
+
+    it("rejects every caller of a request that failed", async () => {
+        zcloud.configureZCloudDownloads({ windowMs: 30 });
+        zcloud.configureZCloudRetry({ delaysMs: [] });
+        const h = harness({ routes: { [P.urls]: () => cloudErr(-7, "no") } });
+        const r = await Promise.allSettled([
+            zcloud.fetchCloudDownloadUrl(h.api, ["nz-a"]),
+            zcloud.fetchCloudDownloadUrl(h.api, ["nz-b"]),
+        ]);
+        assert.deepEqual(
+            r.map((x) => x.status),
+            ["rejected", "rejected"],
+        );
+        assert.equal(h.to(P.urls).length, 1);
+    });
+});
+
+describe("the read-only boot reads", () => {
+    it("usage-mycloud and family-usage are header-authenticated GETs on zcld", async () => {
+        const h = harness({
+            routes: {
+                "/cloudmedia/info/pc/v1/usage-mycloud": () => cloudOk({ usage: 5 }),
+                "/cloudmedia/info/pc/v1/family-usage": () => cloudOk({ members: [] }),
+            },
+        });
+        assert.deepEqual(await zcloud.getMyCloudUsage(h.api), { usage: 5 });
+        assert.deepEqual(await zcloud.getFamilyUsage(h.api), { members: [] });
+        for (const c of h.calls) {
+            assert.equal(c.origin, ZCLD);
+            assert.equal(c.method, "GET");
+            assert.equal(c.headers["cloud-viewer-key"], VK_LOGIN);
+        }
+    });
+
+    it("the family viewer key comes from the auth domain and does not replace the account's own", async () => {
+        const h = harness({
+            routes: {
+                "/api/getFamilyViewerKey": () => sessionOk({ viewer_key: VK_FRESH, enk: ENK_FRESH }),
+                [P.verify]: () => cloudOk(page([])),
+            },
+        });
+        const key = await zcloud.getFamilyViewerKey(h.api);
+        assert.equal(key.viewerKey, VK_FRESH);
+        assert.equal(key.source, "getFamilyViewerKey");
+        assert.equal(h.to("/api/getFamilyViewerKey")[0].origin, "https://wpa.chat.zalo.me");
+        await zcloud.syncCloudIndex({ api: h.api, maxPages: 1 });
+        assert.equal(
+            h.to(P.verify)[0].headers["cloud-viewer-key"],
+            VK_LOGIN,
+            "the cloud calls still use their own key",
+        );
     });
 });

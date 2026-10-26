@@ -285,6 +285,16 @@ export function initDb(dbPath) {
     try {
         db.exec("ALTER TABLE messages ADD COLUMN text_norm TEXT");
     } catch {}
+    // What the zCloud queue needs to apply a removal: `zKey` (`cliMsgId_conversation_sender`, the key a remove entry
+    // names its victims by), `seenAt` (the start time of the last walk that listed the item, for a full walk's sweep)
+    // and the key/algorithm versions the item's `encryptInfo` carries. All nullable; `sync-cloud` fills the first two
+    // for rows written before they existed.
+    for (const col of ["zKey TEXT", "seenAt INTEGER", "keyVersion INTEGER", "algoVersion INTEGER"]) {
+        try {
+            db.exec(`ALTER TABLE cloud_items ADD COLUMN ${col}`);
+        } catch {}
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_cloud_zkey ON cloud_items(zKey)");
     // The fold as an SQL function, for the rows that have none yet.
     db.function("vn_strip", { deterministic: true }, (s) =>
         s === null || s === undefined ? null : stripVietnamese(s),
@@ -1751,9 +1761,9 @@ export function upsertCloudItem(item) {
         .prepare(
             `INSERT INTO cloud_items
        (noiseId, threadId, msgId, msgType, mediaType, cloudUrl, encryptKey, checksum,
-        mediaSize, timestamp, localPath, raw_data, sync_timestamp)
+        mediaSize, timestamp, localPath, raw_data, sync_timestamp, zKey, seenAt, keyVersion, algoVersion)
      VALUES (@noiseId, @threadId, @msgId, @msgType, @mediaType, @cloudUrl, @encryptKey, @checksum,
-             @mediaSize, @timestamp, @localPath, @raw_data, @sync_timestamp)
+             @mediaSize, @timestamp, @localPath, @raw_data, @sync_timestamp, @zKey, @seenAt, @keyVersion, @algoVersion)
      ON CONFLICT(noiseId) DO UPDATE SET
        threadId = COALESCE(excluded.threadId, cloud_items.threadId),
        msgId = COALESCE(excluded.msgId, cloud_items.msgId),
@@ -1763,7 +1773,11 @@ export function upsertCloudItem(item) {
        mediaSize = COALESCE(excluded.mediaSize, cloud_items.mediaSize),
        localPath = COALESCE(excluded.localPath, cloud_items.localPath),
        raw_data = excluded.raw_data,
-       sync_timestamp = excluded.sync_timestamp`,
+       sync_timestamp = excluded.sync_timestamp,
+       zKey = COALESCE(excluded.zKey, cloud_items.zKey),
+       seenAt = COALESCE(excluded.seenAt, cloud_items.seenAt),
+       keyVersion = COALESCE(excluded.keyVersion, cloud_items.keyVersion),
+       algoVersion = COALESCE(excluded.algoVersion, cloud_items.algoVersion)`,
         )
         .run({
             noiseId: String(item.noiseId),
@@ -1779,7 +1793,94 @@ export function upsertCloudItem(item) {
             localPath: item.localPath ?? null,
             raw_data: typeof item.raw_data === "object" ? JSON.stringify(item.raw_data) : (item.raw_data ?? null),
             sync_timestamp: item.sync_timestamp || Date.now(),
+            zKey: item.zKey || null,
+            seenAt: Number(item.seenAt) || null,
+            keyVersion: item.keyVersion === undefined || item.keyVersion === null ? null : Number(item.keyVersion) || 0,
+            algoVersion:
+                item.algoVersion === undefined || item.algoVersion === null ? null : Number(item.algoVersion) || 0,
         });
+}
+
+/**
+ * Remove the cloud items a queue `remove` entry names, by zKey. Returns how many rows went.
+ *
+ * @param {string[]} zKeys
+ */
+export function removeCloudItemsByZKey(zKeys) {
+    if (!db) throw new Error("Database not initialized");
+    const del = db.prepare("DELETE FROM cloud_items WHERE zKey = ?");
+    let n = 0;
+    db.transaction(() => {
+        for (const k of zKeys) if (k) n += del.run(String(k)).changes;
+    })();
+    return n;
+}
+
+/**
+ * Remove a conversation's cloud items older than `beforeTs` (a queue `del_thread` entry: the conversation was
+ * cleared at that moment). Returns how many rows went.
+ *
+ * @param {string} threadId
+ * @param {number} beforeTs - epoch ms; items with a smaller timestamp go
+ */
+export function removeCloudItemsBefore(threadId, beforeTs) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare("DELETE FROM cloud_items WHERE threadId = ? AND timestamp < ?")
+        .run(String(threadId), Number(beforeTs) || 0).changes;
+}
+
+/**
+ * Remove every cloud item except the ones of the given conversations (a queue `reset_cloud` entry: the cloud was
+ * emptied, and the self chat is the one conversation that survives it).
+ *
+ * @param {string[]} keepThreadIds
+ */
+export function removeCloudItemsExcept(keepThreadIds) {
+    if (!db) throw new Error("Database not initialized");
+    const keep = [...new Set(keepThreadIds.filter(Boolean).map(String))];
+    const marks = keep.map(() => "?").join(",");
+    // SQLite reads an empty `NOT IN ()` as true, so an empty list empties the table.
+    return db.prepare(`DELETE FROM cloud_items WHERE threadId IS NULL OR threadId NOT IN (${marks})`).run(...keep)
+        .changes;
+}
+
+/**
+ * After a full walk: drop the items no page of that walk listed (`seenAt` older than the walk's start, or never
+ * set). Only call it after a walk that the server said was complete.
+ *
+ * @param {number} walkStartedAt
+ */
+export function sweepCloudItemsNotSeenSince(walkStartedAt) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("DELETE FROM cloud_items WHERE seenAt IS NULL OR seenAt < ?").run(Number(walkStartedAt)).changes;
+}
+
+/**
+ * Give the rows written before `zKey` existed their key: `compute(row)` is handed each such row and returns the key
+ * (or null to leave it). Returns how many rows were filled.
+ *
+ * @param {(row: object) => string|null} compute
+ */
+export function backfillCloudZKeys(compute) {
+    if (!db) throw new Error("Database not initialized");
+    const rows = db.prepare("SELECT noiseId, raw_data, threadId FROM cloud_items WHERE zKey IS NULL").all();
+    const set = db.prepare("UPDATE cloud_items SET zKey = ? WHERE noiseId = ?");
+    let n = 0;
+    db.transaction(() => {
+        for (const row of rows) {
+            let parsed = null;
+            try {
+                parsed = JSON.parse(row.raw_data);
+            } catch {}
+            const key = parsed ? compute(parsed) : null;
+            if (key) {
+                set.run(key, row.noiseId);
+                n++;
+            }
+        }
+    })();
+    return n;
 }
 
 /** zCloud items, newest first; optionally one thread's. */

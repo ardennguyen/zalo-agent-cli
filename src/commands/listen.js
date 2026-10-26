@@ -27,6 +27,7 @@ import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.j
 import { setUserInfoLogger } from "../core/user-info.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
+import { createCloudVerifier } from "../core/cloud-verify.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
@@ -604,6 +605,14 @@ export function registerListenCommand(program) {
                     const { data, human } = readStateEvent(change);
                     emitEvent(data, human);
                 },
+            });
+            // The cloud queue, kept current when the server says it may be stale (cmd 621): bounded, read-only,
+            // never beside another stage (src/core/cloud-verify.js). Same in `listen` and `mcp start`.
+            createCloudVerifier({
+                tap: socketTap,
+                getApi,
+                lock: stageLock,
+                log: (line) => console.error(`[listen] ${line}`),
             });
             const selfHeal = createSelfHeal({
                 getApi,

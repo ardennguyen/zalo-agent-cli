@@ -325,7 +325,12 @@ export function registerSyncCommands(program) {
         )
         .option("-p, --pages <n>", "Maximum pages to walk", parseIntAtLeast(1), 50)
         .option("-s, --page-size <n>", "Items per page (Zalo Web uses 300)", parseIntAtLeast(1), 300)
-        .option("-r, --resume <noiseId>", "Resume from this cursor instead of starting over")
+        .option("-r, --resume <noiseId>", "Resume from this cursor instead of the saved one")
+        .option(
+            "--full",
+            "Walk from the top and, once the server says it is done, delete every local item no page listed " +
+                "(corrects an index the incremental walks left stale)",
+        )
         .action(async (opts) => {
             await runCloudSync(requireAccount(), opts);
         });
@@ -889,31 +894,36 @@ async function runCloudSync(activeAcc, opts) {
 /**
  * One walk of the zCloud index. Exit-free.
  *
- * The cursor used to be printed and thrown away, so a walk capped by --pages
- * could only be continued by hand-copying it into --resume. It is now kept:
- * saved when the walk stops on the cap, cleared when the server says it has
- * nothing further, and an explicit --resume still wins.
+ * The cursor is saved after every page and kept when the walk is complete, as Zalo Web keeps its last noise id: the
+ * next walk starts there and reads only what is new (a killed or capped walk carries on from its last page, not from
+ * the top). `full` ignores the saved place, walks from the top and sweeps what no page listed; an explicit `resume`
+ * wins over the saved place.
  *
  * @param {object} api
- * @param {{resume?: string, pageSize?: number, pages?: number}} opts
+ * @param {{resume?: string, full?: boolean, pageSize?: number, pages?: number,
+ *   verify?: (params: object) => Promise<object>}} opts - `verify` replaces the network call (tests)
  * @returns {Promise<{status: "ok"|"unavailable", stats: object}>}
  */
-async function cloudPass(api, opts) {
+export async function cloudPass(api, opts) {
     const saved = getSyncState("cloudCursor");
     const resume = opts.resume || saved || "";
-    if (!opts.resume && saved) info("Continuing the cloud walk from where the last capped run stopped.");
-    info("Walking the zCloud media index…");
+    if (!opts.full && !opts.resume && saved) info("Reading the cloud queue from where the last walk stopped.");
+    info(opts.full ? "Walking the whole zCloud queue…" : "Walking the zCloud media index…");
     const stats = await syncCloudIndex({
         api,
         lastNoiseId: resume,
+        full: !!opts.full,
+        verify: opts.verify,
         pageSize: opts.pageSize,
         maxPages: opts.pages,
         onProgress: (p) => info(`  page ${p.page}: ${p.items} item(s) so far`),
+        onPage: (p) => setSyncState("cloudCursor", p.cursor),
     });
-    if (stats.failed && !stats.items) return { status: "unavailable", stats };
-    if (stats.complete) clearSyncState("cloudCursor");
-    else if (stats.lastNoiseId) setSyncState("cloudCursor", String(stats.lastNoiseId));
-    success(`Recorded ${stats.items} cloud item(s) across ${stats.pages} page(s).`);
+    if (stats.failed && !stats.items && !stats.removed) return { status: "unavailable", stats };
+    const bits = [`Recorded ${stats.items} cloud item(s) across ${stats.pages} page(s)`];
+    if (stats.removed) bits.push(`removed ${stats.removed} the cloud no longer holds`);
+    if (stats.swept) bits.push(`swept ${stats.swept} no page listed`);
+    success(`${bits.join(", ")}.`);
     return { status: "ok", stats };
 }
 

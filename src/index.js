@@ -112,6 +112,8 @@ program
         // Daemons authenticate their pinned identity after acquiring its lock.
         const skipAutoLogin =
             ["login", "account", "help", "version", "update", "oa", "mcp", "listen", "fleet"].includes(cmdName) ||
+            // A command that only reads the local cache (`msg search`) needs no session.
+            actionCommand.zaloLocalOnly === true ||
             (cmdName === "logout" && !logoutNeedsSession(actionCommand.opts(), getActive()));
         if (!skipAutoLogin) {
             await autoLogin(program.opts().json);

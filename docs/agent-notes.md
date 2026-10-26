@@ -80,11 +80,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **222** invokable leaves (190 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **223** invokable leaves (191 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3053** as of 2026-10-26 (3048 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3129** as of 2026-10-26 (3124 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -116,7 +116,7 @@ guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**.
+Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**. Measured again 2026-10-26, after `msg search`: **223 leaves, 24 containers, 247 nodes**.
 By group: group 35, oa 32, friend 26, msg 24, conv 21, top-level 12, profile 14,
 catalog 10, account 7, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
 leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
@@ -1351,3 +1351,49 @@ messages in its first shard. Every 590 and 591 is acknowledged with `err 0`; a `
 `{error: 0}`; the pulls 515, 517 and 518 answer in the shape of the old-message queues; 603/0 and 603/1 answer pages
 of 50 `transfer_sync2` controls with `more`; the keepalive answers `{config_vesion}`, and a change in it now refreshes
 the settings at once.
+
+## Search: what Zalo does, what we do, and what it cost (v3.0, 2026-10-26)
+
+**What Zalo's clients do** (read in the Web and PC bundles; the captured session sent no search request at all):
+search is local, in the client's own store. The keyword and the text are folded alike by `simpleStripVietnamese`
+(lowercase, every Vietnamese vowel with its marks to the bare letter, `d` for `đ`), then matched as a substring; the
+keyword is at most 100 characters; a hit is shown as 70 characters before the match and 30 after; results come in
+pages and the footer says how far back the local data reaches. No ranking exists in the code (F10): results are in time
+order. The media tab filters by sender, by a substring of the title (folded), by extension group and by a date range
+that is whole days. We follow all of that except the extension groups. The server switch `enable_matching_enhance` is
+off for everyone and is not followed either.
+
+**What we do.** `src/utils/vn-text.js` is the fold: it strips exactly the eight Vietnamese marks (grave, acute, tilde,
+hook above, dot below, breve, circumflex, horn) from a, e, i, o, u, y, and leaves every other letter alone (`ñ`, `ç`
+and `ü` keep theirs, as in the official function). It is built on decomposition, so the composed and the decomposed
+spelling fold alike. `messages.text_norm` holds the fold of `text`; the three message writers keep it (every one of
+them goes through `insertMessage`, `insertMessageIfAbsent` or `markMessageRecalled` in `db.js`, so nothing else had to
+change). Rows written before the column existed are filled in once from `text` and never from `raw_data`, only where
+the fold is empty. That backfill and the index below are **derived data, not message writes**: no `text`, `type` or other
+column changes, and running them beside a live daemon changes nothing it should not.
+
+`src/core/search.js` is the search: a keyword cut to 100 characters, `accents: "fold"` (default) or `"exact"` (the fold
+finds the candidates and the accents are checked on each, case-insensitively and in either Unicode form), filters (thread,
+sender, dates, types), pages keyed on `(timestamp, msgId)` so a message arriving meanwhile shifts nothing, the tabs'
+numbers (matches by type), context around a hit, previews, and the coverage note (how far back the cache reaches, whether
+a phone restore has finished, the pending gaps and the `sync --from` command). `msg search` and `zalo_search_messages` are
+thin around it. `msg search` is marked local-only, so the program's pre-action login is skipped: it reads `zalo.db` and
+nothing else.
+
+**The index, and why it is built the way it is.** Measured on a copy of the 421,000-message test account while the machine
+was at 100% CPU for other reasons: a scan of `text_norm` costs 0.8 to 2 s, and 6 s for a keyword nobody wrote. An FTS5
+trigram index of `text_norm` (+53 MB on 384 MB, 17 s to build) answers a rare keyword in 3 ms and the tab counts of a
+common one in 0.14 s; a global `(timestamp DESC, msgId DESC)` index (5.5 s to build) lets a short or very common keyword
+stop after its first twenty hits. They cannot be built in one go beside a live daemon (a long write lock would make its
+writes fail), so `ensureSearchIndex` builds a slice per search, up to 2 s: the fold first, then the triggers that keep the
+index current **before** the existing rows are indexed (so no row falls between), then the rows in slices of 20,000 with
+`INSERT OR REPLACE` (indexing a row twice is harmless, and an interrupted run carries on from its saved place). Until it is
+done a search scans and folds on the fly the rows that have no fold, so it is correct from the first call; the FTS only ever
+narrows candidates, and the LIKE on `text_norm` still decides, so the index can change how fast a search is, never what it
+finds. The first search after upgrading starts the build; `initDb` only adds the column (instant), so no other command pays. Measured on the copy: the first search folds 386,000 rows in about 22 s (one time, with a progress line in `msg search`), the next three take 3 to 5 s while the index is built in slices, and from the fifth a common keyword takes 0.25 s, two words 33 ms, a keyword nobody wrote 6 ms, an exact-accents search 0.8 s. Finishing the fold in the foreground is deliberate: when most rows have no fold, scanning them with the fold done on the fly costs as much (27 s), so a slice-sized budget would only add waiting. An MCP client sees the same 22 s once, on its first search of a cache that big.
+A tombstone's text is `[deleted]`, which stays in the index and is never returned (deleted rows are filtered out).
+
+**Not done, on purpose.** An extension filter for files (the groups are in the bundle's `fileExt`, not worth a table here).
+`ensureSearchIndex` is not run by a daemon at start, because a slice per search needs no coordination; a daemon that
+searches little would finish the build on its first dozen searches. The wiki pages (EN and VN) are updated with the
+release, like the logout pages.

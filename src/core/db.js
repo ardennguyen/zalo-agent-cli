@@ -1,8 +1,26 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import { stripVietnamese } from "../utils/vn-text.js";
 
 let db;
+/** Is the search index of the open database complete? Reset by {@link initDb}. */
+let searchReady = false;
+/** How long one search may spend building the index before it answers by scanning. */
+let searchBudgetMs = 2000;
+/** Told how the first search's preparation is going (a command shows it; nothing else needs to). */
+let searchProgress;
+
+/**
+ * Change how a search prepares its index: how much it may build per search (default 2 s; 0 builds nothing, so every
+ * search scans), and who is told of progress.
+ *
+ * @param {{budgetMs?: number, onProgress?: ((p: {phase: string, done: number, total: number|null}) => void)|null}} opts
+ */
+export function configureSearchIndex({ budgetMs, onProgress } = {}) {
+    if (Number.isFinite(budgetMs)) searchBudgetMs = budgetMs;
+    if (onProgress !== undefined) searchProgress = onProgress ?? undefined;
+}
 
 /**
  * The client-side id a message's sender generated, read out of raw_data. Guarded with json_valid() because an older
@@ -11,6 +29,11 @@ let db;
  * this way to use the index.
  */
 const CLIENT_ID_EXPR = "CASE WHEN json_valid(raw_data) THEN json_extract(raw_data, '$.cliMsgId') END";
+
+/** A message text as the `text_norm` column holds it: folded, or null when the message has no text. */
+function foldedText(text) {
+    return text === undefined || text === null ? null : stripVietnamese(text);
+}
 
 export function initDb(dbPath) {
     // A fresh login has no accounts/<ownId>/ yet: only a daemon taking its
@@ -254,6 +277,19 @@ export function initDb(dbPath) {
     try {
         db.exec("ALTER TABLE messages ADD COLUMN mediaPrunedAt INTEGER");
     } catch {}
+    // The text a search matches: `text` folded the way Zalo's own clients fold it (lowercase, Vietnamese vowels to
+    // bare letters, đ to d; src/utils/vn-text.js). Kept by the message writers below. Rows written before the column
+    // existed are filled in, and the indexes a search wants are built, the first time a search runs
+    // ({@link ensureSearchIndex}): adding a column is instant, building an index on 400,000 messages is not, and no
+    // other command should pay for it.
+    try {
+        db.exec("ALTER TABLE messages ADD COLUMN text_norm TEXT");
+    } catch {}
+    // The fold as an SQL function, for the rows that have none yet.
+    db.function("vn_strip", { deterministic: true }, (s) =>
+        s === null || s === undefined ? null : stripVietnamese(s),
+    );
+    searchReady = false;
     // An older listener stored the raw live msgType as the row type, so
     // removals landed as 'chat.undo'/'chat.delete' and media as
     // 'chat.photo'/'share.file'/... Every query keyed on the shared vocabulary
@@ -556,8 +592,8 @@ export function insertMessage(msg) {
        excluded.senderId NOT GLOB '*[^0-9]*')
     )`;
     const stmt = db.prepare(`
-    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
-    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
+    INSERT INTO messages (msgId, threadId, senderId, senderName, text, text_norm, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
+    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @text_norm, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
     ON CONFLICT(msgId) DO UPDATE SET
       senderId = CASE WHEN ${canResolveSender} THEN excluded.senderId ELSE messages.senderId END,
       senderName = CASE
@@ -572,6 +608,7 @@ export function insertMessage(msg) {
       -- The phone keeps its own tombstone, so a sync arriving after a live
       -- recall used to overwrite ours with a poorer one.
       text = CASE WHEN messages.type = 'deleted' THEN messages.text ELSE excluded.text END,
+      text_norm = CASE WHEN messages.type = 'deleted' THEN messages.text_norm ELSE excluded.text_norm END,
       timestamp = excluded.timestamp,
       type = CASE WHEN messages.type = 'deleted' THEN messages.type ELSE excluded.type END,
       raw_data = CASE WHEN messages.type = 'deleted' THEN messages.raw_data ELSE excluded.raw_data END,
@@ -640,6 +677,7 @@ export function insertMessage(msg) {
         senderId: msg.senderId,
         senderName: msg.senderName,
         text: msg.text,
+        text_norm: foldedText(msg.text),
         timestamp: msg.timestamp,
         type: msg.type,
         raw_data: raw_data,
@@ -669,8 +707,8 @@ export function insertMessageIfAbsent(msg) {
     if (!db) throw new Error("Database not initialized");
 
     const stmt = db.prepare(`
-    INSERT INTO messages (msgId, threadId, senderId, senderName, text, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
-    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
+    INSERT INTO messages (msgId, threadId, senderId, senderName, text, text_norm, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
+    VALUES (@msgId, @threadId, @senderId, @senderName, @text, @text_norm, @timestamp, @type, @raw_data, @localPath, @has_attachment, @msgStatus)
     ON CONFLICT(msgId) DO NOTHING
   `);
 
@@ -683,6 +721,7 @@ export function insertMessageIfAbsent(msg) {
         senderId: msg.senderId,
         senderName: msg.senderName,
         text: msg.text,
+        text_norm: foldedText(msg.text),
         timestamp: msg.timestamp,
         type: msg.type,
         raw_data: raw_data,
@@ -767,27 +806,152 @@ export function getMessageById(msgId) {
 }
 
 /**
- * Search cached messages by text substring across one or all conversations, newest first.
+ * Fill in `text_norm` for the rows that have a `text` and no fold yet (rows written before the column existed).
  *
- * Purely local SQLite query — never touches the Zalo network. Excludes recalled/deleted
- * tombstones (`type = 'deleted'`) and escapes SQLite LIKE wildcards (`%`, `_`, `\`) so literal
- * characters in `query` match as literals.
+ * One way only: the fold comes from `text` and never from `raw_data`, and a row that already has one is not
+ * touched, so running it again, or beside a live writer, changes nothing it should not. It is derived data, not a
+ * message write: no `text`, `type` or any other column changes.
  *
- * @param {object} opts
- * @param {string} opts.query - Substring to match in message text (case-insensitive for ASCII)
- * @param {string} [opts.threadId] - Restrict to one conversation
- * @param {string} [opts.senderId] - Restrict to one sender UID
- * @param {number} [opts.since] - Only messages at or after this epoch-ms timestamp
- * @param {number} [opts.until] - Only messages at or before this epoch-ms timestamp
- * @param {number} [opts.limit=50] - Max messages to return
- * @returns {Array<object>}
+ * @param {object} [opts]
+ * @param {number} [opts.chunk=5000] - rows per transaction (a live writer waits at most one chunk)
+ * @param {number} [opts.maxRows=Infinity] - stop after this many rows
+ * @param {(done: number) => void} [opts.onProgress]
+ * @returns {{updated: number, remaining: boolean}}
  */
-export function searchMessages(opts = {}) {
+export function backfillTextNorm({ chunk = 5000, maxRows = Infinity, onProgress } = {}) {
     if (!db) throw new Error("Database not initialized");
-    const { query, threadId, senderId, since, until, limit = 50 } = opts;
-    const escaped = String(query ?? "").replace(/[\\%_]/g, "\\$&");
-    const where = ["COALESCE(type, '') != 'deleted'", "text IS NOT NULL", "text LIKE ? ESCAPE '\\'"];
-    const params = [`%${escaped}%`];
+    // Lists exactly the rows still to fill, so "any left?" and "the next chunk" cost nothing once most are done.
+    db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_messages_norm_todo ON messages(msgId) WHERE text_norm IS NULL AND text IS NOT NULL",
+    );
+    const pick = db.prepare("SELECT msgId, text FROM messages WHERE text_norm IS NULL AND text IS NOT NULL LIMIT ?");
+    const fill = db.prepare("UPDATE messages SET text_norm = ? WHERE msgId = ? AND text_norm IS NULL");
+    let updated = 0;
+    while (updated < maxRows) {
+        const rows = pick.all(Math.min(chunk, maxRows - updated));
+        if (!rows.length) break;
+        db.transaction(() => {
+            for (const r of rows) fill.run(stripVietnamese(r.text), r.msgId);
+        })();
+        updated += rows.length;
+        onProgress?.(updated);
+    }
+    const remaining = Boolean(
+        db.prepare("SELECT 1 FROM messages WHERE text_norm IS NULL AND text IS NOT NULL LIMIT 1").get(),
+    );
+    return { updated, remaining };
+}
+
+/**
+ * Make the search fast, a slice at a time: fold the rows that have no fold, then build a trigram full-text index
+ * (FTS5) of the folded text and a timestamp index. On 421,000 messages this turns a search for a rare word from 6 s into
+ * 3 ms, and the tab counts of a common one from 1.9 s into 0.14 s.
+ *
+ * Built so a live daemon is never stopped by it: every step is a short transaction, the triggers that keep the index
+ * current go in before the existing rows are indexed (so no row falls between), indexing a row twice is harmless
+ * (`INSERT OR REPLACE`), and a run that stops half way (a budget, Ctrl+C, a crash) carries on where it was. Until it is
+ * done a search still answers correctly, by scanning; {@link searchMessageRows} asks for a slice before each search.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.budgetMs=Infinity] - stop after about this long (0: do nothing)
+ * @param {boolean} [opts.foldOnly=false] - stop once every row has its fold
+ * @param {number} [opts.sliceRows=20000] - rows indexed per transaction
+ * @param {(p: {phase: string, done: number, total: number|null}) => void} [opts.onProgress] - called after each slice
+ *   is committed
+ * @returns {{ready: boolean, phase: "ready"|"fold"|"index"}}
+ */
+export function ensureSearchIndex({ budgetMs = Infinity, sliceRows = 20000, foldOnly = false, onProgress } = {}) {
+    if (!db) throw new Error("Database not initialized");
+    if (searchReady) return { ready: true, phase: "ready" };
+    if (String(getSyncState("searchIndexReady")) === "1") {
+        searchReady = true;
+        return { ready: true, phase: "ready" };
+    }
+    if (budgetMs <= 0) return { ready: false, phase: "fold" };
+    const deadline = Date.now() + budgetMs;
+
+    // 1. Fold what has no fold.
+    let folded = 0;
+    let total = null;
+    for (;;) {
+        const r = backfillTextNorm({
+            maxRows: 5000,
+            onProgress: (d) => onProgress?.({ phase: "fold", done: folded + d, total }),
+        });
+        if (total === null) total = r.updated + (r.remaining ? foldTodoCount() : 0);
+        folded += r.updated;
+        if (!r.remaining) break;
+        if (Date.now() >= deadline) return { ready: false, phase: "fold" };
+    }
+    if (foldOnly) return { ready: false, phase: "index" };
+
+    // 2. The index and the triggers that keep it. Triggers first: a row written from now on is indexed by its own
+    //    trigger, and every row written before is at or below the highest rowid read in step 3.
+    db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(text_norm, tokenize='trigram');
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages WHEN new.text_norm IS NOT NULL BEGIN
+            INSERT INTO messages_fts(rowid, text_norm) VALUES (new.rowid, new.text_norm);
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF text_norm ON messages BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(rowid, text_norm) SELECT new.rowid, new.text_norm WHERE new.text_norm IS NOT NULL;
+        END;
+    `);
+    if (Date.now() >= deadline) return { ready: false, phase: "index" };
+    // The newest-first order of every search, so a common word is answered by the first rows of this index.
+    db.exec("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp DESC, msgId DESC)");
+
+    // 3. Index the rows that exist, in slices.
+    const max = db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM messages").get().m;
+    let cursor = Number(getSyncState("searchIndexCursor")) || 0;
+    const slice = db.prepare(
+        "INSERT OR REPLACE INTO messages_fts(rowid, text_norm) SELECT rowid, text_norm FROM messages WHERE rowid > ? AND rowid <= ? AND text_norm IS NOT NULL",
+    );
+    while (cursor < max) {
+        if (Date.now() >= deadline) return { ready: false, phase: "index" };
+        const to = Math.min(max, cursor + sliceRows);
+        db.transaction(() => {
+            slice.run(cursor, to);
+            setSyncState("searchIndexCursor", to);
+        })();
+        cursor = to;
+        onProgress?.({ phase: "index", done: cursor, total: max });
+    }
+    setSyncState("searchIndexReady", "1");
+    searchReady = true;
+    return { ready: true, phase: "ready" };
+}
+
+/** How many rows still have a text and no fold. */
+function foldTodoCount() {
+    return db.prepare("SELECT COUNT(*) AS n FROM messages WHERE text_norm IS NULL AND text IS NOT NULL").get().n;
+}
+
+/** The WHERE of a search: what a message must be to be a hit, apart from where the page starts. */
+function searchWhere({ norm, threadId, senderId, since, until, types }) {
+    const text = String(norm ?? "");
+    const like = `%${text.replace(/[\\%_]/g, "\\$&")}%`;
+    const where = ["COALESCE(type, '') != 'deleted'"];
+    const params = [];
+    if (searchReady) {
+        // The trigram index narrows to the rows holding the keyword (it needs three characters); the LIKE then makes
+        // the match exact, so the index can only ever make a search faster, never change what it finds.
+        if ([...text].length >= 3) {
+            where.push("rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)");
+            params.push(`"${text.replace(/"/g, '""')}"`);
+        }
+        where.push("text_norm LIKE ? ESCAPE '\\'");
+        params.push(like);
+    } else {
+        // Not indexed yet: scan, and fold on the fly the rows that have no fold, so nothing is missed.
+        where.push(
+            "(text_norm LIKE ? ESCAPE '\\' OR (text_norm IS NULL AND text IS NOT NULL AND vn_strip(text) LIKE ? ESCAPE '\\'))",
+        );
+        params.push(like, like);
+    }
     if (threadId) {
         where.push("threadId = ?");
         params.push(String(threadId));
@@ -804,10 +968,173 @@ export function searchMessages(opts = {}) {
         where.push("timestamp <= ?");
         params.push(Number(until));
     }
-    params.push(limit);
-    return db
-        .prepare(`SELECT * FROM messages WHERE ${where.join(" AND ")} ORDER BY timestamp DESC LIMIT ?`)
+    if (Array.isArray(types) && types.length) {
+        where.push(`type IN (${types.map(() => "?").join(",")})`);
+        params.push(...types.map(String));
+    }
+    return { where, params };
+}
+
+/**
+ * What a search does before it runs: a slice of the index per search until it is complete, so the cost is bounded and
+ * the search is correct whether or not the slice finished. One exception: when many rows still have no fold, finishing
+ * the fold costs about what scanning them with the fold done on the fly would (18 s against 27 s on 421,000 messages),
+ * and only the first search ever meets it, so it is finished first, with progress.
+ */
+function prepareSearch() {
+    const first = ensureSearchIndex({ budgetMs: searchBudgetMs, onProgress: searchProgress });
+    if (!first.ready && first.phase === "fold" && searchBudgetMs > 0) {
+        ensureSearchIndex({ budgetMs: Infinity, foldOnly: true, onProgress: searchProgress });
+    }
+}
+
+/** The statement of one page of a search, and its parameters. */
+function searchStatement(spec) {
+    prepareSearch();
+    const { where, params } = searchWhere(spec);
+    if (spec.after) {
+        where.push("(timestamp < ? OR (timestamp = ? AND msgId < ?))");
+        params.push(Number(spec.after.timestamp), Number(spec.after.timestamp), String(spec.after.msgId));
+    }
+    params.push(Number.isFinite(spec.limit) ? spec.limit : -1);
+    return {
+        stmt: db.prepare(
+            `SELECT * FROM messages WHERE ${where.join(" AND ")} ORDER BY timestamp DESC, msgId DESC LIMIT ?`,
+        ),
+        params,
+    };
+}
+
+/**
+ * The rows of one page of a search, newest first, by the folded text.
+ *
+ * Purely local SQLite: it never touches the Zalo network. Recalled and deleted tombstones are left out. A match is a
+ * substring of `text_norm`; the caller folds the keyword (src/utils/vn-text.js) and decides what an "exact" match
+ * adds. Pages are keyed on `(timestamp, msgId)`, so a new message arriving between two pages cannot shift one.
+ *
+ * @param {object} spec
+ * @param {string} spec.norm - the folded keyword
+ * @param {string} [spec.threadId]
+ * @param {string} [spec.senderId]
+ * @param {number} [spec.since] - epoch ms, inclusive
+ * @param {number} [spec.until] - epoch ms, inclusive
+ * @param {string[]} [spec.types] - message types (`text`, `photo`, `file`, ...)
+ * @param {{timestamp: number, msgId: string}|null} [spec.after] - the last row of the previous page
+ * @param {number} [spec.limit=50]
+ * @returns {Array<object>}
+ */
+export function searchMessageRows(spec = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const { stmt, params } = searchStatement({ ...spec, limit: Number.isFinite(spec.limit) ? spec.limit : 50 });
+    return stmt.all(...params);
+}
+
+/**
+ * The same rows, one at a time and with no limit: for a caller that checks each row itself (the exact-accents mode)
+ * and stops when it has enough, which a fixed-size page cannot do without asking again from the start.
+ *
+ * @param {object} spec - as {@link searchMessageRows}, without `limit`
+ * @returns {IterableIterator<object>}
+ */
+export function* iterateSearchRows(spec = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const { stmt, params } = searchStatement({ ...spec, limit: undefined });
+    yield* stmt.iterate(...params);
+}
+
+/**
+ * How many messages match, by message type: the numbers on a search's tabs. Ignores `types` and `after`, so the tabs
+ * count the whole result whichever one is open.
+ *
+ * @param {object} spec - as {@link searchMessageRows}
+ * @returns {Record<string, number>}
+ */
+export function countSearchMatchesByType(spec = {}) {
+    if (!db) throw new Error("Database not initialized");
+    prepareSearch();
+    const { where, params } = searchWhere({ ...spec, types: undefined });
+    const rows = db
+        .prepare(
+            `SELECT COALESCE(type, '') AS type, COUNT(*) AS n FROM messages WHERE ${where.join(" AND ")} GROUP BY 1`,
+        )
         .all(...params);
+    return Object.fromEntries(rows.map((r) => [r.type, r.n]));
+}
+
+/**
+ * The messages around one in its conversation: up to `before` older and `after` newer, oldest first, the message
+ * itself left out. Tombstones are left out too.
+ *
+ * @param {string} threadId
+ * @param {{timestamp: number, msgId: string}} anchor
+ * @param {number} before
+ * @param {number} after
+ * @returns {{before: object[], after: object[]}}
+ */
+export function getMessagesAround(threadId, anchor, before = 2, after = 2) {
+    if (!db) throw new Error("Database not initialized");
+    const ts = Number(anchor.timestamp);
+    const id = String(anchor.msgId);
+    const older = db
+        .prepare(
+            `SELECT * FROM messages WHERE threadId = ? AND COALESCE(type, '') != 'deleted'
+             AND (timestamp < ? OR (timestamp = ? AND msgId < ?)) ORDER BY timestamp DESC, msgId DESC LIMIT ?`,
+        )
+        .all(String(threadId), ts, ts, id, Math.max(0, before));
+    const newer = db
+        .prepare(
+            `SELECT * FROM messages WHERE threadId = ? AND COALESCE(type, '') != 'deleted'
+             AND (timestamp > ? OR (timestamp = ? AND msgId > ?)) ORDER BY timestamp ASC, msgId ASC LIMIT ?`,
+        )
+        .all(String(threadId), ts, ts, id, Math.max(0, after));
+    return { before: older.reverse(), after: newer };
+}
+
+/**
+ * The oldest message in the cache, for one conversation or (with none) for the whole account: how far back a search
+ * can reach.
+ *
+ * @param {string} [threadId]
+ * @returns {number|null} epoch ms
+ */
+export function getOldestCachedTimestamp(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    if (threadId) {
+        const row = db.prepare("SELECT MIN(timestamp) AS ts FROM messages WHERE threadId = ?").get(String(threadId));
+        return Number.isFinite(row?.ts) ? row.ts : null;
+    }
+    // One index lookup per conversation, instead of a scan of every message.
+    const row = db
+        .prepare(
+            "SELECT MIN(first) AS ts FROM (SELECT (SELECT MIN(timestamp) FROM messages WHERE threadId = t.threadId) AS first FROM threads t)",
+        )
+        .get();
+    return Number.isFinite(row?.ts) ? row.ts : null;
+}
+
+/**
+ * Search cached messages by text across one or all conversations, newest first. Accent-insensitive: the keyword and
+ * the text are folded alike (src/utils/vn-text.js), so "duoc" finds "được". Kept for callers that want a plain
+ * array; {@link searchMessageRows} and src/core/search.js give pages, tabs, snippets and the exact mode.
+ *
+ * @param {object} opts
+ * @param {string} opts.query - What to look for (cut to 100 characters)
+ * @param {string} [opts.threadId] - Restrict to one conversation
+ * @param {string} [opts.senderId] - Restrict to one sender UID
+ * @param {number} [opts.since] - Only messages at or after this epoch-ms timestamp
+ * @param {number} [opts.until] - Only messages at or before this epoch-ms timestamp
+ * @param {number} [opts.limit=50] - Max messages to return
+ * @returns {Array<object>}
+ */
+export function searchMessages(opts = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const { query, threadId, senderId, since, until, limit = 50 } = opts;
+    const norm = stripVietnamese(
+        String(query ?? "")
+            .trim()
+            .slice(0, 100),
+    );
+    return searchMessageRows({ norm, threadId, senderId, since, until, limit });
 }
 
 /**
@@ -1608,6 +1935,7 @@ export function markMessageRecalled(msgId, at = Date.now(), opts = {}) {
             `UPDATE messages SET
          type = 'deleted',
          text = '[deleted]',
+         text_norm = '[deleted]',
          raw_data = @raw,
          -- The media goes with the message. Leaving has_attachment set would
          -- queue the attachment of a just-withdrawn message for download;

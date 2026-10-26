@@ -486,17 +486,24 @@ thái hội thoại vẫn dùng CLI. [Hướng dẫn đầy đủ](../../docs/mc
 ---
 
 ### `zalo_search_messages`
-Tìm kiếm nội dung tin nhắn trên toàn bộ cơ sở dữ liệu SQLite cục bộ (`zalo.db`). Không tốn cuộc gọi mạng nào tới Zalo, trả về kết quả từ mới nhất đến cũ nhất.
+Tìm kiếm nội dung tin nhắn trên toàn bộ cơ sở dữ liệu SQLite cục bộ (`zalo.db`). Không tốn cuộc gọi mạng nào tới Zalo, trả về kết quả từ mới nhất đến cũ nhất, theo trang. **Mặc định không phân biệt dấu**, giống tìm kiếm của chính Zalo: `duoc` tìm ra `được` (từ khoá và văn bản đều được chuẩn hoá giống nhau: chữ thường, nguyên âm tiếng Việt về chữ cái gốc, `đ` thành `d`). Đặt `accents: "exact"` nếu cần khớp cả dấu (hoa/thường vẫn không phân biệt).
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
-| `query` | string | Chuỗi văn bản cần tìm (không phân biệt hoa/thường) |
+| `query` | string | Chuỗi cần tìm (cắt ở 100 ký tự; bỏ qua dấu và hoa/thường) |
 | `threadId` | string (tuỳ chọn) | Giới hạn tìm kiếm trong một hội thoại cụ thể |
 | `senderId` | string (tuỳ chọn) | Giới hạn tìm kiếm theo UID người gửi |
 | `since` | number (tuỳ chọn) | Chỉ lấy tin nhắn có `timestamp >= since` (epoch ms) |
 | `until` | number (tuỳ chọn) | Chỉ lấy tin nhắn có `timestamp <= until` (epoch ms) |
-| `limit` | number (mặc định 50, tối đa 200) | Số tin khớp tối đa trả về |
+| `last` | string (tuỳ chọn) | Chỉ lấy khoảng thời gian gần đây: `7d`, `2w`, `3m`, `1y` (thay cho `since`) |
+| `types` | string[] (tuỳ chọn) | Chỉ các loại tin: `["file","link"]`, `media` = ảnh và video; kết quả file/link khớp theo tên |
+| `accents` | `"fold"` \| `"exact"` (mặc định `fold`) | `fold`: bỏ qua dấu; `exact`: phải khớp dấu |
+| `limit` | number (mặc định 50, tối đa 200) | Số tin khớp tối đa mỗi trang |
+| `cursor` | string (tuỳ chọn) | `nextCursor` của trang trước, giữ nguyên |
+| `context` | number (0-10, mặc định 0) | Số tin hiển thị trước và sau mỗi kết quả |
+
+**Kết quả:** `messages[]` (mỗi tin có `snippet` {text, matchStart, matchEnd}: 70 ký tự trước chỗ khớp, 30 sau; và `context` khi được yêu cầu), `count`, `hasMore`, `nextCursor`, `counts` (số tin khớp theo loại, chỉ ở trang đầu), `coverage` (cache đi ngược tới đâu, đã có lần restore từ điện thoại hoàn tất chưa, các khoảng hở đang chờ và lệnh `sync --from` để lấp). Lần tìm đầu tiên sau khi nâng cấp sẽ chuẩn bị chỉ mục tìm kiếm, chỉ một lần: đọc toàn bộ tin nhắn để chuẩn hoá (khoảng 20 giây cho 400.000 tin nhắn, nên lần gọi đầu có thể lâu), rồi xây chỉ mục theo từng phần (tối đa khoảng hai giây mỗi lần tìm, trong lúc đó vẫn quét nên kết quả luôn đúng).
 
 ---
 

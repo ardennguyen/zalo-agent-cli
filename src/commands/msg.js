@@ -34,6 +34,7 @@ import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from 
 import { applySelfThreadAlias } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import { registerMsgSearch } from "./msg-search.js";
 import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
 
 /**
@@ -545,6 +546,8 @@ function parseStyleSpecs(specs) {
 
 export function registerMsgCommands(program) {
     const msg = program.command("msg").description("Send and manage messages");
+
+    registerMsgSearch(msg, program);
 
     // `me` (or the own uid) as a thread argument means My Documents, a 1-1
     // thread of its own -- see src/utils/my-documents.js. Resolved once, here,

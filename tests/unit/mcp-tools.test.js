@@ -1025,6 +1025,93 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(filtered.messages[0].cliMsgId, "c1");
     });
 
+    it("zalo_search_messages ignores accents by default, takes them on request, and pages with a cursor", async () => {
+        const base = { threadId: "g1", senderId: "u2", senderName: "Anh Minh", type: "text" };
+        insertMessage({ ...base, msgId: "s1", text: "Được rồi, hẹn gặp lại", timestamp: 5000 });
+        insertMessage({ ...base, msgId: "s2", text: "duoc nhe", timestamp: 6000 });
+        insertMessage({ ...base, msgId: "s3", text: "Không được đâu", timestamp: 7000 });
+        insertMessage({ ...base, msgId: "s4", text: "báo cáo được duyệt.xlsx", timestamp: 8000, type: "file" });
+
+        const { server } = register();
+        const fold = payloadOf(await server.call("zalo_search_messages", { query: "duoc", limit: 2 }));
+        assert.equal(fold.accents, "fold");
+        assert.deepEqual(
+            fold.messages.map((m) => m.msgId),
+            ["s4", "s3"],
+        );
+        assert.equal(fold.hasMore, true);
+        assert.ok(fold.nextCursor, "a cursor for the next page");
+        assert.deepEqual(fold.counts, { text: 3, file: 1 });
+        assert.match(fold.coverage.note, /local cache only/);
+        assert.equal(
+            fold.messages[0].snippet.text.slice(fold.messages[0].snippet.matchStart, fold.messages[0].snippet.matchEnd),
+            "được",
+        );
+
+        const next = payloadOf(
+            await server.call("zalo_search_messages", { query: "duoc", limit: 2, cursor: fold.nextCursor }),
+        );
+        assert.deepEqual(
+            next.messages.map((m) => m.msgId),
+            ["s2", "s1"],
+        );
+        assert.equal(next.hasMore, false);
+        assert.equal(next.nextCursor, null);
+        assert.equal(next.counts, undefined, "the tabs' numbers come with the first page only");
+
+        const exact = payloadOf(await server.call("zalo_search_messages", { query: "duoc", accents: "exact" }));
+        assert.deepEqual(
+            exact.messages.map((m) => m.msgId),
+            ["s2"],
+            "accents typed, accents matched",
+        );
+        const accented = payloadOf(await server.call("zalo_search_messages", { query: "được", accents: "exact" }));
+        assert.deepEqual(accented.messages.map((m) => m.msgId).sort(), ["s1", "s3", "s4"]);
+    });
+
+    it("zalo_search_messages filters by type and period, shows context, and refuses a bad cursor", async () => {
+        const now = Date.now();
+        const base = { threadId: "g1", senderId: "u2", senderName: "Anh Minh", type: "text" };
+        insertMessage({ ...base, msgId: "k1", text: "trước đó", timestamp: now - 1000 });
+        insertMessage({ ...base, msgId: "k2", text: "họp lúc ba giờ", timestamp: now - 900 });
+        insertMessage({ ...base, msgId: "k3", text: "sau đó", timestamp: now - 800 });
+        insertMessage({ ...base, msgId: "k4", text: "họp.pdf", timestamp: now - 700, type: "file" });
+        insertMessage({ ...base, msgId: "old", text: "họp cũ", timestamp: now - 40 * 86_400_000 });
+
+        const { server } = register();
+        const files = payloadOf(await server.call("zalo_search_messages", { query: "hop", types: ["file"] }));
+        assert.deepEqual(
+            files.messages.map((m) => m.msgId),
+            ["k4"],
+        );
+
+        const recent = payloadOf(await server.call("zalo_search_messages", { query: "hop", last: "7d" }));
+        assert.deepEqual(
+            recent.messages.map((m) => m.msgId),
+            ["k4", "k2"],
+            "the message from 40 days ago is outside the last week",
+        );
+
+        const around = payloadOf(await server.call("zalo_search_messages", { query: "ba gio", context: 1 }));
+        assert.deepEqual(
+            around.messages[0].context.before.map((m) => m.msgId),
+            ["k1"],
+        );
+        assert.deepEqual(
+            around.messages[0].context.after.map((m) => m.msgId),
+            ["k3"],
+        );
+        const plain = payloadOf(await server.call("zalo_search_messages", { query: "ba gio" }));
+        assert.equal(plain.messages[0].context, undefined);
+
+        const bad = await server.call("zalo_search_messages", { query: "hop", cursor: "garbage" });
+        assert.equal(bad.isError, true);
+        const schema = server.tools.get("zalo_search_messages").meta.inputSchema;
+        assert.throws(() => schema.parse({ query: "x", last: "soon" }), "a period is a number and a unit");
+        assert.throws(() => schema.parse({ query: "x", context: 11 }));
+        assert.throws(() => schema.parse({ query: "x", accents: "loose" }));
+    });
+
     it("zalo_lookup_user supports self, phone, username, and userId modes", async () => {
         const { server } = register({
             api: {

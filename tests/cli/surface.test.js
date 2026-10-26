@@ -51,6 +51,7 @@ const COMMAND_SURFACE = {
         "pin",
         "unpin",
         "history",
+        "search",
     ],
     friend: [
         "list",
@@ -299,6 +300,18 @@ const FLAG_CONTRACT = {
     // deleteMessage/undo both key on it.
     "msg delete": ["--cli-msg-id", "--uid-from", "--everyone", "--type"],
     "msg history": ["--limit", "--scan", "--from-msg-id", "--timeout", "--no-cache", "--type"],
+    "msg search": [
+        "--thread",
+        "--from",
+        "--since",
+        "--until",
+        "--last",
+        "--type",
+        "--limit",
+        "--cursor",
+        "--context",
+        "--exact",
+    ],
     "conv mute": ["--duration", "--type"],
     "msg typing": ["--type"],
     "msg report": ["--reason", "--content", "--type"],

@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **222 CLI commands** across 24 command containers (16 top-level groups + 7 OA subgroups + `mcp webhook`) + **25 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **223 CLI commands** across 24 command containers (16 top-level groups + 7 OA subgroups + `mcp webhook`) + **25 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -76,6 +76,7 @@ zalo-agent msg forward <msgId> <targetId>               # Forward (cached messag
 zalo-agent msg pin <msgId> [threadId]                   # Pin a cached text message
 zalo-agent msg unpin <msgId> [threadId]                 # Unpin
 zalo-agent msg history <ID> -n 50                       # History (from local cache)
+zalo-agent msg search duoc --last 3m --type text         # Search the local cache: no login, accents ignored (--exact to require them)
 zalo-agent msg history <ID> -n 50 --no-cache            # Force live fetch; caches only what it lacked
 ```
 Reactions: `:>` haha · `/-heart` heart · `/-strong` like · `:o` wow · `:-((` cry · `:-h` angry
@@ -261,7 +262,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_coverage` | Read-only: pending coverage gaps, resolved count, and the `sync --from <date>` run that restores them | — |
 | `zalo_sync` | Only after an explicit owner request: start messages restore (phone confirmation) or reaction sync; returns immediately | `requestId`, `stage?`, `days?` or `from?`, `waitMs?`, `applyRemovals?` (reactions only) |
 | `zalo_sync_status` | Read progress/result, without another prompt; inspect result.reason before claiming a complete restore | `jobId?` |
-| `zalo_search_messages` | Search message text across the local SQLite cache (`zalo.db`), zero network calls | `query`, `threadId?`, `senderId?`, `since?`, `until?`, `limit` (default 50) |
+| `zalo_search_messages` | Search message text across the local SQLite cache (`zalo.db`), zero network calls; accent-insensitive by default (`duoc` finds `được`) | `query`, `threadId?`, `senderId?`, `since?`, `until?`, `last?`, `types?`, `accents` (`fold`/`exact`), `limit` (default 50), `cursor?`, `context` |
 | `zalo_lookup_user` | Look up a Zalo user by phone, username, userId, or inspect own profile (`self: true`) | One of `self: true`, `phone`, `username`, `userId` |
 | `zalo_forward_message` | Forward a cached message (`msgId`) to `threadId` (`msg forward` parity) | `msgId`, `threadId`, `threadType?` |
 | `zalo_delete_message` | Delete a message from own view (`everyone: false`) or for everyone in a group (`everyone: true`) | `msgId`, `threadId`, `threadType?`, `cliMsgId?`, `uidFrom?`, `everyone?` |
@@ -316,7 +317,7 @@ Full commands: `references/command-reference.md`
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 222 commands + 25 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 223 commands + 25 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

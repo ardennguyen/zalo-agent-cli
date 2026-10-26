@@ -18,13 +18,14 @@ import { openFile } from "../utils/open-file.js";
 import {
     getMessages,
     getMessageById,
-    searchMessages,
     getDisplayName,
     getThreadType,
     getThreadNames,
     getConvState,
     getReadStates,
 } from "../core/db.js";
+import { searchPage } from "../core/search.js";
+import { parsePeriod } from "../utils/date-range.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
@@ -1500,10 +1501,21 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             title: "Search Zalo Messages",
             description:
                 "Search message text across the local SQLite cache (`zalo.db`). Zero network calls. " +
-                "Filter optionally by `threadId`, `senderId`, `since` (epoch ms), and `until` (epoch ms). " +
-                "Results are ordered newest-first.",
+                "Accent-insensitive by default, as Zalo's own search is: 'duoc' finds 'được' (set `accents` to " +
+                "'exact' to require the accents). Filter optionally by `threadId`, `senderId`, `since` / `until` " +
+                "(epoch ms) or `last` (7d, 2w, 3m, 1y), and `types` (text, photo, video, file, link, sticker...; " +
+                "file and link results are matched on their titles). Results are newest-first, in pages: pass " +
+                "`nextCursor` back as `cursor` for the next page. Each message carries a `snippet` (70 characters " +
+                "before the match, 30 after, with its position); `context` adds that many messages around each hit. " +
+                "`counts` gives the matches by type, and `coverage` says how far back the cache reaches and which " +
+                "`sync` command extends it.",
             inputSchema: z.object({
-                query: z.string().min(1).describe("Case-insensitive text substring to search for in cached messages"),
+                query: z
+                    .string()
+                    .min(1)
+                    .describe(
+                        "Text to search for in cached messages (cut to 100 characters; accents and case ignored)",
+                    ),
                 threadId: z.string().min(1).optional().describe("Restrict search to a single thread ID"),
                 senderId: z.string().min(1).optional().describe("Restrict search to a specific sender UID"),
                 since: z
@@ -1518,21 +1530,64 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .positive()
                     .optional()
                     .describe("Only messages with timestamp <= this epoch-ms value"),
+                last: z
+                    .string()
+                    .regex(/^\d{1,4}\s*[hdwmyHDWMY]$/)
+                    .optional()
+                    .describe("Only the last period: 7d, 2w, 3m, 1y (replaces `since`)"),
+                types: z
+                    .array(z.string().min(1))
+                    .max(12)
+                    .optional()
+                    .describe("Only these message types, e.g. ['file','link']; 'media' means photo and video"),
+                accents: z
+                    .enum(["fold", "exact"])
+                    .default("fold")
+                    .describe(
+                        "fold (default): accents and case ignored; exact: accents must match, case still does not",
+                    ),
                 limit: z
                     .number()
                     .int()
                     .min(1)
                     .max(200)
                     .default(50)
-                    .describe("Max matching messages to return (default 50, max 200)"),
+                    .describe("Max matching messages per page (default 50, max 200)"),
+                cursor: z.string().min(1).optional().describe("The nextCursor of the previous page, unchanged"),
+                context: z
+                    .number()
+                    .int()
+                    .min(0)
+                    .max(10)
+                    .default(0)
+                    .describe("Messages to show before and after each hit (default 0, max 10)"),
             }),
             annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         },
-        async ({ query, threadId, senderId, since, until, limit }) => {
+        async ({ query, threadId, senderId, since, until, last, types, accents, limit, cursor, context }) => {
             try {
-                const rows = searchMessages({ query, threadId, senderId, since, until, limit });
+                const page = searchPage({
+                    query,
+                    accents,
+                    threadId,
+                    senderId,
+                    since: last ? parsePeriod(last) : since,
+                    until,
+                    types,
+                    limit,
+                    cursor,
+                    context,
+                });
                 const threadNames = getThreadNames();
-                const messages = rows.map((r) => {
+                const lite = (m) => ({
+                    msgId: m.msgId,
+                    senderId: m.senderId,
+                    senderName: m.senderName || null,
+                    text: m.text,
+                    timestamp: m.timestamp,
+                    type: m.type,
+                });
+                const messages = page.hits.map(({ row: r, snippet, context: around }) => {
                     let cliMsgId = null;
                     try {
                         cliMsgId = cachedCliMsgId(r);
@@ -1548,13 +1603,25 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         senderId: r.senderId,
                         senderName: r.senderDisplayName || r.senderName || null,
                         text: r.text,
+                        snippet,
                         timestamp: r.timestamp,
                         type: r.type,
                         hasAttachment: Boolean(r.has_attachment),
                         localPath: r.localPath || null,
+                        ...(around && { context: { before: around.before.map(lite), after: around.after.map(lite) } }),
                     };
                 });
-                return ok({ query, count: messages.length, messages });
+                return ok({
+                    query: page.query,
+                    accents: page.accents,
+                    ...(page.truncatedKeyword && { truncatedKeyword: true }),
+                    count: messages.length,
+                    hasMore: page.hasMore,
+                    nextCursor: page.nextCursor,
+                    ...(page.counts && { counts: page.counts }),
+                    coverage: page.coverage,
+                    messages,
+                });
             } catch (e) {
                 console.error("[mcp-tools] zalo_search_messages error:", e.message);
                 return err(e.message);

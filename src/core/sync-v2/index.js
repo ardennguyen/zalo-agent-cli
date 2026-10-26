@@ -621,6 +621,8 @@ export class SyncV2 {
      *   caller already pings this socket for the whole window it owns.
      * @param {number} [opts.settleMs] pause before the first request (default 1200; tests only)
      * @param {number} [opts.pollMs] how often a wait looks at its session (default 300; tests only)
+     * @param {string} [opts.tempKey] the `temp_key` of a `transfer_after_login` control, to ask for the sync without a
+     *   tap on the phone (Y8); empty by default
      * @param {AbortSignal} [opts.signal] cancel the run: it stops asking, keeps what already arrived, releases every
      *   open session with reason 0 (cancelled) and resolves with `reason: "cancelled"`
      * @param {boolean} [opts.fullResync] forget what earlier runs settled and ask for every conversation in full
@@ -644,6 +646,9 @@ export class SyncV2 {
         const pollMs = Number.isFinite(opts.pollMs) ? opts.pollMs : 300;
         const onStatus = typeof opts.onStatus === "function" ? opts.onStatus : () => {};
         const log = (m) => onStatus({ phase: "info", detail: m });
+        // The key the phone offered at a QR login with auto sync ticked (a `transfer_after_login` control), when the
+        // caller has one. Sent with the conversation request only.
+        const tempKey = typeof opts.tempKey === "string" ? opts.tempKey : "";
         /** Has the caller asked to stop? Looked at between waits, never inside one request. */
         const aborted = () => opts.signal?.aborted === true;
         /** Set once the run was cut short on purpose: decides the reason sessions are released with. */
@@ -894,9 +899,10 @@ export class SyncV2 {
          * @returns {Promise<{socketClosed: boolean}>} `socketClosed` when the wire died before the ack; any other
          *   failure throws with words the person can act on
          */
-        const sendRequest = async (kind, id, ek, req) => {
+        const sendRequest = async (kind, id, ek, req, tempKey = "") => {
             try {
                 await channel.request({
+                    tempKey,
                     kind,
                     syncId: id,
                     ek: b64(ek.publicKey),
@@ -1029,7 +1035,7 @@ export class SyncV2 {
                 batchSize: 2000,
                 queries: [{ partition: "", from: win.from, to: win.to, limit: 2147483647 }],
             };
-            const convSent = await sendRequest("conv", convId, ekConv, convRequest);
+            const convSent = await sendRequest("conv", convId, ekConv, convRequest, tempKey);
             let convWhy = convSent.socketClosed ? "socket-closed" : await waitDone(convId, waitMs);
             if (convWhy === "cancelled") throw cancelError();
             let convSession = sessions.get(convId);
@@ -1050,7 +1056,7 @@ export class SyncV2 {
                 });
                 const retryId = newSession("conv");
                 ekConv = zproto.generateKeyPair();
-                const retrySent = await sendRequest("conv", retryId, ekConv, convRequest);
+                const retrySent = await sendRequest("conv", retryId, ekConv, convRequest, tempKey);
                 convWhy = retrySent.socketClosed ? "socket-closed" : await waitDone(retryId, waitMs);
                 if (convWhy === "cancelled") throw cancelError();
                 convSession = sessions.get(retryId);

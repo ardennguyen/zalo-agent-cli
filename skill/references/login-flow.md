@@ -35,6 +35,9 @@ Firewall must allow at least one of these ports for remote access.
 | declined | Fails immediately with "Login declined on phone" (`QRCodeDeclined` / `qr_declined` in `--json`) |
 | expired | Auto-retries with a fresh QR |
 
+### Auto sync at login (`--sync`)
+Tick **auto sync** on the phone's QR confirmation screen, and run `zalo-agent login --sync` (add `--sync-days <n>` for a recent window). The phone sends a short-lived key with the login; the restore starts at once with it and the phone does **not** ask for the "ĐỒNG BỘ NGAY" tap. If auto sync was not ticked, or the key is more than two minutes old, nothing is started: run `zalo-agent sync` as usual. `--sync` is never started by a daemon on its own.
+
 ### Troubleshooting
 | Issue | Fix |
 |-------|-----|

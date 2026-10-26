@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3036** as of 2026-10-25 (3031 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3053** as of 2026-10-26 (3048 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -986,11 +986,11 @@ confirmation is ten minutes. The rules are in `src/core/sync-v2/transfer.js` as 
 without a phone or the decryption assets.
 
 **Why a kick happened (L12b).** After a kick the Web client asks `POST {aext}/api/session/kickout-info` (form
-`token=<viewer_key>`). The `{viewer_key, enk}` pair comes from the login answers' `zcloud`; `login.js` keeps it in
-the context and `src/zalo/kickout.js` reads it, so the socket host can hand every supervisor a `kickoutInfo` that
-needs no key from the caller. The reply is sealed with `enk`, not the session key a kick has just ended. Not seen on
-the wire yet: which cipher `enk` drives. zCloud's (random IV in front) is tried first, then the session cipher's
-shape; both are tested. The lookup returns null for any failure and never raises: the kick is already handled.
+`token=<viewer_key>`). The `{viewer_key, enk}` pair is the getLoginInfo answer's `auth_ext_info` (not `zcloud`, which
+Zalo answers with error 112); `login.js` keeps it in the context and `src/zalo/kickout.js` reads it, so the socket host
+can hand every supervisor a `kickoutInfo` that needs no key from the caller. The reply is sealed with `enk`, not the
+session key a kick has just ended, in the session cipher's shape. The host logs the server's own words for the source
+(`kick_out_config`) and the time. The lookup returns null for any failure and never raises: the kick is already handled.
 
 ## The saved-session login is ours, and what it sends (v3.0, 2026-10-25)
 
@@ -1323,11 +1323,25 @@ release per session however many callers ask.
 **3003 and the reason `KICKOUT_BY_WORKER`**; the supervisor, treating 3003 as retryable, reconnected 2 s later and the
 new socket was refused at once with error 600, which ended the daemon (exit 3, "Another Zalo session took this account").
 The newcomer is the one the server refuses, so the extra reconnect evicts nobody. The saved login was then refused (102):
-a kick by Zalo Web ends the saved session, and the next start needs a QR. The `kickout-info` lookup answered HTTP 200
-`{error_code: 112, data: null}` with this session's viewer key both before and after the kick, so it returned no reason:
-either 112 means "nothing recorded for that key" or the token is not this key. Left as it is (best effort, null on
-anything but a reason). Treating 3003 `KICKOUT_BY_WORKER` as terminal at once was considered and not done: 3003 is also in
+a kick by Zalo Web ends the saved session, and the next start needs a QR. The `kickout-info` lookup first answered HTTP 200
+`{error_code: 112, data: null}`: it had been given the zCloud viewer key, which is not the right one. The right pair is
+`auth_ext_info: {viewer_key (334 characters), enk (24)}` in the **getLoginInfo** answer (found in the Web client's
+`setDataKeyGetKickoutInfo` and in the captured request's token). With it the lookup answers error 0 and a sealed
+`data` that opens, in the session cipher's shape with `enk` as a base64 key, to `{kickoutSrc: 2, kickoutTs}`;
+`kickoutTs` is the second the session was replaced. What the source means is the server's own table,
+`settings.features.kick_out_config[src]`: source 2 is titled "Device changed" ("You previously logged into Zalo on a
+different browser"). The listener now logs that text and the time. Treating 3003 `KICKOUT_BY_WORKER` as terminal at once was considered and not done: 3003 is also in
 Zalo's retry list, and a wrong guess would end a healthy daemon.
+
+**Auto sync at login (Y8), 2026-10-26.** With "auto sync" ticked on the phone's QR confirmation, the phone puts two
+`transfer_sync2 / transfer_after_login` controls in the control queues (603_1 and 603_0), stamped at the login:
+`{temp_key (64 characters), imei: null, pc: 0}`. Zalo Web uses the latest one that has a key and `pc` 0 (the web; the PC
+app is 1) and is under 10 s old, and sends the key as `tempKey` in its conversation request. Live: the request went out
+15 s after the login with that key and the phone showed no prompt (no status 3 at all); the same request with a key 765 s old
+got the prompt. `login --sync` does this (`src/core/sync-v2/auto-sync.js`): it reads the control the moment the
+socket is up, accepts a key up to two minutes old (the 10 s of Web is not needed: our request goes out after about 15 s,
+and the limit is only a guard), and puts the key in the conversation request only. It is an explicit command: the daemon
+never starts a phone-backed stage by itself.
 
 **What the phone does while Zalo is in use.** Zalo open and in use on the phone seems to pause the transfer; leave it
 idle for a long restore. This is not proven (the run that went silent also had 32 sessions open).

@@ -273,7 +273,7 @@ export function createSyncChannel({
          * @returns {Promise<{attempts: number, ts: number|null}>}
          * @throws {SyncRequestError}
          */
-        async request({ kind, syncId, ek, ik, req, deviceName }) {
+        async request({ kind, syncId, ek, ik, req, deviceName, tempKey = "" }) {
             const idx = ussidx++;
             sessions.set(syncId, { state: "requested", late: null });
             inFlight.add(syncId);
@@ -293,7 +293,7 @@ export function createSyncChannel({
                                 ek,
                                 ik,
                                 toDevice: 0,
-                                tempKey: "",
+                                tempKey,
                                 deviceName,
                                 req,
                                 ver: 1,

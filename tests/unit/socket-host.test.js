@@ -192,7 +192,24 @@ describe("socket host", () => {
         it("passes along the reason Zalo gives", () => {
             const h = host();
             h.start({}).emit("kickout-info", { info: { reason: "another-device" } });
-            assert.ok(logged(/info: Zalo says why: \{"reason":"another-device"\}/));
+            assert.ok(
+                logged(/info: Zalo says why: \{"reason":"another-device"\}/),
+                "an answer with no words is shown as it is",
+            );
+            h.start({}).emit("kickout-info", {
+                info: {
+                    kickoutSrc: 2,
+                    title: "Device changed",
+                    text: "You logged in on another browser.",
+                    at: "2026-10-26T07:43:33.000Z",
+                },
+            });
+            assert.ok(
+                logged(
+                    /info: Zalo says why: Device changed: You logged in on another browser\. \(at 2026-10-26T07:43:33\.000Z\)/,
+                ),
+                "an answer with the server's words is shown in them",
+            );
         });
 
         it("a login that Zalo answers with a kick ends the daemon too, without asking again", async () => {

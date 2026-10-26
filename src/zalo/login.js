@@ -354,10 +354,10 @@ export async function loginWithSession(
     ctx.uid = loginInfo.uid;
     ctx.settings = second.settings;
     ctx.extraVer = second.extra_ver;
-    // The viewer key and cipher the kickout lookup needs (L12b). Kept out of every log.
-    // Zalo's answers have carried the pair in the login info and, in the Web client's code, beside the settings.
-    const zc = loginInfo.zcloud?.viewer_key && loginInfo.zcloud?.enk ? loginInfo.zcloud : second.raw?.zcloud;
-    if (zc?.viewer_key && zc?.enk) ctx.zcloud = { viewerKey: zc.viewer_key, enk: zc.enk };
+    // The viewer key and cipher the kickout lookup needs (L12b): the login answer's `auth_ext_info`. Kept out of
+    // every log.
+    const ae = loginInfo.auth_ext_info;
+    if (ae?.viewer_key && ae?.enk) ctx.kickout = { viewerKey: ae.viewer_key, enk: ae.enk };
     ctx.loginInfo = loginInfo;
     if (!ctx.secretKey) throw new ZaloApiError("Khởi tạo ngữ cảnh thất bại.");
 

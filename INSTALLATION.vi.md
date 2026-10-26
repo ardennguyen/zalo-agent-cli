@@ -334,7 +334,7 @@ Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục 
 |:---|:---|
 | `npx zalo-agent status` | Kiểm tra trạng thái đăng nhập |
 | `npx zalo-agent whoami` | Xem hồ sơ đầy đủ của tài khoản đang đăng nhập |
-| `npx zalo-agent login [--qr-url] [--credentials <path>] [-p <proxy>]` | Đăng nhập QR, hoặc khôi phục từ file credentials đã xuất |
+| `npx zalo-agent login [--qr-url] [--credentials <path>] [-p <proxy>] [--sync [--sync-days <n>]]` | Đăng nhập QR, hoặc khôi phục từ file credentials đã xuất. `--sync` khôi phục lịch sử ngay sau khi đăng nhập QR bằng khóa auto sync của điện thoại (tích "auto sync" trên điện thoại; không cần chạm xác nhận) |
 | `npx zalo-agent logout [--delete-history] [--purge] [--no-remote] [--keep-session]` | Đăng xuất thiết bị khỏi Zalo (như Zalo Web) và xóa credentials đã lưu; `--keep-session` chỉ kết thúc khóa phiên (cách cũ trước v3.0, khi đó phiên chỉ kết thúc hẳn nếu gỡ thiết bị trong danh sách trên điện thoại); tùy chọn xóa cache cục bộ hoặc xóa sạch dữ liệu tài khoản |
 | `npx zalo-agent sync-mobile [-d <days>]` | **Khôi phục lịch sử tin nhắn từ điện thoại** vào cache cục bộ (xác nhận một lần trên điện thoại). Mặc định lấy toàn bộ lịch sử; `-d/--days <n>` giới hạn trong *n* ngày gần nhất |
 | `npx zalo-agent update` | Tự cập nhật lên phiên bản mới nhất đã phát hành |

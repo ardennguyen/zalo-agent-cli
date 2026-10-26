@@ -24,7 +24,7 @@
  */
 import { EXIT_CODE, classifyServerError, errorCodeOf } from "../zalo/errors.js";
 import { checkMaintenance, maintenanceKeysOf, waitOutMaintenance } from "../zalo/maintenance.js";
-import { fetchKickoutInfo, kickoutKeysOf } from "../zalo/kickout.js";
+import { lookupKickout } from "../zalo/kickout.js";
 import { loadAnomalyState, saveAnomalyState } from "../zalo/anomaly-store.js";
 import { createAnomalyHistory, createRetryEngine, resolveSocketSettings } from "../zalo/retry.js";
 import { superviseListener } from "../zalo/socket.js";
@@ -134,7 +134,15 @@ export function createSocketHost({
             );
             onKicked();
         });
-        sup.on("kickout-info", ({ info }) => log("info", `Zalo says why: ${JSON.stringify(info)}`));
+        sup.on("kickout-info", ({ info }) => {
+            const words = [info?.title, info?.text].filter(Boolean).join(": ");
+            log(
+                "info",
+                words
+                    ? `Zalo says why: ${words}${info.at ? ` (at ${info.at})` : ""}`
+                    : `Zalo says why: ${JSON.stringify(info)}`,
+            );
+        });
         sup.on("session-invalid", ({ kind, code }) => {
             log("warn", `Zalo refused this session (${kind}, code ${code}). Logging in again.`);
             void reloginNow(`session-invalid:${code}`);
@@ -165,7 +173,7 @@ export function createSocketHost({
             anomaly,
             maintenance: { check: () => checkGate(gateKeys) },
             // Why a kick happened: the lookup needs the keys this session's login kept (L12b).
-            kickoutInfo: () => fetchKickoutInfo(api, kickoutKeysOf(api)),
+            kickoutInfo: () => lookupKickout(api),
             ...supervisorOptions,
         });
         wire(supervisor);

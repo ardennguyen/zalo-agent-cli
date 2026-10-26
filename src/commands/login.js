@@ -21,7 +21,48 @@ import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { startQrServer } from "../utils/qr-http-server.js";
 import { success, error, info, warning, output } from "../utils/output.js";
-import { parseIntOption } from "../utils/parse-options.js";
+import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
+import { acquireLock, releaseLock } from "../core/lock.js";
+
+/**
+ * `login --sync`: restore the history at once with the key the phone offers when "auto sync" is ticked at the QR
+ * confirmation. No tap is needed; without the key (not ticked, or too old) nothing is started and the person is told
+ * to run `sync`.
+ *
+ * @param {string} ownId
+ * @param {{syncDays?: number}} opts
+ */
+async function runAutoSync(ownId, opts) {
+    const { autoSyncAfterLogin } = await import("../core/sync-v2/auto-sync.js");
+    const { resolveSyncWindow } = await import("../core/sync-v2/index.js");
+    const { reportRestore } = await import("./sync.js");
+    const accountDir = getAccountDir(ownId);
+    if (!acquireLock(accountDir)) {
+        warning("Auto sync skipped: a listen daemon holds this account. Run `zalo-agent sync` instead.");
+        return;
+    }
+    try {
+        const win = resolveSyncWindow(opts.syncDays, Date.now());
+        const startedAt = Date.now();
+        info(`Auto sync: restoring ${win.label} with the phone's login key (no tap needed).`);
+        const out = await autoSyncAfterLogin(getApi(), ownId, {
+            days: opts.syncDays ?? null,
+            onStatus: ({ phase, detail }) => {
+                if (phase === "confirm") warning(detail);
+                else if (detail) info(`  ${detail}`);
+            },
+        });
+        if (!out.offered) {
+            warning(`No auto sync: ${out.reason}. Run \`zalo-agent sync\` to restore.`);
+            return;
+        }
+        reportRestore(out.result, win, { startedAt, keep: [ownId] });
+    } catch (e) {
+        warning(`Auto sync failed: ${e.message}. Run \`zalo-agent sync\` to restore.`);
+    } finally {
+        releaseLock(accountDir);
+    }
+}
 
 export function registerLoginCommands(program) {
     program
@@ -32,6 +73,11 @@ export function registerLoginCommands(program) {
         .option("--qr-url", "Start local HTTP server to view QR in browser (for VPS/headless)")
         .option("-q, --qr-port <port>", "Port for QR HTTP server (default: 18927)", parseIntOption)
         .option("--credentials <path>", "Login from exported credentials file (skip QR)")
+        .option(
+            "--sync",
+            "After the QR login, restore message history at once with the key the phone offers when 'auto sync' is ticked (no tap)",
+        )
+        .option("--sync-days <n>", "With --sync: restore only the last N days", parseIntAtLeast(1))
         .action(async (opts) => {
             // Credential-based login (headless/CI)
             if (opts.credentials) {
@@ -158,6 +204,7 @@ export function registerLoginCommands(program) {
                 } else {
                     success(`Logged in as ${displayName} (${ownId})`);
                 }
+                if (opts.sync) await runAutoSync(ownId, opts);
             } catch (e) {
                 if (jsonMode) {
                     console.log(JSON.stringify({ event: "login_error", message: e.message }));

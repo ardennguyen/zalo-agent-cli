@@ -12,16 +12,23 @@
  * module is reachable offline with fakes — no session, no socket, no server.
  */
 
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
+
+describe("mcp tools — sandbox", () => {
+    // The local read `voice-transcript` reaches credentials.js, so this file must not touch the real home.
+    it("runs inside the test sandbox", () => assertSandboxed(CONFIG_DIR));
+});
 
 /** The exact tool surface. Changing this list is a deliberate act — see AGENTS.md §10. */
 const EXPECTED_TOOLS = [

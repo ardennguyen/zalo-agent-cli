@@ -36,6 +36,7 @@ import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createCloudVerifier } from "../core/cloud-verify.js";
 import { attachUnknownActs } from "../core/unknown-acts.js";
+import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync } from "../core/read-state.js";
 import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
@@ -65,6 +66,7 @@ import {
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
@@ -574,6 +576,9 @@ export function registerMCPCommands(program) {
             });
             health.setSource("gaps", () => getPendingSyncGaps().length);
             health.setSource("stage", () => stageLock.current());
+            health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
+            const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
+            if (sessionLine) console.error(`[mcp] ${sessionLine}`);
 
             let httpServer = null;
             try {
@@ -778,6 +783,13 @@ export function registerMCPCommands(program) {
             attachUnknownActs({
                 tap: socketTap,
                 file: join(accountDir, "unknown-acts.json"),
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            // The text of a voice message Zalo transcribed arrives as a control push; it is kept in the account
+            // folder for `read run voice-transcript` (src/core/voice-text.js). Same in `listen` and `mcp start`.
+            attachVoiceText({
+                tap: socketTap,
+                file: voiceTextFile(accountDir),
                 log: (line) => console.error(`[mcp] ${line}`),
             });
             const selfHeal = createSelfHeal({

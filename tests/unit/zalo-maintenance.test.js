@@ -12,13 +12,16 @@ import {
     MAINTENANCE_URL,
     checkMaintenance,
     maintenanceKeysOf,
+    pollDelayMs,
     waitOutMaintenance,
+    watchMaintenance,
 } from "../../src/zalo/maintenance.js";
 import { loadAnomalyState, saveAnomalyState } from "../../src/zalo/anomaly-store.js";
 
 const answer =
     (body, ok = true) =>
     async () => ({ ok, json: async () => body });
+const NONE = { startTime: 0, endTime: 0 };
 
 describe("maintenanceKeysOf", () => {
     const apiWith = (dr) => ({ getContext: () => ({ settings: { features: { dr_config: dr } } }) });
@@ -74,27 +77,55 @@ describe("checkMaintenance", () => {
     });
 
     it("reads 0 as ok, 70 as maintenance now, 71 as a notice", async () => {
-        assert.deepEqual(await checkMaintenance({ fetchFn: answer({ error_code: 0 }) }), { state: "ok", code: 0 });
+        assert.deepEqual(await checkMaintenance({ fetchFn: answer({ error_code: 0 }) }), {
+            state: "ok",
+            code: 0,
+            window: NONE,
+        });
         assert.deepEqual(await checkMaintenance({ fetchFn: answer({ error_code: 70 }) }), {
             state: "maintenance",
             code: 70,
+            window: NONE,
         });
         assert.deepEqual(await checkMaintenance({ fetchFn: answer({ error_code: 71 }) }), {
             state: "notice",
             code: 71,
+            window: NONE,
         });
-        assert.deepEqual(await checkMaintenance({ fetchFn: answer(70) }), { state: "maintenance", code: 70 });
+        assert.deepEqual(await checkMaintenance({ fetchFn: answer(70) }), {
+            state: "maintenance",
+            code: 70,
+            window: NONE,
+        });
+    });
+
+    it("reads the announced window from the data of the answer, in milliseconds, and zeros when it is not numbers", async () => {
+        const data = { startTime: 1_000, endTime: 5_000 };
+        for (const code of [0, 70, 71]) {
+            const out = await checkMaintenance({ fetchFn: answer({ error_code: code, data }) });
+            assert.deepEqual(out.window, data, `code ${code}`);
+        }
+        const junk = await checkMaintenance({
+            fetchFn: answer({ error_code: 71, data: { startTime: "soon", endTime: null } }),
+        });
+        assert.deepEqual(junk.window, NONE);
     });
 
     it("calls anything it cannot read unreachable: that says nothing about maintenance", async () => {
         assert.deepEqual(await checkMaintenance({ fetchFn: answer({ error_code: 5 }) }), {
             state: "unreachable",
             code: 5,
+            window: NONE,
         });
-        assert.deepEqual(await checkMaintenance({ fetchFn: answer({}) }), { state: "unreachable", code: null });
+        assert.deepEqual(await checkMaintenance({ fetchFn: answer({}) }), {
+            state: "unreachable",
+            code: null,
+            window: NONE,
+        });
         assert.deepEqual(await checkMaintenance({ fetchFn: answer({ error_code: 0 }, false) }), {
             state: "unreachable",
             code: null,
+            window: NONE,
         });
         assert.deepEqual(
             await checkMaintenance({
@@ -102,7 +133,7 @@ describe("checkMaintenance", () => {
                     throw new Error("offline");
                 },
             }),
-            { state: "unreachable", code: null },
+            { state: "unreachable", code: null, window: NONE },
         );
         assert.deepEqual(
             await checkMaintenance({
@@ -113,19 +144,19 @@ describe("checkMaintenance", () => {
                     },
                 }),
             }),
-            { state: "unreachable", code: null },
+            { state: "unreachable", code: null, window: NONE },
         );
     });
 });
 
 describe("waitOutMaintenance", () => {
     /** A check that answers from a script, and a sleep that records instead of waiting. */
-    function scripted(states) {
+    function scripted(states, window = NONE) {
         const queue = [...states];
         const sleeps = [];
         const polls = [];
         return {
-            check: async () => ({ state: queue.shift() ?? "ok", code: null }),
+            check: async () => ({ state: queue.shift() ?? "ok", code: null, window }),
             sleep: async (ms) => void sleeps.push(ms),
             onPoll: (state) => polls.push(state),
             sleeps,
@@ -136,8 +167,8 @@ describe("waitOutMaintenance", () => {
     it("keeps asking every minute while Zalo is in maintenance, and returns when it is out", async () => {
         const s = scripted(["maintenance", "maintenance", "ok"]);
         const out = await waitOutMaintenance(s);
-        assert.deepEqual(out, { state: "ok", code: null, polls: 3 });
-        assert.deepEqual(s.sleeps, [MAINTENANCE_POLL_MS.maintenance, MAINTENANCE_POLL_MS.maintenance]);
+        assert.deepEqual(out, { state: "ok", code: null, window: NONE, polls: 3 });
+        assert.deepEqual(s.sleeps, [MAINTENANCE_POLL_MS.afterWindow, MAINTENANCE_POLL_MS.afterWindow]);
         assert.deepEqual(s.polls, ["maintenance", "maintenance", "ok"]);
     });
 
@@ -161,8 +192,99 @@ describe("waitOutMaintenance", () => {
         assert.equal(out.polls, 1);
     });
 
-    it("polls an announced window much less often than a live one", () => {
-        assert.ok(MAINTENANCE_POLL_MS.notice >= 10 * MAINTENANCE_POLL_MS.maintenance);
+    it("asks hourly while an announced window is running, as the official client does", async () => {
+        const s = scripted(["maintenance", "maintenance", "ok"], { startTime: 1_000, endTime: 9_000_000 });
+        await waitOutMaintenance({ ...s, now: () => 5_000 });
+        assert.deepEqual(s.sleeps, [MAINTENANCE_POLL_MS.inWindow, MAINTENANCE_POLL_MS.inWindow]);
+    });
+});
+
+describe("pollDelayMs", () => {
+    const window = { startTime: 1_000, endTime: 2_000 };
+
+    it("is an hour inside the window and a minute from its end", () => {
+        assert.equal(pollDelayMs(window, 1_000), MAINTENANCE_POLL_MS.inWindow);
+        assert.equal(pollDelayMs(window, 1_999), MAINTENANCE_POLL_MS.inWindow);
+        assert.equal(pollDelayMs(window, 2_000), MAINTENANCE_POLL_MS.afterWindow);
+        assert.equal(pollDelayMs(window, 9_999), MAINTENANCE_POLL_MS.afterWindow);
+    });
+
+    it("is a minute with no window, and before one starts (the official 0 would ask in a loop)", () => {
+        assert.equal(pollDelayMs(undefined, 5), MAINTENANCE_POLL_MS.afterWindow);
+        assert.equal(pollDelayMs(NONE, 5), MAINTENANCE_POLL_MS.afterWindow);
+        assert.equal(pollDelayMs(window, 999), MAINTENANCE_POLL_MS.afterWindow);
+    });
+
+    it("an hour is longer than a minute by a wide margin", () => {
+        assert.ok(MAINTENANCE_POLL_MS.inWindow >= 10 * MAINTENANCE_POLL_MS.afterWindow);
+    });
+});
+
+describe("watchMaintenance (the 71 continue-checking loop)", () => {
+    /** Answers from a script; a sleep that records. */
+    function watched(answers, extra = {}) {
+        const queue = [...answers];
+        const sleeps = [];
+        const maintenance = [];
+        return {
+            check: async () => queue.shift() ?? { state: "ok", code: 0, window: NONE },
+            sleep: async (ms) => void sleeps.push(ms),
+            onMaintenance: (a) => maintenance.push(a.code),
+            sleeps,
+            maintenance,
+            ...extra,
+        };
+    }
+    const notice = (window = NONE) => ({ state: "notice", code: 71, window });
+
+    it("waits before the first question, keeps asking through 71 and unanswered questions, and ends on 0", async () => {
+        const w = watched([notice(), { state: "unreachable", code: null, window: NONE }, notice()]);
+        assert.equal(await watchMaintenance(w), "ok");
+        assert.equal(w.sleeps.length, 4, "a wait before each of the four questions");
+        assert.deepEqual(w.maintenance, []);
+    });
+
+    it("hands a 70 to the caller and ends: the socket goes back into the maintenance wait", async () => {
+        const w = watched([notice(), { state: "maintenance", code: 70, window: NONE }]);
+        assert.equal(await watchMaintenance(w), "maintenance");
+        assert.deepEqual(w.maintenance, [70]);
+    });
+
+    it("times each wait by the newest window it was told", async () => {
+        const window = { startTime: 0, endTime: 10_000_000 };
+        const w = watched([notice(window), notice(NONE)], { window, now: () => 5_000 });
+        await watchMaintenance(w);
+        assert.deepEqual(w.sleeps, [
+            MAINTENANCE_POLL_MS.inWindow,
+            MAINTENANCE_POLL_MS.inWindow,
+            MAINTENANCE_POLL_MS.afterWindow,
+        ]);
+    });
+
+    it("stops when told to, before or during a wait, without asking", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        let asked = 0;
+        assert.equal(
+            await watchMaintenance({
+                check: async () => void (asked += 1),
+                sleep: async () => {},
+                onMaintenance() {},
+                signal: controller.signal,
+            }),
+            "aborted",
+        );
+        const mid = new AbortController();
+        assert.equal(
+            await watchMaintenance({
+                check: async () => void (asked += 1),
+                sleep: async () => mid.abort(),
+                onMaintenance() {},
+                signal: mid.signal,
+            }),
+            "aborted",
+        );
+        assert.equal(asked, 0);
     });
 });
 

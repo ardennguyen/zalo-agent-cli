@@ -18,6 +18,8 @@ import { CallUsageError } from "../../src/zalo/web-call.js";
 const MSGS_IN = [{ cliMsgIdUndo: "c1", globalMsgId: "g1", cliMsgId: "n1" }];
 const MSGS_OUT = [{ cliMsgId: "n1", cliMsgIdUndo: "c1", globalMsgId: "g1" }];
 const TOP = { color: -16777216, emoji: "", startTime: -1, duration: -1, repeat: 0 };
+/** A body field the test cannot know (a client id made from the clock): it is checked by shape, then replaced. */
+const ANY_CLIENT_ID = "<a client id>";
 
 // [name, args, host key, path, method, what the web client encrypts]
 const CASES = [
@@ -243,6 +245,122 @@ const CASES = [
         },
     ],
     [
+        "voice-to-text",
+        { url: "https://voice.test/a.aac" },
+        "ai_features",
+        "/api/aifeatures/voice2text",
+        "POST",
+        { url: "https://voice.test/a.aac" },
+    ],
+    [
+        "gif-send",
+        {
+            toId: "u1",
+            href: "https://g.test/o.gif",
+            thumb: "https://g.test/n.gif",
+            width: 480,
+            height: 270,
+            contentId: "c9",
+        },
+        "file",
+        "/api/message/gif",
+        "POST",
+        {
+            thumb: "https://g.test/n.gif",
+            width: 480,
+            height: 270,
+            msg: "",
+            type: 0,
+            href: "https://g.test/o.gif",
+            contentId: "c9",
+            toid: "u1",
+            clientId: ANY_CLIENT_ID,
+        },
+    ],
+    [
+        "gif-send-group",
+        {
+            groupId: "g555",
+            href: "https://g.test/o.gif",
+            thumb: "https://g.test/n.gif",
+            width: "480",
+            height: "270",
+            contentId: "c9",
+            src: 2,
+        },
+        "file",
+        "/api/group/gif",
+        "POST",
+        {
+            thumb: "https://g.test/n.gif",
+            width: 480,
+            height: 270,
+            msg: "",
+            type: 0,
+            href: "https://g.test/o.gif",
+            contentId: "c9",
+            visibility: 0,
+            src: 2,
+            grid: "555",
+            clientId: ANY_CLIENT_ID,
+        },
+    ],
+    [
+        "pin-reorder-1on1",
+        { userId: "u1", topics: ["t1", { id: "t2", type: "message" }], topicType: "text", version: "77", lang: "en" },
+        "friend_board",
+        "/api/friendboard/reorder",
+        "GET",
+        {
+            conversationId: "u1",
+            topics: [
+                { topicId: "t1", topicType: 0 },
+                { topicId: "t2", topicType: 2 },
+            ],
+            version: 77,
+            lang: "en",
+            imei: IMEI,
+        },
+    ],
+    [
+        "blocksharing-update",
+        { threadId: "g555", isGroup: true, enabled: true },
+        "conversation",
+        "/api/conv/blocksharing/updateConvers",
+        "POST",
+        { threadId: "555", isGroup: 1, isEnabled: 1, clientLang: "vi" },
+    ],
+    [
+        "label-add",
+        { text: "Work", color: "#0068FF", conversations: ["u1", "g555"] },
+        "label",
+        "/api/convlabel/manage/add",
+        "POST",
+        { labelInfo: '{"text":"Work","color":"#0068FF"}', add: ["u1", "g555"] },
+    ],
+    [
+        "label-update",
+        { id: "13", text: "Work 2", color: "#FF6905", offset: 4, add: ["u2"], remove: ["u1"] },
+        "label",
+        "/api/convlabel/manage/update",
+        "POST",
+        { labelInfo: '{"id":13,"text":"Work 2","color":"#FF6905","offset":4}', add: ["u2"], remove: ["u1"] },
+    ],
+    ["label-delete", { ids: ["13", 14] }, "label", "/api/convlabel/manage/delete", "POST", { labelIds: [13, 14] }],
+    [
+        "label-reorder",
+        {
+            order: [
+                { id: "14", offset: "0" },
+                { id: 13, offset: 1 },
+            ],
+        },
+        "label",
+        "/api/convlabel/manage/reorder",
+        "POST",
+        { lsLabelInfo: '[{"id":14,"offset":0},{"id":13,"offset":1}]' },
+    ],
+    [
         "group-kickout-multi",
         { groupIds: ["g555", "666"], userId: "u1", srcInteraction: 1 },
         "group",
@@ -270,7 +388,12 @@ describe("each write goes out the way the web client's API module sends it", () 
             assert.equal(c.path, path);
             assert.equal(c.method, method);
             assert.equal(c.query.zpw_ver, "694");
-            assert.deepEqual(sent(c), body);
+            const got = sent(c);
+            if (body.clientId === ANY_CLIENT_ID) {
+                assert.match(got.clientId, /^\d{13}$/, "a client id is the clock's milliseconds");
+                got.clientId = ANY_CLIENT_ID;
+            }
+            assert.deepEqual(got, body);
         });
     }
 
@@ -456,18 +579,25 @@ describe("the table", () => {
             for (const a of d.args) assert.ok(a.desc.length > 3, `${name}.${a.name} is described`);
         }
         const destructive = WRITE_NAMES.filter((n) => WRITES[n].risk === "destructive");
-        assert.deepEqual(destructive, ["group-kickout-multi", "todo-delete", "topic-remove"]);
+        assert.deepEqual(destructive, ["group-kickout-multi", "label-delete", "todo-delete", "topic-remove"]);
     });
 
     it("claims a live success only for what was seen to work, and says why for the rest", () => {
         const verified = WRITE_NAMES.filter((n) => WRITES[n].verified);
         assert.deepEqual(verified, [
             "contact-tab-read",
+            "gif-send",
+            "gif-send-group",
             "group-kickout-multi",
+            "label-add",
+            "label-delete",
+            "label-reorder",
+            "label-update",
             "multi-undo",
             "multi-undo-group",
             "pin",
             "pin-reorder",
+            "pin-reorder-1on1",
             "recent-search-update",
             "sync-action-media",
             "topic-create",
@@ -476,6 +606,7 @@ describe("the table", () => {
             "topic-update",
             "unpin",
             "unpin-many",
+            "voice-to-text",
         ]);
         for (const n of WRITE_NAMES.filter((x) => !WRITES[x].verified)) {
             assert.ok(WRITES[n].note?.length > 20, `${n} says why it is not verified`);

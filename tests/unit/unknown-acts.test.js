@@ -104,12 +104,20 @@ describe("what gets noted", () => {
             controls: [
                 { content: { act_type: "transfer_sync2", act: "upload_batch" } },
                 { content: { act_type: "mark_unread", act: "add" } },
-                { content: { act_type: "brand_new", act: "thing" } },
+                {
+                    content: {
+                        act_type: "brand_new",
+                        act: "thing",
+                        data: JSON.stringify({ req_id: "r1", text: "secret words" }),
+                    },
+                },
             ],
         };
         assert.equal(acts.observe(CMD_PUSH_CONTROLS, controls), 1);
         assert.deepEqual(Object.keys(saved(file)), ["brand_new/thing"]);
         assert.equal(saved(file)["brand_new/thing"].cmd, 601);
+        assert.deepEqual(saved(file)["brand_new/thing"].keys, ["req_id", "text"], "the key names of its data");
+        assert.doesNotMatch(readFileSync(file, "utf8"), /secret words/, "never the values");
     });
 
     it("counts a name it has seen, writing the count back at most once a minute", () => {

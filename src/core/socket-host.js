@@ -32,6 +32,22 @@ import { superviseListener } from "../zalo/socket.js";
 export { EXIT_CODE };
 
 /**
+ * The fetch the account's own calls use (zca-js's `polyfill`: carries its proxy and its browser headers), or undefined
+ * for the global one.
+ *
+ * @param {object} [api] - a zca-js API
+ * @returns {typeof fetch|undefined}
+ */
+function fetchOf(api) {
+    try {
+        const f = api?.getContext?.()?.options?.polyfill;
+        return typeof f === "function" ? f : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
  * What a refused saved login says, when the library gives no number. The same words
  * `autoLogin` uses to tell a revoked session from a network failure.
  */
@@ -97,11 +113,15 @@ export function createSocketHost({
     supervisorOptions = {},
     supervise = superviseListener,
     sleep = sleepFor,
-    checkGate = (keys) => checkMaintenance(keys),
+    checkGate = (keys, fetchFn) => checkMaintenance({ ...keys, fetchFn }),
 }) {
     let supervisor = null;
     // What the last session's login learned about maintenance; the question carries it, as the official client's does.
     let gateKeys = {};
+    // The account's own fetch (its proxy, when it has one): the gate's question leaves the way the account's traffic does.
+    let gateFetch;
+    // A 71 from the gate while logging in: the next supervisor keeps asking, as the official client does.
+    let noticeWindow = null;
     let reloginRunning = false;
     const abort = new AbortController();
 
@@ -169,15 +189,20 @@ export function createSocketHost({
                 .finally(() => old.dispose());
         }
         gateKeys = maintenanceKeysOf(api);
+        gateFetch = fetchOf(api);
         supervisor = supervise(api, {
             anomaly,
-            maintenance: { check: () => checkGate(gateKeys) },
+            maintenance: { check: () => checkGate(gateKeys, gateFetch) },
             // Why a kick happened: the lookup needs the keys this session's login kept (L12b).
             kickoutInfo: () => lookupKickout(api),
             ...supervisorOptions,
         });
         wire(supervisor);
         supervisor.start();
+        if (noticeWindow) {
+            supervisor.continueChecking?.(noticeWindow);
+            noticeWindow = null;
+        }
         return supervisor;
     }
 
@@ -212,7 +237,12 @@ export function createSocketHost({
                     if (kind === "maintenance") {
                         log("warn", "Zalo is in maintenance: waiting for it instead of retrying.");
                         health?.noteSocketState?.("maintenance");
-                        await waitOutMaintenance({ check: () => checkGate(gateKeys), sleep, signal: abort.signal });
+                        const gate = await waitOutMaintenance({
+                            check: () => checkGate(gateKeys, gateFetch),
+                            sleep,
+                            signal: abort.signal,
+                        });
+                        if (gate.state === "notice") noticeWindow = gate.window ?? null;
                         loginEngine.resetAll();
                         continue;
                     }

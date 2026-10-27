@@ -174,6 +174,7 @@ const CASES = [
     ],
     ["sticker-category", { cid: 12 }, "sticker", "/api/message/sticker/category/detail", "GET", { cid: 12 }],
     ["sticker-category", { cid: "12" }, "sticker", "/api/message/sticker/category/detail", "GET", { cid: 12 }],
+    ["blocksharing-list", {}, "conversation", "/api/conv/blocksharing/getConvers", "GET", {}],
     ["sticker-personalized", {}, "sticker", "/api/message/sticker/personalized/list", "GET", { imei: IMEI }],
     ["sticker-keywords", {}, "sticker", "/api/message/sticker/suggest/keywords", "GET", { imei: IMEI }],
     ["sticker-tenor-map", {}, "sticker", "/api/message/sticker/tenor/mapping", "GET", { imei: IMEI }],
@@ -267,9 +268,20 @@ describe("each read goes out the way the web client's API module sends it", () =
     it("covers every read in the table (a new read needs a case)", () => {
         const covered = new Set(CASES.map((c) => c[0]));
         const missing = [...READ_NAMES.filter((n) => !covered.has(n))].filter(
-            (n) => !["check-update", "server-settings"].includes(n),
+            (n) => !["check-update", "server-settings", "voice-transcript"].includes(n),
         );
         assert.deepEqual(missing, []);
+    });
+
+    it("voice-transcript is local: it reads what the listener recorded, sends nothing, and builds no request", async () => {
+        const h = harness();
+        const api = { ...h.api, getOwnId: () => "1000000000000000099" };
+        const out = await callRead(api, "voice-transcript", {});
+        assert.deepEqual(out, [], "nothing recorded yet for the sandbox account");
+        assert.equal(h.calls.length, 0, "nothing was sent to Zalo");
+        assert.equal(await callRead(api, "voice-transcript", { reqId: "nope" }), null);
+        assert.throws(() => buildRead(h.api, "voice-transcript", {}), /local read/);
+        assert.equal(READS["voice-transcript"].host, "local");
     });
 
     it("check-update is a plain unencrypted query on the auth host", async () => {
@@ -364,7 +376,7 @@ describe("the table", () => {
 
     it("names only hosts the service map has, and documents every argument it requires", () => {
         for (const [name, d] of Object.entries(READS)) {
-            assert.ok(d.host === "auth" || SERVICE_KEYS.has(d.host), `${name}: host ${d.host}`);
+            assert.ok(d.host === "auth" || d.host === "local" || SERVICE_KEYS.has(d.host), `${name}: host ${d.host}`);
             assert.ok(d.what.length > 10, `${name} says what it is`);
             for (const a of d.args) assert.ok(a.desc.length > 3, `${name}.${a.name} is described`);
         }

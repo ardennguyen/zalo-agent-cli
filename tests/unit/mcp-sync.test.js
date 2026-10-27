@@ -262,6 +262,22 @@ it("shared runners resolve the current API after reconnect and never acquire a s
     assert.equal(seen[1].params.maxResumes, 3, "a daemon allows more resumes than the CLI's one");
 });
 
+it("the messages runner hands the cancel signal of the channel to the restore", async (t) => {
+    const seen = [];
+    const restore = mock.method(SyncV2.prototype, "restore", async function (params) {
+        seen.push(params.signal);
+        return { reason: "cancelled" };
+    });
+    t.after(() => restore.mock.restore());
+    const runners = createSyncRunners({
+        getApi: () => ({ listener: { ws: { readyState: 1 } } }),
+        accountName: "101",
+    });
+    const controller = new AbortController();
+    await runners.messages({}, () => {}, controller.signal);
+    assert.equal(seen[0], controller.signal, "a cancel from the CLI must reach the restore, or Ctrl+C stops nothing");
+});
+
 it("SDK tools/call validates refinements and tracks async work across separate calls", async (t) => {
     const f = fixture();
     const server = new McpServer({ name: "sync-test", version: "1" });

@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3347** as of 2026-10-27 (3342 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3410** as of 2026-10-27 (3405 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1455,7 +1455,7 @@ free-plan removal. None of it is built, and no live request for it was made.
 
 ## Reads: the web client's read-only endpoints (v3.0, 2026-10-26)
 
-**What it is.** `src/zalo/reads.js` is a table of 40 reads: for each, the service-map host, the path, the web client's
+**What it is.** `src/zalo/reads.js` is a table of 42 reads (40 at first; the closing sweep added `blocksharing-list` and the local `voice-transcript`): for each, the service-map host, the path, the web client's
 command id and the body it encrypts into `params`, taken from the web API module (`fBUP`, 2026-10-23 bundle) method of
 the same purpose. They all use the session cipher (a GET with `params` in the query, or a POST with `params` in the form
 body); the two login-host reads (`check-update`, `server-settings`) have plain replies, with `data` unencrypted.
@@ -1486,7 +1486,7 @@ call site was not read.
 
 ## Writes: the web client's state-changing endpoints (v3.0, 2026-10-26)
 
-**What it is.** `src/zalo/writes.js` is a table of 24 writes on the same request path as the reads (`src/zalo/web-call.js`, which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`. The owner approved building all four groups of plan 6.2; the first version was written and tested offline, and P7a (2026-10-27) then ran them on a disposable group ("Việc riêng - AI test", whose members are the owner's accounts) and on the owner's Arden Companion account. **14 of the 24 were seen to work; 10 were not, for reasons recorded in each entry's `note`.** Two more (`profile/mode`, `closefr/update`) answered 404 and were removed. Guards: each entry has a `risk` (`private`, `visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted; `write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); tests keep the `verified` set exact and keep the table's endpoints and names disjoint from the reads, which a test holds to reads only.
+**What it is.** `src/zalo/writes.js` is a table of 33 writes (24 after P7a; the closing sweep added nine) on the same request path as the reads (`src/zalo/web-call.js`, which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`. The owner approved building all four groups of plan 6.2; the first version was written and tested offline, and P7a (2026-10-27) then ran them on a disposable group ("Việc riêng - AI test", whose members are the owner's accounts) and on the owner's Arden Companion account. **14 of the 24 were seen to work; 10 were not, for reasons recorded in each entry's `note`.** Two more (`profile/mode`, `closefr/update`) answered 404 and were removed. Guards: each entry has a `risk` (`private`, `visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted; `write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); tests keep the `verified` set exact and keep the table's endpoints and names disjoint from the reads, which a test holds to reads only.
 
 **Built, with what the body is.** The multi-recall (`multi_undo`, `multi_undomsg`) sends, per message, a fresh client id,
 the original's client id (`cliMsgIdUndo`) and its global id. The group note and reminder writes (`topic/createv2`,
@@ -1564,11 +1564,120 @@ four-session cap's reason, the cookie note).
 usage reads); nothing of ours consumes them at boot, and a boot that makes calls nobody needs is traffic that is not free for
 the account. They can be added where a feature needs one.
 
-**Error 71, from the web client's own code.** The maintenance check (`maint.chat.zalo.me/api/chk`, sent with the stored `bkt`
-and `spt_mtn`) answers `{error_code, data: {startTime, endTime}}`. 0 means the servers are fine (and `startTime`/`endTime`, when
-given, are a window that is already announced); 70 means maintenance now: a running client restarts into the maintenance
-screen, a starting one keeps re-checking; 71 means "continue checking": in both states the client carries on and asks again,
-waiting until the window it was told about. Our reading of 71 (a window is announced, do not block, look again later) is that
-behavior. What 71 means server-side (whether it is a notice before a window, or a degraded service) has never been observed,
-because Zalo was not in maintenance in any capture. Our poller does not yet use `startTime` and `endTime` to time its next
-question (the web client does); it asks every hour after a 71, which is later than the web client would in the last hour.
+**Error 71, from the web client's own code (corrected in the closing sweep).** The maintenance check (`maint.chat.zalo.me/api/chk`,
+sent with the stored `bkt` and `spt_mtn`) answers `{error_code, data: {startTime, endTime}}`, the times in milliseconds. The
+client's maintenance module does this with the answer: 0 ends the check (the servers are fine); 70 while the app is running
+reloads it into the maintenance screen, and 70 while it is starting keeps re-checking; 71, running or starting, means "continue
+checking": the app stays up and the check goes on. Between checks it waits by one rule, `s(window, now)`: inside the announced
+window an hour, from the window's end (or with none announced) a minute, and before the window a flat 0 ms (which asks in a
+loop; this client waits a minute there instead). That rule applies in the 70 loop too, so during an announced window even a
+live maintenance is asked about hourly, not every minute.
+
+What is built (`src/zalo/maintenance.js`, `socket.js`, `core/socket-host.js`): `checkMaintenance` returns the window;
+`pollDelayMs` is the rule above; `waitOutMaintenance` waits by it; and after a 71 the supervisor (or the host, when the 71 came
+while logging in) starts `watchMaintenance`, which keeps asking by the same rule while the socket carries on: a 0 ends the
+watch, a 70 sends the socket back into the maintenance wait (the equivalent of the web client's reload). The question goes out
+through the account's own fetch, so a proxied account's question leaves by its proxy. The earlier text of this note said the
+poller asked hourly after a 71; it did not (a 71 only let the login proceed, and the unused hourly constant was removed).
+
+What 71 means on Zalo's side (a notice before a window, or a degraded service) has never been observed, because Zalo was not
+in maintenance in any capture; what is copied is what the client does with it, not why. That cannot be closed by a test and is
+recorded here as such.
+
+## The closing sweep before P8 (v3.0, 2026-10-27)
+
+The owner asked for every open item of P0 to P7 to be closed or answered before the docs and release phase. This is what
+was found and done; each item says whether it was closed by code, by a live run, by evidence from the web client, or
+by a decision, and the few that need the owner's hands are listed at the end.
+
+**Two defects found by looking, both older than 3.0 (the second is also in 2.5).**
+
+- *Every proxied account failed to log in.* `createProxyFetch` handed an `undici` 8 `ProxyAgent` to Node's global
+  `fetch`, which has its own undici (7.30 in Node 24.22): the pair fails every request with "invalid onRequestStart
+  method", reported as "fetch failed". No offline test had ever sent a request through a proxy. It now uses the
+  package's own `fetch`; `tests/unit/proxy-fetch.test.js` sends through a local proxy and goes red on the old pairing.
+  The maintenance question and the supervisor now go out through the account's own fetch too, so a proxied account's
+  question leaves by its proxy.
+- *A restore wrote a row it could not write into an empty `catch`.* A full disk or a locked file left a hole, the
+  conversation was marked restored and the run said "complete". The failure is now counted (`rowErrors`,
+  `firstRowError`), the partition is settled as `failed` (`write-error`) so the next run asks again, the run is
+  `partial`, and `sync` says how many rows and why. This is also what the client-side `MSG_IMPORT_FAILED` of the web
+  worker amounted to (Y2b).
+
+**Error 71 and the maintenance gate (L3).** Corrected: the web client does not "ask hourly after a 71". Its rule is
+`s(window, now)`: an hour inside the announced window, a minute from its end or with none, and (before the window) 0 ms,
+which asks in a loop and which this client does not copy (a minute). 71 is "continue checking": the app stays up and the
+check goes on, and a later 70 reloads it into the maintenance screen. Built: `pollDelayMs`, the window read from the answer,
+and `watchMaintenance`, which the supervisor (after a 71 in the maintenance wait) or the host (a 71 while logging in)
+starts, and which hands a 70 back to the supervisor as a new maintenance wait. What 71 means on Zalo's side was never
+observed; that cannot be closed by a test.
+
+**The saved login never renews (cookie rotation, L8).** In eight real Zalo Web captures (a few minutes to a long session,
+2,189 requests in the biggest) the chat session cookie `zpw_sek` (90 days) is set exactly once, by `jr.chat.zalo.me/jr/pushsession`
+at login, and cleared at logout; `zpsid` (a year) likewise; no API answer re-issues either. The web client's own renewal call
+(`exta/rnw`, `renewSession`) is defined and has no caller in any bundle. So nothing extends a login, and the useful thing
+to build was the date: `src/core/session-expiry.js` reads `creation + max-age` from the saved jar, `whoami` prints it
+(`sessionExpiry` in `--json`), the daemons log it at start, and the health snapshot warns from 14 days before
+(`session`, `zalo_session_days_left`). Never a cookie value.
+
+**Login host rotation (L2d).** The web client has one `authDomain` for `getServerInfo` and `getLoginInfo`; there is no
+rotation to follow. Closed by evidence.
+
+**Ctrl+C on a restore routed through a daemon (Y6b).** The channel now has `POST /sync/cancel`: it aborts the running
+stage's signal, which `traceRunners` forwards (that wrapper dropped a third argument; a test caught it) to `restore()`;
+`restoreViaDaemon` in the CLI sends it on the first Ctrl+C, and a second quits at once. Walking away without asking still
+does not stop a stage.
+
+**A real network cut (the plan's open live test).** A local CONNECT proxy that can be cut and restored, with
+`ZALO_NET_PROBE` pointed at it, carried a real `listen`: (1) connections reset for 25 s and for 120 s: the socket closed 1006,
+one retry (`interval_check`, 1.1 s) came about 2 s (25 s case) and 6 s (120 s case) after the network returned, self-heal closed each gap, no
+relogin; (2) a black hole for 60 s (sockets open, no bytes): the socket stayed up through it (no ping was due, and a network that is
+down is not a reason to close a socket); the bytes the test proxy had dropped then broke the stream at its release, which
+is an artifact of the test, and the reconnect and the gap recovery worked; (3) a black hole of 215 s across a ping: the echo did not come, the socket closed under 5011, then 5012
+(establish timeout) every ~18 s with the endpoint rotated after the table's five, and the unanswered queue ack was dropped after
+three tries; after the network came back it reconnected and recovered. The hammering the old ladder would have done did not
+happen. Not tested: a cut that leaves some hosts reachable (a captive portal).
+
+**What the live login settings say (L11, the retry table).** The server's own table for this account has the same shape as
+the defaults in `src/zalo/retry.js` (5012 and 5011 `max` 5, 4001 `max` 8 with `[2000, 3000, 5000, 8000]`, `5008` with five longer
+steps, `rotate_error_codes` `[5011, 5012, 4001, 5008]`, `ping_interval` 180000, `reset_endpoint` 600000); the server's values
+win over the defaults whenever the login carries them, which it does. It also carries `chat_label.api.update_label_version: 2`
+and `v2t.transcribe.enabled: true`, and no `task_setting` at all.
+
+**The ping echo (L10).** A real ping is `2/1 {eventId: <number>}` and its echo is `2/1 {eventId: <number>}`, the id at the top of
+the frame body: the supervisor's first reading. Closed.
+
+**zCloud reads (Z6).** `getMyCloudUsage`, `getCloudUsage`, `getFamilyUsage` and both viewer keys were run live: all answer;
+the family key is a separate pair of the same sizes; the family usage list is empty (no family plan). Closed.
+
+**Todos.** The six todo writes and three reads answer `-69` because the web client's todo screens need
+`settings.features.task_setting.enable`, and this account's login settings carry no `task_setting`. The request shapes are
+from the web client and stay unverified here; another account may have the flag.
+
+**New surface found by tracing the bundles (D5: build all but AI translate).**
+
+| Endpoint | Result |
+|---|---|
+| `convlabel/manage/{add,update,delete,reorder}` | built (`label-add`, `label-update`, `label-delete`, `label-reorder`) and all four seen working live on a throwaway label; the account's settings say the web client uses exactly these (`update_label_version` 2) |
+| `message/gif`, `group/gif` | built (`gif-send`, `gif-send-group`), seen working in the disposable group and in the Companion DM; the arguments are what the GIF picker's result carries |
+| `friendboard/reorder` | built (`pin-reorder-1on1`), seen working on the Companion DM (two pins reordered, then removed) |
+| `aifeatures/voice2text` | built (`voice-to-text`): the answer is only a request id; the text arrives as a `601` control `voice2text/convert_finish {req_id, err, text, url, has_more}` (the first real unknown action `unknown-acts.json` ever caught). `src/core/voice-text.js` keeps it in `voice-text.json` (both daemons, identically), and the local read `voice-transcript` returns it. Seen end to end |
+| `conv/blocksharing/{getConvers,updateConvers}` | the list read answers; the write answers 829 "zBusiness accounts only" on this account |
+| `recommendsv2/remove`, `read-requests`, `oa/block`, `oa/unblock` | unchanged: alive, need a real suggestion, request or Official Account (the `src` and `type` of a suggestion are the server's own `recommSrc` and `recommType` of the list item; `type` 1 is a suggestion, 2 an incoming request) |
+| `sync_action/media` | each list item is `{fromUid, destId, isGroup, cmi}`, sent when a photo or video is opened or a file downloaded; its effect is unobserved |
+| `closefr/update`, `profile/mode` | no replacement exists; the web client's toggle is an empty function and the feature flag is off |
+
+Closed as covered, dead code, or not worth a command: `sendpt`, `sharefile`, `sendmp3`, `voicemp3`, `upthumb`, the local GIF
+chunk send (zca-js makes the same request), `photo_url` (a forward's shortcut), the video chunk uploads (the web composer
+sends a local video as a file), `mediastore/remove`, `sticker/personalized/update`, the v1 variants, `action/query`, and the
+legacy and reaction receipts and `subtab/seen` (the owner did not pick the receipts; the v2 forms are sent). Credential and
+account flows, calls, E2EE, LAN friends, zBusiness and eKYC, and the zCloud calls that cost money or acknowledge onboarding are
+out on purpose (S10, Z3).
+
+**Closed by reading the web worker.** `promoteOrphanConversationRanges` is a state change of the web client's own range table
+(ranges of the conversation list that await a message sync become message ranges); this client's ranges exist only once a
+conversation list has named the partition, so there is nothing to promote (Y5d). The two `532` acks that got no answer in
+the first live runs match the black-hole run: an ack sent while the network is gone gets no answer, is dropped after three
+tries, and the server delivers the item again (Y10).
+
+**What the sweep could not close alone.** The wiring of the connect-time pulls (515, 517, 518, 603 and the 564/577/537 requests) is a design choice with a risk to the account's queues, and four checks need the owner's phone or a second account (a login with auto sync and the kick-reason line that follows it, a full restore past the old session cap, the todo and friend-request writes, and a real Official Account for the block calls). They are named in the sweep's report to the owner.

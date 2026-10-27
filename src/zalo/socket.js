@@ -43,7 +43,7 @@
  */
 import { EventEmitter } from "node:events";
 import { CLOSE_CODE, RETRY_KEY, SOCKET_ERROR, classifyServerError } from "./errors.js";
-import { checkMaintenance, waitOutMaintenance } from "./maintenance.js";
+import { checkMaintenance, waitOutMaintenance, watchMaintenance } from "./maintenance.js";
 import { createAnomalyHistory, createRetryEngine, resolveSocketSettings } from "./retry.js";
 
 /** The fixed timings of the official client. Every one can be overridden, which tests do. */
@@ -197,6 +197,7 @@ export class SocketSupervisor extends EventEmitter {
         this._lastTick = 0;
         this._lastCloseCode = null;
         this._maintenanceAbort = null;
+        this._watchAbort = null;
         this._disposed = false;
 
         this._onOpen = () => this._handleOpen();
@@ -258,6 +259,7 @@ export class SocketSupervisor extends EventEmitter {
         if (this._stopping && this._state === "stopped") return Promise.resolve();
         this._stopping = true;
         this._maintenanceAbort?.abort();
+        this._watchAbort?.abort();
         this._clearTimers();
         this._clearInterval();
         if (!this.listener.ws) {
@@ -294,6 +296,7 @@ export class SocketSupervisor extends EventEmitter {
         this._clearTimers();
         this._clearInterval();
         this._maintenanceAbort?.abort();
+        this._watchAbort?.abort();
         this.listener.off("connected", this._onOpen);
         this.listener.off("cipher_key", this._onKey);
         this.listener.off("disconnected", this._onDisconnected);
@@ -634,6 +637,7 @@ export class SocketSupervisor extends EventEmitter {
         this._kickedVia = via;
         this._clearTimers();
         this._maintenanceAbort?.abort();
+        this._watchAbort?.abort();
         this._setState("kicked");
         this.emit("kicked", { via });
         this._closeSocket();
@@ -655,6 +659,33 @@ export class SocketSupervisor extends EventEmitter {
         this._closeSocket();
     }
 
+    /**
+     * Keep asking the maintenance gate after it answered 71, as the official client does: the socket carries on, and
+     * a later 70 sends it back into the maintenance wait. One watch at a time; it ends when Zalo says all is well.
+     *
+     * @param {{startTime?: number, endTime?: number}} [window] - the window the 71 announced
+     */
+    continueChecking(window) {
+        if (this._watchAbort || this._stopping || this._disposed) return;
+        const controller = new AbortController();
+        this._watchAbort = controller;
+        watchMaintenance({
+            check: this.maintenance.check,
+            sleep: this.maintenance.sleep,
+            window,
+            signal: controller.signal,
+            onPoll: (state) => this.log("info", `maintenance gate (watching): ${state}`),
+            onMaintenance: () => {
+                if (this._live()) void this._enterMaintenance();
+            },
+            now: () => this.clock.now(),
+        })
+            .catch(() => {})
+            .finally(() => {
+                if (this._watchAbort === controller) this._watchAbort = null;
+            });
+    }
+
     async _enterMaintenance() {
         if (this._state === "maintenance" || !this._live()) return;
         this._clearTimers();
@@ -671,6 +702,7 @@ export class SocketSupervisor extends EventEmitter {
         this._maintenanceAbort = null;
         if (this._stopping || this._disposed || this._state !== "maintenance") return;
         this.emit("maintenance", { state: result.state === "ok" ? "over" : result.state });
+        if (result.state === "notice") this.continueChecking(result.window);
         this.engine.resetAll();
         this._setState("idle");
         if (this.listener.ws) {

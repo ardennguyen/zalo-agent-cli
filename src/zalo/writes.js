@@ -14,12 +14,22 @@
  * - {@link callWrite} sends nothing under `dryRun`: it returns the request it would have sent, with the body decrypted.
  *   The command and the MCP tool both make a person or an agent say yes (`--yes`, `confirm: true`) before a real call.
  *
- * Not here, on purpose, and why: the message-sending endpoints that upload or re-send content (`photo_url`, `sendpt`,
- * `sharefile`, `sendmp3`/`voicemp3`, the GIF and video chunk uploads, `upthumb`) are multi-step flows whose requests
- * carry parameters the web client adds in a helper this pass did not trace, and zca-js already sends images, files and
- * videos by its own flows; `convlabel/manage/*` and `blocksharing/*` are driven from lazily loaded modules whose request
- * bodies are not in the bundle files read; `voice2text` has no client method in the build; the receipts
- * (`seen`, `delivered` legacy forms, `subtab/seen`) change what other people see and are already sent in their v2 forms.
+ * Not here, on purpose, and why (traced in the 2026-10-23 bundles during the closing sweep):
+ * - `sendpt`, `sharefile`, `sendmp3`/`voicemp3`, `upthumb` and the local-GIF chunk send: the web client never calls them
+ *   (dead code) or zca-js already makes the same request (`asyncfile/*`, `photo_original/*`, the `upthumb` + `gif` chunks);
+ * - `photo_url`: it only lets a forward skip the download and re-upload; `msg forward` reaches the same result;
+ * - the video chunk uploads: the web composer sends a local video as a file (`msg send-file`); only its forward-with-
+ *   reupload flow uses them;
+ * - the receipts (`seen`, `delivered` legacy forms, reaction receipts, `subtab/seen`): they change what other people
+ *   see, and the v2 forms are already sent;
+ * - `closefr/update` and `profile/mode`: Zalo answers 404, and the web client's own toggle is an empty function;
+ * - `mediastore/remove` and `media/oneone/remove` (they need ids only the media store's own list gives),
+ *   `sticker/personalized/update` (an ordering of the sticker packs), the v1 variants the web client has replaced
+ *   (`pin`, `topic/create`, `group/create`, `group/invite`), `action/query` (an analytics hook): no use for them here;
+ * - credential and account flows (password, 2FA, `exta/rnw`, login), the zBusiness and eKYC calls, LAN friends (off by
+ *   default), voice and video calls, the E2EE message stack, and the zCloud calls that spend money or acknowledge the
+ *   onboarding (plan S10, Z3): not implemented on purpose;
+ * - AI translate: dropped until it has its own capture (D5).
  */
 import { CallUsageError, arg, buildCall, enumNum, list, num, runCall } from "./web-call.js";
 
@@ -100,6 +110,36 @@ function topicBody(a, ctx, { update }) {
     return body;
 }
 
+/** The arguments of a GIF send: what the picker's result carries (its `original`, `normal` thumbnail and id). */
+const GIF_ARGS = (group) => [
+    group ? arg("groupId", "string", "group id", true) : arg("toId", "string", "the other user's id", true),
+    arg("href", "string", "the GIF's address (the result's `original.url`)", true),
+    arg("thumb", "string", "the thumbnail's address (the result's `normal.url`)", true),
+    arg("width", "number", "width of the original", true),
+    arg("height", "number", "height of the original", true),
+    arg("contentId", "string", "the GIF's id (the result's `id`)"),
+    arg("src", "number", "where it was picked (the client's own source code; left out when not given)"),
+];
+
+/** What a GIF send carries, as the web client's sender writes it. */
+function gifBody(a, group) {
+    const body = {
+        thumb: String(a.thumb),
+        width: num(a.width),
+        height: num(a.height),
+        msg: "",
+        type: 0,
+        href: String(a.href),
+        ...(a.contentId !== undefined && { contentId: String(a.contentId) }),
+        ...(group && { visibility: 0 }),
+        ...(a.src !== undefined && { src: Number(a.src) }),
+    };
+    if (group) body.grid = bareGroupId(a.groupId);
+    else body.toid = String(a.toId);
+    body.clientId = JSON.stringify(Date.now());
+    return body;
+}
+
 const TOPIC_ARGS = [
     arg("groupId", "string", "group id", true),
     arg("type", "number", `topic type: ${named(ENUMS.topic)}`, true, ENUMS.topic),
@@ -165,6 +205,40 @@ export const WRITES = {
         body: (a, ctx) => ({ syncList: JSON.stringify(list(a.actions)), imei: ctx.imei }),
         verified: true,
         note: "answered with an empty list; what a non-empty list does is not known",
+    },
+
+    "voice-to-text": {
+        host: "ai_features",
+        path: "/api/aifeatures/voice2text",
+        cmd: 13394,
+        method: "post",
+        risk: "private",
+        what: "Ask Zalo to turn a voice message into text; the answer is a request id, and the text arrives later as a push on the socket (the listener records it: `read run voice-transcript`)",
+        args: [arg("url", "string", "the voice message's file address (from its cached message)", true)],
+        body: (a) => ({ url: String(a.url) }),
+        verified: true,
+    },
+    "gif-send": {
+        host: "file",
+        path: "/api/message/gif",
+        cmd: 11292,
+        method: "post",
+        risk: "visible",
+        what: "Send a GIF to a user by reference, the way the GIF picker does (a result of `read run gif-search` or `gif-trending`)",
+        args: GIF_ARGS(false),
+        body: (a) => gifBody(a, false),
+        verified: true,
+    },
+    "gif-send-group": {
+        host: "file",
+        path: "/api/group/gif",
+        cmd: 11194,
+        method: "post",
+        risk: "visible",
+        what: "Send a GIF to a group by reference, the way the GIF picker does",
+        args: GIF_ARGS(true),
+        body: (a) => gifBody(a, true),
+        verified: true,
     },
 
     // ── boards: reminders, notes, pins (group_board host) ──────────────────
@@ -275,6 +349,29 @@ export const WRITES = {
         }),
         verified: true,
     },
+    "pin-reorder-1on1": {
+        host: "friend_board",
+        path: "/api/friendboard/reorder",
+        cmd: 12068,
+        method: "get",
+        risk: "visible",
+        what: "Reorder the pinned items of a one-to-one conversation (the one-to-one pin board of this build)",
+        args: [
+            arg("userId", "string", "the other user's id", true),
+            arg("topics", "json", "the pinned items in their new order: ids, or `{topicId, topicType}` objects", true),
+            arg("topicType", "number", `the type of items given as bare ids (default text)`, false, ENUMS.topic),
+            arg("version", "number", "the board's version", true),
+            arg("lang", "string", "client language, vi or en (default vi)"),
+        ],
+        body: (a, ctx) => ({
+            conversationId: String(a.userId),
+            topics: list(a.topics).map((x) => topicRef(x, a.topicType)),
+            version: num(a.version),
+            lang: a.lang === "en" ? "en" : "vi",
+            imei: ctx.imei,
+        }),
+        verified: true,
+    },
     "unpin-many": {
         host: "group_board",
         path: "/api/board/multi_unpin",
@@ -309,7 +406,7 @@ export const WRITES = {
         ],
         body: (a, ctx) => ({ ...a.todo, src: num(a.src, -1), imei: ctx.imei }),
         verified: false,
-        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
+        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
     },
     "todo-update": {
         host: "boards",
@@ -321,7 +418,7 @@ export const WRITES = {
         args: [arg("todo", "json", "the todo object with its id, as the client builds it", true)],
         body: (a) => ({ ...a.todo }),
         verified: false,
-        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
+        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
     },
     "todo-status": {
         host: "boards",
@@ -335,7 +432,7 @@ export const WRITES = {
         ],
         body: (a, ctx) => ({ id: String(a.id), status: enumNum(a.status, ENUMS.todoStatus), imei: ctx.imei }),
         verified: false,
-        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
+        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
     },
     "todo-ding": {
         host: "boards",
@@ -346,7 +443,7 @@ export const WRITES = {
         args: [arg("taskIds", "json", "todo ids (array)", true)],
         body: (a) => ({ taskIds: list(a.taskIds).map(String) }),
         verified: false,
-        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
+        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
     },
     "todo-ding-ack": {
         host: "boards",
@@ -357,7 +454,7 @@ export const WRITES = {
         args: [arg("taskIds", "json", "todo ids (array)", true)],
         body: (a) => ({ taskIds: list(a.taskIds).map(String) }),
         verified: false,
-        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
+        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
     },
     "todo-delete": {
         host: "boards",
@@ -368,7 +465,7 @@ export const WRITES = {
         args: [arg("id", "string", "todo id", true)],
         body: (a) => ({ id: String(a.id) }),
         verified: false,
-        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
+        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
     },
 
     // ── friends and profile ────────────────────────────────────────────────
@@ -434,6 +531,101 @@ export const WRITES = {
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: false,
         note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
+    },
+    "blocksharing-update": {
+        host: "conversation",
+        path: "/api/conv/blocksharing/updateConvers",
+        cmd: 12179,
+        method: "post",
+        risk: "visible",
+        what: "Turn block sharing on or off for one conversation (see which have it with `read run blocksharing-list`)",
+        args: [
+            arg("threadId", "string", "the user's id, or the group's id (a `g` prefix is dropped)", true),
+            arg("isGroup", "boolean", "true for a group", true),
+            arg("enabled", "boolean", "true to turn it on, false to turn it off", true),
+            arg("lang", "string", "client language, vi or en (default vi)"),
+        ],
+        body: (a) => ({
+            threadId: bareGroupId(a.threadId),
+            isGroup: a.isGroup ? 1 : 0,
+            isEnabled: a.enabled ? 1 : 0,
+            clientLang: a.lang === "en" ? "en" : "vi",
+        }),
+        note: "answers 829 (this feature is for zBusiness accounts only) on a personal account, so no success was seen; the list read answers",
+    },
+    "label-add": {
+        host: "label",
+        path: "/api/convlabel/manage/add",
+        cmd: 12163,
+        method: "post",
+        risk: "private",
+        what: "Create a conversation label, and tag conversations with it (the granular label calls of this build)",
+        args: [
+            arg("text", "string", "the label's name (1 to 30 characters)", true),
+            arg("color", "string", "colour, a palette hex such as #0068FF", true),
+            arg("emoji", "string", "emoji (the web client never sends one)"),
+            arg("conversations", "json", "conversation ids to tag (a group's id as the web names it, `g` + id)"),
+        ],
+        body: (a) => ({
+            labelInfo: JSON.stringify({
+                text: String(a.text),
+                color: String(a.color),
+                ...(a.emoji && { emoji: a.emoji }),
+            }),
+            add: list(a.conversations).map(String),
+        }),
+        verified: true,
+    },
+    "label-update": {
+        host: "label",
+        path: "/api/convlabel/manage/update",
+        cmd: 12164,
+        method: "post",
+        risk: "private",
+        what: "Rename or recolor a label and tag or untag conversations",
+        args: [
+            arg("id", "number", "the label's id (from `label list`)", true),
+            arg("text", "string", "the label's name", true),
+            arg("color", "string", "colour, a palette hex", true),
+            arg("offset", "number", "its position in the list", true),
+            arg("add", "json", "conversation ids newly tagged"),
+            arg("remove", "json", "conversation ids untagged"),
+        ],
+        body: (a) => ({
+            labelInfo: JSON.stringify({
+                id: num(a.id),
+                text: String(a.text),
+                color: String(a.color),
+                offset: num(a.offset),
+            }),
+            add: list(a.add).map(String),
+            remove: list(a.remove).map(String),
+        }),
+        verified: true,
+    },
+    "label-delete": {
+        host: "label",
+        path: "/api/convlabel/manage/delete",
+        cmd: 12165,
+        method: "post",
+        risk: "destructive",
+        what: "Delete labels (the conversations keep existing; the label and its tags are gone)",
+        args: [arg("ids", "json", "label ids to delete (array of numbers)", true)],
+        body: (a) => ({ labelIds: list(a.ids).map(Number) }),
+        verified: true,
+    },
+    "label-reorder": {
+        host: "label",
+        path: "/api/convlabel/manage/reorder",
+        cmd: 12166,
+        method: "post",
+        risk: "private",
+        what: "Set the order of the labels",
+        args: [arg("order", "json", "array of `{id, offset}`, one per label", true)],
+        body: (a) => ({
+            lsLabelInfo: JSON.stringify(list(a.order).map((x) => ({ id: num(x.id), offset: num(x.offset) }))),
+        }),
+        verified: true,
     },
     "recent-search-update": {
         host: "recent_search",

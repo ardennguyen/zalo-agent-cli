@@ -331,7 +331,7 @@ zalo-agent write list                                  # what each touches (priv
 zalo-agent write run topic-remove --args '{"groupId":"<id>","topicId":"<id>"}' --dry-run   # show the request, send nothing
 zalo-agent write run todo-status --arg id=<id> --arg status=2 --yes                          # a real call needs --yes
 ```
-Every write changes something and none has been answered by a live account yet: dry-run first, and try a first real call on something disposable. MCP: `zalo_write` (`dryRun: true`, or `confirm: true` for a real call).
+Every write changes something. 22 of the 33 have been answered by a live account (`write list` says which, and why not for the rest): dry-run first, and try a first real call on something disposable. MCP: `zalo_write` (`dryRun: true`, or `confirm: true` for a real call).
 
 ## References
 

@@ -549,6 +549,66 @@ describe("socket supervisor", () => {
             assert.deepEqual(asked, [60_000, 60_000]);
             await until(() => zalo.sock.connections.length === 2 && sup.state === "connected", "a new connection");
         });
+
+        it("a 71 lets the socket carry on and keeps asking; a later 70 sends it back into maintenance", async () => {
+            const window = { startTime: 1, endTime: 2 };
+            const none = { startTime: 0, endTime: 0 };
+            const answers = [
+                { state: "maintenance", code: 70, window: none },
+                { state: "notice", code: 71, window },
+                { state: "maintenance", code: 70, window: none }, // the watch's first question
+                { state: "ok", code: 0, window: none },
+            ];
+            const slept = [];
+            await rig({
+                extra: {
+                    maintenance: {
+                        check: async () => answers.shift(),
+                        sleep: async (ms) => void slept.push(ms),
+                    },
+                },
+            });
+            sup.start();
+            await until(() => sup.state === "connected", "connected");
+            sup.reportServerError(70);
+            await until(() => named("maintenance").filter((e) => e.state === "over").length === 1, "the second end");
+            assert.deepEqual(
+                named("maintenance").map((e) => e.state),
+                ["in-maintenance", "notice", "in-maintenance", "over"],
+            );
+            assert.equal(answers.length, 0, "every answer was asked for");
+            assert.equal(slept.length, 2, "one wait in the maintenance loop, one before the watch's question");
+            await sup.stop();
+        });
+
+        it("a 71 that is followed by 0 ends the watch: nothing asks again", async () => {
+            const none = { startTime: 0, endTime: 0 };
+            const answers = [
+                { state: "maintenance", code: 70, window: none },
+                { state: "notice", code: 71, window: none },
+                { state: "ok", code: 0, window: none },
+            ];
+            let asked = 0;
+            await rig({
+                extra: {
+                    maintenance: {
+                        check: async () => (asked++, answers.shift()),
+                        sleep: async () => {},
+                    },
+                },
+            });
+            sup.start();
+            await until(() => sup.state === "connected", "connected");
+            sup.reportServerError(70);
+            await until(() => asked === 3, "the watch's question");
+            await quiet(150);
+            assert.equal(asked, 3);
+            assert.deepEqual(
+                named("maintenance").map((e) => e.state),
+                ["in-maintenance", "notice"],
+            );
+            await sup.stop();
+        });
     });
 
     describe("sleep and wake", () => {

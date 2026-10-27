@@ -21,7 +21,7 @@ import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
 import { syncConvState } from "../core/sync-v2/conv-state.js";
 import { planSyncRun } from "../core/sync-v2/plan.js";
 import { startKeepAlive } from "../core/sync-v2/keepalive.js";
-import { getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
+import { cancelViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { attachLiveStore } from "../core/live-store.js";
 import {
     initDb,
@@ -982,6 +982,26 @@ function stoppingNotice() {
 }
 
 /**
+ * Run the message restore on the daemon's socket, and let Ctrl+C stop it there: the first press asks the daemon
+ * to cancel (it keeps what arrived and releases the sessions on the phone), a second quits at once and leaves the
+ * cancel to finish by itself.
+ *
+ * @param {string} accountDir
+ * @param {object} req - as for syncViaDaemon
+ * @param {{proc?: object}} [opts] - the process, replaceable in a test
+ * @returns {Promise<object|null>} syncViaDaemon's answer
+ */
+export function restoreViaDaemon(accountDir, req, { proc = process } = {}) {
+    return whileInterruptible(
+        (signal) => {
+            signal.addEventListener("abort", () => void cancelViaDaemon(accountDir), { once: true });
+            return syncViaDaemon(accountDir, req);
+        },
+        { onStop: stoppingNotice, proc },
+    );
+}
+
+/**
  * Re-open the socket after it dropped mid-stage.
  *
  * Handed to `SyncV2.restore()` as its `reconnect`: that class never starts or
@@ -1061,7 +1081,7 @@ async function runTransferSync(activeAcc, opts) {
         if (win.clamped) info("(--days reaches past the oldest history this sync can request.)");
         warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
         const startedAt = Date.now();
-        const r = await syncViaDaemon(accountDir, {
+        const r = await restoreViaDaemon(accountDir, {
             stage: "messages",
             params: {
                 days: opts.days ?? null,
@@ -1302,7 +1322,18 @@ export function reportRestore(res, win, ctx = {}) {
         return { status: "partial", reason: "cancelled by you" };
     }
     if (res.reason === "partial" || res.reason === "socket-lost") {
-        const how = res.reason === "socket-lost" ? "the connection dropped" : "the run was cut short";
+        const how =
+            res.reason === "socket-lost"
+                ? "the connection dropped"
+                : res.rowErrors
+                  ? "some messages could not be written"
+                  : "the run was cut short";
+        if (res.rowErrors) {
+            warning(
+                `${res.rowErrors} message(s) could not be written to the local cache (${res.firstRowError ?? "unknown error"}). ` +
+                    "Their conversations are not marked as restored, so the next run asks for them again.",
+            );
+        }
         warning(
             `Partial restore: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) before ${how}.`,
         );
@@ -1616,7 +1647,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
             // the owner's phone can supply the history.
             warning("This sends ONE sync request to your phone — confirm the 'ĐỒNG BỘ NGAY' prompt when it appears.");
             const startedAt = Date.now();
-            const r = await syncViaDaemon(accountDir, {
+            const r = await restoreViaDaemon(accountDir, {
                 stage: "messages",
                 params: {
                     days: opts.days ?? null,

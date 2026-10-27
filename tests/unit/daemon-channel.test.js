@@ -26,6 +26,7 @@ import {
     startDaemonChannel,
     sendViaDaemon,
     syncViaDaemon,
+    cancelViaDaemon,
     getDaemonStatus,
     stopViaDaemon,
     stopDaemon,
@@ -294,9 +295,9 @@ function fakeRunners(impl = {}) {
     const calls = [];
     const runners = {};
     for (const stage of ["messages", "reactions"]) {
-        runners[stage] = async (params, onEvent) => {
+        runners[stage] = async (params, onEvent, signal) => {
             calls.push({ stage, params });
-            return impl[stage] ? impl[stage](params, onEvent) : { stage, ok: true };
+            return impl[stage] ? impl[stage](params, onEvent, signal) : { stage, ok: true };
         };
     }
     return { runners, calls };
@@ -409,6 +410,62 @@ describe("the sync routes", () => {
         assert.equal((await first).ok, true);
         // Released on the way out: the next sync is accepted.
         assert.equal((await syncViaDaemon(dir, { stage: "reactions" })).ok, true);
+    });
+
+    it("cancels the running stage on request: its runner is aborted and the stream ends with the runner's result", async () => {
+        // The CLI's Ctrl+C while a restore runs on a daemon's socket. Walking away does not stop a stage
+        // (the restore is writing real messages); asking does, and the runner puts its own house in order.
+        let aborted = null;
+        await syncDaemon(dir, {
+            messages: (_p, _e, signal) =>
+                new Promise((resolve) => {
+                    signal.addEventListener("abort", () => {
+                        aborted = true;
+                        resolve({ reason: "cancelled", messagesSaved: 5 });
+                    });
+                }),
+        });
+        const running = syncViaDaemon(dir, { stage: "messages" });
+        await new Promise((r) => setTimeout(r, 50));
+        assert.equal(aborted, null, "nothing aborts it before it is asked");
+        assert.deepEqual(await cancelViaDaemon(dir), { ok: true, stage: "messages" });
+        const r = await running;
+        assert.equal(r.ok, true);
+        assert.deepEqual(r.result, { reason: "cancelled", messagesSaved: 5 });
+        assert.equal(aborted, true);
+        // The guard is released on the way out, as after any other end.
+        assert.equal((await syncViaDaemon(dir, { stage: "reactions" })).ok, true);
+    });
+
+    it("a cancel with nothing running says so, and a cancel does not touch the next stage", async () => {
+        let signalState;
+        await syncDaemon(dir, {
+            reactions: (_p, _e, signal) => {
+                signalState = signal;
+                return { ok: true };
+            },
+        });
+        assert.deepEqual(await cancelViaDaemon(dir), { ok: true, stage: null });
+        assert.equal((await syncViaDaemon(dir, { stage: "reactions" })).ok, true);
+        assert.equal(signalState.aborted, false, "an earlier cancel leaves a later stage running");
+    });
+
+    it("a cancel after a stage has finished finds nothing running (the finished stage is not kept)", async () => {
+        await syncDaemon(dir, { messages: () => ({ messagesSaved: 1 }) });
+        assert.equal((await syncViaDaemon(dir, { stage: "messages" })).ok, true);
+        assert.deepEqual(await cancelViaDaemon(dir), { ok: true, stage: null });
+    });
+
+    it("refuses a cancel without the daemon's token, and reports no daemon as null", async () => {
+        const { chan } = await syncDaemon(dir, {});
+        const res = await fetch(`http://127.0.0.1:${chan.port}/sync/cancel`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: "nope" }),
+        });
+        assert.equal(res.status, 403);
+        started.pop().stop();
+        assert.equal(await cancelViaDaemon(dir), null);
     });
 
     it("keeps serving attachment uploads while a sync runs", async () => {

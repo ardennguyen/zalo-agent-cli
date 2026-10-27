@@ -29,6 +29,7 @@ import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createCloudVerifier } from "../core/cloud-verify.js";
 import { attachUnknownActs } from "../core/unknown-acts.js";
+import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
@@ -50,6 +51,7 @@ import { createDeliveredReceipts } from "../core/receipts.js";
 import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
+import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 
@@ -593,6 +595,9 @@ export function registerListenCommand(program) {
             health.setSource("gaps", () => getPendingSyncGaps().length);
             health.setSource("stage", () => stageLock.current());
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
+            health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
+            const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
+            if (sessionLine) console.error(`[listen] ${sessionLine}`);
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
             // Read state other devices report -- a conversation read on the
             // phone, an unread mark set or cleared there -- which zca-js
@@ -620,6 +625,13 @@ export function registerListenCommand(program) {
             attachUnknownActs({
                 tap: socketTap,
                 file: join(accountDir, "unknown-acts.json"),
+                log: (line) => console.error(`[listen] ${line}`),
+            });
+            // The text of a voice message Zalo transcribed arrives as a control push; it is kept in the account
+            // folder for `read run voice-transcript` (src/core/voice-text.js). Same in `listen` and `mcp start`.
+            attachVoiceText({
+                tap: socketTap,
+                file: voiceTextFile(accountDir),
                 log: (line) => console.error(`[listen] ${line}`),
             });
             const selfHeal = createSelfHeal({

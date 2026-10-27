@@ -313,6 +313,8 @@ export function startDaemonChannel({
     onStatus = null,
 }) {
     const token = randomBytes(24).toString("hex");
+    // The stage that is running, and the controller its runner was given: `POST /sync/cancel` aborts it.
+    let activeStage = null;
 
     // One stage at a time on this socket. Two stages sharing it is measured to
     // break the restore: running the reaction drain beside it lost the socket
@@ -385,6 +387,11 @@ export function startDaemonChannel({
         // writing real messages into zalo.db and still holds the socket, so
         // stopping half way would lose work and free the guard while the
         // socket is busy. We only stop writing to a response nobody reads.
+        // A client that ASKS (`POST /sync/cancel`, from its Ctrl+C) does abort it:
+        // the runner puts its own house in order (a restore keeps what arrived and
+        // releases its sessions on the phone) and ends with a `cancelled` result.
+        const controller = new AbortController();
+        activeStage = { stage, controller };
         res.on("close", () => {
             gone = true;
             clearInterval(ping);
@@ -393,7 +400,7 @@ export function startDaemonChannel({
         onLog?.(`running the ${stage} sync stage on this daemon's socket`);
         try {
             const params = body.params && typeof body.params === "object" ? body.params : {};
-            const result = await run(params, (event) => write({ t: "event", event }));
+            const result = await run(params, (event) => write({ t: "event", event }), controller.signal);
             write({ t: "done", result });
             onLog?.(`the ${stage} sync stage finished`);
         } catch (e) {
@@ -401,6 +408,7 @@ export function startDaemonChannel({
             onLog?.(`the ${stage} sync stage failed: ${e?.message || String(e)}`);
         } finally {
             clearInterval(ping);
+            if (activeStage?.controller === controller) activeStage = null;
             release();
             try {
                 res.end();
@@ -408,6 +416,16 @@ export function startDaemonChannel({
                 /* the client already went away */
             }
         }
+    };
+
+    /** Ask the running stage to stop the way a Ctrl+C at the daemon's own terminal would (`/sync/cancel`). */
+    const serveCancel = (body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        const running = activeStage;
+        if (!running) return reply(200, { ok: true, stage: null });
+        onLog?.(`cancel requested for the ${running.stage} sync stage`);
+        running.controller.abort();
+        return reply(200, { ok: true, stage: running.stage });
     };
 
     /** Trigger a graceful shutdown over the loopback channel (`--stop`). */
@@ -483,6 +501,7 @@ export function startDaemonChannel({
         if (
             req.url !== "/send-attachments" &&
             req.url !== "/stop" &&
+            req.url !== "/sync/cancel" &&
             req.url !== "/wait" &&
             req.url !== "/mark-read" &&
             req.url !== "/status" &&
@@ -494,6 +513,7 @@ export function startDaemonChannel({
         const body = await readJsonBody(req, reply);
         if (!body) return; // already answered, or the request went away
         if (req.url === "/stop") return serveStop(body, reply);
+        if (req.url === "/sync/cancel") return serveCancel(body, reply);
         if (req.url === "/wait") return serveWait(body, res, reply);
         if (req.url === "/mark-read") return serveMarkRead(body, reply);
         if (req.url === "/status") return serveStatus(body, reply);
@@ -589,6 +609,51 @@ export function sendViaDaemon(accountDir, req) {
         );
         // Every failure resolves null rather than rejecting: an unreachable
         // daemon must degrade to the old behaviour, never fail the send.
+        r.on("timeout", () => {
+            r.destroy();
+            resolve(null);
+        });
+        r.on("error", () => resolve(null));
+        r.end(payload);
+    });
+}
+
+/**
+ * Ask the running daemon to stop the sync stage it is running (the CLI's Ctrl+C while a stage runs on a daemon's
+ * socket). The stage's own `syncViaDaemon` stream then ends with the runner's `cancelled` result.
+ *
+ * @param {string} accountDir
+ * @param {{timeoutMs?: number}} [opts]
+ * @returns {Promise<{ok: boolean, stage?: string|null, error?: string}|null>} null when no daemon is running
+ */
+export function cancelViaDaemon(accountDir, { timeoutMs = 10_000 } = {}) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+    const payload = JSON.stringify({ token: chan.token });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/sync/cancel",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: timeoutMs,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    try {
+                        resolve(JSON.parse(raw));
+                    } catch {
+                        resolve(null);
+                    }
+                });
+            },
+        );
         r.on("timeout", () => {
             r.destroy();
             resolve(null);

@@ -39,6 +39,10 @@ class FakeSupervisor extends EventEmitter {
     dispose() {
         this.calls.push("dispose");
     }
+    continueChecking(window) {
+        this.calls.push("continueChecking");
+        this.watched = window;
+    }
 }
 
 const loginError = (message, code) => Object.assign(new Error(message), code === undefined ? {} : { code });
@@ -303,6 +307,21 @@ describe("socket host", () => {
             assert.ok(sleeps.includes(60_000), "the gate is asked every minute");
         });
 
+        it("a 71 from the gate while logging in makes the next supervisor keep asking, with the announced window", async () => {
+            const window = { startTime: 10, endTime: 20 };
+            const answers = [
+                { state: "maintenance", code: 70 },
+                { state: "notice", code: 71, window },
+            ];
+            const h = host([loginError("down for maintenance", 70)], { checkGate: async () => answers.shift() });
+            await h.reloginNow("test");
+            assert.equal(made.length, 1);
+            assert.deepEqual(made[0].watched, window);
+            assert.deepEqual(made[0].calls, ["start", "continueChecking"]);
+            h.start({ id: "later" });
+            assert.deepEqual(made[1].calls, ["start"], "the window belongs to one supervisor only");
+        });
+
         it("asks the maintenance gate with the numbers the last session's login learned, for the supervisor and for a failed login alike (L3)", async () => {
             const asked = [];
             const apiWith = (bkt) => ({
@@ -331,6 +350,29 @@ describe("socket host", () => {
             h.start(apiWith(10));
             await supOpts.maintenance.check();
             assert.deepEqual(asked.pop(), { bkt: 10, sptMtn: 1 }, "a new login's numbers replace the old ones");
+        });
+
+        it("asks the maintenance gate through the account's own fetch, so a proxied account's question leaves by its proxy", async () => {
+            const polyfill = async () => {};
+            const used = [];
+            let supOpts;
+            const h = host([loginError("down for maintenance", 70)], {
+                checkGate: async (_keys, fetchFn) => {
+                    used.push(fetchFn);
+                    return { state: "ok", code: 0 };
+                },
+                supervise: (api, opts) => {
+                    supOpts = opts;
+                    return new FakeSupervisor(api);
+                },
+            });
+            h.start({ getContext: () => ({ options: { polyfill } }) });
+            await supOpts.maintenance.check();
+            await h.reloginNow("test");
+            assert.deepEqual(used, [polyfill, polyfill], "the supervisor's question and the failed login's alike");
+            h.start({ id: "no-context" });
+            await supOpts.maintenance.check();
+            assert.equal(used.pop(), undefined, "an api with no context of its own falls back to the global fetch");
         });
 
         it("runs one login at a time", async () => {

@@ -125,6 +125,41 @@ describe("a restore against the fake phone", () => {
         assert.equal(JSON.parse(readFileSync(sessionsFile, "utf8")).length, 0, "no session is left written down");
     });
 
+    it("a row that cannot be written is counted and named, its conversation is not settled, and the run is not complete", async () => {
+        // A full disk or a locked file used to vanish into an empty catch: the row was missing, the conversation was
+        // marked restored, and the run said "complete".
+        const { result, error } = await run(
+            {},
+            {
+                before: (sync) => {
+                    const db = initDb(join(sync.accountDir, "zalo.db"));
+                    db.exec(
+                        "CREATE TRIGGER fail_one BEFORE INSERT ON messages WHEN NEW.msgId = '1002' " +
+                            "BEGIN SELECT RAISE(ABORT, 'disk is full'); END",
+                    );
+                },
+            },
+        );
+        assert.equal(error, null);
+        assert.equal(result.reason, "partial");
+        // The unsettled range is asked for once more in the same run (Y2b) and fails the same way.
+        assert.ok(result.rowErrors >= 1, "the failures are counted");
+        assert.match(result.firstRowError, /disk is full/);
+        assert.ok(result.messagesSaved >= 2, "the other rows were still written");
+        assert.ok(getMessageById("1001"));
+        assert.ok(!getMessageById("1002"));
+        const failed = getSyncRanges("failed");
+        assert.deepEqual(
+            failed.map((r) => [r.partition, r.reason]),
+            [["oneone/CONVA", "write-error"]],
+            "only the conversation with the hole is left unsettled",
+        );
+        assert.deepEqual(
+            getSyncRanges("done").map((r) => r.partition),
+            ["group/CONVB"],
+        );
+    });
+
     it("releases the conversation session as soon as it has the list, before asking for any message", async () => {
         const { phone } = await run();
         assert.deepEqual(

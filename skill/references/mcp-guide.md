@@ -665,7 +665,7 @@ Kết quả theo từng `action`:
 Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên cần `confirm: true`; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Luồng tự động/headless/backend không bị chặn: gửi `confirm: true` trong lệnh gọi, hoặc tắt hẳn bước kiểm tra bằng `"groupConfirm": false` trong `mcp-config.json` hay biến môi trường `ZALO_MCP_GROUP_CONFIRM=0` (biến môi trường được ưu tiên; `1`/`true` bật lại). Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool đã được chạy thử trên tài khoản thật (nhóm tạm thời): tạo nhóm, xem thông tin, thêm/xóa thành viên, rời nhóm với `silent`. Đã kiểm chứng trên tài khoản thật: với `silent: true`, các thành viên thường không thấy thông báo "đã rời nhóm", nhưng chủ nhóm vẫn thấy. Chủ nhóm rời nhóm thì quyền chủ nhóm được chuyển cho người khác trước, nên người đó thấy thông báo — muốn rời im lặng hoàn toàn với các thành viên, hãy chuyển quyền chủ nhóm (`group transfer-owner`) rồi mới rời.
 
 ### `zalo_read`
-Chạy một trong các endpoint **chỉ-đọc** của Zalo Web mà không tool nào khác phủ tới — danh mục sticker và GIF, tìm GIF, hạng và trường phụ của hồ sơ, danh sách chặn, biệt danh, lịch sử tìm kiếm Zalo giữ, trạng thái gửi/đã xem, hạn mức nhóm và vai trò của tài khoản trong nhóm, trạng thái emoji của bạn bè, cài đặt phía máy chủ… — tương đương `read list` và `read run`. Không gửi, đánh dấu, đổi hay xóa gì.
+Chạy một trong các endpoint **chỉ-đọc** của Zalo Web mà không tool nào khác phủ tới — danh mục sticker và GIF, tìm GIF, hạng và trường phụ của hồ sơ, danh sách chặn, biệt danh, lịch sử tìm kiếm Zalo giữ, trạng thái gửi/đã xem, hạn mức nhóm và vai trò của tài khoản trong nhóm, trạng thái emoji của bạn bè, cài đặt phía máy chủ… — tương đương `read list` và `read run`. Không gửi, đánh dấu, đổi hay xóa gì. `voice-transcript` là read **cục bộ**: không gửi gì cho Zalo, chỉ đọc văn bản mà `listen`/`mcp start` đã ghi lại khi Zalo chuyển một tin nhắn thoại thành chữ (nhờ chuyển bằng write `voice-to-text`).
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -676,9 +676,9 @@ Chạy một trong các endpoint **chỉ-đọc** của Zalo Web mà không tool
 Kết quả: `{reads: [{name, what, host, path, verified, args}]}` khi không có `name`; `{name, data}` với `data` là phần trả lời của Zalo khi có `name`. Các read chưa `verified` có yêu cầu dựng theo client web nhưng chưa thấy được trả lời thật.
 
 ### `zalo_write`
-Thực hiện một trong các lời gọi **thay đổi trạng thái** của Zalo Web mà không tool nào khác phủ tới — RSVP nhắc hẹn, tạo/sửa ghi chú và nhắc hẹn nhóm (có quy tắc lặp lại và chế độ chỉ mình tôi), ghim/bỏ ghim/sắp xếp lại ghim, xóa topic, todo cá nhân, thu hồi nhiều tin cùng lúc, dọn gợi ý kết bạn, chặn OA, xóa một tài khoản khỏi nhiều nhóm, lịch sử tìm kiếm — tương đương `write list` và `write run`.
+Thực hiện một trong các lời gọi **thay đổi trạng thái** của Zalo Web mà không tool nào khác phủ tới — RSVP nhắc hẹn, tạo/sửa ghi chú và nhắc hẹn nhóm (có quy tắc lặp lại và chế độ chỉ mình tôi), ghim/bỏ ghim/sắp xếp lại ghim (nhóm và 1-1), xóa topic, nhãn hội thoại (thêm/sửa/xóa/sắp xếp), gửi GIF theo tham chiếu, nhờ chuyển tin nhắn thoại thành chữ, todo cá nhân, thu hồi nhiều tin cùng lúc, dọn gợi ý kết bạn, chặn OA, xóa một tài khoản khỏi nhiều nhóm, lịch sử tìm kiếm — tương đương `write list` và `write run`.
 
-**Mọi write đều thay đổi gì đó trên tài khoản.** 14 trong 24 cái đã được thấy chạy thật (`verified`, trên một nhóm có thể bỏ đi); các cái còn lại ghi lý do trong `note`. Vì vậy một lời gọi thật cần `confirm: true` (chỉ là một tham số, không có hộp thoại), và `dryRun: true` trả về yêu cầu sẽ gửi (phương thức, host, đường dẫn, nội dung đã giải mã) mà không gửi gì. Hãy dùng `dryRun` trước, và thử một write chưa `verified` trên thứ có thể bỏ đi. Các tham số kiểu enum nhận tên hoặc số của client web (`list` cho thấy cả hai).
+**Mọi write đều thay đổi gì đó trên tài khoản.** 22 trong 33 cái đã được thấy chạy thật (`verified`, trên một nhóm có thể bỏ đi, trên tài khoản Companion và trên nhãn của chính tài khoản); các cái còn lại ghi lý do trong `note` (todo: tính năng tắt với tài khoản này; chặn chia sẻ: chỉ dành cho zBusiness; dọn gợi ý, đánh dấu lời mời đã xem, chặn OA: cần một gợi ý, lời mời hoặc OA thật). Vì vậy một lời gọi thật cần `confirm: true` (chỉ là một tham số, không có hộp thoại), và `dryRun: true` trả về yêu cầu sẽ gửi (phương thức, host, đường dẫn, nội dung đã giải mã) mà không gửi gì. Hãy dùng `dryRun` trước, và thử một write chưa `verified` trên thứ có thể bỏ đi. Các tham số kiểu enum nhận tên hoặc số của client web (`list` cho thấy cả hai).
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -688,7 +688,7 @@ Thực hiện một trong các lời gọi **thay đổi trạng thái** của Z
 | `dryRun` | boolean (tuỳ chọn) | Trả về yêu cầu sẽ gửi và không gửi gì; không cần `confirm` |
 | `confirm` | boolean (tuỳ chọn) | Phải là `true` cho một lời gọi thật; thiếu thì tool báo lỗi và không gọi Zalo |
 
-Kết quả: `{writes: [...]}` khi không có `name`; `{dryRun: true, request: {method, host, path, body}}` với `dryRun`; `{name, data}` với `data` là phần trả lời của Zalo khi gửi thật. Những thứ cố ý không có ở đây (luồng tải lên/gửi lại nội dung, nhãn `convlabel/manage`, chặn chia sẻ, `voice2text`, biên nhận kiểu cũ) và lý do nằm trong `skill/references/command-reference.md`, mục `write`.
+Kết quả: `{writes: [...]}` khi không có `name`; `{dryRun: true, request: {method, host, path, body}}` với `dryRun`; `{name, data}` với `data` là phần trả lời của Zalo khi gửi thật. Những thứ cố ý không có ở đây (các luồng tải lên mà zca-js đã làm hoặc client web không dùng, biên nhận, luồng tài khoản/thông tin đăng nhập, cuộc gọi, E2EE, …) và lý do nằm trong `skill/references/command-reference.md`, mục `write`.
 
 ### `zalo_friend`
 Kiểm tra, liệt kê và xử lý lời mời kết bạn, và liệt kê bạn bè — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request` và `list`.

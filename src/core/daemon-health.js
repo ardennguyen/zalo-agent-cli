@@ -19,6 +19,7 @@
  */
 
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import { EXPIRY_WARN_DAYS, describeSessionExpiry } from "./session-expiry.js";
 
 /** The listener events whose arrival means the account is alive; their counts are exported. */
 export const COUNTED_EVENTS = Object.freeze([
@@ -167,6 +168,7 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
             const buffer = read("buffer");
             const gaps = read("gaps");
             const stage = read("stage");
+            const session = read("session");
             const mem = process.memoryUsage();
             const p99Ms = lag.count ? lag.percentile(99) / 1e6 : 0;
             const maxMs = lag.count ? lag.max / 1e6 : 0;
@@ -189,6 +191,9 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
             }
             if (webhook?.dead) warnings.push(`webhook: ${webhook.dead} dead-lettered event(s)`);
             if (gaps) warnings.push(`coverage: ${gaps} gap(s) not yet recovered`);
+            if (session && (session.expired || session.daysLeft <= EXPIRY_WARN_DAYS)) {
+                warnings.push(describeSessionExpiry(session).replace(/\.$/, ""));
+            }
             if (maxMs >= LAG_WARN_MS)
                 warnings.push(`event loop was blocked for ${(maxMs / 1000).toFixed(1)}s recently`);
 
@@ -222,6 +227,7 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
                     byKind: { ...counts },
                 },
                 coverage: { pendingGaps: gaps ?? 0 },
+                session,
                 stage: stage ? { running: stage.stage, forSec: ageSec(stage.startedAt, t) } : null,
                 webhook,
                 buffer,
@@ -313,6 +319,12 @@ export function renderPrometheus(s) {
         "gauge",
         "Time windows whose messages are not yet recovered.",
         one(s.coverage.pendingGaps),
+    );
+    metric(
+        "zalo_session_days_left",
+        "gauge",
+        "Days until the saved Zalo session ends and a new QR login is needed (negative once it has).",
+        one(s.session?.daysLeft ?? null),
     );
     metric(
         "zalo_stage_running",

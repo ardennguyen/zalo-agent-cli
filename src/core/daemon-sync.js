@@ -120,18 +120,22 @@ function traceRunners(runners, { log, monitor }) {
     return Object.fromEntries(
         Object.entries(runners).map(([stage, run]) => [
             stage,
-            async (params = {}, onEvent = () => {}) => {
+            async (params = {}, onEvent = () => {}, signal) => {
                 const trace = createStageLogger({ stage, log, monitor });
                 trace.start(params);
                 try {
-                    const result = await run(params, (event) => {
-                        try {
-                            trace.event(event);
-                        } catch {
-                            /* a logging problem never reaches the stage */
-                        }
-                        onEvent(event);
-                    });
+                    const result = await run(
+                        params,
+                        (event) => {
+                            try {
+                                trace.event(event);
+                            } catch {
+                                /* a logging problem never reaches the stage */
+                            }
+                            onEvent(event);
+                        },
+                        signal,
+                    );
                     trace.finish(result);
                     return result;
                 } catch (error) {
@@ -186,9 +190,11 @@ export function createSyncRunners({
          * @param {{days?: number|null, from?: string|number, waitMs?: number,
          *   shardSize?: number, waveSize?: number, fullResync?: boolean}} params
          * @param {(e: {phase: string, detail?: string}) => void} onEvent
+         * @param {AbortSignal} [signal] - aborted by `POST /sync/cancel`: the restore keeps what arrived, releases
+         *   its sessions on the phone and returns `reason: "cancelled"`
          * @returns {Promise<object>} SyncV2.restore() result, as-is
          */
-        async messages(params = {}, onEvent = () => {}) {
+        async messages(params = {}, onEvent = () => {}, signal) {
             const api = liveApi("restore");
             // The api and socket the stage is on, kept current across reconnects.
             let current = { api, ws: api.listener?.ws ?? null };
@@ -199,6 +205,7 @@ export function createSyncRunners({
                 shardSize: Number(params.shardSize) || undefined,
                 waveSize: Number(params.waveSize) || undefined,
                 fullResync: params.fullResync === true,
+                signal,
                 // See rule 1 in this file's header: the daemon is the tap.
                 liveStore: false,
                 // Explicit, not left to the default: a CLI that owns the

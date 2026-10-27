@@ -14,13 +14,16 @@ export const IMEI = "test-imei-0000";
 
 /** The service-map keys the web client's domain manager knows (module `pUq9`), plus the ones the tables use. */
 export const SERVICE_KEYS = new Set([
+    "ai_features",
     "alias",
     "chat",
     "conversation",
     "file",
     "friend",
+    "friend_board",
     "group",
     "group_cloud_message",
+    "label",
     "group_board",
     "boards",
     "profile",

@@ -49,7 +49,7 @@ describe("write", () => {
         const some = JSON.parse(stripAnsi(narrowed.stdout));
         assert.deepEqual(
             some.map((x) => x.name),
-            ["group-kickout-multi", "todo-delete", "topic-remove"],
+            ["group-kickout-multi", "label-delete", "todo-delete", "topic-remove"],
         );
         const text = stripAnsi((await runCli(["write", "list"], options)).all);
         assert.match(text, /topic-remove/);

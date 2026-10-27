@@ -32,14 +32,29 @@ const KNOWN = new Map([
     ["file_done", { kind: "upload", handler: "zca-js" }],
     ["group", { kind: "group-event", handler: "zca-js" }],
     ["fr", { kind: "friend-event", handler: "zca-js" }],
+    ["voice2text", { kind: "transcript", handler: "voice-text" }],
 ]);
+
+/** A control's `data`: an object, or the JSON text of one, or null when it is neither. */
+function dataOf(data) {
+    let obj = data;
+    if (typeof data === "string") {
+        try {
+            obj = JSON.parse(data);
+        } catch {
+            return null;
+        }
+    }
+    return obj && typeof obj === "object" && !Array.isArray(obj) ? obj : null;
+}
 
 /**
  * The controls of one `601` frame's `data`.
  *
  * @param {object|null|undefined} data - a decoded 601 frame's `data`
  * @returns {Array<{actionId: string|null, actType: string, act: string, kind: string, handler: string|null,
- *   handled: boolean}>} `handled` is false for a control this client has no handler for
+ *   handled: boolean, data: object|null}>} `handled` is false for a control this client has no handler for; `data` is
+ *   the control's own data when it is an object
  */
 export function readControls(data) {
     const out = [];
@@ -56,6 +71,7 @@ export function readControls(data) {
             kind: known?.kind ?? "unknown",
             handler: known?.handler ?? null,
             handled: Boolean(known),
+            data: dataOf(content.data),
         });
     }
     return out;

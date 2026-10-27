@@ -15,6 +15,8 @@
  * request shape from the bundle (or, for the emoji-status pair, only its path and the presence of `params` from a
  * capture), so a failure of it says "not accepted", not "broken".
  */
+import { getAccountDir } from "../core/credentials.js";
+import { readTranscript, voiceTextFile } from "../core/voice-text.js";
 import { CallError, CallUsageError, arg, buildCall, list, num, runCall } from "./web-call.js";
 
 /** The avatar size the web client asks profile endpoints for. */
@@ -38,12 +40,24 @@ const NEWEST_PAGE_ID = String(2n ** 63n - 1n);
  * @property {(a: object, ctx: object) => (object|null)} [body] - what is encrypted into `params`; absent: no `params`
  * @property {(a: object) => Record<string,string>} [headers]
  * @property {(a: object) => Record<string,string>} [extraQuery]
+ * @property {(a: object, api: object) => any} [local] - a read of what the listener recorded on this machine: nothing is
+ *   sent to Zalo, and `host` and `path` are "local" and "-"
  * @property {boolean} verified - whether a live account has answered it
  */
 
 /** @type {Record<string, ReadDef>} */
 export const READS = {
     // ── session and login (S1) ──────────────────────────────────────────────
+    // ── what the listener recorded (nothing is sent) ───────────────────────
+    "voice-transcript": {
+        host: "local",
+        path: "-",
+        cmd: null,
+        what: "The text of a voice message Zalo transcribed (ask with `write run voice-to-text`); the listener records it when it arrives",
+        args: [arg("reqId", "string", "the request id `voice-to-text` returned (leave out for the recent ones)")],
+        local: (a, api) => readTranscript(voiceTextFile(getAccountDir(String(api.getOwnId()))), a.reqId),
+        verified: true,
+    },
     "check-update": {
         host: "auth",
         path: "/api/login/chkUpdate",
@@ -317,6 +331,15 @@ export const READS = {
         body: (a) => ({ cid: num(a.cid) }),
         verified: true,
     },
+    "blocksharing-list": {
+        host: "conversation",
+        path: "/api/conv/blocksharing/getConvers",
+        cmd: 12178,
+        what: "The conversations that have block sharing on (who turned it on: `isActor` 1 is this account)",
+        args: [],
+        body: () => ({}),
+        verified: true,
+    },
     "sticker-personalized": {
         host: "sticker",
         path: "/api/message/sticker/personalized/list",
@@ -509,6 +532,8 @@ export const ReadError = CallError;
 export function buildRead(api, name, args = {}) {
     const def = READS[name];
     if (!def) throw new ReadUsageError(`unknown read "${name}"; known: ${READ_NAMES.join(", ")}`);
+    if (def.local)
+        throw new ReadUsageError(`"${name}" is a local read: nothing is sent to Zalo, so there is no request to build`);
     return buildCall(api, def, name, args);
 }
 
@@ -523,6 +548,15 @@ export function buildRead(api, name, args = {}) {
  * @throws {Error} Zalo's own error (code in `.code`) when the reply is an error
  */
 export async function callRead(api, name, args = {}) {
+    const def = READS[name];
+    if (def?.local) {
+        for (const a of def.args) {
+            if (a.required && (args[a.name] === undefined || args[a.name] === null || args[a.name] === "")) {
+                throw new ReadUsageError(`"${name}" needs "${a.name}" (${a.desc})`);
+            }
+        }
+        return def.local(args, api);
+    }
     return runCall(api, buildRead(api, name, args));
 }
 

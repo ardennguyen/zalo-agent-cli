@@ -129,7 +129,7 @@ export function createUnknownActs({ file, now = Date.now, log = () => {} }) {
                 } else if (cmd === CMD_PUSH_CONTROLS) {
                     for (const c of readControls(data)) {
                         if (c.handled) continue;
-                        if (note(cmd, c.actType, c.act, [])) fresh++;
+                        if (note(cmd, c.actType, c.act, c.data ? Object.keys(c.data).slice(0, MAX_KEYS) : [])) fresh++;
                     }
                 }
                 // A new name is written at once; the counts of known names at most once a minute.

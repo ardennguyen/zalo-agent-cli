@@ -8,7 +8,7 @@ import { basename, join } from "node:path";
 import { imageSizeFromFile } from "image-size/fromFile";
 import { Zalo } from "zca-js";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { ProxyAgent } from "undici";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { getActive } from "./accounts.js";
 import { getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
 import { info } from "../utils/output.js";
@@ -103,10 +103,17 @@ export function isLoggedIn() {
 /**
  * Create a proxy-aware fetch that uses undici ProxyAgent dispatcher.
  * Native Node.js fetch ignores the `agent` option — must use `dispatcher`.
+ *
+ * The fetch is undici's own, not the global one: Node bundles its own undici (7.30 in Node 24.22), the package
+ * here is another (8.x), and a dispatcher from one handed to the fetch of the other fails every request with
+ * "invalid onRequestStart method". A proxied account could not log in at all.
+ *
+ * @param {string} proxyUrl
+ * @returns {typeof fetch}
  */
-function createProxyFetch(proxyUrl) {
+export function createProxyFetch(proxyUrl) {
     const dispatcher = new ProxyAgent(proxyUrl);
-    return (url, init = {}) => fetch(url, { ...init, dispatcher });
+    return (url, init = {}) => undiciFetch(url, { ...init, dispatcher });
 }
 
 /**

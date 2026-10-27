@@ -589,7 +589,7 @@ A daemon reports on itself in four ways. The first three are HTTP routes of `mcp
 | `GET /health` | none | Liveness: `status` (always `"ok"` while Express answers), `uptime`, `threads`, and the socket: `socket` (`starting`, `up`, `down`, `stopping`) and `ready` |
 | `GET /ready` | none | **200 only while the Zalo socket is up**, else 503 with `{ready, socket}`: for a load balancer or supervisor that should stop sending work to an offline account |
 | `GET /status` | bearer | Everything below, as JSON |
-| `GET /metrics` | bearer | The same as Prometheus text: `zalo_up`, `zalo_socket_*`, `zalo_last_event_age_seconds`, `zalo_webhook_*`, `zalo_coverage_gaps_pending`, `zalo_buffer_*`, `zalo_process_*`, `zalo_eventloop_lag_*` |
+| `GET /metrics` | bearer | The same as Prometheus text: `zalo_up`, `zalo_socket_*`, `zalo_last_event_age_seconds`, `zalo_webhook_*`, `zalo_coverage_gaps_pending`, `zalo_session_days_left`, `zalo_buffer_*`, `zalo_process_*`, `zalo_eventloop_lag_*` |
 | `zalo-agent mcp start --status` / `listen --status` | local | The same snapshot, printed (`--json` for scripts) |
 
 `/status` holds: the socket (state, how long, reconnects, last close code), the age of the last event and the last message, incoming message and per-kind event counts, pending coverage gaps, the running sync stage, the webhook outbox (queued, dead-lettered, oldest wait, last error, delivered), the live buffer, memory, event-loop delay, and a `warnings` list with `status: "degraded"` when something needs attention (socket down 2+ minutes, a webhook backlog older than 5 minutes, dead letters, unrecovered gaps, a 3+ second stall).

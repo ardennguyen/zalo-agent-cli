@@ -16,6 +16,7 @@ import {
 import { saveCredentials, loadCredentials, getAccountDir } from "../core/credentials.js";
 import { addAccount, getActive, removeAccount, updateAccountName } from "../core/accounts.js";
 import { getDaemonStatus } from "../core/daemon-channel.js";
+import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { serverLogout, reportLogout, finishLocalLogout, lockHolder } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
@@ -382,10 +383,14 @@ export function registerLoginCommands(program) {
                 const accountInfo = await api.fetchAccountInfo();
                 const p = accountInfo?.profile || {};
                 updateAccountName(p.userId || getOwnId(), p.displayName || p.zaloName);
-                output(accountInfo, program.opts().json, () => {
+                // Nothing extends the saved login, so when it ends is worth knowing before it does.
+                const sessionExpiry = sessionExpiryFor(p.userId || getOwnId());
+                output({ ...accountInfo, sessionExpiry }, program.opts().json, () => {
                     info(`Name: ${p.displayName || "?"}`);
                     info(`ID: ${p.userId || getOwnId()}`);
                     info(`Phone: ${p.phoneNumber || "?"}`);
+                    const sessionLine = describeSessionExpiry(sessionExpiry);
+                    if (sessionLine) info(sessionLine);
                 });
             } catch (e) {
                 error(e.message);

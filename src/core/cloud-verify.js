@@ -145,8 +145,17 @@ export function createCloudVerifier({
         }
     }
 
+    // Every notice leaves one line saying what was done with it; `walked` and `failed` already said so themselves.
+    const WHY = {
+        current: "the index is already at the server's newest id: nothing to do",
+        throttled: "walked less than 30 minutes ago: left",
+        "stage-running": "another stage is running: left",
+        busy: "a walk is already running: left",
+    };
     const off = tap.on(CMD_MYCLOUD, (frame) => {
-        void handle(frame);
+        void handle(frame).then((outcome) => {
+            if (WHY[outcome]) say(`notice (cmd 621): ${WHY[outcome]}`);
+        });
     });
     return {
         stop: off,

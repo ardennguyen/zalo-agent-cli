@@ -676,9 +676,9 @@ Chạy một trong các endpoint **chỉ-đọc** của Zalo Web mà không tool
 Kết quả: `{reads: [{name, what, host, path, verified, args}]}` khi không có `name`; `{name, data}` với `data` là phần trả lời của Zalo khi có `name`. Các read chưa `verified` có yêu cầu dựng theo client web nhưng chưa thấy được trả lời thật.
 
 ### `zalo_write`
-Thực hiện một trong các lời gọi **thay đổi trạng thái** của Zalo Web mà không tool nào khác phủ tới — RSVP nhắc hẹn, tạo/sửa ghi chú và nhắc hẹn nhóm (có quy tắc lặp lại và chế độ chỉ mình tôi), ghim/bỏ ghim/sắp xếp lại ghim, xóa topic, todo cá nhân, thu hồi nhiều tin cùng lúc, bạn thân, dọn gợi ý kết bạn, chặn OA, chế độ hiện diện, xóa một tài khoản khỏi nhiều nhóm, lịch sử tìm kiếm — tương đương `write list` và `write run`.
+Thực hiện một trong các lời gọi **thay đổi trạng thái** của Zalo Web mà không tool nào khác phủ tới — RSVP nhắc hẹn, tạo/sửa ghi chú và nhắc hẹn nhóm (có quy tắc lặp lại và chế độ chỉ mình tôi), ghim/bỏ ghim/sắp xếp lại ghim, xóa topic, todo cá nhân, thu hồi nhiều tin cùng lúc, dọn gợi ý kết bạn, chặn OA, xóa một tài khoản khỏi nhiều nhóm, lịch sử tìm kiếm — tương đương `write list` và `write run`.
 
-**Mọi write đều thay đổi gì đó trên tài khoản và chưa cái nào được một tài khoản thật trả lời.** Vì vậy một lời gọi thật cần `confirm: true` (chỉ là một tham số, không có hộp thoại), và `dryRun: true` trả về yêu cầu sẽ gửi (phương thức, host, đường dẫn, nội dung đã giải mã) mà không gửi gì. Hãy dùng `dryRun` trước, và thử lần gọi thật đầu tiên trên thứ có thể bỏ đi.
+**Mọi write đều thay đổi gì đó trên tài khoản.** 14 trong 24 cái đã được thấy chạy thật (`verified`, trên một nhóm có thể bỏ đi); các cái còn lại ghi lý do trong `note`. Vì vậy một lời gọi thật cần `confirm: true` (chỉ là một tham số, không có hộp thoại), và `dryRun: true` trả về yêu cầu sẽ gửi (phương thức, host, đường dẫn, nội dung đã giải mã) mà không gửi gì. Hãy dùng `dryRun` trước, và thử một write chưa `verified` trên thứ có thể bỏ đi. Các tham số kiểu enum nhận tên hoặc số của client web (`list` cho thấy cả hai).
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -739,7 +739,7 @@ MCP server expose **25 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Nhãn hội thoại (Label) | `zalo_label` | `zalo-agent --json label …` |
 | Thông tin nhóm, tạo nhóm, thêm/xóa thành viên, rời nhóm | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
 | Danh mục sticker/GIF, tìm GIF, hạng hồ sơ, danh sách chặn, biệt danh và các read khác của Zalo Web | `zalo_read` | `zalo-agent --json read list\|run <name>` |
-| RSVP nhắc hẹn, ghi chú/nhắc hẹn nhóm có lặp lại, ghim, todo, thu hồi nhiều tin, bạn thân và các thay đổi khác | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
+| RSVP nhắc hẹn, ghi chú/nhắc hẹn nhóm có lặp lại, ghim, todo, thu hồi nhiều tin và các thay đổi khác | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
 | Bạn bè: trạng thái, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè | `zalo_friend` | `zalo-agent --json friend request-status\|sent-requests\|recommendations\|add\|accept\|reject\|undo-request\|list` |
 | Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
 | Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |

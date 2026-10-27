@@ -13,6 +13,10 @@
  * The builders are not sent anywhere by default. What the server answers to 515, 517, 518 and 603 has not been
  * decoded in a session of ours, and a pull may consume what it returns, so sending them blind could lose the
  * items; they are here so that a controlled session can send them, read the answers, and decide.
+ *
+ * Since the first controlled session (2026-10-25) the shapes of the answers are known: 515, 517 and 518 answer in the
+ * shape of the old-message queues (empty on the test account), 564 answers `{err, keyId}`, 537 `{hasMore, actions[]}`
+ * and 603 pages of 50 `transfer_sync2` controls. The consuming pulls are still not sent by default.
  */
 import { nextReqId } from "./req-id.js";
 

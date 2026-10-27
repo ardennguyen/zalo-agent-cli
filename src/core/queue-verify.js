@@ -12,10 +12,11 @@
  * committed to zalo.db.** An ack for something that was not stored reports "nothing missing", and the loss is
  * never repaired. So callers hand ids to {@link confirm} only after the write; this module never decides that.
  *
- * What is not known: the exact element shape of `ids` and of the ack (`[{actionId}]` is what the Web bundle
- * builds), and the server's own `max_msg_verify` and `interval_verify` for this identity. Both settings are read
- * from `settings.features.socket` when present, and a captured session shows the first ack 30 s after a message.
- * The first live message to a test account is what confirms the rest.
+ * Seen live (2026-10-25): an ack is `{queueName, ids: [{actionId}], nretry, reqId}` and Zalo answers `{error: 0, reqId}`.
+ * Two acks for ids of queue 510_1 got no answer in three tries and were dropped; where those ids came from was not
+ * identified. What is still not known is the server's own `max_msg_verify` and `interval_verify` for this identity:
+ * both are read from `settings.features.socket` when present, and a captured session shows the first ack 30 s after
+ * a message.
  */
 import { nextReqId as sharedNextReqId } from "../zalo/req-id.js";
 

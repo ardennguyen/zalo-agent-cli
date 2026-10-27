@@ -92,14 +92,14 @@ export const READS = {
         host: "conversation",
         path: "/api/conv/cm/grOfl",
         cmd: 12300,
-        what: "Whether conversations have messages waiting offline (the web client's own boot probe)",
+        what: "Which conversations have messages waiting offline (the web client's own boot probe; `{}`, `0`, `0` ask for all)",
         args: [
             arg("queueInfo", "json", "queue info as the client sends it", true),
             arg("lastActId", "string", "last action id"),
             arg("lastMsgId", "string", "last message id"),
         ],
         body: (a) => ({ queueInfo: a.queueInfo, lastActId: a.lastActId ?? "", lastMsgId: a.lastMsgId ?? "" }),
-        verified: false,
+        verified: true,
     },
     "last-seen-react": {
         host: "reaction",
@@ -442,6 +442,22 @@ export const READS = {
         verified: false,
     },
 
+    "pin-list": {
+        host: "group_board",
+        path: "/api/board/pin/list",
+        cmd: 12001,
+        what: "A group's pinned board items and the pin board's version (the version `unpin` and `unpin-many` need)",
+        args: [
+            arg("groupId", "string", "group id", true),
+            arg("boardVersion", "number", "the version the client holds (0 for all)"),
+        ],
+        body: (a, ctx) => ({
+            groupId: String(a.groupId).startsWith("g") ? String(a.groupId).slice(1) : String(a.groupId),
+            boardVersion: num(a.boardVersion, 0),
+            imei: ctx.imei,
+        }),
+        verified: true,
+    },
     "banner-info": {
         host: "banner",
         path: "/api/banner/v1/info",

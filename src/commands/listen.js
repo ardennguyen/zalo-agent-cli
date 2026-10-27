@@ -28,6 +28,7 @@ import { setUserInfoLogger } from "../core/user-info.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createCloudVerifier } from "../core/cloud-verify.js";
+import { attachUnknownActs } from "../core/unknown-acts.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
@@ -612,6 +613,13 @@ export function registerListenCommand(program) {
                 tap: socketTap,
                 getApi,
                 lock: stageLock,
+                log: (line) => console.error(`[listen] ${line}`),
+            });
+            // The control actions the server sends that nobody handles, named once in the account folder
+            // (src/core/unknown-acts.js). Same in `listen` and `mcp start`.
+            attachUnknownActs({
+                tap: socketTap,
+                file: join(accountDir, "unknown-acts.json"),
                 log: (line) => console.error(`[listen] ${line}`),
             });
             const selfHeal = createSelfHeal({

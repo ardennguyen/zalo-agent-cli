@@ -211,7 +211,7 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**227**), command groups (**26** containers), MCP tools (**27**), OA commands (**32**), offline tests (**3324** as of 2026-10-26). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**227**), command groups (**26** containers), MCP tools (**27**), OA commands (**32**), offline tests (**3347** as of 2026-10-27). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`.
 

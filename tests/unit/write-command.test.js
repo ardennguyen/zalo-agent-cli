@@ -35,7 +35,24 @@ describe("write arguments", () => {
         });
         assert.deepEqual(a, { groupId: "1000000000000000001", boardVersion: 4, topics: ["a", "b"] });
         assert.throws(() => args("pin-reorder", { arg: ["boardVersion=x"] }), ReadUsageError);
-        assert.throws(() => args("pin-reorder", { arg: ["nope=1"] }), /takes: groupId, topics, boardVersion/);
+        assert.throws(
+            () => args("pin-reorder", { arg: ["nope=1"] }),
+            /takes: groupId, topics, topicType, boardVersion/,
+        );
+    });
+});
+
+describe("enum names on the command line", () => {
+    it("turns a name into the web client's number, in any case, and leaves numbers alone", () => {
+        assert.equal(args("topic-response", { arg: ["type=Accept"] }).type, 1);
+        assert.equal(args("topic-response", { arg: ["type=reject"] }).type, 2);
+        assert.equal(args("topic-response", { arg: ["type=2"] }).type, 2);
+        assert.equal(args("todo-status", { arg: ["status=-1"] }).status, -1);
+        assert.equal(args("todo-status", { arg: ["status=inProcess"] }).status, 0);
+    });
+
+    it("refuses a name the enum does not have, naming the ones it has", () => {
+        assert.throws(() => args("topic-response", { arg: ["type=maybe"] }), /not one of: none, accept, reject/);
     });
 });
 

@@ -68,8 +68,7 @@ const CASES = [
             type: 2,
             params: { title: "t" },
             startTime: 1700,
-            repeat: 1,
-            repeatRule: { x: 1 },
+            repeatRule: { freq: "weekly", byDay: ["we", "MO"] },
             onlyMe: true,
             pinAct: 1,
             src: 3,
@@ -84,13 +83,13 @@ const CASES = [
             emoji: "",
             startTime: 1700,
             duration: -1,
-            params: '{"title":"t"}',
-            repeat: 1,
+            params: '{"title":"t","onlyMe":1}',
+            repeat: 2,
             imei: IMEI,
             src: 3,
             pinAct: 1,
-            repeatRule: { x: 1 },
-            onlyMe: true,
+            repeatRule: '["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE;"]',
+            onlyMe: 1,
         },
     ],
     [
@@ -139,27 +138,34 @@ const CASES = [
     ],
     [
         "unpin",
-        { groupId: "g555", topic: "t9", boardVersion: 4 },
+        { groupId: "g555", topic: "t9", topicType: "poll", boardVersion: 4 },
         "group_board",
         "/api/board/unpinv2",
         "GET",
-        { grid: "555", imei: IMEI, topic: "t9", boardVersion: 4 },
+        { grid: "555", imei: IMEI, topic: { topicId: "t9", topicType: 3 }, boardVersion: 4 },
     ],
     [
         "pin-reorder",
-        { groupId: "g555", topics: ["a", "b"], boardVersion: 4 },
+        { groupId: "g555", topics: ["a", { id: "b", type: 3 }], boardVersion: 4 },
         "group_board",
         "/api/board/pin/update",
         "POST",
-        { groupId: "555", topics: ["a", "b"], boardVersion: 4 },
+        {
+            groupId: "555",
+            topics: [
+                { topicId: "a", topicType: 0 },
+                { topicId: "b", topicType: 3 },
+            ],
+            boardVersion: 4,
+        },
     ],
     [
         "unpin-many",
-        { groupId: "g555", topics: ["a"], boardVersion: 4 },
+        { groupId: "g555", topics: ["a"], topicType: "text", boardVersion: 4 },
         "group_board",
         "/api/board/multi_unpin",
         "GET",
-        { grid: "555", topics: ["a"], boardVersion: 4 },
+        { grid: "555", topics: [{ topicId: "a", topicType: 0 }], boardVersion: 4 },
     ],
     [
         "todo-create",
@@ -195,14 +201,6 @@ const CASES = [
     ],
     ["todo-ding-ack", { taskIds: ["t1"] }, "boards", "/api/board/personal/todo/dingack", "GET", { taskIds: ["t1"] }],
     ["todo-delete", { id: "t1" }, "boards", "/api/board/personal/delete", "GET", { id: "t1" }],
-    [
-        "close-friend",
-        { userId: "u1", action: 1 },
-        "friend",
-        "/api/friend/closefr/update",
-        "POST",
-        { fids: ["u1"], action: 1 },
-    ],
     ["contact-tab-read", { ts: 1700 }, "friend", "/api/friend/read-contact-tab", "POST", { ts: 1700 }],
     [
         "recommend-remove",
@@ -222,14 +220,27 @@ const CASES = [
     ],
     ["oa-block", { oaId: "o1" }, "profile", "/api/social/oa/block", "POST", { oaid: "o1" }],
     ["oa-unblock", { oaId: "o1" }, "profile", "/api/social/oa/unblock", "POST", { oaid: "o1" }],
-    ["profile-mode", { mode: 2 }, "profile", "/api/social/profile/mode", "GET", { mode: 2 }],
     [
         "recent-search-update",
-        { listRecent: [{ id: 1 }], version: 7 },
+        {
+            listRecent: [
+                { userId: "u1", type: 0, displayName: "x", last_update_time: 9 },
+                { userId: "g5", isGroup: true },
+            ],
+            version: 7,
+        },
         "recent_search",
         "/api/recentsearch/update",
         "POST",
-        { list_recent: [{ id: 1 }], version: 7, list_keyword: [], imei: IMEI },
+        {
+            list_recent: [
+                { id: "u1", type: 0, last_update_time: 9 },
+                { id: "5", type: 1 },
+            ],
+            version: 7,
+            list_keyword: [],
+            imei: IMEI,
+        },
     ],
     [
         "group-kickout-multi",
@@ -297,8 +308,94 @@ describe("ids go out as strings", () => {
         const h = harness();
         await callWrite(h.api, "group-kickout-multi", { groupIds: [555, "g666"], userId: 12345, srcInteraction: "2" });
         assert.deepEqual(sent(h.calls[0]), { grids: ["555", "666"], member: "12345", srcInteraction: 2 });
-        await callWrite(h.api, "close-friend", { userId: 777, action: "1" });
-        assert.deepEqual(sent(h.calls[1]), { fids: ["777"], action: 1 });
+        await callWrite(h.api, "recommend-remove", { userId: 777, src: "2", type: "3" });
+        assert.deepEqual(sent(h.calls[1]), { uid: "777", src: 2, type: 3 });
+    });
+});
+
+describe("the web client's enums, by name or number", () => {
+    it("accepts a name wherever the client sends a number, in any case", async () => {
+        const h = harness();
+        await callWrite(h.api, "topic-response", { groupId: "555", eventId: "e1", type: "REJECT" });
+        await callWrite(h.api, "pin", { groupId: "555", topicId: "t", type: "Poll" });
+        await callWrite(h.api, "todo-status", { id: "t1", status: "done" });
+        await callWrite(h.api, "group-kickout-multi", { groupIds: ["555"], userId: "u", srcInteraction: "mediaStore" });
+        assert.equal(sent(h.calls[0]).type, 2);
+        assert.equal(sent(h.calls[1]).type, 3);
+        assert.equal(sent(h.calls[2]).status, 1);
+        assert.equal(sent(h.calls[3]).srcInteraction, 1);
+    });
+
+    it("keeps a number, and refuses a name the enum does not have, naming the ones it has", async () => {
+        const h = harness();
+        await callWrite(h.api, "todo-status", { id: "t1", status: -1 });
+        assert.equal(sent(h.calls[0]).status, -1);
+        await assert.rejects(
+            callWrite(h.api, "todo-status", { id: "t1", status: "maybe" }),
+            /waiting, inProcess, done/,
+        );
+        assert.equal(h.calls.length, 1);
+    });
+
+    it("lists the names beside each enum argument", () => {
+        const arg = describeWrites()
+            .find((w) => w.name === "topic-response")
+            .args.find((a) => a.name === "type");
+        assert.deepEqual(arg.values, { none: 0, accept: 1, reject: 2 });
+        assert.match(arg.desc, /accept=1/);
+    });
+});
+
+describe("a repeat rule and a pin are sent the way the web client serializes them", () => {
+    it("serializes a rule as a JSON array of one RRULE, the legacy repeat code beside it, weekdays in week order", async () => {
+        const h = harness();
+        for (const rule of [
+            { freq: "DAILY" },
+            { freq: "WEEKLY", byDay: ["SU", "TU"] },
+            "monthly",
+            { freq: "YEARLY" },
+        ]) {
+            await callWrite(h.api, "topic-create", { groupId: "555", type: 0, repeatRule: rule });
+        }
+        const bodies = h.calls.map(sent);
+        assert.deepEqual(
+            bodies.map((b) => b.repeatRule),
+            [
+                '["RRULE:FREQ=DAILY;INTERVAL=1;"]',
+                '["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TU,SU;"]',
+                '["RRULE:FREQ=MONTHLY;INTERVAL=1;"]',
+                '["RRULE:FREQ=YEARLY;INTERVAL=1;"]',
+            ],
+        );
+        assert.deepEqual(
+            bodies.map((b) => b.repeat),
+            [1, 2, 3, 4],
+        );
+    });
+
+    it("sends the rule and only-me together (an empty rule, 0) and puts only-me in the params too", async () => {
+        const h = harness();
+        await callWrite(h.api, "topic-create", { groupId: "555", type: 0, onlyMe: true, params: { title: "t" } });
+        await callWrite(h.api, "topic-create", { groupId: "555", type: 0, params: { title: "t" } });
+        const [withMe, plain] = h.calls.map(sent);
+        assert.equal(withMe.repeatRule, "");
+        assert.equal(withMe.onlyMe, 1);
+        assert.equal(withMe.params, '{"title":"t","onlyMe":1}');
+        assert.equal("repeatRule" in plain, false, "neither field is sent unless one was asked for");
+        assert.equal("onlyMe" in plain, false);
+    });
+
+    it("refuses a frequency or a weekday that is not one", async () => {
+        const h = harness();
+        await assert.rejects(
+            callWrite(h.api, "topic-create", { groupId: "5", type: 0, repeatRule: "hourly" }),
+            /not one of: DAILY/,
+        );
+        await assert.rejects(
+            callWrite(h.api, "topic-create", { groupId: "5", type: 0, repeatRule: { freq: "WEEKLY", byDay: ["XX"] } }),
+            /weekday "XX"/,
+        );
+        assert.equal(h.calls.length, 0);
     });
 });
 
@@ -362,8 +459,33 @@ describe("the table", () => {
         assert.deepEqual(destructive, ["group-kickout-multi", "todo-delete", "topic-remove"]);
     });
 
-    it("claims no live answer yet: none of these has been run on an account", () => {
-        assert.ok(Object.values(WRITES).every((d) => d.verified === false));
+    it("claims a live success only for what was seen to work, and says why for the rest", () => {
+        const verified = WRITE_NAMES.filter((n) => WRITES[n].verified);
+        assert.deepEqual(verified, [
+            "contact-tab-read",
+            "group-kickout-multi",
+            "multi-undo",
+            "multi-undo-group",
+            "pin",
+            "pin-reorder",
+            "recent-search-update",
+            "sync-action-media",
+            "topic-create",
+            "topic-remove",
+            "topic-response",
+            "topic-update",
+            "unpin",
+            "unpin-many",
+        ]);
+        for (const n of WRITE_NAMES.filter((x) => !WRITES[x].verified)) {
+            assert.ok(WRITES[n].note?.length > 20, `${n} says why it is not verified`);
+        }
+    });
+
+    it("has no write for an endpoint Zalo answers with 404 (profile/mode, closefr/update)", () => {
+        const paths = Object.values(WRITES).map((d) => d.path);
+        assert.ok(!paths.includes("/api/social/profile/mode"));
+        assert.ok(!paths.includes("/api/friend/closefr/update"));
     });
 
     it("shares no name and no endpoint with the reads, so a read is never one of these", () => {
@@ -377,7 +499,7 @@ describe("the table", () => {
         assert.equal(all.length, WRITE_NAMES.length);
         const rm = all.find((w) => w.name === "topic-remove");
         assert.equal(rm.risk, "destructive");
-        assert.equal(rm.verified, false);
+        assert.equal(rm.verified, true);
         assert.deepEqual(
             rm.args.map((a) => a.name),
             ["groupId", "topicId"],

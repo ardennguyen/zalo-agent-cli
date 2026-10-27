@@ -3010,14 +3010,14 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Make one of the state-changing calls Zalo Web makes that no other tool covers: reminder RSVP, creating " +
                 "or changing a group note or reminder with a repeat rule, pinning and unpinning board items, removing a " +
-                "topic, personal todos, recalling several messages at once, close friends, suggested-friend cleanup, " +
-                "blocking an Official Account, presence mode, removing one account from several groups, the search " +
-                "history. Omit `name` to list every write with what it touches (`risk`: private, visible to others, or " +
-                "destructive), what it takes and whether a live account has answered it. EVERY write changes something " +
-                "and none has been answered by a live account yet, so a real call needs `confirm: true` (a plain " +
-                "parameter, no prompt), and `dryRun: true` returns the request that would be sent without sending " +
-                "anything: use it first, and try a first real call on something disposable. `args` is an object named " +
-                "by the write's own argument list (ids are strings).",
+                "topic, personal todos, recalling several messages at once, suggested-friend cleanup, blocking an " +
+                "Official Account, removing one account from several groups, the search history. Omit `name` to list " +
+                "every write with what it touches (`risk`: private, visible to others, or destructive), what it takes, " +
+                "whether a live success was seen (`verified`) and, if not, why (`note`). EVERY write changes " +
+                "something, so a real call needs `confirm: true` (a plain parameter, no prompt), and `dryRun: true` " +
+                "returns the request that would be sent without sending anything: use it first, and try an unverified " +
+                "write on something disposable. Enum-like arguments take the web client's names or numbers (`list` " +
+                "shows them). `args` is an object named by the write's own argument list (ids are strings).",
             inputSchema: z.object({
                 name: z
                     .enum(WRITE_NAMES)
@@ -3039,7 +3039,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             if (!name) return ok({ writes: describeWrites() });
             if (!dryRun && confirm !== true) {
                 return err(
-                    `"${name}" changes something on the account and no live account has answered it yet. ` +
+                    `"${name}" changes something on the account. ` +
                         "Pass dryRun: true to see the request, or confirm: true to send it.",
                 );
             }

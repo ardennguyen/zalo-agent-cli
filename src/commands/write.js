@@ -15,8 +15,7 @@ import { argsFromDef, collect } from "./read.js";
 
 /** Why a real call was refused, in the words a person needs next. */
 export const NEEDS_YES =
-    "This changes something on the account and no live account has answered it yet. Add --dry-run to see the " +
-    "request, or --yes to send it.";
+    "This changes something on the account. Add --dry-run to see the request, or --yes to send it.";
 
 /** The colour a risk wears in `write list`. */
 const RISK_COLOUR = { private: chalk.cyan, visible: chalk.yellow, destructive: chalk.red };
@@ -70,7 +69,10 @@ export function registerWriteCommands(program) {
                 const def = WRITES[name];
                 if (!def) throw new ReadUsageError(`unknown write "${name}"; \`write list\` shows them`);
                 const args = argsFromDef(def, name, opts);
-                if (!opts.dryRun && !opts.yes) throw new ReadUsageError(`"${name}" (${def.risk}): ${NEEDS_YES}`);
+                if (!opts.dryRun && !opts.yes)
+                    throw new ReadUsageError(
+                        `"${name}" (${def.risk}${def.verified ? "" : ", not yet seen working"}): ${NEEDS_YES}`,
+                    );
                 const result = await callWrite(getApi(), name, args, { dryRun: !!opts.dryRun });
                 output(result ?? null, program.opts().json);
             } catch (e) {

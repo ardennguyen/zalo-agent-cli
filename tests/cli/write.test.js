@@ -72,7 +72,16 @@ describe("write", () => {
             ["write", "run", "no-such-write", "--yes"],
             ["write", "run", "todo-delete", "--yes", "--arg", "nonsense=1"],
             ["write", "run", "todo-delete", "--yes", "--args", "{not json"],
-            ["write", "run", "profile-mode", "--yes", "--arg", "mode=loud"],
+            [
+                "write",
+                "run",
+                "topic-response",
+                "--yes",
+                "--args",
+                '{"groupId":"1","eventId":"2"}',
+                "--arg",
+                "type=maybe",
+            ],
             ["write", "run", "topic-create", "--yes", "--arg", "groupId=1", "--arg", "type=0", "--arg", "onlyMe=maybe"],
         ]) {
             const r = await runCli(args, options);

@@ -97,7 +97,8 @@ const PER_SHARD_BUDGET_MS = 30000;
  * This cap is ours, not Zalo Web's. Web sends every session of a run (98 partitions at 30 each is four of them,
  * which is why a capture shows four) one after the other, each after the previous one was acknowledged. Fifty
  * at once, with no waiting for acks, once got our socket dropped with no error frame; the requests are ack-paced
- * now, and the cap stays until a full-history run on the test account shows the socket survives without it.
+ * now. The cap stays: it is Web's own pace, and a full-history run of the test account (about 421,000 messages in
+ * 2,367 conversations, 2026-10-25) completed with it. A run without it was never made, and is not needed.
  */
 const DEFAULT_WAVE_SIZE = 4;
 /**

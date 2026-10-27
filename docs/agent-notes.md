@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3324** as of 2026-10-26 (3319 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3347** as of 2026-10-27 (3342 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1010,8 +1010,8 @@ is not asked whether zca-js is current. The server's key is `setttings` (three t
 are read.
 
 **Cookies are written back.** When a login changed the cookie jar (name, value, domain, path or expiry; access times
-are ignored) the saved credentials are rewritten atomically at 0600. Whether Zalo rotates cookies is unverified; the
-write is harmless when it does not. A login that does not know its account (a first QR login) saves nothing.
+are ignored) the saved credentials are rewritten atomically at 0600. Whether Zalo rotates cookies is unverified (it
+needs days of use, see the P7a notes); the write is harmless when it does not. A login that does not know its account (a first QR login) saves nothing.
 
 **Browser headers.** `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `priority: u=1, i` and
 `sec-fetch-dest/mode/site` are derived from the saved User-Agent, so a session shows one coherent browser. A
@@ -1097,7 +1097,8 @@ timeout is not retried (the answer may only be late, and the phone may already b
 client is not supported", reported as such). A timeout on a socket that has closed meanwhile is reported as a closed
 socket, which the restore then answers with its one reconnect. Requests are ack-paced: each goes out after the one
 before it was acknowledged, instead of on a 600 ms timer. The cap of four sessions in flight stays: it is ours, Web
-sends all of them, and a full-history run on the test account has not yet shown the socket survives without it.
+sends all of them one after the other, and a full-history run on the test account (421,000 messages) completed with
+it. A run without it was never made and is not needed: four is Web's own pace.
 
 **Counters.** `reqId` is `req_<n>` from one counter; `ussidx` counts the sessions of a run from 0 (it was 0 for every
 session, and `reqId` carried the session id). `deviceName` stays the honest label (decision D4).
@@ -1132,8 +1133,8 @@ its rows were written without a failed write, a `534` re-push after it is stored
 (`storeHistoryMessage` now says `failed: true`, as against a row it deliberately skips) holds the acknowledgement
 back, so the server delivers the item again. A new connection forgets what was waiting on the old one. Zalo Web does
 not verify offline batches (`skip_offline_verify`); acknowledging them is our choice, so the server can let go of
-what it delivered. **Not yet seen live:** the element shape of `ids` (`[{actionId}]` is what the bundle builds), the
-server's own settings for our identity, and the `534` payload. The first message to a test account settles them.
+what it delivered. **Seen live (2026-10-25):** an ack is `{queueName, ids: [{actionId}], nretry, reqId}` and Zalo
+answers `{error: 0, reqId}`. **Still not seen:** the server's own settings for our identity, and the `534` payload.
 
 **One request counter, and `reqId` on every pull (X5, Y7).** `src/zalo/req-id.js` is the process-wide `req_<n>` counter
 the sync channel, the offline-queue drain and the pulls share. `installOfficialPulls` makes the listener's old-message
@@ -1454,7 +1455,7 @@ free-plan removal. None of it is built, and no live request for it was made.
 
 ## Reads: the web client's read-only endpoints (v3.0, 2026-10-26)
 
-**What it is.** `src/zalo/reads.js` is a table of 39 reads: for each, the service-map host, the path, the web client's
+**What it is.** `src/zalo/reads.js` is a table of 40 reads: for each, the service-map host, the path, the web client's
 command id and the body it encrypts into `params`, taken from the web API module (`fBUP`, 2026-10-23 bundle) method of
 the same purpose. They all use the session cipher (a GET with `params` in the query, or a POST with `params` in the form
 body); the two login-host reads (`check-update`, `server-settings`) have plain replies, with `data` unencrypted.
@@ -1462,10 +1463,10 @@ body); the two login-host reads (`check-update`, `server-settings`) have plain r
 (`src/commands/read.js`) and the MCP tool `zalo_read` (`src/mcp/mcp-tools.js`). A test keeps the table to reads: no path
 of it names an update, removal, send, seen mark or the like.
 
-**Live check.** All but one were run on the test account, with shapes printed and values not. 35 answered. The other four:
-`offline-check` is the client's own boot probe and needs queue ids this client does not keep (not run), and the three
-`todo-*` reads answer `-69` ("stop retry"), which the zCloud report reads as a server refusal, so the account probably has
-no todos feature (their request shape is untested). Nine more were in the first table and are **not offered** because Zalo
+**Live check.** They were run on the test account, with shapes printed and values not. 35 answered at first; `pin-list` (added
+by P7a) and `offline-check` (answered `{}`, `0`, `0` with a list of ids and `evict`) made 37. The other three, the `todo-*`
+reads, answer `-69` ("stop retry"), which the zCloud report reads as a server refusal, so the account probably has no todos
+feature (their request shape is untested). Nine more were in the first table and are **not offered** because Zalo
 answers them with 404 or an error on this build: `cm/getpath`, `cm/mget`, `cm/rgetv2`, `group/analyse`,
 `message/get_backupmsginfo`, the sticker `category/list` and `recommended`, and the GIF by-category and by-dictionary
 reads. The web client's code still has methods for them, so a method in the bundle is not evidence that an endpoint is alive.
@@ -1485,15 +1486,7 @@ call site was not read.
 
 ## Writes: the web client's state-changing endpoints (v3.0, 2026-10-26)
 
-**What it is.** `src/zalo/writes.js` is a table of 28 writes on the same request path as the reads (`src/zalo/web-call.js`,
-which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's
-method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`.
-**All 28 are unverified: none has been sent to a live account.** The owner approved building all four groups of plan 6.2 and
-said live tests wait for a separate word, so the guards carry the risk instead: each entry has a `risk` (`private`,
-`visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted;
-`write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); the
-tests keep every entry `verified: false` until a live run changes that on purpose, and keep the table's endpoints and names
-disjoint from the reads, which a test holds to reads only.
+**What it is.** `src/zalo/writes.js` is a table of 24 writes on the same request path as the reads (`src/zalo/web-call.js`, which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`. The owner approved building all four groups of plan 6.2; the first version was written and tested offline, and P7a (2026-10-27) then ran them on a disposable group ("Việc riêng - AI test", whose members are the owner's accounts) and on the owner's Arden Companion account. **14 of the 24 were seen to work; 10 were not, for reasons recorded in each entry's `note`.** Two more (`profile/mode`, `closefr/update`) answered 404 and were removed. Guards: each entry has a `risk` (`private`, `visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted; `write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); tests keep the `verified` set exact and keep the table's endpoints and names disjoint from the reads, which a test holds to reads only.
 
 **Built, with what the body is.** The multi-recall (`multi_undo`, `multi_undomsg`) sends, per message, a fresh client id,
 the original's client id (`cliMsgIdUndo`) and its global id. The group note and reminder writes (`topic/createv2`,
@@ -1513,6 +1506,69 @@ and block sharing is a zBusiness feature (error 829 when not allowed). `label up
 (3) `voice2text`: the build has no method for it. (4) The receipts: the legacy `seen`/`delivered` forms and `subtab/seen`
 change what other people see, and the v2 forms are already sent.
 
-**Values not known.** A topic type, a pin type, a todo status, a presence mode, a close-friend action, a suggestion source
-and type, the `srcInteraction` of a multi-group removal and the RSVP answer are numbers the web client sends from enums
-defined in modules this pass did not trace; they are passed through as given, and `write list` does not claim a meaning.
+**The numbers, traced (P7a, 2026-10-27).** They are enums of the web client's constant modules: a board item's type is
+`text 0, link 1, message 2, poll 3, reminder 4` (a reminder the web client creates is a `text` topic with a start time and
+an emoji; `reminder 4` is the board's own label for it), an RSVP answer is `none 0, accept 1, reject 2`, a todo's status is
+`waiting -1, inProcess 0, done 1`, the account's presence mode (the `user_mode` of its profile, 0 on the test account) is
+`available 0, away 1, busy 2, invisible 3`, and the source of a multi-group removal is `unknown -1, profile 0,
+mediaStore 1, contextMenu 2, operate 3, reviewRetry 4, suggestion 5`. A repeat rule is the RFC 5545 string the web client
+builds, `RRULE:FREQ=<DAILY|WEEKLY|MONTHLY|YEARLY>;INTERVAL=1;[BYDAY=MO,TU,..;]`, sent as a JSON array of one string in
+`repeatRule`, with the legacy `repeat` code beside it (daily 1, weekly 2, monthly 3, yearly 4) and `onlyMe` as 0 or 1 (also
+inside the topic's `params`); both fields go together or not at all. **Not traceable:** the close-friend action (the web
+client's toggle is an empty function in this build, and `closefr/update` answers 404), a suggestion's `src` and `type`.
+
+**What the live runs corrected.** `unpinv2`, `pin/update` and `multi_unpin` name a pinned item as `{topicId, topicType}`,
+not as a bare id (a bare id answers 114), and need the pin board's version from `board/pin/list` (the new `pin-list` read).
+`recentsearch/update` takes `{id, type[, last_update_time]}`, not the shape `recentsearch/list` returns. A reminder is not in
+`board/list` (it is in `board/listReminder`), so a cleanup that lists the board misses it. The `multi_undo` family
+returns `{data: {<new client id>: <value>}, status: 0}`. `kickout/multi` really removes the member from each listed group
+(checked on the disposable group; the member was added back). `topic-create` with `onlyMe` is honored (`onlyMe: 1` comes
+back). `sync_action/media` accepts an empty list. The todos answer `-69` (feature off for the account). `profile/mode` and
+`closefr/update` answer 404. What a send returns: `message.msgId` and `message.cliMsgId`; the recall needs both.
+
+## P7: the live verification sweep and the hardening (v3.0, 2026-10-27)
+
+**P7a, what was run live** (test account, a disposable group "Việc riêng - AI test" whose other members are the owner's own
+accounts, and the owner's Arden Companion account as the target of anything that touches a friend; ids are never written
+down). Reads and writes are in the sections above; the rest:
+
+- **Board and message writes** all worked as recorded in the Writes section, after three corrections the live run forced
+  (the pin refs, the search-history items, the repeat-rule serialization). Everything created was removed again, and the
+  Companion account was removed from the group and added back.
+- **`sync-cloud`**: a first walk to completion (two runs, resumed from the saved place), then `--full` over all 102 pages
+  (35,994 items kept after 466 `remove` entries were applied; nothing to sweep). The queue's removals are real and numerous,
+  which is what Z1 was for. Resuming from a page-100 cursor gave exactly the last two pages.
+- **cmd 621**, in a real `mcp start` and a real `listen`: with the saved place behind the server's, the daemon walked two pages
+  and recorded 560 items; with it level, it did nothing and said so (that line, `notice (cmd 621)`, was added by this pass:
+  before it, "nothing to do" was silent and indistinguishable from "never arrived").
+- **A real MCP session** (the SDK client over stdio): 27 tools, `zalo_read` listing and running, a missing argument refused,
+  `zalo_write` refused without `confirm`, a dry run, and a real write.
+- **Soak**: `listen` stayed up 30 minutes on the test account with no drop, no kick and no retry; self-heal recovered the
+  messages missed while it was down, and the delivered receipts went out. `unknown-acts.json` was not written, which means no
+  action it does not know arrived in that time.
+
+**Not run, and why.** (1) The consuming pulls `515`, `517`, `518`, `603`: they may remove what they return from the server's
+queue, and the account is the owner's real one. (2) The listener on a real network cut: it needs someone to switch the
+network off and on. (3) A restore without the four-session cap: not needed, see the sync section. (4) A non-empty
+`sync_action/media` list, a real `oa-block`, a real suggestion for `recommend-remove`: nothing disposable to aim them at.
+(5) The three todo writes and reads: the account answers `-69`.
+
+**P7b.** X10: `src/core/unknown-acts.js`, attached identically by `listen` and `mcp start` (a test reads both files' syntax
+trees): an action the server pushes (`602`, or an unhandled `601` control) that nobody handles is named once in
+`unknown-acts.json` of the account folder, with its first and last time, its count, the command that carried it and the key
+NAMES of its data (never the values). Bounded (200 names), counts written back at most once a minute, never throws into
+the socket. L16: decided against, see below. L17: comments and notes made true (the 532 ack shape, the pulls' answers, the
+four-session cap's reason, the cookie note).
+
+**L16 (optional boot reads), decided against.** The reads exist on demand (`read run server-settings`, `blocklist`, the zCloud
+usage reads); nothing of ours consumes them at boot, and a boot that makes calls nobody needs is traffic that is not free for
+the account. They can be added where a feature needs one.
+
+**Error 71, from the web client's own code.** The maintenance check (`maint.chat.zalo.me/api/chk`, sent with the stored `bkt`
+and `spt_mtn`) answers `{error_code, data: {startTime, endTime}}`. 0 means the servers are fine (and `startTime`/`endTime`, when
+given, are a window that is already announced); 70 means maintenance now: a running client restarts into the maintenance
+screen, a starting one keeps re-checking; 71 means "continue checking": in both states the client carries on and asks again,
+waiting until the window it was told about. Our reading of 71 (a window is announced, do not block, look again later) is that
+behavior. What 71 means server-side (whether it is a notice before a window, or a degraded service) has never been observed,
+because Zalo was not in maintenance in any capture. Our poller does not yet use `startTime` and `endTime` to time its next
+question (the web client does); it asks every hour after a 71, which is later than the web client would in the last hour.

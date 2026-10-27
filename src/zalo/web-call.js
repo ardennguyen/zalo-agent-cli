@@ -24,8 +24,34 @@ const AUTH_DOMAIN = "https://wpa.chat.zalo.me";
 export const list = (v) => (Array.isArray(v) ? v : v === undefined || v === null ? [] : [v]);
 /** A number argument with a default for an absent or empty one. */
 export const num = (v, d) => (v === undefined || v === null || v === "" ? d : Number(v));
-/** One declared argument of a table entry. */
-export const arg = (name, type, desc, required = false) => ({ name, type, desc, required });
+/**
+ * One declared argument of a table entry. `values` names the numbers of an enum the web client sends (`{accept: 1}`):
+ * a name is accepted wherever the number is.
+ */
+export const arg = (name, type, desc, required = false, values = undefined) => ({
+    name,
+    type,
+    desc,
+    required,
+    ...(values && { values }),
+});
+
+/**
+ * An enum argument as the number the web client sends: a number stays, a name is looked up (case-insensitively).
+ *
+ * @param {number|string|undefined} v
+ * @param {Record<string, number>} values
+ * @param {number} [fallback] - for an absent value
+ * @returns {number}
+ * @throws {CallUsageError} for a name the enum does not have
+ */
+export function enumNum(v, values, fallback) {
+    if (v === undefined || v === null || v === "") return fallback;
+    if (typeof v === "number" || /^-?\d+$/.test(String(v))) return Number(v);
+    const hit = Object.entries(values).find(([k]) => k.toLowerCase() === String(v).toLowerCase());
+    if (!hit) throw new CallUsageError(`"${v}" is not one of: ${Object.keys(values).join(", ")}`);
+    return hit[1];
+}
 
 /** Raised for an unknown name, a missing argument or a host the account lacks, before any request is made. */
 export class CallUsageError extends Error {

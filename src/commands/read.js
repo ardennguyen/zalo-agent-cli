@@ -44,7 +44,15 @@ export function argsFromDef(def, name, opts) {
                 `"${name}" has no argument "${key}"; it takes: ${def.args.map((a) => a.name).join(", ") || "none"}`,
             );
         }
-        if (spec.type === "number") {
+        if (spec.type === "number" && spec.values && /[A-Za-z]/.test(raw)) {
+            const hit = Object.entries(spec.values).find(([k]) => k.toLowerCase() === raw.toLowerCase());
+            if (!hit) {
+                throw new ReadUsageError(
+                    `--arg ${key}: "${raw}" is not one of: ${Object.keys(spec.values).join(", ")}`,
+                );
+            }
+            args[key] = hit[1];
+        } else if (spec.type === "number") {
             const n = Number(raw);
             if (raw.trim() === "" || !Number.isFinite(n))
                 throw new ReadUsageError(`--arg ${key}: "${raw}" is not a number`);

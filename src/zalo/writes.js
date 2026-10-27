@@ -7,8 +7,8 @@
  * who sees a pin or a reminder, what is on a todo list, who is in a group, what a friend list or a block list says.
  * So:
  *
- * - none is `verified`: no live account has answered any of them, and the first run of each should be on something
- *   disposable. A failure says "not accepted", not "broken".
+ * - `verified` means a live success was seen (P7a, 2026-10-27, on a disposable group); an entry without it says why in
+ *   its `note`. A failure of an unverified one says "not accepted", not "broken".
  * - `risk` says what a call touches: `private` (this account's own data), `visible` (other people see it) or
  *   `destructive` (it removes something that cannot be put back from here).
  * - {@link callWrite} sends nothing under `dryRun`: it returns the request it would have sent, with the body decrypted.
@@ -21,23 +21,68 @@
  * bodies are not in the bundle files read; `voice2text` has no client method in the build; the receipts
  * (`seen`, `delivered` legacy forms, `subtab/seen`) change what other people see and are already sent in their v2 forms.
  */
-import { CallUsageError, arg, buildCall, list, num, runCall } from "./web-call.js";
+import { CallUsageError, arg, buildCall, enumNum, list, num, runCall } from "./web-call.js";
+
+/**
+ * The enums behind the numbers the web client sends, read from its constant modules (2026-10-23 bundle). A name or the
+ * number is accepted for each.
+ */
+export const ENUMS = {
+    /** A board item's type (a topic's `type`, and what a pin names). */
+    topic: { text: 0, link: 1, message: 2, poll: 3, reminder: 4 },
+    /** A reminder invitation's answer. */
+    rsvp: { none: 0, accept: 1, reject: 2 },
+    /** A todo's status. */
+    todoStatus: { waiting: -1, inProcess: 0, done: 1 },
+    /** Where a multi-group removal was started from. */
+    interaction: { unknown: -1, profile: 0, mediaStore: 1, contextMenu: 2, operate: 3, reviewRetry: 4, suggestion: 5 },
+};
+
+const named = (values) =>
+    Object.entries(values)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ");
 
 /** Strip the web's `g` prefix from a group conversation id. */
 const bareGroupId = (id) => (String(id).startsWith("g") ? String(id).slice(1) : String(id));
+
+/** The repeat frequencies of a reminder, and the legacy `repeat` code the client sends beside the rule. */
+const REPEAT_CODES = { DAILY: 1, WEEKLY: 2, MONTHLY: 3, YEARLY: 4 };
+const WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+
+/** The frequency of a repeat rule given as `{freq}` or as a bare frequency name. */
+function repeatFreq(rule) {
+    const freq = String(typeof rule === "object" ? rule.freq : rule).toUpperCase();
+    if (!REPEAT_CODES[freq])
+        throw new CallUsageError(`repeat frequency "${freq}" is not one of: ${Object.keys(REPEAT_CODES).join(", ")}`);
+    return freq;
+}
+
+/** A repeat rule as the web client serializes it: a JSON array of one RRULE string (the interval is always 1). */
+function serializeRepeatRule(rule) {
+    const freq = repeatFreq(rule);
+    const days =
+        freq === "WEEKLY" && typeof rule === "object" && rule.byDay
+            ? list(rule.byDay).map((d) => String(d).toUpperCase())
+            : [];
+    for (const d of days)
+        if (!WEEKDAYS.includes(d)) throw new CallUsageError(`weekday "${d}" is not one of: ${WEEKDAYS.join(", ")}`);
+    const ordered = WEEKDAYS.filter((d) => days.includes(d));
+    return JSON.stringify([`RRULE:FREQ=${freq};INTERVAL=1;${ordered.length ? `BYDAY=${ordered.join(",")};` : ""}`]);
+}
 
 /** What a topic (note, reminder) body carries, as the web client's revamp builder writes it. */
 function topicBody(a, ctx, { update }) {
     const body = {
         grid: bareGroupId(a.groupId),
-        type: num(a.type),
+        type: enumNum(a.type, ENUMS.topic),
         color: a.color ? Number(a.color) : -16777216,
         emoji: a.emoji || "",
         startTime: a.startTime ? Number(a.startTime) : -1,
         duration: a.duration ? Number(a.duration) : -1,
         // The client sends an empty object, not an empty string, when there are no params.
-        params: a.params ? JSON.stringify(a.params) : {},
-        repeat: num(a.repeat, 0),
+        params: a.params || a.onlyMe ? JSON.stringify({ ...a.params, ...(a.onlyMe && { onlyMe: 1 }) }) : {},
+        repeat: a.repeatRule ? REPEAT_CODES[repeatFreq(a.repeatRule)] : num(a.repeat, 0),
         imei: ctx.imei,
     };
     if (update) {
@@ -47,22 +92,25 @@ function topicBody(a, ctx, { update }) {
         if (a.src !== undefined) body.src = Number(a.src);
         body.pinAct = a.pinAct === undefined ? undefined : Number(a.pinAct);
     }
-    if (a.repeatRule !== undefined) body.repeatRule = a.repeatRule;
-    if (a.onlyMe !== undefined) body.onlyMe = a.onlyMe;
+    // The two fields of this build: the client sends both together, the rule serialized, onlyMe as 0 or 1.
+    if (a.repeatRule !== undefined || a.onlyMe !== undefined) {
+        body.repeatRule = a.repeatRule ? serializeRepeatRule(a.repeatRule) : "";
+        body.onlyMe = a.onlyMe ? 1 : 0;
+    }
     return body;
 }
 
 const TOPIC_ARGS = [
     arg("groupId", "string", "group id", true),
-    arg("type", "number", "topic type, as the client sends it (note, reminder, …)", true),
+    arg("type", "number", `topic type: ${named(ENUMS.topic)}`, true, ENUMS.topic),
     arg("params", "json", "the topic's content object, as the client builds it (title, …)"),
     arg("color", "number", "colour (default: black)"),
     arg("emoji", "string", "emoji"),
     arg("startTime", "number", "start, epoch ms (default: none)"),
     arg("duration", "number", "duration (default: none)"),
     arg("repeat", "number", "repeat code (0: none)"),
-    arg("repeatRule", "json", "repeat rule object (new in this build)"),
-    arg("onlyMe", "boolean", "visible to this account only (new in this build)"),
+    arg("repeatRule", "json", "repeat rule: `{freq: DAILY|WEEKLY|MONTHLY|YEARLY[, byDay: [MO, TU, …]]}` (weekly only)"),
+    arg("onlyMe", "boolean", "visible to this account only (a feature of this build; the server may ignore it)"),
     arg("pinAct", "number", "pin action: 1 pin, 2 do not"),
 ];
 
@@ -90,7 +138,7 @@ export const WRITES = {
             ),
         ],
         body: (a) => ({ toid: String(a.toId), msgs: multiUndoMsgs(a.msgs) }),
-        verified: false,
+        verified: true,
     },
     "multi-undo-group": {
         host: "group",
@@ -104,7 +152,7 @@ export const WRITES = {
             arg("msgs", "json", "array of `{cliMsgIdUndo, globalMsgId[, cliMsgId]}`, as for multi-undo", true),
         ],
         body: (a) => ({ grid: bareGroupId(a.groupId), msgs: multiUndoMsgs(a.msgs) }),
-        verified: false,
+        verified: true,
     },
     "sync-action-media": {
         host: "sync_action",
@@ -115,7 +163,8 @@ export const WRITES = {
         what: "Tell Zalo about media actions taken on this device (the client's own media sync list)",
         args: [arg("actions", "json", "the sync list, as the client builds it (array)", true)],
         body: (a, ctx) => ({ syncList: JSON.stringify(list(a.actions)), imei: ctx.imei }),
-        verified: false,
+        verified: true,
+        note: "answered with an empty list; what a non-empty list does is not known",
     },
 
     // ── boards: reminders, notes, pins (group_board host) ──────────────────
@@ -129,15 +178,15 @@ export const WRITES = {
         args: [
             arg("groupId", "string", "group id", true),
             arg("eventId", "string", "the reminder's event id", true),
-            arg("type", "number", "the answer code, as the client sends it", true),
+            arg("type", "number", `the answer: ${named(ENUMS.rsvp)}`, true, ENUMS.rsvp),
         ],
         body: (a, ctx) => ({
             grid: bareGroupId(a.groupId),
-            type: num(a.type),
+            type: enumNum(a.type, ENUMS.rsvp),
             eventId: String(a.eventId),
             imei: ctx.imei,
         }),
-        verified: false,
+        verified: true,
     },
     "topic-create": {
         host: "group_board",
@@ -148,7 +197,7 @@ export const WRITES = {
         what: "Create a group note or reminder, with the repeat rule and only-me options of this build",
         args: TOPIC_ARGS,
         body: (a, ctx) => topicBody(a, ctx, { update: false }),
-        verified: false,
+        verified: true,
     },
     "topic-update": {
         host: "group_board",
@@ -159,7 +208,7 @@ export const WRITES = {
         what: "Change a group note or reminder, with the repeat rule and only-me options of this build",
         args: [...TOPIC_ARGS, arg("topicId", "string", "the topic to change", true)],
         body: (a, ctx) => topicBody(a, ctx, { update: true }),
-        verified: false,
+        verified: true,
     },
     "topic-remove": {
         host: "group_board",
@@ -170,7 +219,7 @@ export const WRITES = {
         what: "Remove a group note or reminder",
         args: [arg("groupId", "string", "group id", true), arg("topicId", "string", "the topic to remove", true)],
         body: (a, ctx) => ({ grid: bareGroupId(a.groupId), topicId: String(a.topicId), imei: ctx.imei }),
-        verified: false,
+        verified: true,
     },
     pin: {
         host: "group_board",
@@ -181,10 +230,10 @@ export const WRITES = {
         args: [
             arg("groupId", "string", "group id", true),
             arg("topicId", "string", "the item to pin", true),
-            arg("type", "number", "the item's type, as the client sends it", true),
+            arg("type", "number", `the item's type: ${named(ENUMS.topic)}`, true, ENUMS.topic),
         ],
-        body: (a) => ({ grid: bareGroupId(a.groupId), topicId: String(a.topicId), type: num(a.type) }),
-        verified: false,
+        body: (a) => ({ grid: bareGroupId(a.groupId), topicId: String(a.topicId), type: enumNum(a.type, ENUMS.topic) }),
+        verified: true,
     },
     unpin: {
         host: "group_board",
@@ -194,16 +243,17 @@ export const WRITES = {
         what: "Unpin a board item in a group",
         args: [
             arg("groupId", "string", "group id", true),
-            arg("topic", "string", "the pinned item to unpin", true),
-            arg("boardVersion", "number", "the board version the client holds", true),
+            arg("topic", "string", "the pinned item to unpin (its id)", true),
+            arg("topicType", "number", `its type: ${named(ENUMS.topic)} (default text)`, false, ENUMS.topic),
+            arg("boardVersion", "number", "the pin board's version, from `read run pin-list`", true),
         ],
         body: (a, ctx) => ({
             grid: bareGroupId(a.groupId),
             imei: ctx.imei,
-            topic: String(a.topic),
+            topic: topicRef(a.topic, a.topicType),
             boardVersion: num(a.boardVersion),
         }),
-        verified: false,
+        verified: true,
     },
     "pin-reorder": {
         host: "group_board",
@@ -214,11 +264,16 @@ export const WRITES = {
         what: "Reorder a group's pinned items",
         args: [
             arg("groupId", "string", "group id", true),
-            arg("topics", "json", "the pinned item ids in their new order (array)", true),
-            arg("boardVersion", "number", "the board version the client holds", true),
+            arg("topics", "json", "the pinned items in their new order: ids, or `{topicId, topicType}` objects", true),
+            arg("topicType", "number", `the type of items given as bare ids (default text)`, false, ENUMS.topic),
+            arg("boardVersion", "number", "the pin board's version, from `read run pin-list`", true),
         ],
-        body: (a) => ({ groupId: bareGroupId(a.groupId), topics: list(a.topics), boardVersion: num(a.boardVersion) }),
-        verified: false,
+        body: (a) => ({
+            groupId: bareGroupId(a.groupId),
+            topics: list(a.topics).map((x) => topicRef(x, a.topicType)),
+            boardVersion: num(a.boardVersion),
+        }),
+        verified: true,
     },
     "unpin-many": {
         host: "group_board",
@@ -228,11 +283,16 @@ export const WRITES = {
         what: "Unpin several of a group's pinned items at once",
         args: [
             arg("groupId", "string", "group id", true),
-            arg("topics", "json", "the pinned item ids to unpin (array)", true),
-            arg("boardVersion", "number", "the board version the client holds", true),
+            arg("topics", "json", "the pinned items to unpin: ids, or `{topicId, topicType}` objects", true),
+            arg("topicType", "number", `the type of items given as bare ids (default text)`, false, ENUMS.topic),
+            arg("boardVersion", "number", "the pin board's version, from `read run pin-list`", true),
         ],
-        body: (a) => ({ grid: bareGroupId(a.groupId), topics: list(a.topics), boardVersion: num(a.boardVersion) }),
-        verified: false,
+        body: (a) => ({
+            grid: bareGroupId(a.groupId),
+            topics: list(a.topics).map((x) => topicRef(x, a.topicType)),
+            boardVersion: num(a.boardVersion),
+        }),
+        verified: true,
     },
 
     // ── personal todos (boards host) ───────────────────────────────────────
@@ -249,6 +309,7 @@ export const WRITES = {
         ],
         body: (a, ctx) => ({ ...a.todo, src: num(a.src, -1), imei: ctx.imei }),
         verified: false,
+        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
     },
     "todo-update": {
         host: "boards",
@@ -260,6 +321,7 @@ export const WRITES = {
         args: [arg("todo", "json", "the todo object with its id, as the client builds it", true)],
         body: (a) => ({ ...a.todo }),
         verified: false,
+        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
     },
     "todo-status": {
         host: "boards",
@@ -269,10 +331,11 @@ export const WRITES = {
         what: "Set a todo's status (open, finished)",
         args: [
             arg("id", "string", "todo id", true),
-            arg("status", "number", "the status code, as the client sends it", true),
+            arg("status", "number", `the status: ${named(ENUMS.todoStatus)}`, true, ENUMS.todoStatus),
         ],
-        body: (a, ctx) => ({ id: String(a.id), status: num(a.status), imei: ctx.imei }),
+        body: (a, ctx) => ({ id: String(a.id), status: enumNum(a.status, ENUMS.todoStatus), imei: ctx.imei }),
         verified: false,
+        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
     },
     "todo-ding": {
         host: "boards",
@@ -283,6 +346,7 @@ export const WRITES = {
         args: [arg("taskIds", "json", "todo ids (array)", true)],
         body: (a) => ({ taskIds: list(a.taskIds).map(String) }),
         verified: false,
+        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
     },
     "todo-ding-ack": {
         host: "boards",
@@ -293,6 +357,7 @@ export const WRITES = {
         args: [arg("taskIds", "json", "todo ids (array)", true)],
         body: (a) => ({ taskIds: list(a.taskIds).map(String) }),
         verified: false,
+        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
     },
     "todo-delete": {
         host: "boards",
@@ -303,23 +368,10 @@ export const WRITES = {
         args: [arg("id", "string", "todo id", true)],
         body: (a) => ({ id: String(a.id) }),
         verified: false,
+        note: "answers -69 (stop retry) on the test account: the todos feature is off for it, so the request shape is untested",
     },
 
     // ── friends and profile ────────────────────────────────────────────────
-    "close-friend": {
-        host: "friend",
-        path: "/api/friend/closefr/update",
-        cmd: 11421,
-        method: "post",
-        risk: "private",
-        what: "Mark or unmark a friend as a close friend",
-        args: [
-            arg("userId", "string", "friend's user id", true),
-            arg("action", "number", "the action code, as the client sends it (mark, unmark)", true),
-        ],
-        body: (a) => ({ fids: [String(a.userId)], action: num(a.action) }),
-        verified: false,
-    },
     "contact-tab-read": {
         host: "friend",
         path: "/api/friend/read-contact-tab",
@@ -329,7 +381,7 @@ export const WRITES = {
         what: "Mark the contact tab as read up to a time",
         args: [arg("ts", "number", "epoch ms", true)],
         body: (a) => ({ ts: num(a.ts) }),
-        verified: false,
+        verified: true,
     },
     "recommend-remove": {
         host: "friend",
@@ -345,6 +397,7 @@ export const WRITES = {
         ],
         body: (a) => ({ uid: String(a.userId), src: num(a.src), type: num(a.type) }),
         verified: false,
+        note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
     },
     "recommend-seen": {
         host: "friend",
@@ -356,6 +409,7 @@ export const WRITES = {
         args: [arg("userIds", "json", "the requesters' ids (array)", true)],
         body: (a) => ({ uids_seen: list(a.userIds).map(String) }),
         verified: false,
+        note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
     },
     "oa-block": {
         host: "profile",
@@ -367,6 +421,7 @@ export const WRITES = {
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: false,
+        note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
     },
     "oa-unblock": {
         host: "profile",
@@ -378,16 +433,7 @@ export const WRITES = {
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: false,
-    },
-    "profile-mode": {
-        host: "profile",
-        path: "/api/social/profile/mode",
-        cmd: 11865,
-        risk: "visible",
-        what: "Set the account's presence mode (available, away, invisible …)",
-        args: [arg("mode", "number", "the mode code, as the client sends it", true)],
-        body: (a) => ({ mode: num(a.mode) }),
-        verified: false,
+        note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
     },
     "recent-search-update": {
         host: "recent_search",
@@ -397,17 +443,22 @@ export const WRITES = {
         risk: "private",
         what: "Replace the search history Zalo keeps for the account",
         args: [
-            arg("listRecent", "json", "the recent items (array), as `recent-searches` returns them", true),
+            arg(
+                "listRecent",
+                "json",
+                "the recent items (array): as `recent-searches` returns them, or `{id, type[, last_update_time]}`",
+                true,
+            ),
             arg("version", "number", "the history version", true),
             arg("listKeyword", "json", "the recent keywords (array)"),
         ],
         body: (a, ctx) => ({
-            list_recent: list(a.listRecent),
+            list_recent: list(a.listRecent).map(recentItem),
             version: num(a.version),
             list_keyword: list(a.listKeyword),
             imei: ctx.imei,
         }),
-        verified: false,
+        verified: true,
     },
 
     // ── groups ─────────────────────────────────────────────────────────────
@@ -420,16 +471,41 @@ export const WRITES = {
         args: [
             arg("groupIds", "json", "group ids (array)", true),
             arg("userId", "string", "the account to remove from each", true),
-            arg("srcInteraction", "number", "where the action was taken from, as the client sends it", true),
+            arg(
+                "srcInteraction",
+                "number",
+                `where it was started: ${named(ENUMS.interaction)}`,
+                true,
+                ENUMS.interaction,
+            ),
         ],
         body: (a) => ({
             grids: list(a.groupIds).map(bareGroupId),
             member: String(a.userId),
-            srcInteraction: num(a.srcInteraction),
+            srcInteraction: enumNum(a.srcInteraction, ENUMS.interaction),
         }),
-        verified: false,
+        verified: true,
     },
 };
+
+/** A search-history item as the web client submits it: `{id, type[, last_update_time]}`, a group without its `g`. */
+function recentItem(x) {
+    const raw = String(x.id ?? x.userId);
+    const id = raw.startsWith("g") ? raw.slice(1) : raw;
+    const type = x.type >= 0 ? Number(x.type) : x.isGroup ? 1 : 0;
+    return x.last_update_time ? { id, type, last_update_time: x.last_update_time } : { id, type };
+}
+
+/** A pinned item as the web client names it to the pin endpoints: its id and its type. */
+function topicRef(topic, type) {
+    if (topic && typeof topic === "object") {
+        return {
+            topicId: String(topic.topicId ?? topic.id),
+            topicType: enumNum(topic.topicType ?? topic.type ?? type, ENUMS.topic, 0),
+        };
+    }
+    return { topicId: String(topic), topicType: enumNum(type, ENUMS.topic, 0) };
+}
 
 /** What a multi-recall sends per message: a fresh client id of its own, the original's client id, its global id. */
 function multiUndoMsgs(msgs) {
@@ -497,7 +573,14 @@ export function describeWrites() {
             host: d.host,
             path: d.path,
             verified: d.verified,
-            args: d.args.map((a) => ({ name: a.name, type: a.type, required: !!a.required, desc: a.desc })),
+            ...(d.note && { note: d.note }),
+            args: d.args.map((a) => ({
+                name: a.name,
+                type: a.type,
+                required: !!a.required,
+                desc: a.desc,
+                ...(a.values && { values: a.values }),
+            })),
         };
     });
 }

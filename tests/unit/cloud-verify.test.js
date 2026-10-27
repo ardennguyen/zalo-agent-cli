@@ -248,6 +248,31 @@ describe("when a cmd 621 notice makes the daemon walk", () => {
     });
 });
 
+describe("every notice leaves a line saying what was done with it", () => {
+    const settle = () => new Promise((r) => setTimeout(r, 20));
+
+    it("says so when the index is already current, was walked lately, or another stage is running", async () => {
+        setSyncState("cloudCursor", "server-newest-0000000000");
+        const { tap, lines } = build();
+        tap.subs.get(CMD_MYCLOUD)(frame());
+        await settle();
+        assert.ok(
+            lines.some((l) => /notice \(cmd 621\): the index is already at the server's newest id/.test(l)),
+            lines.join("|"),
+        );
+    });
+
+    it("says nothing extra for a notice it walked for (the walk reports itself), or for a frame that is no notice", async () => {
+        setSyncState("cloudCursor", "my-place");
+        const { tap, lines } = build();
+        tap.subs.get(CMD_MYCLOUD)(frame());
+        tap.subs.get(CMD_MYCLOUD)({ cmd: 621, data: { data: "{}" } });
+        await settle();
+        assert.equal(lines.filter((l) => /notice \(cmd 621\)/.test(l)).length, 0);
+        assert.ok(lines.some((l) => /item\(s\) recorded/.test(l)));
+    });
+});
+
 describe("`listen` and `mcp start` both answer cmd 621 from their socket tap", () => {
     const SRC = join(import.meta.dirname, "..", "..", "src", "commands");
     for (const file of ["listen.js", "mcp.js"]) {

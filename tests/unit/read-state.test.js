@@ -29,6 +29,7 @@ import {
     CLEAR_UNREADS_CMDS,
     createReadStateSync,
     parseKeepingIds,
+    pinMarksFrom,
     readMarksFrom,
     readStateEvent,
     unreadMarksFrom,
@@ -166,6 +167,49 @@ describe("parseKeepingIds -- a JSON payload whose ids are bare numbers", () => {
         assert.equal(typeof v.f, "number");
         // What it guards against: plain JSON.parse names a different thread.
         assert.notEqual(String(JSON.parse(text).id), GROUP);
+    });
+});
+
+describe("pinMarksFrom -- the 601 pinned_convers control", () => {
+    const frame = (...datas) => ({
+        controls: datas.map((data) => ({ content: { act_type: "pinned_convers", act: "update", data } })),
+    });
+
+    it("reads the pins of an object or JSON text, the group by its g and the user by one letter", () => {
+        const out = pinMarksFrom(
+            frame({ action: 1, pinIds: ["g501", "u502"], ts: 9 }, JSON.stringify({ action: 0, pinIds: ["g503"] })),
+        );
+        assert.deepEqual(out, [
+            { threadId: "501", isGroup: true, pinned: true, ts: 9 },
+            { threadId: "502", isGroup: false, pinned: true, ts: 9 },
+            { threadId: "503", isGroup: true, pinned: false, ts: null },
+        ]);
+    });
+
+    it("lets the last mention of a conversation stand, and skips what is not a pin", () => {
+        const out = pinMarksFrom(frame({ action: 1, pinIds: ["g501"] }, { action: 0, pinIds: ["g501"] }));
+        assert.deepEqual(
+            out.map((m) => m.pinned),
+            [false],
+        );
+        for (const junk of [
+            null,
+            undefined,
+            {},
+            { controls: "x" },
+            frame(null),
+            frame("{not json"),
+            frame({ pinIds: "g1" }),
+            frame({ action: 1, pinIds: ["x", "gabc", 5, null] }),
+        ]) {
+            assert.deepEqual(pinMarksFrom(junk), []);
+        }
+        assert.deepEqual(
+            pinMarksFrom({
+                controls: [{ content: { act_type: "mark_unread", act: "update", data: { pinIds: ["g1"] } } }],
+            }),
+            [],
+        );
     });
 });
 
@@ -355,6 +399,37 @@ describe("createReadStateSync -- through the real socket tap", () => {
         assert.deepEqual(
             changes.map((c) => `${c.kind}:${c.marked}`),
             ["unread_mark:true", "unread_mark:false"],
+        );
+    });
+
+    it("pins and unpins from the pinned_convers control, reporting only what changed", () => {
+        const push = (action, ...pinIds) =>
+            listener.push(601, 0, {
+                data: {
+                    controls: [
+                        {
+                            controlId: "1",
+                            content: {
+                                act_type: "pinned_convers",
+                                act: "update",
+                                data: JSON.stringify({ tab: 0, action, pinIds, ts: 1790000000009 }),
+                            },
+                        },
+                    ],
+                },
+            });
+        push(1, `g${GROUP}`, `u${DM}`);
+        assert.equal(getConvState(GROUP).pinned, 1);
+        assert.equal(getConvState(DM).pinned, 1);
+        assert.equal(getConvState(GROUP).pinnedAt, 1790000000009);
+        push(1, `g${GROUP}`);
+        push(0, `g${GROUP}`);
+        assert.equal(getConvState(GROUP).pinned, 0);
+        push(0, `g${GROUP}`);
+        // Red if a repeat is reported, a group id keeps its g, or an unpin is not applied.
+        assert.deepEqual(
+            changes.map((c) => `${c.kind}:${c.threadId}:${c.isGroup}:${c.pinned}`),
+            [`pin:${GROUP}:true:true`, `pin:${DM}:false:true`, `pin:${GROUP}:true:false`],
         );
     });
 

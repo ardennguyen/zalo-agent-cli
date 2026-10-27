@@ -167,6 +167,49 @@ export function unreadMarksFrom(data, threads = lazyThreads()) {
 }
 
 /**
+ * The pins and unpins of a `pinned_convers` control (act `update`, data `{tab, action, pinIds, ts}`).
+ *
+ * The Web client reads `pinIds` as the web's own conversation ids: `g` + the group id, or one letter + the user id.
+ * `action` 1 pins the conversation, anything else unpins it. When one frame names a conversation twice the last one
+ * stands, as in the Web client (it walks the controls newest first and keeps the first it meets).
+ *
+ * @param {object|null|undefined} data - a decoded 601 frame's `data`
+ * @returns {Array<{threadId: string, isGroup: boolean, pinned: boolean, ts: number|null}>}
+ */
+export function pinMarksFrom(data) {
+    const controls = Array.isArray(data?.controls) ? data.controls : [];
+    const latest = new Map();
+    for (const control of controls) {
+        const c = control?.content;
+        if (!c || c.act_type !== "pinned_convers" || c.act !== "update") continue;
+        let payload = c.data ?? c.content;
+        if (typeof payload === "string") {
+            try {
+                payload = parseKeepingIds(payload);
+            } catch {
+                continue;
+            }
+        }
+        if (!payload || typeof payload !== "object" || !Array.isArray(payload.pinIds)) continue;
+        const ts = Number(payload.ts);
+        for (const id of payload.pinIds) {
+            const raw = String(id ?? "");
+            if (raw.length < 2) continue;
+            const isGroup = raw.startsWith("g");
+            const threadId = raw.slice(1);
+            if (!/^\d+$/.test(threadId)) continue;
+            latest.set(threadId, {
+                threadId,
+                isGroup,
+                pinned: Number(payload.action) === 1,
+                ts: Number.isFinite(ts) && ts > 0 ? ts : null,
+            });
+        }
+    }
+    return [...latest.values()];
+}
+
+/**
  * A conversation's read state as `conv recent` and the MCP report it: the
  * account's own reading on Zalo -- what the human read on the phone or Zalo
  * Web -- not any bot's cursor.
@@ -216,8 +259,8 @@ export function readOnZalo(msgId, lastReadMsgId) {
  * A stored change as a listener event: the JSON a consumer gets, and the line
  * a human reads.
  *
- * @param {{kind: "read"|"unread_mark", threadId: string, isGroup: boolean,
- *   lastReadMsgId?: string, ts?: number|null, marked?: boolean}} change
+ * @param {{kind: "read"|"unread_mark"|"pin", threadId: string, isGroup: boolean,
+ *   lastReadMsgId?: string, ts?: number|null, marked?: boolean, pinned?: boolean}} change
  * @returns {{data: object, human: string}}
  */
 export function readStateEvent(change) {
@@ -233,6 +276,12 @@ export function readStateEvent(change) {
                 cmd: change.cmd ?? null,
             },
             human: `Read up to message ${change.lastReadMsgId} in ${threadId}`,
+        };
+    }
+    if (change.kind === "pin") {
+        return {
+            data: { event: "pin", threadId, isGroup, pinned: change.pinned, cmd: change.cmd ?? null },
+            human: change.pinned ? `Pinned: ${threadId}` : `Unpinned: ${threadId}`,
         };
     }
     return {
@@ -309,7 +358,25 @@ export function createReadStateSync({ tap, onChange = () => {}, log = (line) => 
         }
     }
 
-    const offs = [...CLEAR_UNREADS_CMDS.map((cmd) => tap.on(cmd, onEnvelope)), tap.on(CMD_PUSH_CTRL, onControl)];
+    function onPinControl(frame) {
+        for (const m of pinMarksFrom(frame.data)) {
+            try {
+                const before = getConvState(m.threadId);
+                if (Boolean(before?.pinned) === m.pinned) continue;
+                upsertConvState({ threadId: m.threadId, pinned: m.pinned, pinnedAt: m.ts ?? Date.now() });
+            } catch (e) {
+                say(`could not store the pin of ${m.threadId}: ${e?.message || e}`);
+                continue;
+            }
+            tell({ kind: "pin", threadId: m.threadId, isGroup: m.isGroup, pinned: m.pinned, cmd: frame.cmd });
+        }
+    }
+
+    const offs = [
+        ...CLEAR_UNREADS_CMDS.map((cmd) => tap.on(cmd, onEnvelope)),
+        tap.on(CMD_PUSH_CTRL, onControl),
+        tap.on(CMD_PUSH_CTRL, onPinControl),
+    ];
     return {
         stop() {
             for (const off of offs.splice(0)) off();

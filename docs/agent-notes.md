@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3425** as of 2026-10-27 (3420 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3428** as of 2026-10-27 (3423 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1664,7 +1664,8 @@ from the web client and stay unverified here; another account may have the flag.
 | `friendboard/reorder` | built (`pin-reorder-1on1`), seen working on the Companion DM (two pins reordered, then removed) |
 | `aifeatures/voice2text` | built (`voice-to-text`): the answer is only a request id; the text arrives as a `601` control `voice2text/convert_finish {req_id, err, text, url, has_more}` (the first real unknown action `unknown-acts.json` ever caught). `src/core/voice-text.js` keeps it in `voice-text.json` (both daemons, identically), and the local read `voice-transcript` returns it. Seen end to end |
 | `conv/blocksharing/{getConvers,updateConvers}` | the list read answers; the write answers 829 "zBusiness accounts only" on this account |
-| `recommendsv2/remove`, `read-requests`, `oa/block`, `oa/unblock` | unchanged: alive, need a real suggestion, request or Official Account (the `src` and `type` of a suggestion are the server's own `recommSrc` and `recommType` of the list item; `type` 1 is a suggestion, 2 an incoming request) |
+| `recommendsv2/remove`, `read-requests` | alive, need a real suggestion or request (the `src` and `type` of a suggestion are the server's own `recommSrc` and `recommType` of the list item; `type` 1 is a suggestion, 2 an incoming request) |
+| `oa/block`, `oa/unblock` | answered error 0 for a real Official Account (block, then unblock, on one the owner named); no profile, block-list or mini-profile read showed the flip within 8 s, so the effect is not confirmed, and the account ended as it began |
 | `sync_action/media` | each list item is `{fromUid, destId, isGroup, cmi}`, sent when a photo or video is opened or a file downloaded; its effect is unobserved |
 | `closefr/update`, `profile/mode` | no replacement exists; the web client's toggle is an empty function and the feature flag is off |
 
@@ -1722,3 +1723,9 @@ watermark per conversation, moved by the `clearUnreads` rows of the offline page
 there is no list to send. 537: a prefetch hint; media is fetched by the shared downloader. The builders stay in
 `src/zalo/pulls.js` for a client that has the Signal stack. The builder for 537 now reads the cursor from `id` (the Web
 client's field; it read `actionId`) and asks for 50 items, as the Web client does.
+
+**The pin control, found by the replay.** The first real replay named an unhandled control, `pinned_convers/update` with data
+`{tab, action, pinIds, ts}`. It is the live signal that a conversation was pinned or unpinned on another device. The Web client
+reads `pinIds` as its own conversation ids (`g` + group id, or one letter + user id) and `action` 1 as a pin. It is now handled
+with the unread marks (`src/core/read-state.js`, `pinMarksFrom`): `conv_state.pinned` follows it, and `listen` prints a `pin`
+event. Before this a pin changed on the phone reached the cache only through `sync`.

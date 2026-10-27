@@ -595,6 +595,8 @@ describe("the table", () => {
             "label-update",
             "multi-undo",
             "multi-undo-group",
+            "oa-block",
+            "oa-unblock",
             "pin",
             "pin-reorder",
             "pin-reorder-1on1",

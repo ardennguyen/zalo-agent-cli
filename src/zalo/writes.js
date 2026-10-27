@@ -517,8 +517,8 @@ export const WRITES = {
         what: "Block an Official Account",
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
-        verified: false,
-        note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
+        verified: true,
+        note: "answered error 0 for a real Official Account (an unknown id answers 114); no profile or block-list read showed the change, so its effect is not confirmed",
     },
     "oa-unblock": {
         host: "profile",
@@ -529,8 +529,8 @@ export const WRITES = {
         what: "Unblock an Official Account",
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
-        verified: false,
-        note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
+        verified: true,
+        note: "answered error 0 for a real Official Account (an unknown id answers 114); no profile or block-list read showed the change, so its effect is not confirmed",
     },
     "blocksharing-update": {
         host: "conversation",

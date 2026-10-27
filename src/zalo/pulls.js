@@ -10,13 +10,15 @@
  *    the pulls of queues 515, 517, 518 and 603, the key-id request (564), the conversation-state request (577)
  *    and the paged action list (537).
  *
- * The builders are not sent anywhere by default. What the server answers to 515, 517, 518 and 603 has not been
- * decoded in a session of ours, and a pull may consume what it returns, so sending them blind could lose the
- * items; they are here so that a controlled session can send them, read the answers, and decide.
- *
- * Since the first controlled session (2026-10-25) the shapes of the answers are known: 515, 517 and 518 answer in the
- * shape of the old-message queues (empty on the test account), 564 answers `{err, keyId}`, 537 `{hasMore, actions[]}`
- * and 603 pages of 50 `transfer_sync2` controls. The consuming pulls are still not sent by default.
+ * Of these builders, 603 is now sent: on every connect a daemon pulls its control queues from their saved cursors
+ * and replays what they held (./../core/control-replay.js). The others are not sent, and the Web client's own code
+ * says why that is right for a client without end-to-end encryption: 515 and 517 are the Signal queues (1-1 messages
+ * encrypted for the Web device, and session-control items), unreadable without a Signal stack; 518 is deleted by an
+ * acknowledgement (557), so asking for it without handling it only loses it; 564 is the Signal key id; 577 only
+ * reconciles unread badges of a local store that counts unread messages (this client keeps a read watermark, which
+ * the offline pages' `clearUnreads` already move); 537 lists media already downloaded on another device, a prefetch
+ * hint. Answers seen live (2026-10-25): 515, 517 and 518 in the shape of the old-message queues (empty on the test
+ * account), 564 `{err, keyId}`, 537 `{hasMore, actions[]}`, 603 pages of 50 controls.
  */
 import { nextReqId } from "./req-id.js";
 
@@ -69,7 +71,7 @@ export function buildConversationStateRequest({ oneone = [], group = [] } = {}) 
  *
  * @param {{lastId?: string|number, maxItem?: number}} [p]
  */
-export function buildActionListRequest({ lastId = 0, maxItem = 100 } = {}) {
+export function buildActionListRequest({ lastId = 0, maxItem = 50 } = {}) {
     return { version: 1, cmd: 537, subCmd: 0, data: { lastId, maxItem } };
 }
 
@@ -77,14 +79,14 @@ export function buildActionListRequest({ lastId = 0, maxItem = 100 } = {}) {
  * Page an action list the way the client does: ask again while the answer says `hasMore`, from the id of the last
  * action it returned.
  *
- * @param {(request: object) => Promise<{hasMore?: boolean, actions?: Array<{actionId?: string|number}>}|null>} ask -
+ * @param {(request: object) => Promise<{hasMore?: boolean, actions?: Array<{id?: string|number, actionId?: string|number}>}|null>} ask -
  *   sends one request and resolves the answer's `data`, or null when none came
  * @param {object} [opts]
  * @param {number} [opts.maxItem]
  * @param {number} [opts.maxPages] - a stop against a server that never says it is done
  * @returns {Promise<{actions: object[], pages: number, complete: boolean, reason: "drained"|"no-answer"|"stalled"|"page-cap"}>}
  */
-export async function pageActionList(ask, { maxItem = 100, maxPages = 20 } = {}) {
+export async function pageActionList(ask, { maxItem = 50, maxPages = 20 } = {}) {
     const out = { actions: [], pages: 0, complete: false, reason: "page-cap" };
     let lastId = 0;
     while (out.pages < maxPages) {
@@ -94,7 +96,9 @@ export async function pageActionList(ask, { maxItem = 100, maxPages = 20 } = {})
         const actions = Array.isArray(answer.actions) ? answer.actions : [];
         out.actions.push(...actions);
         if (!answer.hasMore) return { ...out, complete: true, reason: "drained" };
-        const next = actions.at(-1)?.actionId;
+        // The web client reads the cursor from `id`; `actionId` is accepted too.
+        const last = actions.at(-1);
+        const next = last?.id ?? last?.actionId;
         // A cursor that does not move would ask for the same page forever.
         if (next === undefined || next === null || String(next) === String(lastId))
             return { ...out, reason: "stalled" };

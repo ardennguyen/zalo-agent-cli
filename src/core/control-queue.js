@@ -6,16 +6,17 @@
  * `lastId`s as the cursor of its next `603` pull, so that controls that arrived while it was offline (a group
  * event, an unread mark, a sync status) are fetched when it comes back.
  *
- * This client does not pull `603` yet: what the server answers has not been decoded in a session of ours (see
- * ./../zalo/pulls.js). What it does now is the groundwork that cannot lose anything:
+ * A daemon pulls `603` on every connect, from the cursors kept here, and replays each page as a `601` push
+ * (./control-replay.js, called by ./self-heal.js). This module is what reads those frames:
  *
  *  - {@link readControls} sorts the controls of a frame by what they are, so a control nobody handles is named
  *    instead of vanishing;
- *  - {@link controlCursorsOf} reads the control queues' cursors, which the daemon keeps (forward only), so the
- *    pull has a cursor the day it exists.
+ *  - {@link controlCursorsOf} reads the control queues' cursors, which the daemon keeps (forward only) from every
+ *    push and every replayed page.
  *
- * Nothing here acknowledges a control: acknowledging only what is safely stored is the rule (./queue-verify.js),
- * and the controls this client handles are acted on in memory, not stored.
+ * Nothing here acknowledges a control: the Web client acknowledges them with nothing at all (its cursor is the
+ * mechanism; a control queue is not consumed by being read), and the controls this client handles are acted on in
+ * memory, not stored.
  */
 
 /** The control queues named in every `601` reply. */

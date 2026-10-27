@@ -84,6 +84,10 @@ describe("the connect-time requests", () => {
 });
 
 describe("paging the action list (537)", () => {
+    it("asks for 50 items from the start by default, as the Web client does", () => {
+        assert.deepEqual(buildActionListRequest().data, { lastId: 0, maxItem: 50 });
+    });
+
     const page = (ids, hasMore) => ({ hasMore, actions: ids.map((actionId) => ({ actionId })) });
 
     it("asks again from the last action while the answer says hasMore, then stops", async () => {
@@ -101,6 +105,23 @@ describe("paging the action list (537)", () => {
             out.actions.map((a) => a.actionId),
             ["1", "2", "3", "4", "5"],
         );
+    });
+
+    it("reads the cursor from `id`, the field the Web client reads, and asks for 50 items like it", async () => {
+        const asked = [];
+        const answers = [
+            { hasMore: true, actions: [{ id: "10" }, { id: "11" }] },
+            { hasMore: false, actions: [{ id: "12" }] },
+        ];
+        const out = await pageActionList(async (req) => {
+            asked.push([req.data.lastId, req.data.maxItem]);
+            return answers.shift();
+        });
+        assert.deepEqual(asked, [
+            [0, 50],
+            ["11", 50],
+        ]);
+        assert.equal(out.reason, "drained");
     });
 
     it("is drained after one page when there is no more", async () => {

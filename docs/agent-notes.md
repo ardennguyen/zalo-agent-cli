@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3410** as of 2026-10-27 (3405 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3425** as of 2026-10-27 (3420 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1144,9 +1144,10 @@ and 603, the key-id request 564, the conversation-state request 577, the paged a
 to anything: what the server answers to them has not been decoded in a session of ours, and a pull may consume what it
 returns, so sending them blind could lose items. A controlled live session is the next step.
 
-**The control queues (X4).** Every `601` names the cursors of `603_1`, `603_0` and `604_0`. They are now kept (forward
-only, in `sync_state` like the message queues') for the pull that will use them, and a control this client has no
-handler for is named once in the log. Nothing acknowledges a control: they are acted on in memory, not stored.
+**The control queues (X4).** Every `601` names the cursors of `603_1`, `603_0` and `604_0`. They are kept (forward
+only, in `sync_state` like the message queues') and a control this client has no handler for is named once in the log.
+Nothing acknowledges a control: they are acted on in memory, not stored. (Since the closing sweep the cursors are also used:
+see "Connect-time pulls" at the end of this file.)
 
 ## A restore remembers what it settled, and a partial run is not a success (v3.0, 2026-10-25)
 
@@ -1681,3 +1682,43 @@ the first live runs match the black-hole run: an ack sent while the network is g
 tries, and the server delivers the item again (Y10).
 
 **What the sweep could not close alone.** The wiring of the connect-time pulls (515, 517, 518, 603 and the 564/577/537 requests) is a design choice with a risk to the account's queues, and four checks need the owner's phone or a second account (a login with auto sync and the kick-reason line that follows it, a full restore past the old session cap, the todo and friend-request writes, and a real Official Account for the block calls). They are named in the sweep's report to the owner.
+
+## Connect-time pulls: what the Web client does, and what this client now does (v3.0, 2026-10-27)
+
+The owner asked for the connect-time pulls (X4 to X6) to be wired. A trace of the Web client's code (modules named in the
+local report) showed what they are, and the answer is not the same for all of them.
+
+**What each one is.**
+
+- **603** (the control queue, `603_0` and `603_1`): the controls the server held while the client was away: group and friend
+  events, unread marks set on another device, a transcribed voice message, sync statuses. The Web client runs a pulled page
+  through the same handler as a live `601` push, persists the cursor first, and acknowledges nothing. A read does not consume
+  it: the server repeats from the cursor the client sends.
+- **515, 517, 518**: the end-to-end encryption (Signal) queues. 515 carries 1-1 messages encrypted for the Web device (the
+  twin of 510), 517 Signal session-control items, 518 delivery records about encrypted messages this device sent. Which
+  queues a client pulls is decided by the server's handshake (`qCmds`, `ctrl_qCmds`, `bk_cmds`), not by constants. 515 and
+  517 cannot be used without libsignal, and a client that pulls them and advances its cursor without decrypting loses the
+  items; 518 is the only cursor-less queue and is deleted by an acknowledgement (`557` for 1-1, `558` for groups), so an
+  unacknowledged page comes back on the next connect, and an acknowledged one is gone.
+- **564**: the Signal key id. **577**: a request for the last-read position of conversations the local store shows as unread
+  and for which the offline pull produced no `clearUnreads`; its reply only clears unread badges. **537**: the list of
+  media already downloaded on another device, which the Web client uses to prefetch the same media.
+
+**What was done.** A daemon pulls `603` on every connect, after the message queues, from the cursors it keeps
+(`src/core/control-replay.js`, called by `src/core/self-heal.js`, so `listen` and `mcp start` do it identically and
+`--no-self-heal` turns it off). Each page is handed to the listener as a `601` push: the frame's command is rewritten and
+the bytes are emitted on the socket as a binary message (`ws` gives its `onmessage` consumers text unless told the frame
+is binary, and zca-js ignores a non-Buffer; a test on the real zca-js listener caught that). zca-js then emits the same
+`group_event` and `friend_event` it emits for a live push, and everything that reads `601` here (unread marks, transcripts,
+the unknown-action collector, the cursor keeper) sees it. It never asks without a saved cursor (a first pull would replay
+everything the server still holds), never acknowledges, and says when the server reports it dropped entries. The control
+queue is given three times the message queues' wait: one cold answer was slower than ten seconds, live. Seen live on the test
+account: eight real controls that arrived while the daemon was off (a group join, friend requests and their rejection, a
+contact-tab mark, an emoji status) were replayed from the saved cursor and the cursor moved.
+
+**What was not done, and why.** 515, 517, 518 and 564: they belong to the Signal stack, which is out of scope on purpose
+(plan S10: no E2EE message endpoints), and pulling them without it can only lose data. 577: this client keeps a read
+watermark per conversation, moved by the `clearUnreads` rows of the offline pages and by `sync`, not an unread count, so
+there is no list to send. 537: a prefetch hint; media is fetched by the shared downloader. The builders stay in
+`src/zalo/pulls.js` for a client that has the Signal stack. The builder for 537 now reads the cursor from `id` (the Web
+client's field; it read `actionId`) and asks for 50 items, as the Web client does.

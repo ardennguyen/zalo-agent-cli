@@ -71,7 +71,14 @@ import {
     setSyncState,
 } from "./db.js";
 import { isRemovalMessage, storeHistoryMessage, storeLiveDelete, storeLiveUndo } from "./live-store.js";
-import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_TIMEOUT_MS, drainOfflineQueue, messageQueuesFrom } from "./offline-queue.js";
+import {
+    DEFAULT_MAX_PAGES,
+    DEFAULT_PAGE_TIMEOUT_MS,
+    controlQueuesFrom,
+    drainOfflineQueue,
+    messageQueuesFrom,
+} from "./offline-queue.js";
+import { replayControlQueues } from "./control-replay.js";
 import { CMD_AUTHEN } from "./socket-tap.js";
 import { CMD_VERIFY, createQueueVerifier, idsOf } from "./queue-verify.js";
 import { controlCursorsOf, readControls } from "./control-queue.js";
@@ -507,9 +514,12 @@ export function createSelfHeal({
             say(`${summary}; not finished: ${failed.join(", ")}, so no window is marked covered${hint}`);
         }
 
+        const controls = await replayControls(listener);
+
         return {
             ran: true,
             reason,
+            controls,
             recovered: added.length,
             untouched,
             removals,
@@ -527,6 +537,56 @@ export function createSelfHeal({
                 added: r.added?.length ?? 0,
             })),
         };
+    }
+
+    /**
+     * After the message queues: the control queues, replayed from their saved cursors (./control-replay.js). Each page
+     * reaches the same handlers as a live control push, which move the cursors; a queue with no saved cursor is not
+     * asked.
+     */
+    async function replayControls(listener) {
+        const queues = controlQueuesFrom(tap?.auth()?.ctrl_qCmds);
+        let results;
+        try {
+            // A control queue is slower to answer the first time it is asked after a long absence (one cold answer
+            // took longer than the message queues' wait, live), so it is given three times as long.
+            results = await replayControlQueues({
+                listener,
+                tap,
+                queues,
+                cursorOf: readCursor,
+                timeoutMs: timeoutMs * 3,
+                maxPages,
+            });
+        } catch (e) {
+            say(`control replay failed: ${e?.message || e}`);
+            return [];
+        }
+        for (const r of results) {
+            const name = r.queue.queueName;
+            if (r.reason === "no-cursor") {
+                say(`${name}: no saved control cursor yet, nothing to replay (the next live control sets one)`);
+                continue;
+            }
+            if (r.resetTo) writeCursor(name, { id: r.resetTo, ts: now() });
+            say(
+                `${name}: replayed ${r.replayed} control(s) after ${r.cursor.id}` +
+                    (r.complete ? "" : `; not finished (${r.reason})`),
+            );
+            if (r.evicted) {
+                say(
+                    `${name}: Zalo dropped control events while this client was away; group, friend and read-state ` +
+                        "changes among them may be missing, and a `sync` restores what the phone holds",
+                );
+            }
+        }
+        return results.map((r) => ({
+            queueName: r.queue.queueName,
+            replayed: r.replayed,
+            complete: r.complete,
+            reason: r.reason,
+            evicted: r.evicted,
+        }));
     }
 
     async function healUnderLock(reason) {

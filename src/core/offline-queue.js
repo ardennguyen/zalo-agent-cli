@@ -51,6 +51,32 @@ const MESSAGE_QUEUES = new Map([
     [511, { threadType: THREAD_GROUP, rows: "groupMsgs" }],
 ]);
 
+/**
+ * The control queue this module can replay, keyed by cmd: 603, whose answers carry `controls[]` in the envelope of a
+ * `601` push (group and friend events, unread marks, transcripts, sync statuses). The control queues' names come
+ * from the handshake's `ctrl_qCmds`; there is no default, because a handshake without them means the server does
+ * not serve this client a control queue at all.
+ */
+const CONTROL_QUEUES = new Map([[603, { rows: "controls" }]]);
+
+/**
+ * The control queues a handshake names, in its order.
+ *
+ * @param {Array<{cmd: number, subCmd: number, queueName?: string}>} [ctrlQCmds] - the handshake's `ctrl_qCmds`
+ * @returns {Array<{cmd: number, subCmd: number, queueName: string}>}
+ */
+export function controlQueuesFrom(ctrlQCmds) {
+    if (!Array.isArray(ctrlQCmds)) return [];
+    const out = [];
+    for (const q of ctrlQCmds) {
+        const cmd = Number(q?.cmd);
+        if (!CONTROL_QUEUES.has(cmd)) continue;
+        const subCmd = Number(q?.subCmd) || 0;
+        out.push({ cmd, subCmd, queueName: String(q?.queueName || `${cmd}_${subCmd}`) });
+    }
+    return out;
+}
+
 /** What the captured handshake lists for them, used until a handshake has been read. */
 export const DEFAULT_MESSAGE_QUEUES = Object.freeze([
     Object.freeze({ cmd: 510, subCmd: 1, queueName: "510_1", threadType: THREAD_USER }),
@@ -91,7 +117,7 @@ export function messageQueuesFrom(qCmds) {
  *
  * @returns {Promise<object|null>} the decoded answer body, or null on timeout
  */
-function request({ listener, tap, queue, data, timeoutMs }) {
+function request({ listener, tap, queue, data, timeoutMs, onFrame }) {
     return new Promise((resolve) => {
         let off = () => {};
         const timer = setTimeout(() => {
@@ -110,6 +136,11 @@ function request({ listener, tap, queue, data, timeoutMs }) {
             if (String(frame.data?.reqId ?? "") !== data.reqId) return;
             clearTimeout(timer);
             off();
+            try {
+                onFrame?.(frame);
+            } catch {
+                /* a failing page hook must not turn an answer into a timeout */
+            }
             resolve(frame.body || {});
         });
         try {
@@ -133,6 +164,8 @@ function request({ listener, tap, queue, data, timeoutMs }) {
  * @param {string} args.lastId - the cursor: the last queue id this session holds
  * @param {number} [args.timeoutMs]
  * @param {number} [args.maxPages]
+ * @param {(frame: object) => void} [args.onPage] - told each answer's frame (with its raw bytes) as it arrives,
+ *   before the next page is asked for: how the control replay hands each page on
  * @returns {Promise<{rows: object[], ids: string[], pages: number, complete: boolean,
  *   reason: "drained"|"timeout"|"stalled"|"page-cap"|"reset"|"error",
  *   evicted: boolean, resetTo: string|null, lastActionId: string|null}>}
@@ -149,8 +182,9 @@ export async function drainOfflineQueue({
     lastId,
     timeoutMs = DEFAULT_PAGE_TIMEOUT_MS,
     maxPages = DEFAULT_MAX_PAGES,
+    onPage,
 }) {
-    const kind = MESSAGE_QUEUES.get(Number(queue.cmd));
+    const kind = MESSAGE_QUEUES.get(Number(queue.cmd)) ?? CONTROL_QUEUES.get(Number(queue.cmd));
     const rowsKey = kind?.rows || "msgs";
     const out = {
         rows: [],
@@ -167,7 +201,7 @@ export async function drainOfflineQueue({
 
     while (out.pages < maxPages) {
         const data = { first, reqId: nextReqId(), lastId: cursor, preIds: [] };
-        const body = await request({ listener, tap, queue, data, timeoutMs });
+        const body = await request({ listener, tap, queue, data, timeoutMs, onFrame: onPage });
         if (!body) return { ...out, reason: "timeout" };
         out.pages++;
         if (Number(body.error_code) && Number(body.error_code) !== 0) return { ...out, reason: "error" };

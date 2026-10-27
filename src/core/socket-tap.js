@@ -75,7 +75,7 @@ export function readFrame(buf, cipherKey) {
  * @param {(line: string) => void} [opts.log] - where a failing subscriber is reported
  * @returns {{
  *   attach: (listener: object) => void,
- *   on: (cmd: number, fn: (frame: object, listener: object) => void) => () => void,
+ *   on: (cmd: number, fn: (frame: object, listener: object) => void) => () => void, (a frame also carries `raw`, its bytes)
  *   auth: () => object|null,
  * }} `attach` taps the listener's current socket and every one it opens after;
  *   `on` subscribes to one cmd and returns the unsubscribe; `auth` is the last
@@ -118,7 +118,11 @@ export function createSocketTap({ log = (line) => console.error(line) } = {}) {
             const cmd = buf.readUInt16LE(1);
             if (cmd !== CMD_AUTHEN && !subscribers.has(cmd)) return;
             const frame = readFrame(buf, listener.cipherKey);
-            if (frame) deliver(frame, listener);
+            if (frame) {
+                // The bytes as they came, for a subscriber that wants to hand a frame on (the control replay).
+                frame.raw = buf;
+                deliver(frame, listener);
+            }
         });
     }
 

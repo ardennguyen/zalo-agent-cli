@@ -1,6 +1,6 @@
 /**
  * Temporary local HTTP server for QR display on headless/VPS environments.
- * Serves QR image as a simple HTML page on localhost.
+ * Serves the QR image as a plain login page on localhost, laid out like the Zalo Web login.
  * Auto-closes after login completes.
  */
 
@@ -9,20 +9,28 @@ import { readFileSync, existsSync, statSync } from "fs";
 import { info } from "./output.js";
 
 /**
- * Start a temporary HTTP server that serves the QR image.
- * @param {string} qrImagePath - path to QR PNG file
- * @param {number} port - default 18927
- * @param {number[]} tryPorts - ports to try in order
- * @param {boolean} exposeOnLan - bind 0.0.0.0 instead of 127.0.0.1
- *
- *   The QR is a **login token**: anyone who can fetch and scan it before it
- *   expires signs in as this account. Binding 0.0.0.0 therefore offers the
- *   account to the whole network, so it is opt-in (`--qr-url`) rather than
- *   the default. Loopback still covers the ordinary desktop case, where the
- *   browser is on the same machine.
- *
- * @returns {{ url: string, close: () => void }}
+ * Where the login is, for the page: which QR is on screen (the first, or the second an account with a trusted
+ * device is asked to scan) and who scanned it. Set by the login command as the events arrive.
  */
+const qrState = { layer: 1, scanned: null };
+
+/**
+ * Note which QR the page should say it is showing.
+ * @param {number} [layer] - 1 for the first QR, 2 for the one scanned after it
+ */
+export function noteQrLayer(layer = 1) {
+    qrState.layer = layer;
+    if (layer === 1) qrState.scanned = null;
+}
+
+/**
+ * Note that the phone scanned the QR and is waiting for the confirmation.
+ * @param {string} [name] - the name the phone scanned as, when it is known
+ */
+export function noteQrScanned(name = "") {
+    qrState.scanned = String(name || "");
+}
+
 /**
  * Which QR image is current: its modification time, or null before the first.
  * The login loop regenerates the QR roughly every 100 s; the page polls this
@@ -40,96 +48,177 @@ export function qrVersion(qrImagePath) {
     }
 }
 
+const PAGE_STYLE = `
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;
+  background:#f0f3f7;color:#081c36;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.brand{font-size:20px;font-weight:600;letter-spacing:-.2px;color:#0068ff}
+.card{width:min(380px,92vw);padding:28px 28px 24px;background:#fff;border:1px solid #dfe4ea;border-radius:8px;text-align:center}
+h1{margin:0 0 4px;font-size:18px;font-weight:600}
+.sub{margin:0 0 20px;color:#5b6b7c;font-size:14px}
+.frame{position:relative;width:240px;height:240px;margin:0 auto 18px;padding:10px;background:#fff}
+.frame i{position:absolute;width:22px;height:22px;border:3px solid #0068ff}
+.frame i:nth-of-type(1){top:0;left:0;border-right:0;border-bottom:0}
+.frame i:nth-of-type(2){top:0;right:0;border-left:0;border-bottom:0}
+.frame i:nth-of-type(3){bottom:0;left:0;border-right:0;border-top:0}
+.frame i:nth-of-type(4){bottom:0;right:0;border-left:0;border-top:0}
+.frame img{display:block;width:100%;height:100%;image-rendering:pixelated}
+.note{min-height:42px;margin:0;color:#5b6b7c;font-size:14px}
+.note b{color:#081c36;font-weight:600}
+.done h1{color:#0a7d33}
+.hidden{display:none}
+.lang{margin:14px 0 0;font-size:13px;color:#8593a3}
+.lang span{margin:0 8px}
+.lang a{color:#5b6b7c;text-decoration:none}
+.lang a.on{color:#0068ff;font-weight:600}
+`;
+
+/**
+ * Everything the page says, in the two languages Zalo Web offers. The page picks one from the `lang` query, then a
+ * saved choice, then the browser's language; the server only ever sends both.
+ */
+export const PAGE_TEXT = Object.freeze({
+    en: Object.freeze({
+        documentTitle: "Log in to Zalo",
+        preparing: "Preparing the code…",
+        title: "Log in with QR code",
+        sub: "Use the Zalo app on your phone to scan this code.",
+        note: "Open Zalo, tap the QR scanner, and point it at this code.",
+        secondTitle: "Scan the new code",
+        secondSub: "This code replaced the first one.",
+        secondNote: "Your account asks to confirm this device: scan this code once more.",
+        confirmTitle: "Confirm on your phone",
+        confirmNote: "Tap Confirm in the Zalo app to finish logging in.",
+        doneTitle: "You are logged in",
+        doneSub: "You can close this page. The command line is ready.",
+        qrAlt: "QR code",
+    }),
+    vi: Object.freeze({
+        documentTitle: "Đăng nhập Zalo",
+        preparing: "Đang chuẩn bị mã…",
+        title: "Đăng nhập bằng mã QR",
+        sub: "Dùng ứng dụng Zalo trên điện thoại để quét mã này.",
+        note: "Mở Zalo, chọn quét mã QR và hướng camera vào mã này.",
+        secondTitle: "Quét mã mới",
+        secondSub: "Mã này đã thay thế mã đầu tiên.",
+        secondNote: "Tài khoản của bạn yêu cầu xác nhận thiết bị này: hãy quét mã này thêm một lần nữa.",
+        confirmTitle: "Xác nhận trên điện thoại",
+        confirmNote: "Nhấn Xác nhận trong ứng dụng Zalo để hoàn tất đăng nhập.",
+        doneTitle: "Đã đăng nhập thành công",
+        doneSub: "Bạn có thể đóng trang này. Dòng lệnh đã sẵn sàng.",
+        qrAlt: "Mã QR",
+    }),
+});
+
+const LANGUAGE_SWITCH = `<p class="lang"><a href="#" data-lang="en">English</a><span>&middot;</span><a href="#" data-lang="vi">Tiếng Việt</a></p>`;
+
+function waitingPage() {
+    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="2">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${PAGE_TEXT.en.documentTitle}</title><style>${PAGE_STYLE}</style></head>
+<body><div class="brand">zalo-agent-cli</div><div class="card"><h1>${PAGE_TEXT.en.preparing}</h1>
+<p class="sub">${PAGE_TEXT.vi.preparing}</p></div></body></html>`;
+}
+
+function loginPage(imageUrl, version) {
+    const en = PAGE_TEXT.en;
+    return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>${en.documentTitle}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>${PAGE_STYLE}</style></head>
+<body>
+<div class="brand">zalo-agent-cli</div>
+<div class="card" id="login">
+<h1 id="title">${en.title}</h1>
+<p class="sub" id="sub">${en.sub}</p>
+<div class="frame"><i></i><i></i><i></i><i></i><img id="qr" src="${imageUrl}" alt="${en.qrAlt}"></div>
+<p class="note" id="note">${en.note}</p>
+${LANGUAGE_SWITCH}
+</div>
+<div class="card done hidden" id="done"><h1 id="doneTitle">${en.doneTitle}</h1>
+<p class="sub" id="doneSub">${en.doneSub}</p></div>
+<script>
+// Poll /status: swap in each new QR, say which one this is, and notice the end of the login.
+const TEXT=${JSON.stringify(PAGE_TEXT)};
+let version=${JSON.stringify(version)},layer=1,scanned=null;
+const $=(id)=>document.getElementById(id);
+const saved=()=>{try{return localStorage.getItem('zalo-agent-lang')}catch{return null}};
+const asked=new URLSearchParams(location.search).get('lang');
+let lang=[asked,saved(),(navigator.language||'').toLowerCase().startsWith('vi')?'vi':'en'].find((l)=>l==='vi'||l==='en');
+function render(){
+  const t=TEXT[lang];
+  document.documentElement.lang=lang;
+  document.title=t.documentTitle;
+  $('qr').alt=t.qrAlt;
+  $('doneTitle').textContent=t.doneTitle;
+  $('doneSub').textContent=t.doneSub;
+  if(scanned!==null){
+    $('title').textContent=t.confirmTitle;
+    $('sub').textContent=scanned;
+    $('note').textContent=t.confirmNote;
+  }else if(layer===2){
+    $('title').textContent=t.secondTitle;
+    $('sub').textContent=t.secondSub;
+    $('note').textContent=t.secondNote;
+  }else{
+    $('title').textContent=t.title;
+    $('sub').textContent=t.sub;
+    $('note').textContent=t.note;
+  }
+  document.querySelectorAll('[data-lang]').forEach((a)=>a.classList.toggle('on',a.dataset.lang===lang));
+}
+document.querySelectorAll('[data-lang]').forEach((a)=>a.addEventListener('click',(e)=>{
+  e.preventDefault();lang=a.dataset.lang;
+  try{localStorage.setItem('zalo-agent-lang',lang)}catch{}
+  render();
+}));
+render();
+async function poll(){
+  try{
+    const d=await (await fetch('/status')).json();
+    if(d.loggedIn){$('login').classList.add('hidden');$('done').classList.remove('hidden');return}
+    if(d.qrVersion&&d.qrVersion!==version){version=d.qrVersion;$('qr').src='/qr.png?v='+version}
+    layer=d.layer||1;scanned=d.scanned;render();
+  }catch{}
+}
+poll();
+setInterval(poll,1500);
+</script>
+</body></html>`;
+}
+
+/**
+ * Start a temporary HTTP server that serves the QR image.
+ * @param {string} qrImagePath - path to QR PNG file
+ * @param {number} port - default 18927
+ * @param {number[]} tryPorts - ports to try in order
+ * @param {boolean} exposeOnLan - bind 0.0.0.0 instead of 127.0.0.1
+ *
+ *   The QR is a **login token**: anyone who can fetch and scan it before it
+ *   expires signs in as this account. Binding 0.0.0.0 therefore offers the
+ *   account to the whole network, so it is opt-in (`--qr-url`) rather than
+ *   the default. Loopback still covers the ordinary desktop case, where the
+ *   browser is on the same machine.
+ *
+ * @returns {{ url: string, close: () => void }}
+ */
 export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080, 3000, 9000], exposeOnLan = false) {
     const bindHost = exposeOnLan ? "0.0.0.0" : "127.0.0.1";
     const server = http.createServer(async (req, res) => {
-        if (req.url === "/qr" || req.url === "/") {
+        // The path decides, not the query: `/qr?lang=vi` is the page, `/qr.png?v=1` is the image.
+        const path = (req.url || "/").split("?")[0];
+        if (path === "/qr" || path === "/") {
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
             if (!existsSync(qrImagePath)) {
-                res.writeHead(200, { "Content-Type": "text/html" });
-                res.end(`<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="2">
-<title>Waiting for QR...</title></head>
-<body style="display:flex;justify-content:center;align-items:center;height:100vh;background:#111;color:#fff;font-family:system-ui">
-<p>QR code generating... auto-refreshing in 2s</p></body></html>`);
+                res.end(waitingPage());
                 return;
             }
-            const img = readFileSync(qrImagePath);
-            const b64 = img.toString("base64");
-            // Embed mascot inline (read from assets if available, else skip)
-            let mascotB64 = "";
-            try {
-                const { resolve: resolvePath } = await import("path");
-                const { fileURLToPath } = await import("url");
-                const { dirname } = await import("path");
-                const dir = dirname(fileURLToPath(import.meta.url));
-                const mascotPath = resolvePath(dir, "../../assets/mascot.png");
-                if (existsSync(mascotPath)) {
-                    mascotB64 = readFileSync(mascotPath).toString("base64");
-                }
-            } catch {}
-            const mascotImg = mascotB64
-                ? `<img src="data:image/png;base64,${mascotB64}" class="mascot" alt="zalo-agent"/>`
-                : "";
-            res.writeHead(200, { "Content-Type": "text/html" });
-            res.end(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Zalo Agent — QR Login</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-*{box-sizing:border-box}
-body{display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;
-  background:linear-gradient(135deg,#0a1628 0%,#111d33 50%,#0d1f3c 100%);font-family:system-ui,-apple-system,sans-serif}
-.card{text-align:center;padding:2.5rem 2rem;background:rgba(17,29,51,0.9);
-  border-radius:20px;max-width:420px;width:90%;
-  border:1px solid rgba(59,130,246,0.2);backdrop-filter:blur(10px);
-  box-shadow:0 20px 60px rgba(0,0,0,0.5),0 0 40px rgba(59,130,246,0.1)}
-.mascot{width:80px;height:80px;border-radius:50%;margin-bottom:0.5rem;
-  border:2px solid rgba(59,130,246,0.4);box-shadow:0 0 20px rgba(59,130,246,0.2)}
-h1{color:#e2e8f0;font-size:1.1rem;font-weight:600;margin:0.5rem 0}
-.brand{color:#3b82f6;font-size:0.8rem;margin-bottom:1.5rem;opacity:0.8}
-.qr-img{width:260px;height:260px;border-radius:12px;border:3px solid rgba(59,130,246,0.3);
-  box-shadow:0 0 30px rgba(59,130,246,0.15)}
-.hint{color:#94a3b8;font-size:0.85rem;margin-top:1.2rem;line-height:1.5}
-.hint strong{color:#60a5fa}
-.success-text{color:#4ade80;font-size:1.3rem;font-weight:bold}
-.hidden{display:none}
-.footer{color:#475569;font-size:0.7rem;margin-top:1.5rem}
-.footer a{color:#3b82f6;text-decoration:none}
-</style></head>
-<body><div class="card">
-<div id="qr-view">
-${mascotImg}
-<h1>Zalo Agent CLI</h1>
-<p class="brand">QR Code Login</p>
-<img src="data:image/png;base64,${b64}" class="qr-img" id="qr-img" alt="QR Code"/>
-<p class="hint">Open <strong>Zalo app</strong> > <strong>QR Scanner</strong> to scan</p>
-<p class="footer">Powered by <a href="https://github.com/ardennguyen/zalo-agent-cli">zalo-agent-cli</a></p>
-</div>
-<div id="success-view" class="hidden">
-${mascotImg}
-<h1 style="color:#4ade80;font-size:1.5rem;margin:1rem 0">Login Successful!</h1>
-<p class="success-text">You can close this page now.</p>
-<p class="hint">The CLI is ready to use.</p>
-</div>
-</div>
-<script>
-// Poll /status to detect login success, and swap in each regenerated QR
-let qrV=${JSON.stringify(qrVersion(qrImagePath))};
-setInterval(async()=>{
-  try{
-    const r=await fetch('/status');
-    const d=await r.json();
-    if(d.loggedIn){
-      document.getElementById('qr-view').classList.add('hidden');
-      document.getElementById('success-view').classList.remove('hidden');
-    }else if(d.qrVersion&&d.qrVersion!==qrV){
-      qrV=d.qrVersion;
-      document.getElementById('qr-img').src='/qr.png?v='+qrV;
-    }
-  }catch{}
-},2000);
-</script>
-</body></html>`);
-        } else if (req.url === "/qr.png") {
+            // The image is fetched by URL (the same one the poll swaps in), so the page stays small.
+            const version = qrVersion(qrImagePath);
+            res.end(loginPage(`/qr.png?v=${version}`, version));
+        } else if (path === "/qr.png") {
             // Raw PNG image endpoint — for agents to send direct image link
             if (!existsSync(qrImagePath)) {
                 res.writeHead(404, { "Content-Type": "text/plain" });
@@ -143,7 +232,7 @@ setInterval(async()=>{
                 "Cache-Control": "no-cache, no-store",
             });
             res.end(img);
-        } else if (req.url === "/status") {
+        } else if (path === "/status") {
             // Login status endpoint for browser polling
             let loggedIn = false;
             try {
@@ -151,7 +240,14 @@ setInterval(async()=>{
                 loggedIn = isLoggedIn();
             } catch {}
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ loggedIn, qrVersion: qrVersion(qrImagePath) }));
+            res.end(
+                JSON.stringify({
+                    loggedIn,
+                    qrVersion: qrVersion(qrImagePath),
+                    layer: qrState.layer,
+                    scanned: qrState.scanned,
+                }),
+            );
         } else {
             res.writeHead(404);
             res.end("Not found");

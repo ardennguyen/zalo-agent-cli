@@ -63,6 +63,7 @@
         "google-protobuf": "^3.21.4",
         "https-proxy-agent": "^9.1.0",
         "image-size": "^2.0.4",
+        "qrcode-generator": "^2.0.4",
         "undici": "^8.5.0",
         "zca-js": "2.2.0",
         "zod": "^4.4.3"

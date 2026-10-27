@@ -20,7 +20,7 @@ import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.
 import { serverLogout, reportLogout, finishLocalLogout, lockHolder } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
-import { startQrServer } from "../utils/qr-http-server.js";
+import { noteQrScanned, startQrServer } from "../utils/qr-http-server.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
@@ -140,6 +140,7 @@ export function registerLoginCommands(program) {
                             // — zca-js already hands this through in
                             // event.data, it was just never surfaced.
                             const name = event.data?.display_name || "unknown";
+                            noteQrScanned(event.data?.display_name || "");
                             if (jsonMode) {
                                 console.log(
                                     JSON.stringify({

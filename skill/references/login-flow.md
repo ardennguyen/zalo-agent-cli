@@ -33,6 +33,7 @@ Firewall must allow at least one of these ports for remote access.
 | generated | Prints the QR (terminal ASCII + browser URL), saves `~/.zalo-agent-cli/qr.png` |
 | scanned | Prints the scanning account's display name and avatar URL, prompts to confirm on the phone |
 | declined | Fails immediately with "Login declined on phone" (`QRCodeDeclined` / `qr_declined` in `--json`) |
+| second QR | `ZALO_QR_FLOW=official` on an account with a trusted device: after the first scan the QR is replaced by a new one to scan once more (`event: "qr"` with `layer: 2` in `--json`; the browser page says so too) |
 | expired | Auto-retries with a fresh QR |
 
 ### Auto sync at login (`--sync`)

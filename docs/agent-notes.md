@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3428** as of 2026-10-27 (3423 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3470** as of 2026-10-27 (3461 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1059,29 +1059,63 @@ valid. Zalo wraps that refusal in a *sealed envelope* (`{error_code, error_messa
 **Left for the release:** the public wiki still describes the old logout. It is updated with the v3.0 release,
 not before: a wiki push is public immediately.
 
-## The official QR login (v3.0, 2026-10-25; opt in since 2026-10-27)
+## The official QR login (v3.0, 2026-10-25; the second QR added 2026-10-27)
 
-`src/zalo/qr-login.js` is the QR login the captured Web client makes. A scan with it worked live on 2026-10-25 and made it
-the default; **on 2026-10-27 it is opt in again (`ZALO_QR_FLOW=official`)**: that evening the phone said "QR is not valid"
-to it twice (once with its scan answer carrying no display name) while zca-js's flow logged in at the first scan, with Zalo
-Web open on the same account both times. The cause is not known: the page's script (`main-2606161423.js`) makes the same
-calls, so it may be a server-side change, or Zalo Web being logged in at the time. A run with Zalo Web logged out would tell. The two differ: zca-js
-announces `continue=https://zalo.me/pc` to three calls, calls `verify-client` (which the official client never does),
-leaves out `cliGenQR`, and ends with a `jr/userinfo` request. The official sequence is the login page (whose script
-name carries the build `v`), `logininfo`, `generate` with `cliGenQR`, the `waiting-scan` and `waiting-confirm` long polls
-(asked again while the answer is 8), then `checksession` and the redirects it starts: `syncsession`, `pushsession` (which
-sets `zpw_sek`) and the chat page.
+`src/zalo/qr-login.js` is the QR login the captured Web client makes. zca-js's flow differs: it announces
+`continue=https://zalo.me/pc` to three calls, calls `verify-client` (which the official client never does), leaves out
+`cliGenQR`, and ends with a `jr/userinfo` request. The official sequence is the login page (whose script name carries the
+build `v`), `logininfo`, `generate` with `cliGenQR=1`, the `waiting-scan` long poll (asked again while the answer is 8),
+**the second QR when the scan asks for it**, the `waiting-confirm` long poll with the proof as `bundle`, then `checksession`
+and the redirects it starts: `syncsession`, `pushsession` (which sets `zpw_sek`) and the chat page.
 
-**`cliGenQR` must be 0 here (found live, 2026-10-25).** The first live scan with `cliGenQR=1` ended with the phone saying
-"QR is not valid". In the login page's script the flag is 1 only when its key helper (the trusted-device module, the
-same one that produces `bundle`) started: the page then draws the QR itself. A server-made image with 1 is not valid
-for the phone, which also explains the failed September attempt. This client has no such helper and sends 0.
+**The second QR (the "swapped" QR), and why the first official version failed.** On 2026-10-25 a login with the first
+version (`cliGenQR=0`, no `bundle`) worked. On 2026-10-27 the phone said "QR is not valid" to it twice, and the scan answer
+carried no display name. The login page's own capture (HARs `CS6-*-login-again`, two logins) shows what the page does that
+this client did not: it asks for the QR with `cliGenQR=1`, shows the server's image, and when the phone scans it the server
+answers `status 4` with `new_qr_supported: true`, a `master_id`, the account's `chatUid`, and a **new `code` and `token`**.
+The page then makes a second QR itself, from that token, with its trusted-device WebAssembly module, shows it in place of
+the first (that is the swap), and polls `waiting-scan` again on the new code. That answer carries the name and
+`link_data {enc_link_hmac, enc_link_data}`; the module turns it into signatures, and `waiting-confirm` sends them as
+`bundle` (base64 of `{encLinkMetaData, encAccSign, encDeviceSign, encCompPubKey}`). The confirm answer carries the device
+list (`devices`). The first version took the status-4 answer for the scan, confirmed on the first code, and the phone
+refused it. What is not known is why the same login worked on 2026-10-25 with `cliGenQR=0`: whether the server began to
+ask every chat-domain login for a second QR, or the account's state changed. Both captures were made with `cliGenQR=1`,
+so that is what the code sends now.
 
-**What it cannot do.** The official `waiting-confirm` also sends `bundle`, the trusted-device module's proof (it needs
-the key work that was ruled out). The new flow leaves it out, as the September login did, and the replay harness pins
-that as its one known difference. The live scan of 2026-10-25 settled it: Zalo accepts the login without `bundle`, with
-`cliGenQR=0`. An earlier attempt (2026-09-19) to move zca-js's flow to `continue=https://chat.zalo.me/` made the phone
-report the QR invalid; that was the `cliGenQR=1` problem above, not the redirect.
+**How this client makes the second QR.** `src/zalo/trust-wasm.js` runs the page's own module in Node: the login script
+names it (`https://stc-zlogin.zdn.vn/wasm/libzproto_wasm_bg.<hash>.wasm`), so it is fetched from the page at login time
+(`loadTrustFromPage`, cached by URL) and never shipped in this repository. The loader around it is ours: the
+`wasm-bindgen` calling convention (a table of JS values behind small integers, strings and bytes copied through the
+module's allocator, a four-word result slot on its stack), for six calls: `zprotoEd25519GenerateKeyPair` (33-byte public
+key, 32-byte private key), `zprotoTrustGenerateLinkingSecretKey` (32 bytes), `zprotoTrustGenerateLinkingQr(publicKey,
+secret|undefined, qrToken, timestamp, platform, relinkId|undefined)` (a 129-character text), `zprotoTrustGetRelinkId`,
+and `zprotoTrustCreateCompanionLinkingProof(publicKey, privateKey, secret, primaryLinkingData, linkingHmac, platform)`.
+Facts read in the page's own code and checked offline: the platform is 1 (Web), the timestamp is milliseconds (the app's
+clock), the QR's error correction is H for a text under 150 characters and M above (`src/zalo/qr-image.js` draws it as a
+PNG), and `link_data` is plain base64 (the module parsed the real answer recorded in the capture to the MAC check, where
+hex or UTF-8 failed at the encoding). The module throws plain `{code, message}` objects, not Errors; the loader converts
+them, keeping `code` (`TrustInvalidKeyType`, `TrustInvalidDataEncoding`, `TrustInvalidLinkingMAC`, ...).
+
+**This client becomes a companion device.** A confirmed login with a proof adds it to the account's trusted-device list,
+which the phone signs. The identity (key pair, linking secret, link id, primary key, the device list the server
+answered) is kept in `accounts/<ownId>/trusted-device.json` at 0600 (`src/zalo/trust-store.js`; a secret, never logged,
+gone with the account's data), written only after the login went through. The next login on the same account finds it
+and links again as the same device (a relink id, no secret in the QR) instead of adding a companion each time; a refusal
+(`-21`) clears it and the login is run again. The page's own relink case was seen in the capture (second login, no new keys).
+The device list is stored as the server sent it; its signature is not verified here (the phone and the server do).
+
+**Status.** Offline, everything above is covered: the fake `id.zalo.me` follows the captured sequence whole (the replay
+harness reports no difference), the module's calls run in tests on the real wasm when `ZALO_TRUST_WASM` points at a copy,
+and a stand-in for the module is asserted on in the unit tests. **No live login with the second QR has been made yet**, so the
+default stays zca-js's flow (`ZALO_QR_FLOW=official` selects this one) until one is seen to work; flipping it is one line
+in `resolveQrFlow` plus the docs that name the default (`docs/configuration.{md,vi.md}`, `INSTALLATION.{md,vi.md}`,
+`skill/references/command-reference.md`).
+
+**The QR page.** `src/utils/qr-http-server.js` serves a plain login page (white card, the QR in a frame with blue corners,
+one line of instruction, no script or style from elsewhere), in English and Vietnamese: the `lang` query, then a saved
+choice, then the browser's language, with a switch under the card. It follows the login: it says when the code was
+replaced by the second one, who scanned it, and when it is done. Text that comes from the phone is set as text, never
+markup. The command-line login prints the same hint for the second QR and `--json` gives each QR a `layer`.
 
 **A header trap that cost a real bug.** zca-js's request helper merges headers by key, case-sensitively, and spells its
 own defaults `Accept`, `Origin` and `Referer`. A caller that passes `origin` besides it sends both, and a real fetch
@@ -1279,7 +1313,7 @@ the channel is a separate change.
 supervisor and for the wait after a login that failed with 70. The names `bkt` and `spt_mtn` are the Web bundle's.
 What 71 means is still an inference (an announced window; it does not block).
 
-**The official QR is opt in** (`ZALO_QR_FLOW=official`) since 2026-10-27; see the section above.
+**The official QR is opt in** (`ZALO_QR_FLOW=official`) until a live login with its second QR is seen to work; see the section above.
 
 **Decided against, with the reason.**
 - *Copy-then-delete when a Windows rename keeps failing (X7).* Not added. A copy over the target is not atomic: a

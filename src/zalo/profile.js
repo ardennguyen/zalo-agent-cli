@@ -72,9 +72,9 @@ export const QR_FLOW_INVALID = "ZALO_QR_FLOW_INVALID";
 /**
  * Which QR login runs: `legacy` (zca-js's own, the default) or `official` (the verified Web sequence,
  * src/zalo/qr-login.js, opt in). The official one was the default from 2026-10-25 after a live login worked, and was
- * made opt-in again on 2026-10-27: that evening the phone answered "QR is not valid" to it twice, with Zalo Web open on
- * the same account, while zca-js's flow logged in at the first scan (the official one's scan answer also carried no
- * display name). Why is not known; until a run explains it, the flow that works is the default.
+ * made opt-in on 2026-10-27, when the phone answered "QR is not valid" to it: an account with a trusted device is asked
+ * to scan a second QR, which that version did not know. It does now (see docs/agent-notes.md); it becomes the default
+ * again when a live login with the second QR has been seen to work.
  *
  * @param {object} [env] - the environment to read, `process.env` by default
  * @returns {"official"|"legacy"}

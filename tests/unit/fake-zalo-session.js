@@ -375,6 +375,29 @@ export function serveOfficialLogout(
     return { token, setsid };
 }
 
+/** What Zalo answers a first scan with when the account has a trusted device: a second QR is needed. */
+export const SECOND_QR_ASKED = {
+    status: 4,
+    master_id: "fake-master-id",
+    chatUid: "fake-chat-uid",
+    code: "qr-code-2",
+    token: "fake-token-2",
+    image: "data:image/png;base64,iVBORw0KGgo=",
+    options: { enabledMultiLayer: true },
+    new_qr_supported: true,
+};
+
+/** What Zalo answers the long poll on the second code with: the name, and the data the proof is made from. */
+export const SECOND_QR_SCANNED = {
+    avatar: "https://avatar.invalid/a.png",
+    display_name: "Fake Person",
+    chatUid: "fake-chat-uid",
+    link_data: {
+        enc_link_hmac: Buffer.from("fake-link-hmac").toString("base64"),
+        enc_link_data: Buffer.from("fake-link-data").toString("base64"),
+    },
+};
+
 /**
  * Make the fake answer the id.zalo.me QR login the way Zalo does: the login page with its build number, the
  * QR, the two long polls, and the three-hop redirect that ends in the `zpw_sek` cookie.
@@ -384,10 +407,14 @@ export function serveOfficialLogout(
  * @param {Array<number|"hang">} [opts.scan] - answers of successive waiting-scan calls: an `error_code`
  *   (8 = not yet, 0 = scanned) or `"hang"` (never answers until aborted); the last one repeats
  * @param {Array<number|"hang">} [opts.confirm] - the same for waiting-confirm (0 = confirmed, -13 = declined)
+ * @param {boolean|object} [opts.second] - the account has a trusted device: the first scan is answered with the
+ *   request for a second QR ({@link SECOND_QR_ASKED}) and the long poll on the new code with the name and link data
+ *   ({@link SECOND_QR_SCANNED}). An object overrides `asked`, `scanned` and `scan` (the second poll's answers).
  * @returns {{generated: number}} how many QR codes were generated
  */
-export function serveQrLogin(fake, { scan = [8, 0], confirm = [0] } = {}) {
+export function serveQrLogin(fake, { scan = [8, 0], confirm = [0], second = false } = {}) {
     const state = { generated: 0 };
+    const layered = second ? { asked: SECOND_QR_ASKED, scanned: SECOND_QR_SCANNED, scan: [0], ...second } : null;
     const json = (body) =>
         new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
     const redirect = (location, extra = {}) => new Response(null, { status: 302, headers: { location, ...extra } });
@@ -420,13 +447,20 @@ export function serveQrLogin(fake, { scan = [8, 0], confirm = [0] } = {}) {
             data: { code: `qr-code-${state.generated}`, image: "data:image/png;base64,iVBORw0KGgo=" },
         });
     });
+    const scanFirst = poll(
+        scan,
+        layered ? layered.asked : { display_name: "Fake Person", avatar: "https://avatar.invalid/a.png" },
+    );
+    const scanSecond = layered ? poll(layered.scan, layered.scanned) : null;
+    route("POST", "id.zalo.me", "/account/authen/qr/waiting-scan", (req) =>
+        layered && req.form?.code === layered.asked.code ? scanSecond(req) : scanFirst(req),
+    );
     route(
         "POST",
         "id.zalo.me",
-        "/account/authen/qr/waiting-scan",
-        poll(scan, { display_name: "Fake Person", avatar: "https://avatar.invalid/a.png" }),
+        "/account/authen/qr/waiting-confirm",
+        poll(confirm, layered ? { devices: { masterId: layered.asked.master_id, companions: [] } } : {}),
     );
-    route("POST", "id.zalo.me", "/account/authen/qr/waiting-confirm", poll(confirm, {}));
     route("GET", "id.zalo.me", "/account/checksession", () =>
         redirect("https://jr.zaloapp.com/jr/syncsession?token=fake-t1&continue=https%3A%2F%2Fchat.zalo.me%2F"),
     );

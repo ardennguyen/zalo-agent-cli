@@ -18,6 +18,7 @@ import { writeFileSync, mkdirSync } from "fs";
 import { platform } from "os";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { info } from "./output.js";
+import { noteQrLayer } from "./qr-http-server.js";
 
 /** Get platform-specific command to open a file. */
 function getOpenCommand() {
@@ -39,6 +40,9 @@ function getOpenCommand() {
  */
 export function displayQR(event) {
     const imageB64 = event.data?.image || "";
+    // An account with a trusted device scans a second QR after the first: say which one this is.
+    const layer = event.data?.layer === 2 ? 2 : 1;
+    noteQrLayer(layer);
     const jsonMode = process.env.ZALO_JSON_MODE === "1";
     const qrPath = getQRPath();
 
@@ -61,6 +65,7 @@ export function displayQR(event) {
             console.log(
                 JSON.stringify({
                     event: "qr",
+                    layer,
                     image: imageB64,
                     file: qrPath,
                     dataUrl: `data:image/png;base64,${imageB64}`,
@@ -77,6 +82,7 @@ export function displayQR(event) {
         process.stdout.write(`\x1b]1337;File=inline=1;width=30;preserveAspectRatio=1:${b64ForTerm}\x07\n`);
 
         const openCmd = getOpenCommand();
+        if (layer === 2) info("This account asks to confirm this device: scan this new QR code once more.");
         info(`QR image saved: ${qrPath}`);
         info(`To open: ${openCmd} "${qrPath}"`);
         info("Copy this URL and paste in any browser to view QR:");

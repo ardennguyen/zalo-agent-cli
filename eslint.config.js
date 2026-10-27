@@ -25,6 +25,7 @@ const NODE_GLOBALS = {
     AbortSignal: "readonly",
     TextDecoder: "readonly",
     TextEncoder: "readonly",
+    WebAssembly: "readonly",
 };
 
 export default [

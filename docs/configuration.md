@@ -77,7 +77,7 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` |  | rotate `daemon.log` at this size (default `50m`, at least `4k`) and keep this many files (default 3) | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | any value: never run the `npm view` update check | | |
 | `ZALO_API_VERSION` |  | protocol version announced to Zalo. Default 694 | | |
-| `ZALO_QR_FLOW` |  | which QR login `login` uses: `legacy` (default: zca-js's own) or `official` (opt in: the sequence Zalo Web makes, no `verify-client`, `continue=https://chat.zalo.me/`, the redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`; the phone answered "QR is not valid" to it on 2026-10-27, so it is not the default). Any other value is refused before Zalo is contacted | | |
+| `ZALO_QR_FLOW` |  | which QR login `login` uses: `legacy` (default: zca-js's own) or `official` (opt in: the sequence Zalo Web makes, no `verify-client`, `continue=https://chat.zalo.me/`, the redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device; it becomes the default once a live login with it is confirmed). Any other value is refused before Zalo is contacted | | |
 | `ZALO_NET_PROBE` |  | what a daemon asks to learn whether the network is up while its socket is down (every 10 s): a URL, default a global search engine's lightweight page, or `off` to assume the network is always up and contact nothing but Zalo | | |
 
 `oa listen` takes its port from `--port` (default 3000). The engine does not read `ZALO_OA_WEBHOOK_PORT`, although older copies of the wrapper's `.env.example` listed it.

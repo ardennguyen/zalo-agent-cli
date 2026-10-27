@@ -15,6 +15,7 @@ import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
 import { API_TYPE, API_VERSION_INVALID, resolveApiVersion, resolveQrFlow } from "../zalo/profile.js";
 import { qrLogin } from "../zalo/qr-login.js";
+import { createTrustStore } from "../zalo/trust-store.js";
 import { createDrStore, loginWithSession, stopUpkeep } from "../zalo/login.js";
 
 /**
@@ -293,6 +294,7 @@ export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
             apiType: zaloOptions.apiType,
             apiVersion: zaloOptions.apiVersion,
             onEvent: onQrEvent,
+            trustStore: createTrustStore(getAccountDir),
         });
         const api = await loginWithSession(
             { imei: session.imei, cookie: session.cookies, userAgent: session.userAgent, language: session.language },

@@ -41,7 +41,7 @@ export const MAX_FAILED_RATIO = 0.5;
 
 /**
  * The phone's error code for "I no longer have this partition" (the conversation was deleted there). Read from the
- * Web sync worker's error table (`PartitionNotFound: 502`); not yet seen on the wire. Such a range is dropped, not retried.
+ * Web sync worker's error table (`PartitionNotFound: 502`); seen on the wire 2026-10-28. Such a range is dropped, not retried.
  */
 export const PARTITION_NOT_FOUND = 502;
 

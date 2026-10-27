@@ -1204,8 +1204,8 @@ sessions of its own; if it fails again it stays failed for the next run. **Only 
 records success** (`lastSyncOkAt`); a partial one used to, so the "synced recently" shortcut could hide the rest of
 the work. `checkSyncFreshness` also refuses to skip while a range is pending or failed (`unfinished-ranges`).
 
-**A conversation the phone no longer has** (error **502**, `PartitionNotFound` in the Web sync worker's error table; not
-yet seen on the wire) has its range dropped and is not asked for again, and it is no failure. **Not done.** The client-side
+**A conversation the phone no longer has** (error **502**, `PartitionNotFound` in the Web sync worker's error table; seen
+on the wire 2026-10-28, see Y8 above) has its range dropped and is not asked for again, and it is no failure. **Not done.** The client-side
 `MSG_IMPORT_FAILED` (keep the range for the next run) has no equivalent here: a row that cannot be written is skipped
 without a word, as it always was. Y5d is implemented as dropping orphans: what the official client means by
 "promoting" them is not clear from its code. The shortcut's one-hour age rule stays (readiness from ranges alone would
@@ -1336,7 +1336,7 @@ What 71 means is still an inference (an announced window; it does not block).
 **Still needs a live session (a QR login).** `agent/work/probe-pulls.mjs` (local, not committed) sends the pulls 564, 537,
 577, 515, 517, 518 and 603 one at a time to the test account and prints only the shape of each answer; it refuses to
 run outside the test home and refuses the consuming pulls without `--i-accept-consuming`. Also open: a full-history
-restore past the four-session cap (Y4b), a `532` ack with a real message (Y10), automatic sync (Y8), and the keepalive
+restore past the four-session cap (Y4b), a `532` ack with a real message (Y10), and the keepalive
 question (L9).
 
 ## What the first live full-history restore found (v3.0, 2026-10-25)
@@ -1384,6 +1384,14 @@ got the prompt. `login --sync` does this (`src/core/sync-v2/auto-sync.js`): it r
 socket is up, accepts a key up to two minutes old (the 10 s of Web is not needed: our request goes out after about 15 s,
 and the limit is only a guard), and puts the key in the conversation request only. It is an explicit command: the daemon
 never starts a phone-backed stage by itself.
+
+**`login --sync` seen end to end, 2026-10-28.** Official QR login with both scans, "auto sync" ticked, Confirm: the key was
+in the queue 3 s after the login ("the phone offered auto sync 3 s ago"), the conversation request carried it, and the
+restore ran to its summary with no prompt on the phone: 862 messages from 48 conversations (2,318 others were already
+settled by earlier runs and not asked for again; the key works with the resume). One partition answered **502**
+(`PartitionNotFound`): it was dropped as designed, and its session was released as failed while the other batch finished
+and its 121 messages were stored. So the 502 is now seen on the wire, and the batch that holds such a partition ends
+`(failed)` in the release line without anything else going wrong.
 
 **What the phone does while Zalo is in use.** Zalo open and in use on the phone seems to pause the transfer; leave it
 idle for a long restore. This is not proven (the run that went silent also had 32 sessions open).
@@ -1722,7 +1730,7 @@ conversation list has named the partition, so there is nothing to promote (Y5d).
 the first live runs match the black-hole run: an ack sent while the network is gone gets no answer, is dropped after three
 tries, and the server delivers the item again (Y10).
 
-**What the sweep could not close alone.** The wiring of the connect-time pulls (515, 517, 518, 603 and the 564/577/537 requests) is a design choice with a risk to the account's queues, and four checks need the owner's phone or a second account (a login with auto sync and the kick-reason line that follows it, a full restore past the old session cap, the todo and friend-request writes, and a real Official Account for the block calls). They are named in the sweep's report to the owner.
+**What the sweep could not close alone.** The wiring of the connect-time pulls (515, 517, 518, 603 and the 564/577/537 requests) is a design choice with a risk to the account's queues, and four checks need the owner's phone or a second account (a login with auto sync, done 2026-10-28, and the kick-reason line that follows it, a full restore past the old session cap, the todo and friend-request writes, and a real Official Account for the block calls). They are named in the sweep's report to the owner.
 
 ## Connect-time pulls: what the Web client does, and what this client now does (v3.0, 2026-10-27)
 

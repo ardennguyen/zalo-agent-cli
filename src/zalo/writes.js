@@ -518,7 +518,7 @@ export const WRITES = {
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: true,
-        note: "answered error 0 for two ordinary Official Accounts (114 for an unknown id, 112 for the system Zalo OA); no profile, mini-profile or block-list read showed a change in three minutes, while the same reads do show a friend block, so its effect is not confirmed (the web client sends this exact request)",
+        note: 'seen to take effect (2026-10-27, Zalo Web as the witness): the block makes Zalo Web show "unblock to send messages to this OA" after a reload and mark a later message "cannot send, you blocked this OA"; the unblock lifts a block made in the web. No profile, mini-profile or block-list read shows the state, and the server still answers the send with success, so only Zalo Web shows it',
     },
     "oa-unblock": {
         host: "profile",
@@ -530,7 +530,7 @@ export const WRITES = {
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: true,
-        note: "answered error 0 for two ordinary Official Accounts (114 for an unknown id, 112 for the system Zalo OA); no profile, mini-profile or block-list read showed a change in three minutes, while the same reads do show a friend block, so its effect is not confirmed (the web client sends this exact request)",
+        note: 'seen to take effect (2026-10-27, Zalo Web as the witness): the block makes Zalo Web show "unblock to send messages to this OA" after a reload and mark a later message "cannot send, you blocked this OA"; the unblock lifts a block made in the web. No profile, mini-profile or block-list read shows the state, and the server still answers the send with success, so only Zalo Web shows it',
     },
     "blocksharing-update": {
         host: "conversation",

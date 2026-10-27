@@ -70,8 +70,11 @@ export function resolveApiVersion(env = process.env) {
 export const QR_FLOW_INVALID = "ZALO_QR_FLOW_INVALID";
 
 /**
- * Which QR login runs: `official` (the verified Web sequence, src/zalo/qr-login.js; the default since a QR login
- * with it was seen to work live on 2026-10-25) or `legacy` (zca-js's own, kept as the way back).
+ * Which QR login runs: `legacy` (zca-js's own, the default) or `official` (the verified Web sequence,
+ * src/zalo/qr-login.js, opt in). The official one was the default from 2026-10-25 after a live login worked, and was
+ * made opt-in again on 2026-10-27: that evening the phone answered "QR is not valid" to it twice, with Zalo Web open on
+ * the same account, while zca-js's flow logged in at the first scan (the official one's scan answer also carried no
+ * display name). Why is not known; until a run explains it, the flow that works is the default.
  *
  * @param {object} [env] - the environment to read, `process.env` by default
  * @returns {"official"|"legacy"}
@@ -80,7 +83,7 @@ export const QR_FLOW_INVALID = "ZALO_QR_FLOW_INVALID";
 export function resolveQrFlow(env = process.env) {
     const raw = env.ZALO_QR_FLOW;
     const value = raw === undefined ? "" : String(raw).trim().toLowerCase();
-    if (value === "") return "official";
+    if (value === "") return "legacy";
     if (value === "legacy" || value === "official") return value;
     const err = new Error(`ZALO_QR_FLOW must be "legacy" or "official", but it is "${raw}". Fix or unset it.`);
     err.code = QR_FLOW_INVALID;

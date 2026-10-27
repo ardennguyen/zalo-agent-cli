@@ -1059,10 +1059,13 @@ valid. Zalo wraps that refusal in a *sealed envelope* (`{error_code, error_messa
 **Left for the release:** the public wiki still describes the old logout. It is updated with the v3.0 release,
 not before: a wiki push is public immediately.
 
-## The official QR login is the default (v3.0, 2026-10-25)
+## The official QR login (v3.0, 2026-10-25; opt in since 2026-10-27)
 
-`src/zalo/qr-login.js` is the QR login the captured Web client makes. A scan with it worked live on 2026-10-25, so it
-is the default; `ZALO_QR_FLOW=legacy` brings zca-js's flow back. The two differ: zca-js
+`src/zalo/qr-login.js` is the QR login the captured Web client makes. A scan with it worked live on 2026-10-25 and made it
+the default; **on 2026-10-27 it is opt in again (`ZALO_QR_FLOW=official`)**: that evening the phone said "QR is not valid"
+to it twice (once with its scan answer carrying no display name) while zca-js's flow logged in at the first scan, with Zalo
+Web open on the same account both times. The cause is not known: the page's script (`main-2606161423.js`) makes the same
+calls, so it may be a server-side change, or Zalo Web being logged in at the time. A run with Zalo Web logged out would tell. The two differ: zca-js
 announces `continue=https://zalo.me/pc` to three calls, calls `verify-client` (which the official client never does),
 leaves out `cliGenQR`, and ends with a `jr/userinfo` request. The official sequence is the login page (whose script
 name carries the build `v`), `logininfo`, `generate` with `cliGenQR`, the `waiting-scan` and `waiting-confirm` long polls
@@ -1276,7 +1279,7 @@ the channel is a separate change.
 supervisor and for the wait after a login that failed with 70. The names `bkt` and `spt_mtn` are the Web bundle's.
 What 71 means is still an inference (an announced window; it does not block).
 
-**Official QR is the default.** See the section above; `ZALO_QR_FLOW=legacy` is the way back.
+**The official QR is opt in** (`ZALO_QR_FLOW=official`) since 2026-10-27; see the section above.
 
 **Decided against, with the reason.**
 - *Copy-then-delete when a Windows rename keeps failing (X7).* Not added. A copy over the target is not atomic: a
@@ -1665,7 +1668,7 @@ from the web client and stay unverified here; another account may have the flag.
 | `aifeatures/voice2text` | built (`voice-to-text`): the answer is only a request id; the text arrives as a `601` control `voice2text/convert_finish {req_id, err, text, url, has_more}` (the first real unknown action `unknown-acts.json` ever caught). `src/core/voice-text.js` keeps it in `voice-text.json` (both daemons, identically), and the local read `voice-transcript` returns it. Seen end to end |
 | `conv/blocksharing/{getConvers,updateConvers}` | the list read answers; the write answers 829 "zBusiness accounts only" on this account |
 | `recommendsv2/remove`, `read-requests` | alive, need a real suggestion or request (the `src` and `type` of a suggestion are the server's own `recommSrc` and `recommType` of the list item; `type` 1 is a suggestion, 2 an incoming request) |
-| `oa/block`, `oa/unblock` | answered error 0 for a real Official Account (block, then unblock, on one the owner named); no profile, block-list or mini-profile read showed the flip, polled for three minutes (a friend block shows at once in the same read), so the effect is not confirmed. Tried on Skyline VMAC and Zalo Video (error 0, no flip) and on the system Zalo OA (error 112); only the account's own user id is accepted as `oaid` (the global id and username answer 114). The request is the web client's own; the account ended as it began. Zalo for Developers was tried again after the owner marked it "Quan tam" (interest) on the phone: the profile still showed `isFr` 0 and the block still changed nothing, so the profile reads do not carry the follow state, or it had not reached them |
+| `oa/block`, `oa/unblock` | answered error 0 for a real Official Account (block, then unblock, on one the owner named); no profile, block-list or mini-profile read showed the flip, polled for three minutes (a friend block shows at once in the same read), so the effect could not be seen from the CLI. Tried on Skyline VMAC and Zalo Video (error 0, no flip) and on the system Zalo OA (error 112); only the account's own user id is accepted as `oaid` (the global id and username answer 114). The request is the web client's own; the account ended as it began. Zalo for Developers was tried again after the owner marked it "Quan tam" (interest) on the phone: the profile still showed `isFr` 0 and the block still changed nothing, so the profile reads do not carry the follow state, or it had not reached them. **Settled in Zalo Web the same day:** the web UI's own block on Zalo for Developers persists (after a reload the chat bar reads "unblock to send messages to this OA"); the CLI's `oa-block` does the same (Zalo Web, logged in afterwards, showed that bar and the line "cannot send, you blocked this OA" for a message sent after it), and the CLI's `oa-unblock` lifted a block made in the web (the next message went through). The request is byte-for-byte the web's shape (`{"oaid":"<19-digit user id>"}`, params only). The profile read is blind to it, and the send call still answers success, so only Zalo Web shows the state. The OA was left unblocked |
 | `sync_action/media` | each list item is `{fromUid, destId, isGroup, cmi}`, sent when a photo or video is opened or a file downloaded; its effect is unobserved |
 | `closefr/update`, `profile/mode` | no replacement exists; the web client's toggle is an empty function and the feature flag is off |
 

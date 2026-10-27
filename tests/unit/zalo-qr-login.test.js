@@ -588,9 +588,9 @@ describe("the QR login", () => {
     });
 
     describe("the switch", () => {
-        it("ZALO_QR_FLOW defaults to the legacy flow (the official one is opt in), and takes only legacy or official", () => {
-            assert.equal(resolveQrFlow({}), "legacy");
-            assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "  " }), "legacy");
+        it("ZALO_QR_FLOW defaults to the official flow (legacy is opt in), and takes only legacy or official", () => {
+            assert.equal(resolveQrFlow({}), "official");
+            assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "  " }), "official");
             assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "official" }), "official");
             assert.equal(resolveQrFlow({ ZALO_QR_FLOW: " Legacy " }), "legacy");
             assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "legacy" }), "legacy");

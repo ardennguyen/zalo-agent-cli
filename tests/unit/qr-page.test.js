@@ -6,6 +6,7 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -141,5 +142,34 @@ describe("the QR page", () => {
 
     it("answers 404 for anything else", async () => {
         assert.equal((await fetch(`${base}/etc/passwd`)).status, 404);
+    });
+});
+
+describe("the QR page and the process that serves it", () => {
+    it("does not keep the process alive for a browser tab that stays connected after the login", () => {
+        // A tab keeps its connection open (keep-alive; the page polls every 1.5 s, so it never idles out in the 5 s Node gives it): the first live two-QR login stayed up until the tab was closed. 3.5 s is under that 5 s.
+        const script = `
+            import net from "node:net";
+            import { mkdtempSync } from "node:fs";
+            import { tmpdir } from "node:os";
+            import { join } from "node:path";
+            import { startQrServer } from ${JSON.stringify(new URL("../../src/utils/qr-http-server.js", import.meta.url).href)};
+            globalThis.fetch = () => Promise.reject(new Error("offline"));
+            process.env.ZALO_JSON_MODE = "1";
+            console.log = () => {};
+            const probe = net.createServer().listen(0, "127.0.0.1", () => {
+                const port = probe.address().port;
+                probe.close(() => {
+                    startQrServer(join(mkdtempSync(join(tmpdir(), "qrkeep-")), "qr.png"), port, [port], false);
+                    setTimeout(() => {
+                        const tab = net.connect(port, "127.0.0.1", () => tab.write("GET /status HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n"));
+                        tab.unref();
+                    }, 150);
+                });
+            });
+        `;
+        const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { timeout: 3500 });
+        assert.equal(run.error, undefined, `the process stayed up: ${run.error}`);
+        assert.equal(run.status, 0, String(run.stderr));
     });
 });

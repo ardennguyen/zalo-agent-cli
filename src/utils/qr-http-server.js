@@ -268,6 +268,11 @@ export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080
         server.unref();
     }
 
+    // unref() on the server does not reach its connections: the browser tab's
+    // keep-alive socket held the process open after a finished login until the
+    // tab was closed (seen in the first live two-QR login, 2026-10-28).
+    server.on("connection", (socket) => socket.unref());
+
     server.on("listening", async () => {
         const actualPort = server.address().port;
         const jsonMode = process.env.ZALO_JSON_MODE === "1";

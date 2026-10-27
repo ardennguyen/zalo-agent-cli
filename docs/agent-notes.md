@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3470** as of 2026-10-27 (3461 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3471** as of 2026-10-28 (3462 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1106,10 +1106,13 @@ The device list is stored as the server sent it; its signature is not verified h
 
 **Status.** Offline, everything above is covered: the fake `id.zalo.me` follows the captured sequence whole (the replay
 harness reports no difference), the module's calls run in tests on the real wasm when `ZALO_TRUST_WASM` points at a copy,
-and a stand-in for the module is asserted on in the unit tests. **No live login with the second QR has been made yet**, so the
-default stays zca-js's flow (`ZALO_QR_FLOW=official` selects this one) until one is seen to work; flipping it is one line
-in `resolveQrFlow` plus the docs that name the default (`docs/configuration.{md,vi.md}`, `INSTALLATION.{md,vi.md}`,
-`skill/references/command-reference.md`).
+and a stand-in for the module is asserted on in the unit tests. **Live, 2026-10-28:** two QR logins on the same account
+went through with `cliGenQR=1`: the first scan was answered with status 4, the second QR (layer 2) was scanned, the phone's
+Confirm ended the login, and the saved session answered `whoami` and `status` from a separate process. The second login
+found the saved identity and went through the same two scans. So the official flow is the default again
+(`resolveQrFlow`, the docs that name it); `ZALO_QR_FLOW=legacy` selects zca-js's. Not checked: whether the phone's list of
+linked devices shows one CLI entry after the two logins (the relink) or two. The live run also showed that the browser tab's
+keep-alive connection held the process open after the login; the QR server now unrefs its connections.
 
 **The QR page.** `src/utils/qr-http-server.js` serves a plain login page (white card, the QR in a frame with blue corners,
 one line of instruction, no script or style from elsewhere), in English and Vietnamese: the `lang` query, then a saved
@@ -1313,7 +1316,7 @@ the channel is a separate change.
 supervisor and for the wait after a login that failed with 70. The names `bkt` and `spt_mtn` are the Web bundle's.
 What 71 means is still an inference (an announced window; it does not block).
 
-**The official QR is opt in** (`ZALO_QR_FLOW=official`) until a live login with its second QR is seen to work; see the section above.
+**The official QR is the default** (`ZALO_QR_FLOW=legacy` selects zca-js's); see the section above.
 
 **Decided against, with the reason.**
 - *Copy-then-delete when a Windows rename keeps failing (X7).* Not added. A copy over the target is not atomic: a

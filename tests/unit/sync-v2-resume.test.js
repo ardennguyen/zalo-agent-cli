@@ -153,6 +153,16 @@ describe("describeRestoreOutcome", () => {
         assert.deepEqual(r, { reason: "complete", error: null });
     });
 
+    it("is not complete when a row could not be written, however many shards came back", () => {
+        // A full disk or a locked file used to vanish into an empty catch and the run said "complete".
+        const r = describeRestoreOutcome({ ...base, messagesSaved: 100, finished: 2, total: 2, rowErrors: 3 });
+        assert.deepEqual(r, { reason: "partial", error: null });
+        assert.equal(
+            describeRestoreOutcome({ ...base, messagesSaved: 100, finished: 2, total: 2, rowErrors: 0 }).reason,
+            "complete",
+        );
+    });
+
     it("separates a lost socket from a phone that never answered", () => {
         const dropped = describeRestoreOutcome({ ...base, socketDied: true, confirmed: true, waitMs: 180000 });
         const silent = describeRestoreOutcome({ ...base, timedOut: true, confirmed: false, waitMs: 180000 });

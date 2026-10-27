@@ -1259,7 +1259,18 @@ function reportRestore(res, win, ctx = {}) {
         return { status: "ok", reason: "phone confirmed: nothing missed in this window" };
     }
     if (res.reason === "partial" || res.reason === "socket-lost") {
-        const how = res.reason === "socket-lost" ? "the connection dropped" : "the run was cut short";
+        const how =
+            res.reason === "socket-lost"
+                ? "the connection dropped"
+                : res.rowErrors
+                  ? "some messages could not be written"
+                  : "the run was cut short";
+        if (res.rowErrors) {
+            warning(
+                `${res.rowErrors} message(s) could not be written to the local cache (${res.firstRowError ?? "unknown error"}). ` +
+                    "Re-run with --force once the cause is gone.",
+            );
+        }
         warning(
             `Partial restore: ${res.messagesSaved} message(s) from ${res.conversations} conversation(s) before ${how}.`,
         );

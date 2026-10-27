@@ -518,7 +518,7 @@ export const WRITES = {
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: true,
-        note: "answered error 0 for a real Official Account (an unknown id answers 114); no profile or block-list read showed the change, so its effect is not confirmed",
+        note: "answered error 0 for two ordinary Official Accounts (114 for an unknown id, 112 for the system Zalo OA); no profile, mini-profile or block-list read showed a change in three minutes, while the same reads do show a friend block, so its effect is not confirmed (the web client sends this exact request)",
     },
     "oa-unblock": {
         host: "profile",
@@ -530,7 +530,7 @@ export const WRITES = {
         args: [arg("oaId", "string", "the OA's id", true)],
         body: (a) => ({ oaid: String(a.oaId) }),
         verified: true,
-        note: "answered error 0 for a real Official Account (an unknown id answers 114); no profile or block-list read showed the change, so its effect is not confirmed",
+        note: "answered error 0 for two ordinary Official Accounts (114 for an unknown id, 112 for the system Zalo OA); no profile, mini-profile or block-list read showed a change in three minutes, while the same reads do show a friend block, so its effect is not confirmed (the web client sends this exact request)",
     },
     "blocksharing-update": {
         host: "conversation",

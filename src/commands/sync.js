@@ -17,7 +17,7 @@ import {
 } from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
 import { drainReactions, placeUnresolvedReactions } from "../core/sync-v2/reactions.js";
-import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
+import { getCloudSettings, getCloudUsage, summarizeCloudQuota, syncCloudIndex } from "../core/sync-v2/zcloud.js";
 import { syncConvState } from "../core/sync-v2/conv-state.js";
 import { planSyncRun } from "../core/sync-v2/plan.js";
 import { pingPayload, startKeepAlive } from "../core/sync-v2/keepalive.js";
@@ -434,6 +434,12 @@ async function runMediaDownload(activeAcc, opts) {
     if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
         warning(`${stats.expired} link(s) are gone (HTTP 404/410 or a lapsed signature).`);
+        if (stats.cloudBacked) {
+            info(
+                `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
+                    "this tool cannot open (it is end-to-end encrypted under your cloud PIN).",
+            );
+        }
         info("Zalo only keeps media for a limited time; past that the file exists only on the sending device.");
     }
     if (stats.throttled) {
@@ -880,6 +886,10 @@ async function runCloudSync(activeAcc, opts) {
     }
 
     const r = await cloudPass(api, opts);
+    if (r.status === "skipped") {
+        info("Pass --full to walk the queue anyway.");
+        process.exit(0);
+    }
     if (r.status === "unavailable") {
         error("Could not read the cloud index.");
         for (const f of r.stats.failures.slice(0, 3)) info(`  ${f.reason}`);
@@ -892,6 +902,43 @@ async function runCloudSync(activeAcc, opts) {
 }
 
 /**
+ * What the account's zCloud plan is: the usage and settings reads, reduced. Null when the plan could not be read.
+ *
+ * @param {object} api
+ * @param {{usage?: () => Promise<object>, settings?: () => Promise<object>}} [opts] - test seams
+ * @returns {Promise<ReturnType<typeof summarizeCloudQuota>|null>}
+ */
+export async function readCloudPlan(api, opts = {}) {
+    try {
+        const usage = await (opts.usage ? opts.usage() : getCloudUsage(api));
+        let settings = {};
+        try {
+            settings = (await (opts.settings ? opts.settings() : getCloudSettings(api))) ?? {};
+        } catch {
+            /* the settings add the opt-in and file limits; the plan stands without them */
+        }
+        return summarizeCloudQuota(usage ?? {}, settings);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * One line that says what the plan is.
+ *
+ * @param {NonNullable<Awaited<ReturnType<typeof readCloudPlan>>>} plan
+ * @returns {string}
+ */
+export function describeCloudPlan(plan) {
+    if (plan.planCode === -1 && !plan.usageBytes) {
+        return "zCloud: no plan on this account (free), so the cloud holds nothing to index.";
+    }
+    const used = plan.usageBytes === null ? "?" : formatBytes(plan.usageBytes);
+    const quota = plan.quotaBytes === null ? "?" : formatBytes(plan.quotaBytes);
+    return `zCloud: ${plan.plan ?? "unknown plan"}, ${used} of ${quota} used.`;
+}
+
+/**
  * One walk of the zCloud index. Exit-free.
  *
  * The cursor is saved after every page and kept when the walk is complete, as Zalo Web keeps its last noise id: the
@@ -901,10 +948,19 @@ async function runCloudSync(activeAcc, opts) {
  *
  * @param {object} api
  * @param {{resume?: string, full?: boolean, pageSize?: number, pages?: number,
- *   verify?: (params: object) => Promise<object>}} opts - `verify` replaces the network call (tests)
- * @returns {Promise<{status: "ok"|"unavailable", stats: object}>}
+ *   verify?: (params: object) => Promise<object>, usage?: () => Promise<object>,
+ *   settings?: () => Promise<object>}} opts - `verify`, `usage` and `settings` replace the network calls (tests)
+ * @returns {Promise<{status: "ok"|"unavailable"|"skipped", plan: object|null, stats: object}>} `skipped`: the account
+ *   has no zCloud plan and nothing in the cloud, so no page was asked for (a `full` or `resume` walk is never skipped)
  */
 export async function cloudPass(api, opts) {
+    // The plan first: an account without zCloud has nothing in the cloud to index, and says so here instead of
+    // walking an empty queue and leaving the person to wonder. A failed read is not a verdict: the walk goes on.
+    const plan = await readCloudPlan(api, opts);
+    if (plan) info(describeCloudPlan(plan));
+    if (plan && plan.planCode === -1 && !plan.usageBytes && !opts.full && !opts.resume) {
+        return { status: "skipped", plan, stats: { items: 0, pages: 0, failures: [], complete: true } };
+    }
     const saved = getSyncState("cloudCursor");
     const resume = opts.resume || saved || "";
     if (!opts.full && !opts.resume && saved) info("Reading the cloud queue from where the last walk stopped.");
@@ -919,12 +975,12 @@ export async function cloudPass(api, opts) {
         onProgress: (p) => info(`  page ${p.page}: ${p.items} item(s) so far`),
         onPage: (p) => setSyncState("cloudCursor", p.cursor),
     });
-    if (stats.failed && !stats.items && !stats.removed) return { status: "unavailable", stats };
+    if (stats.failed && !stats.items && !stats.removed) return { status: "unavailable", plan, stats };
     const bits = [`Recorded ${stats.items} cloud item(s) across ${stats.pages} page(s)`];
     if (stats.removed) bits.push(`removed ${stats.removed} the cloud no longer holds`);
     if (stats.swept) bits.push(`swept ${stats.swept} no page listed`);
     success(`${bits.join(", ")}.`);
-    return { status: "ok", stats };
+    return { status: "ok", plan, stats };
 }
 
 /** Human-readable byte count for the download summary. */
@@ -1452,6 +1508,12 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
     if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
         warning(`${stats.expired} link(s) are gone and could not be renewed.`);
+        if (stats.cloudBacked) {
+            info(
+                `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
+                    "this tool cannot open (it is end-to-end encrypted under your cloud PIN).",
+            );
+        }
         info("Zalo keeps media for a limited time; past that the file exists only on the sending device.");
     }
     if (stats.throttled) {
@@ -1893,7 +1955,9 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
     if (runs("cloud")) {
         try {
             const r = await cloudPass(api, { pages: 50, pageSize: 300 });
-            if (r.status === "unavailable") {
+            if (r.status === "skipped") {
+                record("cloud", "skipped", "no zCloud plan on this account", { plan: r.plan?.plan ?? null });
+            } else if (r.status === "unavailable") {
                 // Not a failure: an account without zCloud answers exactly like
                 // this, and `sync` must not exit 1 on every such account.
                 info("zCloud index unavailable (zCloud off, or the endpoint changed).");

@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { cloudPass } from "../../src/commands/sync.js";
+import { cloudPass, describeCloudPlan, readCloudPlan } from "../../src/commands/sync.js";
 import {
     initDb,
     getCloudItems,
@@ -493,5 +493,95 @@ describe("the cloud_items writers", () => {
         const [row] = getCloudItems();
         assert.equal(row.zKey, "1_1002_1002");
         assert.equal(row.keyVersion, 2);
+    });
+});
+
+describe("`sync-cloud` reads the plan first", () => {
+    const api = { getOwnId: () => OWN };
+    const FREE = { plan: -1, quota: 0, usage: 0, service_usage: { my_cloud: 0, message_backup: 0 } };
+    const PAID = { plan: 0, quota: 107374182400, usage: 39192432681, service_usage: { cloud_media: 39146940745 } };
+    /** A queue that counts the pages asked for. */
+    const counted = () => {
+        const q = { pages: 0 };
+        q.verify = async () => {
+            q.pages++;
+            return { mediaItems: [add("n1", 1)], lastNoiseId: "c1", hasMore: 0 };
+        };
+        return q;
+    };
+
+    it("asks for no page when the account has no zCloud plan and nothing in the cloud", async () => {
+        const q = counted();
+        const r = await cloudPass(api, { verify: q.verify, usage: async () => FREE, pages: 50 });
+        assert.equal(r.status, "skipped");
+        assert.equal(r.plan.plan, "free");
+        assert.equal(q.pages, 0, "the free account's queue was not walked");
+    });
+
+    it("still walks a free account when the person asks for --full or --resume", async () => {
+        for (const extra of [{ full: true }, { resume: "c0" }]) {
+            const q = counted();
+            const r = await cloudPass(api, { verify: q.verify, usage: async () => FREE, pages: 50, ...extra });
+            assert.equal(r.status, "ok", JSON.stringify(extra));
+            assert.equal(q.pages, 1);
+        }
+    });
+
+    it("walks an account that has a plan, and says which", async () => {
+        const q = counted();
+        const r = await cloudPass(api, { verify: q.verify, usage: async () => PAID, pages: 50 });
+        assert.equal(r.status, "ok");
+        assert.equal(r.plan.plan, "zcloud");
+        assert.equal(r.plan.quotaBytes, 107374182400);
+        assert.equal(q.pages, 1);
+    });
+
+    it("walks a free account that still has something in the cloud, and one in its grace period", async () => {
+        for (const usage of [
+            { plan: -1, quota: 0, usage: 5 },
+            { plan: 100, quota: 0, usage: 0 },
+            { plan: 69, quota: 0, usage: 0 },
+        ]) {
+            const q = counted();
+            const r = await cloudPass(api, { verify: q.verify, usage: async () => usage, pages: 50 });
+            assert.equal(r.status, "ok", JSON.stringify(usage));
+            assert.equal(q.pages, 1);
+        }
+    });
+
+    it("does not take a failed plan read for a verdict: the walk goes on, with no plan", async () => {
+        const q = counted();
+        const r = await cloudPass(api, {
+            verify: q.verify,
+            usage: async () => {
+                throw new Error("no answer");
+            },
+            pages: 50,
+        });
+        assert.equal(r.status, "ok");
+        assert.equal(r.plan, null);
+        assert.equal(q.pages, 1);
+    });
+
+    it("reads the plan without the settings when the settings read fails", async () => {
+        const plan = await readCloudPlan(api, {
+            usage: async () => PAID,
+            settings: async () => {
+                throw new Error("nope");
+            },
+        });
+        assert.equal(plan.plan, "zcloud");
+        assert.equal(plan.optIn, null);
+    });
+
+    it("says what the plan is in one line", () => {
+        assert.match(
+            describeCloudPlan({ plan: "free", planCode: -1, usageBytes: 0, quotaBytes: 0 }),
+            /no plan on this account \(free\)/,
+        );
+        assert.equal(
+            describeCloudPlan({ plan: "zcloud", planCode: 0, usageBytes: 39192432681, quotaBytes: 107374182400 }),
+            "zCloud: zcloud, 36.5 GB of 100.0 GB used.",
+        );
     });
 });

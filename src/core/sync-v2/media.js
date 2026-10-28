@@ -31,6 +31,7 @@ import {
     getThreadNames,
 } from "../db.js";
 import { extractRenewedUrls, makeRenewLink } from "./renewlink.js";
+import { lookupCloudBackup } from "./zcloud.js";
 
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
@@ -399,9 +400,12 @@ function writeConversationIndex(mediaRoot, names) {
  * @param {(req: object) => Promise<object>} [opts.renewLink] - pre-built renewal caller;
  *   defaults to one derived from `api`. Injectable so the renewal path can be
  *   exercised without round-tripping Zalo's request crypto.
+ * @param {(msgId: string) => {found: boolean}} [opts.cloudLookup] - whether the local zCloud index lists a message's
+ *   backup (defaults to {@link lookupCloudBackup}); a file that is gone from the CDN and listed there is counted in
+ *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the owner's cloud PIN, which this client never holds
  * @param {(p: object) => void} [opts.onProgress]
  * @returns {Promise<{considered:number, downloaded:number, skipped:number, failed:number, expired:number,
- *   throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean,
+ *   cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean,
  *   reasons:Record<string,number>, failures:Array<object>}>}
  *   `throttled` counts only responses that said to slow down; `unknown` counts the retryable
  *   failures that explained nothing. `reasons` tallies the observed codes — pass it to
@@ -455,6 +459,8 @@ export async function downloadSyncedMedia(opts = {}) {
         skipped: 0,
         failed: 0,
         expired: 0,
+        // Of the files that are gone, the ones the local zCloud index lists: the cloud holds a copy this client cannot open.
+        cloudBacked: 0,
         // Only responses that said so: 429, 5xx, or a body asking us to wait.
         throttled: 0,
         // Everything retryable that explained nothing — 403 above all, which
@@ -484,6 +490,13 @@ export async function downloadSyncedMedia(opts = {}) {
 
     // Explicit mediaRootOpt or global ZALO_MEDIA_DIR (--media-dir) overrides the
     // per-account default (<accountDir>/media).
+    const isInCloudIndex = (msgId) => {
+        try {
+            return Boolean((opts.cloudLookup ?? lookupCloudBackup)(msgId)?.found);
+        } catch {
+            return false; // no local index to ask (no database open): not a verdict
+        }
+    };
     const configuredRoot = mediaRootOpt || process.env.ZALO_MEDIA_DIR;
     const mediaRoot = configuredRoot ? resolve(configuredRoot) : resolve(accountDir, "media");
 
@@ -539,10 +552,12 @@ export async function downloadSyncedMedia(opts = {}) {
             const dir = join(mediaRoot, String(row.threadId));
 
             let got = await fetchBytes(url, timeoutMs);
+            let wasGone = false;
 
             // One renewal attempt: only helps while Zalo still holds the file.
             if (!got.ok && got.expired && renewLink) {
                 stats.expired++;
+                wasGone = true;
                 try {
                     const resp = await renewLink({
                         threadId: row.threadId,
@@ -562,9 +577,11 @@ export async function downloadSyncedMedia(opts = {}) {
                 }
             } else if (!got.ok && got.expired) {
                 stats.expired++;
+                wasGone = true;
             }
 
             if (!got.ok) {
+                if (wasGone && isInCloudIndex(row.msgId)) stats.cloudBacked++;
                 // Tally what was actually observed, so the summary reports it
                 // rather than inferring a cause from the bucket it landed in.
                 if (got.code) stats.reasons[got.code] = (stats.reasons[got.code] || 0) + 1;

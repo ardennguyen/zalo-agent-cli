@@ -309,6 +309,52 @@ describe("downloadSyncedMedia — expiry", () => {
         assert.ok(asked.msgInfo.normalUrl.endsWith("/expired.jpg"));
     });
 
+    it("counts a gone file that the local zCloud index lists as cloud-backed, and one it does not list as not", async () => {
+        row({ msgId: "m-in-cloud" }, [photo("/expired.jpg")]);
+        row({ msgId: "m-not-in-cloud" }, [photo("/expired.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            cloudLookup: (msgId) => ({ found: msgId === "m-in-cloud" }),
+        });
+        assert.equal(stats.expired, 2);
+        assert.equal(stats.failed, 2);
+        assert.equal(stats.cloudBacked, 1, "only the one the index lists");
+    });
+
+    it("counts only files that are gone: a refusal the index also lists is a different problem", async () => {
+        row({ msgId: "m-refused" }, [photo("/servererr.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            backoffBaseMs: 0,
+            cloudLookup: () => ({ found: true }),
+        });
+        assert.equal(stats.expired, 0, "a 503 is not a gone file");
+        assert.equal(stats.cloudBacked, 0);
+    });
+
+    it("does not count a file the renewal brought back, even if the index lists it", async () => {
+        row({ msgId: "m-renewed" }, [photo("/expired.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            renewLink: async () => ({ data: { normalUrl: `${base}/renewed.jpg` } }),
+            cloudLookup: () => ({ found: true }),
+        });
+        assert.equal(stats.downloaded, 1);
+        assert.equal(stats.cloudBacked, 0);
+    });
+
+    it("takes a lookup that cannot run for no verdict, not for a failure of the download pass", async () => {
+        row({ msgId: "m1" }, [photo("/expired.jpg")]);
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            cloudLookup: () => {
+                throw new Error("no database open");
+            },
+        });
+        assert.equal(stats.expired, 1);
+        assert.equal(stats.cloudBacked, 0);
+    });
+
     it("gives up cleanly when renewal yields nothing usable", async () => {
         row({}, [photo("/expired.jpg")]);
         const stats = await downloadSyncedMedia({

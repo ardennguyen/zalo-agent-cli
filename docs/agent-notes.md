@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3474** as of 2026-10-28 (3465 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3485** as of 2026-10-28 (3476 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1896,3 +1896,28 @@ already in chat history, not calls to the service.
 
 **If Zalo brings it back**, the removed entries are in the history of `src/zalo/reads.js` and `src/zalo/writes.js`
 (the commit that removed them), with their request shapes checked against the Web client's `fBUP` module.
+
+## What a sync covers, with and without zCloud (v3.0, 2026-10-28)
+
+The owner's main account has a zCloud subscription; the Companion account has none. What `sync` covers for each, from
+the code and from read-only calls on both:
+
+| Stage | Account with zCloud | Account without zCloud | Where the data comes from |
+|---|---|---|---|
+| messages | all history the phone holds | the same | the phone (transfer-sync-v2, one tap); zCloud plays no part |
+| reactions, pinned and unread, boards | same | same | the socket (610/611) and REST |
+| cloud index | walks the queue; records where each backup lives | free plan with nothing in the cloud: no page asked for, stage reported as skipped | zCloud REST (`zcld.chat.zalo.me`) |
+| media downloads | from the CDN references the messages carry | the same | the CDN, until Zalo's copy expires |
+| media that expired from the CDN | listed in the cloud index; not downloadable (the blob is end-to-end encrypted under the owner's cloud PIN, decision D8) | gone: nothing else holds it | none for this client |
+
+Live reads of the two accounts (aggregate numbers only): the usage answer is `{plan, quota, usage, service_usage}` for
+both. Main: plan 0 (`zcloud`), quota 107374182400 B (100 GiB), 39,192,432,681 B used, `service_usage` keys `my_cloud`,
+`cloud_media`, `message_backup`; settings `opt_in` 7, per-file limits 2147483640, `enable_offload` 1, `key_export`
+`{drive, icloud}`. Companion: plan -1 (`free`), quota 0, usage 0, `service_usage` keys `my_cloud` and `message_backup`
+(both 0); `opt_in` 4, per-file limits 100, `enable_offload` 0, `key_export` empty. The helpers for these reads
+(`getCloudUsage`, `getCloudSettings`, `summarizeCloudQuota`) existed and had no caller; the cloud stage now reads the
+plan first (`readCloudPlan`, `describeCloudPlan` in `src/commands/sync.js`).
+
+Not tested live: a message restore on the Companion account (its listener holds the socket and the restore needs a tap
+on the phone that holds that account). The restore code does not read the plan, so nothing in it differs by account.
+

@@ -49,7 +49,7 @@ describe("write", () => {
         const some = JSON.parse(stripAnsi(narrowed.stdout));
         assert.deepEqual(
             some.map((x) => x.name),
-            ["group-kickout-multi", "label-delete", "todo-delete", "topic-remove"],
+            ["group-kickout-multi", "label-delete", "topic-remove"],
         );
         const text = stripAnsi((await runCli(["write", "list"], options)).all);
         assert.match(text, /topic-remove/);
@@ -58,7 +58,7 @@ describe("write", () => {
     });
 
     it("refuses to send without --yes, with the way forward, and a failing exit", async () => {
-        const r = await runCli(["write", "run", "todo-delete", "--arg", "id=t1"], options);
+        const r = await runCli(["write", "run", "topic-remove", "--arg", "groupId=g1", "--arg", "topicId=t1"], options);
         assert.equal(r.code, 1);
         const text = stripAnsi(r.all);
         assert.match(text, /✗/);
@@ -70,8 +70,8 @@ describe("write", () => {
     it("refuses an unknown write, a bad argument and unparseable JSON with a message and a failing exit", async () => {
         for (const args of [
             ["write", "run", "no-such-write", "--yes"],
-            ["write", "run", "todo-delete", "--yes", "--arg", "nonsense=1"],
-            ["write", "run", "todo-delete", "--yes", "--args", "{not json"],
+            ["write", "run", "topic-remove", "--yes", "--arg", "nonsense=1"],
+            ["write", "run", "topic-remove", "--yes", "--args", "{not json"],
             [
                 "write",
                 "run",

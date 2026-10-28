@@ -21,8 +21,6 @@ import { CallError, CallUsageError, arg, buildCall, list, num, runCall } from ".
 
 /** The avatar size the web client asks profile endpoints for. */
 const AVATAR_SIZE = 160;
-/** `TODO_TYPE` of the web client: 0 all, 1 open, 2 finished. */
-const TODO_TYPE = { all: 0, open: 1, finished: 2 };
 
 /** The largest signed 64-bit id, past every real message id: a "page back from" read then starts at the newest. */
 const NEWEST_PAGE_ID = String(2n ** 63n - 1n);
@@ -417,54 +415,7 @@ export const READS = {
         verified: true,
     },
 
-    // ── boards and todos (S6 reads) ────────────────────────────────────────
-    "todo-get": {
-        host: "boards",
-        path: "/api/board/personal/get",
-        cmd: 12417,
-        what: "One todo in full",
-        args: [arg("id", "string", "todo id", true)],
-        body: (a, ctx) => ({ id: String(a.id), imei: ctx.imei }),
-        verified: false,
-    },
-    "todo-list": {
-        host: "boards",
-        path: "/api/board/personal/list",
-        cmd: 12416,
-        what: "The todos of the account, a page at a time",
-        args: [
-            arg("type", "string", "open (default), finished or all"),
-            arg("scrollId", "string", "page token from the previous answer"),
-            arg("offset", "number", "from (0)"),
-            arg("limit", "number", "how many (20)"),
-            arg("queries", "json", "filters as the client sends them (array)"),
-        ],
-        body: (a) => ({
-            scrollId: a.scrollId ?? "",
-            offset: num(a.offset, 0),
-            limit: num(a.limit, 20),
-            queries: list(a.queries),
-            type: TODO_TYPE[String(a.type ?? "open")] ?? TODO_TYPE.open,
-        }),
-        verified: false,
-    },
-    "todo-verify": {
-        host: "boards",
-        path: "/api/board/personal/todo/verify",
-        cmd: 12603,
-        what: "Which todos changed since a time",
-        args: [
-            arg("scrollId", "string", "page token"),
-            arg("lastUpdatedTime", "number", "epoch ms the client last synced at", true),
-        ],
-        body: (a, ctx) => ({
-            scrollId: a.scrollId ?? "",
-            lastUpdatedTime: num(a.lastUpdatedTime, 0),
-            imei: ctx.imei,
-        }),
-        verified: false,
-    },
-
+    // ── boards (S6 reads) ──────────────────────────────────────────────────
     "pin-list": {
         host: "group_board",
         path: "/api/board/pin/list",

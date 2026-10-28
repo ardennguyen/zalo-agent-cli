@@ -197,31 +197,6 @@ const CASES = [
         "GET",
         { keyword: "cat", offset: 0, limit: 10 },
     ],
-    ["todo-get", { id: "t1" }, "boards", "/api/board/personal/get", "GET", { id: "t1", imei: IMEI }],
-    [
-        "todo-list",
-        {},
-        "boards",
-        "/api/board/personal/list",
-        "GET",
-        { scrollId: "", offset: 0, limit: 20, queries: [], type: 1 },
-    ],
-    [
-        "todo-list",
-        { type: "finished", limit: 5 },
-        "boards",
-        "/api/board/personal/list",
-        "GET",
-        { scrollId: "", offset: 0, limit: 5, queries: [], type: 2 },
-    ],
-    [
-        "todo-verify",
-        { lastUpdatedTime: 1700 },
-        "boards",
-        "/api/board/personal/todo/verify",
-        "GET",
-        { scrollId: "", lastUpdatedTime: 1700, imei: IMEI },
-    ],
     [
         "pin-list",
         { groupId: "g555", boardVersion: 5 },
@@ -350,8 +325,11 @@ describe("what a read returns and refuses", () => {
 
     it("says when the account's service map lacks the host", async () => {
         const h = harness();
-        delete h.api.zpwServiceMap.boards;
-        await assert.rejects(callRead(h.api, "todo-get", { id: "t1" }), /no "boards" host/);
+        delete h.api.zpwServiceMap.group_board;
+        await assert.rejects(
+            callRead(h.api, "pin-list", { groupId: "g555", boardVersion: 5 }),
+            /no "group_board" host/,
+        );
         assert.equal(h.calls.length, 0);
     });
 
@@ -388,6 +366,9 @@ describe("the table", () => {
         const rank = all.find((r) => r.name === "profile-rank");
         assert.deepEqual(rank.args, [{ name: "id", type: "string", required: true, desc: "user id" }]);
         assert.equal(rank.verified, true);
-        assert.equal(all.find((r) => r.name === "todo-list").verified, false);
+        assert.ok(
+            all.every((r) => r.verified === true),
+            "every read was seen answering on a live account",
+        );
     });
 });

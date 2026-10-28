@@ -47,8 +47,9 @@ describe("enum names on the command line", () => {
         assert.equal(args("topic-response", { arg: ["type=Accept"] }).type, 1);
         assert.equal(args("topic-response", { arg: ["type=reject"] }).type, 2);
         assert.equal(args("topic-response", { arg: ["type=2"] }).type, 2);
-        assert.equal(args("todo-status", { arg: ["status=-1"] }).status, -1);
-        assert.equal(args("todo-status", { arg: ["status=inProcess"] }).status, 0);
+        assert.equal(args("group-kickout-multi", { arg: ["srcInteraction=-1"] }).srcInteraction, -1);
+        assert.equal(args("group-kickout-multi", { arg: ["srcInteraction=unknown"] }).srcInteraction, -1);
+        assert.equal(args("group-kickout-multi", { arg: ["srcInteraction=mediaStore"] }).srcInteraction, 1);
     });
 
     it("refuses a name the enum does not have, naming the ones it has", () => {

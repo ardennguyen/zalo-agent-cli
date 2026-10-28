@@ -265,7 +265,7 @@ Engine này đăng ký **27 MCP tools** trong `src/mcp/mcp-tools.js`, phục v�
 | `zalo_group` | Rời nhóm (có thể rời im lặng), xem thông tin nhóm, tạo nhóm, thêm hoặc xóa thành viên |
 | `zalo_friend` | Trạng thái kết bạn, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè |
 | `zalo_read` | Chạy một endpoint chỉ-đọc của Zalo Web mà không tool nào khác phủ tới (danh mục sticker và GIF, tìm GIF, hạng hồ sơ, danh sách chặn, biệt danh, trạng thái…), hoặc liệt kê chúng |
-| `zalo_write` | Thực hiện một lời gọi thay đổi trạng thái của Zalo Web mà không tool nào khác phủ tới (RSVP nhắc hẹn, ghi chú và nhắc hẹn nhóm có lặp lại, ghim, todo, thu hồi nhiều tin…), hoặc liệt kê chúng; gọi thật cần `confirm: true`, `dryRun: true` để xem yêu cầu |
+| `zalo_write` | Thực hiện một lời gọi thay đổi trạng thái của Zalo Web mà không tool nào khác phủ tới (RSVP nhắc hẹn, ghi chú và nhắc hẹn nhóm có lặp lại, ghim, thu hồi nhiều tin…), hoặc liệt kê chúng; gọi thật cần `confirm: true`, `dryRun: true` để xem yêu cầu |
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 

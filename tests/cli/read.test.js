@@ -45,7 +45,10 @@ describe("read", () => {
     it("lists only the answered reads with --verified, and says what the marks mean", async () => {
         const all = JSON.parse(stripAnsi((await runCli(["--json", "read", "list"], options)).stdout));
         const some = JSON.parse(stripAnsi((await runCli(["--json", "read", "list", "--verified"], options)).stdout));
-        assert.ok(some.length > 0 && some.length < all.length);
+        // Every read has been answered by a live account since the unanswered todo reads were removed, so the filter
+        // keeps them all; what it must never do is keep one that was not answered.
+        assert.ok(some.length > 0);
+        assert.equal(some.length, all.filter((x) => x.verified).length);
         assert.ok(some.every((x) => x.verified));
         const text = stripAnsi((await runCli(["read", "list"], options)).all);
         assert.match(text, /profile-rank/);

@@ -274,7 +274,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_group` | Leave, inspect, create and change the membership of a group (`zalo_get_group_members` lists who is in one) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`), `groupId?`, `name?`, `userIds?`, `userId?`, `silent?`, `confirm?` (must be `true` for `leave` and `remove_member`) |
 | `zalo_friend` | Friend requests and friends: relationship status, sent and received requests, send / accept / reject / cancel a request, list friends | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`), `userId?`, `message?`, `limit?` |
 | `zalo_read` | Run one of Zalo Web's read-only endpoints that no other tool covers (sticker and GIF catalogs and search, profile rank, block list, nicknames, status…), or list them with their arguments | `name?` (omit to list), `args?` (by the read's argument names; ids are strings) |
-| `zalo_write` | Make one of Zalo Web's state-changing calls that no other tool covers (reminder RSVP, group notes/reminders with repeat rules, pins, todos, multi-recall, …), or list them with their `risk`. A real call needs `confirm: true`; `dryRun: true` shows the request | `name?` (omit to list), `args?`, `dryRun?`, `confirm?` |
+| `zalo_write` | Make one of Zalo Web's state-changing calls that no other tool covers (reminder RSVP, group notes/reminders with repeat rules, pins, multi-recall, …), or list them with their `risk`. A real call needs `confirm: true`; `dryRun: true` shows the request | `name?` (omit to list), `args?`, `dryRun?`, `confirm?` |
 
 Sync requests share the daemon socket and lock. Reuse requestId and arguments after a timeout; keep polling the same job. Ten jobs are held in RAM, lost on restart. No safe cancellation is exposed. Never initiate restore merely because coverage reports a gap. [Details](../docs/mcp-sync.md) / [Tiếng Việt](../docs/mcp-sync.vi.md).
 
@@ -298,7 +298,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Reminders, group notes & pins, group polls, labels | `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_label` | `zalo-agent --json reminder\|poll\|group note-*\|msg pin\|label` |
 | Group details, create a group, add / remove a member, leave a group | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
 | Sticker/GIF catalogs and search, profile rank, block list, nicknames, other web reads | `zalo_read` | `zalo-agent --json read list\|run <name>` |
-| Reminder RSVP, group note/reminder with repeat rule, pins, todos, multi-recall, other state changes | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
+| Reminder RSVP, group note/reminder with repeat rule, pins, multi-recall, other state changes | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
 | Friend requests, friend list | `zalo_friend` | `zalo-agent --json friend add\|accept\|reject\|undo-request\|sent-requests\|request-status\|list` |
 | Is the cache complete? (coverage gaps) | `zalo_coverage` | — (`listen`/`mcp start` print each gap as it is filed) |
 | Owner-requested message/reaction sync | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-reactions` |
@@ -329,9 +329,9 @@ Reads only: nothing is sent, marked or changed. MCP: `zalo_read` (omit `name` to
 ```bash
 zalo-agent write list                                  # what each touches (private / visible / destructive)
 zalo-agent write run topic-remove --args '{"groupId":"<id>","topicId":"<id>"}' --dry-run   # show the request, send nothing
-zalo-agent write run todo-status --arg id=<id> --arg status=2 --yes                          # a real call needs --yes
+zalo-agent write run topic-response --arg groupId=<id> --arg eventId=<id> --arg type=accept --yes   # a real call needs --yes
 ```
-Every write changes something. 24 of the 33 have been answered by a live account (`write list` says which, and why not for the rest): dry-run first, and try a first real call on something disposable. MCP: `zalo_write` (`dryRun: true`, or `confirm: true` for a real call).
+Every write changes something. 26 of the 27 have been answered by a live account (`write list` says which, and why not for the rest): dry-run first, and try a first real call on something disposable. MCP: `zalo_write` (`dryRun: true`, or `confirm: true` for a real call).
 
 ## References
 

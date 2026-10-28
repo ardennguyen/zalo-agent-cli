@@ -43,7 +43,7 @@ export function registerWriteCommands(program) {
     const write = program
         .command("write")
         .description(
-            "State-changing endpoints of Zalo Web's API that have no command of their own (board items, todos, friends, …)",
+            "State-changing endpoints of Zalo Web's API that have no command of their own (board items, friends, …)",
         );
 
     const list = write

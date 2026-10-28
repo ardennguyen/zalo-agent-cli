@@ -1507,7 +1507,7 @@ free-plan removal. None of it is built, and no live request for it was made.
 
 ## Reads: the web client's read-only endpoints (v3.0, 2026-10-26)
 
-**What it is.** `src/zalo/reads.js` is a table of 42 reads (40 at first; the closing sweep added `blocksharing-list` and the local `voice-transcript`): for each, the service-map host, the path, the web client's
+**What it is.** `src/zalo/reads.js` is a table of 39 reads (42 until the todo reads were removed on 2026-10-28; 40 at first; the closing sweep added `blocksharing-list` and the local `voice-transcript`): for each, the service-map host, the path, the web client's
 command id and the body it encrypts into `params`, taken from the web API module (`fBUP`, 2026-10-23 bundle) method of
 the same purpose. They all use the session cipher (a GET with `params` in the query, or a POST with `params` in the form
 body); the two login-host reads (`check-update`, `server-settings`) have plain replies, with `data` unencrypted.
@@ -1538,7 +1538,7 @@ call site was not read.
 
 ## Writes: the web client's state-changing endpoints (v3.0, 2026-10-26)
 
-**What it is.** `src/zalo/writes.js` is a table of 33 writes (24 after P7a; the closing sweep added nine) on the same request path as the reads (`src/zalo/web-call.js`, which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`. The owner approved building all four groups of plan 6.2; the first version was written and tested offline, and P7a (2026-10-27) then ran them on a disposable group ("Việc riêng - AI test", whose members are the owner's accounts) and on the owner's Arden Companion account. **14 of the 24 were seen to work; 10 were not, for reasons recorded in each entry's `note`.** Two more (`profile/mode`, `closefr/update`) answered 404 and were removed. Guards: each entry has a `risk` (`private`, `visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted; `write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); tests keep the `verified` set exact and keep the table's endpoints and names disjoint from the reads, which a test holds to reads only.
+**What it is.** `src/zalo/writes.js` is a table of 27 writes (33 until the todo writes were removed on 2026-10-28; 24 after P7a; the closing sweep added nine) on the same request path as the reads (`src/zalo/web-call.js`, which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`. The owner approved building all four groups of plan 6.2; the first version was written and tested offline, and P7a (2026-10-27) then ran them on a disposable group ("Việc riêng - AI test", whose members are the owner's accounts) and on the owner's Arden Companion account. **14 of the 24 were seen to work; 10 were not, for reasons recorded in each entry's `note`.** Two more (`profile/mode`, `closefr/update`) answered 404 and were removed. Guards: each entry has a `risk` (`private`, `visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted; `write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); tests keep the `verified` set exact and keep the table's endpoints and names disjoint from the reads, which a test holds to reads only.
 
 **Built, with what the body is.** The multi-recall (`multi_undo`, `multi_undomsg`) sends, per message, a fresh client id,
 the original's client id (`cliMsgIdUndo`) and its global id. The group note and reminder writes (`topic/createv2`,
@@ -1852,8 +1852,7 @@ dir, so nothing here opened a second socket on it: every call was a plain HTTP o
 `friend recommendations` lists names and ids; count with `--json`, do not paste it anywhere.
 
 - **The todos feature is off for the Companion too**: `todo-list` answers `-69` ("Stop retry"), as on the test
-  account. The six todo writes and the three todo reads cannot be verified on either account; the flag is on Zalo's
-  side (no `features.task_setting` in the login settings).
+  account. That led to the check that removed the todo calls the same day; see "Personal todos removed".
 - **`recommend-remove` works.** One suggestion removed from a list of 199: the list then held 198, without it, and
   nothing new. Its `src` and `type` are the list item's `dataInfo.recommSrc` and `dataInfo.recommType` (1 and 1 for
   every suggestion seen); the body is `{uid, src, type}` as the Web client's `removeRecommendedFriendV2` builds it.
@@ -1867,3 +1866,33 @@ dir, so nothing here opened a second socket on it: every call was a plain HTTP o
   returns the id the requester must use; once the two are friends, `friend add` says "Already friends".
 - **Unfriending and re-adding lost nothing**: the owner's account removed the Companion, sent a request, the Companion
   accepted it, and afterwards the alias and the label that held the chat were exactly as before.
+
+## Personal todos removed (v3.0, 2026-10-28)
+
+The three todo reads (`todo-get`, `todo-list`, `todo-verify`) and the six todo writes (`todo-create`, `todo-update`,
+`todo-status`, `todo-ding`, `todo-ding-ack`, `todo-delete`) are gone, with the todo status enum, their tests and their
+lines in the docs. There are 39 reads and 27 writes now, and 26 of the 27 writes have been seen working.
+
+**Why.** The owner reported that Zalo's To-Do mini app (`task.chat.zalo.me`) still opens but picking people no longer
+works, and that the page does not load in a plain browser (which proves nothing alone: it is a mini app that loads
+Zalo's app SDK). The checks that did settle it, all read-only:
+
+- `task.chat.zalo.me` serves a small static shell (the HTML is dated 2021-12-02; its script, chunk, style and manifest
+  all answer 200). The chunk calls the same paths this client did (`/api/board/personal/todo/create`, `update`,
+  `status`, `ding`, `dingack`, `comment/add`, and `/api/board/personal/list`, `get`, `delete`, `friendProfiles`, the
+  list of people to pick from) on `task-api.chat.zalo.me`. The other host it names, `task.api.zalo.me`, does not resolve.
+- **`task-api.chat.zalo.me` answers `{"error_code":-69,"error_message":"Stop retry."}` with HTTP 200 to every request**:
+  the real paths, a made-up path under `/api/board/personal/`, `/api/login/getLoginInfo`, `/nonexistent`, with no login
+  at all. That is not an account setting but a service that answers the same stop to everything. The boards host
+  answered only the todo paths that way, while notes, reminders and pins on it worked.
+- Web's own default settings carry `task_setting.enable_feature: 0` (the todo menu item shows only when it is on), and
+  no string or code ties the feature to zBusiness; the shutdown, not a package, is what the evidence supports.
+
+**What stays.** Everything for reminders and notes: `topic-create`, `topic-update`, `topic-response` (RSVP) and
+`topic-remove`, the pins, and the `topic` and `rsvp` enums (a reminder is a `text` topic with a start time, type 4).
+They are on the group-board host and share nothing with the todo calls; the writes test lists them as verified and
+runs each. Also unchanged: the `chat.todo` message type and msgType 24 in the sync decoder, which describe todo events
+already in chat history, not calls to the service.
+
+**If Zalo brings it back**, the removed entries are in the history of `src/zalo/reads.js` and `src/zalo/writes.js`
+(the commit that removed them), with their request shapes checked against the Web client's `fBUP` module.

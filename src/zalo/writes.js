@@ -4,7 +4,7 @@
  *
  * Every entry is one request of the web client's API module (`fBUP`, 2026-10-23 bundle), with the host, path, command
  * id and body written out from the method of the same purpose. Unlike the reads, **each of these changes something**:
- * who sees a pin or a reminder, what is on a todo list, who is in a group, what a friend list or a block list says.
+ * who sees a pin or a reminder, who is in a group, what a friend list or a block list says.
  * So:
  *
  * - `verified` means a live success was seen (P7a, 2026-10-27, on a disposable group); an entry without it says why in
@@ -42,8 +42,6 @@ export const ENUMS = {
     topic: { text: 0, link: 1, message: 2, poll: 3, reminder: 4 },
     /** A reminder invitation's answer. */
     rsvp: { none: 0, accept: 1, reject: 2 },
-    /** A todo's status. */
-    todoStatus: { waiting: -1, inProcess: 0, done: 1 },
     /** Where a multi-group removal was started from. */
     interaction: { unknown: -1, profile: 0, mediaStore: 1, contextMenu: 2, operate: 3, reviewRetry: 4, suggestion: 5 },
 };
@@ -390,82 +388,6 @@ export const WRITES = {
             boardVersion: num(a.boardVersion),
         }),
         verified: true,
-    },
-
-    // ── personal todos (boards host) ───────────────────────────────────────
-    "todo-create": {
-        host: "boards",
-        path: "/api/board/personal/todo/create",
-        cmd: 12413,
-        method: "post",
-        risk: "private",
-        what: "Create a todo",
-        args: [
-            arg("todo", "json", "the todo object, as the client builds it (title, due time, …)", true),
-            arg("src", "number", "where it was created from (-1)"),
-        ],
-        body: (a, ctx) => ({ ...a.todo, src: num(a.src, -1), imei: ctx.imei }),
-        verified: false,
-        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
-    },
-    "todo-update": {
-        host: "boards",
-        path: "/api/board/personal/todo/update",
-        cmd: 12414,
-        method: "post",
-        risk: "private",
-        what: "Change a todo",
-        args: [arg("todo", "json", "the todo object with its id, as the client builds it", true)],
-        body: (a) => ({ ...a.todo }),
-        verified: false,
-        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
-    },
-    "todo-status": {
-        host: "boards",
-        path: "/api/board/personal/todo/status",
-        cmd: 12418,
-        risk: "private",
-        what: "Set a todo's status (open, finished)",
-        args: [
-            arg("id", "string", "todo id", true),
-            arg("status", "number", `the status: ${named(ENUMS.todoStatus)}`, true, ENUMS.todoStatus),
-        ],
-        body: (a, ctx) => ({ id: String(a.id), status: enumNum(a.status, ENUMS.todoStatus), imei: ctx.imei }),
-        verified: false,
-        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
-    },
-    "todo-ding": {
-        host: "boards",
-        path: "/api/board/personal/todo/ding",
-        cmd: 12426,
-        risk: "visible",
-        what: "Ping (ding) the people on todos",
-        args: [arg("taskIds", "json", "todo ids (array)", true)],
-        body: (a) => ({ taskIds: list(a.taskIds).map(String) }),
-        verified: false,
-        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
-    },
-    "todo-ding-ack": {
-        host: "boards",
-        path: "/api/board/personal/todo/dingack",
-        cmd: 12427,
-        risk: "visible",
-        what: "Acknowledge a todo ping",
-        args: [arg("taskIds", "json", "todo ids (array)", true)],
-        body: (a) => ({ taskIds: list(a.taskIds).map(String) }),
-        verified: false,
-        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
-    },
-    "todo-delete": {
-        host: "boards",
-        path: "/api/board/personal/delete",
-        cmd: 12415,
-        risk: "destructive",
-        what: "Delete a todo",
-        args: [arg("id", "string", "todo id", true)],
-        body: (a) => ({ id: String(a.id) }),
-        verified: false,
-        note: "answers -69 (stop retry): the todos feature is off for this account (its login settings carry no `features.task_setting`, which is what the web client's todo UI needs), so the request shape is untested",
     },
 
     // ── friends and profile ────────────────────────────────────────────────

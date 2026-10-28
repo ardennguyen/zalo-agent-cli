@@ -124,7 +124,7 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `auto-reply` | 4 | Quản lý trả lời tự động | [Trả lời tự động](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tr%E1%BA%A3-L%E1%BB%9Di-T%E1%BB%B1-%C4%90%E1%BB%99ng) |
 | `quick-msg` | 4 | Tin nhắn nhanh đã lưu | [Tin nhắn nhanh](https://github.com/ardennguyen/zalo-agent-cli/wiki/Tin-Nh%E1%BA%AFn-Nhanh) |
 | `read` | 2 | Các endpoint chỉ-đọc của Zalo Web chưa có lệnh riêng: sticker, GIF, hạng hồ sơ, danh sách chặn, biệt danh… (chỉ đọc, không thay đổi gì) | [Tham chiếu lệnh](skill/references/command-reference.md) |
-| `write` | 2 | Các endpoint thay đổi trạng thái của Zalo Web chưa có lệnh riêng: ghim, todo, RSVP nhắc hẹn, thu hồi nhiều tin… (`--dry-run` để xem yêu cầu, `--yes` mới gửi thật) | [Tham chiếu lệnh](skill/references/command-reference.md) |
+| `write` | 2 | Các endpoint thay đổi trạng thái của Zalo Web chưa có lệnh riêng: ghim, RSVP nhắc hẹn, thu hồi nhiều tin… (`--dry-run` để xem yêu cầu, `--yes` mới gửi thật) | [Tham chiếu lệnh](skill/references/command-reference.md) |
 | `label` | 2 | Nhãn hội thoại | [Nhãn](https://github.com/ardennguyen/zalo-agent-cli/wiki/Nh%C3%A3n) |
 | `catalog` | 10 | zBusiness — danh mục sản phẩm | [zBusiness](https://github.com/ardennguyen/zalo-agent-cli/wiki/zBusiness) |
 | `bank` | 5 | Tài khoản ngân hàng đã lưu, danh sách ngân hàng được hỗ trợ | [Ngân hàng](https://github.com/ardennguyen/zalo-agent-cli/wiki/Ng%C3%A2n-H%C3%A0ng) |
@@ -263,7 +263,7 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)** · [Fu
 | `auto-reply` | 4 | Auto-reply rules | [Auto-Reply](https://github.com/ardennguyen/zalo-agent-cli/wiki/Auto-Reply) |
 | `quick-msg` | 4 | Saved quick messages | [Quick Messages](https://github.com/ardennguyen/zalo-agent-cli/wiki/Quick-Messages) |
 | `read` | 2 | Zalo Web's read-only endpoints with no command of their own: stickers, GIFs, profile rank, block list, nicknames… (reads only, changes nothing) | [Command reference](skill/references/command-reference.md) |
-| `write` | 2 | Zalo Web's state-changing endpoints with no command of their own: pins, todos, reminder RSVP, multi-recall… (`--dry-run` shows the request, `--yes` sends it) | [Command reference](skill/references/command-reference.md) |
+| `write` | 2 | Zalo Web's state-changing endpoints with no command of their own: pins, reminder RSVP, multi-recall… (`--dry-run` shows the request, `--yes` sends it) | [Command reference](skill/references/command-reference.md) |
 | `label` | 2 | Conversation labels | [Labels](https://github.com/ardennguyen/zalo-agent-cli/wiki/Labels) |
 | `catalog` | 10 | zBusiness catalogs & products | [Catalog](https://github.com/ardennguyen/zalo-agent-cli/wiki/Catalog) |
 | `bank` | 5 | Saved bank accounts, supported banks | [Bank](https://github.com/ardennguyen/zalo-agent-cli/wiki/Bank) |

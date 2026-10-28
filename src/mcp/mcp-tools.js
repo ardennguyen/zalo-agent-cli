@@ -3010,7 +3010,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Make one of the state-changing calls Zalo Web makes that no other tool covers: reminder RSVP, creating " +
                 "or changing a group note or reminder with a repeat rule, pinning and unpinning board items, removing a " +
-                "topic, personal todos, recalling several messages at once, suggested-friend cleanup, blocking an " +
+                "topic, recalling several messages at once, suggested-friend cleanup, blocking an " +
                 "Official Account, removing one account from several groups, the search history. Omit `name` to list " +
                 "every write with what it touches (`risk`: private, visible to others, or destructive), what it takes, " +
                 "whether a live success was seen (`verified`) and, if not, why (`note`). EVERY write changes " +

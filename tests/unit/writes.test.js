@@ -169,40 +169,6 @@ const CASES = [
         "GET",
         { grid: "555", topics: [{ topicId: "a", topicType: 0 }], boardVersion: 4 },
     ],
-    [
-        "todo-create",
-        { todo: { title: "buy" } },
-        "boards",
-        "/api/board/personal/todo/create",
-        "POST",
-        { title: "buy", src: -1, imei: IMEI },
-    ],
-    [
-        "todo-update",
-        { todo: { id: "t1", title: "buy more" } },
-        "boards",
-        "/api/board/personal/todo/update",
-        "POST",
-        { id: "t1", title: "buy more" },
-    ],
-    [
-        "todo-status",
-        { id: "t1", status: 2 },
-        "boards",
-        "/api/board/personal/todo/status",
-        "GET",
-        { id: "t1", status: 2, imei: IMEI },
-    ],
-    [
-        "todo-ding",
-        { taskIds: ["t1", "t2"] },
-        "boards",
-        "/api/board/personal/todo/ding",
-        "GET",
-        { taskIds: ["t1", "t2"] },
-    ],
-    ["todo-ding-ack", { taskIds: ["t1"] }, "boards", "/api/board/personal/todo/dingack", "GET", { taskIds: ["t1"] }],
-    ["todo-delete", { id: "t1" }, "boards", "/api/board/personal/delete", "GET", { id: "t1" }],
     ["contact-tab-read", { ts: 1700 }, "friend", "/api/friend/read-contact-tab", "POST", { ts: 1700 }],
     [
         "recommend-remove",
@@ -441,21 +407,19 @@ describe("the web client's enums, by name or number", () => {
         const h = harness();
         await callWrite(h.api, "topic-response", { groupId: "555", eventId: "e1", type: "REJECT" });
         await callWrite(h.api, "pin", { groupId: "555", topicId: "t", type: "Poll" });
-        await callWrite(h.api, "todo-status", { id: "t1", status: "done" });
         await callWrite(h.api, "group-kickout-multi", { groupIds: ["555"], userId: "u", srcInteraction: "mediaStore" });
         assert.equal(sent(h.calls[0]).type, 2);
         assert.equal(sent(h.calls[1]).type, 3);
-        assert.equal(sent(h.calls[2]).status, 1);
-        assert.equal(sent(h.calls[3]).srcInteraction, 1);
+        assert.equal(sent(h.calls[2]).srcInteraction, 1);
     });
 
     it("keeps a number, and refuses a name the enum does not have, naming the ones it has", async () => {
         const h = harness();
-        await callWrite(h.api, "todo-status", { id: "t1", status: -1 });
-        assert.equal(sent(h.calls[0]).status, -1);
+        await callWrite(h.api, "topic-response", { groupId: "555", eventId: "e1", type: 0 });
+        assert.equal(sent(h.calls[0]).type, 0);
         await assert.rejects(
-            callWrite(h.api, "todo-status", { id: "t1", status: "maybe" }),
-            /waiting, inProcess, done/,
+            callWrite(h.api, "topic-response", { groupId: "555", eventId: "e1", type: "maybe" }),
+            /none, accept, reject/,
         );
         assert.equal(h.calls.length, 1);
     });
@@ -550,13 +514,13 @@ describe("a dry run sends nothing and shows what would go", () => {
 describe("what a write returns and refuses", () => {
     it("returns the reply's data", async () => {
         const h = harness(() => sessionOk({ done: true }));
-        assert.deepEqual(await callWrite(h.api, "todo-delete", { id: "t1" }), { done: true });
+        assert.deepEqual(await callWrite(h.api, "contact-tab-read", { ts: 1700 }), { done: true });
     });
 
     it("refuses an unknown write and a missing argument before sending anything", async () => {
         const h = harness();
         await assert.rejects(callWrite(h.api, "no-such-write"), CallUsageError);
-        await assert.rejects(callWrite(h.api, "todo-delete", {}), /needs "id"/);
+        await assert.rejects(callWrite(h.api, "contact-tab-read", {}), /needs "ts"/);
         await assert.rejects(callWrite(h.api, "multi-undo", { toId: "u1" }), /needs "msgs"/);
         assert.equal(h.calls.length, 0);
     });
@@ -579,7 +543,7 @@ describe("the table", () => {
             for (const a of d.args) assert.ok(a.desc.length > 3, `${name}.${a.name} is described`);
         }
         const destructive = WRITE_NAMES.filter((n) => WRITES[n].risk === "destructive");
-        assert.deepEqual(destructive, ["group-kickout-multi", "label-delete", "todo-delete", "topic-remove"]);
+        assert.deepEqual(destructive, ["group-kickout-multi", "label-delete", "topic-remove"]);
     });
 
     it("claims a live success only for what was seen to work, and says why for the rest", () => {

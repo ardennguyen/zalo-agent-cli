@@ -80,11 +80,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **227** invokable leaves (195 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **228** invokable leaves (196 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3485** as of 2026-10-28 (3476 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3504** as of 2026-10-28 (3495 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -116,9 +116,9 @@ guessing those names silently drops OA's 32 commands and MCP's 3. Load each into
 a fresh `Command`, walk it, count nodes with no children, and add the inline
 top-level commands found by scanning `src/index.js` for `.command("...")`.
 
-Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**. Measured again 2026-10-26, after `msg search`: **223 leaves, 24 containers, 247 nodes**; after `read`: **225 leaves, 25 containers, 250 nodes**; after `write`: **227 leaves, 26 containers, 253 nodes**.
+Measured (2026-10-21): **222 leaves, 24 containers, 246 nodes**. Measured again 2026-10-26, after `msg search`: **223 leaves, 24 containers, 247 nodes**; after `read`: **225 leaves, 25 containers, 250 nodes**; after `write`: **227 leaves, 26 containers, 253 nodes**; after `account status` (2026-10-28): **228 leaves**.
 By group: group 35, oa 32, friend 26, msg 25, conv 21, top-level 12, profile 14,
-catalog 10, account 7, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
+catalog 10, account 8, poll 7, mcp 7 (`start`, `wait`, `mark-read`, and the four `webhook`
 leaves), reminder 6, fleet 6, bank 5, auto-reply 4, quick-msg 4, label 2, read 2, write 2, listen 1. (Was 190 at `99d5a97` before `mcp` gained `wait` and `mark-read`, and
 184 at `a719c99` before `conv` gained pin/unpin/archive/unarchive
 and `msg` gained pin/unpin.) A separate audit confirmed zero drift between that live tree and the

@@ -107,6 +107,7 @@ const PATH = {
     myCloudUsage: "/cloudmedia/info/pc/v1/usage-mycloud",
     familyUsage: "/cloudmedia/info/pc/v1/family-usage",
     settings: "/cloudmedia/info/pc/v1/cloud-settings",
+    subscription: "/zalocloud/cloudinfopcweb/v1/info",
 };
 
 /** Reply codes the client accepts as success. */
@@ -558,6 +559,17 @@ export async function getFamilyUsage(api) {
 }
 
 /**
+ * The zCloud subscription (`cloudinfopcweb`, command 12754): package, billing gateway, status and expiry, and the
+ * migration state. Zalo Web asks for it only on a paid plan; a free account gets an empty or refused answer.
+ *
+ * @param {object} api
+ * @returns {Promise<object|null>}
+ */
+export async function getCloudSubscription(api) {
+    return zcloudGet(api, PATH.subscription);
+}
+
+/**
  * The account's zCloud settings: per-file size limits, `enable_offload`, `opt_in`.
  *
  * @param {object} api
@@ -573,14 +585,18 @@ const finiteOrNull = (v) =>
 /**
  * Reduce the usage and settings replies to what the CLI reports.
  *
+ * The two `...PerFileLimitRaw` values are the settings' numbers as sent: no Web or PC client reads them, so their unit
+ * is not defined anywhere we can read (live: 100 on a free account, probably megabytes; 2147483640 on a paid one, a
+ * "no practical limit" number). They are not bytes.
+ *
  * Over-quota is `usage > quota`, the client's own rule. `opt_in` is read as a
  * bit set over the client's service enum (media 1, mycloud 2, backup 4).
  *
  * @param {object} [usage] - getCloudUsage() reply
  * @param {object} [settings] - getCloudSettings() reply
  * @returns {{plan: string|null, planCode: number|null, quotaBytes: number|null, usageBytes: number|null,
- *   freeBytes: number|null, overQuota: boolean|null, serviceUsage: object|null, perFileLimitBytes: number|null,
- *   myCloudPerFileLimitBytes: number|null, optIn: {media: boolean, mycloud: boolean, backup: boolean}|null}}
+ *   freeBytes: number|null, overQuota: boolean|null, serviceUsage: object|null, perFileLimitRaw: number|null,
+ *   myCloudPerFileLimitRaw: number|null, optIn: {media: boolean, mycloud: boolean, backup: boolean}|null}}
  */
 export function summarizeCloudQuota(usage = {}, settings = {}) {
     const quota = finiteOrNull(usage?.quota);
@@ -596,8 +612,8 @@ export function summarizeCloudQuota(usage = {}, settings = {}) {
         freeBytes: both ? Math.max(0, quota - used) : null,
         overQuota: both ? used > quota : null,
         serviceUsage: usage?.service_usage ?? null,
-        perFileLimitBytes: finiteOrNull(settings?.cloud_media_file_size_limit),
-        myCloudPerFileLimitBytes: finiteOrNull(settings?.my_cloud_file_size_limit),
+        perFileLimitRaw: finiteOrNull(settings?.cloud_media_file_size_limit),
+        myCloudPerFileLimitRaw: finiteOrNull(settings?.my_cloud_file_size_limit),
         optIn: optIn === null ? null : { media: !!(optIn & 1), mycloud: !!(optIn & 2), backup: !!(optIn & 4) },
     };
 }

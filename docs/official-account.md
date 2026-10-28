@@ -307,7 +307,7 @@ zalo-agent oa whoami --oa-id shop2
 | Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (no `-cli` suffix) |
 | Runtime disclaimer | Shown | Suppressed (official API) |
 | Pre-command auto-login | Yes | No — `oa` manages its own OAuth token |
-| Command count | 191 (of 227 total CLI commands) | 32 |
+| Command count | 196 (of 228 total CLI commands) | 32 |
 | Real-time events | WebSocket (`listen`) | HTTP Webhook (`oa listen`) |
 | Exposed as MCP tools? | Yes — 27 tools (see [mcp-guide](../skill/references/mcp-guide.md)) | **No** — CLI only |
 

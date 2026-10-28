@@ -3,8 +3,8 @@
  * Includes export for headless/CI credential transfer.
  */
 
-import { writeFileSync, chmodSync } from "fs";
-import { resolve } from "path";
+import { writeFileSync, chmodSync, existsSync } from "fs";
+import { resolve, join } from "path";
 import {
     loginWithQR,
     loginWithCredentials,
@@ -14,7 +14,9 @@ import {
     autoLogin,
     isLoggedIn,
 } from "../core/zalo-client.js";
-import { saveCredentials, loadCredentials } from "../core/credentials.js";
+import { saveCredentials, loadCredentials, getAccountDir } from "../core/credentials.js";
+import { initDb, summarizeCloudItems } from "../core/db.js";
+import { describeAccountStatus, readAccountStatus } from "../core/account-status.js";
 import { listAccounts, getActive, setActive, addAccount, removeAccount, getAccount } from "../core/accounts.js";
 import { serverLogout, reportLogout, lockHolder } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
@@ -235,6 +237,38 @@ export function registerAccountCommands(program) {
             success(`Exported to ${outPath}`);
             warning("This file contains login credentials. Keep it secure and do not commit to git.");
             info(`Import on another machine: zalo-agent login --credentials ${opts.output}`);
+        });
+
+    account
+        .command("status")
+        .description(
+            "Show the account's plans (read-only): the zBusiness package, the zCloud plan with its usage and limits",
+        )
+        .action(async () => {
+            try {
+                // Like `devices`: "account" subcommands skip the preAction login, so do it here.
+                await autoLogin(program.opts().json);
+                const ownId = getActive()?.ownId ?? null;
+                // The local index is read only when this machine has a database for the account: asking must not
+                // create one.
+                let dbFile = null;
+                if (ownId) {
+                    const file = join(getAccountDir(ownId), "zalo.db");
+                    if (existsSync(file)) dbFile = file;
+                }
+                if (dbFile) initDb(dbFile);
+                const status = await readAccountStatus(getApi(), {
+                    ownId,
+                    localIndex: () => (dbFile ? summarizeCloudItems() : null),
+                });
+                output(status, program.opts().json, () => {
+                    for (const line of describeAccountStatus(status)) info(line);
+                });
+                if (!status.sources.length) process.exitCode = 1;
+            } catch (e) {
+                error(`Failed to read the account's plans: ${e.message}`);
+                process.exitCode = 1;
+            }
         });
 
     account

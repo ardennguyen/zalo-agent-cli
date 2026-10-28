@@ -330,7 +330,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 227 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 228 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |
@@ -358,6 +358,7 @@ Append `--json` to any command for machine-readable output. This is a shortlist 
 | `npx zalo-agent group list [-q <text>]` / `group members <groupId>` | List groups / members |
 | `npx zalo-agent conv recent [-n 20]` | List recent conversations with thread IDs |
 | `npx zalo-agent account devices` | List devices/sessions linked to the active account |
+| `npx zalo-agent account status` | The account's plans: zBusiness package, zCloud plan, usage and limits (read-only) |
 | `npx zalo-agent account remove <ownerId>` | Invalidate remote session, wipe local data, delete creds |
 | `npx zalo-agent listen [--webhook <url>] [--save <dir>]` | Real-time listener, optional webhook forwarding and JSONL archival |
 | `npx zalo-agent msg send-qr-transfer <id> <acct> --bank <alias> -a <amount>` | Send a VietQR payment |

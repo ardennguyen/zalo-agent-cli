@@ -183,7 +183,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 
 ---
 
-## Accounts — `account` (7 commands)
+## Accounts — `account` (8 commands)
 
 Multi-account management, each account bound 1:1 to its own dedicated proxy.
 
@@ -195,6 +195,7 @@ Multi-account management, each account bound 1:1 to its own dedicated proxy.
 | `remove <ownerId>` | **Fully remove an account from this machine**: if it's the currently active/logged-in one, signs the device out at Zalo first, exactly as `logout` does (see `logout`); then wipes its entire local data directory (`zalo.db` + WAL sidecars, `media/`, `sync/`, `daemon.lock`); deletes its credentials file; drops it from the registry (activating the next remaining account, if any). Refuses (aborts, nothing touched) if a `listen`/`mcp start` daemon still holds that account's lock — reports the PID. |
 | `info` | Show the currently active account's owner ID, name, and masked proxy. |
 | `export [ownerId] [-o, --output <path>]` | Export an account's credentials to a JSON file (chmod 600) for transfer to another machine. Defaults to the active account and `./zalo-creds.json`. |
+| `status` | The account's plans, read-only (`--json` for the full report). **zBusiness**: the package on the profile (`bizPkg`: id, name, expiry, days left, whether it has lapsed) and that package's limits, read key by key from the server's table in the login settings (`ba_pkg_config`), not copied here. **zCloud**: the plan (`free`, `paid`, `grace` = 30 days after expiry before the data is deleted, `after-grace`, or `unknown` with its number), on a paid plan the subscription (tier, months, gateway, auto-renew, dates), used and free space against the quota with the split by service (cloud media, My Cloud, text message backup), what is backed up (opt-in), the per-file limits **as raw numbers (their unit is not defined in any client)**, key-backup provider names, and what this machine's zCloud index holds against what the server counts. A read that fails is named under `problems` and costs only its own part. Never printed: the cloud viewer key, the key backup's emails, the subscription's ids and price. Nothing is written and no socket is opened. |
 | `devices` | List devices/sessions currently linked to the active account (read-only) — shows the master session ID, last-update time, and any other "companion" linked sessions. |
 
 **Thread type (`-t, --type`):** every command taking it still defaults to `0` (1-1), but when the flag is left off and the conversation is already in the local cache as a group, it is filled in as `1` automatically. Zalo routes a send by thread id either way, so a mistyped group send still arrives and still reports success — what the declared type actually decides is which socket channel the server echoes the sender's own copy back on (cmd 501 for 1-1, 521 for group), and the listener types the conversation from that channel. A group send left at the default therefore came back looking like a DM and rewrote the stored thread type. Passing `-t` explicitly is always honored.
@@ -546,7 +547,7 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `friend` | 26 |
 | `group` | 35 |
 | `conv` | 21 |
-| `account` | 7 |
+| `account` | 8 |
 | `profile` | 14 |
 | `poll` | 7 |
 | `reminder` | 6 |
@@ -561,7 +562,7 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 27 MCP tools) |
 | `fleet` | 6 (`ports`, `status`, `start`, `stop`, `restart`, `generate`) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **227 CLI commands** + 27 MCP tools |
+| **Total** | **228 CLI commands** + 27 MCP tools |
 
 ## Provenance
 

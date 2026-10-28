@@ -303,7 +303,7 @@ describe("zCloud requests go out the way Zalo Web sends them", () => {
         assert.equal(q.usageBytes, 1073741824);
         assert.equal(q.freeBytes, 107374182400 - 1073741824);
         assert.equal(q.overQuota, false);
-        assert.equal(q.perFileLimitBytes, 2147483640);
+        assert.equal(q.perFileLimitRaw, 2147483640);
         assert.deepEqual(q.optIn, { media: true, mycloud: true, backup: true });
     });
 

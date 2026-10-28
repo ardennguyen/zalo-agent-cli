@@ -329,7 +329,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 227 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 228 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |
@@ -356,6 +356,7 @@ Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục 
 | `npx zalo-agent group list [-q <text>]` / `group members <groupId>` | Danh sách nhóm / thành viên nhóm |
 | `npx zalo-agent conv recent [-n 20]` | Liệt kê các hội thoại gần đây kèm `threadId` |
 | `npx zalo-agent account devices` | Xem danh sách thiết bị/phiên đang liên kết với tài khoản |
+| `npx zalo-agent account status` | Các gói của tài khoản: gói zBusiness, gói zCloud, dung lượng đã dùng và giới hạn (chỉ đọc) |
 | `npx zalo-agent account remove <ownerId>` | Hủy phiên từ xa, xóa sạch dữ liệu cục bộ và xóa credentials |
 | `npx zalo-agent listen [--webhook <url>] [--save <dir>]` | Lắng nghe thời gian thực, chuyển tiếp webhook và lưu trữ JSONL |
 | `npx zalo-agent msg send-qr-transfer <id> <acct> --bank <alias> -a <amount>` | Gửi mã QR chuyển khoản VietQR |

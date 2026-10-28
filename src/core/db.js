@@ -1893,6 +1893,13 @@ export function getCloudItems(threadId = null, limit = 500) {
         : db.prepare("SELECT * FROM cloud_items ORDER BY timestamp DESC LIMIT ?").all(limit);
 }
 
+/** What the local zCloud index holds: how many items, and the bytes of their media. */
+export function summarizeCloudItems() {
+    if (!db) throw new Error("Database not initialized");
+    const r = db.prepare("SELECT COUNT(*) AS items, COALESCE(SUM(mediaSize), 0) AS bytes FROM cloud_items").get();
+    return { items: Number(r.items), bytes: Number(r.bytes) };
+}
+
 /** The zCloud backup for one message, if the cloud queue has told us about it. */
 export function getCloudItemByMsgId(msgId) {
     if (!db) throw new Error("Database not initialized");

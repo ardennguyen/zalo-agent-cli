@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **227 CLI commands** across 26 command containers (18 top-level groups + 7 OA subgroups + `mcp webhook`) + **27 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **228 CLI commands** across 26 command containers (18 top-level groups + 7 OA subgroups + `mcp webhook`) + **27 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -204,6 +204,7 @@ zalo-agent --account <ownerId> msg send <ID> "hi" --json    # Run any command as
 ZALO_ACCOUNT=<ownerId> zalo-agent conv recent --json        # Or pin via environment variable
 zalo-agent account export -o creds.json                     # Export
 zalo-agent account devices                                  # List linked devices/sessions (read-only)
+zalo-agent account status                                   # Plans: zBusiness package, zCloud plan/usage/limits (read-only; --json)
 zalo-agent account remove <ownerId>                         # Invalidate remote session + wipe local data + delete creds
 ```
 

@@ -470,7 +470,8 @@ Cho biết cache cục bộ đầy đủ tới đâu. Mỗi "khoảng hở" (cov
 `zalo_sync` nhận `requestId` riêng (1–64 ký tự chữ/số hoặc `._:-`), `stage`
 (`messages` mặc định hoặc `reactions`). Messages nhận `days` (1–36500) **hoặc**
 `from` (ngày UTC YYYY-MM-DD hợp lệ); bỏ cả hai để lấy mọi lịch sử điện thoại
-còn giữ, trên tất cả hội thoại. `waitMs` tùy chọn 30000–600000 ms mỗi giai đoạn.
+còn giữ, trên tất cả hội thoại. `waitMs` tùy chọn 30000–600000 ms mỗi giai đoạn. Messages còn nhận `fullResync`
+(hỏi lại mọi hội thoại, bỏ qua phần đã chốt) và `shardSize` (1–30 hội thoại mỗi lô).
 Reactions không có khoảng ngày, nhận `applyRemovals` (mặc định true) cho cache.
 
 Tool trả ngay `jobId`, `state`, `phoneConfirmationRequired`. Messages vẫn gửi
@@ -876,6 +877,6 @@ Claude Code / Gemini / MCP Client
 |---|---|
 | Client không thấy tool nào, hoặc rớt kết nối ngay | Có thứ gì đó in ra stdout. Ở stdio mode stdout là kênh JSON-RPC — xem log stderr để tìm lỗi thật |
 | `Thread name cache not initialized yet` | Cache được dựng lúc server start (fetch toàn bộ group + friend). Thử lại sau vài giây |
-| `Duplicate Zalo Web session detected. Exiting.` | Tài khoản đang có phiên WebSocket khác (Zalo Web trên browser, hoặc `listen`). Đóng phiên kia rồi chạy lại |
+| `Another Zalo session took this account` | Tài khoản đang có phiên WebSocket khác (Zalo Web trên browser, hoặc `listen`). Đóng phiên kia rồi chạy lại |
 | `zalo_get_messages` trả rỗng dù có tin nhắn | Buffer chỉ chứa tin nhận **sau khi server start**, và bị lọc bởi `watchThreads` + noise filter. Dùng `zalo_get_history` cho tin cũ |
 | HTTP request trả 401 | Thiếu hoặc sai header `Authorization: Bearer <token>` |

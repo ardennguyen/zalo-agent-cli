@@ -17,6 +17,10 @@ import { initDb, getSyncState, setSyncState } from "../../src/core/db.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
 import { CMD_MYCLOUD, THROTTLE_MS, createCloudVerifier, readCloudNotice } from "../../src/core/cloud-verify.js";
 
+it("keeps Zalo Web's own pace: a cloud verify push is acted on once in 30 minutes", () => {
+    assert.equal(THROTTLE_MS, 30 * 60 * 1000);
+});
+
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-cloud-verify-"));
 const opened = [];
 let n = 0;

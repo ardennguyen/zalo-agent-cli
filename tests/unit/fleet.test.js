@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     FleetError,
+    STATES,
     assignPorts,
     classifyAccount,
     fleetFile,
@@ -138,6 +139,33 @@ describe("classifyAccount", () => {
         );
         assert.equal(classifyAccount({ running: true, health: up({ warnings: ["webhook backlog"] }) }), "degraded");
         assert.equal(classifyAccount({ running: true, health: up() }), "ok");
+    });
+
+    it("says why a socket is not up when the daemon says so: maintenance, a login being redone, another session", () => {
+        for (const state of ["maintenance", "relogin", "kicked"]) {
+            assert.equal(
+                classifyAccount({ running: true, health: { socket: { state, forSec: 5 }, warnings: [] } }),
+                state,
+                `a daemon in the ${state} state is not just starting`,
+            );
+        }
+        // A hold wins over how long it has lasted: a maintenance of three hours is still maintenance, not down.
+        assert.equal(
+            classifyAccount({
+                running: true,
+                health: { socket: { state: "maintenance", forSec: 10_800 }, warnings: [] },
+            }),
+            "maintenance",
+        );
+    });
+
+    it("lists every state it can say, worst last, and restarts only what a restart can mend", () => {
+        assert.deepEqual(
+            [...STATES],
+            ["ok", "degraded", "starting", "maintenance", "relogin", "kicked", "down", "unresponsive", "stopped"],
+        );
+        // kicked is deliberate: a restart would take the account back from the session that took it.
+        assert.deepEqual(["maintenance", "relogin", "kicked"].map(needsRestart), [false, false, false]);
     });
 
     it("how long a socket may be down is the caller's to choose", () => {

@@ -150,6 +150,11 @@ describe("applyControl: statuses", () => {
         assert.equal(isIdleTooLong(null), false);
     });
 
+    it("gives an idle phone a minute on an incomplete session where Web gives it ten (pinned: a change is a decision)", () => {
+        assert.equal(STALL_IDLE_MS, 60_000);
+        assert.equal(IDLE_TIMEOUT_MS, 600_000);
+    });
+
     it("calls a session stalled when the phone has been idle for a minute and the session is still incomplete", () => {
         applyControl(s, status(2), { now: 1000 });
         assert.equal(isStalledIdle(s, { now: 1000 + STALL_IDLE_MS - 1 }), false, "a minute is not yet over");

@@ -107,7 +107,20 @@ export function assignPorts(ownIds, { basePort } = {}) {
 }
 
 /** The states `fleet status` reports, worst last. */
-export const STATES = Object.freeze(["ok", "degraded", "starting", "down", "unresponsive", "stopped"]);
+export const STATES = Object.freeze([
+    "ok",
+    "degraded",
+    "starting",
+    "maintenance",
+    "relogin",
+    "kicked",
+    "down",
+    "unresponsive",
+    "stopped",
+]);
+
+/** The socket states a daemon reports that are neither up nor merely down: each says why the socket is not up. */
+const HELD = new Set(["maintenance", "relogin", "kicked"]);
 
 /**
  * One word for an account.
@@ -115,18 +128,23 @@ export const STATES = Object.freeze(["ok", "degraded", "starting", "down", "unre
  *  - `stopped`: no daemon runs for it
  *  - `unresponsive`: a daemon runs (its lock is held) but does not answer on its loopback channel
  *  - `down`: it answers, and its Zalo socket has been down at least `downForSec`
+ *  - `maintenance`: it answers, and it is waiting for Zalo to come back from maintenance (nothing to do)
+ *  - `relogin`: it answers, and Zalo refused its session, so it is logging in again (transient)
+ *  - `kicked`: it answers, and another session took the account, so it will not reconnect (see the log; restarting it
+ *    would only evict the other session in turn)
  *  - `starting`: it answers, and its socket is not up yet (or has not been down long enough to count)
  *  - `degraded`: the socket is up but it has warnings (a webhook backlog, dead letters, open gaps)
  *  - `ok`
  *
  * @param {{ running: boolean, health: object|null }} a - `health` is null when the daemon did not answer
  * @param {{ downForSec?: number }} [o]
- * @returns {"ok"|"degraded"|"starting"|"down"|"unresponsive"|"stopped"}
+ * @returns {"ok"|"degraded"|"starting"|"maintenance"|"relogin"|"kicked"|"down"|"unresponsive"|"stopped"}
  */
 export function classifyAccount({ running, health }, { downForSec = 180 } = {}) {
     if (!running) return "stopped";
     if (!health) return "unresponsive";
     const socket = health.socket ?? {};
+    if (HELD.has(socket.state)) return socket.state;
     if (socket.state === "down" && (socket.forSec ?? 0) >= downForSec) return "down";
     if (socket.state !== "up") return "starting";
     return health.warnings?.length ? "degraded" : "ok";

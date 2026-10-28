@@ -2,7 +2,7 @@
 
 [English](mcp-sync.md)
 
-Engine cung cấp 25 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
+Engine cung cấp 27 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
 `@ardennguyen/zalo-agent-cli` v2.1.0+ và `@ardennguyen/zalo-mcp` v2.0.0+).
 `mcp start --account <ID>` (hoặc `ZALO_ACCOUNT=<ID>`) ghim tiến trình vào đúng
 tài khoản đã đăng ký lúc khởi động và qua các lần reconnect; hai tool sync chỉ
@@ -27,6 +27,11 @@ Messages nhận `days` (số nguyên dương, tối đa 36500) **hoặc** `from`
 hợp lệ YYYY-MM-DD). Bỏ cả hai để lấy mọi lịch sử điện thoại còn giữ. Khoảng
 thời gian áp dụng cho tất cả hội thoại, không giới hạn một nhóm. `waitMs` tùy
 chọn từ 30000–600000 ms là ngân sách chờ mỗi giai đoạn, không phải toàn job.
+
+Job messages còn nhận `fullResync` (hỏi điện thoại toàn bộ mọi hội thoại, bỏ qua phần các
+lần chạy trước đã chốt: chạy lâu, dùng khi cache có vẻ thiếu) và `shardSize` (1 đến 30 hội
+thoại mỗi lô, mặc định 30; ít hơn thì lô đầu về sớm hơn và mất ít hơn khi đứt kết nối). Cả hai
+bị từ chối với reactions.
 
 Đồng bộ hàng đợi phản ứng:
 
@@ -62,7 +67,7 @@ trong RAM. Job, kết quả và chống lặp mất khi restart hoặc bị thay
 response khởi động, xem job mới nhất. Sau khi daemon restart, kiểm tra coverage
 trước khi quyết định sync lại. Đóng request MCP không hủy job. Chưa có tool hủy
 vì runner chưa có cơ chế abort an toàn; không tạo job mới để hủy job cũ. Dừng
-daemon ngắt công việc và có thể để lại restore dở; không hứa tự resume.
+daemon ngắt công việc và có thể để lại restore dở. Mất socket thì khác: stage chờ daemon tự kết nối lại (tối đa 120 giây) rồi chạy tiếp, tối đa ba lần, chỉ hỏi điện thoại phần chưa về.
 
 ## Kiến trúc, bảo mật và kiểm thử
 
@@ -71,7 +76,8 @@ server mới mỗi request nhưng giữ chung bộ theo dõi job. Hai tool dùng
 `createSyncRunners` của daemon channel CLI, lấy API hiện tại mỗi lần chạy và
 giữ chung khóa stage với history/self-heal. Không thêm login, WebSocket,
 kết nối database hay writer thứ hai. Reconnect cập nhật các lần chạy sau;
-mất socket giữa restore có thể kết thúc dở như CLI sync qua daemon hiện tại.
+mất socket giữa restore thì chờ daemon tự kết nối lại (tối đa 120 giây) và chạy tiếp,
+tối đa ba lần, rồi mới kết thúc dở, như CLI sync qua daemon.
 
 Tool dùng quyền MCP hiện có: cùng bearer token HTTP cho phép sync; stdio dùng
 quyền process cục bộ của client. Không có ranh giới quyền riêng từng bot.

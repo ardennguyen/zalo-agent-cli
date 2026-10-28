@@ -1449,6 +1449,23 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .boolean()
                         .optional()
                         .describe("Reactions only: apply observed removals; defaults to true."),
+                    fullResync: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Messages only: ask the phone for every conversation in full, ignoring what earlier runs " +
+                                "settled. A long run; use it when the cache looks incomplete, not by default.",
+                        ),
+                    shardSize: z
+                        .number()
+                        .int()
+                        .min(1)
+                        .max(30)
+                        .optional()
+                        .describe(
+                            "Messages only: conversations per batch (1 to 30, default 30). Fewer means more, smaller " +
+                                "batches: the first comes back sooner and less is lost if the connection drops.",
+                        ),
                 })
                 .strict()
                 .refine(
@@ -1462,6 +1479,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 .refine(
                     (value) => value.stage !== "messages" || value.applyRemovals === undefined,
                     "applyRemovals is reactions-only",
+                )
+                .refine(
+                    (value) =>
+                        value.stage !== "reactions" ||
+                        (value.fullResync === undefined && value.shardSize === undefined),
+                    "fullResync and shardSize are messages-only",
                 ),
             annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
         },

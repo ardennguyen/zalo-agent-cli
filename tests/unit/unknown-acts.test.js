@@ -144,6 +144,10 @@ describe("what gets noted", () => {
         assert.equal(Object.keys(saved(file)).length, MAX_NAMES);
     });
 
+    it("keeps 200 names at most: a bound of ours, pinned so that a change is a decision", () => {
+        assert.equal(MAX_NAMES, 200);
+    });
+
     it("carries on from the file of an earlier run, and from a damaged one", () => {
         const file = fresh();
         writeFileSync(

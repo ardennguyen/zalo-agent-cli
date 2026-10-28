@@ -422,7 +422,7 @@ Xem file mẫu tại [`.env.example`](.env.example).
 | Hiện tượng | Nguyên nhân / cách xử lý |
 |:---|:---|
 | MCP client không hiện tool nào, hoặc ngắt kết nối ngay lập tức | Có nội dung in ra stdout. Ở chế độ stdio, stdout là kênh truyền JSON-RPC — hãy kiểm tra log stderr để xem lỗi thực sự |
-| `Duplicate Zalo Web session detected. Exiting.` | Zalo chỉ cho phép 1 WebSocket trên mỗi tài khoản. Hãy đóng tab Zalo Web trên trình duyệt và không chạy `listen` cùng lúc với `mcp start` trên cùng một tài khoản |
+| `Another Zalo session took this account` (daemon dừng lại) | Zalo chỉ cho phép 1 WebSocket trên mỗi tài khoản. Hãy đóng tab Zalo Web trên trình duyệt và không chạy `listen` cùng lúc với `mcp start` trên cùng một tài khoản |
 | `logout` / `account remove` từ chối kèm số PID | Một tiến trình daemon `listen` hoặc `mcp start` đang giữ `daemon.lock` của tài khoản đó. Hãy dừng daemon trước (`--stop`) |
 | `Thread name cache not initialized yet` khi gọi `zalo_search_threads` | Bộ nhớ đệm tên hội thoại đang được xây dựng lúc khởi động MCP bằng cách tải danh sách nhóm + bạn bè. Thử lại sau vài giây |
 | Không kết nối được tới HTTP MCP server từ máy khác | Mặc định `--http` chỉ bind vào `127.0.0.1` (loopback). Hãy truyền `--host 0.0.0.0 --auth <token>` (hỗ trợ trên cả `zalo-mcp` và `zalo-agent mcp start`) |

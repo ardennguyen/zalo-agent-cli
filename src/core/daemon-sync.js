@@ -27,7 +27,7 @@
  *     nulled. This is the same lesson `/send-attachments` learned when it
  *     captured the api instead of a getter.
  */
-import { SyncV2 } from "./sync-v2/index.js";
+import { SyncV2, resolveMaxResumes } from "./sync-v2/index.js";
 import { drainReactions, placeUnresolvedReactions } from "./sync-v2/reactions.js";
 import { fetchAndCacheHistory } from "./history-fetch.js";
 import { createStageLogger } from "./daemon-log.js";
@@ -225,9 +225,9 @@ export function createSyncRunners({
                 // re-requests the batches that never arrived. Before this, any
                 // lost socket (close 1006, which Zalo does not offer to retry) ended
                 // a long restore as partial and the next one asked the phone again.
-                // A long restore on a busy account can lose its socket more than once, so a daemon allows
-                // three resumes (the CLI's default is one); `params.maxResumes` overrides.
-                maxResumes: Number.isInteger(params.maxResumes) ? params.maxResumes : 3,
+                // How many reconnects a restore may spend is one rule for the CLI and a daemon: `resolveMaxResumes`
+                // (its default, three, since 2026-10-28; `params.maxResumes` overrides, capped).
+                maxResumes: resolveMaxResumes(params.maxResumes),
                 reconnect: async () => {
                     const back = await waitForDaemonSocket({
                         getApi,

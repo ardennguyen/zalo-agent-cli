@@ -209,6 +209,22 @@ describe("a restore the way Zalo's clients run it", () => {
         );
     });
 
+    it("requests thirty sessions up front by default, and never more than thirty whatever is asked", async () => {
+        // The phone stops serving at about 32 sessions open together; a wave stays under that.
+        const firstWave = (phone) =>
+            phone.order
+                .map((o) => o.cmd)
+                .slice(2)
+                .findIndex((c) => c === 591);
+        const byDefault = await run({ conversations: convs(33) }, { shardSize: 1 });
+        assert.equal(byDefault.error, null);
+        assert.equal(firstWave(byDefault.phone), 30, "thirty 590 before the first of the releases");
+        await zalo.stop();
+        const asked = await run({ conversations: convs(33) }, { shardSize: 1, waveSize: 99 });
+        assert.equal(asked.error, null);
+        assert.equal(firstWave(asked.phone), 30, "99 asked, 30 given");
+    });
+
     it("releases a wave's sessions one after the other, each after the previous ack (bursts were answered only in part)", async () => {
         const { result, error } = await run(
             { conversations: convs(10), releaseAckDelayMs: 40 },

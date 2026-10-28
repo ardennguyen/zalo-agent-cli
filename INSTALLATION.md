@@ -424,7 +424,7 @@ See [`.env.example`](.env.example) for a template.
 | Symptom | Cause / fix |
 |:---|:---|
 | MCP client shows no tools, or the connection drops immediately | Something printed to stdout. In stdio mode stdout is the JSON-RPC channel — check stderr logs for the real error |
-| `Duplicate Zalo Web session detected. Exiting.` | Only one WebSocket per account. Close Zalo Web in the browser, and don't run `listen` and `mcp start` for the same account at once |
+| `Another Zalo session took this account` (the daemon stops) | Only one WebSocket per account. Close Zalo Web in the browser, and don't run `listen` and `mcp start` for the same account at once |
 | `logout` (any form) / `account remove` refuses with a PID | A `listen` or `mcp start` daemon holds `daemon.lock` for that account. Stop it first |
 | `Thread name cache not initialized yet` from `zalo_search_threads` | The cache builds at MCP startup by fetching all groups + friends. Retry after a few seconds |
 | HTTP MCP server unreachable from another machine | By default `--http` binds `127.0.0.1` (loopback only). Pass `--host 0.0.0.0 --auth <token>` (supported on both `zalo-mcp` and `zalo-agent mcp start`) |

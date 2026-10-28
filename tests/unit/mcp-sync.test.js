@@ -199,9 +199,25 @@ it("reaction jobs forward removal control and need no phone restore", async () =
     assert.equal(payload(await api.call("zalo_sync_status", { jobId: start.jobId })).result.placed, 2);
 });
 
+it("a messages job forwards fullResync and shardSize to the runner", async () => {
+    const f = fixture();
+    const api = tools(f.jobs);
+    payload(await api.call("zalo_sync", { requestId: "full-1", fullResync: true, shardSize: 10 }));
+    await tick();
+    assert.deepEqual(f.calls, [{ fullResync: true, shardSize: 10 }]);
+    f.finish({});
+    await tick();
+});
+
 for (const invalid of [
     {},
     { requestId: "" },
+    { requestId: "a", shardSize: 0 },
+    { requestId: "a", shardSize: 31 },
+    { requestId: "a", shardSize: 1.5 },
+    { requestId: "a", fullResync: "yes" },
+    { requestId: "a", stage: "reactions", fullResync: true },
+    { requestId: "a", stage: "reactions", shardSize: 5 },
     { requestId: "a", days: 0 },
     { requestId: "a", days: 1, from: "2026-10-01" },
     { requestId: "a", from: "2026-02-30" },

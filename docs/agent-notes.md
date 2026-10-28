@@ -67,8 +67,13 @@ tests/                    # Test suite — see tests/README.md
 ├── mcp-config.json               # Optional MCP config
 ├── accounts/<ownId>/
 │   ├── zalo.db                   # SQLite cache (messages, threads, contacts, sync_state, sync_gaps)
+│   ├── trusted-device.json       # The device identity of the official QR login: private key + linking secret (0600)
+│   ├── dr-config.json            # Disaster-recovery numbers the last login learned (0600)
+│   ├── sock-anomaly.json         # The week's socket error history for the retry table (0600)
+│   ├── unknown-acts.json         # Socket control acts this client does not know, counted
+│   ├── voice-text.json           # Voice-message transcripts a running daemon heard
 │   ├── media/                    # Auto-downloaded attachments
-│   ├── sync/                     # transfer-sync-v2 assets (zproto-cache/)
+│   ├── sync/                     # transfer-sync-v2 assets (zproto-cache/) and open-sessions.json, the sessions on the phone
 │   ├── daemon.lock               # Held by a running `listen` daemon or `mcp start`
 │   └── daemon-channel.json       # Loopback port + token of that daemon's upload channel (0600)
 └── qr.png
@@ -84,7 +89,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3504** as of 2026-10-28 (3495 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3524** as of 2026-10-28 (3514 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that

@@ -53,9 +53,13 @@ Every `logout` and `account remove` refuse, changing nothing, while a `listen`/`
 # QR (interactive — human scan required, temporary local server, auto-closes after scan/timeout)
 zalo-agent login --qr-url &
 
+# QR, then restore the history at once with the key the phone offers when "auto sync" is ticked at the QR (no tap; --sync-days <n> limits it)
+zalo-agent login --sync
+
 # Headless (re-use previously exported credentials)
 zalo-agent login --credentials ./creds.json
 ```
+The QR login is Zalo Web's own sequence (the default; `ZALO_QR_FLOW=legacy` selects zca-js's). An account that has a trusted device is asked to scan a second QR once more, and the CLI becomes a trusted companion device on the account (visible in the phone's linked devices).
 CRITICAL: QR expires 60s. QR server is temporary and local-only. Scan via **Zalo app QR Scanner** (NOT camera).
 Details: `references/login-flow.md`
 
@@ -261,7 +265,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_get_group_members` | A group's members — uid and display name — as `group members` | `groupId` |
 | `zalo_list_conversations` | Recent conversations from the local cache, newest first, as `conv recent`, each with the account's own read state on Zalo (`readState`) | `type` (`dm`/`group`/`all`), `limit` (per type, default 20) |
 | `zalo_coverage` | Read-only: pending coverage gaps, resolved count, and the `sync --from <date>` run that restores them | — |
-| `zalo_sync` | Only after an explicit owner request: start messages restore (phone confirmation) or reaction sync; returns immediately | `requestId`, `stage?`, `days?` or `from?`, `waitMs?`, `applyRemovals?` (reactions only) |
+| `zalo_sync` | Only after an explicit owner request: start messages restore (phone confirmation) or reaction sync; returns immediately | `requestId`, `stage?`, `days?` or `from?`, `waitMs?`, `fullResync?` and `shardSize?` (messages only), `applyRemovals?` (reactions only) |
 | `zalo_sync_status` | Read progress/result, without another prompt; inspect result.reason before claiming a complete restore | `jobId?` |
 | `zalo_search_messages` | Search message text across the local SQLite cache (`zalo.db`), zero network calls; accent-insensitive by default (`duoc` finds `được`) | `query`, `threadId?`, `senderId?`, `since?`, `until?`, `last?`, `types?`, `accents` (`fold`/`exact`), `limit` (default 50), `cursor?`, `context` |
 | `zalo_lookup_user` | Look up a Zalo user by phone, username, userId, or inspect own profile (`self: true`) | One of `self: true`, `phone`, `username`, `userId` |

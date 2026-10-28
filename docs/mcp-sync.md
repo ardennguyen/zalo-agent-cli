@@ -27,6 +27,11 @@ YYYY-MM-DD UTC date). Omit both for all history the phone still holds. The windo
 applies to all conversations, not a single group. `waitMs` is an optional
 30000–600000 ms per-phase budget, not a total job deadline.
 
+A messages job also takes `fullResync` (ask the phone for every conversation in full,
+ignoring what earlier runs settled: a long run, for a cache that looks incomplete) and
+`shardSize` (1 to 30 conversations per batch, default 30; fewer means a first batch
+sooner and less lost if the connection drops). Both are refused for reactions.
+
 For the reaction backlog, call:
 
 ```json
@@ -64,7 +69,9 @@ restart, check cache coverage before deciding whether another restore is needed.
 Closing an MCP request does not cancel its job. No cancellation tool is exposed
 because the existing runners have no safe abort contract; do not start another
 run to cancel one. Stopping the daemon interrupts work and may leave a partial
-restore; no automatic resume is promised.
+restore. A lost socket is different: the stage waits up to 120 s for the daemon's
+own reconnect and resumes (up to three times, asking the phone only for what
+never arrived) before the restore ends partially, keeping what was stored.
 
 ## Architecture, security and validation
 
@@ -73,8 +80,9 @@ HTTP tools. HTTP creates a fresh MCP server per request but shares the tracker.
 Both tools call the same `createSyncRunners` as the CLI daemon channel, resolve
 the current API per run, and hold the same stage lock as history and self-heal.
 No second login, WebSocket, database connection or writer is introduced. A
-reconnect updates future runs; socket loss during a restore can end it partially,
-as for existing daemon-routed CLI sync.
+reconnect updates future runs; socket loss during a restore waits for the daemon's
+reconnect and resumes up to three times, then ends partially, as for daemon-routed
+CLI sync.
 
 The tools inherit existing MCP access: the same HTTP bearer token permits sync,
 and stdio has the client's local process access. There is no per-bot permission

@@ -129,7 +129,8 @@ Tất cả lệnh hỗ trợ `--json`. Tài liệu đầy đủ: **[Wiki](https:
 | `catalog` | 10 | zBusiness — danh mục sản phẩm | [zBusiness](https://github.com/ardennguyen/zalo-agent-cli/wiki/zBusiness) |
 | `bank` | 5 | Tài khoản ngân hàng đã lưu, danh sách ngân hàng được hỗ trợ | [Ngân hàng](https://github.com/ardennguyen/zalo-agent-cli/wiki/Ng%C3%A2n-H%C3%A0ng) |
 | `listen` | 1 | Lắng nghe real-time, webhook, JSONL, ghi vào cache cục bộ | [Lắng nghe](https://github.com/ardennguyen/zalo-agent-cli/wiki/L%E1%BA%AFng-Nghe) |
-| `mcp` | 3 | MCP server (`start`, `wait`, `mark-read`) — 27 tools cho AI agent + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server-(VN)) |
+| `fleet` | 6 | Chạy nhiều tài khoản trên một máy: bảng cổng, một bảng trạng thái, khởi động/khởi động lại theo lô, giám sát | [Tham chiếu lệnh](skill/references/command-reference.md) |
+| `mcp` | 7 | MCP server (`start`, `wait`, `mark-read` và bốn lệnh `webhook`) — 27 tools cho AI agent + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server-(VN)) |
 | **`oa`** | **32** | **Zalo Official Account API v3.0 — OAuth, tin nhắn, follower, tag, bài viết, cửa hàng, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account-(VN))** |
 
 Xem thêm: [Đa tài khoản & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/%C4%90a-T%C3%A0i-Kho%E1%BA%A3n-&-Proxy) · [Cài đặt VPS](https://github.com/ardennguyen/zalo-agent-cli/wiki/C%C3%A0i-%C4%90%E1%BA%B7t-VPS) · [Thẻ chuyển khoản & QR](https://github.com/ardennguyen/zalo-agent-cli/wiki/Th%E1%BA%BB-Chuy%E1%BB%83n-Kho%E1%BA%A3n-&-QR) · [Bộ nhớ đệm & Đồng bộ](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BB%99-Nh%E1%BB%9B-%C4%90%E1%BB%87m-&-%C4%90%E1%BB%93ng-B%E1%BB%99) · [Bảo mật](https://github.com/ardennguyen/zalo-agent-cli/wiki/B%E1%BA%A3o-M%E1%BA%ADt)
@@ -268,7 +269,8 @@ Full docs: **[Wiki](https://github.com/ardennguyen/zalo-agent-cli/wiki)** · [Fu
 | `catalog` | 10 | zBusiness catalogs & products | [Catalog](https://github.com/ardennguyen/zalo-agent-cli/wiki/Catalog) |
 | `bank` | 5 | Saved bank accounts, supported banks | [Bank](https://github.com/ardennguyen/zalo-agent-cli/wiki/Bank) |
 | `listen` | 1 | Real-time listener, webhook, JSONL, local cache writes | [Listener](https://github.com/ardennguyen/zalo-agent-cli/wiki/Listener) |
-| `mcp` | 3 | MCP server (`start`, `wait`, `mark-read`) — 27 tools for AI agents + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server) |
+| `fleet` | 6 | Run many accounts on one machine: port table, one status table, batched start/restart, supervisor | [Command reference](skill/references/command-reference.md) |
+| `mcp` | 7 | MCP server (`start`, `wait`, `mark-read` and the four `webhook` commands) — 27 tools for AI agents + zero-polling CLI | [MCP Server](https://github.com/ardennguyen/zalo-agent-cli/wiki/MCP-Server) |
 | **`oa`** | **32** | **Zalo Official Account API v3.0 — OAuth, messaging, followers, tags, articles, store, webhook** | **[Official Account](https://github.com/ardennguyen/zalo-agent-cli/wiki/Official-Account)** |
 
 See also: [Multi-Account & Proxy](https://github.com/ardennguyen/zalo-agent-cli/wiki/Multi-Account-&-Proxy) · [VPS Setup](https://github.com/ardennguyen/zalo-agent-cli/wiki/VPS-Setup) · [Bank Card & QR Payments](https://github.com/ardennguyen/zalo-agent-cli/wiki/Bank-Card-&-QR-Payments) · [Local Cache & Sync](https://github.com/ardennguyen/zalo-agent-cli/wiki/Local-Cache-&-Sync) · [Security](https://github.com/ardennguyen/zalo-agent-cli/wiki/Security)

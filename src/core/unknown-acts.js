@@ -24,6 +24,16 @@ export const CMD_PUSH_CONTROLS = 601;
 /** 602 actions a handler of this client or of zca-js already reads. */
 const KNOWN_ACTIONS = new Set(["typing"]);
 
+/**
+ * The socket commands this client handles or names on purpose (the offline queues, messages, receipts, reactions, the
+ * sync-v2 pair, the control pushes, the zCloud notice, the handshake and the keepalive). Any other command that
+ * arrives is noted once, by number: the server can start sending a new one with any release, and until now the
+ * ones that were not handled (533, 570 to 578, 592, 604, 614, 620, 623, 800 were seen in captures) left no trace.
+ */
+export const KNOWN_COMMANDS = new Set([
+    1, 2, 501, 502, 504, 510, 511, 521, 522, 524, 532, 534, 590, 591, 601, 602, 603, 610, 611, 612, 613, 621,
+]);
+
 /** How many distinct names one file keeps: a flood of new names must not grow it without end. */
 export const MAX_NAMES = 200;
 /** How often the counts of names already known are written back. */
@@ -78,6 +88,7 @@ function loadNames(file) {
  * @param {() => number} [args.now]
  * @param {(line: string) => void} [args.log] - told once per new name
  * @returns {{
+ *   observeCommand: (view: object) => number,
  *   observe: (cmd: number, data: object|null|undefined) => number,
  *   names: () => Record<string, {firstSeen: number, lastSeen: number, count: number, cmd: number, keys: string[]}>,
  * }} `observe` returns how many names in this frame were new to the file
@@ -118,6 +129,41 @@ export function createUnknownActs({ file, now = Date.now, log = () => {} }) {
     }
 
     return {
+        /**
+         * One frame's header: a command that is not in {@link KNOWN_COMMANDS} is noted as `cmd/<cmd>_<subCmd>`, with the
+         * key names of its body (never the values) from the first time it is seen.
+         *
+         * @param {{cmd: number, subCmd: number, size: number, frame: () => (object|null)}} view
+         * @returns {number} 1 when the name was new
+         */
+        observeCommand(view) {
+            try {
+                if (KNOWN_COMMANDS.has(view.cmd)) return 0;
+                const key = `cmd/${view.cmd}_${view.subCmd}`;
+                let fresh = 0;
+                if (names[key]) {
+                    note(view.cmd, "cmd", `${view.cmd}_${view.subCmd}`, []);
+                } else {
+                    let keys = [];
+                    try {
+                        const data = view.frame()?.data;
+                        if (data && typeof data === "object" && !Array.isArray(data)) {
+                            keys = Object.keys(data).slice(0, MAX_KEYS);
+                        }
+                    } catch {
+                        /* an undecodable body is still a command worth naming */
+                    }
+                    if (note(view.cmd, "cmd", `${view.cmd}_${view.subCmd}`, keys)) {
+                        names[key].size = view.size;
+                        fresh = 1;
+                    }
+                }
+                if (fresh > 0 || (dirty && now() - savedAt >= SAVE_EVERY_MS)) save();
+                return fresh;
+            } catch {
+                return 0;
+            }
+        },
         observe(cmd, data) {
             let fresh = 0;
             try {
@@ -157,6 +203,8 @@ export function attachUnknownActs({ tap, file, log }) {
     const offs = [CMD_PUSH_ACTIONS, CMD_PUSH_CONTROLS].map((cmd) =>
         tap.on(cmd, (frame) => acts.observe(cmd, frame.data)),
     );
+    // Every other command, by number (a tap without `onAny` simply does not offer this).
+    if (typeof tap.onAny === "function") offs.push(tap.onAny((view) => acts.observeCommand(view)));
     return {
         stop() {
             for (const off of offs.splice(0)) off();

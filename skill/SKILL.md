@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **228 CLI commands** across 26 command containers (18 top-level groups + 7 OA subgroups + `mcp webhook`) + **27 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **230 CLI commands** across 27 command containers (19 top-level groups + 7 OA subgroups + `mcp webhook`) + **27 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -151,6 +151,7 @@ zalo-agent sync-media                        # Re-run/resume the media fetch on 
 zalo-agent sync-media --kind photo,video --dry-run   # ...plan the fetch without touching the network
 zalo-agent sync-boards                       # Notes, pinned messages, polls, reminders — NOT in the message stream
 zalo-agent sync-cloud                        # Walk the zCloud media index (records where backups live; follows removals; --full sweeps)
+zalo-agent cloud ls | cloud plan [--type video --older-than 365 --larger-than 50 --only-saved-locally]   # Reports on the local index: what a cleanup would cover. Deletes nothing
 
 # Cleanup. Always preview with --dry-run; none of these contact Zalo.
 zalo-agent sync-media --prune 90 --dry-run   # Delete downloaded media older than N days (message text kept)
@@ -302,7 +303,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | A group's members | `zalo_get_group_members` | `zalo-agent --json group members` |
 | Reminders, group notes & pins, group polls, labels | `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_label` | `zalo-agent --json reminder\|poll\|group note-*\|msg pin\|label` |
 | Group details, create a group, add / remove a member, leave a group | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
-| Sticker/GIF catalogs and search, profile rank, block list, nicknames, other web reads | `zalo_read` | `zalo-agent --json read list\|run <name>` |
+| Sticker/GIF catalogs and search, profile rank, block list, nicknames, the account's plans (`account-status`), other web reads | `zalo_read` | `zalo-agent --json read list\|run <name>` |
 | Reminder RSVP, group note/reminder with repeat rule, pins, multi-recall, other state changes | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
 | Friend requests, friend list | `zalo_friend` | `zalo-agent --json friend add\|accept\|reject\|undo-request\|sent-requests\|request-status\|list` |
 | Is the cache complete? (coverage gaps) | `zalo_coverage` | — (`listen`/`mcp start` print each gap as it is filed) |
@@ -342,7 +343,7 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 227 commands + 27 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 230 commands + 27 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

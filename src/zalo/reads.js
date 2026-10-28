@@ -17,6 +17,7 @@
  */
 import { getAccountDir } from "../core/credentials.js";
 import { readTranscript, voiceTextFile } from "../core/voice-text.js";
+import { readAccountStatus } from "../core/account-status.js";
 import { CallError, CallUsageError, arg, buildCall, list, num, runCall } from "./web-call.js";
 
 /** The avatar size the web client asks profile endpoints for. */
@@ -38,8 +39,9 @@ const NEWEST_PAGE_ID = String(2n ** 63n - 1n);
  * @property {(a: object, ctx: object) => (object|null)} [body] - what is encrypted into `params`; absent: no `params`
  * @property {(a: object) => Record<string,string>} [headers]
  * @property {(a: object) => Record<string,string>} [extraQuery]
- * @property {(a: object, api: object) => any} [local] - a read of what the listener recorded on this machine: nothing is
- *   sent to Zalo, and `host` and `path` are "local" and "-"
+ * @property {(a: object, api: object) => any} [local] - a read answered here, with no request of its own: what the
+ *   listener recorded on this machine (`voice-transcript`), or an answer composed from several reads (`account-status`,
+ *   which makes its own calls). `host` and `path` are "local" and "-"
  * @property {boolean} verified - whether a live account has answered it
  */
 
@@ -54,6 +56,15 @@ export const READS = {
         what: "The text of a voice message Zalo transcribed (ask with `write run voice-to-text`); the listener records it when it arrives",
         args: [arg("reqId", "string", "the request id `voice-to-text` returned (leave out for the recent ones)")],
         local: (a, api) => readTranscript(voiceTextFile(getAccountDir(String(api.getOwnId()))), a.reqId),
+        verified: true,
+    },
+    "account-status": {
+        host: "local",
+        path: "-",
+        cmd: null,
+        what: "The account's plans in one answer: the zBusiness package and its limits, the zCloud plan, usage, limits and subscription expiry (composed from several reads; `zalo-agent account status` prints the same)",
+        args: [],
+        local: (_a, api) => readAccountStatus(api, { ownId: String(api.getOwnId()) }),
         verified: true,
     },
     "check-update": {
@@ -261,6 +272,16 @@ export const READS = {
         what: "An account's rank and badges",
         args: [arg("id", "string", "user id", true)],
         body: (a, ctx) => ({ profile_id: String(a.id), imei: ctx.imei }),
+        verified: true,
+    },
+    "oa-convert-ids": {
+        host: "profile",
+        path: "/api/social/oa/convertid",
+        cmd: 11863,
+        what: "Turn Official Account ids into the ids the profile service uses for them (the web client asks before opening an OA from a link)",
+        args: [arg("oaIds", "json", "OA ids without the `OA` prefix (array)", true)],
+        body: (a) => ({ oa_ids: list(a.oaIds).map(String) }),
+        // Answered `{}` for an id that is not an OA (2026-10-28); the shape of a real OA's answer has not been seen.
         verified: true,
     },
     aliases: {

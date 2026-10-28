@@ -83,7 +83,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | Command | Description |
 |---------|-------------|
 | `list` | List all friends, sorted by most recent interaction (`lastActionTime`), with last-activity timestamps. |
-| `online` | List currently online friends. |
+| `online` | List currently online friends. **Zalo answers 404 on the current build** (rechecked live on two accounts, 2026-10-28), so the command reports the 404 and points at `last-online`; the web client still asks for the list and its answer was never captured. |
 | `search <name>` | Search your friend list by display name, Zalo name or the alias you set for the friend (case-insensitive substring match), returns `userId` usable as `threadId`. A match through an alias carries an `alias` field. If the alias list cannot be read, it matches names only and says so. |
 | `find <query>` | Find a user by phone number or Zalo ID (network lookup, not limited to friends). |
 | `info <userId>` | Get a user's profile info (name, phone, avatar). |
@@ -101,7 +101,7 @@ Exhaustive reference for every command, subcommand, and flag `zalo-agent` expose
 | `undo-request <userId>` | Cancel a friend request **you** sent. |
 | `sent-requests` | List all friend requests you've sent that are still pending. |
 | `request-status <userId>` | Check `is_friend` / `is_requested` / `is_requesting` status with a user. |
-| `close` | List your "close friends" (Zalo's close-friends feature). |
+| `close` | List your "close friends". **Retired by Zalo**: the current web client has no menu and no caller for it, and the request answers 404; the command reports that. |
 | `recommendations` | Get friend recommendations **and** received friend requests in one call (each item tagged `[request]` or `[suggest]`). |
 | `find-phones <phones...>` | Bulk-lookup users by a list of phone numbers. |
 | `qr <userIds...>` | Get the QR code image URL of one or more users. Zalo answers for your own id; for a friend it returned an empty result when measured. |
@@ -306,7 +306,7 @@ Read-only endpoints of Zalo Web's API that have no command of their own (plan tr
 | `list [-v, --verified]` | List the reads, what each takes (`[x]` is optional) and whether a live account has answered it (`✓`) or only the request shape comes from the web client (`?`). `--verified` shows only the answered ones. Reads a local table: no login needed. `--json` gives `name`, `what`, `host`, `path`, `verified` and `args` for each. |
 | `run <name> [--args <json>] [-a, --arg <key=value>…]` | Ask Zalo one read and print the answer as JSON. Arguments come as a JSON object (`--args '{"id":"123"}'`) and/or repeated `--arg key=value`, each typed by what the read declares: a string stays a string (a Zalo id has 19 digits, more than a number keeps exactly), a number is a number, a `json` argument is parsed. An unknown read, an unknown or malformed argument, or a missing required one is refused before Zalo is contacted (exit 1). HTTP only: it needs no socket and works beside a running `listen` or `mcp start`. |
 
-The 39 reads (every one answered by a live account): `aliases`, `banner-info`, `blocklist`, `blocksharing-list` (the conversations that have block sharing on), `check-update` (1001 means Zalo has no update information for the announced version), `contact-tab-last-read`, `emoji-status-config`, `emoji-status-friends`, `friend-context`, `friend-verify`, `gif-categories`, `gif-search`, `gif-trending`, `group-message-status`, `group-quota-community`, `group-quota-members`, `group-user-context`, `important-messages`, `last-messages`, `last-seen`, `last-seen-react`, `message-status`, `mini-profiles`, `noise-ids`, `noised-uids`, `offline-check`, `phonebook`, `pin-list` (a group's pinned items and the pin board's version, which `unpin` and `unpin-many` need), `profile-extra`, `profile-rank`, `recent-searches`, `server-settings`, `sticker-category`, `sticker-effects`, `sticker-hello`, `sticker-keywords`, `sticker-personalized`, `sticker-tenor-map`, `voice-transcript`. `voice-transcript` is **local**: it sends nothing to Zalo and reads the file `voice-text.json` in the account folder, where a running `listen` or `mcp start` keeps the text of each voice message Zalo transcribed (ask for one with `write run voice-to-text`; the text arrives as a push on the socket, so a command that is not the daemon could not hear it). `read list` is the source of truth for each one's arguments. Not offered, because Zalo answers them with 404 or an error on this build: `cm/getpath`, `group/analyse`, `message/get_backupmsginfo`, the sticker category list and recommended list, and the GIF-by-category and by-dictionary reads. The personal todo calls (three reads, six writes) were removed on 2026-10-28: Zalo's todo service (`task-api.chat.zalo.me`, the host of the To-Do mini app) answers `-69` ("stop retry") to every request, even a made-up path or no login, and the boards host answers the todo paths the same way while its notes, reminders and pins work. `offline-check` is the web client's own boot probe (it answers a list of conversation ids and `evict`).
+The 41 reads (every one answered by a live account): `account-status` (the zBusiness package and limits, the zCloud plan, usage and expiry in one answer: the same report as `account status --json`), `aliases`, `banner-info`, `blocklist`, `blocksharing-list` (the conversations that have block sharing on), `check-update` (1001 means Zalo has no update information for the announced version), `contact-tab-last-read`, `emoji-status-config`, `emoji-status-friends`, `friend-context`, `friend-verify`, `gif-categories`, `gif-search`, `gif-trending`, `group-message-status`, `group-quota-community`, `group-quota-members`, `group-user-context`, `important-messages`, `last-messages`, `last-seen`, `last-seen-react`, `message-status`, `mini-profiles`, `noise-ids`, `noised-uids`, `offline-check`, `oa-convert-ids` (answers `{}` for an id that is not an Official Account), `phonebook`, `pin-list` (a group's pinned items and the pin board's version, which `unpin` and `unpin-many` need), `profile-extra`, `profile-rank`, `recent-searches`, `server-settings`, `sticker-category`, `sticker-effects`, `sticker-hello`, `sticker-keywords`, `sticker-personalized`, `sticker-tenor-map`, `voice-transcript`. `voice-transcript` is **local**: it sends nothing to Zalo and reads the file `voice-text.json` in the account folder, where a running `listen` or `mcp start` keeps the text of each voice message Zalo transcribed (ask for one with `write run voice-to-text`; the text arrives as a push on the socket, so a command that is not the daemon could not hear it). `read list` is the source of truth for each one's arguments. Not offered, because Zalo answers them with 404 or an error on this build: `cm/getpath`, `group/analyse`, `message/get_backupmsginfo`, the sticker category list and recommended list, and the GIF-by-category and by-dictionary reads; `friend/active-pcweb` (404), `group/getlg/e2ee`, the list of end-to-end encrypted groups (`Stop retry`, the answer of a retired service, like the todos), the media-store lists `mediastore/list` and `media/oneone/list` (error 114 for every body tried) and `friend online` / `friend close` (404), rechecked live on 2026-10-28. The personal todo calls (three reads, six writes) were removed on 2026-10-28: Zalo's todo service (`task-api.chat.zalo.me`, the host of the To-Do mini app) answers `-69` ("stop retry") to every request, even a made-up path or no login, and the boards host answers the todo paths the same way while its notes, reminders and pins work. `offline-check` is the web client's own boot probe (it answers a list of conversation ids and `evict`).
 
 ---
 
@@ -345,6 +345,15 @@ Requires a Zalo Shop / zBusiness account.
 | `register <on\|off>` | Turn the Zalo Shop catalog feature on or off for this account. |
 
 ---
+
+## zCloud report — `cloud` (2 commands)
+
+What the zCloud index holds and what a cleanup would touch. Both commands read the local index that `sync-cloud` fills and the local message cache: they send nothing to Zalo, need no login session, and **delete nothing**. Zalo has no zCloud delete endpoint; the only removal its clients have is deleting the chat message the item belongs to, for this account on every device, which cannot be undone. There is no `apply`: it waits until one such delete has been validated on a disposable item with the owner present.
+
+| Command | Description |
+|---------|-------------|
+| `ls [-n, --top <n>]` | Items and bytes in the local index, by kind (photo, video, file, voice, gif, other) and by conversation (the `--top` largest, default 10). An empty index says to run `sync-cloud`. |
+| `plan [-c, --conv <threadId>]… [-t, --type <kinds>] [--older-than <days>] [--larger-than <mb>] [-n, --limit <n>] [--only-saved-locally] [--include-groups] [--include-my-cloud] [-o, --out <file>]` | Dry run of a cleanup of that shape: how many items match, how much space they would free, by kind and by conversation, and what is risky (items not saved on this machine, items in messages other people sent, groups). End-to-end encrypted items are never included; groups and My Cloud (the chat with yourself) only with their flags. `--limit` (default 200, at most 2000) caps the items listed, not the totals. `--out` writes the whole plan as JSON at mode 0600. |
 
 ## Bank — `bank` (5 commands)
 
@@ -557,12 +566,13 @@ Completely independent from the personal zca-js account: separate OAuth credenti
 | `read` | 2 |
 | `write` | 2 |
 | `catalog` | 10 |
+| `cloud` | 2 (`ls`, `plan`) |
 | `bank` | 5 |
 | `listen` | 1 |
 | `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 27 MCP tools) |
 | `fleet` | 6 (`ports`, `status`, `start`, `stop`, `restart`, `generate`) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **228 CLI commands** + 27 MCP tools |
+| **Total** | **230 CLI commands** + 27 MCP tools |
 
 ## Provenance
 

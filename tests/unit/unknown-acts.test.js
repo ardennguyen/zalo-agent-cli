@@ -14,6 +14,7 @@ import { walkAst } from "../helpers/zca-call-sites.js";
 import {
     CMD_PUSH_ACTIONS,
     CMD_PUSH_CONTROLS,
+    KNOWN_COMMANDS,
     MAX_NAMES,
     SAVE_EVERY_MS,
     attachUnknownActs,
@@ -182,7 +183,84 @@ describe("what gets noted", () => {
     });
 });
 
+describe("commands this client does not know", () => {
+    const view = (cmd, subCmd, data = null, size = 64) => ({
+        cmd,
+        subCmd,
+        size,
+        frame: () => (data ? { data } : null),
+    });
+
+    it("names a command once, by number, with the key NAMES of its body and its size", () => {
+        const file = fresh();
+        const acts = createUnknownActs({ file });
+        assert.equal(acts.observeCommand(view(533, 0, { room: "secret-room", n: 3 }, 120)), 1);
+        assert.equal(acts.observeCommand(view(533, 0, { room: "again" })), 0, "the same name is not new");
+        assert.equal(acts.observeCommand(view(533, 1, { other: 1 })), 1, "another subCmd is another name");
+        const names = saved(file);
+        assert.deepEqual(Object.keys(names).sort(), ["cmd/533_0", "cmd/533_1"]);
+        assert.deepEqual(names["cmd/533_0"].keys, ["room", "n"]);
+        assert.equal(names["cmd/533_0"].size, 120);
+        assert.equal(names["cmd/533_0"].count, 2);
+        assert.doesNotMatch(readFileSync(file, "utf8"), /secret-room|again/, "values are never kept");
+    });
+
+    it("lets every command the client handles or names pass without a trace", () => {
+        const file = fresh();
+        const acts = createUnknownActs({ file });
+        for (const cmd of KNOWN_COMMANDS) assert.equal(acts.observeCommand(view(cmd, 0)), 0, `cmd ${cmd}`);
+        assert.equal(existsSync(file), false);
+        // the ones captured and never handled are exactly what this exists for
+        for (const cmd of [533, 570, 571, 575, 576, 577, 578, 592, 604, 614, 620, 623, 800]) {
+            assert.equal(KNOWN_COMMANDS.has(cmd), false, `cmd ${cmd} is unhandled, so it must be noted`);
+        }
+    });
+
+    it("names a command whose body cannot be decoded, and survives a frame() that throws", () => {
+        const file = fresh();
+        const acts = createUnknownActs({ file });
+        assert.equal(acts.observeCommand(view(614, 0, null)), 1);
+        const throwing = {
+            cmd: 623,
+            subCmd: 0,
+            size: 9,
+            frame: () => {
+                throw new Error("bad");
+            },
+        };
+        assert.equal(acts.observeCommand(throwing), 1);
+        assert.deepEqual(Object.keys(saved(file)).sort(), ["cmd/614_0", "cmd/623_0"]);
+    });
+
+    it("shares the cap with the actions: a flood of new commands cannot grow the file without end", () => {
+        const acts = createUnknownActs({ file: fresh() });
+        for (let c = 1000; c < 1000 + MAX_NAMES + 50; c++) acts.observeCommand(view(c, 0));
+        assert.equal(Object.keys(acts.names()).length, MAX_NAMES);
+    });
+});
+
 describe("attached to a socket tap", () => {
+    it("also listens to every frame's header when the tap offers it, and lets go on stop", () => {
+        let any = null;
+        const tap = {
+            on: () => () => {},
+            onAny(fn) {
+                any = fn;
+                return () => {
+                    any = null;
+                };
+            },
+        };
+        const file = fresh();
+        const a = attachUnknownActs({ tap, file });
+        assert.equal(typeof any, "function");
+        any({ cmd: 800, subCmd: 1, size: 40, frame: () => ({ data: { k: 1 } }) });
+        any({ cmd: 501, subCmd: 0, size: 40, frame: () => null });
+        assert.deepEqual(Object.keys(a.names()), ["cmd/800_1"]);
+        a.stop();
+        assert.equal(any, null);
+    });
+
     it("listens to 602 and 601 and lets go on stop", () => {
         const subs = new Map();
         const tap = {

@@ -17,8 +17,10 @@ import {
 import { saveCredentials, loadCredentials, getAccountDir } from "../core/credentials.js";
 import { initDb, summarizeCloudItems } from "../core/db.js";
 import { describeAccountStatus, readAccountStatus } from "../core/account-status.js";
+import { describeDevices, summarizeCompanion } from "../core/account-devices.js";
+import { createTrustStore } from "../zalo/trust-store.js";
 import { listAccounts, getActive, setActive, addAccount, removeAccount, getAccount } from "../core/accounts.js";
-import { serverLogout, reportLogout, lockHolder } from "../core/logout.js";
+import { serverLogout, reportLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { startQrServer } from "../utils/qr-http-server.js";
@@ -173,6 +175,7 @@ export function registerAccountCommands(program) {
                 clearSession();
             }
 
+            const trustNote = describeTrustedDevice(ownerId, "deleted");
             const { removed, wiped, skippedLocked } = removeAccount(ownerId);
             if (skippedLocked) {
                 warning(
@@ -183,6 +186,7 @@ export function registerAccountCommands(program) {
             }
             if (removed) {
                 success(`Account ${ownerId} removed${wiped ? " — local data deleted" : ""}`);
+                if (trustNote && wiped) info(trustNote);
             } else {
                 error(`Account not found: ${ownerId}`);
             }
@@ -287,22 +291,12 @@ export function registerAccountCommands(program) {
                 // API: destructuring .data silently produced undefined).
                 const result = await getApi().getListDevice();
                 const devices = result?.devices;
-                const companions = devices?.companions || [];
-                output({ devices }, program.opts().json, () => {
-                    if (!devices) {
-                        info("No device data returned.");
-                        return;
-                    }
-                    console.log(`  This session (master): ${devices.masterId}`);
-                    console.log(`  Last updated:          ${new Date(devices.lastUpdateTs).toLocaleString()}`);
-                    if (!companions.length) {
-                        info("No other devices/sessions linked to this account.");
-                    } else {
-                        console.log(`  Other linked sessions (${companions.length}):`);
-                        for (const c of companions) {
-                            console.log(`    - ${JSON.stringify(c)}`);
-                        }
-                    }
+                // Which entry is this CLI: the companion identity saved by the official QR login, if there is one.
+                const saved = createTrustStore(getAccountDir).load(String(getApi().getOwnId()));
+                const mine = { companionId: saved?.companionId ?? null };
+                const companions = (devices?.companions || []).map((c) => summarizeCompanion(c, mine));
+                output({ devices, companions }, program.opts().json, () => {
+                    for (const line of describeDevices(devices, mine)) console.log(`  ${line}`);
                 });
             } catch (e) {
                 error(`Failed to list devices: ${e.message}`);

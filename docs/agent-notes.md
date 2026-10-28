@@ -85,11 +85,11 @@ tests/                    # Test suite — see tests/README.md
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **228** invokable leaves (196 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **230** invokable leaves (198 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3524** as of 2026-10-28 (3514 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3588** as of 2026-10-28 (3578 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1109,14 +1109,15 @@ and links again as the same device (a relink id, no secret in the QR) instead of
 (`-21`) clears it and the login is run again. The page's own relink case was seen in the capture (second login, no new keys).
 The device list is stored as the server sent it; its signature is not verified here (the phone and the server do).
 
+**What each way out does with the identity (decision D19, 2026-10-28, owner ratified the companion device).** `logout` and `logout --delete-history` keep `trusted-device.json` (a history delete removes `zalo.db` and `media/` only), so the next QR login relinks as the same companion; `logout --purge` and `account remove` remove the account's folder with it, and say that Zalo still lists the entry on the phone until it is removed there (`describeTrustedDevice`, `src/core/logout.js`). `account devices` marks which entry is this CLI by matching the saved `companionId`. Seen live 2026-10-28: after two QR logins on one account the list holds one CLI entry, not two.
+
 **Status.** Offline, everything above is covered: the fake `id.zalo.me` follows the captured sequence whole (the replay
 harness reports no difference), the module's calls run in tests on the real wasm when `ZALO_TRUST_WASM` points at a copy,
 and a stand-in for the module is asserted on in the unit tests. **Live, 2026-10-28:** two QR logins on the same account
 went through with `cliGenQR=1`: the first scan was answered with status 4, the second QR (layer 2) was scanned, the phone's
 Confirm ended the login, and the saved session answered `whoami` and `status` from a separate process. The second login
 found the saved identity and went through the same two scans. So the official flow is the default again
-(`resolveQrFlow`, the docs that name it); `ZALO_QR_FLOW=legacy` selects zca-js's. Not checked: whether the phone's list of
-linked devices shows one CLI entry after the two logins (the relink) or two. The live run also showed that the browser tab's
+(`resolveQrFlow`, the docs that name it); `ZALO_QR_FLOW=legacy` selects zca-js's. Checked afterwards (`account devices`): the list shows one CLI entry after the two logins, so the relink works. The live run also showed that the browser tab's
 keep-alive connection held the process open after the login; the QR server now unrefs its connections.
 
 **The QR page.** `src/utils/qr-http-server.js` serves a plain login page (white card, the QR in a frame with blue corners,
@@ -1512,7 +1513,7 @@ free-plan removal. None of it is built, and no live request for it was made.
 
 ## Reads: the web client's read-only endpoints (v3.0, 2026-10-26)
 
-**What it is.** `src/zalo/reads.js` is a table of 39 reads (42 until the todo reads were removed on 2026-10-28; 40 at first; the closing sweep added `blocksharing-list` and the local `voice-transcript`): for each, the service-map host, the path, the web client's
+**What it is.** `src/zalo/reads.js` is a table of 41 reads (42 until the todo reads were removed on 2026-10-28; 40 at first; the closing sweep added `blocksharing-list` and the local `voice-transcript`): for each, the service-map host, the path, the web client's
 command id and the body it encrypts into `params`, taken from the web API module (`fBUP`, 2026-10-23 bundle) method of
 the same purpose. They all use the session cipher (a GET with `params` in the query, or a POST with `params` in the form
 body); the two login-host reads (`check-update`, `server-settings`) have plain replies, with `data` unencrypted.
@@ -1615,7 +1616,10 @@ network off and on. (3) A restore without the four-session cap: not needed, see 
 trees): an action the server pushes (`602`, or an unhandled `601` control) that nobody handles is named once in
 `unknown-acts.json` of the account folder, with its first and last time, its count, the command that carried it and the key
 NAMES of its data (never the values). Bounded (200 names), counts written back at most once a minute, never throws into
-the socket. L16: decided against, see below. L17: comments and notes made true (the 532 ack shape, the pulls' answers, the
+the socket. Since 2026-10-28 it also notes a socket COMMAND that is neither handled nor named in `KNOWN_COMMANDS`, as
+`cmd/<cmd>_<subCmd>` in the same file (the socket tap's `onAny` gives it each frame's header; the body is decoded once, on first
+sight, for its key names): 533, 570 to 578, 592, 604, 614, 620, 623 and 800 had been seen in captures and left no trace.
+L16: decided against, see below. L17: comments and notes made true (the 532 ack shape, the pulls' answers, the
 four-session cap's reason, the cookie note).
 
 **L16 (optional boot reads), decided against.** The reads exist on demand (`read run server-settings`, `blocklist`, the zCloud
@@ -1876,7 +1880,7 @@ dir, so nothing here opened a second socket on it: every call was a plain HTTP o
 
 The three todo reads (`todo-get`, `todo-list`, `todo-verify`) and the six todo writes (`todo-create`, `todo-update`,
 `todo-status`, `todo-ding`, `todo-ding-ack`, `todo-delete`) are gone, with the todo status enum, their tests and their
-lines in the docs. There are 39 reads and 27 writes now, and 26 of the 27 writes have been seen working.
+lines in the docs. There are 41 reads and 27 writes now, and 26 of the 27 writes have been seen working.
 
 **Why.** The owner reported that Zalo's To-Do mini app (`task.chat.zalo.me`) still opens but picking people no longer
 works, and that the page does not load in a plain browser (which proves nothing alone: it is a mini app that loads
@@ -1913,7 +1917,7 @@ the code and from read-only calls on both:
 | reactions, pinned and unread, boards | same | same | the socket (610/611) and REST |
 | cloud index | walks the queue; records where each backup lives | free plan with nothing in the cloud: no page asked for, stage reported as skipped | zCloud REST (`zcld.chat.zalo.me`) |
 | media downloads | from the CDN references the messages carry | the same | the CDN, until Zalo's copy expires |
-| media that expired from the CDN | listed in the cloud index; not downloadable (the blob is end-to-end encrypted under the owner's cloud PIN, decision D8) | gone: nothing else holds it | none for this client |
+| media that expired from the CDN | listed in the cloud index; not downloadable (the blob is end-to-end encrypted under the account's cloud key, which this tool never holds, decision D8) | gone: nothing else holds it | none for this client |
 
 Live reads of the two accounts (aggregate numbers only): the usage answer is `{plan, quota, usage, service_usage}` for
 both. Main: plan 0 (`zcloud`), quota 107374182400 B (100 GiB), 39,192,432,681 B used, `service_usage` keys `my_cloud`,
@@ -1926,3 +1930,44 @@ plan first (`readCloudPlan`, `describeCloudPlan` in `src/commands/sync.js`).
 Not tested live: a message restore on the Companion account (its listener holds the socket and the restore needs a tap
 on the phone that holds that account). The restore code does not read the plan, so nothing in it differs by account.
 
+
+
+### Parity with the Web client, audited 2026-10-28 (decision D31)
+
+The audit read the Web and PC bundles and nine HARs (all of the paid account) against this code. What it found, and what
+was done (items are the audit's ZP numbers):
+
+- **The message sync is the same for both account types, in the Web and here.** The Web's sync modules do not mention
+  zCloud, the plan or `opt_in`; after a manual sync its REST traffic holds batch downloads and `gid/decrypt`, no zcld and
+  no media request. `settings.features.sync_2_web` is identical on the paid and the free account (read live): `enable`
+  true, 300 s awaiting-mobile and paused timeouts, 30 s batch timeout. A `restore()` now stops before asking the phone
+  anything when that flag is false (ZP-04); our own waits stay longer than the Web's (a person has to tap).
+- **Downloads go in the account's identity (ZP-01).** The batch downloads and the media downloads used the global `fetch`:
+  no session User-Agent, no `Referer`, and, for a proxied account, a direct connection while everything else used the
+  proxy. They now use the account's own fetch (`src/zalo/download-fetch.js`): its proxy, its User-Agent, the Web client's
+  `Referer`, the browser's `sec-fetch-*` and client hints, and no cookie.
+- **The cloud lookup joins on the Web's key (ZP-02).** The queue's `glbMsgId` is the literal `"0"` for 74.6 percent of the
+  entries in the capture, so looking an item up by message id found a quarter of them. The Web joins on
+  `cliMsgId_conversation_sender`, which is stored as `zKey`: `lookupCloudBackup(msgId, zKey)` tries it first
+  (`messageZKey`), and the `cloudBacked` count of the media summary follows.
+- **The plan is read as the Web reads it (ZP-05).** Settings, then `usage-mycloud` (which carries the plan), then
+  `v2/usage` only when the plan is not free (-1). A free account never asks for `v2/usage` from `sync`. Live: the free
+  account's `usage-mycloud` quota is 524288000 B (500 MB), and the server's default cloud quota is 1 GiB.
+- **`tracking_source` is 2 (ZP-06)**, what every page of every captured Web walk sends; **the walk reads up to 500 pages
+  (ZP-07)**, so the first sync of a 103-page queue is not cut at 50.
+- **Wording (ZP-12, ZP-14)**: status 8 now says "busy (syncing or backing up)"; the media summary no longer names a PIN.
+- **Not done, and why.** ZP-03 (the media stage is eager, the Web's is lazy: a decision for the owner), ZP-09 (the CLI's
+  cloud stage takes no lock beside a daemon's cmd-621 walk: both write the same index rows, a low risk), ZP-11 (forced
+  verify flags stay ignored: they ask for a key change or an audit, never captured), ZP-13 (the Web reports downloaded
+  media to the `sync_action` host: no HAR shows it), ZP-15, ZP-16.
+- **My Cloud blobs (ZP-10): tried live, not retrievable.** The 11 key-less items of the paid account sum to exactly the
+  `usage-mycloud` bytes. `downloadurls` gives a URL for each, and the GET with the viewer key answers 404 `NOT_FOUND`
+  (without the key, 401). Until a Web capture of opening a My Cloud item shows the real path, they stay unfetched.
+- **The phone's "back up text messages to zCloud" has no client surface.** `opt_in` bit 4 and `service_usage.message_backup`
+  are read nowhere in the Web or PC bundles, the Web logs the old `msgbackup` control as unsupported, and no zCloud path
+  lists or restores a message backup. The Web restores messages only from the phone (transfer-sync-v2). Restoring it
+  would need an endpoint nobody has captured, the phone app's own traffic, and probably the account's key (D8). On the
+  paid account `account status` shows the backup's size (42.6 MB at the time).
+- **Read-only rechecks (2026-10-28):** `friend-active-pcweb` 404, the media-store lists (`mediastore/list`,
+  `media/oneone/list`) error 114 for every body tried, `group/getlg/e2ee` "Stop retry", `friend online` 404 (unknown:
+  the Web still asks for it, its answer was never captured), `friend close` retired by Zalo (no caller, menu off).

@@ -205,6 +205,7 @@ const CASES = [
         "GET",
         { groupId: "555", boardVersion: 5, imei: IMEI },
     ],
+    ["oa-convert-ids", { oaIds: ["1", 2] }, "profile", "/api/social/oa/convertid", "GET", { oa_ids: ["1", "2"] }],
     ["banner-info", {}, "banner", "/api/banner/v1/info", "GET", { imei: IMEI }],
     ["emoji-status-friends", {}, "emoji_stt", "/api/v1/emoji-status/friends", "GET", { imei: IMEI }],
     ["emoji-status-config", {}, "emoji_stt", "/api/v1/emoji-status/resource-config", "GET", { imei: IMEI }],
@@ -243,9 +244,28 @@ describe("each read goes out the way the web client's API module sends it", () =
     it("covers every read in the table (a new read needs a case)", () => {
         const covered = new Set(CASES.map((c) => c[0]));
         const missing = [...READ_NAMES.filter((n) => !covered.has(n))].filter(
-            (n) => !["check-update", "server-settings", "voice-transcript"].includes(n),
+            (n) => !["check-update", "server-settings", "voice-transcript", "account-status"].includes(n),
         );
         assert.deepEqual(missing, []);
+    });
+
+    it("account-status is composed: it answers from several reads of its own, and says which one failed", async () => {
+        const h = harness();
+        const api = {
+            ...h.api,
+            getOwnId: () => "1000000000000000099",
+            fetchAccountInfo: async () => ({
+                profile: { bizPkg: { pkgId: 1, pkgName: { EN: "zBusiness Basic" }, expired: 0 } },
+            }),
+        };
+        const out = await callRead(api, "account-status", {});
+        assert.equal(out.zbusiness.pkgId, 1);
+        assert.equal(out.zbusiness.name, "zBusiness Basic");
+        assert.ok(
+            out.problems.some((p) => /zcld/.test(p.source)),
+            "the zCloud reads failed offline and are named",
+        );
+        assert.equal(READS["account-status"].host, "local");
     });
 
     it("voice-transcript is local: it reads what the listener recorded, sends nothing, and builds no request", async () => {

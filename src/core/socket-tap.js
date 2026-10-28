@@ -76,6 +76,7 @@ export function readFrame(buf, cipherKey) {
  * @returns {{
  *   attach: (listener: object) => void,
  *   on: (cmd: number, fn: (frame: object, listener: object) => void) => () => void, (a frame also carries `raw`, its bytes)
+ *   onAny: (fn: (view: object, listener: object) => void) => () => void, (every frame's header; `view.frame()` decodes)
  *   auth: () => object|null,
  * }} `attach` taps the listener's current socket and every one it opens after;
  *   `on` subscribes to one cmd and returns the unsubscribe; `auth` is the last
@@ -84,6 +85,8 @@ export function readFrame(buf, cipherKey) {
 export function createSocketTap({ log = (line) => console.error(line) } = {}) {
     /** @type {Map<number, Set<Function>>} */
     const subscribers = new Map();
+    /** Subscribers to every frame's header, for what only needs to know that a command arrived. */
+    const headerSubscribers = new Set();
     /** Sockets already tapped: a re-login attaches again, and a frame must arrive once. */
     const tapped = new WeakSet();
     /** Listeners already watched for new sockets. */
@@ -116,6 +119,27 @@ export function createSocketTap({ log = (line) => console.error(line) } = {}) {
             // one header read per frame; the handshake is always kept.
             if (!Buffer.isBuffer(buf) || buf.length < 4) return;
             const cmd = buf.readUInt16LE(1);
+            if (headerSubscribers.size) {
+                // The header alone; `frame()` decodes the body only for a subscriber that asks, once.
+                let decoded;
+                const view = {
+                    cmd,
+                    subCmd: buf[3],
+                    size: buf.length,
+                    frame: () => (decoded === undefined ? (decoded = readFrame(buf, listener.cipherKey)) : decoded),
+                };
+                for (const fn of [...headerSubscribers]) {
+                    try {
+                        fn(view, listener);
+                    } catch (e) {
+                        try {
+                            log(`socket tap: a header handler failed: ${e?.message || e}`);
+                        } catch {
+                            /* a broken logger must not break the socket either */
+                        }
+                    }
+                }
+            }
             if (cmd !== CMD_AUTHEN && !subscribers.has(cmd)) return;
             const frame = readFrame(buf, listener.cipherKey);
             if (frame) {
@@ -149,6 +173,18 @@ export function createSocketTap({ log = (line) => console.error(line) } = {}) {
                 set.delete(fn);
                 if (set.size === 0) subscribers.delete(key);
             };
+        },
+
+        /**
+         * Subscribe to the header of EVERY frame: `{cmd, subCmd, size, frame()}`, where `frame()` decodes the body on
+         * demand. Costs one header read per frame while nobody decodes.
+         *
+         * @param {(view: {cmd: number, subCmd: number, size: number, frame: () => (object|null)}, listener: object) => void} fn
+         * @returns {() => void} unsubscribe
+         */
+        onAny(fn) {
+            headerSubscribers.add(fn);
+            return () => headerSubscribers.delete(fn);
         },
 
         auth() {

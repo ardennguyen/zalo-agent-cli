@@ -13,7 +13,7 @@ contacts Zalo or reads your real `~/.zalo-agent-cli/`. Some tests use disposable
 loopback servers and subprocess transports.
 
 ```bash
-npm test                      # 3524 offline tests — no Zalo session needed
+npm test                      # 3588 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/

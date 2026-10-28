@@ -31,6 +31,7 @@ import { checkLock } from "./lock.js";
 import { COMPUTER_NAME } from "../zalo/profile.js";
 import { errorCodeOf } from "../zalo/errors.js";
 import { officialLogout } from "../zalo/official-logout.js";
+import { TRUST_FILE } from "../zalo/trust-store.js";
 
 const require = createRequire(import.meta.url);
 
@@ -256,6 +257,30 @@ export function deleteLocalHistory(ownId) {
         }
     }
     return { dbDeleted, mediaDeleted };
+}
+
+/**
+ * What a person should know about this client's companion-device identity when an account is signed out or removed
+ * here (decision D19, 2026-10-28). The official QR login makes this CLI a trusted companion device of the account;
+ * the identity that proves it lives in `accounts/<ownId>/trusted-device.json`.
+ *
+ * - `logout` (also `--delete-history`) keeps it, with the account's other data: the next QR login links again as the
+ *   SAME companion entry instead of adding one.
+ * - `logout --purge` and `account remove` delete it with the account's folder. Zalo still lists the entry on the phone
+ *   until it is removed there (Settings, linked devices; `account devices` shows it), and a later QR login adds a
+ *   new one.
+ *
+ * Null when this machine holds no such identity (a login by the old flow, or none made yet).
+ *
+ * @param {string} ownId
+ * @param {"kept"|"deleted"} what - whether the caller's route keeps the identity or deletes it
+ * @returns {string|null}
+ */
+export function describeTrustedDevice(ownId, what) {
+    if (!existsSync(join(getAccountDir(ownId), TRUST_FILE))) return null;
+    return what === "kept"
+        ? "This CLI stays a linked companion device of the account: its identity is kept, so the next QR login links as the same entry. `logout --purge` deletes it."
+        : "This CLI's companion-device identity was deleted. Zalo still lists it as a linked device until you remove it on your phone (`account devices` shows the list); a later QR login adds a new entry.";
 }
 
 /**

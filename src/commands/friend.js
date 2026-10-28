@@ -50,7 +50,11 @@ export function registerFriendCommands(program) {
                 const result = await getApi().getFriendOnlines();
                 output(result, program.opts().json);
             } catch (e) {
-                error(e.message);
+                error(
+                    /404/.test(e.message)
+                        ? `${e.message}. Zalo answers 404 for the online-friends list on this build (rechecked live on two accounts, 2026-10-28); the web client still asks for it, and its answer was never captured. \`friend last-online <userId>\` works.`
+                        : e.message,
+                );
             }
         });
 
@@ -341,7 +345,12 @@ export function registerFriendCommands(program) {
                     }
                 });
             } catch (e) {
-                error(`Get close friends failed: ${e.message}`);
+                error(
+                    `Get close friends failed: ${e.message}` +
+                        (/404/.test(e.message)
+                            ? ". Zalo has retired close friends: this build's web client has no menu and no caller for it, and the request answers 404."
+                            : ""),
+                );
             }
         });
 

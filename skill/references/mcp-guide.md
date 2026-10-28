@@ -674,6 +674,8 @@ Chạy một trong các endpoint **chỉ-đọc** của Zalo Web mà không tool
 | `name` | enum (tuỳ chọn) | Tên một read trong bảng của `read list`. Bỏ trống: tool liệt kê mọi read kèm tham số và việc một tài khoản thật đã trả lời nó chưa (`verified`) |
 | `args` | object (tuỳ chọn) | Tham số của read theo đúng tên (id là chuỗi); thiếu tham số bắt buộc thì tool báo lỗi và không gọi Zalo |
 
+Gói dịch vụ của tài khoản (gói zBusiness và hạn mức của nó, gói zCloud, dung lượng, hạn mức, ngày hết hạn đăng ký) lấy bằng `name: "account-status"`: một read tổng hợp, không cần tham số, chỉ-đọc, tương đương `zalo-agent account status --json`.
+
 Kết quả: `{reads: [{name, what, host, path, verified, args}]}` khi không có `name`; `{name, data}` với `data` là phần trả lời của Zalo khi có `name`. Các read chưa `verified` có yêu cầu dựng theo client web nhưng chưa thấy được trả lời thật.
 
 ### `zalo_write`

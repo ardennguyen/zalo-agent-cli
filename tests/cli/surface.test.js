@@ -163,6 +163,7 @@ const COMMAND_SURFACE = {
     "auto-reply": ["list", "create", "update", "delete"],
     "quick-msg": ["list", "add", "update", "remove"],
     label: ["list", "update"],
+    cloud: ["ls", "plan"],
     bank: ["list", "accounts", "add", "update", "remove"],
     catalog: [
         "list",

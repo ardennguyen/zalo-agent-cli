@@ -17,7 +17,7 @@ import { saveCredentials, loadCredentials, getAccountDir } from "../core/credent
 import { addAccount, getActive, removeAccount, updateAccountName } from "../core/accounts.js";
 import { getDaemonStatus } from "../core/daemon-channel.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
-import { serverLogout, reportLogout, finishLocalLogout, lockHolder } from "../core/logout.js";
+import { serverLogout, reportLogout, finishLocalLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { noteQrScanned, startQrServer } from "../utils/qr-http-server.js";
@@ -280,6 +280,8 @@ export function registerLoginCommands(program) {
             // rather than pull credentials out from under a running daemon.
             if (opts.purge) {
                 try {
+                    // Asked before the folder goes: the identity is in it.
+                    const trustNote = describeTrustedDevice(active.ownId, "deleted");
                     const { wiped, skippedLocked } = removeAccount(active.ownId);
                     if (skippedLocked) {
                         warning(
@@ -294,6 +296,7 @@ export function registerLoginCommands(program) {
                     success(
                         `Logged out and purged ${active.name || active.ownId} — ${wiped ? "local account data deleted" : "no local account data found to delete"}.`,
                     );
+                    if (trustNote && wiped) info(trustNote);
                 } catch (e) {
                     // A filesystem-level failure (locked file, permissions, AV
                     // scanner) must not crash the process with a raw stack trace.
@@ -329,6 +332,8 @@ export function registerLoginCommands(program) {
                     `Logged out ${who} — ${historyGone ? "local chat history deleted; " : ""}no saved credentials were found to delete.`,
                 );
             }
+            const trustNote = describeTrustedDevice(active.ownId, "kept");
+            if (trustNote) info(trustNote);
             if (opts.keepSession || opts.remote === false) {
                 info(
                     "This ended the session on this device only. To sign it out at Zalo, remove it from your phone's list of logged-in devices.",

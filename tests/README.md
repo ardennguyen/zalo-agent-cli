@@ -79,7 +79,8 @@ tests/
 │   ├── validation.test.js       # every guard that fires before a network call
 │   └── sandbox-discipline.test.js  # no offline test may touch the real ~/.zalo-agent-cli/
 └── e2e/                         # live, tiered — see below
-    ├── tier1-readonly.test.js         tier2-create.test.js
+    ├── tier1-readonly.test.js         tier1-web-reads.test.js
+    ├── tier2-create.test.js
     ├── tier3-mutate-restore.test.js   tier4-cleanup.test.js
     └── tier5-destructive.test.js
 ```
@@ -420,6 +421,9 @@ tiers before it already proved healthy.
 wrong account, or a drifted target id fails the run before anything has been
 created or destroyed. It asserts the group's _name_ matches `targets.json`,
 which is the tripwire for a stale config pointing at someone else's group.
+`tier1-web-reads.test.js` (also tier 1) asks a live account every read of Zalo Web's table
+(`src/zalo/reads.js`, 41 reads) and fails for a read that no longer answers: how the personal todos and the
+media-store lists, which had stopped answering, would have been caught the day Zalo retired them.
 
 **Tier 2 — send & create.** Adds only: messages, polls, reminders, a group
 note, a quick message, an auto-reply rule, a catalog. Nearly every created

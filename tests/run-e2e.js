@@ -35,6 +35,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 const TIERS = [
     { n: 1, file: "e2e/tier1-readonly.test.js", label: "read-only", risk: "none" },
+    { n: 1, file: "e2e/tier1-web-reads.test.js", label: "read-only: every read of Zalo Web's table", risk: "none" },
     { n: 2, file: "e2e/tier2-create.test.js", label: "send & create", risk: "adds artifacts" },
     { n: 3, file: "e2e/tier3-mutate-restore.test.js", label: "mutate & restore", risk: "reversible" },
     { n: 4, file: "e2e/tier4-cleanup.test.js", label: "delete & wipe history", risk: "destroys tier-2 artifacts" },

@@ -20,7 +20,7 @@ import { drainReactions, placeUnresolvedReactions } from "../core/sync-v2/reacti
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
 import { syncConvState } from "../core/sync-v2/conv-state.js";
 import { planSyncRun } from "../core/sync-v2/plan.js";
-import { startKeepAlive } from "../core/sync-v2/keepalive.js";
+import { pingPayload, startKeepAlive } from "../core/sync-v2/keepalive.js";
 import { cancelViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { attachLiveStore } from "../core/live-store.js";
 import {
@@ -941,16 +941,26 @@ function formatBytes(n) {
 }
 
 /**
- * Open the listener socket and resolve once connected (or on close/error/timeout).
+ * Open the listener socket and resolve once the server's hello has been processed (or on close/error/timeout).
  *
  * @param {object} api
  * @param {number} waitMs
  * @returns {Promise<{ok: boolean, reason?: string}>}
  */
-function connectListener(api, waitMs) {
+export function connectListener(api, waitMs) {
     return new Promise((res) => {
         let settled = false;
-        const onConnected = () => done({ ok: true });
+        // Web and PC send nothing until the server's hello (cmd 1/1, which carries the key) has been processed, and
+        // then ping at once (capture: +7 ms) before anything else. "Open" is therefore not "connected": a reconnect
+        // that asked for sessions 1 ms ahead of the hello was closed again within seconds.
+        const onHello = () => {
+            try {
+                api.listener.sendWs(pingPayload(), false);
+            } catch {
+                /* a socket that cannot take a ping is reported by the close that follows */
+            }
+            done({ ok: true });
+        };
         const onClosed = (code) =>
             done({ ok: false, reason: code === CLOSE_DUPLICATE ? "duplicate" : `closed (${code})` });
         const onError = (e) => done({ ok: false, reason: e && e.message ? e.message : "socket error" });
@@ -963,13 +973,13 @@ function connectListener(api, waitMs) {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            api.listener.removeListener("connected", onConnected);
+            api.listener.removeListener("cipher_key", onHello);
             api.listener.removeListener("closed", onClosed);
             api.listener.removeListener("error", onError);
             res(v);
         };
         const timer = setTimeout(() => done({ ok: false, reason: "timeout" }), waitMs);
-        api.listener.on("connected", onConnected);
+        api.listener.on("cipher_key", onHello);
         api.listener.on("closed", onClosed);
         api.listener.on("error", onError);
         api.listener.start({ retryOnClose: false });
@@ -1001,6 +1011,9 @@ export function restoreViaDaemon(accountDir, req, { proc = process } = {}) {
     );
 }
 
+/** The shortest pause Zalo Web puts before retrying a socket that closed abnormally (its table: 2, 3, 5, 8 s). */
+export const RECONNECT_DELAY_MS = 2000;
+
 /**
  * Re-open the socket after it dropped mid-stage.
  *
@@ -1013,12 +1026,15 @@ export function restoreViaDaemon(accountDir, req, { proc = process } = {}) {
  *
  * @param {object} api
  * @param {number} [waitMs=30000]
+ * @param {number} [delayMs=RECONNECT_DELAY_MS] - how long to wait before opening the new socket
  * @returns {Promise<boolean>} true once a live socket is back
  */
-async function reconnectListener(api, waitMs = 30000) {
+export async function reconnectListener(api, waitMs = 30000, delayMs = RECONNECT_DELAY_MS) {
     // zca-js nulls `ws` on close and throws "Already started" while it is set,
     // so a socket still hanging around has to be put down first.
     if (api?.listener?.ws) await closeListener(api);
+    // Web's first retry after a 1006 comes after 2 s (then 3, 5, 8); this one came after 0.5 s.
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
     const r = await connectListener(api, waitMs);
     return r.ok === true;
 }

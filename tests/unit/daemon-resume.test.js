@@ -116,12 +116,12 @@ describe("reconnectedApi", () => {
 });
 
 describe("resolveMaxResumes", () => {
-    it("is one unless a whole number is asked for, and never more than five", () => {
-        assert.equal(resolveMaxResumes(undefined), 1);
-        assert.equal(resolveMaxResumes(null), 1);
-        assert.equal(resolveMaxResumes("3"), 1, "text is not a whole number");
-        assert.equal(resolveMaxResumes(1.5), 1);
-        assert.equal(resolveMaxResumes(3), 3);
+    it("is three unless a whole number is asked for, and never more than five", () => {
+        assert.equal(resolveMaxResumes(undefined), 3);
+        assert.equal(resolveMaxResumes(null), 3);
+        assert.equal(resolveMaxResumes("1"), 3, "text is not a whole number");
+        assert.equal(resolveMaxResumes(1.5), 3);
+        assert.equal(resolveMaxResumes(1), 1);
         assert.equal(resolveMaxResumes(0), 0, "zero switches resuming off");
         assert.equal(resolveMaxResumes(99), 5);
         assert.equal(resolveMaxResumes(-2), 0);

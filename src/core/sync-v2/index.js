@@ -59,11 +59,13 @@ import {
     PARTITION_NOT_FOUND,
     isConfirmed,
     isIdleTooLong,
+    isStalledIdle,
     isTransferSessionComplete,
     judgeConversationRound,
     recordDownloadFailure,
     readTransferControls,
     shouldAbortOnFailures,
+    STALL_IDLE_MS,
 } from "./transfer.js";
 import { attachLiveStore } from "../live-store.js";
 
@@ -91,31 +93,40 @@ const MAX_TS = 9007199254740991;
  * one-shard run.
  */
 const PER_SHARD_BUDGET_MS = 30000;
+/** How long a session may be waited for before the restore says what it is still missing. */
+const STALL_NOTE_MS = 60_000;
 /**
  * How many message sessions are asked for before the first of them has been served.
  *
- * This cap is ours, not Zalo Web's. Web sends every session of a run (98 partitions at 30 each is four of them,
- * which is why a capture shows four) one after the other, each after the previous one was acknowledged. Fifty
- * at once, with no waiting for acks, once got our socket dropped with no error frame; the requests are ack-paced
- * now. The cap stays: it is Web's own pace, and a full-history run of the test account (about 421,000 messages in
- * 2,367 conversations, 2026-10-25) completed with it. A run without it was never made, and is not needed.
+ * Web and PC send every session of a run (98 partitions at 30 each is four of them, which is why a capture shows
+ * four; PC has no cap either) one after the other, each after the previous one was acknowledged, then consume them
+ * and release them together at the end. Fifty at once, with no waiting for acks, once got our socket dropped with no
+ * error frame; the requests are ack-paced now. The phone stops serving at about 32 sessions that are open together
+ * (live, 2026-10-25), so a wave is at most 30, which is also the most the restore takes (see `waveSize`): a run
+ * of 79 sessions is three waves, and the sessions of a wave are released together when the wave is done.
  */
-const DEFAULT_WAVE_SIZE = 4;
+const DEFAULT_WAVE_SIZE = 30;
+/**
+ * Sessions released at once. One: each release goes out after the previous one was acknowledged. Web sends four 591
+ * within 3 ms and gets four acks, but this client's bursts were answered only in part (live, 2026-10-28: two acks for
+ * thirty releases, two for each burst of four, the rest unanswered for 3 s and then released fine one at a time),
+ * while one at a time was acknowledged every time.
+ */
+const RELEASE_BURST = 1;
 /**
  * How many times a dropped socket may be reconnected inside one restore.
  *
- * One, deliberately. A reconnect is cheap for us and potentially expensive for
- * the account owner -- if the server does not carry the phone's confirmation
- * across it, the resumed request prompts their phone again -- so this retries
- * once and then reports honestly rather than looping on a wire that keeps
- * dying.
+ * Three, as in a daemon. It was one, on the argument that a reconnect may cost the person a second tap if the server
+ * does not carry the phone's confirmation across it. Live, 2026-10-28, none of a dozen or so reconnects on the
+ * test account prompted the phone again, and each cost about three seconds (a two second pause, then the dead
+ * socket's sessions released). A restore that dies on its second drop throws away a run that a phone tap bought.
  */
-const MAX_RESUMES = 1;
+const MAX_RESUMES = 3;
 /** The most reconnects a caller may ask a single restore to attempt. */
 const MAX_RESUMES_CAP = 5;
 
 /**
- * How many reconnects a restore may spend: the caller's `maxResumes` (a whole number, capped), else one.
+ * How many reconnects a restore may spend: the caller's `maxResumes` (a whole number, capped), else three.
  *
  * @param {unknown} requested
  * @returns {number}
@@ -631,7 +642,9 @@ export class SyncV2 {
      *   open session with reason 0 (cancelled) and resolves with `reason: "cancelled"`
      * @param {boolean} [opts.fullResync] forget what earlier runs settled and ask for every conversation in full
      * @param {{zproto: object, M: object, C: object}} [opts.codecs] decryption and decoding stand-ins (tests only)
-     * @param {number} [opts.maxResumes] reconnects this run may spend (default 1, at most 5); each one
+     * @param {number} [opts.stallNoteMs=60000] how long a session may be waited for before the run says what it lacks
+     * @param {number} [opts.stallIdleMs=60000] how long an incomplete session may sit with the phone idle before it is failed
+     * @param {number} [opts.maxResumes] reconnects this run may spend (default 3, at most 5); each one
      *   that needs the phone's confirmation again costs the owner a tap.
      * @param {() => Promise<boolean|{api: object}>} [opts.reconnect] re-open the listener socket
      *   after a drop and resolve true once it is live. Supplied by the caller because this class
@@ -643,6 +656,8 @@ export class SyncV2 {
     async restore(opts = {}) {
         const shardSize = Math.min(30, Math.max(1, opts.shardSize || 30));
         const waveSize = Math.min(30, Math.max(1, opts.waveSize || DEFAULT_WAVE_SIZE));
+        const stallNoteMs = opts.stallNoteMs ?? STALL_NOTE_MS;
+        const stallIdleMs = opts.stallIdleMs ?? STALL_IDLE_MS;
         const waitMs = Math.max(30000, opts.waitMs || CONFIRM_WAIT_MS);
         // How long the socket is given to settle before the first request, and how often a wait looks at its session.
         // Both only ever change in a test.
@@ -869,9 +884,18 @@ export class SyncV2 {
         const waitDone = async (id, budgetMs) => {
             const dl = Date.now() + resolveWaitBudget(budgetMs, waitMs);
             const s = sessions.get(id);
+            let noted = Date.now();
             while (!s.done && !s.err && !s.fatal && Date.now() < dl) {
                 if (aborted()) return "cancelled";
+                // A minute of waiting says what the session has and what it lacks: without it a phone that went
+                // quiet looks exactly like work in progress (seen live, 2026-10-28: ten minutes of nothing).
+                if (Date.now() - noted >= stallNoteMs) {
+                    noted = Date.now();
+                    onStatus({ phase: "wait", detail: describeWait(s) });
+                }
                 // A phone that says it is idle and stays so is not coming back.
+                // A message session the phone left incomplete and idle: failed for this run, asked again at the end.
+                if (s.kind === "msg" && isStalledIdle(s, { afterMs: stallIdleMs })) return "stalled";
                 if (isIdleTooLong(s)) return "idle-timeout";
                 // A closed socket can never deliver the rest, so stop now
                 // instead of burning the whole budget waiting on a dead wire.
@@ -888,22 +912,57 @@ export class SyncV2 {
             return "timeout";
         };
 
-        /** Release one session the moment it finishes, as Zalo Web does (the ack is awaited in the background). */
+        /** What a session that is still waited for has: batches, conversations covered of those asked, phone statuses. */
+        const describeWait = (s) => {
+            const status = `phone status ${s.statuses.length ? s.statuses.slice(-4).join(",") : "none"}`;
+            if (s.kind === "conv")
+                return `still waiting for the phone: ${s.batches.length} batch(es) of the conversation list so far, ${status}`;
+            return (
+                `still waiting for the phone: ${s.batches.length} batch(es) so far, ${s.covered.size} of ${s.want.size} ` +
+                `conversation(s) covered, ${s.failed.size} failed, last batch ${s.sawLast ? "seen" : "not seen"}, ${status}`
+            );
+        };
+
+        /** Releases sent and not yet answered: a request must not overtake them (see sendRequest). */
+        const releasing = new Set();
+
+        /**
+         * Release one session (the ack is awaited in the background; the next request waits for it).
+         *
+         * @returns {Promise<object>|undefined} the release, or nothing when the session is already let go of
+         */
         const disposeOne = (id) => {
             const s = sessions.get(id);
-            if (!s || s.disposed) return;
+            if (!s || s.disposed) return undefined;
             s.disposed = true;
-            void channel.release(id, s.disposeReason ?? DISPOSE_REASON.SUCCESS);
+            const going = channel.release(id, s.disposeReason ?? DISPOSE_REASON.SUCCESS).finally(() => {
+                releasing.delete(going);
+            });
+            releasing.add(going);
+            return going;
+        };
+
+        /**
+         * Release a wave's sessions together, once the wave is stored (see RELEASE_BURST for how many go out at once).
+         */
+        const disposeTogether = async (ids) => {
+            for (let i = 0; i < ids.length; i += RELEASE_BURST) {
+                await Promise.allSettled(ids.slice(i, i + RELEASE_BURST).map(disposeOne));
+            }
         };
 
         /**
          * Send one cmd 590 and wait until Zalo acknowledges it (Y4a): requests are paced by their acks, so a
          * request is never sent into a queue that has not taken the one before it.
          *
+         * A request also waits for the releases still unanswered: Web sends 591, takes its ack, and only then the
+         * 590 (capture CS1: 591 at 37.419 s, ack at 37.456, first 590 at 37.487).
+         *
          * @returns {Promise<{socketClosed: boolean}>} `socketClosed` when the wire died before the ack; any other
          *   failure throws with words the person can act on
          */
         const sendRequest = async (kind, id, ek, req, tempKey = "") => {
+            await Promise.allSettled([...releasing]);
             try {
                 await channel.request({
                     tempKey,
@@ -1065,6 +1124,9 @@ export class SyncV2 {
                         ? "reconnected — asking for your conversation list again (your phone already confirmed)"
                         : "reconnected — asking for your conversation list again; your phone may prompt once more",
                 });
+                // A new socket starts as Web's does: the dead one's sessions released with reason 3, counting from 0.
+                await channel.releaseAbandoned();
+                channel.resetUssidx(0);
                 const retryId = newSession("conv");
                 ekConv = zproto.generateKeyPair();
                 const retrySent = await sendRequest("conv", retryId, ekConv, convRequest, tempKey);
@@ -1436,7 +1498,27 @@ export class SyncV2 {
                         stop = true;
                         break;
                     }
-                    if (why === "idle-timeout" || why === "timeout") {
+                    if (why === "stalled") {
+                        // Fail this session alone, as Web does (its idle timeout fails the session, not the run):
+                        // what arrived is stored, and the conversations it never delivered are asked for once more at
+                        // the end of the run, in sessions of their own.
+                        const stalled = sessions.get(m.sid);
+                        const missing = shards[wave[k]].filter(
+                            (q) => !stalled.covered.has(q.partition) && !stalled.failed.has(q.partition),
+                        );
+                        for (const q of missing) {
+                            stalled.failed.add(q.partition);
+                            stalled.failures.push({ partition: q.partition, code: "stalled" });
+                        }
+                        stalled.disposeReason ??= DISPOSE_REASON.ERROR;
+                        onStatus({
+                            phase: "warn",
+                            detail:
+                                `the phone went idle with ${shards[wave[k]].length - missing.length} of ` +
+                                `${shards[wave[k]].length} conversation(s) of batch ${finished + 1} delivered — ` +
+                                `keeping those, and asking for the other ${missing.length} again at the end`,
+                        });
+                    } else if (why === "idle-timeout" || why === "timeout") {
                         stop = true;
                         timedOut = true;
                         onStatus({
@@ -1494,10 +1576,10 @@ export class SyncV2 {
                     // The partitions of this shard now stand done, failed, or (a session that ended early) pending.
                     if (served.err) sessionErrors++;
                     settleRanges(shards[wave[k]], served);
-                    // Let go of the session now, as Zalo Web does. The phone keeps every open session and stopped
-                    // serving at about 32 (live, 2026-10-25: 29 finished and 3 in flight, none released until the end).
+                    // The session is released with the others of its wave below, not now: Web and PC release a run's
+                    // sessions together once all are consumed (capture CS1: four 591 within 3 ms, none between two
+                    // 590s). The phone stops serving at about 32 sessions open together, which a wave never reaches.
                     if (served.err || served.failures.length) served.disposeReason ??= DISPOSE_REASON.ERROR;
-                    disposeOne(m.sid);
 
                     finished++;
                     // Per-shard progress: without it a 50-shard run prints nothing
@@ -1509,6 +1591,11 @@ export class SyncV2 {
                     });
                 }
 
+                // A wave that was consumed whole: let go of its sessions together, back to back (the next request
+                // waits for the acks, see sendRequest). One that stopped early is released by the end of the run,
+                // each with its own reason (cancelled, declined, failed); one that lost the socket is released by
+                // the first move on the next socket (releaseAbandoned).
+                if (!lostSocket && !stop) await disposeTogether(waveMeta.map((m) => m.sid));
                 if (!lostSocket) continue;
                 socketDied = true;
                 onStatus({
@@ -1520,13 +1607,19 @@ export class SyncV2 {
                             : " [no close event seen]"),
                 });
                 // Re-tapping the phone is the expensive part of this command, so
-                // a dropped wire is worth one reconnect before giving the tap
+                // a dropped wire is worth a few reconnects before giving the tap
                 // up. The shards already served stay served; only what is still
                 // pending goes out again. Worst case the phone prompts once more
                 // -- which is exactly what a manual re-run would have cost, and
                 // that run would have had to re-fetch everything as well.
                 if (schedule.useResume() && (await reconnect())) {
                     socketDied = false;
+                    // What Web does first on a socket it opens: release, with reason 3, every session the
+                    // previous socket left open (cleanOldSyncSession; capture After-CS6: three 591 before any 590),
+                    // and count sessions from 0 again, as a new sync does. The sessions of the dead socket are
+                    // gone with it; asking on without releasing them left up to 39 of them open on the phone.
+                    await channel.releaseAbandoned();
+                    channel.resetUssidx(1); // 0 is the conversation round, which a resume does not repeat
                     // The remaining shards still need their own time; the
                     // reconnect must not eat the budget they were owed.
                     runDeadline = Date.now() + shardBudget(schedule.remaining());
@@ -1569,6 +1662,7 @@ export class SyncV2 {
                         why === "cancelled" ||
                         why === "socket-closed" ||
                         why === "declined" ||
+                        why === "stalled" ||
                         why === "idle-timeout" ||
                         why === "timeout"
                     )

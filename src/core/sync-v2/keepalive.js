@@ -148,10 +148,16 @@ export function startKeepAlive(listener, opts = {}) {
         // so an absent socket is just as dead as a CLOSING/CLOSED one.
         if (!listener?.ws || listener.ws.readyState > 1) return;
         retap();
+        // zca-js pings on the server's interval from the hello on. A second timer at the same cadence only doubled
+        // every ping (two 2/1 frames in one millisecond; Web sends one), so on the default cadence this one just
+        // keeps counting echoes. A caller that asks for its own interval still gets its own pings.
+        const zcaPings = !opts.intervalMs && Boolean(listener.pingInterval);
         try {
-            listener.sendWs(pingPayload(now()), false);
-            sent++;
-            onPing({ sent, echoed });
+            if (!zcaPings) {
+                listener.sendWs(pingPayload(now()), false);
+                sent++;
+                onPing({ sent, echoed });
+            }
         } catch {
             /* a send on a dying socket is not worth failing the run over */
         }

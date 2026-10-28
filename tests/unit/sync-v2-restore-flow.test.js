@@ -203,7 +203,7 @@ describe("a restore against the fake phone", () => {
             messages: [{ id: `${3000 + i}`, text: `hello ${i}`, ts: T + 1000 + i }],
         }));
 
-        it("never holds more than a wave of them: each session is released as soon as its shard is stored", async () => {
+        it("never holds more than a wave of them: a wave is released together once its shards are stored", async () => {
             const { result, error, phone } = await run({ conversations: many }, { shardSize: 1, waveSize: 2 });
             assert.equal(error, null);
             assert.equal(result.reason, "complete");

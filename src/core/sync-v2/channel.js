@@ -36,6 +36,8 @@ export const RETRY_DELAYS_MS = Object.freeze([1_000, 2_000]);
 
 /** How long a release waits for its ack. */
 export const DISPOSE_ACK_MS = 3_000;
+/** Releases sent at once: one, each after the previous ack. Bursts were answered only in part (see sync-v2/index.js). */
+const RELEASE_BURST = 1;
 
 /** The server's "this client is not supported". Not retried. */
 export const CLIENT_NOT_SUPPORTED = 211;
@@ -406,6 +408,45 @@ export function createSyncChannel({
             }
             if (store && left.length) persist();
             return n;
+        },
+
+        /**
+         * Release, with reason 3 (outdated), every session this channel still holds: those of a socket that
+         * died. Web does this first on every socket it opens (`cleanOldSyncSession`, sent back to back and
+         * before any 590). The sessions are not kept afterwards, acknowledged or not: they belong to a socket
+         * that is gone.
+         *
+         * @returns {Promise<number>} how many were released
+         */
+        async releaseAbandoned() {
+            const old = [...sessions.keys()];
+            for (const syncId of old) {
+                inFlight.delete(syncId);
+                const s = sessions.get(syncId);
+                if (s) {
+                    s.late = null;
+                    s.releasing = null;
+                }
+            }
+            // Each after the previous one's ack: bursts were answered only in part (see RELEASE_BURST).
+            for (let i = 0; i < old.length; i += RELEASE_BURST) {
+                await Promise.allSettled(
+                    old
+                        .slice(i, i + RELEASE_BURST)
+                        .map((syncId) => channel.releaseNow(syncId, DISPOSE_REASON.OUTDATED)),
+                );
+            }
+            for (const syncId of old) sessions.delete(syncId);
+            if (old.length) persist();
+            return old.length;
+        },
+
+        /**
+         * Count sessions again from `start`: a new socket starts a new sync, as it does in Web, where the
+         * conversation round is 0 and the message sessions follow from 1.
+         */
+        resetUssidx(start = 0) {
+            ussidx = start;
         },
 
         /** The syncIds currently written down as open. */

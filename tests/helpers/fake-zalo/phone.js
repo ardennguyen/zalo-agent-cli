@@ -74,6 +74,9 @@ export function fakeCodecs() {
  * @param {"complete"|"decline"|"silent"} [opts.outcome] - `decline`: status 3 then 6; `silent`: status 3 only
  * @param {(request: object) => number} [opts.ackError] - the `err` of the ack of a 590 request, 0 by default
  * @param {number} [opts.ackDelayMs] - how long the phone takes to acknowledge a 590 request (0: at once)
+ * @param {(partition: string, attempt: number) => boolean} [opts.losePartition] - the phone never sends this
+ *   partition's batch and goes idle (status 2) instead: a batch lost on the way
+ * @param {number} [opts.releaseAckDelayMs] - how long it takes to acknowledge a 591 release (0: at once)
  * @param {number} [opts.failCode] - the `err` the phone gives a failed partition (default 1)
  * @param {(partition: string, attempt: number) => boolean} [opts.failPartition] - the phone reports this partition as
  *   failed; `attempt` counts the times it has been asked for, from 1
@@ -87,6 +90,7 @@ export function fakeCodecs() {
 export function installFakePhone(zalo, opts = {}) {
     const { conversations = [], outcome = "complete", ackError = () => 0, failPartition = () => false } = opts;
     const ackDelayMs = opts.ackDelayMs ?? 0;
+    const releaseAckDelayMs = opts.releaseAckDelayMs ?? 0;
     /** partition -> how many times it has been asked for */
     const attempts = new Map();
     const downloadStatus = opts.downloadStatus ?? (() => null);
@@ -189,8 +193,10 @@ export function installFakePhone(zalo, opts = {}) {
             const partitions = (req.queries ?? []).map((q) => q.partition);
             const asked = partitions.map((p) => [p, (attempts.get(p) ?? 0) + 1]);
             for (const [p, n] of asked) attempts.set(p, n);
-            const failed = asked.filter(([p, n]) => failPartition(p, n)).map(([p]) => p);
-            const served = asked.filter(([p, n]) => !failPartition(p, n)).map(([p]) => p);
+            const lose = opts.losePartition ?? (() => false);
+            const lost = asked.filter(([p, n]) => lose(p, n)).map(([p]) => p);
+            const failed = asked.filter(([p, n]) => !lose(p, n) && failPartition(p, n)).map(([p]) => p);
+            const served = asked.filter(([p, n]) => !lose(p, n) && !failPartition(p, n)).map(([p]) => p);
             const parts = served.map((id) => {
                 const conv = conversations.find((c) => id.endsWith(`/${c.id}`));
                 return {
@@ -211,12 +217,13 @@ export function installFakePhone(zalo, opts = {}) {
                     inner.syncId,
                     reqId,
                     1,
-                    failed.length === 0,
+                    failed.length === 0 && lost.length === 0,
                     1,
                     served.map((partition) => ({ partition })),
                     blobOf({ partitionsList: parts }),
                 ),
                 ...failed.map((p) => failureControl(inner.syncId, p, opts.failCode)),
+                ...(lost.length ? [transferStatus(inner.syncId, 2)] : []),
             ]);
         });
         const ack = ok({ reqId, err, ts: Date.now() });
@@ -227,7 +234,8 @@ export function installFakePhone(zalo, opts = {}) {
         const inner = frame.data?.data ?? {};
         releases.push({ syncId: inner.syncId, reason: inner.reason, reqId: frame.data?.reqId });
         order.push({ cmd: 591, at: releases.length });
-        return ok({ reqId: frame.data?.reqId, err: 0, ts: Date.now() });
+        const ack = ok({ reqId: frame.data?.reqId, err: 0, ts: Date.now() });
+        return releaseAckDelayMs > 0 ? [{ cmd: 591, sub: 0, body: ack, delayMs: releaseAckDelayMs }] : ack;
     });
 
     const handle = {

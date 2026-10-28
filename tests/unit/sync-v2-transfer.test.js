@@ -16,6 +16,7 @@ import {
     CONFIRM_WAIT_MS,
     DISPOSE_REASON,
     IDLE_TIMEOUT_MS,
+    STALL_IDLE_MS,
     MAX_FAILED_BATCHES,
     applyControl,
     classifyTransferStatus,
@@ -24,6 +25,7 @@ import {
     firstFatalStatus,
     isConfirmed,
     isIdleTooLong,
+    isStalledIdle,
     isTransferSessionComplete,
     judgeConversationRound,
     readTransferControls,
@@ -146,6 +148,23 @@ describe("applyControl: statuses", () => {
         assert.equal(s.idleSince, null);
         assert.equal(isIdleTooLong(s, 10 ** 12), false);
         assert.equal(isIdleTooLong(null), false);
+    });
+
+    it("calls a session stalled when the phone has been idle for a minute and the session is still incomplete", () => {
+        applyControl(s, status(2), { now: 1000 });
+        assert.equal(isStalledIdle(s, { now: 1000 + STALL_IDLE_MS - 1 }), false, "a minute is not yet over");
+        assert.equal(isStalledIdle(s, { now: 1000 + STALL_IDLE_MS }), true);
+        assert.equal(isStalledIdle(s, { now: 1000 + 200, afterMs: 100 }), true, "the grace is a parameter");
+        applyControl(s, status(5), { now: 2000 });
+        assert.equal(isStalledIdle(s, { now: 10 ** 12 }), false, "a phone that is not idle is not stalled");
+        assert.equal(isStalledIdle(null), false);
+    });
+
+    it("does not call a finished session stalled, however long the phone stays idle", () => {
+        applyControl(s, status(2), { now: 1000 });
+        applyControl(s, batch(0, true, ["oneone/a"]), { now: 1500 });
+        assert.equal(isTransferSessionComplete(s), true);
+        assert.equal(isStalledIdle(s, { now: 10 ** 12 }), false);
     });
 
     it("does not call an idle phone fatal", () => {

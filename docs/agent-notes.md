@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3471** as of 2026-10-28 (3462 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3484** as of 2026-10-28 (3475 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1135,10 +1135,11 @@ acknowledgements; `download.js` fetches the batches. `SyncV2.restore()` no longe
 It is awaited for 10 s; a refused request (`err` not 0) is sent again after 1 s and 2 s, three attempts in all; a
 timeout is not retried (the answer may only be late, and the phone may already be preparing), nor is error 211 ("this
 client is not supported", reported as such). A timeout on a socket that has closed meanwhile is reported as a closed
-socket, which the restore then answers with its one reconnect. Requests are ack-paced: each goes out after the one
+socket, which the restore then answers with a reconnect (one then; three since 2026-10-28). Requests are ack-paced: each goes out after the one
 before it was acknowledged, instead of on a 600 ms timer. The cap of four sessions in flight stays: it is ours, Web
 sends all of them one after the other, and a full-history run on the test account (421,000 messages) completed with
-it. A run without it was never made and is not needed: four is Web's own pace.
+it. A run without it was never made and is not needed: four is Web's own pace. *(Superseded 2026-10-28: Web's pace is
+every session up front, and a wave is now up to 30 sessions; see "A restore the way Zalo's clients run it".)*
 
 **Counters.** `reqId` is `req_<n>` from one counter; `ussidx` counts the sessions of a run from 0 (it was 0 for every
 session, and `reqId` carried the session id). `deviceName` stays the honest label (decision D4).
@@ -1359,7 +1360,9 @@ connection. 20,000 lookups take 150 ms. The index builds in 0.3 s per 57,000 row
 silent; the phone then showed no sync status, and the next start found 32 sessions open to release as outdated. Zalo
 Web lets go of a session when it has what it asked for, and so does the restore now: each shard's session is released
 as soon as it is stored (finished, or failed when it had an error), in the retry round too. The channel sends one
-release per session however many callers ask.
+release per session however many callers ask. *(Superseded 2026-10-28: Web and PC do not release a session when it is
+stored; they release a run's sessions together at the end. The restore releases a wave together, in bursts of four.
+What stays true is the cap: about 32 sessions open together.)*
 
 **A live kick (L12b), 2026-10-26.** Opening Zalo Web on the account while the daemon ran: the socket closed with code
 **3003 and the reason `KICKOUT_BY_WORKER`**; the supervisor, treating 3003 as retryable, reconnected 2 s later and the
@@ -1777,3 +1780,65 @@ client's field; it read `actionId`) and asks for 50 items, as the Web client doe
 reads `pinIds` as its own conversation ids (`g` + group id, or one letter + user id) and `action` 1 as a pin. It is now handled
 with the unread marks (`src/core/read-state.js`, `pinMarksFrom`): `conv_state.pinned` follows it, and `listen` prints a `pin`
 event. Before this a pin changed on the phone reached the cache only through `sync`.
+
+## A restore the way Zalo's clients run it (v3.0, 2026-10-28)
+
+**What was wrong.** A full restore of the test account (2,366 conversations, 79 sessions) lost its WebSocket again and
+again: **code 1006, no close frame, about 60 ms after we sent a cmd 590, before its ack**, at random (about 2 of 12
+requests, 2 of 21, 1 of 60, whatever the pacing). After a drop the reconnect sometimes served one session and then went
+silent for minutes. A restore of 421,000 messages had completed on 2026-10-25 with the same wave code. Refuted first, so
+nobody repeats them: event-loop stalls (measured with `monitorEventLoopDelay`: nothing over 2.7 s near any drop), a
+request sent before the release ack (now ack-ordered like Web: 591, ack, 590; the drops went on), a burst of four
+requests (Web sends four within 87 ms), too many open sessions (one socket served 30 and more).
+
+**Where the answer came from.** Three read-only passes over the captures: the nine Web HARs (the 590/591 payloads, every
+frame Web sends, the gaps between them), the Web bundles (the socket layer and the sync worker) and the PC dist (the
+same). Their reports are local, in `agent/work/research-sync-drop/` (decision D11: capture findings are never
+committed). What they agree on, all read in the sources:
+
+- **Nothing is sent before the server's hello (cmd 1/1) has been processed**; the first frame after it is a ping
+  (capture: +7 ms), then one ping every 180 s. Ours: no ping for 180 s, then two in the same millisecond (zca-js's timer
+  and ours), and after a reconnect the first 590 went out 1 ms *before* the hello.
+- **Every socket starts by releasing the sessions of the one before** (`cleanOldSyncSession`, reason 3, back to back,
+  before any 590; capture After-CS6). We never released a dead socket's sessions: 39 were open on the phone at the second
+  drop of one run.
+- **A run's sessions are requested up front, ack-paced, consumed, and released together at the end** (Web: four 591
+  within 3 ms; PC the same, with no client cap). Not one by one as each is stored, which is what we did.
+- **After a 1006 Web waits at least 2 s** (2, 3, 5, 8 s) and rejects every pending request at once; we reconnected after
+  0.5 s. A drop ends a Web or PC run; neither resumes it.
+- **Web and PC send nothing back for a 601 or a batch**, so no acknowledgement is missing from our side.
+- **The PC client's "preparing data, n %" on the phone is its other sync**, an HTTP `pull_mobile_msg` that makes the phone
+  build a snapshot, picked by a remote-config flag. Web has no such path, and neither do we (checked with the owner:
+  the phone showed that phase for PC syncs and not for Web).
+
+**What changed** (`src/core/sync-v2/`, `src/commands/sync.js`):
+
+- `connectListener` resolves on the hello (`cipher_key`), not on open, and pings at once; the keepalive no longer doubles
+  zca-js's ping on the default cadence; `reconnectListener` pauses 2 s (`RECONNECT_DELAY_MS`).
+- After a reconnect the channel releases every session it still holds with reason 3 (`releaseAbandoned`, one at a time)
+  and counts `ussidx` again (0 for a repeated conversation round, 1 for a resumed message round: Web restarts per sync).
+- A wave is up to 30 sessions (was 4), requested up front, held until the wave is stored, then released together; a 590
+  also waits for the releases still unanswered. **The release is one session at a time, each after the previous ack**: a
+  burst was answered only in part (two acks for thirty releases, two for each burst of four, the rest unanswered for 3 s
+  and fine when sent singly), though Web's own burst of four is fully answered.
+- A message session the phone left incomplete and idle for a minute (`STALL_IDLE_MS`) fails alone, as Web's idle timeout
+  fails a session and not the run: what arrived is stored and the conversations it never delivered are asked for once
+  more at the end. Before, the run waited out the 10-minute idle timeout and stopped partial (seen live: 29 of 30
+  conversations of a session covered, its last batch seen, one batch index missing, the phone idle).
+- While any session is waited for, a line every minute says what it has and lacks (`still waiting for the phone: 30
+  batch(es) so far, 29 of 30 conversation(s) covered, ...`).
+- A restore may spend three reconnects (was one): none of the dozen or so reconnects of that day prompted the phone again.
+
+**What the live runs showed.** Before: drops in nearly every run, restores that finished only across four to six runs and
+as many taps. After: three full restores, 79 sessions on one socket for 12 min 41 s with no drop (closed with 1000), 68
+sessions in six minutes, 46 in three; a fourth had one drop in the first wave's requests and resumed in 2 s (a new
+socket, the dead socket's sessions released, the rest of the run), then met the incomplete session described above. **Not proven which change did it**: they went
+in together, and the first drop's cause is still unknown. The captures hold at most five 590 per run and never a cut
+socket (CS4's "network drop" is Chrome's offline emulation, the socket stayed open), so they cannot show it either.
+
+**Not done, on purpose.** The boot Web sends after the hello (eight queue pulls within 2 ms, the Signal pre-key upload
+540, 541, 543, 563, the 4/1 activity ping, 537): the pulls of 515, 517 and 518 are the Signal queues and 518 is deleted
+by an acknowledgement, so the risk to the account's queues that the connect-time-pulls section names stands. `from: 0`,
+the `deviceName`, the temp key in the first message request, and the handshake's `prgama` header and parameter order
+are values the server accepts (every ack was `err 0`). If a drop returns, the boot is the first thing to try, after the
+pulls that are safe (510, 511, 610, 611, 603).

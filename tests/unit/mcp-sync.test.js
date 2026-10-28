@@ -259,7 +259,7 @@ it("shared runners resolve the current API after reconnect and never acquire a s
     assert.equal(seen[1].params.keepAlive, true);
     // A reconnect that only waits for the daemon's own recovery (daemon-sync.js): it never opens a socket itself.
     assert.equal(typeof seen[1].params.reconnect, "function");
-    assert.equal(seen[1].params.maxResumes, 3, "a daemon allows more resumes than the CLI's one");
+    assert.equal(seen[1].params.maxResumes, 3, "a daemon names its three resumes itself");
 });
 
 it("the messages runner hands the cancel signal of the channel to the restore", async (t) => {

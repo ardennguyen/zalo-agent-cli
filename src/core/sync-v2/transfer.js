@@ -33,6 +33,14 @@ export const CONFIRM_WAIT_MS = 600_000;
 /** How long the phone may stay idle (status 1 or 2) while a sync runs. */
 export const IDLE_TIMEOUT_MS = 600_000;
 
+/**
+ * How long a message session may stay incomplete once the phone has said it is idle. Web waits the whole
+ * {@link IDLE_TIMEOUT_MS} and then fails that one session. A phone that went idle with a batch of a session never
+ * sent does not send it later (live, 2026-10-28: 29 of 30 conversations covered, the last batch seen, one index
+ * missing, the phone idle for ten minutes and then some), so the session is given a minute and then treated as failed.
+ */
+export const STALL_IDLE_MS = 60_000;
+
 /** A run that has had this many failed batches is stopped. */
 export const MAX_FAILED_BATCHES = 10;
 
@@ -358,6 +366,22 @@ export function shouldAbortOnFailures({ failed, total }) {
  */
 export function isIdleTooLong(session, now = Date.now()) {
     return session?.idleSince !== null && session?.idleSince !== undefined && now - session.idleSince > IDLE_TIMEOUT_MS;
+}
+
+/**
+ * Is this session stuck: the phone said it is idle some time ago, and the session is still not complete?
+ *
+ * @param {object} session
+ * @param {{now?: number, afterMs?: number}} [opts]
+ * @returns {boolean}
+ */
+export function isStalledIdle(session, { now = Date.now(), afterMs = STALL_IDLE_MS } = {}) {
+    return (
+        session?.idleSince !== null &&
+        session?.idleSince !== undefined &&
+        !isTransferSessionComplete(session) &&
+        now - session.idleSince >= afterMs
+    );
 }
 
 /**

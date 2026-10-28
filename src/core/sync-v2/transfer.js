@@ -86,7 +86,7 @@ const STATUS = new Map([
             kind: "busy",
             reason: "phone-busy",
             dispose: DISPOSE_REASON.ERROR,
-            message: "your phone is busy with another sync; try again in a few minutes",
+            message: "your phone is busy (syncing or backing up); try again in a few minutes",
         },
     ],
     [

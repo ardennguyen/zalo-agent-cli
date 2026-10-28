@@ -231,7 +231,7 @@ describe("zCloud requests go out the way Zalo Web sends them", () => {
             lastNoiseId: "resume-cursor",
             loadType: 1,
             listNoiseIds: [],
-            tracking_source: 0,
+            tracking_source: 2, // Need_Verify_CMD: what every page of every captured Web walk sends
         });
     });
 
@@ -559,6 +559,32 @@ describe("zCloud is a partial source", () => {
         const hit = zcloud.lookupCloudBackup("glb-nz-hit");
         assert.equal(hit.found, true);
         assert.equal(hit.item.noiseId, "nz-hit");
+    });
+
+    it("finds an item by the key Zalo Web joins on when its global message id is the literal 0", async () => {
+        // About three quarters of the live queue's entries carry glbMsgId "0" (every year, every type), so the message id
+        // cannot find them; the Web joins on cliMsgId_conversation_sender, which is stored as zKey.
+        const zero = (id, cli) => addItem(id, { msgInfo: { ...MSG_INFO, glbMsgId: "0", cliMsgId: cli } });
+        const h = harness({
+            routes: {
+                [P.verify]: () => cloudOk(page([zero("nz-zero-a", 1790000000042), zero("nz-zero-b", 1790000000043)])),
+            },
+        });
+        await zcloud.syncCloudIndex({ api: h.api });
+        const mine = { threadId: PEER, senderId: PEER, raw_data: JSON.stringify({ cliMsgId: 1790000000042 }) };
+        assert.equal(zcloud.messageZKey(mine), `1790000000042_${PEER}_${PEER}`);
+        const hit = zcloud.lookupCloudBackup("9001", zcloud.messageZKey(mine));
+        assert.equal(hit.found, true);
+        assert.equal(hit.item.noiseId, "nz-zero-a", "its own item, not the other item that also has glbMsgId 0");
+        const other = { ...mine, raw_data: JSON.stringify({ cliMsgId: 5 }) };
+        assert.equal(zcloud.lookupCloudBackup("9002", zcloud.messageZKey(other)).found, false);
+        assert.equal(zcloud.lookupCloudBackup("0", null).found, false, 'the id "0" names no message');
+    });
+
+    it("has no queue key for a message row that carries no client message id", () => {
+        assert.equal(zcloud.messageZKey({ threadId: PEER, senderId: PEER, raw_data: "{}" }), null);
+        assert.equal(zcloud.messageZKey({ threadId: PEER, senderId: PEER, raw_data: "not json" }), null);
+        assert.equal(zcloud.messageZKey({ senderId: PEER, raw_data: JSON.stringify({ cliMsgId: 1 }) }), null);
     });
 });
 

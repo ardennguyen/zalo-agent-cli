@@ -83,7 +83,7 @@ export function fakeCodecs() {
  * @param {(path: string, phone: object) => number|null} [opts.downloadStatus] - an HTTP status to answer a batch
  *   download with (null: serve it); gets the phone, to look at the requests so far
  * @returns {{
- *   requests: object[], releases: object[], downloads: string[], order: Array<{cmd: number, at: number}>,
+ *   requests: object[], releases: object[], downloads: string[], downloadHeaders: object[], order: Array<{cmd: number, at: number}>,
  *   asked: (type: string) => object[],
  * }}
  */
@@ -97,6 +97,7 @@ export function installFakePhone(zalo, opts = {}) {
     const requests = [];
     const releases = [];
     const downloads = [];
+    const downloadHeaders = [];
     const order = [];
     const blobs = new Map();
     let started = false;
@@ -142,6 +143,7 @@ export function installFakePhone(zalo, opts = {}) {
         (r) => r.host === BATCH_HOST,
         (r) => {
             downloads.push(r.path);
+            downloadHeaders.push(r.headers);
             const status = downloadStatus(r.path, handle);
             if (status) return new Response("", { status });
             return new Response(blobs.get(r.path) ?? "", { status: blobs.has(r.path) ? 200 : 404 });
@@ -242,6 +244,7 @@ export function installFakePhone(zalo, opts = {}) {
         requests,
         releases,
         downloads,
+        downloadHeaders,
         order,
         asked: (type) => requests.filter((r) => r.type === type),
     };

@@ -280,10 +280,18 @@ describe("the login against the fake Zalo", () => {
 
     it("gives up on a call that does not answer within the timeout", async () => {
         fake = installFakeZalo({ serverInfoScript: [{ hang: true }] });
-        await assert.rejects(
-            loginWithSession(creds(), { ...OPTIONS, ...noWait, timeoutMs: 40 }),
-            /did not answer within \d+ s: \/api\/login\/getServerInfo/,
-        );
+        // The deadline is an AbortSignal.timeout, which never keeps a process alive, and the fake's hang is a promise with
+        // no socket behind it: on Linux the event loop would drain before the deadline and the runner cancels the test.
+        // A real hang has a real socket; this stands in for it.
+        const holdLoop = setInterval(() => {}, 1000);
+        try {
+            await assert.rejects(
+                loginWithSession(creds(), { ...OPTIONS, ...noWait, timeoutMs: 40 }),
+                /did not answer within \d+ s: \/api\/login\/getServerInfo/,
+            );
+        } finally {
+            clearInterval(holdLoop);
+        }
     });
 
     it("reports error 600 from either call as code 600: another session took the account", async () => {

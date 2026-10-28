@@ -31,7 +31,8 @@ import {
     getThreadNames,
 } from "../db.js";
 import { extractRenewedUrls, makeRenewLink } from "./renewlink.js";
-import { lookupCloudBackup } from "./zcloud.js";
+import { lookupCloudBackup, messageZKey } from "./zcloud.js";
+import { createDownloadFetch } from "../../zalo/download-fetch.js";
 
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
@@ -291,7 +292,7 @@ export const THROTTLE_GIVE_UP = 25;
  *   retryable?: boolean, expired?: boolean, verdict?: string, code?: string,
  *   status?: number, reason?: string}>}
  */
-async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl = (...a) => fetch(...a)) {
     let res;
     let buf;
     let ct;
@@ -300,7 +301,7 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
     // and then stops writing the body is exactly the stall this guards against.
     const signal = AbortSignal.timeout(timeoutMs);
     try {
-        res = await fetch(url, { signal, redirect: "follow" });
+        res = await fetchImpl(url, { signal, redirect: "follow" });
         // Reading the body must be guarded too, not just the request. A
         // connection dropped mid-body throws here ("terminated" from undici),
         // and with this outside the try it escaped the worker and aborted an
@@ -379,7 +380,9 @@ function writeConversationIndex(mediaRoot, names) {
  * Download the attachments recorded by a transfer sync.
  *
  * @param {object} opts
- * @param {object} [opts.api] - logged-in zca-js api; without it expired URLs cannot be renewed
+ * @param {object} [opts.api] - logged-in zca-js api; without it expired URLs cannot be renewed. Its context also
+ *   gives the downloads the account's proxy, User-Agent and Referer
+ * @param {typeof fetch} [opts.fetchImpl] - the fetch the downloads use (tests); default: the account's own
  * @param {string} opts.accountDir - the account's data dir (media lands under `<dir>/media`)
  * @param {string} [opts.threadId] - restrict to one thread
  * @param {Set<string>|string[]} [opts.kinds] - restrict to these attachment kinds
@@ -400,9 +403,9 @@ function writeConversationIndex(mediaRoot, names) {
  * @param {(req: object) => Promise<object>} [opts.renewLink] - pre-built renewal caller;
  *   defaults to one derived from `api`. Injectable so the renewal path can be
  *   exercised without round-tripping Zalo's request crypto.
- * @param {(msgId: string) => {found: boolean}} [opts.cloudLookup] - whether the local zCloud index lists a message's
+ * @param {(msgId: string, zKey?: string|null) => {found: boolean}} [opts.cloudLookup] - whether the local zCloud index lists a message's
  *   backup (defaults to {@link lookupCloudBackup}); a file that is gone from the CDN and listed there is counted in
- *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the owner's cloud PIN, which this client never holds
+ *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the account's cloud key, which this client never holds
  * @param {(p: object) => void} [opts.onProgress]
  * @returns {Promise<{considered:number, downloaded:number, skipped:number, failed:number, expired:number,
  *   cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean,
@@ -490,9 +493,11 @@ export async function downloadSyncedMedia(opts = {}) {
 
     // Explicit mediaRootOpt or global ZALO_MEDIA_DIR (--media-dir) overrides the
     // per-account default (<accountDir>/media).
-    const isInCloudIndex = (msgId) => {
+    // The account's own fetch: its proxy, its User-Agent and the Web client's Referer (plan item ZP-01).
+    const download = opts.fetchImpl ?? createDownloadFetch(api);
+    const isInCloudIndex = (row) => {
         try {
-            return Boolean((opts.cloudLookup ?? lookupCloudBackup)(msgId)?.found);
+            return Boolean((opts.cloudLookup ?? lookupCloudBackup)(row.msgId, messageZKey(row))?.found);
         } catch {
             return false; // no local index to ask (no database open): not a verdict
         }
@@ -551,7 +556,7 @@ export async function downloadSyncedMedia(opts = {}) {
             // id -> name mapping a human needs to find anything.
             const dir = join(mediaRoot, String(row.threadId));
 
-            let got = await fetchBytes(url, timeoutMs);
+            let got = await fetchBytes(url, timeoutMs, download);
             let wasGone = false;
 
             // One renewal attempt: only helps while Zalo still holds the file.
@@ -569,7 +574,7 @@ export async function downloadSyncedMedia(opts = {}) {
                     const fresh = extractRenewedUrls(resp);
                     const next = fresh?.normalUrl || fresh?.hdUrl || fresh?.thumbUrl;
                     if (next) {
-                        got = await fetchBytes(next, timeoutMs);
+                        got = await fetchBytes(next, timeoutMs, download);
                         if (got.ok) stats.renewed++;
                     }
                 } catch (e) {
@@ -581,7 +586,7 @@ export async function downloadSyncedMedia(opts = {}) {
             }
 
             if (!got.ok) {
-                if (wasGone && isInCloudIndex(row.msgId)) stats.cloudBacked++;
+                if (wasGone && isInCloudIndex(row)) stats.cloudBacked++;
                 // Tally what was actually observed, so the summary reports it
                 // rather than inferring a cause from the bucket it landed in.
                 if (got.code) stats.reasons[got.code] = (stats.reasons[got.code] || 0) + 1;

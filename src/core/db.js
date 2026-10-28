@@ -1907,6 +1907,16 @@ export function getCloudItemByMsgId(msgId) {
 }
 
 /**
+ * The zCloud backup for one message by the key Zalo Web joins on (`cliMsgId_conversation_sender`, see
+ * `cloudKeyOf` in sync-v2/zcloud.js). The queue's global message id is the literal "0" for most entries, so this is
+ * the lookup that finds them.
+ */
+export function getCloudItemByZKey(zKey) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("SELECT * FROM cloud_items WHERE zKey = ? LIMIT 1").get(String(zKey)) || null;
+}
+
+/**
  * Advance a message's delivery state.
  *
  * Only ever forwards: a late-arriving "delivered" must not undo a "seen" that

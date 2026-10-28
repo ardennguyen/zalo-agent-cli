@@ -39,6 +39,8 @@ let server;
 let base;
 /** Counts requests per path so tests can assert a renewal actually re-fetched. */
 let hits;
+/** The request headers of every request the server saw, in order. */
+let heads = [];
 
 const PHOTO_BYTES = Buffer.from("\xff\xd8\xff\xe0JFIF-pretend-jpeg", "binary");
 /**
@@ -54,6 +56,7 @@ before(async () => {
     server = createServer((req, res) => {
         const path = req.url.split("?")[0];
         hits[path] = (hits[path] || 0) + 1;
+        heads.push(req.headers);
         if (path === "/ok.jpg" || path === "/renewed.jpg") {
             res.writeHead(200, { "content-type": "image/jpeg" });
             return res.end(PHOTO_BYTES);
@@ -271,6 +274,19 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.equal(hits["/ok.jpg"], 1);
     });
 
+    it("downloads in the account's own identity: its User-Agent and the Web client's Referer, no cookie", async () => {
+        heads = [];
+        row({}, [photo("/ok.jpg")]);
+        const api = { getContext: () => ({ userAgent: "Test-UA/1.0", options: {} }) };
+        const stats = await downloadSyncedMedia({ accountDir: dir, api });
+        assert.equal(stats.downloaded, 1);
+        const h = heads.find((x) => x.referer);
+        assert.ok(h, "the download carried a Referer");
+        assert.equal(h["user-agent"], "Test-UA/1.0");
+        assert.equal(h.referer, "https://chat.zalo.me/");
+        assert.equal(h.cookie, undefined);
+    });
+
     it("downloads several attachments concurrently", async () => {
         for (let i = 0; i < 8; i++) row({}, [photo("/ok.jpg")]);
         const stats = await downloadSyncedMedia({ accountDir: dir, concurrency: 4, limit: 50 });
@@ -319,6 +335,21 @@ describe("downloadSyncedMedia — expiry", () => {
         assert.equal(stats.expired, 2);
         assert.equal(stats.failed, 2);
         assert.equal(stats.cloudBacked, 1, "only the one the index lists");
+    });
+
+    it("asks the index with the queue key of the message, which is how most of its entries can be found", async () => {
+        // The queue's global message id is "0" for most entries; only cliMsgId_conversation_sender finds them.
+        row({ msgId: "m-zero" }, [photo("/expired.jpg")]);
+        let asked;
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            cloudLookup: (msgId, zKey) => {
+                asked = { msgId, zKey };
+                return { found: zKey === "999_t1_u1" };
+            },
+        });
+        assert.deepEqual(asked, { msgId: "m-zero", zKey: "999_t1_u1" });
+        assert.equal(stats.cloudBacked, 1);
     });
 
     it("counts only files that are gone: a refusal the index also lists is a different problem", async () => {

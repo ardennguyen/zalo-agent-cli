@@ -17,7 +17,13 @@ import {
 } from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
 import { drainReactions, placeUnresolvedReactions } from "../core/sync-v2/reactions.js";
-import { getCloudSettings, getCloudUsage, summarizeCloudQuota, syncCloudIndex } from "../core/sync-v2/zcloud.js";
+import {
+    getCloudSettings,
+    getCloudUsage,
+    getMyCloudUsage,
+    summarizeCloudQuota,
+    syncCloudIndex,
+} from "../core/sync-v2/zcloud.js";
 import { syncConvState } from "../core/sync-v2/conv-state.js";
 import { planSyncRun } from "../core/sync-v2/plan.js";
 import { pingPayload, startKeepAlive } from "../core/sync-v2/keepalive.js";
@@ -323,7 +329,7 @@ export function registerSyncCommands(program) {
                 "reconciliation Zalo Web runs when it receives a cloud verify event. Records where " +
                 "each backup lives; it does not download or decrypt cloud blobs",
         )
-        .option("-p, --pages <n>", "Maximum pages to walk", parseIntAtLeast(1), 50)
+        .option("-p, --pages <n>", "Maximum pages to walk", parseIntAtLeast(1), 500)
         .option("-s, --page-size <n>", "Items per page (Zalo Web uses 300)", parseIntAtLeast(1), 300)
         .option("-r, --resume <noiseId>", "Resume from this cursor instead of the saved one")
         .option(
@@ -437,7 +443,7 @@ async function runMediaDownload(activeAcc, opts) {
         if (stats.cloudBacked) {
             info(
                 `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
-                    "this tool cannot open (it is end-to-end encrypted under your cloud PIN).",
+                    "this tool cannot open (it is end-to-end encrypted under the account's cloud key, which this tool never holds).",
             );
         }
         info("Zalo only keeps media for a limited time; past that the file exists only on the sending device.");
@@ -902,21 +908,31 @@ async function runCloudSync(activeAcc, opts) {
 }
 
 /**
- * What the account's zCloud plan is: the usage and settings reads, reduced. Null when the plan could not be read.
+ * What the account's zCloud plan is, read in the order and with the calls Zalo Web makes at boot: the settings, then
+ * `usage-mycloud`, which carries the plan; the full `v2/usage` only when that plan is not the free one (-1), as the
+ * web client does. A free account therefore never asks for `v2/usage`. Null when the plan could not be read.
  *
  * @param {object} api
- * @param {{usage?: () => Promise<object>, settings?: () => Promise<object>}} [opts] - test seams
+ * @param {{settings?: () => Promise<object>, myCloud?: () => Promise<object>, usage?: () => Promise<object>}} [opts]
+ *   test seams: the settings, `usage-mycloud` and `v2/usage` reads
  * @returns {Promise<ReturnType<typeof summarizeCloudQuota>|null>}
  */
 export async function readCloudPlan(api, opts = {}) {
     try {
-        const usage = await (opts.usage ? opts.usage() : getCloudUsage(api));
         let settings = {};
         try {
             settings = (await (opts.settings ? opts.settings() : getCloudSettings(api))) ?? {};
         } catch {
             /* the settings add the opt-in and file limits; the plan stands without them */
         }
+        let mine = null;
+        try {
+            mine = (await (opts.myCloud ? opts.myCloud() : getMyCloudUsage(api))) ?? null;
+        } catch {
+            /* the plan can still come from v2/usage */
+        }
+        const free = mine !== null && Number(mine.plan) === -1;
+        const usage = free ? mine : await (opts.usage ? opts.usage() : getCloudUsage(api));
         return summarizeCloudQuota(usage ?? {}, settings);
     } catch {
         return null;
@@ -948,8 +964,9 @@ export function describeCloudPlan(plan) {
  *
  * @param {object} api
  * @param {{resume?: string, full?: boolean, pageSize?: number, pages?: number,
- *   verify?: (params: object) => Promise<object>, usage?: () => Promise<object>,
- *   settings?: () => Promise<object>}} opts - `verify`, `usage` and `settings` replace the network calls (tests)
+ *   verify?: (params: object) => Promise<object>, usage?: () => Promise<object>, myCloud?: () => Promise<object>,
+ *   settings?: () => Promise<object>}} opts - `verify`, `usage`, `myCloud` and `settings` replace the network calls
+ *   (tests)
  * @returns {Promise<{status: "ok"|"unavailable"|"skipped", plan: object|null, stats: object}>} `skipped`: the account
  *   has no zCloud plan and nothing in the cloud, so no page was asked for (a `full` or `resume` walk is never skipped)
  */
@@ -1511,7 +1528,7 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
         if (stats.cloudBacked) {
             info(
                 `${stats.cloudBacked} of the files that are gone are listed in your zCloud index: the cloud holds a copy ` +
-                    "this tool cannot open (it is end-to-end encrypted under your cloud PIN).",
+                    "this tool cannot open (it is end-to-end encrypted under the account's cloud key, which this tool never holds).",
             );
         }
         info("Zalo keeps media for a limited time; past that the file exists only on the sending device.");
@@ -1954,7 +1971,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
 
     if (runs("cloud")) {
         try {
-            const r = await cloudPass(api, { pages: 50, pageSize: 300 });
+            const r = await cloudPass(api, { pages: 500, pageSize: 300 });
             if (r.status === "skipped") {
                 record("cloud", "skipped", "no zCloud plan on this account", { plan: r.plan?.plan ?? null });
             } else if (r.status === "unavailable") {

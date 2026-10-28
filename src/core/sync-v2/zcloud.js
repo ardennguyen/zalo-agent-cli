@@ -15,8 +15,6 @@
  *   GET {zcloud}/cloudmedia/downloadurls/pc/v1         (12743) -- noiseId -> signed URL, 100 per call
  *   GET {zcloud}/cloudmedia/info/pc/v2/usage           (12749) -- plan, quota, usage
  *   GET {zcloud}/cloudmedia/info/pc/v1/cloud-settings  (12756) -- per-file limit, opt-in
- *   {media_store}/api/mediastore/list                  (11841) -- media in a conversation
- *   {media_store_send2me}/api/media/oneone/list        (12220) -- media in the self-chat
  *
  * {auth} is https://wpa.chat.zalo.me, the host zca-js logs in against. {zcloud}
  * is the service map's `zcloud` entry, falling back to https://zcld.chat.zalo.me
@@ -73,6 +71,7 @@ import { dirname, join } from "node:path";
 import {
     backfillCloudZKeys,
     getCloudItemByMsgId,
+    getCloudItemByZKey,
     removeCloudItemsBefore,
     removeCloudItemsByZKey,
     removeCloudItemsExcept,
@@ -89,9 +88,6 @@ function zcaUtils() {
     _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
     return _utils;
 }
-
-/** Zalo's media_type filter on the media-store listing. */
-export const MEDIA_TYPE = { all: 0, image: 1, video: 2, file: 3, link: 4 };
 
 /** Where the viewer key is issued: Zalo Web's authDomain, zca-js's login host. */
 const AUTH_DOMAIN = "https://wpa.chat.zalo.me";
@@ -134,8 +130,12 @@ export function configureZCloudRetry({ delaysMs } = {}) {
 const DOWNLOAD_URL_BATCH = 100;
 /** verify `loadType`: oldest_to_newest, what the web's own walk sends. */
 const LOAD_OLDEST_TO_NEWEST = 1;
-/** verify `tracking_source`: Unknown, the client's default (a telemetry tag). */
-const TRACKING_UNKNOWN = 0;
+/**
+ * verify `tracking_source`, a telemetry tag (enum `UwMY` of the web client: Unknown 0, Start_session 1,
+ * Need_Verify_CMD 2, Re_login 3, Client 4). Every captured Web walk page of every capture sends 2, the walk the
+ * cmd 621 notice asks for.
+ */
+const TRACKING_NEED_VERIFY = 2;
 /** msgInfo.destType for a group; users are 3, pages 5. */
 const DEST_TYPE_GROUP = 6;
 /** Queue entry actions. Only `add` says an item is in the cloud. */
@@ -161,14 +161,6 @@ export class ZCloudError extends Error {
     }
 }
 
-/** Pick a service-map domain, tolerating a map that lacks it. */
-function domain(api, key) {
-    const v = api?.zpwServiceMap?.[key];
-    const url = Array.isArray(v) ? v[0] : v;
-    if (!url) throw new Error(`service map has no "${key}" domain (account may not have zCloud enabled)`);
-    return String(url).replace(/\/+$/, "");
-}
-
 /** The zCloud media domains, in the service map's order, with Zalo Web's own fallback when it names none. */
 function cloudDomains(api) {
     const v = api?.zpwServiceMap?.zcloud;
@@ -179,17 +171,6 @@ function cloudDomains(api) {
 /** Run `fn(ctx, utils)` inside zca-js's authenticated request envelope. */
 function withZca(api, fn) {
     return zcaUtils().apiFactory()((_api, ctx, utils) => fn(ctx, utils))(api.getContext(), api);
-}
-
-/** Build an authenticated GET(params=AES(...)) caller for one session-cipher endpoint. */
-function makeGet(api, base) {
-    const zu = zcaUtils();
-    return zu.apiFactory()((_api, ctx, utils) => async (params) => {
-        const enc = utils.encodeAES(JSON.stringify({ ...params, imei: ctx.imei }));
-        if (!enc) throw new Error("failed to encrypt params");
-        const resp = await utils.request(utils.makeURL(base, { params: enc }), { method: "GET" });
-        return utils.resolve(resp);
-    })(api.getContext(), api);
 }
 
 // ── the viewer key ──────────────────────────────────────────────────────────
@@ -406,7 +387,7 @@ async function zcloudGet(api, path, params = null) {
  * @param {string} [page.lastNoiseId=""] - cursor; "" starts from the top
  * @param {number} [page.loadType=1] - 1 oldest_to_newest, 0 newest_to_oldest
  * @param {string[]} [page.listNoiseIds=[]]
- * @param {number} [page.trackingSource=0] - telemetry tag; 0 Unknown
+ * @param {number} [page.trackingSource=2] - telemetry tag; 2 Need_Verify_CMD, what the web client sends
  * @returns {Promise<{mediaItems?: object[], lastNoiseId?: string, hasMore?: number|boolean}|null>}
  */
 export async function verifyCloudQueue(api, page = {}) {
@@ -414,7 +395,7 @@ export async function verifyCloudQueue(api, page = {}) {
         lastNoiseId = "",
         loadType = LOAD_OLDEST_TO_NEWEST,
         listNoiseIds = [],
-        trackingSource = TRACKING_UNKNOWN,
+        trackingSource = TRACKING_NEED_VERIFY,
     } = page;
     return zcloudGet(api, PATH.verify, {
         lastNoiseId: String(lastNoiseId ?? ""),
@@ -986,17 +967,46 @@ export async function syncCloudIndex(opts = {}) {
 }
 
 /**
+ * The key the cloud queue files a cached message under, `cliMsgId_conversation_sender`, from the message row: the
+ * client message id in its `raw_data`, the thread and the sender. Null when the row has no client message id.
+ *
+ * @param {{threadId?: string, senderId?: string, raw_data?: string}} row - a `messages` row
+ * @returns {string|null}
+ */
+export function messageZKey(row) {
+    let cli;
+    try {
+        cli = JSON.parse(row?.raw_data || "{}")?.cliMsgId;
+    } catch {
+        return null;
+    }
+    if (cli === undefined || cli === null || cli === "") return null;
+    if (row.threadId === undefined || row.threadId === null || row.senderId === undefined || row.senderId === null) {
+        return null;
+    }
+    return `${cli}_${row.threadId}_${row.senderId}`;
+}
+
+/**
  * What the local cloud index can say about one message's media.
  *
  * A hit confirms a zCloud backup existed as of the last `sync-cloud`. A miss is
  * never proof of absence: zCloud is a partial source, and the message may live
  * only on the local-cache path. Callers must not turn `found: false` into "gone".
  *
+ * The queue's `glbMsgId` is the literal "0" for about three quarters of its entries, so the message id alone finds
+ * few of them. Zalo Web joins on `cliMsgId_conversation_sender` ({@link messageZKey}); that key is tried first and
+ * the message id second.
+ *
  * @param {string} msgId - the message's global id
+ * @param {string|null} [zKey] - the message's queue key ({@link messageZKey})
  * @returns {{found: true, conclusive: true, item: object} | {found: false, conclusive: false, reason: string}}
  */
-export function lookupCloudBackup(msgId) {
-    const item = msgId === undefined || msgId === null || msgId === "" ? null : getCloudItemByMsgId(String(msgId));
+export function lookupCloudBackup(msgId, zKey = null) {
+    let item = zKey ? getCloudItemByZKey(String(zKey)) : null;
+    if (!item && msgId !== undefined && msgId !== null && msgId !== "" && String(msgId) !== "0") {
+        item = getCloudItemByMsgId(String(msgId));
+    }
     if (item) return { found: true, conclusive: true, item };
     return {
         found: false,
@@ -1006,66 +1016,4 @@ export function lookupCloudBackup(msgId) {
             "messages, disallowed types or conversations, anything over the quota or the per-file limit, or " +
             "anything from before the account opted in, and the index is only as fresh as the last sync-cloud",
     };
-}
-
-/**
- * List the media Zalo holds server-side for one conversation.
- *
- * Independent of the message sync: this enumerates a conversation's media even
- * for messages that were never synced. The self-chat ("Cloud của tôi") uses a
- * different domain and path, which is what `isSelfChat` selects. These are
- * session-cipher endpoints, not zCloud ones.
- *
- * @param {object} opts
- * @param {object} opts.api
- * @param {string} opts.threadId
- * @param {boolean} [opts.isSelfChat=false]
- * @param {number} [opts.mediaType=0] - see {@link MEDIA_TYPE}
- * @param {number} [opts.limit=50] - per page
- * @param {number} [opts.maxPages=20]
- * @param {(params: object) => Promise<object>} [opts.list] - injected caller (tests)
- * @returns {Promise<{items:Array<object>, pages:number, failed:number, failures:Array<object>}>}
- */
-export async function listConversationMedia(opts = {}) {
-    const { api, threadId, isSelfChat = false, mediaType = 0, limit = 50, maxPages = 20 } = opts;
-    const out = { items: [], pages: 0, failed: 0, failures: [] };
-
-    let list = opts.list;
-    if (!list && api) {
-        list = isSelfChat
-            ? makeGet(api, `${domain(api, "media_store_send2me")}/api/media/oneone/list`)
-            : makeGet(api, `${domain(api, "media_store")}/api/mediastore/list`);
-    }
-    if (!list) return out;
-
-    let lastId = null;
-    let lastFetchId = null;
-    for (let page = 0; page < maxPages; page++) {
-        // Field names mirror Zalo Web's getMediaFromConversation().
-        const params = { media_type: mediaType, limit };
-        if (!isSelfChat) params.group_id = String(threadId);
-        if (lastId) params.last_id = lastId;
-        if (lastFetchId) params.lastFetchId = lastFetchId;
-
-        let resp;
-        try {
-            resp = await list(params);
-        } catch (e) {
-            out.failed++;
-            out.failures.push({ page, reason: e?.message || String(e) });
-            break;
-        }
-        const items = itemsOf(resp);
-        out.pages++;
-        out.items.push(...items);
-        if (!items.length || items.length < limit) break;
-
-        const d = resp?.data ?? resp;
-        const nextId = d?.last_id ?? d?.lastId ?? items[items.length - 1]?.id ?? null;
-        const nextFetch = d?.lastFetchId ?? null;
-        if ((!nextId || nextId === lastId) && (!nextFetch || nextFetch === lastFetchId)) break;
-        lastId = nextId;
-        lastFetchId = nextFetch;
-    }
-    return out;
 }

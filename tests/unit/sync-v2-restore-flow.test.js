@@ -92,6 +92,38 @@ describe("a restore against the fake phone", () => {
         };
     }
 
+    it("asks nothing of the phone when the server has turned the phone-backed sync off for the account", async () => {
+        const { error, phone, result } = await run(
+            {},
+            {
+                before: (sync) => {
+                    const ctx = sync.api.getContext();
+                    ctx.settings = {
+                        ...(ctx.settings ?? {}),
+                        features: { ...(ctx.settings?.features ?? {}), sync_2_web: { enable: false } },
+                    };
+                },
+            },
+        );
+        assert.equal(result, null);
+        assert.match(error?.message ?? "", /turned the phone-backed sync off/);
+        assert.equal(phone.requests.length, 0, "no 590 was sent");
+    });
+
+    it("fetches the batches in the account's own identity: its User-Agent and the Web client's Referer, no cookie", async () => {
+        const { error, phone } = await run();
+        assert.equal(error, null);
+        assert.ok(phone.downloadHeaders.length > 0, "the phone served at least one batch");
+        const ua = api.getContext().userAgent;
+        assert.ok(ua, "the fake account has a User-Agent");
+        for (const h of phone.downloadHeaders) {
+            const lower = Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
+            assert.equal(lower["user-agent"], ua);
+            assert.equal(lower.referer, "https://chat.zalo.me/");
+            assert.equal(lower.cookie, undefined, "the batch host is never given the session");
+        }
+    });
+
     it("restores every conversation, with one ack-paced request per session and a release for each", async () => {
         const { result, error, phone, sessionsFile } = await run();
         assert.equal(error, null);

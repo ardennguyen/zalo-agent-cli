@@ -563,6 +563,35 @@ describe("`sync-cloud` reads the plan first", () => {
         assert.equal(q.pages, 1);
     });
 
+    it("reads in the web client's order, and a free account never asks for v2/usage", async () => {
+        const calls = [];
+        const seams = (mine) => ({
+            settings: async () => (calls.push("settings"), { opt_in: 4 }),
+            myCloud: async () => (calls.push("usage-mycloud"), mine),
+            usage: async () => (calls.push("v2/usage"), PAID),
+        });
+        const free = await readCloudPlan(api, seams({ plan: -1, quota: 524288000, usage: 0 }));
+        assert.deepEqual(calls, ["settings", "usage-mycloud"], "the free plan stops after usage-mycloud");
+        assert.equal(free.plan, "free");
+        assert.equal(free.usageBytes, 0);
+        calls.length = 0;
+        const paid = await readCloudPlan(api, seams({ plan: 0, quota: 107374182400, usage: 800228 }));
+        assert.deepEqual(calls, ["settings", "usage-mycloud", "v2/usage"], "any other plan reads the full usage");
+        assert.equal(paid.plan, "zcloud");
+        assert.equal(paid.usageBytes, 39192432681, "the totals are the full usage's, not My Cloud's");
+    });
+
+    it("falls back to v2/usage when usage-mycloud cannot be read", async () => {
+        const plan = await readCloudPlan(api, {
+            settings: async () => ({}),
+            myCloud: async () => {
+                throw new Error("no answer");
+            },
+            usage: async () => FREE,
+        });
+        assert.equal(plan.plan, "free");
+    });
+
     it("reads the plan without the settings when the settings read fails", async () => {
         const plan = await readCloudPlan(api, {
             usage: async () => PAID,
@@ -572,6 +601,15 @@ describe("`sync-cloud` reads the plan first", () => {
         });
         assert.equal(plan.plan, "zcloud");
         assert.equal(plan.optIn, null);
+    });
+
+    it("walks up to 500 pages by default: the first sync of a 103-page queue must not end 'partial'", async () => {
+        const { Command } = await import("commander");
+        const { registerSyncCommands } = await import("../../src/commands/sync.js");
+        const program = new Command();
+        registerSyncCommands(program);
+        const cloud = program.commands.find((c) => c.name() === "sync-cloud");
+        assert.equal(cloud.options.find((o) => o.long === "--pages").defaultValue, 500);
     });
 
     it("says what the plan is in one line", () => {

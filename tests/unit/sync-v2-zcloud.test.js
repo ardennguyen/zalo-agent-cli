@@ -15,12 +15,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb, getCloudItems, getCloudItemByMsgId } from "../../src/core/db.js";
-import {
-    syncCloudIndex,
-    listConversationMedia,
-    normalizeCloudItem,
-    MEDIA_TYPE,
-} from "../../src/core/sync-v2/zcloud.js";
+import { syncCloudIndex, normalizeCloudItem } from "../../src/core/sync-v2/zcloud.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-zcloud-test-"));
 const opened = [];
@@ -188,107 +183,5 @@ describe("syncCloudIndex", () => {
         const [row] = getCloudItems();
         assert.equal(row.encryptKey, "k1", "a refreshed URL must not erase the key");
         assert.equal(row.cloudUrl, "https://cloud.zalo/x/1b");
-    });
-});
-
-describe("listConversationMedia", () => {
-    it("sends group_id for a normal conversation", async () => {
-        const asked = [];
-        await listConversationMedia({
-            threadId: "g1",
-            list: async (p) => {
-                asked.push(p);
-                return { items: [] };
-            },
-        });
-        assert.equal(asked[0].group_id, "g1");
-        assert.equal(asked[0].media_type, 0);
-    });
-
-    it("omits group_id for the self-chat", async () => {
-        // "Cloud của tôi" goes to a different domain and takes no group id.
-        const asked = [];
-        await listConversationMedia({
-            threadId: "me",
-            isSelfChat: true,
-            list: async (p) => {
-                asked.push(p);
-                return { items: [] };
-            },
-        });
-        assert.equal(asked[0].group_id, undefined);
-    });
-
-    it("passes the media_type filter through", async () => {
-        let seen;
-        await listConversationMedia({
-            threadId: "g1",
-            mediaType: MEDIA_TYPE.video,
-            list: async (p) => {
-                seen = p;
-                return { items: [] };
-            },
-        });
-        assert.equal(seen.media_type, MEDIA_TYPE.video);
-    });
-
-    it("pages with last_id until a short page", async () => {
-        const asked = [];
-        let page = 0;
-        const r = await listConversationMedia({
-            threadId: "g1",
-            limit: 2,
-            list: async (p) => {
-                asked.push(p.last_id ?? null);
-                page++;
-                if (page === 1) return { items: [{ id: "1" }, { id: "2" }], last_id: "2" };
-                return { items: [{ id: "3" }] };
-            },
-        });
-        assert.deepEqual(asked, [null, "2"]);
-        assert.equal(r.items.length, 3);
-        assert.equal(r.pages, 2);
-    });
-
-    it("stops when the cursor does not advance", async () => {
-        let calls = 0;
-        await listConversationMedia({
-            threadId: "g1",
-            limit: 1,
-            maxPages: 99,
-            list: async () => {
-                calls++;
-                return { items: [{ id: "stuck" }], last_id: "stuck" };
-            },
-        });
-        assert.ok(calls <= 2, `a repeating cursor must not loop (made ${calls} calls)`);
-    });
-
-    it("records a failure instead of throwing", async () => {
-        const r = await listConversationMedia({
-            threadId: "g1",
-            list: async () => {
-                throw new Error("403");
-            },
-        });
-        assert.equal(r.failed, 1);
-        assert.equal(r.items.length, 0);
-    });
-
-    it("reads items from the several envelope shapes", async () => {
-        for (const resp of [{ items: [{ id: "a" }] }, { data: { items: [{ id: "a" }] } }, [{ id: "a" }]]) {
-            const r = await listConversationMedia({ threadId: "g1", limit: 50, list: async () => resp });
-            assert.equal(r.items.length, 1, `shape ${JSON.stringify(resp).slice(0, 30)} not handled`);
-        }
-    });
-
-    it("does nothing without an api or an injected caller", async () => {
-        assert.deepEqual((await listConversationMedia({ threadId: "g1" })).items, []);
-    });
-});
-
-describe("MEDIA_TYPE", () => {
-    it("matches Zalo's media_type filter", () => {
-        assert.deepEqual(MEDIA_TYPE, { all: 0, image: 1, video: 2, file: 3, link: 4 });
     });
 });

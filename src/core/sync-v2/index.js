@@ -49,6 +49,7 @@ import { startKeepAlive } from "./keepalive.js";
 import { DEVICE_LABEL } from "../../zalo/profile.js";
 import { REQUEST_FAILURE, SyncRequestError, createSessionStore, createSyncChannel } from "./channel.js";
 import { createBatchDownloader } from "./download.js";
+import { createDownloadFetch } from "../../zalo/download-fetch.js";
 import { coveredAfter, planRanges, rangeStatusAfter } from "./ranges.js";
 import {
     CONFIRM_WAIT_MS,
@@ -654,6 +655,15 @@ export class SyncV2 {
      * @returns {Promise<{conversations:number, messagesSaved:number, threadsMapped:number, threadsUnmapped:number, reason:string, days:number|null, from:number, confirmed:boolean, resumes:number, rePrompted:boolean}>}
      */
     async restore(opts = {}) {
+        // The server decides whether this account may sync from the phone at all: the web client reads
+        // `settings.features.sync_2_web.enable` and shows no sync when it is false. (Live, 2026-10-28: true on a paid
+        // and on a free account alike, with the same 300 s timeouts; the block does not depend on the zCloud plan.)
+        if (this.api.getContext?.()?.settings?.features?.sync_2_web?.enable === false) {
+            throw new Error(
+                "Zalo has turned the phone-backed sync off for this account (the server's sync_2_web setting is off). " +
+                    "Nothing was asked of the phone.",
+            );
+        }
         const shardSize = Math.min(30, Math.max(1, opts.shardSize || 30));
         const waveSize = Math.min(30, Math.max(1, opts.waveSize || DEFAULT_WAVE_SIZE));
         const stallNoteMs = opts.stallNoteMs ?? STALL_NOTE_MS;
@@ -712,7 +722,8 @@ export class SyncV2 {
         });
         // A batch is fetched the moment the phone announces it, two at a time (Y3), not when its turn to be
         // decoded comes.
-        const downloader = createBatchDownloader();
+        // In the account's own identity and over its proxy (plan item ZP-01), not the global fetch.
+        const downloader = createBatchDownloader({ fetchImpl: createDownloadFetch(this.api) });
         const onMsg = async (buf) => {
             channel.handleFrame(buf);
             for (const ctl of readTransferControls(buf, (parsed) => decodeFrame(parsed, L.cipherKey))) {

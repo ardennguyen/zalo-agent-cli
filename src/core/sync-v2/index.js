@@ -384,6 +384,7 @@ export function createShardSchedule(shardCount, opts = {}) {
  * @param {number} st.total - shards requested
  * @param {number} [st.resumes=0] - reconnects used
  * @param {number} [st.waitMs] - the budget, for the timeout wording
+ * @param {number} [st.rowErrors] - rows that could not be written to the cache
  * @returns {{reason: string, error: string|null}}
  */
 export function describeRestoreOutcome(st) {
@@ -410,6 +411,8 @@ export function describeRestoreOutcome(st) {
         };
     }
     if (st.finished < st.total) return { reason: st.socketDied ? "socket-lost" : "partial", error: null };
+    // Every shard came back, but a row did not reach the cache: a hole is not complete.
+    if (st.rowErrors > 0) return { reason: "partial", error: null };
     return { reason: "complete", error: null };
 }
 
@@ -874,7 +877,10 @@ export class SyncV2 {
         const ik = zproto.generateKeyPair();
         let conversations = 0,
             messagesSaved = 0,
-            attachmentsSaved = 0;
+            attachmentsSaved = 0,
+            rowErrors = 0;
+        /** The first reason a row could not be written, for the report. */
+        let firstRowError = null;
         const mappedThreads = new Set(),
             unmappedThreads = new Set();
         /** type name -> count, for the command's summary line. */
@@ -892,6 +898,8 @@ export class SyncV2 {
                 confirmed,
                 ...resumeInfo,
                 attachmentsSaved,
+                rowErrors,
+                firstRowError,
                 typeCounts: { ...typeCounts },
                 // Every threadId the conversation round accounted for. Anything
                 // cached outside this list is orphaned.
@@ -1253,8 +1261,12 @@ export class SyncV2 {
                                         messagesSaved++;
                                         if (info.hasAttachment) attachmentsSaved++;
                                         typeCounts[info.type] = (typeCounts[info.type] || 0) + 1;
-                                    } catch {
-                                        /* dedupe/constraint — keep going */
+                                    } catch (e) {
+                                        // Keep going with the rest of the chunk, but never silently: a row that cannot
+                                        // be written (a full disk, a locked file) leaves a hole, so the run does not
+                                        // call itself complete.
+                                        rowErrors++;
+                                        firstRowError ??= e?.message ?? String(e);
                                     }
                                 }
                             }
@@ -1314,6 +1326,7 @@ export class SyncV2 {
                 timedOut,
                 confirmed,
                 messagesSaved,
+                rowErrors,
                 finished,
                 total: shards.length,
                 resumes: schedule.resumes(),

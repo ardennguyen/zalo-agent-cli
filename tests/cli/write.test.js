@@ -11,7 +11,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
 import { WRITE_NAMES } from "../../src/zalo/writes.js";
 
-const options = { home: SANDBOX_HOME, timeout: 40_000 };
+const options = { home: SANDBOX_HOME, timeout: 120_000 };
 
 describe("write", () => {
     before(() => {

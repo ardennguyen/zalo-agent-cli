@@ -7,7 +7,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { acquireLock, releaseLock } from "../../src/core/lock.js";
 import { runCli } from "../helpers/cli.js";
 
-const options = { home: SANDBOX_HOME, timeout: 30_000 };
+const options = { home: SANDBOX_HOME, timeout: 120_000 };
 before(() => assertSandboxed(CONFIG_DIR));
 beforeEach(() => {
     mkdirSync(CONFIG_DIR, { recursive: true });

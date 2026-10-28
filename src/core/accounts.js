@@ -303,9 +303,12 @@ export function removeAccount(ownId) {
  *
  * @param {string|null|undefined} ownId
  * @param {string|null|undefined} name
+ * @param {{ lockTimeoutMs?: number }} [opts] - how long to wait for the registry's lock before giving up on this
+ *   cosmetic refresh (3 s: a daemon calls this from event handlers); a test that is about lost writes, not about
+ *   timing, waits longer
  * @returns {boolean} true when an existing account's name was changed
  */
-export function updateAccountName(ownId, name) {
+export function updateAccountName(ownId, name, { lockTimeoutMs = 3000 } = {}) {
     const id = ownId ? String(ownId).trim() : "";
     const trimmed = typeof name === "string" ? name.trim() : "";
     if (!id || !trimmed) return false;
@@ -324,7 +327,7 @@ export function updateAccountName(ownId, name) {
             },
             // Daemons call this from event handlers: a busy registry costs a missed cosmetic refresh,
             // not seconds of a blocked event loop.
-            { timeoutMs: 3000 },
+            { timeoutMs: lockTimeoutMs },
         );
     } catch (e) {
         // A cached display name is not worth a daemon: say so and carry on.

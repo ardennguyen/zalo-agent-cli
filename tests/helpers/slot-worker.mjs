@@ -5,7 +5,7 @@
  *   hold <configDir> <slots> <holdMs> <ownId>   enter, record, hold, record, leave; print { slot }
  *   die  <configDir> <slots> <ownId>            enter, then exit WITHOUT leaving
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createStartupGate } from "../../src/core/startup-gate.js";
 import { sleepSync, withFileLock } from "../../src/utils/atomic-file.js";
@@ -16,6 +16,12 @@ const settings = { jitterSec: 0, slots, waitSec: 60, holdSec: 300, warnings: [] 
 
 if (mode === "hold") {
     const [holdMs, ownId] = [Number(rest[0]), rest[1]];
+    // With a barrier, every worker says it is ready (its module loading done) and waits for the go file: a loaded
+    // machine starts processes seconds apart, and without this the test could see no contention at all.
+    if (process.env.ZALO_SLOT_BARRIER) {
+        writeFileSync(join(configDir, `ready-${ownId}`), "");
+        while (!existsSync(join(configDir, "go"))) sleepSync(10);
+    }
     const gate = createStartupGate({ configDir, ownId, settings });
     const { slot } = await gate.enter();
     const file = join(configDir, "concurrency.json");

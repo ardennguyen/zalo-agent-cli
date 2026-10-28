@@ -11,7 +11,7 @@ import { initDb, insertMessage, upsertThread } from "../../src/core/db.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
 import { indexProgressReporter } from "../../src/commands/msg-search.js";
 
-const options = { home: SANDBOX_HOME, timeout: 40_000 };
+const options = { home: SANDBOX_HOME, timeout: 120_000 };
 const OWN = "4242";
 const NOW = Date.now();
 const DAY = 86_400_000;

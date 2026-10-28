@@ -601,6 +601,8 @@ describe("the table", () => {
             "pin-reorder",
             "pin-reorder-1on1",
             "recent-search-update",
+            "recommend-remove",
+            "recommend-seen",
             "sync-action-media",
             "topic-create",
             "topic-remove",

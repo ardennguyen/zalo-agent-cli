@@ -493,8 +493,8 @@ export const WRITES = {
             arg("type", "number", "the suggestion type, as the client sends it", true),
         ],
         body: (a) => ({ uid: String(a.userId), src: num(a.src), type: num(a.type) }),
-        verified: false,
-        note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
+        verified: true,
+        note: "seen working (2026-10-28): one suggestion removed from a list of 199, which then held 198 without it; src and type are the item's recommSrc and recommType from `friend recommendations --json` (1 and 1 for every suggestion seen); an unknown id is rejected with 114",
     },
     "recommend-seen": {
         host: "friend",
@@ -505,8 +505,8 @@ export const WRITES = {
         what: "Mark friend requests as seen (clears their unread badge)",
         args: [arg("userIds", "json", "the requesters' ids (array)", true)],
         body: (a) => ({ uids_seen: list(a.userIds).map(String) }),
-        verified: false,
-        note: "alive: rejects an unknown id with 114; a success was not seen (it needs a real suggestion or Official Account)",
+        verified: true,
+        note: "seen working (2026-10-28): the request's isSeenFriendReq went from false to true; the id is the requester's as the one who answers sees it (the request item's dataInfo.userId, which for someone who is not yet a friend is not his own id); request items have recommType 2; an unknown id is rejected with 114",
     },
     "oa-block": {
         host: "profile",

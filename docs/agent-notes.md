@@ -1602,7 +1602,8 @@ down). Reads and writes are in the sections above; the rest:
 **Not run, and why.** (1) The consuming pulls `515`, `517`, `518`, `603`: they may remove what they return from the server's
 queue, and the account is the owner's real one. (2) The listener on a real network cut: it needs someone to switch the
 network off and on. (3) A restore without the four-session cap: not needed, see the sync section. (4) A non-empty
-`sync_action/media` list, a real `oa-block`, a real suggestion for `recommend-remove`: nothing disposable to aim them at.
+`sync_action/media` list, a real `oa-block`, a real suggestion for `recommend-remove`: nothing disposable to aim them at
+(`recommend-remove` and `recommend-seen` were seen working on 2026-10-28, see "The Companion checks").
 (5) The three todo writes and reads: the account answers `-69`.
 
 **P7b.** X10: `src/core/unknown-acts.js`, attached identically by `listen` and `mcp start` (a test reads both files' syntax
@@ -1842,3 +1843,27 @@ by an acknowledgement, so the risk to the account's queues that the connect-time
 the `deviceName`, the temp key in the first message request, and the handshake's `prgama` header and parameter order
 are values the server accepts (every ack was `err 0`). If a drop returns, the boot is the first thing to try, after the
 pulls that are safe (510, 511, 610, 611, 603).
+
+## The Companion checks (v3.0, 2026-10-28)
+
+The Companion account (the second account of the owner) was logged in with a live listener in the default config
+dir, so nothing here opened a second socket on it: every call was a plain HTTP one through `--account` with
+`--data-dir` pointed at a scratch folder, so nothing was written to the live listener's account folder. The output of
+`friend recommendations` lists names and ids; count with `--json`, do not paste it anywhere.
+
+- **The todos feature is off for the Companion too**: `todo-list` answers `-69` ("Stop retry"), as on the test
+  account. The six todo writes and the three todo reads cannot be verified on either account; the flag is on Zalo's
+  side (no `features.task_setting` in the login settings).
+- **`recommend-remove` works.** One suggestion removed from a list of 199: the list then held 198, without it, and
+  nothing new. Its `src` and `type` are the list item's `dataInfo.recommSrc` and `dataInfo.recommType` (1 and 1 for
+  every suggestion seen); the body is `{uid, src, type}` as the Web client's `removeRecommendedFriendV2` builds it.
+- **`recommend-seen` works.** On a real incoming request the item's `isSeenFriendReq` went from false to true. The id
+  it takes is the one the answering account sees for the requester, the request item's `dataInfo.userId`.
+- **A request is told from a suggestion by `dataInfo.recommType`**: 2 for a request (`recommSrc` 4, `recommInfo` with
+  the sender's `source` and `message`), 1 for a suggestion (`recommSrc` 1). `recommItemType` is 1 for both.
+- **A non-friend has a different id for each account that sees them.** The Companion's own id, given to `friend add`
+  from the owner's account, answered 114 ("invalid parameter"), and the friend list of the owner's account did not
+  contain that id although the two were friends (the list holds the ids that account sees). `friend find <phone>`
+  returns the id the requester must use; once the two are friends, `friend add` says "Already friends".
+- **Unfriending and re-adding lost nothing**: the owner's account removed the Companion, sent a request, the Companion
+  accepted it, and afterwards the alias and the label that held the chat were exactly as before.

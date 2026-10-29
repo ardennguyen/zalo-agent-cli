@@ -31,7 +31,7 @@ def events_of(body: dict) -> list:
 
 
 def handle(event: dict) -> None:
-    print("message", event.get("id") or event.get("msgId"), event.get("threadId"))
+    print("message", event.get("msgId"), event.get("threadId"))
 
 
 class Hook(BaseHTTPRequestHandler):
@@ -45,7 +45,7 @@ class Hook(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"ok")
         for event in events_of(json.loads(raw)):
-            key = (event.get("accountId"), event.get("id") or event.get("msgId"))
+            key = (event.get("accountId"), event.get("msgId"))
             if key[1] is not None and key in SEEN:
                 continue
             SEEN.add(key)

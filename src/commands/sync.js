@@ -100,6 +100,11 @@ export function registerSyncCommands(program) {
         .option("--no-cloud", "Skip the zCloud index")
         .option("--no-media", "Skip downloading attachments")
         .option(
+            "--media-limit <n>",
+            "Download at most this many attachments in this run, two at a time; the rest wait for `sync-media`. Default: all of them",
+            parseIntAtLeast(1),
+        )
+        .option(
             "--no-removals",
             "Do not apply un-react entries from the reaction backlog (see sync-reactions --no-removals)",
         )
@@ -227,7 +232,12 @@ export function registerSyncCommands(program) {
         )
         .option("-n, --limit <n>", "Consider at most this many messages", parseIntAtLeast(1), 500)
         .option("-d, --days <n>", "Only attachments from the last N days", parseIntAtLeast(1))
-        .option("-c, --concurrency <n>", "Parallel downloads", parseIntAtLeast(1), 4)
+        .option("-c, --concurrency <n>", "Parallel downloads", parseIntAtLeast(1), 2)
+        .option(
+            "--media-limit <n>",
+            "Download at most this many attachments in this run; the rest stay pending for the next run. Default: all of them",
+            parseIntAtLeast(1),
+        )
         .option("-m, --max-size <mb>", "Skip attachments larger than this many MB", parseIntAtLeast(1))
         .option(
             "--timeout <seconds>",
@@ -416,6 +426,7 @@ async function runMediaDownload(activeAcc, opts) {
         limit: opts.limit,
         since,
         concurrency: opts.concurrency,
+        maxFiles: opts.mediaLimit,
         maxBytes: opts.maxSize ? opts.maxSize * MB : undefined,
         timeoutMs: (opts.timeout || 60) * 1000,
         thumbs: Boolean(opts.thumbs),
@@ -437,6 +448,11 @@ async function runMediaDownload(activeAcc, opts) {
         process.exit(0);
     }
     success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.deferred) {
+        info(
+            `${stats.deferred} more attachment(s) are waiting (this run was capped at ${opts.mediaLimit}); run it again to continue.`,
+        );
+    }
     if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
         warning(`${stats.expired} link(s) are gone (HTTP 404/410 or a lapsed signature).`);
@@ -1269,7 +1285,7 @@ async function runTransferSync(activeAcc, opts) {
     // a successful restore into a failed run -- the messages are already safe.
     if (exitCode === 0 && !opts.messagesOnly) {
         try {
-            await fetchMediaAfterRestore(accountDir, api, win.from);
+            await fetchMediaAfterRestore(accountDir, api, win.from, { limit: opts.mediaLimit });
         } catch (err) {
             warning(`Media download stopped: ${err.message}`);
             info("The messages are stored. Run `zalo-agent sync-media` to retry the files.");
@@ -1490,12 +1506,18 @@ export function reportRestore(res, win, ctx = {}) {
  *
  * @param {string} accountDir
  * @param {object|null} api - needed only to renew expired links
+ * @param {number} [since] - epoch ms; only media inside the window this run covered
+ * @param {{limit?: number}} [cap] - `limit`: download at most this many files in this run (`--media-limit`)
  */
-async function fetchMediaAfterRestore(accountDir, api, since) {
+async function fetchMediaAfterRestore(accountDir, api, since, { limit } = {}) {
     const pending = countPendingAttachments();
     if (!pending) return null;
 
-    info(`Downloading ${pending} attachment(s) — no phone confirmation needed. Ctrl-C is safe; it resumes.`);
+    const capped = Number.isFinite(limit) && limit > 0 && limit < pending;
+    info(
+        `Downloading ${capped ? `up to ${limit} of ${pending}` : pending} attachment(s) — no phone confirmation needed. ` +
+            "Ctrl-C is safe; it resumes.",
+    );
     let last = 0;
     // Tallied here rather than read off the result: the result does not exist
     // until the whole download resolves, so progress lines would all read 0 B.
@@ -1510,7 +1532,9 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
         // an unscoped fetch re-downloads exactly what was just deleted.
         since: Number.isFinite(since) && since > 0 ? since : undefined,
         includePruned: false,
-        concurrency: 4,
+        // Two at a time, as Zalo Web fetches: a burst is what the CDN answers with 403 and 429.
+        concurrency: 2,
+        maxFiles: limit,
         threadNames: getThreadNames(),
         onProgress: (p) => {
             if (p.phase !== "saved") return;
@@ -1522,6 +1546,11 @@ async function fetchMediaAfterRestore(accountDir, api, since) {
         },
     });
     success(`Downloaded ${stats.downloaded}/${stats.considered} file(s) (${formatBytes(stats.bytes)}).`);
+    if (stats.deferred) {
+        info(
+            `${stats.deferred} more file(s) are waiting (this run was capped at ${limit}); run \`zalo-agent sync-media\` to continue.`,
+        );
+    }
     if (stats.renewed) info(`Renewed ${stats.renewed} expired link(s).`);
     if (stats.expired) {
         warning(`${stats.expired} link(s) are gone and could not be renewed.`);
@@ -1998,13 +2027,14 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
     if (runs("media")) {
         try {
             const since = Number(getSyncState("lastSyncOkFrom"));
-            const m = await fetchMediaAfterRestore(accountDir, api, since);
+            const m = await fetchMediaAfterRestore(accountDir, api, since, { limit: opts.mediaLimit });
             if (!m) record("media", "ok", "nothing waiting to download");
             else {
                 const short = m.expired || m.throttled || m.unknown || m.abortedEarly;
                 record("media", short ? "partial" : "ok", "", {
                     downloaded: m.downloaded,
                     considered: m.considered,
+                    deferred: m.deferred,
                     expired: m.expired,
                     throttled: m.throttled,
                     unknown: m.unknown,

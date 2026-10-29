@@ -130,9 +130,9 @@ describe("zalo_get_group_members", () => {
         assert.deepEqual(api.nameCalls, [[B, C]]);
         // Red if a "_version" suffix survives in a uid, or "_0" in a name key.
         assert.deepEqual(out.members, [
-            { userId: A, uid: A, displayName: "Chị Lan" },
-            { userId: B, uid: B, displayName: "Anh Minh" },
-            { userId: C, uid: C, displayName: "Bích Ngọc" },
+            { userId: A, displayName: "Chị Lan" },
+            { userId: B, displayName: "Anh Minh" },
+            { userId: C, displayName: "Bích Ngọc" },
         ]);
         assert.equal(out.groupId, GROUP);
         assert.equal(out.name, "Nhóm thử");
@@ -178,8 +178,8 @@ describe("zalo_get_group_members", () => {
         assert.equal(r.isError, undefined, "the member list does not depend on the names");
         const out = payloadOf(r);
         assert.deepEqual(out.members, [
-            { userId: A, uid: A, displayName: null },
-            { userId: B, uid: B, displayName: null },
+            { userId: A, displayName: null },
+            { userId: B, displayName: null },
         ]);
         assert.match(out.warnings[0], /did not name 2 member\(s\): HTTP 414/);
     });
@@ -211,14 +211,13 @@ describe("zalo_list_conversations", () => {
         );
         assert.deepEqual(out.conversations[1], {
             threadId: "g2",
-            type: "group",
-            threadType: 1,
+            threadType: "group",
             name: "Nhóm B",
             lastActivity: 1700000003000,
             lastActivityAt: new Date(1700000003000).toISOString(),
             readState: null,
         });
-        assert.equal(out.conversations[0].threadType, 0, "a DM is threadType 0, ready for zalo_send_message");
+        assert.equal(out.conversations[0].threadType, "dm", "a DM is threadType dm, ready for zalo_send_message");
         assert.equal(out.total, 4);
         assert.equal(out.source, "cache");
     });

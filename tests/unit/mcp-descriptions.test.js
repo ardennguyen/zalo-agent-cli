@@ -4,7 +4,8 @@
  *
  * A model calls a tool only as well as it understands it. A parameter with no description, a tool that points at a
  * tool that does not exist, or ids that carry different names in different replies (`id` in the live buffer,
- * `msgId` in history, `messageId` in a send reply) are how a weaker model ends up with the wrong field name.
+ * `msgId` in history, `messageId` in a send reply, before 3.0 made it `msgId` everywhere) are how a weaker model ends up
+ * with the wrong field name.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -60,7 +61,7 @@ describe("every tool and parameter is described", () => {
 });
 
 describe("the id vocabulary is stated where an agent needs it", () => {
-    it("says what each id is called in each reply: `id` in the live buffer, `msgId` in history, `messageId` from a send", () => {
+    it("says where each msgId comes from, and names the one vocabulary in the instructions", () => {
         // Red if a tool that takes a msgId stops saying where it comes from.
         for (const name of ["zalo_react", "zalo_undo", "zalo_view_media"]) {
             const text = params(tools.get(name).meta)
@@ -69,15 +70,20 @@ describe("the id vocabulary is stated where an agent needs it", () => {
             assert.match(text, /zalo_get_history|zalo_send_message/, `${name}: where msgId comes from`);
         }
         assert.match(tools.get("zalo_get_messages").meta.description, /`msgId` \(pass it as/);
-        assert.match(tools.get("zalo_get_messages").meta.description, /`id` is the same value/);
         assert.match(tools.get("zalo_send_message").meta.description, /`msgId` and `cliMsgId`/);
         assert.match(SERVER_INSTRUCTIONS, /called `msgId` in every input and reply/);
-        assert.match(SERVER_INSTRUCTIONS, /`id`.*`messageId`/);
-        assert.match(
-            SERVER_INSTRUCTIONS,
-            /never pass that text back/,
-            "the threadType trap: the output is text, the input a number",
-        );
+        assert.match(SERVER_INSTRUCTIONS, /threadType is `dm` or `group`, in inputs and in replies/);
+    });
+
+    it("mentions no older name: the aliases are gone, so nothing may say they are kept", () => {
+        const all = [SERVER_INSTRUCTIONS];
+        for (const [, { meta }] of tools)
+            all.push(meta.description, ...params(meta).map(([, s]) => s.description ?? ""));
+        for (const text of all) {
+            assert.doesNotMatch(text, /older clients/);
+            assert.doesNotMatch(text, /\bmessageId\b/);
+            assert.doesNotMatch(text, /0 = DM|0=DM/);
+        }
     });
 
     it("tells the agent to send real line breaks, in the instructions, the tool and the parameter", () => {

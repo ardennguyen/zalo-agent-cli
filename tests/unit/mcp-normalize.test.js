@@ -96,7 +96,7 @@ describe("normalizeMessage", () => {
 describe("postMCPWebhook", () => {
     it("is a no-op when webhookUrl is null or empty", async () => {
         let called = false;
-        const ok = await postMCPWebhook(null, { id: "m1", text: "hi" }, { accountId: "101" }, async () => {
+        const ok = await postMCPWebhook(null, { msgId: "m1", text: "hi" }, { accountId: "101" }, async () => {
             called = true;
         });
         assert.equal(ok, false);
@@ -120,7 +120,7 @@ describe("postMCPWebhook", () => {
     });
 
     it("swallows fetch failures without throwing into the listener", async () => {
-        const ok = await postMCPWebhook("http://127.0.0.1:4999/hook", { id: "m1" }, {}, async () => {
+        const ok = await postMCPWebhook("http://127.0.0.1:4999/hook", { msgId: "m1" }, {}, async () => {
             throw new Error("connection refused");
         });
         assert.equal(ok, false);
@@ -130,7 +130,7 @@ describe("postMCPWebhook", () => {
         let capturedHeaders = null;
         const ok = await postMCPWebhook(
             "http://127.0.0.1:4999/hook",
-            { id: "m1", text: "signed crm event" },
+            { msgId: "m1", text: "signed crm event" },
             { accountId: "101" },
             async (_url, opts) => {
                 capturedHeaders = opts.headers;
@@ -147,19 +147,19 @@ describe("postMCPWebhook", () => {
 describe("MessageBuffer.waitForMessage & GET /events/wait", () => {
     it("resolves immediately when a message after `since` is already buffered", async () => {
         const buf = new MessageBuffer();
-        buf.push("t1", { id: "m1", threadId: "t1", text: "already here", timestamp: Date.now() });
+        buf.push("t1", { msgId: "m1", threadId: "t1", text: "already here", timestamp: Date.now() });
         const got = await buf.waitForMessage({ since: 0, timeoutMs: 5000 });
-        assert.equal(got.id, "m1");
+        assert.equal(got.msgId, "m1");
         assert.equal(got._cursor, 1);
     });
 
     it("wakes a waiting caller as soon as push() arrives for the matching thread", async () => {
         const buf = new MessageBuffer();
         const waitPromise = buf.waitForMessage({ threadId: "t2", timeoutMs: 5000 });
-        buf.push("t1", { id: "m1", threadId: "t1", text: "other thread", timestamp: Date.now() });
-        buf.push("t2", { id: "m2", threadId: "t2", text: "target thread", timestamp: Date.now() });
+        buf.push("t1", { msgId: "m1", threadId: "t1", text: "other thread", timestamp: Date.now() });
+        buf.push("t2", { msgId: "m2", threadId: "t2", text: "target thread", timestamp: Date.now() });
         const got = await waitPromise;
-        assert.equal(got.id, "m2");
+        assert.equal(got.msgId, "m2");
         assert.equal(got.text, "target thread");
     });
 
@@ -191,12 +191,12 @@ describe("MessageBuffer.waitForMessage & GET /events/wait", () => {
             while (buf._waiters.size === 0) {
                 await new Promise((r) => setTimeout(r, 10));
             }
-            buf.push("t9", { id: "m9", threadId: "t9", text: "live push", timestamp: Date.now() });
+            buf.push("t9", { msgId: "m9", threadId: "t9", text: "live push", timestamp: Date.now() });
             const res = await pendingFetch;
             assert.equal(res.status, 200);
             const body = await res.json();
             assert.equal(body.status, "message");
-            assert.equal(body.message.id, "m9");
+            assert.equal(body.message.msgId, "m9");
             assert.equal(body.cursor, 1);
         } finally {
             server.close();

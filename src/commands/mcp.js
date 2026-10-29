@@ -101,10 +101,8 @@ export function normalizeMessage(msg, info = null) {
     const cls = info || classifyLiveMessage(data);
     const media = cls.attachments.find((a) => a.url || a.thumbUrl) || null;
     return {
-        // `msgId` is the name every tool takes and every other reply uses; `id` is the same value, kept for clients
-        // that already read it (the webhook and /events/wait payloads carry both).
+        // `msgId`, the name every tool takes and every reply uses (3.0 dropped the older `id`).
         msgId: data.msgId,
-        id: data.msgId,
         threadId: msg.threadId,
         threadType: msg.type === 0 ? "dm" : "group",
         senderId: data.uidFrom || null,
@@ -702,7 +700,7 @@ export function registerMCPCommands(program) {
             /** Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent. */
             const queueWebhook = (normalized) =>
                 webhookDelivery?.enqueue(
-                    `message:${normalized.id}`,
+                    `message:${normalized.msgId}`,
                     buildMCPWebhookPayload(normalized, { accountId: activeAcc.ownId }),
                 );
 

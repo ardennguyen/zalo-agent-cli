@@ -66,9 +66,9 @@ const payloadOf = (res) => {
 describe("zalo_get_messages -- readOnZalo on each message", () => {
     it("is true through the watermark, false after it, and null where nothing is known", async () => {
         const buffered = [
-            { id: "7000000000002", threadId: GROUP, content: "a" },
-            { id: "7000000000003", threadId: GROUP, content: "b" },
-            { id: "7000000000009", threadId: DM, content: "c" },
+            { msgId: "7000000000002", threadId: GROUP, content: "a" },
+            { msgId: "7000000000003", threadId: GROUP, content: "b" },
+            { msgId: "7000000000009", threadId: DM, content: "c" },
         ];
         const buffer = { read: () => ({ messages: buffered, cursor: 3 }), readCursor: () => 0 };
         const out = payloadOf(await call("zalo_get_messages", { since: 0, limit: 10 }, buffer));

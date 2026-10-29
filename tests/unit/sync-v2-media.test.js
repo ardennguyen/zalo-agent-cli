@@ -292,6 +292,52 @@ describe("downloadSyncedMedia — happy path", () => {
         const stats = await downloadSyncedMedia({ accountDir: dir, concurrency: 4, limit: 50 });
         assert.equal(stats.downloaded, 8);
     });
+
+    it("fetches two at a time unless told otherwise, as Zalo Web does", async () => {
+        for (let i = 0; i < 6; i++) row({}, [photo("/slow.jpg")]);
+        let live = 0;
+        let peak = 0;
+        const stats = await downloadSyncedMedia({
+            accountDir: dir,
+            limit: 50,
+            fetchImpl: async () => {
+                peak = Math.max(peak, ++live);
+                await new Promise((r) => setTimeout(r, 20));
+                live--;
+                return new Response(Buffer.from("x"), { status: 200, headers: { "content-type": "image/jpeg" } });
+            },
+        });
+        // Red if the default goes back to four (peak 4) or the workers stop sharing the queue (peak 1).
+        assert.equal(stats.downloaded, 6);
+        assert.equal(peak, 2);
+    });
+});
+
+describe("downloadSyncedMedia — maxFiles", () => {
+    it("downloads at most that many and counts the rest as deferred, still pending for the next run", async () => {
+        for (let i = 0; i < 5; i++) row({}, [photo("/ok.jpg")]);
+        const first = await downloadSyncedMedia({ accountDir: dir, limit: 50, maxFiles: 2 });
+        assert.equal(first.downloaded, 2);
+        assert.equal(first.considered, 2);
+        assert.equal(first.deferred, 3);
+
+        // Nothing was marked done for what was left out: the next run takes it.
+        const second = await downloadSyncedMedia({ accountDir: dir, limit: 50, maxFiles: 2 });
+        assert.equal(second.downloaded, 2);
+        assert.equal(second.deferred, 1);
+        const third = await downloadSyncedMedia({ accountDir: dir, limit: 50, maxFiles: 2 });
+        assert.equal(third.downloaded, 1);
+        assert.equal(third.deferred, 0);
+    });
+
+    it("is no cap at all when unset or larger than what is pending", async () => {
+        for (let i = 0; i < 3; i++) row({}, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 50, maxFiles: 10 });
+        assert.equal(stats.downloaded, 3);
+        assert.equal(stats.deferred, 0);
+        const none = await downloadSyncedMedia({ accountDir: dir, limit: 50 });
+        assert.equal(none.deferred, 0);
+    });
 });
 
 describe("downloadSyncedMedia — expiry", () => {

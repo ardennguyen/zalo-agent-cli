@@ -93,23 +93,60 @@ describe("tool inputs", () => {
     });
 });
 
+describe("threadType is the same words in every input and reply", () => {
+    it("is the enum dm | group in every tool that takes it", () => {
+        let seen = 0;
+        for (const [name, { meta }] of tools) {
+            const schema = z.toJSONSchema(meta.inputSchema, { io: "input", unrepresentable: "any" }).properties ?? {};
+            if (!("threadType" in schema)) continue;
+            seen++;
+            assert.deepEqual(schema.threadType.enum, ["dm", "group"], `${name}.threadType`);
+        }
+        assert.ok(seen >= 7, "the tools that take a threadType were found");
+    });
+
+    it("a live message says dm or group, as the inputs do", () => {
+        const dm = normalizeMessage({
+            threadId: "t1",
+            type: 0,
+            data: { msgId: "m1", ts: "1", content: "hi", msgType: "webchat" },
+        });
+        const group = normalizeMessage({
+            threadId: "t2",
+            type: 1,
+            data: { msgId: "m2", ts: "1", content: "hi", msgType: "webchat" },
+        });
+        assert.equal(dm.threadType, "dm");
+        assert.equal(group.threadType, "group");
+    });
+
+    it("a send reply says dm or group, whichever way it was resolved", async () => {
+        const { call } = tool();
+        assert.equal((await call({ threadId: "g1", text: "hi", format: "plain" })).body.threadType, "group");
+        assert.equal(
+            (await call({ threadId: "u1", text: "hi", format: "plain", threadType: "dm" })).body.threadType,
+            "dm",
+        );
+    });
+});
+
 describe("replies", () => {
-    it("a live message carries its id as msgId, and as id for the clients that read it", () => {
+    it("a live message carries its id as msgId only; the old id is gone", () => {
         const n = normalizeMessage({
             threadId: "t1",
             type: 0,
             data: { msgId: "m1", uidFrom: "u2", ts: "1", content: "hi", msgType: "webchat" },
         });
         assert.equal(n.msgId, "m1");
-        assert.equal(n.id, "m1");
+        assert.equal("id" in n, false);
         assert.equal(n.senderId, "u2", "the author is senderId");
     });
 
-    it("a send reply carries the id as msgId, and as messageId for the clients that read it", async () => {
+    it("a send reply carries the id as msgId only; the old messageId is gone", async () => {
         const { call } = tool();
         const { body } = await call({ threadId: "g1", text: "hi", format: "plain" });
         assert.equal(body.msgId, "m1");
-        assert.equal(body.messageId, body.msgId);
+        assert.equal("messageId" in body, false);
         assert.equal(body.cliMsgId, "c1");
     });
 
@@ -119,7 +156,7 @@ describe("replies", () => {
         assert.ok(body.parts.length >= 2);
         for (const p of body.parts) {
             assert.ok(p.msgId);
-            assert.equal(p.messageId, p.msgId);
+            assert.equal("messageId" in p, false);
         }
     });
 });

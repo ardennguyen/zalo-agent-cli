@@ -31,10 +31,10 @@ describe("zalo_send_message of a long text", () => {
         assert.equal(body.success, true);
         assert.equal(body.splitInto, sent.length);
         assert.deepEqual(
-            body.parts.map((p) => p.messageId),
+            body.parts.map((p) => p.msgId),
             sent.map((_, i) => `m${i + 1}`),
         );
-        assert.equal(body.messageId, "m1", "messageId and cliMsgId are the first part's");
+        assert.equal(body.msgId, "m1", "msgId and cliMsgId are the first part's");
         assert.equal(body.cliMsgId, "c1");
         // Bold stays on the first part only, where the word is.
         assert.equal(stylesOf(sent[0].content)[0].st, "b");

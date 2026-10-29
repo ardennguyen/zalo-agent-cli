@@ -388,7 +388,10 @@ function writeConversationIndex(mediaRoot, names) {
  * @param {Set<string>|string[]} [opts.kinds] - restrict to these attachment kinds
  * @param {number} [opts.limit=500] - max messages to consider
  * @param {number} [opts.since] / @param {number} [opts.until] - epoch ms bounds
- * @param {number} [opts.concurrency=4]
+ * @param {number} [opts.concurrency=2] - parallel downloads. Two, not more: the CDN answers a burst with 403 and 429
+ *   long before it runs short of bandwidth, and Zalo Web fetches a file only when it is opened
+ * @param {number} [opts.maxFiles] - download at most this many files in this run; the rest are counted in
+ *   `deferred` and stay pending for the next run. Unset: all of them
  * @param {number} [opts.maxBytes] - skip attachments larger than this
  * @param {boolean} [opts.thumbs=false] - also save thumbnails
  * @param {boolean} [opts.dryRun=false] - report what would be fetched, write nothing
@@ -408,7 +411,7 @@ function writeConversationIndex(mediaRoot, names) {
  *   `cloudBacked`: it exists, but the copy is end-to-end encrypted under the account's cloud key, which this client never holds
  * @param {(p: object) => void} [opts.onProgress]
  * @returns {Promise<{considered:number, downloaded:number, skipped:number, failed:number, expired:number,
- *   cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean,
+ *   cloudBacked:number, throttled:number, unknown:number, renewed:number, bytes:number, abortedEarly:boolean, deferred:number,
  *   reasons:Record<string,number>, failures:Array<object>}>}
  *   `throttled` counts only responses that said to slow down; `unknown` counts the retryable
  *   failures that explained nothing. `reasons` tallies the observed codes — pass it to
@@ -422,7 +425,8 @@ export async function downloadSyncedMedia(opts = {}) {
         limit = 500,
         since,
         until,
-        concurrency = 4,
+        concurrency = 2,
+        maxFiles,
         maxBytes,
         thumbs = false,
         dryRun = false,
@@ -456,8 +460,14 @@ export async function downloadSyncedMedia(opts = {}) {
         }
     }
 
+    // A cap on the run, not on what is pending: what it leaves out is still missing a localPath, so the next run
+    // (or `sync-media`) picks it up. Counted so the caller can say how much is left.
+    const deferred = Number.isFinite(maxFiles) && maxFiles > 0 && jobs.length > maxFiles ? jobs.length - maxFiles : 0;
+    if (deferred > 0) jobs.length = maxFiles;
+
     const stats = {
         considered: jobs.length,
+        deferred,
         downloaded: 0,
         skipped: 0,
         failed: 0,

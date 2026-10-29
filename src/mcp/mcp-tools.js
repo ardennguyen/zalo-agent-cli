@@ -163,11 +163,12 @@ async function forwardSourceForMcp(api, row) {
  * Omitted means "work it out"; an explicit 0 or 1 is always obeyed.
  *
  * @param {string} threadId
- * @param {number} [explicit] - the caller's threadType, if they gave one
+ * @param {"dm"|"group"} [explicit] - the caller's threadType, if they gave one
  * @returns {number} THREAD_USER or THREAD_GROUP
  */
 function resolveThreadType(threadId, explicit) {
-    if (explicit !== undefined && explicit !== null) return Number(explicit);
+    if (explicit === "group") return THREAD_GROUP;
+    if (explicit === "dm") return THREAD_USER;
     try {
         return getThreadType(String(threadId)) === "group" ? THREAD_GROUP : THREAD_USER;
     } catch {
@@ -181,6 +182,9 @@ const THREAD_USER = 0;
 
 /** Thread type for groups — the only kind Zalo delivers mentions in. */
 const THREAD_GROUP = 1;
+
+/** What a reply calls a thread type: the same words an input takes. */
+const threadTypeName = (type) => (Number(type) === THREAD_GROUP ? "group" : "dm");
 
 /**
  * How many member ids `zalo_get_group_members` asks Zalo to name per request.
@@ -274,11 +278,11 @@ function readStatesOf(api, threadIds) {
  * `me`, or this account's own uid, means My Documents: a 1-1 conversation of
  * its own whose id is the session's `loginInfo.send2me_id`, never the own uid
  * (src/utils/my-documents.js, the same function `msg send me` calls). An
- * explicit `threadType: 1` is refused, as `msg send me -t 1` is.
+ * explicit `threadType: "group"` is refused, as `msg send me -t 1` is.
  *
  * @param {object} api - zca-js API instance
  * @param {string} threadId - as the caller gave it
- * @param {number} [threadTypeIn] - the caller's threadType, if they gave one
+ * @param {"dm"|"group"} [threadTypeIn] - the caller's threadType, if they gave one
  * @returns {null|{threadId: string, notice: string}|{error: string}} null when it is not a self reference
  */
 function selfThread(api, threadId, threadTypeIn) {
@@ -291,7 +295,7 @@ function selfThread(api, threadId, threadTypeIn) {
     return resolveSelfThread(threadId, {
         ownId: ownId === null ? null : String(ownId),
         send2meId: () => api.getContext().loginInfo?.send2me_id,
-        groupRequested: Number(threadTypeIn) === THREAD_GROUP,
+        groupRequested: threadTypeIn === "group",
     });
 }
 
@@ -304,7 +308,7 @@ function selfThread(api, threadId, threadTypeIn) {
  *
  * @param {object} api - zca-js API instance
  * @param {string} threadIdIn - as the caller gave it
- * @param {number} [threadTypeIn] - the caller's threadType, if they gave one
+ * @param {"dm"|"group"} [threadTypeIn] - the caller's threadType, if they gave one
  * @returns {{threadId: string, threadType: number, notice?: string}|{error: string}} `notice` only for My Documents
  */
 function actionThread(api, threadIdIn, threadTypeIn) {
@@ -419,7 +423,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Read the new incoming Zalo messages (DMs and groups) from the live buffer, in order. It returns the messages this consumer has not yet marked read; when you have handled them, call zalo_mark_read with the reply's `cursor`. " +
                 "To continue exactly after the last reply, pass its `cursor` as `since`. To wait for the next message instead of polling, use zalo_wait_for_message. " +
-                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools; `id` is the same value, kept for older clients), `threadId`, `threadType` (dm or group), `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when the message was first seen), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
+                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when the message was first seen), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
                 "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (phone or Zalo Web), and null when that is unknown; zalo_mark_read does not change it. " +
                 "Returns `{ messages, cursor, hasMore }`.",
             inputSchema: z.object({
@@ -478,7 +482,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 };
                 result.messages = result.messages.map((msg) => ({
                     ...msg,
-                    readOnZalo: readOnZalo(msg.id, watermarkOf(String(msg.threadId))),
+                    readOnZalo: readOnZalo(msg.msgId, watermarkOf(String(msg.threadId))),
                 }));
                 return ok(result);
             } catch (e) {
@@ -499,7 +503,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Mention in a group: put `@[userId]` in the text where the tag belongs (`@[-1]` is @All). Take the user id from a message's `senderId` (zalo_get_messages, zalo_get_history) or from zalo_get_group_members. It is sent as `@Their Name` and notifies that person; a user id the cache cannot name is tagged as the bare id and listed in `unresolvedMentions`. Mentions only work in groups. " +
                 "Reply to a message: pass its msgId as `quoteMsgId` (text messages only, and the message must be in the local cache). " +
                 '`urgency` marks the message Important or Urgent, as the apps do. `threadId: "me"` sends to the owner\'s My Documents. ' +
-                "Returns `{ success, msgId, cliMsgId, threadType }` (`messageId` is the same value as `msgId`, kept for older clients) and, when they apply, `parts` and `warnings`. Keep `msgId` and `cliMsgId` if you may need to react to or recall this message (zalo_react, zalo_undo).",
+                "Returns `{ success, msgId, cliMsgId, threadType }` and, when they apply, `parts` and `warnings`. Keep `msgId` and `cliMsgId` if you may need to react to or recall this message (zalo_react, zalo_undo).",
             inputSchema: z
                 .object({
                     threadId: z
@@ -539,13 +543,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .optional()
                         .describe("The user id whose contact card to share in this conversation."),
                     threadType: z
-                        .number()
-                        .int()
-                        .min(0)
-                        .max(1)
+                        .enum(["dm", "group"])
                         .optional()
                         .describe(
-                            "0 = DM, 1 = group. Leave it out: the type stored for this thread is used. Pass it only to override that.",
+                            'The conversation type: "dm" or "group". Leave it out: the type stored for this thread is used. Pass it only to override that.',
                         ),
                     quoteMsgId: z
                         .string()
@@ -617,10 +618,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         success: true,
                         kind: "card",
                         cardUserId,
-                        messageId,
                         msgId: messageId,
                         ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         ...(thread.notice && { threadId, notice: thread.notice }),
                     });
                 }
@@ -634,10 +634,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         success: true,
                         kind: "link",
                         link,
-                        messageId,
                         msgId: messageId,
                         ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         ...(thread.notice && { threadId, notice: thread.notice }),
                     });
                 }
@@ -680,10 +679,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         kind: "attachment",
                         files: absPaths,
                         sent,
-                        messageId,
                         msgId: messageId,
                         ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         ...(thread.notice && { threadId, notice: thread.notice }),
                     });
                 }
@@ -720,7 +718,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 if (mentions.length > 0 && Number(threadType) !== THREAD_GROUP) {
                     warnings.push(
                         "Mentions only apply to group messages. This was sent with threadType " +
-                            `${Number(threadType)}, so the names went out as plain text and nobody was tagged.`,
+                            `${threadTypeName(threadType)}, so the names went out as plain text and nobody was tagged.`,
                     );
                 }
 
@@ -798,10 +796,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const cliMsgId = result?.message?.cliMsgId ?? result?.cliMsgId ?? null;
                 return ok({
                     success: true,
-                    messageId,
                     msgId: messageId,
                     ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     // Only for `me`: the thread it really went to, which is
                     // what a later zalo_get_history names.
                     ...(thread.notice && { threadId, notice: thread.notice }),
@@ -818,7 +815,6 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             const partCli = r?.message?.cliMsgId ?? r?.cliMsgId ?? null;
                             return {
                                 msgId: partId,
-                                messageId: partId,
                                 ...(partCli !== null && { cliMsgId: String(partCli) }),
                             };
                         }),
@@ -957,14 +953,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .string()
                     .describe("The conversation: the other person's user id for a DM, the group id for a group."),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
                     .describe(
-                        "0 = DM, 1 = group. Leave it out: the type stored for this thread is used. " +
-                            "Pass it only to override that.",
+                        'The conversation type: "dm" or "group". Leave it out: the type stored for this thread is used. Pass it only to override that.',
                     ),
                 limit: z
                     .number()
@@ -1125,7 +1117,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 } catch (e) {
                     console.error("[mcp-tools] cache unavailable:", e.message);
                 }
-                const buffered = buffer.read(threadId, 0, 9999).messages.find((m) => m.id === msgId) || null;
+                const buffered = buffer.read(threadId, 0, 9999).messages.find((m) => m.msgId === msgId) || null;
                 if (!row && !buffered) return err(`Message ${msgId} not found in cache or buffer`);
                 if (row && !row.has_attachment && !buffered?.attachment?.url) {
                     return err(`Message ${msgId} has no media attachment`);
@@ -1167,14 +1159,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
     // The threadType parameter of the message actions, worded as the send's is.
     const threadTypeSchema = z
-        .number()
-        .int()
-        .min(0)
-        .max(1)
+        .enum(["dm", "group"])
         .optional()
         .describe(
-            "0 = DM, 1 = group. Leave it out: the type stored for this thread is used. " +
-                "Pass it only to override that.",
+            'The conversation type: "dm" or "group". Leave it out: the type stored for this thread is used. Pass it only to override that.',
         );
     const cliMsgIdSchema = z
         .string()
@@ -1241,7 +1229,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     msgId,
                     cliMsgId: target.cliMsgId,
                     threadId,
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     ...(thread.notice && { notice: thread.notice }),
                 });
             } catch (e) {
@@ -1296,7 +1284,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     msgId,
                     cliMsgId: target.cliMsgId,
                     threadId,
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     ...(thread.notice && { notice: thread.notice }),
                 });
             } catch (e) {
@@ -1312,7 +1300,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "List Zalo Group Members",
             description:
-                "List the members of a group: each member's `userId` (`uid` is the same value, kept for older clients) and `displayName` (from the cache, or from Zalo for members the cache cannot name), and `totalMember`, Zalo's own count (it can be larger than the members listed). Use a `userId` as `@[userId]` in zalo_send_message to mention that member.",
+                "List the members of a group: each member's `userId` and `displayName` (from the cache, or from Zalo for members the cache cannot name), and `totalMember`, Zalo's own count (it can be larger than the members listed). Use a `userId` as `@[userId]` in zalo_send_message to mention that member.",
             inputSchema: z.object({
                 groupId: z
                     .string()
@@ -1351,7 +1339,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
                 for (const w of warnings) console.error("[mcp-tools] zalo_get_group_members warning:", w);
 
-                const members = group.uids.map((uid) => ({ userId: uid, uid, displayName: names.get(uid) ?? null }));
+                const members = group.uids.map((uid) => ({ userId: uid, displayName: names.get(uid) ?? null }));
                 return ok({
                     groupId,
                     name: group.name,
@@ -1374,7 +1362,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             title: "List Recent Zalo Conversations",
             description:
                 "List the conversations this account was most recently active in, newest first, from the local cache, to get a `threadId` or to see what is current. Unlike zalo_list_threads it is not limited to messages that arrived since this server started. " +
-                "Each has its thread id, type, name and last activity, plus `readState`: how far the account owner has read it on Zalo (on any device), meaning the newest message read, how many cached messages from others came after it, and whether it is marked unread (null when unknown). `limit` is per type: with `type` 'all' that is up to `limit` DMs and `limit` groups.",
+                "Each has its `threadId`, `threadType`, `name` and last activity, plus `readState`: how far the account owner has read it on Zalo (on any device), meaning the newest message read, how many cached messages from others came after it, and whether it is marked unread (null when unknown). `limit` is per type: with `type` 'all' that is up to `limit` DMs and `limit` groups.",
             inputSchema: z.object({
                 type: z
                     .enum(["group", "dm", "all"])
@@ -1399,8 +1387,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     const ts = Number(t.lastUpdate) || null;
                     return {
                         threadId: String(t.threadId),
-                        type: isGroup ? "group" : "dm",
-                        threadType: isGroup ? THREAD_GROUP : THREAD_USER,
+                        threadType: isGroup ? "group" : "dm",
                         name:
                             dmNames.get(String(t.threadId))?.name ||
                             t.name ||
@@ -1816,12 +1803,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .min(1)
                     .describe("Destination thread ID (`me` or your own uid resolves to My Documents)"),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
-                    .describe("Destination thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+                    .describe(
+                        'The destination conversation type: "dm" or "group". Inferred from the cache when omitted.',
+                    ),
             }),
         },
         async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn }) => {
@@ -1912,7 +1898,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         success: true,
                         kind,
                         threadId,
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         ...(thread.notice && { notice: thread.notice }),
                         result: res,
                     });
@@ -1948,7 +1934,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     success: true,
                     kind: "text",
                     threadId,
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     ...(thread.notice && { notice: thread.notice }),
                     sent,
                 });
@@ -1976,12 +1962,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .min(1)
                     .describe("The conversation the message is in: the user id for a DM, the group id for a group."),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
-                    .describe("Thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+                    .describe('The conversation type: "dm" or "group". Inferred from the cache when omitted.'),
                 cliMsgId: z
                     .string()
                     .min(1)
@@ -2040,7 +2023,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     msgId,
                     cliMsgId: String(cliMsgId),
                     threadId,
-                    threadType,
+                    threadType: threadTypeName(threadType),
                     everyone: Boolean(everyone),
                     ...(thread.notice && { notice: thread.notice }),
                     result,
@@ -2068,12 +2051,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .describe("Reminder operation to perform"),
                 threadId: z.string().min(1).optional().describe("Thread ID (required for create, list, edit, remove)"),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
-                    .describe("Thread type: 0=DM(User), 1=Group. Inferred from cache when omitted."),
+                    .describe('The conversation type: "dm" or "group". Inferred from the cache when omitted.'),
                 reminderId: z
                     .string()
                     .min(1)
@@ -2147,7 +2127,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         action,
                         success: true,
                         threadId,
-                        threadType,
+                        threadType: threadTypeName(threadType),
                         reminderId: result?.reminderId ?? result?.id ?? null,
                         startTime,
                         repeat: REMINDER_REPEAT_LABELS[repeatMode],
@@ -2163,7 +2143,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         result = null;
                     }
                     const reminders = Array.isArray(result) ? result : [];
-                    return ok({ action, threadId, threadType, count: reminders.length, reminders });
+                    return ok({
+                        action,
+                        threadId,
+                        threadType: threadTypeName(threadType),
+                        count: reminders.length,
+                        reminders,
+                    });
                 }
 
                 if (action === "edit") {
@@ -2184,13 +2170,27 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         editOpts.repeat = REMINDER_REPEAT_MODES[repeat];
                     }
                     const result = await api.editReminder(editOpts, threadId, Number(threadType));
-                    return ok({ action, success: true, reminderId, threadId, threadType, result });
+                    return ok({
+                        action,
+                        success: true,
+                        reminderId,
+                        threadId,
+                        threadType: threadTypeName(threadType),
+                        result,
+                    });
                 }
 
                 if (action === "remove") {
                     if (!reminderId) return err("reminderId is required for action='remove'.");
                     const result = await api.removeReminder(reminderId, threadId, Number(threadType));
-                    return ok({ action, success: true, reminderId, threadId, threadType, result });
+                    return ok({
+                        action,
+                        success: true,
+                        reminderId,
+                        threadId,
+                        threadType: threadTypeName(threadType),
+                        result,
+                    });
                 }
 
                 return err(`Unsupported reminder action: ${action}`);
@@ -2229,13 +2229,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         "Thread ID for 'pin_message' / 'unpin_message' (defaults to the message's cached threadId)",
                     ),
                 threadType: z
-                    .number()
-                    .int()
-                    .min(0)
-                    .max(1)
+                    .enum(["dm", "group"])
                     .optional()
                     .describe(
-                        "Thread type for 'pin_message' / 'unpin_message': 0=DM(User), 1=Group. Inferred from cache when omitted.",
+                        "The conversation type for 'pin_message' / 'unpin_message': \"dm\" or \"group\". Inferred from the cache when omitted.",
                     ),
                 noteId: z
                     .string()

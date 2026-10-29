@@ -156,10 +156,14 @@ describe("MCP input schemas", () => {
         );
     });
 
-    it("zalo_send_message rejects a threadType outside 0..1", () => {
+    it("zalo_send_message takes threadType as the word dm or group, and nothing else", () => {
         const s = schemaOf("zalo_send_message");
-        assert.throws(() => s.parse({ threadId: "t1", text: "hi", threadType: 2 }));
-        assert.equal(s.parse({ threadId: "t1", text: "hi", threadType: 1 }).threadType, 1);
+        // Strict on purpose: no number, no other spelling. The words are what messages and replies show.
+        for (const bad of [0, 1, 2, "0", "1", "Group", "user"]) {
+            assert.throws(() => s.parse({ threadId: "t1", text: "hi", threadType: bad }), `${JSON.stringify(bad)}`);
+        }
+        assert.equal(s.parse({ threadId: "t1", text: "hi", threadType: "group" }).threadType, "group");
+        assert.equal(s.parse({ threadId: "t1", text: "hi", threadType: "dm" }).threadType, "dm");
     });
 
     it("zalo_get_messages applies the configured poll limit as its default", () => {
@@ -232,17 +236,17 @@ describe("MCP input schemas", () => {
 });
 
 describe("MCP handlers", () => {
-    it("zalo_send_message returns {success, msgId, messageId, threadType} on the happy path", async () => {
+    it("zalo_send_message returns {success, msgId, threadType} on the happy path", async () => {
         const { server } = register();
-        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 0 });
+        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "dm" });
         assert.equal(r.isError, undefined);
-        assert.deepEqual(payloadOf(r), { success: true, messageId: "m1", msgId: "m1", threadType: 0 });
+        assert.deepEqual(payloadOf(r), { success: true, msgId: "m1", threadType: "dm" });
     });
 
     it("an explicit threadType is obeyed, not second-guessed by the cache", async () => {
         const { server } = register();
-        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 1 });
-        assert.equal(payloadOf(r).threadType, 1);
+        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "group" });
+        assert.equal(payloadOf(r).threadType, "group");
     });
 
     it("omitting threadType no longer silently means DM", async () => {
@@ -257,7 +261,7 @@ describe("MCP handlers", () => {
         assert.ok("threadType" in payloadOf(r), "the resolved type must be visible to the caller");
     });
 
-    it("zalo_send_message coerces threadType to a number before calling the API", async () => {
+    it("zalo_send_message calls the API with the number for the word: group is 1, dm is 0", async () => {
         let seen;
         const { server } = register({
             api: {
@@ -267,8 +271,10 @@ describe("MCP handlers", () => {
                 },
             },
         });
-        await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "1" });
-        assert.strictEqual(seen, 1, "a string threadType would silently address the wrong thread kind");
+        await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "group" });
+        assert.strictEqual(seen, 1, "the word group must address a group");
+        await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "dm" });
+        assert.strictEqual(seen, 0, "the word dm must address a user");
     });
 
     it("zalo_send_message reports an API failure as an MCP error, not a throw", async () => {
@@ -279,7 +285,7 @@ describe("MCP handlers", () => {
                 },
             },
         });
-        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 0 });
+        const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: "dm" });
         assert.equal(r.isError, true);
         assert.match(r.content[0].text, /Đăng nhập thất bại/);
     });
@@ -387,8 +393,8 @@ describe("MCP handlers", () => {
 describe("several bots share one listener's buffer", () => {
     const withTwoMessages = () => {
         const buffer = new MessageBuffer();
-        buffer.push("t1", { id: "a", threadId: "t1", text: "a", timestamp: Date.now() });
-        buffer.push("t1", { id: "b", threadId: "t1", text: "b", timestamp: Date.now() });
+        buffer.push("t1", { msgId: "a", threadId: "t1", text: "a", timestamp: Date.now() });
+        buffer.push("t1", { msgId: "b", threadId: "t1", text: "b", timestamp: Date.now() });
         return register({ buffer }).server;
     };
     const get = async (server, consumer) =>
@@ -420,7 +426,7 @@ describe("several bots share one listener's buffer", () => {
         await server.call("zalo_mark_read", { cursor: first.cursor, consumer: "bot-1" });
         const again = payloadOf(await server.call("zalo_get_messages", { since: 1, limit: 20, consumer: "bot-1" }));
         assert.deepEqual(
-            again.messages.map((m) => m.id),
+            again.messages.map((m) => m.msgId),
             ["b"],
         );
     });
@@ -626,9 +632,6 @@ describe("MCP tools read the local cache", () => {
  * reports back instead of throwing.
  */
 describe("zalo_send_message composes mentions and quotes", () => {
-    const THREAD_USER = 0;
-    const THREAD_GROUP = 1;
-
     const ROOT = mkdtempSync(join(tmpdir(), "zalo-mcp-send-"));
     const handles = [];
     let n = 0;
@@ -685,7 +688,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
 
     const send = async (args, api) => {
         const { server } = register({ api });
-        return server.call("zalo_send_message", { threadType: THREAD_GROUP, ...args });
+        return server.call("zalo_send_message", { threadType: "group", ...args });
     };
 
     it("leaves a plain send as a bare string, not an object", async () => {
@@ -695,7 +698,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
         // threadType is echoed back because it is now INFERRED from the cache
         // when the caller omits it; without it in the reply there is no way to
         // see what the server decided.
-        assert.deepEqual(payloadOf(r), { success: true, messageId: "sent1", msgId: "sent1", threadType: THREAD_GROUP });
+        assert.deepEqual(payloadOf(r), { success: true, msgId: "sent1", threadType: "group" });
     });
 
     it("expands `@[uid]` from a contact and puts the mention on the wire", async () => {
@@ -760,7 +763,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
     it("warns when mentions are used in a DM, where Zalo drops them", async () => {
         upsertContact({ userId: "789", name: "Bích Ngọc", phone: null });
         const api = recordingApi();
-        const r = await send({ threadId: "u1", text: "@[789] hi", threadType: THREAD_USER }, api);
+        const r = await send({ threadId: "u1", text: "@[789] hi", threadType: "dm" }, api);
 
         const out = payloadOf(r);
         assert.equal(out.success, true, "a DM mention is a warning, not a failure");
@@ -881,8 +884,8 @@ describe("zalo_send_message composes mentions and quotes", () => {
             type: 1,
         });
         assert.equal(payloadOf(r).kind, "link");
-        assert.equal(payloadOf(r).messageId, "link1");
-        assert.equal(payloadOf(r).msgId, "link1", "msgId is the name every other tool takes");
+        assert.equal(payloadOf(r).msgId, "link1");
+        assert.equal(payloadOf(r).messageId, undefined, "the old messageId is gone");
     });
 
     it("sends a contact card when `cardUserId` is provided", async () => {
@@ -945,8 +948,8 @@ describe("zalo_send_message composes mentions and quotes", () => {
             { msgId: "att1", cliMsgId: "c_att1" },
             { msgId: "att2", cliMsgId: "c_att2" },
         ]);
-        assert.equal(out.messageId, "att1");
         assert.equal(out.msgId, "att1");
+        assert.equal(out.messageId, undefined, "the old messageId is gone");
         assert.equal(out.cliMsgId, "c_att1");
     });
 
@@ -1408,7 +1411,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
 
     it("zalo_wait_for_message returns buffered message with threadName or times out cleanly", async () => {
         const buf = new MessageBuffer();
-        buf.push("g1", { id: "m100", threadId: "g1", text: "Ping assistant", timestamp: Date.now() });
+        buf.push("g1", { msgId: "m100", threadId: "g1", text: "Ping assistant", timestamp: Date.now() });
         const { server } = register({
             buffer: buf,
             nameCache: {
@@ -1421,7 +1424,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         const hit = payloadOf(await server.call("zalo_wait_for_message", { since: 0, timeoutSec: 2 }));
         assert.equal(hit.status, "message");
         assert.equal(hit.cursor, 1);
-        assert.equal(hit.message.id, "m100");
+        assert.equal(hit.message.msgId, "m100");
         assert.equal(hit.message.threadName, "ACME Team");
 
         const miss = payloadOf(await server.call("zalo_wait_for_message", { since: 1, timeoutSec: 1 }));

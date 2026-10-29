@@ -41,7 +41,7 @@ export function eventsOf(body) {
 
 const seen = new Set(); // use your database in production
 
-export function startReceiver({ secret, port = 8080, onMessage = (m) => console.log("message", m.id ?? m.msgId, m.threadId) } = {}) {
+export function startReceiver({ secret, port = 8080, onMessage = (m) => console.log("message", m.msgId, m.threadId) } = {}) {
     return http
         .createServer((req, res) => {
             const chunks = [];
@@ -54,10 +54,10 @@ export function startReceiver({ secret, port = 8080, onMessage = (m) => console.
                 }
                 res.writeHead(200).end("ok"); // acknowledge first
                 const body = JSON.parse(raw.toString("utf8"));
-                // `mcp start` sends {event:"message", accountId, id, threadId, threadType, senderId, senderName, text, timestamp, type, attachment}
+                // `mcp start` sends {event:"message", accountId, msgId, threadId, threadType, senderId, senderName, text, timestamp, type, attachment}
                 // `listen` sends   {accountId, event:"message"|..., msgId, threadId, type, isSelf, uidFrom, dName, msgType, content}
                 for (const event of eventsOf(body)) {
-                    const id = event.id ?? event.msgId;
+                    const id = event.msgId;
                     if (id && seen.has(`${event.accountId}:${id}`)) continue;
                     if (id) seen.add(`${event.accountId}:${id}`);
                     queueMicrotask(() => onMessage(event));

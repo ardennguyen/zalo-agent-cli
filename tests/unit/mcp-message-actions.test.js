@@ -166,7 +166,7 @@ describe("zalo_react", () => {
         const api = recordingApi();
         await call(
             "zalo_react",
-            { msgId: GROUP_MSG.msgId, threadId: GROUP, reaction: ":>", cliMsgId: "1700000000555", threadType: 0 },
+            { msgId: GROUP_MSG.msgId, threadId: GROUP, reaction: ":>", cliMsgId: "1700000000555", threadType: "dm" },
             api,
         );
         assert.deepEqual(api.calls[0].dest, {
@@ -279,7 +279,7 @@ describe("zalo_send_message to `me`", () => {
         assert.deepEqual(api.calls, [{ fn: "sendMessage", content: "offline note", threadId: SEND2ME, type: 0 }]);
         const out = payloadOf(r);
         assert.equal(out.threadId, SEND2ME, "the reply names the thread it really went to");
-        assert.equal(out.threadType, THREAD_USER);
+        assert.equal(out.threadType, "dm");
         assert.match(out.notice, /My Documents/);
     });
 
@@ -296,9 +296,9 @@ describe("zalo_send_message to `me`", () => {
         assert.match(payloadOf(r).notice, /own uid/);
     });
 
-    it("refuses `me` with threadType 1: My Documents is not a group", async () => {
+    it("refuses `me` with threadType group: My Documents is not a group", async () => {
         const api = recordingApi();
-        const r = await call("zalo_send_message", { threadId: "me", text: "offline", threadType: 1 }, api);
+        const r = await call("zalo_send_message", { threadId: "me", text: "offline", threadType: "group" }, api);
         assert.equal(r.isError, true);
         assert.match(r.content[0].text, /not a group/);
         assert.deepEqual(api.calls, []);
@@ -316,6 +316,6 @@ describe("zalo_send_message to `me`", () => {
         const api = recordingApi();
         const r = await call("zalo_send_message", { threadId: PEER, text: "offline hi" }, api);
         assert.equal(api.calls[0].threadId, PEER);
-        assert.deepEqual(Object.keys(payloadOf(r)).sort(), ["cliMsgId", "messageId", "msgId", "success", "threadType"]);
+        assert.deepEqual(Object.keys(payloadOf(r)).sort(), ["cliMsgId", "msgId", "success", "threadType"]);
     });
 });

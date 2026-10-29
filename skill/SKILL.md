@@ -42,7 +42,7 @@ zalo-agent logout --keep-session # ...only end this session's key (pre-v3.0 beha
 zalo-agent logout --delete-history  # ...and delete the local chat cache (zalo.db + media)
 zalo-agent logout --purge        # ...and wipe all local data + the registry entry
 zalo-agent sync                  # Restore everything from the phone into zalo.db (one confirm)
-zalo-agent sync-media             # Re-run/resume the media fetch on its own (no phone confirm)
+zalo-agent sync-media             # Re-run/resume the media fetch on its own (no phone confirm; two at a time, --media-limit <n> caps a run)
 zalo-agent sync-media --prune 90  # Free disk: delete downloaded media older than 90 days (keeps text)
 zalo-agent update                # Self-update to the latest published version
 ```
@@ -325,10 +325,10 @@ The server sends these as its `instructions` when a client connects; they are re
 | Concept | Name | Notes |
 |---|---|---|
 | a conversation | `threadId` | a user id for a DM, the group id for a group (`groupId` in group-only tools, the same value); `me` is My Documents |
-| one message | `msgId` | the same name in every input and reply; live messages also carry it as `id`, a send reply as `messageId` (same value, kept for older clients) |
+| one message | `msgId` | the same name in every input and reply (`id` and `messageId` were dropped in 3.0) |
 | the sender's own id for a message | `cliMsgId` | returned by `zalo_send_message`; `zalo_react` and `zalo_undo` need it |
 | a Zalo user | `userId` | a message's author is `senderId`; group members have `userId`; `@[userId]` mentions someone |
-| conversation type | `threadType` | input: the number `0` (DM) or `1` (group), or leave it out; messages show the text `"dm"` / `"group"`, which is never passed back |
+| conversation type | `threadType` | `"dm"` or `"group"`, in inputs and in replies (leave it out and the stored type is used) |
 
 - **Reading:** wait with `zalo_wait_for_message` or poll `zalo_get_messages`, then `zalo_mark_read` with the returned `cursor` (several bots on one server each pass their own `consumer`). Older messages: `zalo_get_history`, or `zalo_search_messages` across conversations.
 - **Sending text:** real line breaks in `text`, never the two characters backslash and `n` (Zalo shows them as typed; the reply warns when it sees them). Markdown is converted by default (`format: "plain"` sends it as written). A text over 3000 bytes goes out as several messages and the reply lists each part. A sent message cannot be edited: recall it with `zalo_undo` and send it again.

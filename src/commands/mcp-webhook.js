@@ -142,7 +142,7 @@ export function registerMCPWebhookCommands(mcp, program) {
                     lastAttemptAt: iso(r.last_attempt_at),
                     lastError: r.last_error,
                     event: event.event ?? null,
-                    id: event.id ?? event.msgId ?? null,
+                    id: event.msgId ?? event.id ?? null, // an event queued by an older version has only `id`
                     threadId: event.threadId ?? null,
                 };
             });

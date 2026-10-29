@@ -89,7 +89,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3653** as of 2026-10-29 (3643 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3660** as of 2026-10-29 (3650 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -913,39 +913,43 @@ A Gemini-driven bot called `zalo_react` with wrong field names and a wrong `thre
 broken. The tool was right and the names were inconsistent: the live buffer called a message's id `id`, history and
 search called it `msgId`, a send reply `messageId`, `zalo_view_media` took `messageId` while every other tool took
 `msgId`, and `zalo_delete_message` took `uidFrom` for what every message calls `senderId`. A model copies a name from
-one reply into the next call; when the two differ it fails, and a weaker model cannot work out why. `threadType` has
-the same trap in its values: an input is the number 0 or 1, while a message reply shows the text "dm" or "group".
+one reply into the next call; when the two differ it fails, and a weaker model cannot work out why. `threadType` had
+the same trap in its values: an input was the number 0 or 1, while a message reply showed the text "dm" or "group".
 
-| Concept | Canonical name | Kept beside it in replies (never removed in a patch) | Notes |
-|---|---|---|---|
-| a conversation | `threadId` | | a user id for a DM, the group id for a group; group-only tools call it `groupId` (the same value); `me` is My Documents |
-| one message | `msgId` | `id` (live messages, webhook and `/events/wait` payloads), `messageId` (send replies) | every input is `msgId`; `quoteMsgId` and `lastMsgId` are msgIds with a role |
-| the sender's own id for a message | `cliMsgId` | | returned by a send; react and undo need it |
-| a Zalo user | `userId` | `uid` (group members) | a message's author is `senderId` (a userId); `@[userId]` mentions |
-| a message's author, as an input | `senderId` | | `zalo_search_messages` and `zalo_delete_message`; never `uidFrom` |
-| reading position | `cursor` | | from a read or wait reply, back into `since` or `zalo_mark_read` |
+2.5.8 fixed the names (replies carried the canonical name beside the old one; two inputs were renamed). **3.0 removed
+the old names and made `threadType` the words `"dm"` / `"group"` in every MCP input and reply** (the CLI keeps `-t 0|1`).
+
+| Concept | Name | Notes |
+|---|---|---|
+| a conversation | `threadId` | a user id for a DM, the group id for a group; group-only tools call it `groupId` (the same value); `me` is My Documents |
+| conversation type | `threadType` | `"dm"` or `"group"`, in inputs and in replies |
+| one message | `msgId` | every input and every reply; `quoteMsgId` and `lastMsgId` are msgIds with a role. Dropped in 3.0: `id` (live messages), `messageId` (send replies) |
+| the sender's own id for a message | `cliMsgId` | returned by a send; react and undo need it |
+| a Zalo user | `userId` | a message's author is `senderId` (a userId); `@[userId]` mentions. Dropped in 3.0: `uid` (group members) |
+| a message's author, as an input | `senderId` | `zalo_search_messages` and `zalo_delete_message`; never `uidFrom` |
+| reading position | `cursor` | from a read or wait reply, back into `since` or `zalo_mark_read` |
 
 Rules for whoever adds or changes an MCP tool:
 
 1. **Look the concept up here before naming a parameter or a reply field.** Reuse the canonical name. A new id name is
    a decision: add a row here and to `ALLOWED` in `tests/unit/mcp-naming.test.js` in the same change.
-2. **One name per concept in inputs, always.** A reply carries the canonical name; an older name may stay beside it as
-   an alias, because a client may already read it. Remove or rename a reply field only in a major version.
+2. **One name per concept, in inputs and in replies.** In a patch or minor release an old name may stay beside the
+   canonical one in replies, because a client may already read it; remove it only in a major version, and say so in
+   the release notes.
 3. **Rename an input only in a major version**, or when the old name cannot have been used, and say so in the release
    notes. Never accept two spellings of one input to be kind to a model: a strict schema with a clear description is
    what keeps the tools maintainable (the owner's ruling, 2026-10-29).
-4. **The same field name must mean the same kind of value in an input and in a reply.** `threadType` is the one known
-   exception (number in, text out), stated in the server instructions and in the `threadType` descriptions; a future
-   major should remove it.
+4. **The same field name must mean the same kind of value in an input and in a reply.** `tests/unit/mcp-naming.test.js`
+   checks `threadType` as the one value that was ever different.
 5. **Every id parameter says where its value comes from** (which tool returns it, under which name). The
    description test fails a parameter with no description, and a description that names a tool that does not exist.
 6. **When a model reports wrong field names or types, compare our names across tools first.** Blame the model only
    after the names agree.
 
 `tests/unit/mcp-naming.test.js` enforces the table (banned synonyms, the allowed id names, `msgId` and `userId` in the
-replies); `tests/unit/mcp-descriptions.test.js` enforces the descriptions and the server `instructions`
-(`src/mcp/instructions.js`, sent to every client on connect). The rules an agent that *uses* the tools needs are in
-those instructions and in the "Using the MCP tools" section of `skill/SKILL.md`.
+replies, no old names, `threadType` as the same two words everywhere); `tests/unit/mcp-descriptions.test.js` enforces the
+descriptions and the server `instructions` (`src/mcp/instructions.js`, sent to every client on connect). The rules an
+agent that *uses* the tools needs are in those instructions and in the "Using the MCP tools" section of `skill/SKILL.md`.
 
 ## Long messages: what Zalo refuses, and how Web splits (2026-10-29)
 

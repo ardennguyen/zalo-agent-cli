@@ -31,7 +31,7 @@ export function tool({ failOn = 0 } = {}) {
         undefined,
     );
     const call = async (args) => {
-        const res = await tools.get("zalo_send_message").handler({ threadType: 1, ...args });
+        const res = await tools.get("zalo_send_message").handler({ threadType: "group", ...args });
         const text = res.content[0].text;
         // A refusal is the plain text "Error: ...", not JSON.
         return { isError: res.isError === true, text, body: res.isError ? null : JSON.parse(text) };

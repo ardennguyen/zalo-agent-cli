@@ -177,6 +177,64 @@ describe("invariants over random text", () => {
     });
 });
 
+describe("every script, not only Chinese", () => {
+    // The budget is UTF-8 bytes, so it holds for any script; what differs is where a part may end. Each sample says how
+    // its script ends a sentence (`mark`: null when it writes none or relies on spaces). Scripts whose marks need no space after them are written without
+    // spaces here, so only the mark can be what the cut lands on.
+    const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467, 0x200d, 0x1f466);
+    const flag = String.fromCodePoint(0x1f1fb, 0x1f1f3);
+    const thumbs = String.fromCodePoint(0x1f44d, 0x1f3fd);
+    const SAMPLES = {
+        vietnamese: { unit: "Chào bạn, hôm nay trời đẹp quá. ", mark: /\.$/ },
+        thai: { unit: "สวัสดีครับ ยินดีที่ได้รู้จักคุณ ", mark: null },
+        "thai, no spaces": { unit: "ภาษาไทยไม่มีช่องว่างระหว่างคำและประโยค", mark: null },
+        hindi: { unit: "यहपरीक्षणवाक्यहैजिसेअनदेखाकरें।", mark: /।$/ },
+        arabic: { unit: "هذهجملةاختبارللتحققمنطولالرسالة؟نعم،تماما۔", mark: /[؟۔،]$/ },
+        russian: { unit: "Это тестовое предложение для проверки длины сообщения. ", mark: /\.$/ },
+        hebrew: { unit: "זהו משפט בדיקה לבדיקת אורך ההודעה. ", mark: /\.$/ },
+        greek: { unit: "Αυτή είναι μια δοκιμαστική πρόταση. ", mark: /\.$/ },
+        korean: { unit: "이것은 메시지 길이를 확인하기 위한 시험 문장입니다. ", mark: /\.$/ },
+        japanese: { unit: "これはメッセージの長さを確認するためのテスト文です。", mark: /。$/ },
+        burmese: { unit: "ဤသည်မှာစမ်းသပ်ရန်စာကြောင်းဖြစ်သည်။", mark: /။$/ },
+        khmer: { unit: "នេះគឺជាប្រយោគសាកល្បង។", mark: /។$/ },
+        ethiopic: { unit: "ይህየሙከራዓረፍተነገርነው።", mark: /።$/ },
+        "emoji clusters, no break at all": { unit: `${family}${flag}${thumbs}`, mark: null },
+    };
+
+    const segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
+    const boundariesOf = (text) => new Set([...[...segmenter.segment(text)].map((g) => g.index), text.length]);
+
+    for (const [name, { unit, mark }] of Object.entries(SAMPLES)) {
+        it(`${name}: every part fits, nothing is lost, and no cut lands inside a character`, () => {
+            let text = "";
+            while (bytes(text) < 7500) text += unit;
+            const parts = splitMessage({ text });
+            assert.ok(parts.length >= 3, `${name}: ${bytes(text)} bytes became ${parts.length} part(s)`);
+            const ok = boundariesOf(text);
+            let at = 0;
+            for (const p of parts) {
+                assert.ok(cost(p) <= MESSAGE_BYTE_LIMIT, `${name}: a part costs ${cost(p)}`);
+                at = text.indexOf(p.text, at);
+                assert.ok(at >= 0, `${name}: a part is not a slice of the text`);
+                assert.ok(ok.has(at), `${name}: a part starts inside a character`);
+                assert.ok(ok.has(at + p.text.length), `${name}: a part ends inside a character`);
+                at += p.text.length;
+            }
+            assert.equal(squash(parts.map((p) => p.text).join("")), squash(text), `${name}: text lost`);
+            if (mark)
+                for (const p of parts.slice(0, -1)) assert.match(p.text, mark, `${name}: cut away from a sentence end`);
+        });
+    }
+
+    it("styled text in another script is budgeted with its styles too (Thai bullets)", () => {
+        const md = markdownToZalo(Array.from({ length: 120 }, (_, i) => `- รายการที่ ${i} ภาษาไทย`).join("\n"));
+        const parts = splitMessage(md);
+        assert.ok(parts.length >= 2);
+        for (const p of parts) assert.ok(cost(p) <= MESSAGE_BYTE_LIMIT, `part costs ${cost(p)}`);
+        assert.equal(parts.flatMap((p) => p.styles).filter((s) => s.st === "lst_1").length, 120, "no bullet lost");
+    });
+});
+
 describe("sendParts", () => {
     const noWait = { sleep: async () => {} };
 

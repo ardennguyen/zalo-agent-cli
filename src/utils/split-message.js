@@ -22,6 +22,27 @@ export const PART_GAP_MS = 300;
 
 const byteLength = (s) => Buffer.byteLength(s, "utf8");
 
+const graphemes = new Intl.Segmenter("und", { granularity: "grapheme" });
+
+/**
+ * Move `cut` back to the nearest boundary between user-perceived characters, so a hard cut never splits a Thai or
+ * Devanagari syllable (a base letter and its vowel and tone marks), an Arabic letter and its marks, a flag, a skin
+ * tone or an emoji joined by zero-width joiners. Only looks a little either side: a cluster is never that long.
+ *
+ * @returns {number} a boundary in `(pos, cut]`, or `cut` itself when none is found
+ */
+function snapToGrapheme(text, pos, cut) {
+    if (cut <= pos || cut >= text.length) return cut;
+    const from = Math.max(pos, cut - 64);
+    let best = -1;
+    for (const { index } of graphemes.segment(text.slice(from, cut + 64))) {
+        const at = from + index;
+        if (at > cut) break;
+        if (at > pos) best = at;
+    }
+    return best > pos ? best : cut;
+}
+
 /** Style ranges clipped to `[from, to)` and re-based to `from`. */
 function clipStyles(styles, from, to) {
     const out = [];
@@ -39,15 +60,48 @@ function cost(text, styles) {
 }
 
 /**
+ * Sentence and clause marks of the scripts Zalo is used in, ranked like Web's ASCII ones (a full stop strongest). They
+ * need no space after them: Chinese, Japanese, Thai, Burmese and Khmer write none.
+ */
+const MARKS = {
+    // full stops: CJK, fullwidth, Devanagari danda and double danda, Arabic/Urdu, Armenian, Ethiopic, Burmese, Khmer
+    "。": 6,
+    "．": 6,
+    "।": 6,
+    "॥": 6,
+    "۔": 6,
+    "։": 6,
+    "።": 6,
+    "။": 6,
+    "។": 6,
+    "៕": 6,
+    // question marks: fullwidth, Arabic
+    "？": 5,
+    "؟": 5,
+    // exclamation: fullwidth
+    "！": 4,
+    // semicolons: fullwidth, Arabic
+    "；": 2,
+    "؛": 2,
+    // commas: fullwidth, ideographic, halfwidth ideographic, Arabic, Ethiopic; and the ideographic space
+    "，": 1,
+    "、": 1,
+    "､": 1,
+    "،": 1,
+    "፣": 1,
+    "\u3000": 0,
+};
+
+/**
  * How good a place `text[i]` is to end a part after: higher is better, null when it is no break at all.
- * Web's own order (`" ,;)!?."`, a full stop strongest), a newline above all, and the CJK marks that do the same job
- * (Web's list is ASCII only, so a long Chinese text with no space would otherwise be cut blind).
+ * Web's own order (`" ,;)!?."`, a full stop strongest), a newline above all, and the marks other scripts use for the
+ * same jobs (Web's list is ASCII only, so a long Chinese, Hindi or Arabic text with few spaces would be cut blind).
  */
 function breakRank(text, i) {
     const c = text[i];
     if (c === "\n") return 7;
-    const cjk = { "。": 6, "？": 5, "！": 4, "；": 2, "，": 1, "、": 1 }[c];
-    if (cjk !== undefined) return cjk;
+    const mark = MARKS[c];
+    if (mark !== undefined) return mark;
     const ascii = " ,;)!?.".indexOf(c);
     if (ascii === -1) return null;
     const next = text[i + 1];
@@ -81,7 +135,8 @@ function chooseCut(text, pos, end) {
  * (the same text, no trimming), so only a message that needed splitting is ever changed.
  *
  * A style range that spans a cut is clipped into both parts. A mention is never cut: the cut moves before it. A
- * surrogate pair (an emoji) is never cut. Whitespace at a cut is dropped, as Web trims its parts.
+ * user-perceived character (an emoji, a flag, a Thai or Devanagari syllable with its marks) is never cut. Whitespace
+ * at a cut is dropped, as Web trims its parts.
  *
  * @param {{text: string, styles?: Array<{start: number, len: number, st: string}>, mentions?: Array<{pos: number, len: number, uid: string}>}} message
  * @param {number} [limit] - bytes per part
@@ -108,6 +163,7 @@ export function splitMessage({ text, styles = [], mentions = [] }, limit = MESSA
             for (const m of mentions) {
                 if (m.pos > pos && m.pos < cut && cut < m.pos + m.len) cut = m.pos;
             }
+            cut = snapToGrapheme(text, pos, cut);
             const high = text.charCodeAt(cut - 1);
             if (high >= 0xd800 && high <= 0xdbff) cut -= 1;
             if (cut <= pos) cut = Math.min(text.length, pos + 2);

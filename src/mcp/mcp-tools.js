@@ -47,6 +47,7 @@ import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
+import { splitMessage, sendParts } from "../utils/split-message.js";
 import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
 import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
 import {
@@ -481,6 +482,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Send a text message, file/image attachment (`filePath` or `files`), link preview card (`link`), or " +
                 "contact card (`cardUserId`) to a Zalo thread (DM or group). threadType: 0=DM(User), 1=Group. " +
+                "A text over 3000 bytes (a Chinese character is 3) is split into several messages at paragraph or " +
+                "sentence ends, as Zalo Web does; the reply then lists every part (`splitInto`, `parts`). " +
                 "To @-mention someone in a group, put `@[uid]` in the text where the tag belongs — " +
                 "`@[123456]` becomes `@Their Name` and notifies them, and `@[-1]` is @All. " +
                 "Use the `senderId` from zalo_get_messages or zalo_get_history as the uid; the display name " +
@@ -752,22 +755,30 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // {urgency}` Zalo Web sends. "normal" is no urgency at all.
                 const urgency = urgencyIn ? urgencyLevel(urgencyIn) : null;
 
-                // A plain send stays a plain string: the object form is only
-                // built when there is something to put in it.
-                const hasExtras = mentions.length > 0 || styles.length > 0 || Boolean(quote) || Boolean(urgency);
-                const content = hasExtras
-                    ? {
-                          msg: expanded.text,
-                          ...(mentions.length > 0 && { mentions }),
-                          ...(styles.length > 0 && { styles }),
-                          ...(quote && { quote }),
-                          ...(urgency && { urgency }),
-                      }
-                    : expanded.text;
+                // Zalo refuses one oversized message (114 plain, 112 styled), so a long text goes out as Web sends
+                // it: split at 3000 bytes of text plus styles, in order, 300 ms apart. The quote and the urgency
+                // belong to the first part only.
+                const parts = splitMessage({ text: expanded.text, styles, mentions });
+                const contentOf = (part, index) => {
+                    const first = index === 0;
+                    const extras = part.mentions.length > 0 || part.styles.length > 0 || (first && (quote || urgency));
+                    return extras
+                        ? {
+                              msg: part.text,
+                              ...(part.mentions.length > 0 && { mentions: part.mentions }),
+                              ...(part.styles.length > 0 && { styles: part.styles }),
+                              ...(first && quote && { quote }),
+                              ...(first && urgency && { urgency }),
+                          }
+                        : part.text;
+                };
 
                 for (const w of warnings) console.error("[mcp-tools] zalo_send_message warning:", w);
 
-                const result = await api.sendMessage(content, threadId, Number(threadType));
+                const results = await sendParts(parts, (part, index) =>
+                    api.sendMessage(contentOf(part, index), threadId, Number(threadType)),
+                );
+                const result = results[0];
                 const messageId = result?.message?.msgId ?? result?.msgId ?? null;
                 // `msg react`, `msg undo` and a later quote all key off cliMsgId,
                 // and it appears in no other output. Without it an agent cannot
@@ -786,6 +797,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     ...(expanded.text !== text && { text: expanded.text }),
                     ...(styles.length > 0 && { formatted: styles.length }),
                     ...(unresolved.length > 0 && { unresolvedMentions: unresolved }),
+                    // Only when it was split: every part's ids, in order (messageId/cliMsgId above are the first).
+                    ...(parts.length > 1 && {
+                        splitInto: parts.length,
+                        parts: results.map((r) => ({
+                            messageId: r?.message?.msgId ?? r?.msgId ?? null,
+                            ...((r?.message?.cliMsgId ?? r?.cliMsgId ?? null) !== null && {
+                                cliMsgId: String(r?.message?.cliMsgId ?? r?.cliMsgId),
+                            }),
+                        })),
+                    }),
                     ...(warnings.length > 0 && { warnings }),
                 });
             } catch (e) {

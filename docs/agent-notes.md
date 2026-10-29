@@ -84,7 +84,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **24** containers — 16 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **18** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **25** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **2554** as of 2026-10-21 (2549 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **2590** as of 2026-10-29 (2585 pass, 5 skipped, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -901,6 +901,52 @@ doing, and neither exists for a daemon started by hand or by another supervisor.
   (`tests/unit/startup-gate.test.js`, which also shows the same six overlapping without the cap).
 
 ---
+
+## Long messages: what Zalo refuses, and how Web splits (2026-10-29)
+
+A companion bot on the MCP server reported sends refused with three different Vietnamese errors: "Tham số
+không hợp lệ" (114), "Lỗi không xác định" (112) and, in older log lines, "Nội dung quá dài". None of them
+said what was wrong. They are the server's size limits, and the Web client never trips them because it
+splits.
+
+**Measured live, 2026-10-29, on a disposable group (plain `sendMessage`, no Markdown):**
+
+| What was sent | Result |
+|---|---|
+| plain ASCII, 3000 units / 3001 units | accepted / **114** |
+| plain Chinese (3 bytes each), 3000 units = 9000 bytes / 3001 | accepted / **114** |
+| plain emoji text (4 bytes each), 3000 units = 4000 bytes / 3001 | accepted / **114** |
+| styled, 3000 ASCII chars + 1 style | accepted |
+| styled, 1000 Chinese chars (2992 bytes) + 1 style / 1200 chars (3592 bytes) | accepted / **112** |
+| styled, 80 style entries (text 600 B + styles JSON 2473 B) / 90 entries (2783 B) | accepted / **112** |
+
+So a **plain** message is limited in UTF-16 units (3000), while a **styled** one (what Markdown becomes: every
+bullet is a `lst_1` entry, every bold word a `b` entry) is limited by bytes of text plus the `textProperties`
+JSON, somewhere between about 3.1 and 3.5 KB. A Chinese answer or a long bulleted answer reaches that limit
+at a fraction of 3000 characters. The server echoes what it accepts byte for byte (newlines after an emoji
+included), so nothing is lost or rewritten in transit.
+
+**What Web does** (`default-embed-render` and `1.eddd…js`, read 2026-10-29; the config keys are
+`limitMsgByte` 3000 and `limitMsgCheckThreshold` 1500, overridable by `settings.features.limit_msg_byte`,
+which this build's server does not send): a text longer than the threshold is cut by `getTextToSend`: when its
+UTF-8 byte length is over 3000 it estimates the cut at `3000/bytes × length`, looks back up to two thirds of
+that for a newline, else the strongest of `" ,;)!?."` (a full stop strongest, and only before a space or the
+end), and sends the rest as the next message, trimmed, repeating. A styled message is cut by paragraph: each
+block costs `bytes(text) + bytes(JSON.stringify(its styles))` and a new message starts when the total passes
+3000. The parts are sent in order, `setTimeout(…, 300)` apart. Web's own fallback when no break is found is the
+threshold (1500 characters), which for Chinese would exceed the byte budget; it only works there because the
+plain limit is in units.
+
+**What `src/utils/split-message.js` does:** the same budget (3000 UTF-8 bytes of text plus styles JSON, counted
+for both plain and styled so a long Vietnamese or Chinese text is cut where Web cuts it), the same preference
+order with the CJK marks `。！？；，、` added, a hard cut inside the budget when there is no break, never inside
+a surrogate pair or an `@[uid]` mention, ranges clipped and re-based per part, whitespace at a cut dropped. A
+message that fits is returned untouched. `msg send` and `zalo_send_message` both use it; `urgency` and the quote
+go on the first part only; a part Zalo refuses stops the rest and the error says how many went out (nothing
+can take those back). Captions of files and link cards are not split (a different endpoint and limit:
+`edit_media_caption.max_size_in_bytes` is 2000).
+
+Probe scripts, local only: `agent/work/live-msg-limits*.mjs`, `live-style-limits-probe*.mjs`.
 
 ## Markdown replies arrived raw (2026-10-21)
 

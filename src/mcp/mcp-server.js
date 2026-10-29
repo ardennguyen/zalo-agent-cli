@@ -6,9 +6,9 @@
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerTools } from "./mcp-tools.js";
+import { newMcpServer } from "./new-server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8"));
@@ -24,13 +24,10 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8
  * @param {string} [accountDir] - account data dir, for cache reads and media paths
  * @param {object} [stageLock] - the daemon's one-stage-at-a-time lock (daemon-channel.js)
  * @param {object} [syncJobs] - account-local sync tracker shared by all MCP requests
- * @returns {Promise<McpServer>}
+ * @returns {Promise<import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>}
  */
 export async function createMCPServer(api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs) {
-    const server = new McpServer({
-        name: "zalo-agent",
-        version: pkg.version,
-    });
+    const server = newMcpServer(pkg.version);
 
     registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs);
 

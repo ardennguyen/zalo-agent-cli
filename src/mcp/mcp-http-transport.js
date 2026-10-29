@@ -12,7 +12,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { newMcpServer } from "./new-server.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -539,7 +539,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     // MCP endpoint — stateless, fresh server+transport per request (POST, GET, DELETE per Streamable HTTP spec)
     app.all("/mcp", async (req, res) => {
         try {
-            const server = new McpServer({ name: "zalo-agent", version: pkg.version });
+            const server = newMcpServer(pkg.version);
             registerToolsFn(
                 server,
                 deps.api,

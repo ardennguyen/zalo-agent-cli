@@ -431,7 +431,7 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 **Prompt:** (agent is connected over MCP) "Save that photo she sent and tell me where it went"
 
 **Expected reasoning:**
-1. `zalo_view_media(messageId, threadId?)` downloads if needed and returns `{success, path, mediaType}`
+1. `zalo_view_media(msgId, threadId?)` downloads if needed and returns `{success, path, mediaType}`
 2. Report the `path` **as returned** — it is under `~/.zalo-agent-cli/accounts/<ownId>/media/<threadId>/`, named `<date>-<HH-mm>_<msgIdTail>_<name>.<ext>`
 3. It is the same folder every other command uses — one downloader, one layout — unless `media.downloadDir` in `mcp-config.json` moved the MCP server's root; the returned `path` already reflects that
 4. Set `open: false` when the user only wants it saved, not launched in a system viewer

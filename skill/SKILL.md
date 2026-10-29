@@ -242,7 +242,7 @@ The `zalo-mcp` deployment wrapper (`zalo-mcp` or `node mcp-server.js`) spawns `z
 
 To run **multiple Zalo accounts live at once**, launch one MCP server per account with `--account <ID>` (e.g. multiple entries in `.claude/settings.json` `mcpServers` for stdio, or separate `--http <port>` instances on a VPS) and pass `--account <ID>` when shelling out to CLI commands. See `references/mcp-guide.md`.
 
-**MCP tools exposed (23 — personal account only):**
+**MCP tools exposed (25 — personal account only):**
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
@@ -252,7 +252,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit` (default 10, max 50) |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global, not per-thread**; deletes nothing, so bots sharing a server keep their own cursors | `cursor`, `consumer` |
 | `zalo_get_history` | Older messages from local cache (`zalo.db`) first, falling back to Zalo server | `threadId`, `threadType?`, `limit` (default 50, max 200), `before?`, `lastMsgId?` |
-| `zalo_view_media` | Open a received image/audio/video attachment (downloads first if needed) | `messageId`, `threadId?`, `open` |
+| `zalo_view_media` | Open a received image/audio/video attachment (downloads first if needed) | `msgId`, `threadId?`, `open` |
 | `zalo_react` | React to a message, as `msg react` — refused, nothing sent, when the cliMsgId is neither passed nor cached | `msgId`, `threadId`, `reaction`, `threadType?`, `cliMsgId?` |
 | `zalo_undo` | Recall one of your own messages for everyone, as `msg undo`; same cliMsgId rule | `msgId`, `threadId`, `threadType?`, `cliMsgId?` |
 | `zalo_get_group_members` | A group's members — uid and display name — as `group members` | `groupId` |
@@ -263,7 +263,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_search_messages` | Search message text across the local SQLite cache (`zalo.db`), zero network calls | `query`, `threadId?`, `senderId?`, `since?`, `until?`, `limit` (default 50) |
 | `zalo_lookup_user` | Look up a Zalo user by phone, username, userId, or inspect own profile (`self: true`) | One of `self: true`, `phone`, `username`, `userId` |
 | `zalo_forward_message` | Forward a cached message (`msgId`) to `threadId` (`msg forward` parity) | `msgId`, `threadId`, `threadType?` |
-| `zalo_delete_message` | Delete a message from own view (`everyone: false`) or for everyone in a group (`everyone: true`) | `msgId`, `threadId`, `threadType?`, `cliMsgId?`, `uidFrom?`, `everyone?` |
+| `zalo_delete_message` | Delete a message from own view (`everyone: false`) or for everyone in a group (`everyone: true`) | `msgId`, `threadId`, `threadType?`, `cliMsgId?`, `senderId?`, `everyone?` |
 | `zalo_reminder` | Create, list, inspect, view responses, edit, or remove reminders in a DM or group | `action`, `threadId?`, `reminderId?`, `title?`, `time?`, `repeat?` |
 | `zalo_note` | Create/edit group notes, list group board items, or pin/unpin a cached text message | `action`, `groupId?`, `threadId?`, `noteId?`, `title?`, `pin?`, `msgId?` |
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll | `action`, `groupId?`, `pollId?`, `question?`, `options?`, `optionIds?` |
@@ -306,6 +306,24 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 **Rule of thumb:** use an MCP tool when one exists; otherwise shell out to `zalo-agent <command> --json` and parse the JSON. Do not claim a capability is unavailable just because it has no MCP tool.
 
 Use stdio mode for local Claude Code, HTTP mode for VPS deployments. In HTTP mode `/health` is the only unauthenticated endpoint.
+### Using the MCP tools (rules for the agent that calls them)
+
+The server sends these as its `instructions` when a client connects; they are repeated here for agents that read the skill. One concept has one name in every tool input and reply:
+
+| Concept | Name | Notes |
+|---|---|---|
+| a conversation | `threadId` | a user id for a DM, the group id for a group (`groupId` in group-only tools, the same value); `me` is My Documents |
+| one message | `msgId` | the same name in every input and reply; live messages also carry it as `id`, a send reply as `messageId` (same value, kept for older clients) |
+| the sender's own id for a message | `cliMsgId` | returned by `zalo_send_message`; `zalo_react` and `zalo_undo` need it |
+| a Zalo user | `userId` | a message's author is `senderId`; group members have `userId`; `@[userId]` mentions someone |
+| conversation type | `threadType` | input: the number `0` (DM) or `1` (group), or leave it out; messages show the text `"dm"` / `"group"`, which is never passed back |
+
+- **Reading:** wait with `zalo_wait_for_message` or poll `zalo_get_messages`, then `zalo_mark_read` with the returned `cursor` (several bots on one server each pass their own `consumer`). Older messages: `zalo_get_history`, or `zalo_search_messages` across conversations.
+- **Sending text:** real line breaks in `text`, never the two characters backslash and `n` (Zalo shows them as typed; the reply warns when it sees them). Markdown is converted by default (`format: "plain"` sends it as written). A text over 3000 bytes goes out as several messages and the reply lists each part. A sent message cannot be edited: recall it with `zalo_undo` and send it again.
+- **Finding ids:** `zalo_search_threads` (by name), `zalo_list_conversations` (recent), `zalo_lookup_user` (phone or username), `zalo_get_group_members` (who is in a group).
+- **Only when the owner asks:** `zalo_sync` (it makes the owner's phone ask for a confirmation). `zalo_group` `leave` / `remove_member` need `confirm: true`.
+- **A refused call says why** in its error text. Fix the argument it names; do not repeat the same call.
+
 Full reference: `references/mcp-guide.md`
 
 ### Other: profile, conv, poll, reminder, auto-reply, quick-msg, label, catalog

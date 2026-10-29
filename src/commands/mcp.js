@@ -99,6 +99,9 @@ export function normalizeMessage(msg, info = null) {
     const cls = info || classifyLiveMessage(data);
     const media = cls.attachments.find((a) => a.url || a.thumbUrl) || null;
     return {
+        // `msgId` is the name every tool takes and every other reply uses; `id` is the same value, kept for clients
+        // that already read it (the webhook and /events/wait payloads carry both).
+        msgId: data.msgId,
         id: data.msgId,
         threadId: msg.threadId,
         threadType: msg.type === 0 ? "dm" : "group",

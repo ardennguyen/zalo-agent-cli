@@ -89,7 +89,7 @@ tests/                    # Test suite — see tests/README.md
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3638** as of 2026-10-29 (3628 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3653** as of 2026-10-29 (3643 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -983,8 +983,8 @@ threshold (1500 characters), which for Chinese would exceed the byte budget; it 
 plain limit is in units.
 
 **What `src/utils/split-message.js` does:** the same budget (3000 UTF-8 bytes of text plus styles JSON, counted
-for both plain and styled so a long Vietnamese or Chinese text is cut where Web cuts it), the same preference
-order with the CJK marks `。！？；，、` added, a hard cut inside the budget when there is no break, never inside
+for both plain and styled, so a long text in any script is cut where Web cuts it), the same preference
+order with the sentence marks of CJK, Indic, Arabic, Armenian, Ethiopic, Burmese and Khmer added (`MARKS`), a hard cut inside the budget when there is no break, never inside
 a surrogate pair or an `@[uid]` mention, ranges clipped and re-based per part, whitespace at a cut dropped. A
 message that fits is returned untouched. `msg send` and `zalo_send_message` both use it; `urgency` and the quote
 go on the first part only; a part Zalo refuses stops the rest and the error says how many went out (nothing

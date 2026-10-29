@@ -187,6 +187,21 @@ Mỗi tài khoản Zalo cá nhân có cơ sở dữ liệu (`<DATA_DIR>/<ownId>/
 
 ---
 
+## Từ vựng chung: một khái niệm, một tên
+
+Mọi tool dùng chung một bộ tên cho id, ở cả tham số lẫn kết quả, nên chép một tên từ kết quả này sang lần gọi sau luôn đúng. Bộ tên này được kiểm tra tự động (`tests/unit/mcp-naming.test.js`).
+
+| Khái niệm | Tên | Ghi chú |
+|-----------|-----|---------|
+| Hội thoại | `threadId` | DM: id của người kia; nhóm: id nhóm. Tool chỉ dành cho nhóm gọi nó là `groupId` (cùng giá trị với `threadId` của nhóm). `me` là My Documents |
+| Loại hội thoại | `threadType` | Là **tham số**: số `0` (DM) hoặc `1` (nhóm); bỏ trống thì dùng loại đã lưu. Trong **kết quả** của tin nhắn nó là chữ `"dm"` / `"group"`: đừng truyền chữ đó vào tham số |
+| Một tin nhắn | `msgId` | Có ở mọi tham số và mọi kết quả. Tin nhắn live còn mang thêm `id`, kết quả của `zalo_send_message` còn mang thêm `messageId`: cùng giá trị, giữ lại cho client cũ |
+| Id phía client của tin | `cliMsgId` | `zalo_send_message` trả về; `zalo_react` và `zalo_undo` cần (tra từ cache nếu bỏ trống) |
+| Người dùng | `userId` | Tác giả của một tin là `senderId` (cũng là một `userId`); thành viên nhóm có `userId` (cùng giá trị với `uid` cũ). Tag ai đó bằng `@[userId]` |
+| Con trỏ đọc | `cursor` | `zalo_get_messages` / `zalo_wait_for_message` trả về, `zalo_mark_read` nhận lại; truyền vào `since` để đọc tiếp |
+
+Hai tham số đã đổi tên cho khớp bảng này (2.5.8 và 3.0): `zalo_view_media` nhận `msgId` (trước là `messageId`) và `zalo_delete_message` nhận `senderId` (trước là `uidFrom`). Tên cũ trong **kết quả** (`id`, `messageId`, `uid`) vẫn còn, bên cạnh tên mới.
+
 ## Tham chiếu Tools (25 tools)
 
 ### `zalo_get_messages`
@@ -204,7 +219,7 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 ```json
 {
   "messages": [
-    { "id": "msg123", "threadId": "uid456", "threadType": "dm", "senderId": "uid789", "senderName": "Phúc", "text": "Xin chào", "timestamp": 1710000000000, "type": "text", "threadName": "Phúc", "readOnZalo": false }
+    { "msgId": "msg123", "id": "msg123", "threadId": "uid456", "threadType": "dm", "senderId": "uid789", "senderName": "Phúc", "text": "Xin chào", "timestamp": 1710000000000, "type": "text", "threadName": "Phúc", "readOnZalo": false }
   ],
   "cursor": 42,
   "hasMore": false
@@ -233,11 +248,13 @@ Gửi tin nhắn văn bản, tệp/ảnh đính kèm (`filePath` hoặc `files`)
 | `format` | enum "markdown"\|"plain" (tuỳ chọn, mặc định `markdown`) | Zalo hiển thị nguyên văn `**đậm**` và `- mục` vì định dạng chỉ được vẽ từ các khoảng style, nên với `markdown` công cụ chuyển Markdown thành định dạng của Zalo: `**đậm**`, `*nghiêng*`, `~~gạch~~`, `# tiêu đề` (in đậm), `- mục` thành gạch đầu dòng thật (lồng nhau thì thụt vào), `1.` giữ nguyên số, `> trích dẫn`, `` `mã` ``, `[chữ](url)` thành `chữ (url)`, và màu `{red:chữ}`. Văn bản không phải Markdown (`snake_case`, `2 * 3 * 4`) được giữ nguyên. `plain` gửi đúng như đã viết. `ZALO_SEND_FORMAT=markdown\|plain` đổi mặc định |
 | `urgency` | enum "normal"\|"important"\|"urgent" (tuỳ chọn) | Đánh dấu tin **Quan trọng** (`important`) hoặc **Khẩn cấp** (`urgent`) như tuỳ chọn trong app, ánh xạ y hệt `msg send --urgency`. Bỏ trống hoặc `normal` là tin thường |
 
+Văn bản mà Zalo sẽ từ chối nếu gửi thành một tin (quá 3000 byte UTF-8 gồm chữ và, với tin có định dạng, cả JSON của các style — mỗi chữ Hán là 3 byte, mỗi mục gạch đầu dòng thêm một style) được chia thành nhiều tin như Zalo Web: cắt ở xuống dòng, không có thì ở cuối câu hoặc dấu cách (cả `。！？，` của tiếng Trung), gửi lần lượt cách nhau 300 ms. `urgency` và `quoteMsgId` chỉ áp dụng cho tin đầu. Khi có chia, kết quả có thêm `splitInto` và `parts[]` (`messageId`, `cliMsgId` của từng tin); `messageId`/`cliMsgId` ở ngoài là của tin đầu. Nếu một tin bị Zalo từ chối, các tin sau không được gửi và thông báo lỗi nêu đã gửi được bao nhiêu tin.
+
 `threadId: "me"` được hiểu đúng như `msg send me`: tin đi vào My Documents, một thread 1-1 riêng có id là `send2me_id` của phiên đăng nhập (không phải uid của bạn — Zalo từ chối uid đó). Tool từ chối, không gửi gì, nếu kèm `threadType: 1` hoặc nếu phiên không báo `send2me_id`. Khi gửi vào My Documents, kết quả có thêm `threadId` thật và `notice`.
 
 **Kết quả mẫu:**
 ```json
-{ "success": true, "messageId": "msg456", "cliMsgId": "1710000000123", "threadType": 0 }
+{ "success": true, "msgId": "msg456", "messageId": "msg456", "cliMsgId": "1710000000123", "threadType": 0 }
 ```
 `cliMsgId` là id phía client của tin vừa gửi — `zalo_react` và `zalo_undo` cần nó. Giữ lại nếu định thả cảm xúc hay thu hồi tin này: tin vừa gửi có thể chưa kịp vào cache.
 
@@ -340,7 +357,7 @@ Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
-| `messageId` | string | ID tin nhắn (từ `zalo_get_messages`) có đính kèm media |
+| `msgId` | string | `msgId` của tin nhắn (từ `zalo_get_messages`, `zalo_wait_for_message` hoặc `zalo_get_history`) có đính kèm media |
 | `threadId` | string (tuỳ chọn) | Giới hạn tìm kiếm trong 1 thread |
 | `open` | boolean (mặc định theo config `media.autoOpen`) | Có mở bằng trình xem hệ thống hay không |
 
@@ -404,8 +421,8 @@ Liệt kê thành viên của một nhóm, giống `group members` (uid lấy t�
   "totalMember": 8,
   "count": 8,
   "members": [
-    { "uid": "uid456", "displayName": "Phúc" },
-    { "uid": "uid457", "displayName": null }
+    { "userId": "uid456", "uid": "uid456", "displayName": "Phúc" },
+    { "userId": "uid457", "uid": "uid457", "displayName": null }
   ]
 }
 ```
@@ -535,7 +552,7 @@ Xoá một tin nhắn ở phía bạn (`everyone: false`, mặc định) hoặc 
 | `threadId` | string | ID hội thoại chứa tin nhắn |
 | `threadType` | number (tuỳ chọn) | 0 = DM, 1 = nhóm |
 | `cliMsgId` | string (tuỳ chọn) | ID phía client (tra từ cache nếu bỏ trống) |
-| `uidFrom` | string (tuỳ chọn) | UID người gửi (tra từ cache hoặc mặc định là UID của bạn) |
+| `senderId` | string (tuỳ chọn) | `senderId` của tin: userId người gửi (tra từ cache hoặc mặc định là userId của bạn) |
 | `everyone` | boolean (mặc định `false`) | `true` = xoá với mọi người trong nhóm |
 
 ---

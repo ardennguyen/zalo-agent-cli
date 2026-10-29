@@ -232,11 +232,11 @@ describe("MCP input schemas", () => {
 });
 
 describe("MCP handlers", () => {
-    it("zalo_send_message returns {success, messageId, threadType} on the happy path", async () => {
+    it("zalo_send_message returns {success, msgId, messageId, threadType} on the happy path", async () => {
         const { server } = register();
         const r = await server.call("zalo_send_message", { threadId: "t1", text: "hi", threadType: 0 });
         assert.equal(r.isError, undefined);
-        assert.deepEqual(payloadOf(r), { success: true, messageId: "m1", threadType: 0 });
+        assert.deepEqual(payloadOf(r), { success: true, messageId: "m1", msgId: "m1", threadType: 0 });
     });
 
     it("an explicit threadType is obeyed, not second-guessed by the cache", async () => {
@@ -592,7 +592,7 @@ describe("MCP tools read the local cache", () => {
     it("zalo_view_media returns the path the cache recorded, without refetching", async () => {
         cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: "/tmp/a.jpg" }]);
         const { server } = register({ api: emptyServerApi() });
-        const out = payloadOf(await server.call("zalo_view_media", { messageId: "m1", open: false }));
+        const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", open: false }));
         assert.equal(out.success, true);
         assert.equal(out.path, "/tmp/a.jpg");
         assert.equal(out.mediaType, "photo");
@@ -601,7 +601,7 @@ describe("MCP tools read the local cache", () => {
     it("zalo_view_media says so when the message carries no media", async () => {
         cache([{ msgId: "m1", ts: 100 }]);
         const { server } = register({ api: emptyServerApi() });
-        const out = await server.call("zalo_view_media", { messageId: "m1", open: false });
+        const out = await server.call("zalo_view_media", { msgId: "m1", open: false });
         assert.equal(out.isError, true);
         assert.match(out.content[0].text, /no media attachment/i);
     });
@@ -609,7 +609,7 @@ describe("MCP tools read the local cache", () => {
     it("zalo_view_media reports an unknown message rather than throwing", async () => {
         cache([{ msgId: "m1", ts: 100 }]);
         const { server } = register({ api: emptyServerApi() });
-        const out = await server.call("zalo_view_media", { messageId: "gone", open: false });
+        const out = await server.call("zalo_view_media", { msgId: "gone", open: false });
         assert.equal(out.isError, true);
         assert.match(out.content[0].text, /not found/i);
     });
@@ -695,7 +695,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
         // threadType is echoed back because it is now INFERRED from the cache
         // when the caller omits it; without it in the reply there is no way to
         // see what the server decided.
-        assert.deepEqual(payloadOf(r), { success: true, messageId: "sent1", threadType: THREAD_GROUP });
+        assert.deepEqual(payloadOf(r), { success: true, messageId: "sent1", msgId: "sent1", threadType: THREAD_GROUP });
     });
 
     it("expands `@[uid]` from a contact and puts the mention on the wire", async () => {
@@ -882,6 +882,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
         });
         assert.equal(payloadOf(r).kind, "link");
         assert.equal(payloadOf(r).messageId, "link1");
+        assert.equal(payloadOf(r).msgId, "link1", "msgId is the name every other tool takes");
     });
 
     it("sends a contact card when `cardUserId` is provided", async () => {
@@ -945,6 +946,7 @@ describe("zalo_send_message composes mentions and quotes", () => {
             { msgId: "att2", cliMsgId: "c_att2" },
         ]);
         assert.equal(out.messageId, "att1");
+        assert.equal(out.msgId, "att1");
         assert.equal(out.cliMsgId, "c_att1");
     });
 

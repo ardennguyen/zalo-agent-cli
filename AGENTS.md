@@ -211,7 +211,7 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ### Numbers quoted across many docs
 
-CLI commands (**230**), command groups (**27** containers), MCP tools (**27**), OA commands (**32**), offline tests (**3616** as of 2026-10-29). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**230**), command groups (**27** containers), MCP tools (**27**), OA commands (**32**), offline tests (**3638** as of 2026-10-29). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`.
 
@@ -227,15 +227,15 @@ bash ../zalo-agent-cli/.agents/check-wiki-leaks.sh
 
 It fails the push on any of:
 
-1. **Zalo ids** — any digit run of 12 or more. A real 19-digit thread id reached `command-reference.md` once and had to be scrubbed (`b0f267c`).
+1. **Zalo ids** — any digit run of 12 or more. A real thread id once reached `command-reference.md` (`b0f267c`).
 2. **Phone shapes** that are not the known dummies (`0123456789`, `0901234567`).
 3. **Confidential terms** — company/product names and the personal names scrubbed in `b0f267c`.
 
 The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose** (this file is public, so the denylist cannot live here). If the list is missing the script exits 2 rather than passing — recreate it, never skip it. The same rule covers npm READMEs, GitHub releases, and issue comments.
 
-**The check guards the working tree, so it runs *before* the push.** A pushed term stays in public history; remediation is a history rewrite plus rotating whatever leaked. Audit with `git log --all -S'<term>'`: **0 on every remote ref of both repos as of 2026-09-30, apart from the copyright holder's name in LICENSE, NOTICE and README since 2.0.1** (intentional). Rebase any pre-scrub branch with the value replaced before pushing (see [`docs/agent-notes.md`](docs/agent-notes.md)).
+**The check guards the working tree, so it runs *before* the push.** A pushed term stays in public history; remediation is a history rewrite plus rotating whatever leaked. Audit with `git log --branches --tags -S'<term>'` (the copyright holder's name in LICENSE, NOTICE and README is intentional); history details: [`docs/agent-notes.md`](docs/agent-notes.md).
 
-> Keep the script honest: after changing it, plant one sample per category in a scratch directory, confirm it exits 1, and delete them. Why that matters: [`docs/agent-notes.md`](docs/agent-notes.md).
+> After changing the script, plant one sample per category in a scratch directory, confirm exit 1, delete them (why: [`docs/agent-notes.md`](docs/agent-notes.md)).
 
 ---
 
@@ -269,6 +269,7 @@ The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose
 
 Every entry here has its diagnosis, measurements and recovery steps in [`docs/agent-notes.md`](docs/agent-notes.md). Read it before working around any of them.
 
+- **MCP names are one vocabulary.** One concept, one name in every tool input and reply (`msgId`, `userId`, `senderId`, `threadId`, `cliMsgId`); the table is in `docs/agent-notes.md`, `tests/unit/mcp-naming.test.js` enforces it.
 - **Verify a write actually stuck** (re-read the file) after any edit in this tree. When a file looks wrong, rule out the mundane causes — ownership/ACLs, an external handler, an elevated shell — and ask, before recording anything as "cause unidentified".
 - **Never run `zalo-agent login` from an elevated shell.** It leaves credentials owned by `BUILTIN\Administrators`, after which `logout --purge` and `account remove` fail with `EPERM` while everything else looks fine.
 - **Line endings are pinned by `.gitattributes` — never work around it.** `tests/fixtures/** -text`, everything else LF. **Never "fix" a mangled fixture with `git add --renormalize .` or a broad `git add`** — that stages the corruption and breaks CI.
@@ -280,6 +281,6 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
 - **Message rows have exactly three writers: the listener, sync, and `msg history`'s fetch** (insert-if-absent — it never modifies or removes a row already cached). Nothing else writes to `zalo.db`; `msg send` stores nothing, not even a looked-up name. A message you just sent is therefore not quotable, forwardable or recallable until the listener observes its echo or a later `msg history` fetch returns it; say that plainly rather than pointing users at a command that cannot seed it.
 - **Unofficial API.** `patches/` holds patch-package patches against zca-js, applied by `prepare` and shipped **inside the tarball** via `bundleDependencies` — never a consumer `postinstall`, which cannot reach a hoisted `zca-js`. Bumping `zca-js` means regenerating the patch *and* re-pinning the exact version; `tests/unit/packaging.test.js` enforces both.
 - **One media downloader, one layout.** `src/core/sync-v2/media.js` is the only one; everything writes to `accounts/<ownId>/media/<threadId>/`. **Folders are thread IDs, never names** — a name can carry a path separator and changes on rename. `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` overrides the root for the MCP server only.
-  - **A custom `media.downloadDir` survives a purge** — `wipeAccountDir()` removes only `CONFIG_DIR/accounts/<ownId>`. Warned about in `Security.md` / `Bảo-Mật.md` and `INSTALLATION.md`; not fixed in code.
+  - **A custom `media.downloadDir` survives a purge** (`wipeAccountDir()` removes only `CONFIG_DIR/accounts/<ownId>`); documented in `INSTALLATION.md`, not fixed.
 - **`zalo-mcp` is a pass-through launcher (v2.0+).** It forwards all `mcp start` flags, global storage flags, and CLI subcommands (`--account`, `--http`, `--auth`, `--host`, `--config`, …) to `zalo-agent`.
 - **`zalo-mcp` serves a published engine.** A tool or flag added here is unreachable through the wrapper until published to npm and updated (`zalo-mcp.ps1 update` / `./zalo-mcp.sh update`).

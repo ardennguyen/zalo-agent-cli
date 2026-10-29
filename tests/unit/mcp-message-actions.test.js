@@ -316,6 +316,6 @@ describe("zalo_send_message to `me`", () => {
         const api = recordingApi();
         const r = await call("zalo_send_message", { threadId: PEER, text: "offline hi" }, api);
         assert.equal(api.calls[0].threadId, PEER);
-        assert.deepEqual(Object.keys(payloadOf(r)).sort(), ["cliMsgId", "messageId", "success", "threadType"]);
+        assert.deepEqual(Object.keys(payloadOf(r)).sort(), ["cliMsgId", "messageId", "msgId", "success", "threadType"]);
     });
 });

@@ -36,6 +36,7 @@ import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../utils/urgency.js";
 import { registerMsgSearch } from "./msg-search.js";
 import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
+import { splitMessage, sendParts } from "../utils/split-message.js";
 
 /**
  * Open the active account's SQLite cache.
@@ -681,19 +682,38 @@ export function registerMsgCommands(program) {
                 // Build message content. `urgency` is 1 (important) or 2
                 // (urgent); zca-js turns it into the `metaData: {urgency}`
                 // object Zalo Web sends, on every text endpoint.
+                //
+                // Zalo refuses one oversized message (114 plain, 112 styled), so
+                // a long text goes out as Web sends it: split at 3000 bytes of
+                // text plus styles, in order, 300 ms apart. The quote and the
+                // urgency belong to the first part only.
                 const urgency = opts.urgency;
-                const hasExtras = mentions.length > 0 || styles.length > 0 || Boolean(quote) || Boolean(urgency);
-                const msgContent = hasExtras
-                    ? {
-                          msg: finalMsg,
-                          ...(mentions.length > 0 && { mentions }),
-                          ...(styles.length > 0 && { styles }),
-                          ...(quote && { quote }),
-                          ...(urgency && { urgency }),
-                      }
-                    : finalMsg;
+                const parts = splitMessage({ text: finalMsg, styles, mentions });
+                const contentOf = (part, index) => {
+                    const first = index === 0;
+                    const extras = part.mentions.length > 0 || part.styles.length > 0 || (first && (quote || urgency));
+                    return extras
+                        ? {
+                              msg: part.text,
+                              ...(part.mentions.length > 0 && { mentions: part.mentions }),
+                              ...(part.styles.length > 0 && { styles: part.styles }),
+                              ...(first && quote && { quote }),
+                              ...(first && urgency && { urgency }),
+                          }
+                        : part.text;
+                };
 
-                const result = await getApi().sendMessage(msgContent, threadId, Number(opts.type));
+                const answers = await sendParts(parts, (part, index) =>
+                    getApi().sendMessage(contentOf(part, index), threadId, Number(opts.type)),
+                );
+                const result = answers[0];
+                if (parts.length > 1) {
+                    result.splitInto = parts.length;
+                    result.parts = answers.map((r) => ({
+                        msgId: r.message?.msgId ? String(r.message.msgId) : null,
+                        cliMsgId: r.message?.cliMsgId ? String(r.message.cliMsgId) : null,
+                    }));
+                }
 
                 // The cliMsgId comes back from zca-js, which hands over the
                 // clientId it actually put on the wire (patches/zca-js+2.2.0.patch
@@ -712,7 +732,11 @@ export function registerMsgCommands(program) {
                 // so — a fabricated one is worse than an absent one.
                 const cliMsgId = result.message?.cliMsgId ? String(result.message.cliMsgId) : null;
                 if (cliMsgId) result.cliMsgId = cliMsgId;
-                output(result, program.opts().json, () => success("Message sent"));
+                output(result, program.opts().json, () =>
+                    success(
+                        parts.length > 1 ? `Message sent in ${parts.length} parts (too long for one)` : "Message sent",
+                    ),
+                );
 
                 if (result.message && !cliMsgId) {
                     warning(

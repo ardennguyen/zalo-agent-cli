@@ -76,6 +76,26 @@ tests/                    # Test suite — see tests/README.md
 
 ---
 
+## Windows traps that fail silently (§5)
+
+Each of these reports success, or names the wrong cause. They were all learned the expensive way.
+
+- **Git Bash `kill` does not work on native Windows PIDs** — both `kill -TERM` and `kill -0` report
+  success while the process runs on. Use `Stop-Process -Id <pid> -Force` and verify with
+  `Get-Process`. A `daemon.lock` PID is a number in a file, not proof of life.
+- **MSYS rewrites any argument starting with `/`.** Every Zalo reaction code starts with `/`, so set
+  `MSYS2_ARG_CONV_EXCL="*"` for `msg react` and `msg send --react`.
+- **Backslashes do not survive being written through the shell.** Use forward slashes; write scripts
+  to a file rather than `node -e` when they contain escapes.
+- **PowerShell `Start-Process` does not inherit `$env:X` set earlier**, and its child may die with
+  the session. For a daemon, use `nohup … &` from Bash.
+- **git reads `.gitattributes` from the working tree, not your checked-out commit** (§13).
+- **The Cowork/Claude mounted shell is slow on this tree.** A recursive `find`/`grep` over a repo
+  with `node_modules` takes minutes through the mount; use the native shell (PowerShell, or
+  `git grep` / `rg`) for anything recursive.
+
+---
+
 ## Numbers repeated across docs — sources and check commands (§10)
 
 | Invariant | Current | Source of truth | How to check |
@@ -197,18 +217,29 @@ claims, not the absence of a stack trace.
 
 ---
 
-## Release: the reset-and-retag sequence (§8)
+## Release: how a version reaches npm (§8)
 
-Release branches (`v1.x.x`) and tags are always reset to `main`'s HEAD; tag, branch and `main` must
-point at the same commit. Never cherry-pick from `main` to a release branch.
+Since 2.5.x a release is a pull request, not a reset. Work lands on the version branch
+(`v2.5-dev`, `v3.0-dev`), the version bump is a commit there, the branch is merged into `main` by
+PR, and the tag goes on the merge commit (`v2.5.7` → PR #17, `v2.5.8` → #18, `v2.5.9` → #19). The
+step-by-step checklist, including what follows in the wrapper and the wiki, is `docs/RELEASE.md`.
 
-```bash
-git checkout v1.x.x && git reset --hard origin/main
-git push origin refs/heads/v1.x.x --force
-git tag -d v1.x.x && git push origin :refs/tags/v1.x.x
-git tag v1.x.x && git push origin refs/tags/v1.x.x
-git checkout main
-```
+The earlier scheme — one branch per release reset to `main` and force-pushed, then re-tagged — is
+retired. It left a branch and a tag with the same name (`v1.0.5`, `v1.1.0-beta1`, `v2.0.0`), which
+made every `git` reference to that name print `refname is ambiguous`. Those branches were deleted
+on 2026-11-03; the tags are the only name a release has.
+
+### Why `v3.0-dev` must not merge `main` with `-s ours` (§7)
+
+Between 2.5.7 and 2.5.9 every merge of `main` into `v3.0-dev` was a "keep this branch's tree"
+merge (`363f139`, `e7bfadc`, `c30ba3d`). That was safe only because each 2.5.x fix was written on
+v3 first and re-applied to 2.5 by hand (the duplicate pairs `04ba225`/`2c0b3a1`,
+`4138a48`/`c4e558b`, `5f938d0`/`5736fb9`). An `ours` merge tells git that `main` is fully
+incorporated while taking nothing, so the first time a change is made on 2.5 *first* and the next
+merge is again `ours`, that change is gone from v3 and `git log --merges` will insist it arrived.
+`src/utils/split-message.js` was checked identical on both branches on 2026-11-03, so nothing had
+been lost by then. The rule now: write a shared fix where it is found, `git cherry-pick -x` it to
+the other branch, and merge `main` into v3 only as a real merge.
 
 A GitHub Release created from the tag triggers `.github/workflows/publish.yml`, which publishes
 `@ardennguyen/zalo-agent-cli` with `--provenance`. Never run `npm publish` manually.

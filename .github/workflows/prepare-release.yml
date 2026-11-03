@@ -3,8 +3,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Package version (engine: 2.1.0; wrapper: 1.1.0)'
+        description: 'Package version (engine: 2.5.10; wrapper: 2.0.9)'
         required: true
+        type: string
+      branch:
+        description: 'Version branch to prepare from (default: the active one — engine v2.5-dev, wrapper v2.0-dev)'
+        required: false
         type: string
 
 permissions:
@@ -22,6 +26,7 @@ jobs:
       pull-requests: write
     env:
       VERSION: ${{ inputs.version }}
+      BRANCH_INPUT: ${{ inputs.branch }}
     steps:
       - name: Select trusted upstream branch and validate version
         id: target
@@ -30,10 +35,12 @@ jobs:
           set -euo pipefail
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use X.Y.Z'; exit 1; }
           case "$GITHUB_REPOSITORY" in
-            ardennguyen/zalo-agent-cli) target='v2.0-dev'; package='@ardennguyen/zalo-agent-cli' ;;
-            ardennguyen/zalo-mcp) target='v1.1.0'; package='@ardennguyen/zalo-mcp' ;;
+            ardennguyen/zalo-agent-cli) target='v2.5-dev'; package='@ardennguyen/zalo-agent-cli' ;;
+            ardennguyen/zalo-mcp) target='v2.0-dev'; package='@ardennguyen/zalo-mcp' ;;
             *) echo 'Run only in the trusted upstream repository'; exit 1 ;;
           esac
+          # The active version branch moves with every major/minor line (docs/RELEASE.md); an explicit input wins.
+          if [[ -n "${BRANCH_INPUT:-}" ]]; then target="$BRANCH_INPUT"; fi
           echo "branch=$target" >> "$GITHUB_OUTPUT"
           echo "package=$package" >> "$GITHUB_OUTPUT"
 
@@ -56,8 +63,8 @@ jobs:
           npm view "$EXPECTED_PACKAGE" versions --json > "$RUNNER_TEMP/published-versions.json"
           node -e 'const fs=require("fs"),v=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/published-versions.json","utf8")); if([].concat(v).includes(process.env.VERSION)) throw new Error("Version already published; choose a new release version");'
           if [[ "$EXPECTED_PACKAGE" == '@ardennguyen/zalo-mcp' ]]; then
-            npm view '@ardennguyen/zalo-agent-cli@^2.0.1' version --json
-            npm pkg set 'dependencies.@ardennguyen/zalo-agent-cli=^2.0.1'
+            npm view '@ardennguyen/zalo-agent-cli@^2.5.0' version --json
+            npm pkg set 'dependencies.@ardennguyen/zalo-agent-cli=^2.5.0'
           fi
 
       - name: Synchronize package version and real registry lockfile

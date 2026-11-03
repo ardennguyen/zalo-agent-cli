@@ -1,6 +1,6 @@
 {
     "name": "@ardennguyen/zalo-agent-cli",
-    "version": "2.5.6",
+    "version": "3.0.0-alpha.0",
     "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
     "type": "module",
     "bin": {
@@ -21,7 +21,7 @@
         "lint:fix": "eslint src/ tests/ --fix",
         "format": "prettier --write src/ tests/",
         "format:check": "prettier --check src/ tests/",
-        "release": "npm version patch -m 'release: v%s' && git push origin main --tags",
+        "release": "echo 'Releases go through a PR into main - see docs/RELEASE.md' && exit 1",
         "prepublishOnly": "npm run lint && npm test",
         "prepare": "patch-package",
         "test:unit": "node --test tests/unit/*.test.js",

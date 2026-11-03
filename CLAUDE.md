@@ -1,17 +1,15 @@
 # AGENTS.md — zalo-agent-cli Project Rules
 
-Rules for any AI coding agent working in this repository (Claude Code, Antigravity, Cursor, Cline, Codex, …).
+Rules for any AI coding agent working in this repository (Claude Code/Cowork, Antigravity, Cursor, Cline, Codex, …).
 
-**This file is the instructor: it states rules, not reasons.** Every rule that has a story behind it — the incident that produced it, how to recover, the measured numbers, the lookup tables — lives in **[`docs/agent-notes.md`](docs/agent-notes.md)**, which is committed, has **no size limit**, and is read on demand. Read it when a rule here surprises you, when you are about to work around one, or when you need the detail a rule points at. It is not optional background; it is where this file's evidence went.
+**This file is the instructor: it states rules, not reasons.** Every rule that has a story behind it — the incident that produced it, how to recover, the measured numbers, the lookup tables — lives in **[`docs/agent-notes.md`](docs/agent-notes.md)**, which is committed, has **no size limit**, and is read on demand. Read it when a rule here surprises you, when you are about to work around one, or when you need the detail a rule points at. It is where this file's evidence went.
 
 **`AGENTS.md`, `CLAUDE.md`, `.clinerules` and `.cursor/rules/project.mdc` are byte-identical copies of this text.** Each tool reads only its own filename. Edit `AGENTS.md`, copy it over the other three in the same commit, never hand-edit a copy.
 
-**Keep this file under 24,000 bytes.** Google Antigravity silently truncates a longer rule file — no warning, no marker, the tail never reaches the model. Adding a rule that would exceed the budget means moving explanation to `docs/agent-notes.md` first, not shaving words.
+**Keep this file under 24,000 bytes** — Google Antigravity silently truncates a longer rule file. A rule that would exceed the budget means moving explanation to `docs/agent-notes.md` first.
 
 ```bash
-for f in CLAUDE.md .clinerules .cursor/rules/project.mdc; do cp AGENTS.md "$f"; done
-wc -c AGENTS.md   # must be < 24000
-sha256sum AGENTS.md CLAUDE.md .clinerules .cursor/rules/project.mdc   # four identical hashes
+for f in CLAUDE.md .clinerules .cursor/rules/project.mdc; do cp AGENTS.md "$f"; done   # then: wc -c AGENTS.md < 24000
 ```
 
 ---
@@ -35,12 +33,12 @@ If you read nothing else, read these.
 ### First commands in a new session
 
 ```bash
-git branch --show-current      # v2.0-dev is the active major-version branch
+git branch --show-current      # v2.5-dev (2.5.x) or v3.0-dev (3.0) — never main
 git status --short             # another agent may have left uncommitted work
 npm test                       # offline suite, no Zalo session needed
 ```
 
-Uncommitted work in the tree — including the sibling `zalo-agent-cli-wiki` checkout — is probably another session's. Read it before overwriting it.
+Uncommitted work in any checkout here is probably another session's. Read it before overwriting it.
 
 ---
 
@@ -57,7 +55,7 @@ Two separate API surfaces live in one binary, and **must never be conflated**:
 
 The unofficial-API disclaimer is deliberately suppressed for `oa` commands.
 
-Three sibling repos under one parent (locally `F:/Coding/zalo-mcp/`): **`zalo-agent-cli`** (this repo, the engine), **`zalo-mcp`** (thin wrapper, no engine code, pins a *published* version — §13), **`zalo-agent-cli-wiki`** (public wiki, EN + VN pairs).
+One parent folder (locally `F:/Coding/zalo-mcp/`, its `README.md` is the map): **`zalo-agent-cli`** (this repo, the engine, branch `v2.5-dev`), **`zalo-agent-cli-v3`** (a git *worktree* of this repo on `v3.0-dev`: one `.git`, one stash), **`zalo-mcp`** (thin wrapper, no engine code, pins a *published* version — §13), **`zalo-agent-cli-wiki`** (public wiki, EN + VN pairs). Live account state lives **outside** the workspace (`F:/zalo-live-state/`) — never copy from it.
 
 ---
 
@@ -112,13 +110,7 @@ This project is developed through AI coding agents — the user does not write c
 
 ### Windows traps that fail silently
 
-Each reports success, or names the wrong cause. Detail and measurements: [`docs/agent-notes.md`](docs/agent-notes.md).
-
-- **Git Bash `kill` does not work on native Windows PIDs** — both `kill -TERM` and `kill -0` report success while the process runs on. Use `Stop-Process -Id <pid> -Force` and verify with `Get-Process`. A `daemon.lock` PID is a number in a file, not proof of life.
-- **MSYS rewrites any argument starting with `/`.** Every Zalo reaction code starts with `/`, so set `MSYS2_ARG_CONV_EXCL="*"` for `msg react` and `msg send --react`.
-- **Backslashes do not survive being written through the shell.** Use forward slashes; write scripts to a file rather than `node -e` when they contain escapes.
-- **PowerShell `Start-Process` does not inherit `$env:X` set earlier**, and its child may die with the session. For a daemon, use `nohup … &` from Bash.
-- **git reads `.gitattributes` from the working tree, not your checked-out commit** (§13).
+Each reports success, or names the wrong cause. **Read [`docs/agent-notes.md` § Windows traps](docs/agent-notes.md#windows-traps-that-fail-silently-5) before killing a process, passing a `/`-prefixed argument, writing backslashes through a shell, or starting a daemon from PowerShell.** Short form: `Stop-Process`, not `kill`; `MSYS2_ARG_CONV_EXCL="*"` for `msg react`; forward slashes only; daemons via `nohup … &` from Bash; git reads `.gitattributes` from the working tree (§13).
 
 ---
 
@@ -145,15 +137,10 @@ While iterating, narrow the loop (`npm run test:unit`, `npm run test:cli`, `node
 
 ## 7. Git workflow
 
-- **Always commit to `main` first**, then update the target branch:
-  ```bash
-  git checkout main && git commit ... && git push origin main
-  git checkout <branch> && git reset --hard origin/main
-  git push origin refs/heads/<branch> --force
-  ```
-- **Exceptions:** commit only to a feature branch when the user says so; long-lived version branches (`v2.0-dev`) take work directly. **Confirm with the user before merging `v2.0-dev` into `main`** — that is a release decision.
-- Never leave `main` behind a feature branch meant to ship.
-- **Every `git commit` MUST be immediately followed by `git push`.**
+- **Work lands on the active version branch** — `v2.5-dev` for 2.5.x, `v3.0-dev` for 3.0 — **never directly on `main`.** `main` moves only by a pull request from a version branch, and that PR is a release (§8): **confirm with the user before opening or merging it.**
+- A feature branch only when the user asks for one; it merges into the version branch, not `main`.
+- **Every `git commit` MUST be immediately followed by `git push`** to the same branch.
+- **`v3.0-dev` never takes `main` with `-s ours` / "keeping this branch's tree".** That records `main` as merged without taking one hunk, so a 2.5.x change made on 2.5 first is lost on v3 while `git log` says it was merged. A change both lines need: write it where found, `git cherry-pick -x <sha>` to the other branch. `main` into `v3.0-dev` only as a real merge.
 - Conventional messages: `feat:`, `fix:`, `chore:`, `style:`, `docs:`, `build:`. Differing or absent co-author trailers are expected, not something to "fix".
 
 ### More than one session in this checkout
@@ -176,9 +163,13 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 
 ## 8. Release & publish
 
-- All work is committed to `main` first.
-- Release branches (`v1.x.x`) and tags are always **reset to `main`'s HEAD** — never cherry-pick. Tag, branch and `main` end at the same commit; the reset-and-retag sequence is in [`docs/agent-notes.md`](docs/agent-notes.md).
-- A GitHub Release from the tag triggers `.github/workflows/publish.yml`, which publishes with `--provenance` via npm trusted publishing (no token).
+Full checklist, including the wrapper and wiki steps after an engine release: **[`docs/RELEASE.md`](docs/RELEASE.md)**. In short:
+
+1. On the version branch: add the `CHANGELOG.md` section, `chore: bump version to X.Y.Z`, push.
+2. PR the version branch into `main` (user approves). Tag `vX.Y.Z` on the merge commit; the tag is the only name a release has — **never create a branch named after a release.**
+3. A GitHub Release from the tag (body = the CHANGELOG section) triggers `.github/workflows/publish.yml`, which publishes with `--provenance` via npm trusted publishing (no token).
+4. Then bump the wrapper's lock file and sweep the wiki (`docs/RELEASE.md`).
+
 - **Never run `npm publish` manually.**
 
 ---
@@ -203,15 +194,16 @@ Before ANY of `git reset --hard`, `git checkout <branch>`, `git clean -fd`: read
 | `README.md` (VN/EN) | A command group is added/removed, or a headline feature ships |
 | `INSTALLATION.{md,vi.md}`, `docs/deployment.{md,vi.md}` | Install/update flow, MCP transport/daemon flags, or config keys |
 | `docs/configuration.{md,vi.md}`, `docs/config-samples/**`, wiki `Configuration` ⇄ `Cấu-Hình` | An env var, `mcp-config.json` key, or MCP HTTP/webhook behavior changes (`config-samples.test.js` enforces the samples) |
+| `CHANGELOG.md` | Every user-visible change, under `## [Unreleased]` as it lands; renamed to the version in the bump commit |
+| `docs/decisions/*.md` | An architectural decision is made or reversed (one file per decision, dated) |
 | `tests/README.md` | A suite moves, a gate or the test count changes, a manual check is added |
 | `docs/agent-notes.md` | The background behind a rule here changes, or a new incident is worth recording |
-| `agent/work/transfer-sync-v2/{NOTES,HANDOFF,FINDINGS}.md` | New measured behavior or protocol detail (gitignored — does not travel) |
 | `zalo-agent-cli-wiki/*.md` | A command's behavior changes — **update the EN + VN pair together** |
 | `CLAUDE.md`, `.clinerules`, `.cursor/rules/project.mdc` | **Anything in this file changes** — copy over all three in the same commit |
 
 ### Numbers quoted across many docs
 
-CLI commands (**230**), command groups (**27** containers), MCP tools (**27**), OA commands (**32**), offline tests (**3660** as of 2026-10-29). Changing the code behind one means changing every doc that quotes it. **Re-measure; never trust the number written down** — counting method and sources are in [`docs/agent-notes.md`](docs/agent-notes.md), including why the two obvious ways to count commands both give wrong answers.
+CLI commands (**230**), command groups (**27** containers), MCP tools (**27**), OA commands (**32**), offline tests (**3660** as of 2026-11-03). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`.
 
@@ -233,16 +225,14 @@ It fails the push on any of:
 
 The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose** (this file is public, so the denylist cannot live here). If the list is missing the script exits 2 rather than passing — recreate it, never skip it. The same rule covers npm READMEs, GitHub releases, and issue comments.
 
-**The check guards the working tree, so it runs *before* the push.** A pushed term stays in public history; remediation is a history rewrite plus rotating whatever leaked. Audit with `git log --branches --tags -S'<term>'` (the copyright holder's name in LICENSE, NOTICE and README is intentional); history details: [`docs/agent-notes.md`](docs/agent-notes.md).
-
-> After changing the script, plant one sample per category in a scratch directory, confirm exit 1, delete them (why: [`docs/agent-notes.md`](docs/agent-notes.md)).
+**The check guards the working tree, so it runs *before* the push.** A pushed term stays in public history; remediation is a history rewrite plus rotating whatever leaked (audit and history: [`docs/agent-notes.md`](docs/agent-notes.md)). After changing the script, plant one sample per category in scratch, confirm exit 1, delete them.
 
 ---
 
 ## 11. Agent artifacts
 
 - Long-form docs, plans and artifacts go in the project, **not** an agent's default `brain` directory: markdown → `agent/docs/`; generated code, scripts, media → `agent/work/`; temporary scratch → the session scratch directory only.
-- `agent/` is gitignored. Anything that must reach another clone belongs in `docs/`.
+- `agent/` is gitignored. Anything that must reach another clone belongs in `docs/`. **Release notes go in `CHANGELOG.md` and decisions in `docs/decisions/` — never only in `agent/docs/`.**
 - A document covering **both** repos goes into `agent/docs/` in both, named so the copies do not collide.
 
 ---

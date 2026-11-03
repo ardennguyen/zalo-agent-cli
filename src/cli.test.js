@@ -48,9 +48,9 @@ function run(...args) {
 }
 
 describe("CLI interface", () => {
-    it("--version outputs 1.0.0", () => {
+    it("--version outputs a semver version (a pre-release suffix such as 3.0.0-alpha.0 is allowed)", () => {
         const out = run("--version");
-        assert.match(out.trim(), /^\d+\.\d+\.\d+$/);
+        assert.match(out.trim(), /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/);
     });
 
     it("--help lists all command groups", () => {

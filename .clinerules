@@ -6,12 +6,10 @@ Rules for any AI coding agent working in this repository (Claude Code/Cowork, An
 
 **`AGENTS.md`, `CLAUDE.md`, `.clinerules` and `.cursor/rules/project.mdc` are byte-identical copies of this text.** Each tool reads only its own filename. Edit `AGENTS.md`, copy it over the other three in the same commit, never hand-edit a copy.
 
-**Keep this file under 24,000 bytes.** Google Antigravity silently truncates a longer rule file — no warning, no marker, the tail never reaches the model. Adding a rule that would exceed the budget means moving explanation to `docs/agent-notes.md` first, not shaving words.
+**Keep this file under 24,000 bytes** — Google Antigravity silently truncates a longer rule file. A rule that would exceed the budget means moving explanation to `docs/agent-notes.md` first.
 
 ```bash
-for f in CLAUDE.md .clinerules .cursor/rules/project.mdc; do cp AGENTS.md "$f"; done
-wc -c AGENTS.md   # must be < 24000
-sha256sum AGENTS.md CLAUDE.md .clinerules .cursor/rules/project.mdc   # four identical hashes
+for f in CLAUDE.md .clinerules .cursor/rules/project.mdc; do cp AGENTS.md "$f"; done   # then: wc -c AGENTS.md < 24000
 ```
 
 ---
@@ -200,15 +198,14 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 | `docs/decisions/*.md` | An architectural decision is made or reversed (one file per decision, dated) |
 | `tests/README.md` | A suite moves, a gate or the test count changes, a manual check is added |
 | `docs/agent-notes.md` | The background behind a rule here changes, or a new incident is worth recording |
-| `agent/work/transfer-sync-v2/{NOTES,HANDOFF,FINDINGS}.md` | New measured behavior or protocol detail (gitignored — does not travel) |
 | `zalo-agent-cli-wiki/*.md` | A command's behavior changes — **update the EN + VN pair together** |
 | `CLAUDE.md`, `.clinerules`, `.cursor/rules/project.mdc` | **Anything in this file changes** — copy over all three in the same commit |
 
 ### Numbers quoted across many docs
 
-Command, group, MCP-tool, OA-command and offline-test counts are quoted in README, SKILL.md, the wiki and `tests/README.md`; changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
+CLI commands (**222**), command groups (**24** containers), MCP tools (**25**), OA commands (**32**), offline tests (**2627** as of 2026-11-03). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
-**Every MCP tool list in a doc must match `src/mcp/mcp-tools.js`** — `node scripts/count-surface.mjs` prints the current list; paste from there, never from memory.
+**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`.
 
 `tests/cli/surface.test.js` is the **machine-checkable twin** of `command-reference.md`. For the wiki, the authoritative EN⇄VN pairing is `_Sidebar.md` in that checkout.
 

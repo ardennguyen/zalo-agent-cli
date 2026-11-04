@@ -126,6 +126,39 @@ export function normalizeMessage(msg, info = null) {
 }
 
 /**
+ * Normalize a zca-js `undo` (recall) event into the same shape as a buffered message, so a
+ * long-poll waiter wakes for it and zalo_get_messages lists it in order with the messages.
+ *
+ * `msgId` is the RECALLED message (what every tool calls a message), not the notification's own
+ * id: an agent reading `{ type: "undo", msgId }` knows which earlier message is gone. The
+ * target is named inside `content` (see storeLiveUndo); a recall that names neither a global nor
+ * a client id cannot be attributed and is not normalized.
+ *
+ * @param {object} undo - Raw zca-js undo event
+ * @returns {object|null} Normalized recall event, or null when it names no message
+ */
+export function normalizeUndo(undo) {
+    const data = undo?.data || {};
+    const content = data.content || {};
+    const target = content.globalMsgId && Number(content.globalMsgId) !== 0 ? String(content.globalMsgId) : null;
+    const cliMsgId = content.cliMsgId && Number(content.cliMsgId) !== 0 ? String(content.cliMsgId) : null;
+    if (!target && !cliMsgId) return null;
+    return {
+        msgId: target,
+        cliMsgId,
+        threadId: undo.threadId,
+        threadType: undo.type === 0 ? "dm" : "group",
+        senderId: data.uidFrom || null,
+        senderName: data.dName || null,
+        text: "",
+        timestamp: data.ts ? Number(data.ts) : Date.now(),
+        type: "undo",
+        attachment: null,
+        replyTo: null,
+    };
+}
+
+/**
  * The JSON a webhook receiver gets for one buffered message.
  *
  * @param {object} message - Normalized message object
@@ -133,7 +166,7 @@ export function normalizeMessage(msg, info = null) {
  * @returns {object}
  */
 export function buildMCPWebhookPayload(message, extra = {}) {
-    return { event: "message", ...extra, ...message };
+    return { event: message?.type === "undo" ? "undo" : "message", ...extra, ...message };
 }
 
 /**
@@ -700,7 +733,7 @@ export function registerMCPCommands(program) {
             /** Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent. */
             const queueWebhook = (normalized) =>
                 webhookDelivery?.enqueue(
-                    `message:${normalized.msgId}`,
+                    `${normalized.type === "undo" ? "undo" : "message"}:${normalized.msgId ?? normalized.cliMsgId}`,
                     buildMCPWebhookPayload(normalized, { accountId: activeAcc.ownId }),
                 );
 
@@ -913,6 +946,19 @@ export function registerMCPCommands(program) {
                 api.listener.on("undo", (u) => {
                     const r = storeLiveUndo(u);
                     if (!r.stored && r.reason) console.error(`[mcp] recall not applied: ${r.reason}`);
+                    // The cache is updated above whatever happens next; this is what an agent
+                    // sees. A recall used to stop at the cache, so a waiter on
+                    // zalo_wait_for_message never woke for one and zalo_get_messages never
+                    // listed it (bug-reports #3). Self recalls are the agent's own zalo_undo.
+                    if (u?.isSelf) return;
+                    const recalled = normalizeUndo(u);
+                    if (!recalled) return;
+                    if (!filter.shouldWatch(recalled.threadId, recalled.threadType)) return;
+                    buffer.push(recalled.threadId, recalled);
+                    queueWebhook(recalled);
+                    console.error(
+                        `${DEBUG_MARK}[mcp] Buffered recall of ${recalled.msgId ?? recalled.cliMsgId} in ${recalled.threadId}`,
+                    );
                 });
 
                 api.listener.on("delivered_messages", (m) => storeReceipts(m, STATUS_RECEIVED));

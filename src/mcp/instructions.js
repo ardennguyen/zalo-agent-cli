@@ -16,6 +16,7 @@ export const SERVER_INSTRUCTIONS = [
     "",
     "READING",
     "- To receive messages, wait with zalo_wait_for_message or poll with zalo_get_messages, then call zalo_mark_read with the returned `cursor`. If several bots share the server, each passes its own `consumer` name.",
+    '- A recall arrives in that list as an entry with `type` "undo": its `msgId` is the recalled message and its `text` is empty.',
     "- For older messages use zalo_get_history (one conversation) or zalo_search_messages (text, across all conversations).",
     "",
     "SENDING TEXT",

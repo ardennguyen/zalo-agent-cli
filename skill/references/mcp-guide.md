@@ -227,6 +227,8 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 ```
 `cursor` trong kết quả là cursor của tin cuối cùng trả về — dùng lại cho lần gọi `since` tiếp theo, hoặc cho `zalo_mark_read`.
 
+Một tin bị thu hồi cũng xuất hiện trong danh sách này (và đánh thức `zalo_wait_for_message`) dưới dạng một mục có `type` là `"undo"`: `msgId` là tin đã bị thu hồi (`null` nếu Zalo chỉ cho biết `cliMsgId`), `text` rỗng, và tin cũ không còn trong cache. Thu hồi do chính tài khoản làm (qua `zalo_undo`) không được đưa vào.
+
 `readOnZalo` cho biết chính tài khoản đã đọc tin này trên Zalo hay chưa — tức là người dùng đã xem nó trên điện thoại hoặc Zalo Web: `true` là đã đọc, `false` là chưa, `null` khi listener chưa nhận được báo cáo nào về hội thoại đó. Giá trị này khác với read cursor của consumer: `zalo_mark_read` không làm nó thay đổi. Đây là tín hiệu để bot biết người thật đã xem tin và nhường lại hội thoại cho họ.
 
 ---
@@ -659,14 +661,14 @@ Liệt kê, gắn nhãn (`assign`), gỡ nhãn (`unassign`), hoặc cập nhật
 | `labelData`, `version` | tuỳ chọn | Dữ liệu nhãn đầy đủ và `version` cho `action: "update"` |
 
 ### `zalo_group`
-Rời nhóm, xem thông tin nhóm, tạo nhóm và thêm/xóa thành viên — tương đương `group leave`, `info`, `create`, `add-member` và `remove-member`. Danh sách thành viên vẫn do `zalo_get_group_members` trả về.
+Rời nhóm, xem thông tin nhóm, tạo nhóm, đổi tên nhóm và thêm/xóa thành viên — tương đương `group leave`, `info`, `create`, `rename`, `add-member` và `remove-member`. Danh sách thành viên vẫn do `zalo_get_group_members` trả về.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
-| `action` | enum `"leave"\|"info"\|"create"\|"add_members"\|"remove_member"` | Thao tác cần thực hiện |
-| `groupId` | string (tuỳ chọn) | Id nhóm dạng số. Bắt buộc với `leave`, `info`, `add_members`, `remove_member`; tìm bằng `zalo_search_threads` |
-| `name` | string (tuỳ chọn) | Tên nhóm mới (bắt buộc với `create`) |
+| `action` | enum `"leave"\|"info"\|"create"\|"add_members"\|"remove_member"\|"rename"` | Thao tác cần thực hiện |
+| `groupId` | string (tuỳ chọn) | Id nhóm dạng số. Bắt buộc với `leave`, `info`, `add_members`, `remove_member`, `rename`; tìm bằng `zalo_search_threads` |
+| `name` | string (tuỳ chọn) | Tên nhóm: tên nhóm mới với `create`, tên cần đặt với `rename` (bắt buộc với cả hai) |
 | `userIds` | string[] 1–100 (tuỳ chọn) | Các Zalo userId dạng số (bắt buộc với `create` và `add_members`; id trùng chỉ gửi một lần) |
 | `userId` | string (tuỳ chọn) | Một Zalo userId dạng số (bắt buộc với `remove_member`) |
 | `silent` | boolean (tuỳ chọn) | Chỉ với `leave`: rời mà không đăng thông báo thường lệ vào nhóm (mặc định `false`) |
@@ -678,6 +680,7 @@ Kết quả theo từng `action`:
 - `create`: `{groupId, name, added, failed}` — `added` chỉ gồm các thành viên bạn đã yêu cầu (Zalo cũng liệt kê cả người tạo nhóm, tool loại ra); `failed` là các thành viên Zalo từ chối. Không có `groupId` trong phản hồi của Zalo thì là lỗi.
 - `add_members`: `{groupId, added, failed, errorData?}`. Zalo trả thành công ngay cả khi không nhận ai; khi không thêm được thành viên nào, tool báo lỗi kèm mã lỗi của Zalo.
 - `remove_member`: `{success: true, groupId, userId}`; Zalo từ chối (không phải thành viên, hoặc tài khoản không đủ quyền — chủ nhóm hoặc quản trị viên mới xóa được) thì là lỗi.
+- `rename`: `{success: true, groupId, name}` — mọi thành viên thấy tên mới; không cần `confirm` vì đổi lại được.
 - `leave`: `{success: true, groupId, silent}`. Khi bạn không còn ở trong nhóm (đã rời hoặc chưa từng vào), Zalo trả mã 167 và tool giải thích bằng lời. Chủ nhóm vẫn rời được nhóm của mình (đã đo trên tài khoản thật).
 
 Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên cần `confirm: true`; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Luồng tự động/headless/backend không bị chặn: gửi `confirm: true` trong lệnh gọi, hoặc tắt hẳn bước kiểm tra bằng `"groupConfirm": false` trong `mcp-config.json` hay biến môi trường `ZALO_MCP_GROUP_CONFIRM=0` (biến môi trường được ưu tiên; `1`/`true` bật lại). Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool đã được chạy thử trên tài khoản thật (nhóm tạm thời): tạo nhóm, xem thông tin, thêm/xóa thành viên, rời nhóm với `silent`. Đã kiểm chứng trên tài khoản thật: với `silent: true`, các thành viên thường không thấy thông báo "đã rời nhóm", nhưng chủ nhóm vẫn thấy. Chủ nhóm rời nhóm thì quyền chủ nhóm được chuyển cho người khác trước, nên người đó thấy thông báo — muốn rời im lặng hoàn toàn với các thành viên, hãy chuyển quyền chủ nhóm (`group transfer-owner`) rồi mới rời.
@@ -711,15 +714,16 @@ Thực hiện một trong các lời gọi **thay đổi trạng thái** của Z
 Kết quả: `{writes: [...]}` khi không có `name`; `{dryRun: true, request: {method, host, path, body}}` với `dryRun`; `{name, data}` với `data` là phần trả lời của Zalo khi gửi thật. Những thứ cố ý không có ở đây (các luồng tải lên mà zca-js đã làm hoặc client web không dùng, biên nhận, luồng tài khoản/thông tin đăng nhập, cuộc gọi, E2EE, …) và lý do nằm trong `skill/references/command-reference.md`, mục `write`.
 
 ### `zalo_friend`
-Kiểm tra, liệt kê và xử lý lời mời kết bạn, và liệt kê bạn bè — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request` và `list`.
+Kiểm tra, liệt kê và xử lý lời mời kết bạn, liệt kê bạn bè, đặt/xóa biệt danh — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request`, `list`, `alias`, `alias-remove` và `alias-list`.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
-| `action` | enum `"status"\|"sent_requests"\|"received_requests"\|"send"\|"accept"\|"reject"\|"undo"\|"list"` | Thao tác cần thực hiện |
-| `userId` | string (tuỳ chọn) | Zalo userId dạng số. Bắt buộc với `status`, `send`, `accept`, `reject`, `undo`; tìm bằng `zalo_lookup_user` |
+| `action` | enum `"status"\|"sent_requests"\|"received_requests"\|"send"\|"accept"\|"reject"\|"undo"\|"list"\|"alias"\|"alias_list"` | Thao tác cần thực hiện |
+| `userId` | string (tuỳ chọn) | Zalo userId dạng số. Bắt buộc với `status`, `send`, `accept`, `reject`, `undo`, `alias`; tìm bằng `zalo_lookup_user` |
 | `message` | string (tuỳ chọn) | Lời nhắn kèm lời mời (chỉ với `send`) |
-| `limit` | number 1–1000 (tuỳ chọn) | Số bạn bè tối đa trả về cho `list` (mặc định 200; kết quả cho biết tổng số) |
+| `alias` | string (tuỳ chọn) | Chỉ với `alias`: biệt danh hiển thị cho `userId`; chuỗi rỗng thì xóa biệt danh |
+| `limit` | number 1–1000 (tuỳ chọn) | Số mục tối đa trả về cho `list` (mặc định 200) và `alias_list` (mặc định 100); kết quả cho biết tổng số |
 
 Kết quả theo từng `action`:
 
@@ -728,6 +732,8 @@ Kết quả theo từng `action`:
 - `received_requests`: các lời mời người khác gửi cho bạn, mới nhất trước, kèm lời nhắn của họ và `seen`. Zalo không có danh sách riêng cho việc này: tool lọc các mục loại "lời mời kết bạn đã nhận" (`recommType` 2) trong danh sách gợi ý, giống cách `friend recommendations` gắn nhãn `[request]`.
 - `send`, `accept`, `reject`, `undo`: `{success: true, userId}`. Khi Zalo từ chối `send` (đã là bạn, bị chặn, gửi quá nhiều…), lỗi nêu lý do bằng đúng lời của CLI.
 - `list`: `{total, count, truncated, friends: [{userId, displayName, lastActionTime}]}`, hoạt động gần đây nhất trước.
+- `alias`: `{success: true, userId, alias}` (`alias` là `null` khi vừa xóa). Biệt danh là tên mà `senderDisplayName` và mention `@[userId]` dùng từ đó về sau; khi xóa, tool tra lại tên hồ sơ để tên hiển thị không còn là biệt danh cũ.
+- `alias_list`: `{count, aliases: [{userId, alias}]}`.
 
 Lưu ý: Zalo hạn chế tài khoản gửi nhiều lời mời kết bạn, nên chỉ `send` khi cần. Thời gian trong `requestedAt`/`receivedAt` được chuẩn hoá về ISO dù Zalo trả giây hay mili-giây; đơn vị đó chưa được đo trên tài khoản thật. Tool mới chỉ được kiểm thử offline.
 
@@ -757,10 +763,10 @@ MCP server expose **25 tool cho tài khoản cá nhân**. Mọi thứ còn lại
 | Ghi chú nhóm & Ghim tin nhắn | `zalo_note` | `zalo-agent --json group note-create\|note-edit …` · `msg pin\|unpin …` |
 | Khảo sát nhóm (Poll) | `zalo_poll` | `zalo-agent --json poll …` |
 | Nhãn hội thoại (Label) | `zalo_label` | `zalo-agent --json label …` |
-| Thông tin nhóm, tạo nhóm, thêm/xóa thành viên, rời nhóm | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
+| Thông tin nhóm, tạo nhóm, đổi tên nhóm, thêm/xóa thành viên, rời nhóm | `zalo_group` | `zalo-agent --json group info\|create\|rename\|add-member\|remove-member\|leave [-s]` |
 | Danh mục sticker/GIF, tìm GIF, hạng hồ sơ, danh sách chặn, biệt danh và các read khác của Zalo Web | `zalo_read` | `zalo-agent --json read list\|run <name>` |
 | RSVP nhắc hẹn, ghi chú/nhắc hẹn nhóm có lặp lại, ghim, thu hồi nhiều tin và các thay đổi khác | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
-| Bạn bè: trạng thái, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè | `zalo_friend` | `zalo-agent --json friend request-status\|sent-requests\|recommendations\|add\|accept\|reject\|undo-request\|list` |
+| Bạn bè: trạng thái, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè, biệt danh | `zalo_friend` | `zalo-agent --json friend request-status\|sent-requests\|recommendations\|add\|accept\|reject\|undo-request\|list\|alias\|alias-remove\|alias-list` |
 | Kiểm tra cache có thiếu tin không (khoảng hở) | `zalo_coverage` | — (`listen` / `mcp start` in ra từng khoảng hở khi ghi nhận) |
 | Khôi phục lịch sử từ điện thoại / sync phản ứng | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-mobile` hoặc `sync-reactions` (restore vẫn cần xác nhận điện thoại) |
 | Gửi voice (URL) / video (URL) / sticker | — | `zalo-agent --json msg send-voice\|send-video\|sticker …` |

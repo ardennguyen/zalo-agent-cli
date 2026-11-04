@@ -19,6 +19,7 @@ import {
     getMessages,
     getMessageById,
     getDisplayName,
+    setContactName,
     getThreadType,
     getThreadNames,
     getConvState,
@@ -231,6 +232,21 @@ const CLI_MSG_ID_HINT = "the `cliMsgId` parameter (zalo_send_message returns it 
  * @param {string} uid
  * @returns {string|null}
  */
+/**
+ * Record the name this account shows for a user (the nickname just set, or the profile name after a nickname was
+ * removed) in `contacts`, where `getDisplayName` reads first. Best effort, like cachedDisplayName: the MCP tests run
+ * without a db, and a name that fails to persist only costs the next lookup.
+ * @param {string} uid
+ * @param {string} name
+ */
+function rememberContactName(uid, name) {
+    try {
+        setContactName(uid, name);
+    } catch {
+        /* no db open in this process */
+    }
+}
+
 function cachedDisplayName(uid) {
     try {
         return getDisplayName(uid);
@@ -425,6 +441,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "To continue exactly after the last reply, pass its `cursor` as `since`. To wait for the next message instead of polling, use zalo_wait_for_message. " +
                 "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when the message was first seen), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
                 "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (phone or Zalo Web), and null when that is unknown; zalo_mark_read does not change it. " +
+                'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. ' +
                 "Returns `{ messages, cursor, hasMore }`.",
             inputSchema: z.object({
                 threadId: z
@@ -2782,22 +2799,43 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'send' (friend request to userId, with an optional message), " +
                 "'accept' / 'reject' (the request from userId), " +
                 "'undo' (cancel the request you sent to userId), " +
-                "'list' (your friends, most recently active first, capped by limit). " +
+                "'list' (your friends, most recently active first, capped by limit), " +
+                "'alias' (set the nickname this account shows for userId to `alias`; an empty alias removes it; " +
+                "the nickname is what `senderDisplayName` and `@[userId]` mentions then use), " +
+                "'alias_list' (the nicknames set on this account, capped by limit). " +
                 "userId is the numeric Zalo id (zalo_lookup_user finds one from a phone number). " +
                 "Zalo restricts accounts that send many friend requests, so send sparingly.",
             inputSchema: z.object({
                 action: z
-                    .enum(["status", "sent_requests", "received_requests", "send", "accept", "reject", "undo", "list"])
+                    .enum([
+                        "status",
+                        "sent_requests",
+                        "received_requests",
+                        "send",
+                        "accept",
+                        "reject",
+                        "undo",
+                        "list",
+                        "alias",
+                        "alias_list",
+                    ])
                     .describe("Friend operation to perform"),
                 userId: z
                     .string()
                     .min(1)
                     .optional()
-                    .describe("Numeric Zalo user id (required for status, send, accept, reject and undo)"),
+                    .describe("Numeric Zalo user id (required for status, send, accept, reject, undo and alias)"),
                 message: z
                     .string()
                     .optional()
                     .describe("Message sent with the friend request (only for 'send'; default: none)"),
+                alias: z
+                    .string()
+                    .max(200)
+                    .optional()
+                    .describe(
+                        "Only for 'alias': the nickname to show for userId; an empty string removes the nickname",
+                    ),
                 limit: z
                     .number()
                     .int()
@@ -2805,12 +2843,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .max(1000)
                     .optional()
                     .describe(
-                        "Most friends to return for 'list' (default 200; the reply says how many there are in all)",
+                        "Most entries to return for 'list' (default 200) and 'alias_list' (default 100); the reply says how many there are in all",
                     ),
             }),
         },
-        async ({ action, userId, message, limit }) => {
-            const needsUser = ["status", "send", "accept", "reject", "undo"].includes(action);
+        async ({ action, userId, message, limit, alias }) => {
+            const needsUser = ["status", "send", "accept", "reject", "undo", "alias"].includes(action);
             const target = userId === undefined ? "" : String(userId).trim();
             if (needsUser) {
                 if (!target) return err(`userId is required for action='${action}'.`);
@@ -2855,6 +2893,38 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         const { total, friends } = friendsFrom(await api.getAllFriends(), limit ?? 200);
                         return ok({ action, total, count: friends.length, truncated: friends.length < total, friends });
                     }
+                    case "alias": {
+                        const nick = alias === undefined ? "" : String(alias).trim();
+                        if (nick) {
+                            // The same call as the CLI's `friend alias` (zca-js takes the alias first).
+                            await api.changeFriendAlias(nick, target);
+                            // `contacts.name` is what senderDisplayName and mentions read (db.getDisplayName);
+                            // the nickname is the name Zalo will show from now on, so it is written there at once.
+                            rememberContactName(target, nick);
+                            return ok({ action, success: true, userId: target, alias: nick });
+                        }
+                        await api.removeFriendAlias(target);
+                        // Without the nickname the contact is shown by their profile name again; fetch it so the
+                        // cached name does not stay the removed nickname. Best effort: the removal already stuck.
+                        try {
+                            const info = await api.getUserInfo(target);
+                            const p = info?.changed_profiles?.[target] || info?.unchanged_profiles?.[target] || null;
+                            const shown = p?.displayName || p?.zaloName || null;
+                            if (shown) rememberContactName(target, shown);
+                        } catch (e) {
+                            console.error(`[mcp-tools] zalo_friend alias: profile name not refreshed: ${e.message}`);
+                        }
+                        return ok({ action, success: true, userId: target, alias: null });
+                    }
+                    case "alias_list": {
+                        const max = limit ?? 100;
+                        const res = await api.getAliasList(max, 1);
+                        const items = Array.isArray(res?.items) ? res.items : [];
+                        const aliases = items
+                            .filter((i) => i && i.userId !== undefined && i.userId !== null)
+                            .map((i) => ({ userId: String(i.userId), alias: i.alias ?? null }));
+                        return ok({ action, count: aliases.length, aliases });
+                    }
                     default:
                         return err(`Unsupported friend action: ${action}`);
                 }
@@ -2881,7 +2951,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'create' (a new group named `name` with the members in userIds), " +
                 "'add_members' (add userIds to the group), " +
                 "'remove_member' (remove the one member userId from the group), " +
-                "'leave' (leave the group; `silent` hides the usual notice from ordinary members; the owner still sees it). " +
+                "'leave' (leave the group; `silent` hides the usual notice from ordinary members; the owner still sees it), " +
+                "'rename' (set the group's name to `name`; every member sees the change). " +
                 "groupId is the group's thread id (zalo_search_threads or zalo_list_conversations finds it); " +
                 "user ids are numeric Zalo ids (zalo_lookup_user finds one from a phone number). " +
                 "'leave' and 'remove_member' cannot be undone from here, so they need confirm: true (a plain " +
@@ -2890,14 +2961,17 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "of a create or add_members: the reply lists the members it did and did not take.",
             inputSchema: z.object({
                 action: z
-                    .enum(["leave", "info", "create", "add_members", "remove_member"])
+                    .enum(["leave", "info", "create", "add_members", "remove_member", "rename"])
                     .describe("Group operation to perform"),
                 groupId: z
                     .string()
                     .min(1)
                     .optional()
-                    .describe("The group's id (required for leave, info, add_members and remove_member)"),
-                name: z.string().optional().describe("The new group's name (required for 'create')"),
+                    .describe("The group's id (required for leave, info, add_members, remove_member and rename)"),
+                name: z
+                    .string()
+                    .optional()
+                    .describe("The group's name: the new group's for 'create', the name to set for 'rename'"),
                 userIds: z
                     .array(z.string().min(1))
                     .min(1)
@@ -2922,7 +2996,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         },
         async ({ action, groupId, name, userIds, userId, silent, confirm }) => {
             const gid = groupId === undefined ? "" : String(groupId).trim();
-            if (["leave", "info", "add_members", "remove_member"].includes(action)) {
+            if (["leave", "info", "add_members", "remove_member", "rename"].includes(action)) {
                 if (!gid) return err(`groupId is required for action='${action}'.`);
                 if (!/^\d{1,30}$/.test(gid)) {
                     return err(
@@ -2952,7 +3026,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
             }
             const groupName = name === undefined ? "" : String(name).trim();
-            if (action === "create" && !groupName) return err("name is required for action='create'.");
+            if ((action === "create" || action === "rename") && !groupName) {
+                return err(`name is required for action='${action}'.`);
+            }
 
             // After validation, before Zalo: a refused call changes nothing and says exactly how to retry.
             if (CONFIRMED_ACTIONS.includes(action) && confirm !== true && groupConfirmRequired({ config })) {
@@ -3015,6 +3091,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             );
                         }
                         return ok({ action, success: true, groupId: gid, userId: target });
+                    }
+                    case "rename": {
+                        // The same call as the CLI's `group rename` (zca-js takes the name first).
+                        await api.changeGroupName(groupName, gid);
+                        return ok({ action, success: true, groupId: gid, name: groupName });
                     }
                     case "leave": {
                         const quiet = silent === true;

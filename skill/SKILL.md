@@ -277,8 +277,8 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll | `action`, `groupId?`, `pollId?`, `question?`, `options?`, `optionIds?` |
 | `zalo_wait_for_message` | Long-poll the live message buffer for the next incoming watched message without manual polling (mirrors `GET /events/wait`) | `threadId?`, `since?`, `timeoutSec` (default 55, max 300) |
 | `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) | `action` (`list`｜`assign`｜`unassign`｜`update`), `labelId?`, `labelText?`, `threadId?`, `threadIds?`, `labelData?`, `version?` |
-| `zalo_group` | Leave, inspect, create and change the membership of a group (`zalo_get_group_members` lists who is in one) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`), `groupId?`, `name?`, `userIds?`, `userId?`, `silent?`, `confirm?` (must be `true` for `leave` and `remove_member`) |
-| `zalo_friend` | Friend requests and friends: relationship status, sent and received requests, send / accept / reject / cancel a request, list friends | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`), `userId?`, `message?`, `limit?` |
+| `zalo_group` | Leave, inspect, create, rename and change the membership of a group (`zalo_get_group_members` lists who is in one) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`｜`rename`), `groupId?`, `name?` (`create`, `rename`), `userIds?`, `userId?`, `silent?`, `confirm?` (must be `true` for `leave` and `remove_member`) |
+| `zalo_friend` | Friend requests and friends: relationship status, sent and received requests, send / accept / reject / cancel a request, list friends, set or remove a friend's nickname, list nicknames | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`｜`alias`｜`alias_list`), `userId?`, `message?`, `alias?` (empty removes), `limit?` |
 | `zalo_read` | Run one of Zalo Web's read-only endpoints that no other tool covers (sticker and GIF catalogs and search, profile rank, block list, nicknames, status…), or list them with their arguments | `name?` (omit to list), `args?` (by the read's argument names; ids are strings) |
 | `zalo_write` | Make one of Zalo Web's state-changing calls that no other tool covers (reminder RSVP, group notes/reminders with repeat rules, pins, multi-recall, …), or list them with their `risk`. A real call needs `confirm: true`; `dryRun: true` shows the request | `name?` (omit to list), `args?`, `dryRun?`, `confirm?` |
 
@@ -302,10 +302,10 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Forward / delete a message | `zalo_forward_message`, `zalo_delete_message` | `zalo-agent --json msg forward\|delete` |
 | A group's members | `zalo_get_group_members` | `zalo-agent --json group members` |
 | Reminders, group notes & pins, group polls, labels | `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_label` | `zalo-agent --json reminder\|poll\|group note-*\|msg pin\|label` |
-| Group details, create a group, add / remove a member, leave a group | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]` |
+| Group details, create a group, add / remove a member, leave or rename a group | `zalo_group` | `zalo-agent --json group info\|create\|add-member\|remove-member\|leave [-s]\|rename` |
 | Sticker/GIF catalogs and search, profile rank, block list, nicknames, the account's plans (`account-status`), other web reads | `zalo_read` | `zalo-agent --json read list\|run <name>` |
 | Reminder RSVP, group note/reminder with repeat rule, pins, multi-recall, other state changes | `zalo_write` | `zalo-agent --json write list\|run <name> [--dry-run\|--yes]` |
-| Friend requests, friend list | `zalo_friend` | `zalo-agent --json friend add\|accept\|reject\|undo-request\|sent-requests\|request-status\|list` |
+| Friend requests, friend list, nicknames | `zalo_friend` | `zalo-agent --json friend add\|accept\|reject\|undo-request\|sent-requests\|request-status\|list\|alias\|alias-list\|alias-remove` |
 | Is the cache complete? (coverage gaps) | `zalo_coverage` | — (`listen`/`mcp start` print each gap as it is filed) |
 | Owner-requested message/reaction sync | `zalo_sync`, `zalo_sync_status` | `zalo-agent sync` / `sync-reactions` |
 | Send voice (URL) / video (URL) / sticker | **none** | `zalo-agent --json msg send-voice\|send-video\|sticker` |

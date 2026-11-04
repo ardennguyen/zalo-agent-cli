@@ -9,6 +9,12 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased] — 3.0.0, on `v3.0-dev`
 
+#### Since 2026-11-04 (not in the draft notes below)
+
+- fix(mcp): **a recall now reaches the agent.** When someone recalls a message, `zalo_wait_for_message` wakes and `zalo_get_messages` lists an entry with `type` `"undo"` whose `msgId` is the recalled message (`null` when only its `cliMsgId` is known) and whose `text` is empty; the webhook carries it as `event: "undo"`. The cache was already updated; nothing was shown to an agent, so a message it had read could vanish without a word (bug-reports #3).
+- feat(mcp): **`zalo_group` `rename`** (`groupId` + `name`), the MCP side of `group rename`; no `confirm` needed, a rename is reversible (bug-reports #6).
+- feat(mcp): **`zalo_friend` `alias` and `alias_list`** (`userId` + `alias`; an empty `alias` removes the nickname), the MCP side of `friend alias` / `alias-remove` / `alias-list`. The nickname is written to the local contacts at once, so `senderDisplayName` and `@[userId]` mentions use it without a CLI fallback; after a removal the profile name is fetched to take its place (bug-reports #7).
+
 ### What's changed since v2.5.7
 
 3.0 makes the CLI behave toward Zalo the way Zalo Web does: it logs in, stays connected, signs out and restores history by the same steps, and it reports what it did and what it could not do.

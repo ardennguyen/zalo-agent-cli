@@ -2213,6 +2213,22 @@ export function getReadStates(threadIds, ownId) {
     return out;
 }
 
+/**
+ * Set only the name of a contact, creating the row when it is new and keeping its phone when it exists.
+ * `upsertContact` replaces the phone too, which a caller that knows only the name must not do.
+ *
+ * @param {string|number} userId
+ * @param {string} name
+ */
+export function setContactName(userId, name) {
+    if (!db) throw new Error("Database not initialized");
+    if (userId === undefined || userId === null || userId === "" || !name) return;
+    db.prepare(
+        `INSERT INTO contacts (userId, name, phone) VALUES (?, ?, NULL)
+         ON CONFLICT(userId) DO UPDATE SET name = excluded.name`,
+    ).run(String(userId), String(name));
+}
+
 export function upsertContact(contact) {
     if (!db) throw new Error("Database not initialized");
 

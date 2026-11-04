@@ -1525,12 +1525,16 @@ describe("zalo_friend", () => {
                 rejectFriendRequest: rec("rejectFriendRequest", ""),
                 undoFriendRequest: rec("undoFriendRequest", ""),
                 getAllFriends: rec("getAllFriends", []),
+                changeFriendAlias: rec("changeFriendAlias", ""),
+                removeFriendAlias: rec("removeFriendAlias", ""),
+                getAliasList: rec("getAliasList", { items: [] }),
+                getUserInfo: rec("getUserInfo", { changed_profiles: {} }),
             },
         };
     }
     const call = (fa, args) => register({ api: fa.api }).server.call("zalo_friend", args);
 
-    it("takes exactly the eight actions, and a bounded limit", () => {
+    it("takes exactly the ten actions, and a bounded limit", () => {
         const { server } = register();
         const schema = server.tools.get("zalo_friend").meta.inputSchema;
         for (const action of [
@@ -1542,6 +1546,8 @@ describe("zalo_friend", () => {
             "reject",
             "undo",
             "list",
+            "alias",
+            "alias_list",
         ]) {
             assert.doesNotThrow(() => schema.parse({ action }), action);
         }
@@ -1686,6 +1692,92 @@ describe("zalo_friend", () => {
     });
 });
 
+describe("zalo_friend alias (bug-reports #7)", () => {
+    const U = "9100000000000000001";
+    function aliasApi(answers = {}) {
+        const calls = [];
+        const rec =
+            (name, fallback) =>
+            async (...args) => {
+                calls.push([name, ...args]);
+                const a = answers[name];
+                if (a instanceof Error) throw a;
+                return typeof a === "function" ? a(...args) : (a ?? fallback);
+            };
+        return {
+            calls,
+            api: {
+                changeFriendAlias: rec("changeFriendAlias", ""),
+                removeFriendAlias: rec("removeFriendAlias", ""),
+                getAliasList: rec("getAliasList", { items: [] }),
+                getUserInfo: rec("getUserInfo", { changed_profiles: {} }),
+            },
+        };
+    }
+    const call = (fa, args) => register({ api: fa.api }).server.call("zalo_friend", args);
+
+    it("alias needs a numeric userId", async () => {
+        const fa = aliasApi();
+        const missing = await call(fa, { action: "alias", alias: "Bob" });
+        assert.equal(missing.isError, true);
+        assert.match(missing.content[0].text, /userId is required/);
+        assert.match(
+            (await call(fa, { action: "alias", userId: "bob", alias: "Bob" })).content[0].text,
+            /numeric Zalo id/,
+        );
+        assert.deepEqual(fa.calls, [], "nothing reached Zalo");
+    });
+
+    it("sets the nickname with (alias, userId), the order zca-js takes", async () => {
+        const fa = aliasApi();
+        const out = payloadOf(await call(fa, { action: "alias", userId: U, alias: "  Ms. Bob  " }));
+        assert.deepEqual(out, { action: "alias", success: true, userId: U, alias: "Ms. Bob" });
+        // Red if the two arguments are swapped, which Zalo would accept silently as a nickname of digits.
+        assert.deepEqual(fa.calls, [["changeFriendAlias", "Ms. Bob", U]]);
+    });
+
+    it("an empty alias removes the nickname and asks for the profile name to show instead", async () => {
+        const fa = aliasApi({ getUserInfo: { changed_profiles: { [U]: { displayName: "Bob Profile" } } } });
+        const out = payloadOf(await call(fa, { action: "alias", userId: U, alias: "" }));
+        assert.deepEqual(out, { action: "alias", success: true, userId: U, alias: null });
+        assert.deepEqual(
+            fa.calls.map((c) => c[0]),
+            ["removeFriendAlias", "getUserInfo"],
+        );
+        assert.deepEqual(fa.calls[0], ["removeFriendAlias", U]);
+    });
+
+    it("a removal still succeeds when the profile lookup fails afterwards", async () => {
+        const fa = aliasApi({ getUserInfo: new Error("profile unavailable") });
+        const out = payloadOf(await call(fa, { action: "alias", userId: U }));
+        assert.equal(out.success, true);
+        assert.equal(out.alias, null);
+    });
+
+    it("alias_list returns userId and alias per entry, capped by limit", async () => {
+        const fa = aliasApi({
+            getAliasList: { items: [{ userId: 9100000000000000001n.toString(), alias: "Bob" }, { userId: 42 }] },
+        });
+        const out = payloadOf(await call(fa, { action: "alias_list", limit: 5 }));
+        assert.deepEqual(fa.calls, [["getAliasList", 5, 1]]);
+        assert.deepEqual(out, {
+            action: "alias_list",
+            count: 2,
+            aliases: [
+                { userId: U, alias: "Bob" },
+                { userId: "42", alias: null },
+            ],
+        });
+    });
+
+    it("reports Zalo's refusal instead of claiming success", async () => {
+        const fa = aliasApi({ changeFriendAlias: new Error("Zalo API error: 999") });
+        const r = await call(fa, { action: "alias", userId: U, alias: "Bob" });
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /999/);
+    });
+});
+
 describe("zalo_group", () => {
     const G = "7000000000000000001";
     const U1 = "9100000000000000001";
@@ -1709,18 +1801,45 @@ describe("zalo_group", () => {
                 addUserToGroup: rec("addUserToGroup", { errorMembers: [], error_data: {} }),
                 removeUserFromGroup: rec("removeUserFromGroup", { errorMembers: [] }),
                 leaveGroup: rec("leaveGroup", { memberError: [] }),
+                changeGroupName: rec("changeGroupName", ""),
             },
         };
     }
     const call = (ga, args, config) =>
         register({ api: ga.api, ...(config && { config }) }).server.call("zalo_group", args);
 
-    it("takes exactly the five actions", () => {
+    it("rename needs a groupId and a non-blank name, and passes (name, groupId), the order zca-js takes", async () => {
+        const ga = groupApi();
+        const text = async (args) => (await call(ga, args)).content[0].text;
+        assert.match(await text({ action: "rename", name: "Team" }), /groupId is required/);
+        assert.match(await text({ action: "rename", groupId: G }), /name is required/);
+        assert.match(await text({ action: "rename", groupId: G, name: "   " }), /name is required/);
+        assert.deepEqual(ga.calls, [], "nothing reached Zalo");
+        const out = payloadOf(await call(ga, { action: "rename", groupId: G, name: " Sales Team " }));
+        assert.deepEqual(out, { action: "rename", success: true, groupId: G, name: "Sales Team" });
+        // Red if the arguments are swapped: Zalo would then be asked to rename group "Sales Team".
+        assert.deepEqual(ga.calls, [["changeGroupName", "Sales Team", G]]);
+    });
+
+    it("rename needs no confirm: it is reversible from here", async () => {
+        const ga = groupApi();
+        const out = payloadOf(await call(ga, { action: "rename", groupId: G, name: "X" }, { groupConfirm: true }));
+        assert.equal(out.success, true);
+    });
+
+    it("rename reports Zalo's refusal instead of claiming success", async () => {
+        const ga = groupApi({ changeGroupName: new Error("Zalo API error: 166") });
+        const r = await call(ga, { action: "rename", groupId: G, name: "X" });
+        assert.equal(r.isError, true);
+        assert.match(r.content[0].text, /166/);
+    });
+
+    it("takes exactly the six actions", () => {
         const schema = register().server.tools.get("zalo_group").meta.inputSchema;
-        for (const action of ["leave", "info", "create", "add_members", "remove_member"]) {
+        for (const action of ["leave", "info", "create", "add_members", "remove_member", "rename"]) {
             assert.doesNotThrow(() => schema.parse({ action }), action);
         }
-        assert.throws(() => schema.parse({ action: "rename" }), "an action outside the list is refused");
+        assert.throws(() => schema.parse({ action: "dissolve" }), "an action outside the list is refused");
         assert.throws(() => schema.parse({ action: "create", userIds: [] }), "an empty member list is refused");
     });
 

@@ -119,7 +119,7 @@ describe("friendStatusFrom and friendsFrom", () => {
 });
 
 describe("error wording shared with `friend add`", () => {
-    it("extracts the numeric code from a zca-js message", () => {
+    it("extracts the numeric code from an error message", () => {
         assert.equal(extractErrorCode("Zalo said no (225)"), 225);
         assert.equal(extractErrorCode("bad id (-1)"), -1);
         assert.equal(extractErrorCode("no code here"), null);

@@ -11,7 +11,7 @@
  * of the same key takes the next entry, staying on the last. `max` is how many
  * retries the key gets. A key the table does not list waits the last default
  * delay and is never counted: it is not an error to ask for a key the server did
- * not describe (the zca-js listener threw a TypeError there).
+ * not describe (the listener threw a TypeError there).
  *
  * **Endpoint rotation.** When a key's retries are spent and the server lists it
  * under `rotate_error_codes`, the next endpoint is tried and the key starts

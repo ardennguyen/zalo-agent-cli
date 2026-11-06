@@ -1,13 +1,12 @@
 /**
  * The people area on the wire (design 3.1, package PPL): profiles, the friend list, phone and username lookups,
  * aliases, friend requests, the 1-1 pin board, and the friend extras of spec-sweep 1.2 (remove, block, last online,
- * the two retired lists, phones, QR, shared groups, business profile, feed block), zca-js against
- * src/zalo/api/people.js on one logged-in fake.
+ * the two retired lists, phones, QR, shared groups, business profile, feed block), src/zalo/api/people.js on one
+ * logged-in fake (design 3.1 and 3.3).
  *
- * Each case has the three parts of design 3.1: (1) `assertSameWire` against the rows of tests/helpers/wire-diff/
- * allow/people.js, which fails on any difference not declared AND on a declared one that is absent; (2) our side
- * against its reviewed golden record; (3) the error answers. The Web-only behavior is also asserted outright on our
- * side, so a row that matched by accident cannot hide it.
+ * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
+ * against a literal `{message, code}`. The Web behavior is also asserted outright, so a reader sees it here and not
+ * only in the golden file.
  *
  * Every id and phone number here is fake (tests/unit/no-real-ids.test.js).
  */
@@ -15,9 +14,8 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { ALLOW, FAKE, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
+import { FAKE, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import {
-    OWN_READY,
     parseBoardTopics,
     parseOnlineStatuses,
     peopleMethods,
@@ -32,50 +30,50 @@ const PEER2 = "1000000000000000002";
 /** The dummy phone the docs use. */
 const PHONE = "0901234567";
 
-/**
- * The allowed differences of one case: the area's rows of that case, plus the global rows.
- *
- * @param {string} name - the case
- * @returns {object[]}
- */
-function allowFor(name) {
-    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
-}
-
-/** The error answers every method is run against (part 3), and whether zca-js has the same message for each. */
+/** The answers every method is run against for the error part, and what each must throw. */
 const ERROR_ANSWERS = [
-    { label: "an outer error", error: { outer: { error_code: 102, error_message: "outer failure" } }, sameText: true },
-    { label: "an inner error", error: { inner: { error_code: 114, error_message: "inner failure" } }, sameText: true },
-    { label: "HTTP 500", error: { status: 500 }, sameText: false },
-    { label: "an undecryptable data", error: { undecryptable: true }, sameText: true },
+    {
+        label: "an outer error",
+        error: { outer: { error_code: 102, error_message: "outer failure" } },
+        expected: { message: "outer failure", code: 102 },
+    },
+    {
+        label: "an inner error",
+        error: { inner: { error_code: 114, error_message: "inner failure" } },
+        expected: { message: "inner failure", code: 114 },
+    },
+    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
+    {
+        label: "an undecryptable data",
+        error: { undecryptable: true },
+        expected: { message: "Failed to parse response data", code: null },
+    },
 ];
 
-describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
-    let pair;
+describe("wire: people (src/zalo/api/people.js)", () => {
+    let wire;
 
     before(async () => {
         assertSandboxed(CONFIG_DIR);
-        pair = await openPair();
-        // A cookie for every fake host, so the Cookie header is compared on a value (zca-js writes an empty header
-        // for an empty jar, fetch writes none).
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+        wire = await openWire();
+        // A cookie for every fake host, so the Cookie header is recorded with a value.
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
         // A phonebook version from the login, so the ordinary getUserInfo case compares it on a value.
-        pair.ctx.extraVer = { phonebook: 7 };
+        wire.ctx.extraVer = { phonebook: 7 };
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     /**
-     * Run one case through both engines, check it against its rows and its golden record.
+     * Run one case and check it against its golden record.
      *
-     * @param {string} name - the case (golden key and allow `case`)
+     * @param {string} name - the case (golden key)
      * @param {string} method
      * @param {unknown[]} args
      * @param {object} fixture
      * @returns {Promise<object>} the record
      */
     async function check(name, method, args, fixture) {
-        const rec = await pair.run(method, args, fixture);
-        assertSameWire(rec, allowFor(name));
+        const rec = await wire.run(method, args, fixture);
         await expectGolden(AREA, name, rec.own);
         return rec;
     }
@@ -88,12 +86,12 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
      * @returns {Promise<object>}
      */
     async function withCtx(fields, fn) {
-        const saved = Object.fromEntries(Object.keys(fields).map((k) => [k, pair.ctx[k]]));
-        Object.assign(pair.ctx, fields);
+        const saved = Object.fromEntries(Object.keys(fields).map((k) => [k, wire.ctx[k]]));
+        Object.assign(wire.ctx, fields);
         try {
             return await fn();
         } finally {
-            Object.assign(pair.ctx, saved);
+            Object.assign(wire.ctx, saved);
         }
     }
 
@@ -124,26 +122,25 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
         });
 
         it("one uid string is a list of one", async () => {
-            const rec = await pair.run("getUserInfo", [PEER], { reply });
-            assertSameWire(rec, allowFor("getUserInfo"));
+            const rec = await wire.run("getUserInfo", [PEER], { reply });
             assert.deepEqual(rec.own.requests[0].params.friend_pversion_map, [`${PEER}_0`]);
         });
 
-        it('language is "vi" even when the session is in English (zca-js sent the session language)', async () => {
+        it('language is "vi" even when the session is in English (the previous engine sent the session language)', async () => {
             const rec = await withCtx({ language: "en" }, () =>
                 check("getUserInfo/lang-en", "getUserInfo", [PEER], { reply }),
             );
             assert.equal(rec.own.requests[0].params.language, "vi");
         });
 
-        it("phonebook_version 0 when the login carried none (zca-js left the key out)", async () => {
+        it("phonebook_version 0 when the login carried none (the previous engine left the key out)", async () => {
             const rec = await withCtx({ extraVer: {} }, () =>
                 check("getUserInfo/no-phonebook", "getUserInfo", [PEER], { reply }),
             );
             assert.equal(rec.own.requests[0].params.phonebook_version, 0);
         });
 
-        it("no uid: refused before any request, with zca-js's message", async () => {
+        it("no uid: refused before any request, with the previous engine's message", async () => {
             const rec = await check("getUserInfo/missing", "getUserInfo", [], { reply });
             assert.equal(rec.own.requests.length, 0);
             assert.deepEqual(rec.own.error, { message: "Missing user id", code: null });
@@ -178,7 +175,7 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
         it("GET {friend}/profile/get with params once, reqSrc 40, a leading 0 turned into 84", async () => {
             const rec = await check("findUser", "findUser", [PHONE], { reply });
             const [req] = rec.own.requests;
-            // Red if params went into the query twice again (zca-js's order is the allowed difference).
+            // Red if params went into the query twice again (the previous engine's order).
             assert.deepEqual(req.queryOrder, ["zpw_ver", "zpw_type", "params"]);
             assert.deepEqual(req.params, {
                 phone: "84901234567",
@@ -190,7 +187,7 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
             assert.deepEqual(rec.own.result, reply);
         });
 
-        it("0 -> 84 whatever the session language (zca-js did it only for vi)", async () => {
+        it("0 -> 84 whatever the session language (the previous engine did it only for vi)", async () => {
             const rec = await withCtx({ language: "en" }, () =>
                 check("findUser/lang-en", "findUser", [PHONE], { reply }),
             );
@@ -249,8 +246,7 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
         });
 
         it("getAliasList: the defaults are 100 and page 1", async () => {
-            const rec = await pair.run("getAliasList", [], { reply: page(0) });
-            assertSameWire(rec, allowFor("getAliasList"));
+            const rec = await wire.run("getAliasList", [], { reply: page(0) });
             assert.deepEqual(rec.own.requests[0].params, { page: 1, count: 100, imei: FAKE.imei });
         });
 
@@ -275,14 +271,14 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
          * @param {number} [pageSize]
          */
         async function pages(answers, pageSize = 100) {
-            pair.fake.clearRoutes();
-            pair.fake.routeSequence("/api/alias/list", answers);
-            const from = pair.fake.requests.length;
+            wire.fake.clearRoutes();
+            wire.fake.routeSequence("/api/alias/list", answers);
+            const from = wire.fake.requests.length;
             try {
-                const items = await readAllAliases(pair.own, { pageSize });
-                return { items, asked: pair.fake.requests.slice(from).map((r) => r.params.page) };
+                const items = await readAllAliases(wire.own, { pageSize });
+                return { items, asked: wire.fake.requests.slice(from).map((r) => r.params.page) };
             } finally {
-                pair.fake.clearRoutes();
+                wire.fake.clearRoutes();
             }
         }
 
@@ -448,7 +444,7 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
         });
 
         it("getFriendOnlines: HTTP 404 keeps the status in the message (friend online's hint matches /404/)", async () => {
-            const rec = await pair.run("getFriendOnlines", [], { error: { status: 404 } });
+            const rec = await wire.run("getFriendOnlines", [], { error: { status: 404 } });
             assert.match(rec.own.error.message, /404/);
             assert.equal(rec.own.error.code, null);
         });
@@ -534,8 +530,7 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
                 ["getRelatedFriendGroup", PEER, "friend_ids", JSON.stringify([PEER])],
                 ["getMultiUsersByPhones", PHONE, "phones", ["84901234567"]],
             ]) {
-                const rec = await pair.run(method, [arg], { reply: {} });
-                assertSameWire(rec, allowFor(method));
+                const rec = await wire.run(method, [arg], { reply: {} });
                 assert.deepEqual(rec.own.requests[0].params[key], want, method);
             }
         });
@@ -556,7 +551,7 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
         });
     });
 
-    describe("errors (part 3): the same code on both sides, the same text where zca-js has it", () => {
+    describe("errors (part 2): the code and message of each answer", () => {
         /** One call per method, with arguments that reach the wire. */
         const CALLS = [
             ["getUserInfo", [PEER]],
@@ -595,27 +590,17 @@ describe("wire: people (zca-js against src/zalo/api/people.js)", () => {
 
         for (const [method, args] of CALLS) {
             it(`${method}: outer, inner, HTTP 500, undecryptable`, async () => {
-                for (const { label, error, sameText } of ERROR_ANSWERS) {
-                    const rec = await pair.run(method, args, { error });
+                for (const { label, error, expected } of ERROR_ANSWERS) {
+                    const rec = await wire.run(method, args, { error });
                     const where = `${method} on ${label}`;
-                    assert.ok(rec.own.error, `${where}: our side threw`);
-                    assert.ok(rec.zca.error, `${where}: zca-js threw`);
-                    assert.equal(rec.own.error.code, rec.zca.error.code, `${where}: the same code`);
-                    if (sameText) assert.equal(rec.own.error.message, rec.zca.error.message, `${where}: the same text`);
-                    else assert.equal(rec.own.error.message, "HTTP 500", where);
+                    assert.deepEqual(rec.own.error, expected, where);
                     assert.equal(rec.own.requests.length, 1, `${where}: one request, no retry`);
-                    assert.equal(rec.zca.requests.length, 1, `${where}: zca-js made one request`);
                 }
             });
         }
     });
 
     describe("the module", () => {
-        it("OWN_READY is every method of the module (each has a passing case above)", () => {
-            const names = Object.keys(peopleMethods({ call: () => null, ctx: {} }));
-            assert.deepEqual([...OWN_READY].sort(), names.sort());
-        });
-
         it("webPhone turns only a leading 0 into 84", () => {
             assert.equal(webPhone("0901234567"), "84901234567");
             assert.equal(webPhone("84901234567"), "84901234567");

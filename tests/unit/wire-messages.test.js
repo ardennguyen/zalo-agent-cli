@@ -1,19 +1,15 @@
 /**
- * The messages area on the wire (package MSG, design.md 4.1): our `src/zalo/api/messages.js` against zca-js, both
- * built by `createApi` on ONE logged-in context of the fake Zalo (tests/helpers/wire-diff).
+ * The messages area on the wire (package MSG, design.md 4.1 and 3.3): `src/zalo/api/messages.js`, built by
+ * `createApi` on a logged-in context of the fake Zalo (tests/helpers/wire-diff).
  *
- * Each case has three parts (design 3.1):
+ * Each case has two parts:
  *
- * 1. `assertSameWire`: every request (method, service, path, query and its order, decrypted params and their key
- *    order, headers, form) and the outcome, zca-js against ours. A difference fails unless a row of
- *    tests/helpers/wire-diff/allow/messages.js declares it, and a declared difference that is not there fails too.
- * 2. `expectGolden`: our side against its reviewed record in tests/helpers/wire-diff/golden/messages.js, which keeps
- *    guarding the wire once zca-js is gone.
- * 3. Error cases: an outer error, an inner error, HTTP 500 and an undecryptable `data` for every method; the thrown
- *    code always, and the message wherever zca-js has the same text.
+ * 1. `expectGolden`: every request (method, service, path, query and its order, decrypted params and their key
+ *    order, headers, form) and the outcome, against its reviewed record in tests/helpers/wire-diff/golden/messages.js.
+ * 2. Error cases: an outer error, an inner error, HTTP 500 and an undecryptable `data` for every method, each checked
+ *    against a literal `{message, code}`.
  *
- * Beside those, assertions on our side alone that survive the cut-over: the reported `cliMsgId` is the `clientId`
- * on the wire for every send, the client ids of 50 sends in one millisecond are all different, the HEAD of a hosted
+ * Beside those, direct assertions: the reported `cliMsgId` is the `clientId` on the wire for every send, the client ids of 50 sends in one millisecond are all different, the HEAD of a hosted
  * voice/video carries no cookie and times out, and a video without geometry sends nothing.
  *
  * Every id here is fake.
@@ -22,8 +18,8 @@ import "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createApi } from "../../src/zalo/api.js";
-import { ENDPOINTS, HEAD_TIMEOUT_MS, OWN_READY, messageMethods } from "../../src/zalo/api/messages.js";
-import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
+import { ENDPOINTS, HEAD_TIMEOUT_MS, messageMethods } from "../../src/zalo/api/messages.js";
+import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import { normalizeRequest } from "../helpers/wire-diff/normalize.js";
 
 const USER = "2000000000000000002";
@@ -109,8 +105,8 @@ function reportsWireId(own, pick, key = "clientId") {
 }
 
 /**
- * Every case: `name` (unique; the golden key, and what `cases` in the allow rows name), `method`, `args`,
- * `fixture` (pair.run's canned answers), and `check(own)`: assertions on our side alone, each saying what turns it
+ * Every case: `name` (unique; the golden key), `method`, `args`,
+ * `fixture` (wire.run's canned answers), and `check(own)`: assertions on our side alone, each saying what turns it
  * red.
  */
 const CASES = [
@@ -369,7 +365,7 @@ const CASES = [
         },
     },
     {
-        // An answer with no data object: zca-js throws reading it, ours finds no suggestion.
+        // An answer with no data object: the previous engine throws reading it, ours finds no suggestion.
         name: "getStickers/no-data",
         method: "getStickers",
         args: ["hello"],
@@ -654,18 +650,7 @@ const ERRORS = {
     undecryptable: { error: { undecryptable: true } },
 };
 
-/**
- * The allow rows of one case: the global rows, and the method rows that name the case or name none.
- *
- * @param {string} caseName
- * @returns {object[]}
- */
-function allowFor(caseName) {
-    const names = (c) => (c.endsWith("*") ? caseName.startsWith(c.slice(0, -1)) : c === caseName);
-    return ALLOW.messages.filter((r) => (r.method === "*" ? true : (r.cases ?? []).some(names)));
-}
-
-/** Answer the hosted host's HEAD (installed again after every `clearRoutes`, since pair.run clears them). */
+/** Answer the hosted host's HEAD (installed again after every `clearRoutes`, since wire.run clears them). */
 function installHosted(fake) {
     const clear = fake.clearRoutes;
     const add = () =>
@@ -683,40 +668,22 @@ function installHosted(fake) {
     add();
 }
 
-describe("messages on the wire: zca-js against ours on one context", () => {
-    let pair;
+describe("messages on the wire", () => {
+    let wire;
 
     before(async () => {
-        pair = await openPair();
-        installHosted(pair.fake);
-        // A cookie every fake Zalo host gets, so the Cookie header is compared on a value; and one for the hosted
+        wire = await openWire();
+        installHosted(wire.fake);
+        // A cookie every fake Zalo host gets, so the Cookie header is recorded with a value; and one for the hosted
         // host, which a HEAD that went through the session's cookie jar would carry.
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
-        pair.ctx.cookie.setCookieSync("tracker=fake-t; Path=/", `https://${HOSTED_HOST}/`);
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+        wire.ctx.cookie.setCookieSync("tracker=fake-t; Path=/", `https://${HOSTED_HOST}/`);
     });
-    after(() => pair?.close());
-
-    it("scopes every row of its allow file to cases that exist", () => {
-        // A row with no case would be handed to no comparison and could never be checked; a case name with a typo
-        // likewise. Red for either.
-        const known = new Set([
-            ...CASES.map((c) => c.name),
-            ...ERROR_CALLS.flatMap(([m]) => Object.keys(ERRORS).map((k) => `${m}/error-${k}`)),
-        ]);
-        for (const row of ALLOW.messages.filter((r) => r.method !== "*")) {
-            assert.ok(Array.isArray(row.cases) && row.cases.length, `${row.method} ${row.field}: no cases`);
-            for (const c of row.cases) {
-                const hit = c.endsWith("*") ? [...known].some((k) => k.startsWith(c.slice(0, -1))) : known.has(c);
-                assert.ok(hit, `${row.method} ${row.field}: no case "${c}"`);
-                assert.ok(c.startsWith(`${row.method}`), `${row.method} ${row.field}: case "${c}" is another method's`);
-            }
-        }
-    });
+    after(() => wire?.close());
 
     for (const c of CASES) {
         it(c.name, async () => {
-            const rec = await pair.run(c.method, c.args, c.fixture);
-            assertSameWire(rec, allowFor(c.name));
+            const rec = await wire.run(c.method, c.args, c.fixture);
             await expectGolden("messages", c.name, rec.own);
             c.check?.(rec.own);
         });
@@ -726,15 +693,13 @@ describe("messages on the wire: zca-js against ours on one context", () => {
         for (const [method, args] of ERROR_CALLS) {
             for (const [kind, fixture] of Object.entries(ERRORS)) {
                 it(`${method}: ${kind}`, async () => {
-                    const rec = await pair.run(method, args, fixture);
+                    const rec = await wire.run(method, args, fixture);
                     if (method === "getStickersDetail") {
-                        // A refused id is dropped, not thrown: both sides answer [].
+                        // A refused id is dropped, not thrown: the answer is [].
                         assert.deepEqual(rec.own.result, []);
                     } else if (kind === "http500") {
-                        // The code (none) always; the text is the kernel's own ("HTTP 500", K1), not zca-js's.
+                        // No code; the text is the kernel's own ("HTTP 500", K1).
                         assert.deepEqual(rec.own.error, { message: "HTTP 500", code: null });
-                        assert.equal(rec.zca.error?.code, null);
-                        rec.zca.error = rec.own.error;
                     } else {
                         const expected = {
                             outer: { message: "session expired", code: 102 },
@@ -743,7 +708,6 @@ describe("messages on the wire: zca-js against ours on one context", () => {
                         }[kind];
                         assert.deepEqual(rec.own.error, expected);
                     }
-                    assertSameWire(rec, allowFor(`${method}/error-${kind}`));
                     await expectGolden("messages", `${method}/error-${kind}`, rec.own);
                 });
             }
@@ -751,29 +715,28 @@ describe("messages on the wire: zca-js against ours on one context", () => {
     });
 });
 
-describe("messages, our side alone", () => {
-    let pair;
+describe("messages: the session's client ids, the hosted HEAD, the URL scan", () => {
+    let wire;
     let api;
     let clock;
 
     before(async () => {
-        pair = await openPair();
-        installHosted(pair.fake);
-        pair.ctx.cookie.setCookieSync("tracker=fake-t; Path=/", `https://${HOSTED_HOST}/`);
+        wire = await openWire();
+        installHosted(wire.fake);
+        wire.ctx.cookie.setCookieSync("tracker=fake-t; Path=/", `https://${HOSTED_HOST}/`);
         clock = T0;
-        api = await createApi(pair.ctx, pair.ctx.loginInfo.zpw_service_map_v3, ["wss://ws.zalo.invalid/"], {
-            engine: "own",
+        api = await createApi(wire.ctx, wire.ctx.loginInfo.zpw_service_map_v3, ["wss://ws.zalo.invalid/"], {
             now: () => clock,
         });
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     it("gives 50 sends in one millisecond 50 different client ids, each reported as it went out", async () => {
-        pair.fake.clearRoutes();
-        pair.fake.routeAnswer("/mget-qr", { data: { [OTHER]: QR_URL } });
-        pair.fake.routeAnswer("/parselink", { data: PREVIEW });
-        pair.fake.routeAnswer("", { data: { msgId: MSG_ID } });
-        const from = pair.fake.requests.length;
+        wire.fake.clearRoutes();
+        wire.fake.routeAnswer("/mget-qr", { data: { [OTHER]: QR_URL } });
+        wire.fake.routeAnswer("/parselink", { data: PREVIEW });
+        wire.fake.routeAnswer("", { data: { msgId: MSG_ID } });
+        const from = wire.fake.requests.length;
         // Every kind of send draws from the one session source; the clock never moves.
         const kinds = [
             () => api.sendMessage("hi", USER, 0).then((r) => r.message.cliMsgId),
@@ -784,12 +747,12 @@ describe("messages, our side alone", () => {
         ];
         const reported = [];
         for (let i = 0; i < 50; i++) reported.push(await kinds[i % kinds.length]());
-        const sends = pair.fake.requests
+        const sends = wire.fake.requests
             .slice(from)
-            .map((r) => normalizeRequest(r, pair.fake))
+            .map((r) => normalizeRequest(r, wire.fake))
             .filter((r) => r.params && "clientId" in r.params);
         const onWire = sends.map((r) => String(r.params.clientId));
-        // Red with a clock read per send (zca-js): all 50 would be T0.
+        // Red with a clock read per send (the previous engine): all 50 would be T0.
         assert.equal(new Set(onWire).size, 50, "no two sends share a client id");
         assert.deepEqual(
             onWire,
@@ -799,10 +762,10 @@ describe("messages, our side alone", () => {
     });
 
     it("gives up on a hosted voice whose host never answers the HEAD, and sends nothing to Zalo", async () => {
-        pair.fake.clearRoutes();
-        pair.fake.routeAnswer("", { data: { msgId: MSG_ID } });
+        wire.fake.clearRoutes();
+        wire.fake.routeAnswer("", { data: { msgId: MSG_ID } });
         HOSTED.hang = true;
-        const from = pair.fake.requests.length;
+        const from = wire.fake.requests.length;
         try {
             await assert.rejects(
                 api.sendVoice({ voiceUrl: VOICE_URL, timeoutMs: 50 }, USER, 0),
@@ -811,30 +774,30 @@ describe("messages, our side alone", () => {
         } finally {
             HOSTED.hang = false;
         }
-        const made = pair.fake.requests.slice(from);
+        const made = wire.fake.requests.slice(from);
         assert.equal(made.length, 1, "the HEAD only");
         assert.equal(made[0].host, HOSTED_HOST);
     });
 
     it("waits a bounded time for a HEAD by default", () => {
-        // Red if the default timeout is removed (zca-js waits forever).
+        // Red if the default timeout is removed (the previous engine waits forever).
         assert.ok(HEAD_TIMEOUT_MS > 0 && HEAD_TIMEOUT_MS <= 15000);
     });
 
     it("skips the HEAD when the size is known, and passes a forward's m4a URL", async () => {
-        pair.fake.clearRoutes();
-        pair.fake.routeAnswer("", { data: { msgId: MSG_ID } });
-        const from = pair.fake.requests.length;
+        wire.fake.clearRoutes();
+        wire.fake.routeAnswer("", { data: { msgId: MSG_ID } });
+        const from = wire.fake.requests.length;
         const m4a = `https://${HOSTED_HOST}/v.m4a`;
         await api.sendVoice({ voiceUrl: VOICE_URL, m4aUrl: m4a, fileSize: 321 }, USER, 0);
-        const made = pair.fake.requests.slice(from).map((r) => normalizeRequest(r, pair.fake));
+        const made = wire.fake.requests.slice(from).map((r) => normalizeRequest(r, wire.fake));
         assert.equal(made.length, 1, "no HEAD");
         assert.deepEqual(JSON.parse(made[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl: m4a, fileSize: 321 });
     });
 
     it("gives up on a URL scan Zalo does not answer after 5 s, Web's scanUrl timeout, not the 10 s default", async () => {
-        pair.fake.clearRoutes();
-        pair.fake.routeAnswer("/scanurl", { hang: true });
+        wire.fake.clearRoutes();
+        wire.fake.routeAnswer("/scanurl", { hang: true });
         const started = Date.now();
         // Red when the endpoint loses its own timeout: the kernel's default then gives up after 10 s, not 5.
         await assert.rejects(api.scanURL("https://example.invalid/page"), /did not answer within 5 s/);
@@ -843,10 +806,13 @@ describe("messages, our side alone", () => {
         assert.equal(ENDPOINTS.scanUrl.timeoutMs, 5000);
     });
 
-    it("lists every method it defines in OWN_READY, sendText included, so the switch answers them from our code", () => {
+    it("defines exactly the methods this file covers, sendText included", () => {
         const names = Object.keys(messageMethods({ ctx: {}, call: async () => null, now: () => 0 }));
         assert.ok(names.includes("sendText"));
-        // Red when a method is added without its wire test passing and being marked, or marked and removed.
-        assert.deepEqual([...OWN_READY].sort(), names.sort());
+        // Red when a method is added to the area without a case here, or one covered here is removed.
+        const covered = new Set([...CASES.map((c) => c.method), ...ERROR_CALLS.map(([m]) => m)]);
+        covered.delete("sendMessage");
+        covered.add("sendText");
+        assert.deepEqual([...covered].sort(), names.sort());
     });
 });

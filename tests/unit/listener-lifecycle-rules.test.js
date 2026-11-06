@@ -24,7 +24,7 @@ describe("listen: a reconnect must file a coverage gap", () => {
     it("does not gate gap reporting on reconnectCount", () => {
         // reconnectCount is incremented ONLY in the `closed` handler, and
         // `closed` never fires for a code on the server's close_and_retry_codes
-        // list — zca-js emits `disconnected`, retries internally, then emits
+        // list — the listener emits `disconnected`, retries internally, then emits
         // `connected`. Those codes are precisely the recoverable ones, so
         // `if (reconnectCount > 0) reportGap(...)` was always false on the
         // common drop path: no gap was filed, and markConnected() then asserted
@@ -216,7 +216,7 @@ describe("a kick ends the daemon cleanly, in either listener", () => {
 describe("listen and mcp start: the socket host keeps the socket alive", () => {
     const mcp = read("commands/mcp.js");
 
-    it("neither has a `closed` ladder, and neither lets zca-js retry on its own", () => {
+    it("neither has a `closed` ladder, and neither lets the listener retry on its own", () => {
         // The ladder (re-login after 5 s, again after 30 s, then exit) reconnected on a duplicate
         // session until its retries ran out, evicting the other session again each time, and ran the
         // same way for every cause. The supervisor retries by Zalo's own rules instead.
@@ -225,7 +225,7 @@ describe("listen and mcp start: the socket host keeps the socket alive", () => {
             ["mcp.js", mcp],
         ]) {
             assert.doesNotMatch(src, /listener\.on\("closed"/, `${name} must not handle \`closed\` itself`);
-            assert.doesNotMatch(src, /retryOnClose: true/, `${name} must not let zca-js retry on its own`);
+            assert.doesNotMatch(src, /retryOnClose: true/, `${name} must not let the listener retry on its own`);
             assert.doesNotMatch(src, /Re-login in 5s/, `${name} must not carry the old recovery ladder`);
         }
     });

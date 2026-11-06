@@ -1,7 +1,7 @@
 /**
  * The Web login, as the official Zalo Web client does it (plan items L2a-e, L5, L6, L7).
  *
- * zca-js's own `Zalo.login()` asked `getLoginInfo` first, `getServerInfo` second, probed the npm registry
+ * The previous engine's `Zalo.login()` asked `getLoginInfo` first, `getServerInfo` second, probed the npm registry
  * on the way, announced `zpw_ver`/`zpw_type` where the official client does not, always encrypted, and had
  * no timeout and no retry. This module does the login the verified way and hands the finished session to
  * `createApi` (./api.js), which builds the session object every command uses:
@@ -319,8 +319,7 @@ export async function loginWithSession(
 
     const ctx = createSession({ apiType, apiVersion });
     Object.assign(ctx.options, zaloOptions);
-    // Nothing in the protocol layer writes to stdout; zca-js, while it still answers some calls on this context
-    // (the build-week switch of ./api.js), must not either.
+    // Nothing in the protocol layer writes to stdout, whatever a caller passed.
     ctx.options.logging = false;
     ctx.options.polyfill = withBrowserHeaders(ctx.options.polyfill, creds.userAgent);
     ctx.imei = creds.imei;

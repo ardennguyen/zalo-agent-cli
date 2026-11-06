@@ -1,7 +1,7 @@
 /**
  * src/core/read-state.js -- the read state other devices report (M4).
  *
- * zca-js drops both carriers: the `clearUnreads` rows (cmds 504/524, and a
+ * The listener's events drop both carriers: the `clearUnreads` rows (cmds 504/524, and a
  * field of every chat envelope and offline page) that say "this conversation
  * is read through message N", and the 601 `mark_unread` control that sets or
  * clears the manual unread flag. Without them a conversation the human read
@@ -37,7 +37,7 @@ import {
 import { createSocketTap } from "../../src/core/socket-tap.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { fakeListener } from "./support/fake-socket.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 // Fakes by the convention in no-real-ids.test.js; both past MAX_SAFE_INTEGER.
 const GROUP = "9000000000000000011";

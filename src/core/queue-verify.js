@@ -59,7 +59,7 @@ export function idsOf(queueStatus, queueName) {
  * The verifier of one connection.
  *
  * @param {object} p
- * @param {() => object|null} p.getListener - the zca-js listener to send on
+ * @param {() => object|null} p.getListener - the listener to send on
  * @param {() => {max_msg_verify?: number, interval_verify?: number}} [p.settings] - the server's socket settings
  * @param {{setTimeout: Function, clearTimeout: Function}} [p.timers]
  * @param {(line: string) => void} [p.log]
@@ -131,7 +131,7 @@ export function createQueueVerifier({
                 reqId: entry.reqId,
             },
         };
-        getListener().sendWs(frame, false);
+        getListener().sendWs(frame);
         counts.sent++;
         entry.timer = timers.setTimeout(() => onSilence(entry), VERIFY_DEFAULTS.replyTimeoutMs);
         entry.timer?.unref?.();

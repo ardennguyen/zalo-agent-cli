@@ -2,7 +2,7 @@
  * `src/core/daemon-channel.js` — handing an upload to the running daemon.
  *
  * Zalo permits one web session per account. A non-inline attachment can only
- * be sent over a socket (zca-js parks the upload until the upload-complete
+ * be sent over a socket (the upload is parked until the upload-complete
  * frame arrives), so `msg send-file` opened its own — and Zalo answered by
  * evicting whatever daemon was already connected.
  *

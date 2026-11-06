@@ -123,7 +123,7 @@ export function initDb(dbPath) {
     -- Board items: notes ("Ghi chú"), pinned messages and polls. These are NOT
     -- in the transfer-sync message stream at all — Zalo keeps them behind
     -- /api/board/list, one call per thread — so they are synced separately and
-    -- stored here. boardType mirrors zca-js BoardType: 1=Note, 2=PinnedMessage,
+    -- stored here. boardType mirrors Zalo's board types: 1=Note, 2=PinnedMessage,
     -- 3=Poll. The id column is scoped by thread because item ids repeat across
     -- threads. (No backticks anywhere in this SQL: it sits inside a JS template
     -- literal, so one would close it and break the whole module.)
@@ -2243,7 +2243,7 @@ export function recordReadWatermark({ threadId, msgId, ts }) {
  * `unreadAfter` counts cached messages only -- ids after the watermark that
  * someone other than this account sent, not recalled or deleted -- so it is a
  * floor, and null when no watermark is known yet ("never told", not "all
- * read"). Own messages are told apart as everywhere else: zca-js rewrites an
+ * read"). Own messages are told apart as everywhere else: the listener rewrites an
  * own message's raw sender "0" to this account's uid before it is stored.
  *
  * @param {string[]} threadIds

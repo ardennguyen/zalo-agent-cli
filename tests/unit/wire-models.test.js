@@ -1,21 +1,12 @@
 /**
- * src/zalo/listener/{models,group-events,friend-events}.js: the objects the listener emits, built from one wire
- * object by zca-js's code and by ours, for every row of spec-listener 2.6.
- *
- * Two parts:
- *  1. The differential (deleted at the cut-over, design section 3.3): zca-js's class or initializer and ours get a
- *     deep clone of the same input; `type`, `threadId`, `isSelf`, `isGroup` and the rewritten `data` must match. A
- *     difference we intend is declared per case, and a declared difference that is not there fails the case, so the
- *     declaration cannot go stale. The only declared difference for well-formed input is `Undo.type`.
- *  2. Our own expectations, written out by hand, which stay after zca-js is gone.
+ * src/zalo/listener/{models,group-events,friend-events}.js: the objects the listener emits, built from a wire
+ * object (spec-listener 2.6), checked against expectations written out by hand.
  *
  * Fake ids only (tests/unit/no-real-ids.test.js).
  */
 import "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
 import {
     GroupDeliveredMessage,
     GroupMessage,
@@ -48,36 +39,6 @@ const PEER = "2000000000000000002";
 const GROUP = "3000000000000000003";
 const OTHER = "4000000000000000004";
 
-const require = createRequire(import.meta.url);
-const zca = require("zca-js");
-const zcaUtils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-
-const clone = (v) => structuredClone(v);
-
-/** The fields the engine reads from an event object, as a plain object (absent fields left out). */
-function view(obj) {
-    const out = {};
-    for (const k of ["type", "act", "threadId", "isSelf", "isGroup", "data"]) if (k in obj) out[k] = obj[k];
-    return out;
-}
-
-/**
- * Build with zca-js and with ours from clones of one input and compare. `allow` declares intended differences as
- * `{field: {zca, own}}`; each must be present exactly as declared.
- */
-function same(input, buildZca, buildOwn, allow = {}) {
-    const z = view(buildZca(clone(input)));
-    const o = view(buildOwn(clone(input)));
-    for (const [field, { zca: zv, own: ov }] of Object.entries(allow)) {
-        assert.deepEqual(z[field], zv, `declared difference on ${field}: zca-js side`);
-        assert.deepEqual(o[field], ov, `declared difference on ${field}: our side`);
-        delete z[field];
-        delete o[field];
-    }
-    assert.deepEqual(o, z);
-    return o;
-}
-
 const dmIn = (over = {}) => ({
     msgId: "7000000000001",
     cliMsgId: "1700000000001",
@@ -91,154 +52,6 @@ const dmIn = (over = {}) => ({
 });
 const groupIn = (over = {}) => ({ ...dmIn(), idTo: GROUP, mentions: [{ uid: OTHER, pos: 0, len: 4 }], ...over });
 const recallContent = { globalMsgId: "7000000000002", cliMsgId: "1700000000002", deleteMsg: 1 };
-
-describe("message objects against zca-js (deleted at the cut-over)", () => {
-    const rows = [
-        ["UserMessage from the peer", dmIn(), UserMessage, zca.UserMessage],
-        ["UserMessage sent by this account", dmIn({ uidFrom: "0", idTo: PEER }), UserMessage, zca.UserMessage],
-        [
-            "UserMessage with a numeric quote owner",
-            dmIn({ quote: { ownerId: 12345, msg: "q" } }),
-            UserMessage,
-            zca.UserMessage,
-        ],
-        ["UserMessage with a string quote owner", dmIn({ quote: { ownerId: PEER } }), UserMessage, zca.UserMessage],
-        [
-            "UserMessage with an attachment",
-            dmIn({ msgType: "chat.photo", content: { href: "https://x/y.jpg" } }),
-            UserMessage,
-            zca.UserMessage,
-        ],
-        [
-            "UserMessage removal (chat.delete)",
-            dmIn({ msgType: "chat.delete", content: "" }),
-            UserMessage,
-            zca.UserMessage,
-        ],
-        ["GroupMessage from a member", groupIn(), GroupMessage, zca.GroupMessage],
-        ["GroupMessage sent by this account", groupIn({ uidFrom: "0" }), GroupMessage, zca.GroupMessage],
-        [
-            "GroupMessage quoting this account",
-            groupIn({ quote: { ownerId: 7, msg: "q" } }),
-            GroupMessage,
-            zca.GroupMessage,
-        ],
-    ];
-    for (const [name, input, Own, Zca] of rows) {
-        it(name, () => {
-            same(
-                input,
-                (d) => new Zca(OWN, d),
-                (d) => new Own(OWN, d),
-            );
-        });
-    }
-
-    for (const [name, input, isGroup] of [
-        ["Undo of a peer's 1-1 message", dmIn({ content: recallContent }), false],
-        ["Undo of this account's 1-1 message", dmIn({ uidFrom: "0", idTo: PEER, content: recallContent }), false],
-        ["Undo in a group", groupIn({ content: recallContent }), true],
-        ["Undo by this account in a group", groupIn({ uidFrom: "0", content: recallContent }), true],
-    ]) {
-        it(`${name}: same except Undo.type`, () => {
-            same(
-                input,
-                (d) => new zca.Undo(OWN, d, isGroup),
-                (d) => new Undo(OWN, d, isGroup),
-                { type: { zca: undefined, own: isGroup ? 1 : 0 } },
-            );
-        });
-    }
-
-    const react = (over = {}) => ({
-        actionId: "8000000000001",
-        msgId: "8000000000002",
-        cliMsgId: "1700000000003",
-        uidFrom: PEER,
-        idTo: "0",
-        dName: "Peer",
-        ts: "1700000000004",
-        content: {
-            rMsg: [{ gMsgID: "7000000000001", cMsgID: "1700000000001", msgType: 1 }],
-            rIcon: "/-heart",
-            rType: 5,
-        },
-        ...over,
-    });
-    for (const [name, input, isGroup] of [
-        ["Reaction from the peer", react(), false],
-        ["Reaction by this account in a 1-1", react({ uidFrom: "0", idTo: PEER }), false],
-        ["Reaction in a group", react({ idTo: GROUP }), true],
-        ["Reaction by this account in a group", react({ uidFrom: "0", idTo: GROUP }), true],
-        ["Reaction removal (empty icon), content still a string", react({ content: '{"rIcon":"","rType":-1}' }), false],
-    ]) {
-        it(name, () => {
-            // Reaction carries no `type` on either side. Red if ours grows one without a decision.
-            const o = same(
-                input,
-                (d) => new zca.Reaction(OWN, d, isGroup),
-                (d) => new Reaction(OWN, d, isGroup),
-            );
-            assert.equal("type" in new Reaction(OWN, clone(input), isGroup), false);
-            assert.ok(o.isGroup === isGroup);
-        });
-    }
-
-    for (const [name, input, Own, Zca, withUid] of [
-        ["UserTyping", { uid: PEER, ts: "1700000000005", isPC: 0 }, UserTyping, zca.UserTyping, false],
-        ["GroupTyping", { uid: PEER, gid: GROUP, ts: "1700000000005", isPC: 1 }, GroupTyping, zca.GroupTyping, false],
-        [
-            "UserSeenMessage",
-            { idTo: PEER, msgId: "7000000000001", realMsgId: "0" },
-            UserSeenMessage,
-            zca.UserSeenMessage,
-            false,
-        ],
-        [
-            "GroupSeenMessage, seen by others",
-            { msgId: "7000000000001", groupId: GROUP, seenUids: [PEER, OTHER] },
-            GroupSeenMessage,
-            zca.GroupSeenMessage,
-            true,
-        ],
-        [
-            "GroupSeenMessage, seen by this account",
-            { msgId: "7000000000001", groupId: GROUP, seenUids: [PEER, OWN] },
-            GroupSeenMessage,
-            zca.GroupSeenMessage,
-            true,
-        ],
-        [
-            "UserDeliveredMessage",
-            { msgId: "7000000000001", seen: 0, deliveredUids: [PEER], seenUids: [], realMsgId: "0", mSTs: 1 },
-            UserDeliveredMessage,
-            zca.UserDeliveredMessage,
-            false,
-        ],
-        [
-            "GroupDeliveredMessage, to others",
-            { msgId: "7000000000001", groupId: GROUP, deliveredUids: [PEER], seenUids: [] },
-            GroupDeliveredMessage,
-            zca.GroupDeliveredMessage,
-            true,
-        ],
-        [
-            "GroupDeliveredMessage, to this account",
-            { msgId: "7000000000001", groupId: GROUP, deliveredUids: [OWN], seenUids: [] },
-            GroupDeliveredMessage,
-            zca.GroupDeliveredMessage,
-            true,
-        ],
-    ]) {
-        it(name, () => {
-            same(
-                input,
-                (d) => (withUid ? new Zca(OWN, d) : new Zca(d)),
-                (d) => (withUid ? new Own(OWN, d) : new Own(d)),
-            );
-        });
-    }
-});
 
 /** The `data` each group act carries, shaped the way its `isSelf` rule reads it. */
 function groupData(act, self) {
@@ -260,35 +73,6 @@ function groupData(act, self) {
 }
 
 const UNKNOWN_GROUP_ACTS = ["join_accept", "group_type", "new_group_invitation", "update_status"];
-
-describe("group_event against zca-js (deleted at the cut-over)", () => {
-    for (const act of [...GROUP_EVENT_TYPES, ...UNKNOWN_GROUP_ACTS]) {
-        for (const self of [false, true]) {
-            it(`${act}${self ? ", own" : ""}`, () => {
-                same(
-                    groupData(act, self),
-                    (d) => zca.initializeGroupEvent(OWN, d, zcaUtils.getGroupEventType(act), act),
-                    (d) => toGroupEvent(OWN, act, d),
-                );
-            });
-        }
-    }
-
-    it("reads threadId from group_id when the data has it", () => {
-        const o = same(
-            { group_id: GROUP, updateMembers: [] },
-            (d) => zca.initializeGroupEvent(OWN, d, zcaUtils.getGroupEventType("leave"), "leave"),
-            (d) => toGroupEvent(OWN, "leave", d),
-        );
-        assert.equal(o.threadId, GROUP);
-    });
-
-    it("maps every act to the same type name", () => {
-        for (const act of [...GROUP_EVENT_TYPES, ...UNKNOWN_GROUP_ACTS, "", "JOIN"]) {
-            assert.equal(groupEventType(act), zcaUtils.getGroupEventType(act), act);
-        }
-    });
-});
 
 /** The `data` each friend act carries. */
 function friendData(act, self) {
@@ -319,30 +103,7 @@ const FRIEND_ACTS = [
     "something_new",
 ];
 
-describe("friend_event against zca-js (deleted at the cut-over)", () => {
-    for (const act of FRIEND_ACTS) {
-        for (const self of [false, true]) {
-            it(`${act}${self ? ", own" : ""}`, () => {
-                same(
-                    friendData(act, self),
-                    (d) => zca.initializeFriendEvent(OWN, d, zcaUtils.getFriendEventType(act)),
-                    (d) => toFriendEvent(OWN, act, d),
-                );
-            });
-        }
-    }
-
-    it("maps every act to the same type number", () => {
-        for (const act of [...FRIEND_ACTS, "req", ""])
-            assert.equal(friendEventType(act), zcaUtils.getFriendEventType(act), act);
-        assert.deepEqual(
-            { ...FRIEND_EVENT_TYPE },
-            Object.fromEntries(Object.entries(zca.FriendEventType).filter(([k]) => isNaN(k))),
-        );
-    });
-});
-
-// ── Our own expectations (stay after the cut-over) ────────────────────────────────────────────────────────────
+// ── Expectations ──────────────────────────────────────────────────────────────────────────────────────────────
 
 describe("message objects", () => {
     it("UserMessage: a peer's message is the peer's thread and gets the own uid as idTo, in place", () => {
@@ -373,19 +134,28 @@ describe("message objects", () => {
         );
     });
 
-    it("leaves a quote without an ownerId without one (zca-js wrote the text 'undefined')", () => {
+    it("leaves a quote without an ownerId without one (never the text 'undefined')", () => {
         const data = dmIn({ quote: { msg: "q" } });
         new UserMessage(OWN, data);
         assert.equal("ownerId" in data.quote, false);
-        // The asserted difference, while zca-js is here to compare with.
-        const z = dmIn({ quote: { msg: "q" } });
-        new zca.UserMessage(OWN, z);
-        assert.equal(z.quote.ownerId, "undefined");
+    });
+
+    it("leaves the rest of a message's data as it came: the content, an attachment, a removal", () => {
+        for (const over of [
+            {},
+            { msgType: "chat.photo", content: { href: "https://x/y.jpg" } },
+            { msgType: "chat.delete", content: "" },
+        ]) {
+            const data = dmIn(over);
+            const m = new UserMessage(OWN, data);
+            assert.deepEqual(m.data, { ...dmIn(over), idTo: OWN }, JSON.stringify(over));
+        }
+        const g = new GroupMessage(OWN, groupIn());
+        assert.deepEqual(g.data, groupIn(), "a member's group message is not rewritten at all");
     });
 
     it("Undo carries the thread type: 0 for a 1-1 recall, 1 for a group recall", () => {
-        // Red on zca-js's class, which has no type: normalizeUndo (src/commands/mcp.js) then calls a 1-1 recall
-        // a group recall.
+        // Red without the type: normalizeUndo (src/commands/mcp.js) then calls a 1-1 recall a group recall.
         const dm = new Undo(OWN, dmIn({ content: recallContent }), false);
         const gr = new Undo(OWN, groupIn({ content: recallContent }), true);
         assert.deepEqual([dm.type, dm.threadId, dm.isGroup], [0, PEER, false]);
@@ -394,9 +164,14 @@ describe("message objects", () => {
         assert.deepEqual([own.threadId, own.isSelf, own.data.uidFrom], [PEER, true, OWN]);
     });
 
-    it("Reaction: thread by the same rule as Undo, isGroup kept", () => {
+    it("Reaction: thread by the same rule as Undo, isGroup kept, no type", () => {
         const r = new Reaction(OWN, { uidFrom: "0", idTo: GROUP, content: {} }, true);
         assert.deepEqual([r.threadId, r.isSelf, r.isGroup, r.data.uidFrom], [GROUP, true, true, OWN]);
+        const dm = new Reaction(OWN, { uidFrom: PEER, idTo: "0", content: '{"rIcon":""}' }, false);
+        assert.deepEqual([dm.threadId, dm.isSelf, dm.isGroup, dm.data.idTo], [PEER, false, false, OWN]);
+        assert.equal(dm.data.content, '{"rIcon":""}', "a string content is left as it came");
+        // Red if Reaction grows a type without a decision.
+        assert.equal("type" in r, false);
     });
 
     it("treats the own mark as '0' whether it was parsed as a string or a number", () => {
@@ -441,6 +216,19 @@ describe("group events", () => {
         assert.deepEqual([ev.type, ev.act, ev.threadId, ev.isSelf], [GROUP_EVENT_UNKNOWN, "join_accept", GROUP, true]);
     });
 
+    it("every act: the group is the thread, and the account is itself where its act's field names it", () => {
+        for (const act of [...GROUP_EVENT_TYPES, ...UNKNOWN_GROUP_ACTS]) {
+            for (const self of [false, true]) {
+                const ev = toGroupEvent(OWN, act, groupData(act, self));
+                const where = `${act}${self ? ", own" : ""}`;
+                assert.equal(ev.threadId, GROUP, where);
+                assert.equal(ev.type, GROUP_EVENT_TYPES.includes(act) ? act : GROUP_EVENT_UNKNOWN, where);
+                // A join request is never the account's own doing: it asks to join a group it is not in.
+                assert.equal(ev.isSelf, self && act !== "join_request", where);
+            }
+        }
+    });
+
     it("decides isSelf from the field each kind of act names the account in", () => {
         assert.equal(toGroupEvent(OWN, "join_request", { groupId: GROUP, sourceId: OWN }).isSelf, false);
         assert.equal(toGroupEvent(OWN, "new_pin_topic", { groupId: GROUP, actorId: OWN }).isSelf, true);
@@ -460,6 +248,51 @@ describe("group events", () => {
 });
 
 describe("friend events", () => {
+    it("keeps the friend event type numbers, and maps each act to its number", () => {
+        assert.deepEqual(
+            { ...FRIEND_EVENT_TYPE },
+            {
+                ADD: 0,
+                REMOVE: 1,
+                REQUEST: 2,
+                UNDO_REQUEST: 3,
+                REJECT_REQUEST: 4,
+                SEEN_FRIEND_REQUEST: 5,
+                BLOCK: 6,
+                UNBLOCK: 7,
+                BLOCK_CALL: 8,
+                UNBLOCK_CALL: 9,
+                PIN_UNPIN: 10,
+                PIN_CREATE: 11,
+                UNKNOWN: 12,
+            },
+        );
+        const expected = {
+            add: 0,
+            remove: 1,
+            block: 6,
+            unblock: 7,
+            block_call: 8,
+            unblock_call: 9,
+            req_v2: 2,
+            reject: 4,
+            undo_req: 3,
+            seen_fr_req: 5,
+            pin_unpin: 10,
+            pin_create: 11,
+            something_new: 12,
+            req: 12,
+            "": 12,
+        };
+        for (const [act, type] of Object.entries(expected)) assert.equal(friendEventType(act), type, act);
+        // Every act of FRIEND_ACTS has its own data shape above; red if one were dropped from the list.
+        assert.deepEqual(
+            FRIEND_ACTS.filter((a) => !(a in expected)),
+            [],
+        );
+        for (const act of FRIEND_ACTS) assert.ok(friendData(act, false) !== undefined, act);
+    });
+
     it("friendControlEvent: drops req, keeps a numeric uid string whole, parses topic.params", () => {
         assert.equal(friendControlEvent(OWN, { act: "req", data: "{}" }), null);
         // A uid past 2^53 sent as a JSON string: red if it is parsed to a (lossy) number.

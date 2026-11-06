@@ -1,5 +1,5 @@
 /**
- * Small argument parsers for the commands that wrap a zca-js call taking an
+ * Small argument parsers for the commands that wrap a session call taking an
  * enum or a boolean: typing indicator, report, active status, language.
  *
  * Each throws an Error whose message says what was accepted, so the command's
@@ -37,7 +37,7 @@ export function parseOnOff(value, what = "value") {
 }
 
 /**
- * `vi` / `en`, as zca-js's `updateLang` takes them (it sends `VI` / `EN`).
+ * `vi` / `en`, as the session's `updateLang` takes them (it sends `VI` / `EN`).
  *
  * @param {string} value
  * @returns {string} an UPDATE_LANG value
@@ -58,9 +58,9 @@ export const REPORT_REASONS = Object.freeze({
 });
 
 /**
- * The options object zca-js's `sendReport` takes.
+ * The options object the session's `sendReport` takes.
  *
- * `other` is the only reason that carries text, and zca-js sends it only for
+ * `other` is the only reason that carries text, and the session sends it only for
  * that reason, so a text given with another reason would be dropped without a
  * word: refuse it instead of pretending it was reported.
  *

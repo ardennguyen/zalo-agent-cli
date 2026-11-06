@@ -287,8 +287,8 @@ export function registerAccountCommands(program) {
                 // flows), so trigger it here — same pattern mcp.js uses.
                 await autoLogin(program.opts().json);
                 // getListDevice() returns { devices: {...} } directly —
-                // zca-js's resolveResponse() unwraps result.data itself
-                // when called with no callback, so there's no extra .data
+                // the session's reply decoding unwraps result.data itself,
+                // so there's no extra .data
                 // layer to destructure here (confirmed against the real
                 // API: destructuring .data silently produced undefined).
                 const result = await getApi().getListDevice();

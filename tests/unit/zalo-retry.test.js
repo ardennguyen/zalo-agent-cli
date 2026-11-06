@@ -107,7 +107,7 @@ describe("round 1", () => {
         assert.deepEqual(e.snapshot().round1, {}, "an undescribed key was counted");
     });
 
-    it("treats the key 3003, listed as retryable but absent from the table, as undescribed (the zca-js TypeError)", () => {
+    it("treats the key 3003, listed as retryable but absent from the table, as undescribed (the old listener's TypeError)", () => {
         const s = resolveSocketSettings();
         assert.ok(s.close_and_retry_codes.includes(3003));
         assert.equal(s.retries[3003], undefined);

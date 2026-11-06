@@ -90,7 +90,7 @@ function rememberSent(thread, r, what) {
         }
         const msgId = node.msgId ?? node.message?.msgId;
         const cliMsgId = node.cliMsgId ?? node.message?.cliMsgId;
-        // Record on msgId ALONE — requiring both was the bug. Upstream zca-js
+        // Record on msgId ALONE — requiring both was the bug. The previous engine
         // stamps `responses.message` only, and for a single jpg/jpeg/png/webp
         // `canBeDesc` is true so the caption folds into the attachment and
         // `responses.message` stays null. Every image and file send therefore
@@ -98,7 +98,7 @@ function rememberSent(thread, r, what) {
         // it had sent itself. The stale tests/.artifacts.json told the story —
         // 10 entries, all plain text.
         //
-        // patches/zca-js+2.2.0.patch now stamps each attachment response too,
+        // the send now stamps each attachment response too,
         // and `msg send-image`/`send-file --json` surface them as `sent[]`, so
         // the cliMsgId normally IS here. Verified live against the group on
         // 2026-09-29: the id the CLI reported matched the one Zalo echoed back
@@ -319,7 +319,7 @@ describe("tier 2 · quote-reply", { skip }, () => {
 });
 
 describe("tier 2 · image attachments", { skip }, () => {
-    // One test per format, because zca-js branches on extension
+    // One test per format, because the upload branches on extension
     // (jpg/jpeg/png/webp take the "image" upload path, everything else does
     // not) and readImageMetadata() branches on magic bytes. A PNG-only test
     // would leave both the JPEG segment scan and the GIF path unproven end
@@ -386,7 +386,7 @@ describe("tier 2 · image attachments", { skip }, () => {
 
     // REGRESSION GUARD — send-image used to hang on these.
     //
-    // zca-js routes by EXTENSION, not by command: anything outside
+    // The upload routes by EXTENSION, not by command: anything outside
     // jpg/jpeg/png/webp/gif takes the "others" path, which waits on a
     // WebSocket upload-complete frame. send-image never started a listener,
     // so `send-image photo.bmp` hung forever with no output — the same bug
@@ -432,7 +432,7 @@ function sendFileArgs(thread, ...paths) {
 describe("tier 2 · file attachments", { skip }, () => {
     // REGRESSION GUARD — this used to hang forever.
     //
-    // zca-js's uploadAttachment() resolves synchronously for images but, for
+    // The session's uploadAttachment() resolves synchronously for images but, for
     // "video"/"others", awaits a promise only apis/listen.js can settle when
     // the upload-complete frame arrives over the WebSocket. send-file never
     // started a listener, so the await never settled and the command hung
@@ -633,7 +633,7 @@ describe("tier 2 · DM messages", { skip: skip || (T?.dm ? false : "no DM target
         // Demand success. The old assertion here was crash-only, with a
         // comment excusing "a clean error" as acceptable — and `msg forward`
         // was in fact broken for its entire life (wrong call arity made
-        // zca-js throw "Missing message content" before any network call,
+        // the previous engine throw "Missing message content" before any network call,
         // for every message type). The CLI catches that and prints a ✗ line,
         // never a stack trace, so the regex could not match and the test
         // passed green the whole time. Fixed upstream in 24ea016.
@@ -767,9 +767,9 @@ describe("tier 2 · group notes", { skip }, () => {
     });
 
     // There is deliberately no DM equivalent here, and that is a finding
-    // rather than an omission: zca-js types createNote as
+    // rather than an omission: the previous engine types createNote as
     // createNote(options, groupId) — group-only — so the CLI cannot make a
-    // note ("Ghi chú") on a 1:1 thread at all. zca-js DOES ship
+    // note ("Ghi chú") on a 1:1 thread at all. The previous engine DOES ship
     // getFriendBoardList(conversationId), the DM-side board reader, but no
     // CLI command exposes it (only sync-v2/board.js touches getListBoard).
     // Until a command surfaces it there is nothing to drive from here.

@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as acorn from "acorn";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getSyncState, setSyncState } from "../../src/core/db.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";

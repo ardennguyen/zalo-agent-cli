@@ -310,7 +310,7 @@ describe("self-heal replays the control queues after the message queues", () => 
     });
 });
 
-describe("on the real zca-js listener", () => {
+describe("on the real listener", () => {
     it("a replayed group control becomes the same group_event a live push makes", async () => {
         assertSandboxed(CONFIG_DIR);
         const zalo = await startFakeZalo();
@@ -353,7 +353,7 @@ describe("on the real zca-js listener", () => {
             });
             assert.equal(r.replayed, 1);
             for (let i = 0; i < 100 && events.length === 0; i++) await sleep(20);
-            assert.equal(events.length, 1, "zca-js emitted the event from the replayed frame");
+            assert.equal(events.length, 1, "the listener emitted the event from the replayed frame");
             assert.equal(events[0].act, "join_request");
             assert.equal(events[0].threadId, "5001");
         } finally {

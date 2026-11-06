@@ -3,9 +3,9 @@
  *
  * It used to build its payload as `opts.X ?? false` for all eight toggles, so
  * `group settings G --join-appr` switched join approval on and every other
- * setting OFF. Below the CLI it was worse: zca-js's `updateGroupSettings`
- * sends `setTopicOnly` (which the CLI never exposed) as 0, leaves out
- * `addMemberOnly`, and hard-codes `bannFeature: 0, dirtyMedia: 0,
+ * setting OFF. Below the CLI it was worse: the `updateGroupSettings` wrapper
+ * it called sent `setTopicOnly` (which the CLI never exposed) as 0, left out
+ * `addMemberOnly`, and hard-coded `bannFeature: 0, dirtyMedia: 0,
  * banDuration: 0, blocked_members: []` on every call.
  *
  * Zalo Web does a read-modify-write (bundle 1.e0ef5e98f8f9d8970e2c.js of the
@@ -16,11 +16,10 @@
  *
  * These tests hold the CLI to the same thing. argv goes through the REAL
  * `group settings` flag definitions, then the helper the action calls, the
- * real zca-js `getGroupInfo`, and whatever builds the update, all over
- * `ctx.options.polyfill` (zca-js's own HTTP seam). What reaches the wire is
- * decrypted and checked. So the tests care WHAT is sent, not HOW: the harness
- * also wires zca-js's own `updateGroupSettings`, and code that went back to
- * calling it would put its hard-coded zeros on the wire and fail here.
+ * engine's real `getGroupInfo` (src/zalo/api.js), and whatever builds the
+ * update, all over `ctx.options.polyfill` (the session's HTTP seam). What
+ * reaches the wire is decrypted and checked. So the tests care WHAT is sent,
+ * not HOW.
  */
 
 import { assertSandboxed } from "../helpers/sandbox.js";
@@ -33,9 +32,8 @@ import { Command } from "commander";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { registerGroupCommands } from "../../src/commands/group.js";
 import { settingChangesFromOptions, applyGroupSettingChanges } from "../../src/core/group-settings.js";
-import { getGroupInfoFactory } from "../../node_modules/zca-js/dist/apis/getGroupInfo.js";
-import { updateGroupSettingsFactory } from "../../node_modules/zca-js/dist/apis/updateGroupSettings.js";
-import { encodeAES, decodeAES } from "../../node_modules/zca-js/dist/utils.js";
+import { createApi } from "../../src/zalo/api.js";
+import { openSession as decodeAES, sealSession as encodeAES } from "../../src/zalo/kernel/cipher.js";
 
 assertSandboxed(CONFIG_DIR);
 
@@ -46,8 +44,8 @@ const GROUP = "9000000000000000077";
 const GROUP_HOST = "https://tt-group-test.invalid";
 
 /**
- * The group's settings as Zalo reports them (zca-js `GroupSetting`, all 13
- * keys). Most toggles are ON, so a writer that zeroes what it was not told
+ * The group's settings as Zalo reports them (all 13 keys of a group's
+ * `setting`). Most toggles are ON, so a writer that zeroes what it was not told
  * about goes red; `lockCreatePoll` is OFF, so one that sets everything ON
  * goes red too. The ban fields are non-zero for the same reason: they are
  * Zalo's media-ban state (`dirtyMedia` 1 or 2 = banned, `banDuration` in
@@ -73,8 +71,7 @@ const CURRENT = Object.freeze({
 /**
  * Flag -> the GroupSetting key it must change. Written out here rather than
  * imported, so the command's mapping is checked against something other than
- * itself. Sources: each flag's help text, zca-js's UpdateGroupSettingsOptions
- * docs, and Zalo Web's ParamsSettingGroup map (ONLY_ADMIN_SET_TOPIC is
+ * itself. Sources: each flag's help text and Zalo Web's ParamsSettingGroup map (ONLY_ADMIN_SET_TOPIC is
  * `setTopicOnly`).
  */
 const EXPECTED_FLAGS = {
@@ -92,7 +89,7 @@ const EXPECTED_FLAGS = {
 /**
  * A response shaped like Zalo's: outer JSON envelope, AES-encrypted payload.
  *
- * @param {*} data - what zca-js's resolve step should hand back
+ * @param {*} data - what the session's reply decoding should hand back
  * @returns {object} a minimal Response stand-in
  */
 function zaloOk(data) {
@@ -177,9 +174,7 @@ function harness({ setting = CURRENT, groupInfo, readError, afterWrite, readBack
             },
         },
     };
-    const api = { zpwServiceMap: { group: [GROUP_HOST] }, getContext: () => ctx };
-    api.getGroupInfo = getGroupInfoFactory(ctx, api);
-    api.updateGroupSettings = updateGroupSettingsFactory(ctx, api);
+    const api = createApi(ctx, { group: [GROUP_HOST] }, [], { createListener: () => null });
     return { api, reads, writes };
 }
 
@@ -238,7 +233,7 @@ describe("group settings changes only what was named", () => {
     it("(a) a toggle the user did not pass keeps the group's current value", async () => {
         // Red if any untouched toggle is defaulted instead of read back: the
         // old `?? false` sent six of these as 0, and `?? true` would flip
-        // lockCreatePoll. setTopicOnly is here because zca-js zeroed it.
+        // lockCreatePoll. setTopicOnly is here because the old wrapper zeroed it.
         const { writes, failure } = await run(["--join-appr"]);
         assert.equal(failure, undefined, `unexpected refusal: ${failure?.message}`);
         assert.equal(writes.length, 1, "exactly one update request");
@@ -250,10 +245,9 @@ describe("group settings changes only what was named", () => {
     });
 
     it("(b) the ban fields, addMemberOnly and setTopicOnly go back exactly as Zalo reported them", async () => {
-        // Red if the request is built by zca-js's updateGroupSettings (it
-        // hard-codes the ban fields to 0, drops addMemberOnly, zeroes
-        // setTopicOnly) or by anything that lists fields instead of carrying
-        // the read.
+        // Red if the request is built from a list of fields (the old
+        // updateGroupSettings wrapper hard-coded the ban fields to 0, dropped
+        // addMemberOnly and zeroed setTopicOnly) instead of carrying the read.
         const { writes } = await run(["--join-appr"]);
         assert.equal(writes.length, 1, "exactly one update request");
         const sent = writes[0].params;
@@ -279,8 +273,8 @@ describe("group settings changes only what was named", () => {
         // web's member-list toggle omits the key, its settings panel sends
         // `[]`, and nothing in the web ever sends a populated list. Omitting
         // it is safe under every server reading that `[]` is safe under, and
-        // under one more. Red if the request goes back to zca-js's
-        // hard-coded `blocked_members: []`.
+        // under one more. Red if the request goes back to a hard-coded
+        // `blocked_members: []`.
         const { writes } = await run(["--join-appr"]);
         assert.equal(writes.length, 1, "exactly one update request");
         assert.ok(!("blocked_members" in writes[0].params), "blocked_members must not be sent");
@@ -288,7 +282,7 @@ describe("group settings changes only what was named", () => {
 
     it("is the web's request: GET {group}/api/group/setting/update, AES params in the query", async () => {
         // Red if the endpoint, the method, or where the params travel changes
-        // from what zca-js and Zalo Web both send (cmd 11816).
+        // from what Zalo Web sends (cmd 11816).
         const { writes } = await run(["--join-appr"]);
         assert.equal(writes.length, 1, "exactly one update request");
         const w = writes[0];
@@ -488,7 +482,7 @@ describe("the command goes through the read-modify-write", () => {
     // Wiring only. The tests above prove what the helper sends; this proves
     // the command uses it. It reads only the `settings` action in group.js,
     // with comments stripped, so the helper existing elsewhere cannot satisfy
-    // it. Red if the action goes back to zca-js's updateGroupSettings, back to
+    // it. Red if the action goes back to an updateGroupSettings call, back to
     // `?? false`, or maps the flags itself.
     it("the settings action maps flags with settingChangesFromOptions and writes with applyGroupSettingChanges", () => {
         const src = readFileSync(join(import.meta.dirname, "..", "..", "src", "commands", "group.js"), "utf8");
@@ -502,7 +496,7 @@ describe("the command goes through the read-modify-write", () => {
             .join("\n");
         assert.match(body, /settingChangesFromOptions\(opts\)/);
         assert.match(body, /applyGroupSettingChanges\(/);
-        assert.doesNotMatch(body, /\.updateGroupSettings\(/, "zca-js's updateGroupSettings resets fields");
+        assert.doesNotMatch(body, /\.updateGroupSettings\(/, "a field-list updateGroupSettings resets fields");
         assert.doesNotMatch(body, /\?\?\s*false/, "`?? false` turns an absent flag into OFF");
     });
 });

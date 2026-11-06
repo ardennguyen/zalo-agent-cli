@@ -668,17 +668,3 @@ export function actionMethods(s) {
         updateLabels,
     };
 }
-
-/** Methods whose wire-actions.test.js differential passes: the switch answers these from our code. */
-export const OWN_READY = new Set([
-    "undo",
-    "deleteMessage",
-    "addReaction",
-    "deleteChat",
-    "getUnreadMark",
-    "removeUnreadMark",
-    "getPinConversations",
-    "getArchivedChatList",
-    "getLabels",
-    "updateLabels",
-]);

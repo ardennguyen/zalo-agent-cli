@@ -33,10 +33,10 @@ function getOpenCommand() {
 }
 
 /**
- * Display QR code from a zca-js login QR event.
- * Synchronous — safe to call from zca-js callback.
+ * Display QR code from a login QR event.
+ * Synchronous — safe to call from the login's callback.
  * In JSON mode (--json), outputs structured event for AI agents.
- * @param {object} event - zca-js QR callback event
+ * @param {object} event - QR login callback event
  */
 export function displayQR(event) {
     const imageB64 = event.data?.image || "";
@@ -54,7 +54,7 @@ export function displayQR(event) {
         } catch {}
     }
 
-    // Also fire-and-forget the zca-js built-in save
+    // Also fire-and-forget the login's own save
     if (event.actions?.saveToFile) {
         event.actions.saveToFile(qrPath).catch(() => {});
     }

@@ -2,7 +2,7 @@
  * transfer-sync-v2 — restore mobile message history into zalo.db.
  *
  * This is the real, phone-backed sync (as opposed to the empty cmd 510/511
- * socket backfill). Flow, all over the one zca-js WebSocket:
+ * socket backfill). Flow, all over the listener's one WebSocket:
  *
  *   1. cmd 590 CONVERSATION round (priority 0, partition "") — prompts the
  *      owner's phone once (transfer_status 3 -> 4 on tap). Decrypts to the full
@@ -470,7 +470,7 @@ function syncMsgId(msg, threadId = null) {
 
 export class SyncV2 {
     /**
-     * @param {object} api - a logged-in zca-js API (from getApi()).
+     * @param {object} api - a logged-in session (from getApi()).
      * @param {string} accountName - ownId; picks the account data dir.
      */
     constructor(api, accountName) {
@@ -771,7 +771,7 @@ export class SyncV2 {
 
         // Everything below is attached to the RAW socket, so all of it has to be
         // re-attached after a reconnect -- `L.ws` is a different object then, and
-        // zca-js nulls the old one. (`attachLiveStore` taps the Listener, which
+        // the listener nulls the old one. (`attachLiveStore` taps the Listener, which
         // outlives the socket, so it is deliberately not in here.)
         const attachSocketTaps = () => {
             try {
@@ -880,7 +880,7 @@ export class SyncV2 {
                 if (isIdleTooLong(s)) return "idle-timeout";
                 // A closed socket can never deliver the rest, so stop now
                 // instead of burning the whole budget waiting on a dead wire.
-                // zca-js sets `this.ws = null` on close, so an absent socket is
+                // The listener sets `ws = null` on close, so an absent socket is
                 // just as dead as one reporting CLOSING/CLOSED -- checking only
                 // readyState missed every real disconnect.
                 if (!L.ws || L.ws.readyState > 1) return "socket-closed";
@@ -1034,7 +1034,7 @@ export class SyncV2 {
                 for (const chunk of splitChunks(blob)) {
                     // Hand the event loop back before each chunk. Decode and
                     // store are synchronous and a single shard can carry tens of
-                    // thousands of messages; zca-js keeps the socket alive with
+                    // thousands of messages; the listener keeps the socket alive with
                     // a setInterval ping, and a blocked loop means a missed ping
                     // means Zalo drops the connection mid-run. This is the same
                     // problem Zalo Web avoids by decoding in a worker thread.

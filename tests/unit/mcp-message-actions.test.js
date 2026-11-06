@@ -7,7 +7,7 @@
  * (src/core/cached-message.js), `resolveSelfThread` (src/utils/my-documents.js)
  * and `urgencyLevel` (src/utils/urgency.js). The CLI side of each is pinned on
  * the wire by msg-react-cache, msg-my-documents and msg-urgency; what is
- * asserted here is what the tool hands the zca-js api — the call a live
+ * asserted here is what the tool hands the session — the call a live
  * session would encrypt and post — and that a refusal hands it nothing.
  *
  * `registerTools` only needs an object with `registerTool()`, so the handlers
@@ -247,7 +247,7 @@ describe("zalo_send_message urgency", () => {
         const api = recordingApi();
         await call("zalo_send_message", { threadId: GROUP, text: "offline urgent", urgency: "urgent" }, api);
         await call("zalo_send_message", { threadId: PEER, text: "offline important", urgency: "important" }, api);
-        // zca-js turns `urgency` into the metaData {urgency} Zalo Web sends
+        // the send turns `urgency` into the metaData {urgency} Zalo Web sends
         // (pinned on the wire for the CLI in msg-urgency.test.js). Red if the
         // mapping drifts, or the field is dropped.
         assert.deepEqual(api.calls[0].content, { msg: "offline urgent", urgency: 2 });

@@ -4,17 +4,17 @@
  * Asserted on the wire: the calls and their forms in the verified order (an account without a trusted device
  * confirms with no `bundle`; one with a trusted device matches the captured Web login in full: the second QR, the
  * poll on its code, the proof as `bundle`), the headers of a page load versus a script call, the events
- * zca-js-shaped consumers rely on, decline, retry, expiry and abort, the session the redirect chain ends in, the
+ * the login's consumers rely on, decline, retry, expiry and abort, the session the redirect chain ends in, the
  * device identity kept after a login, and the switch that selects it (`ZALO_QR_FLOW`).
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { LoginQRCallbackEventType, Zalo } from "zca-js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { QrLoginAborted, QrLoginDeclined } from "../../src/zalo/errors.js";
+import { QR_EVENT } from "../../src/zalo/enums.js";
+import { newJar } from "../../src/zalo/kernel/cookies.js";
+import { createSession } from "../../src/zalo/kernel/session.js";
 import { clearSession, loginWithQR } from "../../src/core/zalo-client.js";
 import { QR_FLOW_INVALID, resolveQrFlow } from "../../src/zalo/profile.js";
 import { buildOf, loadTrustFromPage, qrLogin, scriptUrlOf, wantsSecondQr } from "../../src/zalo/qr-login.js";
@@ -26,14 +26,10 @@ const CHROME_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
 const BASE = { userAgent: CHROME_UA, apiType: 30, apiVersion: 694 };
 
-/** A zca-js request context, as the login makes one. */
+/** A request context, as the login makes one. */
 const requestContext = () => {
-    const require = createRequire(import.meta.url);
-    const { createContext } = require(join(dirname(require.resolve("zca-js")), "context.cjs"));
-    const ctx = createContext(30, 694);
-    ctx.options.checkUpdate = false;
-    ctx.userAgent = CHROME_UA;
-    ctx.cookie = new Zalo().parseCookies([]);
+    const ctx = createSession({ apiType: 30, apiVersion: 694, userAgent: CHROME_UA });
+    ctx.cookie = newJar();
     return ctx;
 };
 
@@ -158,7 +154,7 @@ describe("the QR login", () => {
         await qrLogin({ ...BASE });
         const by = (method, path) => fake.requests.find((r) => r.method === method && r.path === path);
         const post = by("POST", "/account/authen/qr/generate").headers;
-        assert.equal(post.origin, "https://id.zalo.me", "one Origin, not zca-js's default joined to ours");
+        assert.equal(post.origin, "https://id.zalo.me", "one Origin, not a default joined to ours");
         assert.equal(post.accept, "application/json, text/plain, */*");
         assert.equal(post.referer, "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F");
         assert.equal(post["sec-fetch-site"], "same-origin");
@@ -196,17 +192,18 @@ describe("the QR login", () => {
         assert.equal(result.language, "vi");
     });
 
-    it("emits the events zca-js-shaped consumers use, with the image without its data-URL prefix", async () => {
+    it("emits the events its consumers use, with the image without its data-URL prefix", async () => {
+        // The numbers are the contract: src/core/qr-login-flow.js switches on them.
+        assert.deepEqual(
+            { ...QR_EVENT },
+            { QR_GENERATED: 0, QR_EXPIRED: 1, QR_SCANNED: 2, QR_DECLINED: 3, GOT_LOGIN_INFO: 4 },
+        );
         serveQrLogin(fake);
         const { seen, onEvent } = events();
         await qrLogin({ ...BASE, onEvent });
         assert.deepEqual(
             seen.map((e) => e.type),
-            [
-                LoginQRCallbackEventType.QRCodeGenerated,
-                LoginQRCallbackEventType.QRCodeScanned,
-                LoginQRCallbackEventType.GotLoginInfo,
-            ],
+            [QR_EVENT.QR_GENERATED, QR_EVENT.QR_SCANNED, QR_EVENT.GOT_LOGIN_INFO],
         );
         assert.equal(seen[0].data.image, "iVBORw0KGgo=");
         assert.equal(seen[0].data.code, "qr-code-1");
@@ -222,7 +219,7 @@ describe("the QR login", () => {
         serveQrLogin(fake, { confirm: [-13] });
         const { seen, onEvent } = events();
         await assert.rejects(qrLogin({ ...BASE, onEvent }), (e) => e instanceof QrLoginDeclined);
-        assert.ok(seen.some((e) => e.type === LoginQRCallbackEventType.QRCodeDeclined));
+        assert.ok(seen.some((e) => e.type === QR_EVENT.QR_DECLINED));
         assert.ok(
             !fake.requests.some((r) => r.path === "/account/checksession"),
             "no session is fetched after a decline",
@@ -252,15 +249,15 @@ describe("the QR login", () => {
             ...BASE,
             onEvent: (e) => {
                 seen.push(e);
-                if (e.type === LoginQRCallbackEventType.QRCodeGenerated && !retried) {
+                if (e.type === QR_EVENT.QR_GENERATED && !retried) {
                     retried = true;
                     e.actions.retry();
                 }
             },
         });
         assert.equal(state.generated, 2, "two QR codes were made");
-        assert.equal(seen.filter((e) => e.type === LoginQRCallbackEventType.QRCodeGenerated).length, 2);
-        assert.equal(seen.filter((e) => e.type === LoginQRCallbackEventType.QRCodeScanned).length, 1);
+        assert.equal(seen.filter((e) => e.type === QR_EVENT.QR_GENERATED).length, 2);
+        assert.equal(seen.filter((e) => e.type === QR_EVENT.QR_SCANNED).length, 1);
         assert.ok(result.cookies.length > 0);
         assert.ok(
             fake.requests.filter((r) => r.path.endsWith("/waiting-confirm")).every((r) => r.form.code === "qr-code-2"),
@@ -276,17 +273,12 @@ describe("the QR login", () => {
             lifetimeMs: 40,
             onEvent: (e) => {
                 seen.push(e);
-                if (e.type === LoginQRCallbackEventType.QRCodeExpired) e.actions.retry();
+                if (e.type === QR_EVENT.QR_EXPIRED) e.actions.retry();
             },
         });
         assert.deepEqual(
-            seen.map((e) => e.type).filter((t) => t !== LoginQRCallbackEventType.GotLoginInfo),
-            [
-                LoginQRCallbackEventType.QRCodeGenerated,
-                LoginQRCallbackEventType.QRCodeExpired,
-                LoginQRCallbackEventType.QRCodeGenerated,
-                LoginQRCallbackEventType.QRCodeScanned,
-            ],
+            seen.map((e) => e.type).filter((t) => t !== QR_EVENT.GOT_LOGIN_INFO),
+            [QR_EVENT.QR_GENERATED, QR_EVENT.QR_EXPIRED, QR_EVENT.QR_GENERATED, QR_EVENT.QR_SCANNED],
         );
         assert.ok(result.cookies.length > 0);
     });
@@ -297,7 +289,7 @@ describe("the QR login", () => {
             qrLogin({
                 ...BASE,
                 onEvent: (e) => {
-                    if (e.type === LoginQRCallbackEventType.QRCodeGenerated) e.actions.abort();
+                    if (e.type === QR_EVENT.QR_GENERATED) e.actions.abort();
                 },
             }),
             (e) => e instanceof QrLoginAborted,
@@ -314,7 +306,7 @@ describe("the QR login", () => {
         await qrLogin({
             ...BASE,
             onEvent: (e) => {
-                if (e.type === LoginQRCallbackEventType.QRCodeGenerated) e.actions.saveToFile(file);
+                if (e.type === QR_EVENT.QR_GENERATED) e.actions.saveToFile(file);
             },
         });
         await new Promise((r) => setTimeout(r, 50));
@@ -369,7 +361,7 @@ describe("the QR login", () => {
             assert.deepEqual([...qr.publicKey], [1, 2, 3]);
             assert.deepEqual([...qr.secret], [7, 8]);
             assert.equal(qr.relinkId, undefined);
-            const generated = seen.filter((e) => e.type === LoginQRCallbackEventType.QRCodeGenerated);
+            const generated = seen.filter((e) => e.type === QR_EVENT.QR_GENERATED);
             assert.deepEqual(
                 generated.map((e) => e.data.layer),
                 [1, 2],
@@ -382,7 +374,7 @@ describe("the QR login", () => {
 
         it("announces the scan with the name the second poll answered, and nothing for the first", async () => {
             const { seen } = await login();
-            const scanned = seen.filter((e) => e.type === LoginQRCallbackEventType.QRCodeScanned);
+            const scanned = seen.filter((e) => e.type === QR_EVENT.QR_SCANNED);
             assert.equal(scanned.length, 1);
             assert.equal(scanned[0].data.display_name, SECOND_QR_SCANNED.display_name);
         });
@@ -518,14 +510,14 @@ describe("the QR login", () => {
                     lifetimeMs: 60,
                     onEvent: (e) => {
                         seen.push(e);
-                        if (e.type === LoginQRCallbackEventType.QRCodeExpired) e.actions.abort();
+                        if (e.type === QR_EVENT.QR_EXPIRED) e.actions.abort();
                     },
                 }),
                 (e) => e instanceof QrLoginAborted,
             );
             const kinds = seen.map((e) => `${e.type}${e.data?.layer ?? ""}`);
-            assert.ok(kinds.includes(`${LoginQRCallbackEventType.QRCodeGenerated}2`), "the second QR was shown");
-            assert.ok(kinds.includes(String(LoginQRCallbackEventType.QRCodeExpired)), "and expired");
+            assert.ok(kinds.includes(`${QR_EVENT.QR_GENERATED}2`), "the second QR was shown");
+            assert.ok(kinds.includes(String(QR_EVENT.QR_EXPIRED)), "and expired");
         });
 
         it("tells a scan that wants a second QR from one that does not", () => {
@@ -614,7 +606,7 @@ describe("the QR login", () => {
         it("loginWithQR with ZALO_QR_FLOW=legacy is refused with the 3.0.0 message before any request", async () => {
             process.env.ZALO_QR_FLOW = "legacy";
             serveQrLogin(fake);
-            // Red if a legacy branch still runs: zca-js's loginQR would reach id.zalo.me first.
+            // Red if a legacy branch still runs: the old QR flow would reach id.zalo.me first.
             await assert.rejects(
                 loginWithQR(null, () => {}),
                 (e) => e.code === QR_FLOW_INVALID && /removed in 3\.0\.0/.test(e.message),

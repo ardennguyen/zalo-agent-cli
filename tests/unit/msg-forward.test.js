@@ -1,7 +1,7 @@
 /**
- * `msg forward` shipped calling zca-js with the wrong arity, so it threw
+ * `msg forward` shipped calling the previous engine with the wrong arity, so it threw
  * "Missing message content" on every invocation -- every message type, both
- * thread types -- before it ever reached the network. The zca-api-surface
+ * thread types -- before it ever reached the network. The api-surface
  * test did not catch it: `forwardMessage` exists, only the call shape was
  * wrong. These guards are about the shape.
  *
@@ -9,7 +9,7 @@
  * both returned a msgId with an empty `fail` array; photo, file, sticker and
  * link were each refused locally with no network call.
  *
- * Text no longer goes through zca-js's forwardMessage at all: it now carries
+ * Text no longer goes through the previous engine's forwardMessage at all: it now carries
  * the reference Zalo Web sends, which forwardMessage cannot serialize
  * correctly (it hardcodes the decorLog's `st`), so it is a custom call in
  * src/core/forward.js. The guards that pinned forwardMessage's call shape --
@@ -68,7 +68,7 @@ describe("msg forward reads the cache and dispatches by kind", () => {
         // A shared contact arrives classified as a link; only its action says
         // otherwise, so the dispatch has to read the action.
         assert.ok(/recommened\.user/.test(block), "a shared contact must route to sendCard, not sendLink");
-        // Location has no send API in zca-js, so it must refuse rather than
+        // Location has no send API in the session, so it must refuse rather than
         // pretend. The generic "no send path" branch covers it.
         assert.ok(/no send path reproduces it/.test(MSG_SRC), "unsupported kinds must say so");
     });

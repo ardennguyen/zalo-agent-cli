@@ -2,7 +2,7 @@
  * Self-tests of the fake Zalo (tests/helpers/fake-zalo): the thing every later
  * socket, retry and sync test stands on must itself be trusted first.
  *
- * Everything here runs through the REAL zca-js login and the REAL zca-js
+ * Everything here runs through the REAL login and the REAL
  * listener, which dials the fake's WebSocket server over TCP on 127.0.0.1. Each
  * test says what it asserts on the wire, not what it read back from the fake.
  */
@@ -133,7 +133,7 @@ describe("fake Zalo", () => {
             assert.equal(keys, 1, "the key frame did not come after setAutoAuth(true)");
         });
 
-        it("makes getLoginInfo fail on request: zca-js refuses the session", async () => {
+        it("makes getLoginInfo fail on request: the login refuses the session", async () => {
             zalo = await startFakeZalo({ loginError: { error_code: 70, error_message: "maintenance" } });
             await assert.rejects(zalo.login(), /Đăng nhập thất bại/);
             assert.equal(zalo.http.calls("/api/login/getLoginInfo").length, 1);
@@ -255,7 +255,7 @@ describe("fake Zalo", () => {
             const [messages] = await old;
             assert.deepEqual(messages, []);
             const sent = zalo.sock.framesOf(510, 1).at(-1);
-            // the Web's key (reqId), not zca-js's own (req_id): see src/zalo/pulls.js
+            // the Web's key (reqId), not the previous engine's own (req_id): see src/zalo/pulls.js
             assert.deepEqual(Object.keys(sent.data).sort(), ["first", "lastId", "preIds", "reqId"]);
         });
 
@@ -311,8 +311,8 @@ describe("fake Zalo", () => {
 
         it("a completed run: ack, statuses 3 then 4, batches, status 5, then dispose acks", async () => {
             const { sync, seen } = await ready({ outcome: "complete", batchesPerRequest: 2, expectedRequests: 2 });
-            api.listener.sendWs(syncRequest(1, "conversation"), false);
-            api.listener.sendWs(syncRequest(2), false);
+            api.listener.sendWs(syncRequest(1, "conversation"));
+            api.listener.sendWs(syncRequest(2));
 
             const ack = await seen.waitFor((f) => f.cmd === 590);
             assert.deepEqual(Object.keys(ack.body.data).sort(), ["err", "reqId", "ts"]);
@@ -340,15 +340,12 @@ describe("fake Zalo", () => {
             const reply = seen.frames.find((f) => f.cmd === 601);
             assert.deepEqual(Object.keys(reply.body.data.queueStatus).sort(), ["603_0", "603_1", "604_0"]);
 
-            api.listener.sendWs(
-                {
-                    version: 1,
-                    cmd: 591,
-                    subCmd: 0,
-                    data: { data: { syncId: "sync-1", toDevice: 0, reason: 1 }, reqId: "disp-1" },
-                },
-                false,
-            );
+            api.listener.sendWs({
+                version: 1,
+                cmd: 591,
+                subCmd: 0,
+                data: { data: { syncId: "sync-1", toDevice: 0, reason: 1 }, reqId: "disp-1" },
+            });
             const disposeAck = await seen.waitFor((f) => f.cmd === 591);
             assert.equal(disposeAck.body.data.reqId, "disp-1");
             assert.deepEqual(sync.disposals, [{ syncId: "sync-1", reason: 1, reqId: "disp-1" }]);
@@ -363,17 +360,14 @@ describe("fake Zalo", () => {
 
         it("a declined run: statuses 3 then 6, no batches, and the dispose is still acknowledged", async () => {
             const { seen } = await ready({ outcome: "declined" });
-            api.listener.sendWs(syncRequest(1, "conversation"), false);
+            api.listener.sendWs(syncRequest(1, "conversation"));
             await seen.waitFor((f) => f.cmd === 601 && f.body.data.controls.some((c) => c.content.data.status === 6));
-            api.listener.sendWs(
-                {
-                    version: 1,
-                    cmd: 591,
-                    subCmd: 0,
-                    data: { data: { syncId: "sync-1", toDevice: 0, reason: 2 }, reqId: "disp-1" },
-                },
-                false,
-            );
+            api.listener.sendWs({
+                version: 1,
+                cmd: 591,
+                subCmd: 0,
+                data: { data: { syncId: "sync-1", toDevice: 0, reason: 2 }, reqId: "disp-1" },
+            });
             await seen.waitFor((f) => f.cmd === 591);
             assert.deepEqual(statusesOf(seen), [3, 6]);
             const batches = seen.frames
@@ -385,7 +379,7 @@ describe("fake Zalo", () => {
 
         it("a waiting run: status 3 and then silence", async () => {
             const { seen } = await ready({ outcome: "waiting" });
-            api.listener.sendWs(syncRequest(1, "conversation"), false);
+            api.listener.sendWs(syncRequest(1, "conversation"));
             await seen.waitFor((f) => f.cmd === 601);
             await new Promise((r) => setTimeout(r, 150));
             assert.deepEqual(statusesOf(seen), [3]);
@@ -393,7 +387,7 @@ describe("fake Zalo", () => {
 
         it("an ack error means no progress frames at all", async () => {
             const { seen } = await ready({ outcome: "complete", ackError: 211 });
-            api.listener.sendWs(syncRequest(1, "conversation"), false);
+            api.listener.sendWs(syncRequest(1, "conversation"));
             const ack = await seen.waitFor((f) => f.cmd === 590);
             assert.equal(ack.body.data.err, 211);
             await new Promise((r) => setTimeout(r, 150));
@@ -526,7 +520,7 @@ describe("fake Zalo", () => {
             const names = conn.rawHeaders.filter((_, i) => i % 2 === 0);
             assert.ok(names.includes("Sec-WebSocket-Key"), `no case-preserved Sec-WebSocket-Key in ${names}`);
             assert.ok(names.includes("Pragma") && !names.includes("pragma"), `Pragma is not spelled as sent: ${names}`);
-            assert.ok(!names.includes("prgama"), `zca-js's misspelled prgama went out: ${names}`);
+            assert.ok(!names.includes("prgama"), `the misspelled prgama went out: ${names}`);
         });
     });
 

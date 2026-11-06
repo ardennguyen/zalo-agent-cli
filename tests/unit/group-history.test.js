@@ -1,7 +1,7 @@
 /**
  * src/core/group-history.js -- group history from Zalo's cloud-message store.
  *
- * Driven through a real zca-js session whose transport is
+ * Driven through a real session whose transport is
  * ./fake-zalo-session.js, so every assertion is about the request that
  * actually goes out (decrypted) or what the caller gets back.
  *
@@ -100,7 +100,7 @@ describe("getGroupHistory", () => {
         assert.equal(storeCalls()[0].params.groupId, GID);
     });
 
-    it("returns messages newest first, as zca-js GroupMessage objects", async () => {
+    it("returns messages newest first, as listener GroupMessage objects", async () => {
         fake.route("/api/cm/getrecentv2", () =>
             page([row(msgIdAt(2)), row(msgIdAt(0)), row(msgIdAt(1))], { hasMore: 0 }),
         );

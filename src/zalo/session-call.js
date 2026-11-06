@@ -6,10 +6,8 @@
  * bound helpers (src/zalo/kernel/bound.js): `makeURL` (`zpw_ver`/`zpw_type` first), the session cipher, the
  * transport (headers, cookies), and the reply decoding in `resolve`, which throws a `ZaloApiError` carrying Zalo's
  * error code. Only the path and the params are the caller's.
- *
- * (The file keeps its name until the cut-over renames it; design 5.)
  */
-import { boundUtils } from "../zalo/kernel/bound.js";
+import { boundUtils } from "./kernel/bound.js";
 
 /**
  * Run one request with a logged-in session's context and its bound helpers.
@@ -18,7 +16,7 @@ import { boundUtils } from "../zalo/kernel/bound.js";
  *
  * @template T
  * @param {object} api - a logged-in session
- * @param {(ctx: object, utils: import("../zalo/kernel/bound.js").BoundUtils) => Promise<T>} body
+ * @param {(ctx: object, utils: import("./kernel/bound.js").BoundUtils) => Promise<T>} body
  * @returns {Promise<T>}
  */
 export async function customCall(api, body) {
@@ -30,7 +28,7 @@ export async function customCall(api, body) {
 /**
  * Encrypt `params` into the query string and GET `base`.
  *
- * @param {import("../zalo/kernel/bound.js").BoundUtils} utils - the helpers `customCall` hands its body
+ * @param {import("./kernel/bound.js").BoundUtils} utils - the helpers `customCall` hands its body
  * @param {string} base - endpoint URL without a query
  * @param {object} params
  * @returns {Promise<unknown>} the decoded `data`
@@ -44,7 +42,7 @@ export async function getWithParams(utils, base, params) {
 /**
  * Encrypt `params` into a form body and POST it to `base`.
  *
- * @param {import("../zalo/kernel/bound.js").BoundUtils} utils - the helpers `customCall` hands its body
+ * @param {import("./kernel/bound.js").BoundUtils} utils - the helpers `customCall` hands its body
  * @param {string} base - endpoint URL without a query
  * @param {object} params
  * @returns {Promise<unknown>} the decoded `data`

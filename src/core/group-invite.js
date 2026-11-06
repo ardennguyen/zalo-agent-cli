@@ -1,15 +1,15 @@
 /**
  * A pending group invitation's details (`group invite-info`).
  *
- * zca-js's `getGroupInviteBoxInfo` reads `data.groupInfo.topic.params` without
+ * The previous engine's `getGroupInviteBoxInfo` read `data.groupInfo.topic.params` without
  * checking that the group has a topic. Most groups have no pinned message, so
- * for them Zalo's answer carries no `topic` and zca-js throws "Cannot read
+ * for them Zalo's answer carries no `topic` and that call threw "Cannot read
  * properties of undefined (reading 'params')" after Zalo had answered fine.
  * This makes the same request (GET {group}/api/group/inv-box/inv-info) on
- * zca-js's own session envelope, and unpacks the topic's JSON-in-JSON params
+ * the session envelope, and unpacks the topic's JSON-in-JSON params
  * only when there is a topic.
  */
-import { customCall, getWithParams } from "./zca-custom.js";
+import { customCall, getWithParams } from "../zalo/session-call.js";
 
 /**
  * Parse a topic's `params`, which Zalo sends as a JSON string whose `extra`
@@ -36,7 +36,7 @@ export function unpackTopic(topic) {
 }
 
 /**
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {{groupId: string, mpage?: number, mcount?: number}} payload
  * @returns {Promise<object>} Zalo's `data`: groupInfo, inviterInfo, grCreatorInfo, expiredTs, type
  */

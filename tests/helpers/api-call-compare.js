@@ -1,5 +1,5 @@
 /**
- * Comparing an observed call against a declared zca-js signature.
+ * Comparing an observed call against a method's declared signature.
  *
  * Two independent detectors, because neither alone is sufficient:
  *

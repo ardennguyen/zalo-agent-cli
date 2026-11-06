@@ -141,7 +141,7 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
          * Subscribe to a listener. Call again with the new listener after a re-login.
          * Never subscribes to `cipher_key`, which carries the session's key material.
          *
-         * @param {object} listener - zca-js listener
+         * @param {object} listener - listener
          */
         attach(listener) {
             listener.on("connected", () => api.noteUp());

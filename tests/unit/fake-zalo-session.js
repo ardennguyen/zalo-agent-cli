@@ -1,6 +1,6 @@
 /**
  * An offline stand-in for Zalo's login and REST servers, driven through the
- * REAL zca-js login flow, the real API factories and the real CLI commands.
+ * REAL login flow (src/zalo/login.js), the real session object and the real CLI commands.
  *
  * Not a test file (no `.test.js`), so `npm test` does not run it on its own.
  * A test that imports it reaches `src/core/credentials.js` and must import
@@ -8,13 +8,12 @@
  *
  * ## How it intercepts the network
  *
- * zca-js reaches the network only through `ctx.options.polyfill`. With no
+ * The session reaches the network only through `ctx.options.polyfill`. With no
  * proxy configured, that is whatever `globalThis.fetch` was at the moment the
- * login context was created (`createContext()` in zca-js `dist/context.js`).
+ * login context was created (`createSession()` in src/zalo/kernel/session.js).
  * Installing `handle()` as globalThis.fetch before `loginWithCredentials()`
- * therefore routes every request of that session through here: zca-js's npm
- * version probe, `getLoginInfo`, `getServerInfo`, and every API call made on
- * the session afterwards. A request nothing here answers gets an HTTP 404 --
+ * therefore routes every request of that session through here: `getLoginInfo`,
+ * `getServerInfo`, and every API call made on the session afterwards. A request nothing here answers gets an HTTP 404 --
  * which is also exactly what the real server says to a retired endpoint.
  *
  * ## Why no socket can open
@@ -26,14 +25,13 @@
  *
  * ## The login cipher
  *
- * zca-js encrypts getLoginInfo's response key from the `zcid` and `zcid_ext`
- * it sends in the query (`ParamsEncryptor` in zca-js `dist/utils.js`), so this
- * derives the same key the real server does. Every later response is sealed
+ * The login derives getLoginInfo's response key from the `zcid` and `zcid_ext`
+ * it sends in the query (src/zalo/kernel/login-cipher.js), so this derives the
+ * same key the real server does. Every later response is sealed
  * with a throwaway session key. Every id here is fake.
  */
 import { mkdirSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Command } from "commander";
 import { loginWithCredentials } from "../../src/core/zalo-client.js";
 import { addAccount } from "../../src/core/accounts.js";
@@ -41,8 +39,8 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { _resetErrorLatch } from "../../src/utils/output.js";
 import { parseMultipart, readBody } from "../helpers/wire-diff/body.js";
 
-const require = createRequire(import.meta.url);
-const zu = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
+import { deriveEnk, sealLogin } from "../../src/zalo/kernel/login-cipher.js";
 
 /** Fake identities. The uid is deliberately past 2^53, as real Zalo uids are. */
 export const FAKE = Object.freeze({
@@ -60,9 +58,8 @@ export const FAKE_CREDENTIALS = Object.freeze({
 });
 
 /**
- * Every service key a zca-js factory reads while the API object is being
- * built, plus the ones this repo's own custom calls use. A key missing here
- * makes `new API()` throw inside login.
+ * Every service key the session's calls read, plus the ones this repo's own
+ * custom calls use. A key missing here fails only the call that needs it.
  */
 const SERVICES = [
     "aext",
@@ -98,7 +95,7 @@ export function serviceHost(key) {
     return `${key.replace(/_/g, "-")}.zalo.invalid`;
 }
 
-/** The subset of server settings zca-js reads while building a session. */
+/** The subset of server settings the previous engine reads while building a session. */
 const SETTINGS = {
     features: {
         sharefile: {
@@ -112,6 +109,17 @@ const SETTINGS = {
     },
     keepalive: { alway_keepalive: 0, keepalive_duration: 0, time_deactive: 0 },
 };
+
+/**
+ * The key a login answer is sealed with: the one the server derives from the `zcid` and `zcid_ext` the request
+ * carries in its query.
+ *
+ * @param {URL} url - the getLoginInfo request
+ * @returns {string}
+ */
+function loginKeyOf(url) {
+    return deriveEnk(url.searchParams.get("zcid"), url.searchParams.get("zcid_ext"));
+}
 
 /** Deep-merge plain objects; arrays and scalars in `over` replace the base value. */
 function mergeSettings(base, over) {
@@ -214,7 +222,7 @@ export function installFakeZalo({
         reply({
             error_code: 0,
             error_message: "Successful.",
-            data: zu.encodeAES(FAKE.sessionKey, JSON.stringify(inner)),
+            data: sealSession(FAKE.sessionKey, JSON.stringify(inner)),
         });
     const sealed = (data) => seal({ error_code: 0, error_message: "Successful.", data });
     const hosts = new Map(Object.entries(serviceMap).map(([k, [base]]) => [new URL(base).host, k]));
@@ -307,7 +315,7 @@ export function installFakeZalo({
         // negative test answers it there); only the plain routes below insist on opening them.
         if (hosts.has(url.host) && req.rawParams) {
             try {
-                req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, req.rawParams));
+                req.params = JSON.parse(openSession(FAKE.sessionKey, req.rawParams));
             } catch {
                 req.params = null;
             }
@@ -315,26 +323,17 @@ export function installFakeZalo({
 
         for (const raw of rawRoutes) if (raw.match(req)) return raw.handler(req);
 
-        // zca-js asks npm whether it is current on every login.
+        // A client that asked npm whether it is current would get a 404 (the login never asks).
         if (url.host === "registry.npmjs.org") return reply({}, 404);
 
         if (url.pathname === "/api/login/getLoginInfo") {
             const step = loginScript.shift();
             if (step?.sealedEnvelope) {
                 // an envelope sealed with the key the request asked for, as Zalo answers a login it refuses
-                const keyer = new zu.ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
-                keyer.zcid = url.searchParams.get("zcid");
-                keyer.zcid_ext = url.searchParams.get("zcid_ext");
-                keyer.createEncryptKey();
                 return reply({
                     error_code: 0,
                     error_message: "",
-                    data: zu.ParamsEncryptor.encodeAES(
-                        keyer.getEncryptKey(),
-                        JSON.stringify(step.sealedEnvelope),
-                        "base64",
-                        false,
-                    ),
+                    data: sealLogin(loginKeyOf(url), step.sealedEnvelope),
                 });
             }
             if (step) return scripted(step, init);
@@ -356,16 +355,8 @@ export function installFakeZalo({
             };
             // A request without zcid was sent unencrypted: answer it the same way.
             if (!url.searchParams.get("zcid")) return reply({ error_code: 0, error_message: "", data: loginInfo });
-            const keyer = new zu.ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
-            keyer.zcid = url.searchParams.get("zcid");
-            keyer.zcid_ext = url.searchParams.get("zcid_ext");
-            keyer.createEncryptKey();
-            const payload = JSON.stringify({ error_code: 0, error_message: "", data: loginInfo });
-            return reply({
-                error_code: 0,
-                error_message: "",
-                data: zu.ParamsEncryptor.encodeAES(keyer.getEncryptKey(), payload, "base64", false),
-            });
+            const payload = { error_code: 0, error_message: "", data: loginInfo };
+            return reply({ error_code: 0, error_message: "", data: sealLogin(loginKeyOf(url), payload) });
         }
 
         if (url.pathname === "/api/login/getServerInfo") {
@@ -382,7 +373,7 @@ export function installFakeZalo({
         }
 
         const enc = req.rawParams;
-        if (enc && req.params === null) req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, enc));
+        if (enc && req.params === null) req.params = JSON.parse(openSession(FAKE.sessionKey, enc));
 
         for (const [suffix, handler] of routes) {
             if (url.pathname.endsWith(suffix)) return sealed(await handler(req));
@@ -575,10 +566,10 @@ export function serveQrLogin(fake, { scan = [8, 0], confirm = [0], second = fals
 
 /**
  * Register the fake account and log in through the real `loginWithCredentials`,
- * so `getApi()` returns a real zca-js API whose transport is the fake server.
+ * so `getApi()` returns a real session object whose transport is the fake server.
  * Install the fake server first.
  *
- * @returns {Promise<object>} the zca-js API, with `listener.start` disabled
+ * @returns {Promise<object>} the session object, with `listener.start` disabled
  */
 export async function loginFake() {
     addAccount(FAKE.ownId, "Offline test account");

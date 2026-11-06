@@ -1,5 +1,5 @@
 /**
- * Read state that other devices report, which zca-js drops: how far the
+ * Read state that other devices report, which the listener's events leave out: how far the
  * account has read each conversation, and which conversations the human
  * marked unread by hand.
  *
@@ -25,8 +25,8 @@
  *    `{convsGroup: [{id, cliMsgId, fromUid, ts}], convsUser: [...]}`) or
  *    cleared (`act: "remove"`, content `{convsGroup: [id], convsUser: [id]}`).
  *    The content is a JSON string on the control's `content` (the web's
- *    MarkUnreadManager, @~6215256). zca-js's 601 handler knows only
- *    `file_done`, `group` and `fr`.
+ *    MarkUnreadManager, @~6215256). The listener's 601 events cover only
+ *    the upload, `group` and `fr` controls.
  *
  * Cmd 613 carries `clearUnreads` too, on the reaction path: reactions seen,
  * not messages read. It is not read here.

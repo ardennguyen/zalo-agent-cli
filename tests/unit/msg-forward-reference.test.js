@@ -13,7 +13,7 @@
  * a group, the peer's uid for a 1-1. Checked offline against the real capture
  * (agent/work/zalo-web-capture-2026-09-29/live/both.A16_forward_multi.json):
  * md5 of the captured source cliMsgId + the own uid + "g" + the group id
- * reproduces the captured reference id exactly (comparison-vs-zca-js.md §5.16).
+ * reproduces the captured reference id exactly (the capture's comparison notes §5.16).
  *
  * The expected ids below were computed from the fake ids here with that
  * derivation. The request SHAPE is the captured one, key order included,
@@ -24,7 +24,7 @@
  *   decorLog  = {"fw":{"pmsg":{"st","ts","id"},"rmsg":{"st","ts","id"},"fwLvl"}}
  *
  * `st` is the reference's logSrcType (the web maps st -> logSrcType), so it is
- * 2 for a group source and 1 for a 1-1 source. zca-js hardcodes 1, which is
+ * 2 for a group source and 1 for a 1-1 source. The previous engine hardcodes 1, which is
  * why this goes through a custom call.
  *
  * NOT captured, derived from the web bundle and flagged for the live session:

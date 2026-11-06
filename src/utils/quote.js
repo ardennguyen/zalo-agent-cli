@@ -2,16 +2,16 @@
  * Rebuild the quote payload `sendMessage({ msg, quote })` needs from a cached
  * message row.
  *
- * Quoting is the one send that cannot be driven from a msgId alone. zca-js
+ * Quoting is the one send that cannot be driven from a msgId alone. The send
  * puts five fields on the wire — `qmsgOwner`, `qmsgId`, `qmsgCliId`,
  * `qmsgTs`, `qmsg` (and `qmsgAttach` for groups) — and two of them,
  * `cliMsgId` and the `property` blob, appear in no CLI output at all. They
  * live only in `messages.raw_data` in the local SQLite cache, which is why
  * `--quote` is a cache lookup rather than a pure argument transform.
  *
- * Only **text** messages can be quoted natively. zca-js raises
- * `This kind of 'webchat' quote type is not available` when a `webchat`
- * quote's content is not a string, and the sync path stores a *placeholder*
+ * Only **text** messages can be quoted natively. The session refuses with
+ * `Only a text message can be quoted` when a quote's content is not a
+ * string, and the sync path stores a *placeholder*
  * string ("[Hình ảnh]", "[Sticker]", "[File] …") for attachments — which
  * would slip past that check and send a quote whose visible text is the
  * placeholder. So the guard here is the row's classified `type`, not the
@@ -39,7 +39,7 @@ function parseRaw(rawData) {
 }
 
 /**
- * Turn a cached `messages` row into the `quote` object zca-js expects.
+ * Turn a cached `messages` row into the `quote` object the session expects.
  *
  * Returns `{ error }` rather than throwing so the caller can report a
  * reason the user can act on — "nothing has cached this message yet" is a
@@ -134,7 +134,7 @@ export function buildQuote(row, { msgId = row?.msgId, threadId = null } = {}) {
             content,
             // Normalized rather than echoed: the live path records "webchat"
             // and the sync path records the numeric 0 for the same text
-            // message. zca-js maps both to client type 1, so say it once.
+            // message. The send maps both to client type 1, so say it once.
             msgType: "webchat",
             // Group quotes go out as `qmsgAttach: JSON.stringify(propertyExt)`.
             // undefined is tolerated (removeUndefinedKeys drops it) but the
@@ -167,7 +167,7 @@ export function buildQuote(row, { msgId = row?.msgId, threadId = null } = {}) {
  * sending something the server will reject.
  *
  * @param {object} quote - the `quote` from buildQuote()
- * @param {object} api - a logged-in zca-js api
+ * @param {object} api - a logged-in session
  * @returns {Promise<{quote?: object, error?: string, resolved?: string}>}
  */
 export async function resolveQuoteSender(quote, api) {

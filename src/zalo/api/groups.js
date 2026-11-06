@@ -629,35 +629,3 @@ export function groupMethods(s) {
         disperseGroup: (groupId) => s.call(GROUP_DISPERSE, { groupId }),
     };
 }
-
-/** Methods whose wire-groups.test.js comparison passes (all 28): the switch answers these from our code. */
-export const OWN_READY = new Set([
-    "getGroupInfo",
-    "getAllGroups",
-    "getGroupMembersInfo",
-    "createGroup",
-    "addUserToGroup",
-    "removeUserFromGroup",
-    "leaveGroup",
-    "changeGroupName",
-    "changeGroupAvatar",
-    "addGroupDeputy",
-    "removeGroupDeputy",
-    "changeGroupOwner",
-    "addGroupBlockedMember",
-    "removeGroupBlockedMember",
-    "getGroupBlockedMember",
-    "upgradeGroupToCommunity",
-    "joinGroupLink",
-    "getPendingGroupMembers",
-    "reviewPendingMemberRequest",
-    "enableGroupLink",
-    "disableGroupLink",
-    "getGroupLinkDetail",
-    "getGroupLinkInfo",
-    "getGroupInviteBoxList",
-    "joinGroupInviteBox",
-    "deleteGroupInviteBox",
-    "inviteUserToGroups",
-    "disperseGroup",
-]);

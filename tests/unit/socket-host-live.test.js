@@ -1,5 +1,5 @@
 /**
- * The socket host on the real stack: the real supervisor, the real zca-js listener and the fake
+ * The socket host on the real stack: the real supervisor, the real listener and the fake
  * Zalo's WebSocket. The unit tests of the host script a supervisor; these check that the pieces
  * really fit: a kick ends the daemon and nothing reconnects, a refused session leads to a new login
  * and a new socket, and a socket that cannot authenticate leads to one too.

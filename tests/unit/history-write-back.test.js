@@ -13,7 +13,7 @@
  * the listener stored keeps everything the listener and later events put on
  * it: localPath, the receipt's msgStatus, the st/at/cmd a seen receipt needs.
  *
- * Each test runs the real command on a real zca-js session whose transport is
+ * Each test runs the real command on a real session whose transport is
  * ./fake-zalo-session.js and reads zalo.db afterwards.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
@@ -150,7 +150,7 @@ describe("msg history writes fetched history insert-if-absent", () => {
         assert.equal(text.timestamp, Number(wire(textId, GID).ts));
         const pic = stored(photoId);
         assert.ok(pic, "the store's photo row was not written");
-        assert.equal(pic.type, "photo", "shared vocabulary, not zca-js's chat.photo");
+        assert.equal(pic.type, "photo", "shared vocabulary, not the previous engine's chat.photo");
         assert.equal(pic.has_attachment, 1, "otherwise sync-media can never fetch it");
 
         // Identical to the row the listener writes for the same frame, apart

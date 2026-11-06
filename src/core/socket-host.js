@@ -4,7 +4,7 @@
  * `listen` and `mcp start` are two entry points to the same socket, so this is
  * written once and both call it (AGENTS.md section 13: any asymmetry between
  * them is a defect). Before it, each carried its own copy of a recovery ladder:
- * let zca-js retry, then on `closed` log in again after 5 s, once more after
+ * let the listener retry, then on `closed` log in again after 5 s, once more after
  * 30 s, then exit. That ladder reconnected on a duplicate-session close until
  * its retries ran out, which evicted the other session again and again, and it
  * ran the same way for every cause.
@@ -33,10 +33,10 @@ import { superviseListener } from "../zalo/socket.js";
 export { EXIT_CODE };
 
 /**
- * The fetch the account's own calls use (zca-js's `polyfill`: carries its proxy and its browser headers), or undefined
+ * The fetch the account's own calls use (the session's `polyfill`: carries its proxy and its browser headers), or undefined
  * for the global one.
  *
- * @param {object} [api] - a zca-js API
+ * @param {object} [api] - a session object
  * @returns {typeof fetch|undefined}
  */
 function fetchOf(api) {

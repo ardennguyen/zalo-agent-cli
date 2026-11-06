@@ -139,7 +139,7 @@ export class SyncRequestError extends Error {
  * The channel for one run.
  *
  * @param {object} p
- * @param {() => object} p.getListener - the zca-js listener to send on; asked on every send
+ * @param {() => object} p.getListener - the listener to send on; asked on every send
  * @param {(parsed: object) => object} p.decode - decodes an encrypted frame body
  * @param {{load: Function, save: Function}} [p.store] - where open sessions are written down
  * @param {(ms: number) => Promise<void>} [p.sleep]
@@ -205,7 +205,7 @@ export function createSyncChannel({
     }
 
     function send(frame) {
-        getListener().sendWs(frame, false);
+        getListener().sendWs(frame);
     }
 
     /** One send and its ack, retried per the official rules. */

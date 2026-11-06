@@ -2,9 +2,9 @@
  * `me` as the thread argument of `msg` commands means My Documents.
  *
  * Zalo rejects `msg send <ownUid>` ("Tham số không hợp lệ"): the self-chat is
- * not the own uid but a thread of its own, which zca-js already keeps as
+ * not the own uid but a thread of its own, which the login already keeps as
  * `ctx.loginInfo.send2me_id` (captures self.S0/S1; FINDINGS §16;
- * comparison-vs-zca-js.md §3(f)). Sending there is an ordinary 1-1 send with
+ * the capture's comparison notes §3(f)). Sending there is an ordinary 1-1 send with
  * `toid` set to that id -- the replay of `sendMessage(text, send2me, 0)` is
  * identical to the captured request.
  *

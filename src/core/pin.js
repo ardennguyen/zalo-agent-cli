@@ -1,8 +1,8 @@
 /**
  * Pin and unpin a message the way Zalo Web does.
  *
- * zca-js has none of these endpoints, so they are custom calls on its session
- * envelope (./zca-custom.js). Each shape is the one captured from Zalo Web on
+ * The session has no area method for these, so they are custom calls on its
+ * envelope (src/zalo/session-call.js). Each shape is the one captured from Zalo Web on
  * 2026-09-29 (agent/work/zalo-web-capture-2026-09-29/live/group.A9_pin_message,
  * group.A9b_unpin_message, dm.D9_pin_message, dm.D9b_unpin_message):
  *
@@ -15,14 +15,14 @@
  * message. Unpinning takes the topic's id, not the message's, so both unpins
  * start by listing the pinned topics: `/api/board/pin/list` for a group (the
  * web's fetchTopics, which also hands back the `boardVersion` unpinv2 needs)
- * and zca-js's getFriendBoardList for a 1-1 (which returns the `version`
+ * and getFriendBoardList for a 1-1 (which returns the `version`
  * create and multi_unpin need). A stale group board version is error 183; the
  * web then refetches once and retries, and so does this.
  *
  * Only text messages: text is the kind the capture covers, and every other
  * kind carries its own params blob.
  */
-import { customCall, getWithParams, postWithParams } from "./zca-custom.js";
+import { customCall, getWithParams, postWithParams } from "../zalo/session-call.js";
 
 /** A pinned message's board topic type (the web's MSG_TOPIC). */
 export const PINNED_MESSAGE_TOPIC = 2;
@@ -93,7 +93,7 @@ export function findPinnedTopic(topics, msgId) {
 /**
  * Pin a text message.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {object} target
  * @param {string} target.threadId
  * @param {boolean} target.isGroup
@@ -208,7 +208,7 @@ async function unpinOneToOneMessage(api, conversationId, msgId) {
 /**
  * Unpin a message.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {object} target
  * @param {string} target.threadId
  * @param {boolean} target.isGroup

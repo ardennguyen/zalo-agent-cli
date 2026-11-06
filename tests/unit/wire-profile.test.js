@@ -1,12 +1,11 @@
 /**
- * The own-profile area on the wire (design 3.1, package PRF): avatar upload, bio, profile, settings, the avatar
- * gallery, online status, language, lost focus and linked devices, zca-js against src/zalo/api/profile.js on one
- * logged-in fake.
+ * The own-profile area on the wire (design 3.1 and 3.3, package PRF): avatar upload, bio, profile, settings, the
+ * avatar gallery, online status, language, lost focus and linked devices, src/zalo/api/profile.js on one logged-in
+ * fake.
  *
- * Each case has the three parts of design 3.1: (1) `assertSameWire` against the rows of tests/helpers/wire-diff/
- * allow/profile.js, which fails on any difference not declared AND on a declared one that is absent; (2) our side
- * against its reviewed golden record; (3) the error answers. The Web-only behavior is also asserted outright, so a
- * case is red if our side drifts back to zca-js's shape even where the golden file were re-recorded.
+ * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
+ * against a literal `{message, code}`. The Web behavior is also asserted outright, so a case is red if our side
+ * drifts from it even where the golden file were re-recorded.
  *
  * The settings calls go to Zalo Web's auth host (`https://wpa.chat.zalo.me`), which is no service-map host of the
  * fake: this file answers it itself (`answerAuthHost`), opening the sealed params so they are compared decrypted.
@@ -20,8 +19,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { openSession } from "../../src/zalo/kernel/cipher.js";
-import { ALLOW, FAKE, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
-import { OWN_READY } from "../../src/zalo/api/profile.js";
+import { FAKE, expectGolden, openWire } from "../helpers/wire-diff/index.js";
+import { profileMethods } from "../../src/zalo/api/profile.js";
 
 const AREA = "profile";
 const FRIEND = "1000000000000000002";
@@ -33,38 +32,40 @@ const IMAGE_BYTES = Buffer.from("fake-jpeg-bytes-for-the-avatar-upload-012345678
 const IMAGE_PATH = join(SANDBOX_HOME, "avatar.jpg");
 const IMAGE_META = Object.freeze({ width: 640, height: 480, size: IMAGE_BYTES.length });
 
-/**
- * The allowed differences of one case: the area's rows of that case, plus the global rows.
- *
- * @param {string} name - the case
- * @returns {object[]}
- */
-function allowFor(name) {
-    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
-}
-
-/** The answers every method is run against for part 3, and whether zca-js has the same message for each. */
+/** The answers every method is run against for the error part, and what each must throw. */
 const ERROR_ANSWERS = [
-    { label: "an outer error", error: { outer: { error_code: 102, error_message: "outer failure" } }, sameText: true },
-    { label: "an inner error", error: { inner: { error_code: 114, error_message: "inner failure" } }, sameText: true },
-    { label: "HTTP 500", error: { status: 500 }, sameText: false },
-    { label: "an undecryptable data", error: { undecryptable: true }, sameText: true },
+    {
+        label: "an outer error",
+        error: { outer: { error_code: 102, error_message: "outer failure" } },
+        expected: { message: "outer failure", code: 102 },
+    },
+    {
+        label: "an inner error",
+        error: { inner: { error_code: 114, error_message: "inner failure" } },
+        expected: { message: "inner failure", code: 114 },
+    },
+    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
+    {
+        label: "an undecryptable data",
+        error: { undecryptable: true },
+        expected: { message: "Failed to parse response data", code: null },
+    },
 ];
 
-describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
-    let pair;
+describe("wire: profile (src/zalo/api/profile.js)", () => {
+    let wire;
     /** What the auth host answers in the current run: the run's `error`, else its `reply` sealed. */
     let authAnswer = { data: null };
 
     before(async () => {
         assertSandboxed(CONFIG_DIR);
         writeFileSync(IMAGE_PATH, IMAGE_BYTES);
-        pair = await openPair({ zaloOptions: { imageMetadataGetter: async () => ({ ...IMAGE_META }) } });
-        // zca-js writes an empty Cookie header for an empty jar and fetch writes none: give every host a cookie.
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.me; Path=/", "https://chat.zalo.me/");
+        wire = await openWire({ zaloOptions: { imageMetadataGetter: async () => ({ ...IMAGE_META }) } });
+        // Give every host a cookie, so the Cookie header is recorded with a value.
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.me; Path=/", "https://chat.zalo.me/");
         // Every run clears the fake's routes; put the auth host's answer back each time, ahead of the run's own.
-        const { fake } = pair;
+        const { fake } = wire;
         const clear = fake.clearRoutes;
         fake.clearRoutes = () => {
             clear();
@@ -78,10 +79,10 @@ describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
             );
         };
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     /**
-     * `pair.run`, with the run's `reply` or `error` also answering the auth host.
+     * `wire.run`, with the run's `reply` or `error` also answering the auth host.
      *
      * @param {string} method
      * @param {unknown[]} args
@@ -89,11 +90,11 @@ describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
      */
     async function run(method, args, fixture) {
         authAnswer = fixture.error ?? { data: fixture.reply ?? null };
-        return pair.run(method, args, fixture);
+        return wire.run(method, args, fixture);
     }
 
     /**
-     * Run one case through both engines, check it against its rows and its golden record.
+     * Run one case and check it against its golden record.
      *
      * @param {string} name - the case (golden entry and `case` of its rows)
      * @param {string} method
@@ -102,7 +103,6 @@ describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
      */
     async function check(name, method, args, fixture) {
         const rec = await run(method, args, fixture);
-        assertSameWire(rec, allowFor(name));
         await expectGolden(AREA, name, rec.own);
         assert.equal(rec.own.error, null, `${name}: our side threw ${JSON.stringify(rec.own.error)}`);
         return rec;
@@ -147,14 +147,14 @@ describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
         });
 
         it("refuses a path when the session cannot measure images, before any request", async () => {
-            const getter = pair.ctx.options.imageMetadataGetter;
-            delete pair.ctx.options.imageMetadataGetter;
+            const getter = wire.ctx.options.imageMetadataGetter;
+            delete wire.ctx.options.imageMetadataGetter;
             try {
-                const from = pair.fake.requests.length;
-                await assert.rejects(pair.own.changeAccountAvatar(IMAGE_PATH), /imageMetadataGetter/);
-                assert.equal(pair.fake.requests.length, from, "no request was made");
+                const from = wire.fake.requests.length;
+                await assert.rejects(wire.own.changeAccountAvatar(IMAGE_PATH), /imageMetadataGetter/);
+                assert.equal(wire.fake.requests.length, from, "no request was made");
             } finally {
-                pair.ctx.options.imageMetadataGetter = getter;
+                wire.ctx.options.imageMetadataGetter = getter;
             }
         });
     });
@@ -270,7 +270,7 @@ describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
         it("updateActiveStatus(false): GET deactive with {imei} only", async () => {
             const rec = await check("active-off", "updateActiveStatus", [false], { reply: { status: true } });
             assert.equal(rec.own.requests[0].path, "/api/social/profile/deactive");
-            // Red if the zca-js status: 0 came back.
+            // Red if the old status: 0 came back.
             assert.deepEqual(rec.own.requests[0].params, { imei: FAKE.imei });
         });
 
@@ -316,25 +316,19 @@ describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
             ["getListDevice", []],
         ];
         for (const [method, args] of CALLS) {
-            it(`${method}(${args.map((a) => (a === IMAGE_PATH ? "<image>" : JSON.stringify(a))).join(", ")}): same code, same text where zca-js has it`, async () => {
+            it(`${method}(${args.map((a) => (a === IMAGE_PATH ? "<image>" : JSON.stringify(a))).join(", ")}): the code and message of each error`, async () => {
                 for (const answer of ERROR_ANSWERS) {
                     const rec = await run(method, args, { error: answer.error });
-                    const where = `${method}, ${answer.label}`;
-                    assert.ok(rec.own.error, `${where}: our side did not throw`);
-                    assert.ok(rec.zca.error, `${where}: zca-js did not throw`);
-                    assert.equal(rec.own.error.code, rec.zca.error.code, where);
-                    if (answer.sameText) assert.equal(rec.own.error.message, rec.zca.error.message, where);
-                    else assert.equal(rec.own.error.message, "HTTP 500", where);
+                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
                 }
             });
         }
     });
 
-    it("OWN_READY lists the methods this file compares", () => {
-        // Red if a method was flipped to our engine without a comparison here, or one compared here was left on
-        // zca-js.
+    it("the area defines exactly the methods this file covers", () => {
+        // Red if a method was added to the area without a case here, or one covered here was removed.
         assert.deepEqual(
-            [...OWN_READY].sort(),
+            Object.keys(profileMethods({})).sort(),
             [
                 "changeAccountAvatar",
                 "deleteAvatar",

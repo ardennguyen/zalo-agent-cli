@@ -1,7 +1,7 @@
 /**
  * The session context: the one object a login fills in and every call reads.
  *
- * Its field names are the ones the engine has read since it ran on zca-js (spec-kernel 2.3), so the 40-odd
+ * Its field names are the ones the engine has always read (spec-kernel 2.3), so the 40-odd
  * `api.getContext()` call sites did not change: `API_TYPE`, `API_VERSION`, `imei`, `cookie` (a tough-cookie jar),
  * `userAgent`, `language`, `secretKey` (`zpw_enk`), `uid`, `settings`, `extraVer`, `loginInfo`, `kickout`,
  * `options.polyfill` (the fetch every request goes through), `options.logging`, `options.selfListen`,
@@ -12,7 +12,7 @@
  */
 import { EventEmitter } from "node:events";
 
-/** How long an upload settlement waiter (or a zca-js-style callback) is kept before it is dropped. */
+/** How long an upload settlement waiter (or a plain callback entry) is kept before it is dropped. */
 export const UPLOAD_ENTRY_TTL_MS = 5 * 60 * 1000;
 
 /** How long a settlement that arrived before anyone waited for it is kept. */
@@ -76,13 +76,13 @@ export function createSession({
  * The registry an upload waits on for the socket's word that the server has the file (the 601 control).
  *
  * It is a `Map` (`get`, `set`, `delete`, `has`), with each entry dropped after {@link UPLOAD_ENTRY_TTL_MS}, so an
- * upload and a listener written against zca-js's `ctx.uploadCallbacks` keep working on it. On top of that:
+ * upload and a listener that use `ctx.uploadCallbacks` as a plain map keep working on it. On top of that:
  *
  * - `waitFor(fileId, {timeoutMs, signal})` resolves with the settlement when it comes;
  * - `settle(fileId, {url, kind, data})` is the one call a listener makes for a finished upload. A function entry
- *   under the id (zca-js's uploader registers one) is removed and called with `{fileUrl, fileId}`, the shape
- *   zca-js's own listener hands it; every waiter gets the settlement. Only when neither took it is it kept for
- *   {@link EARLY_SETTLE_TTL_MS}, so a `waitFor` that comes a moment later still gets it (zca-js loses such a 601),
+ *   under the id (the upload stands one there) is removed and called with `{fileUrl, fileId}`, the shape a Map-only
+ *   listener hands it; every waiter gets the settlement. Only when neither took it is it kept for
+ *   {@link EARLY_SETTLE_TTL_MS}, so a `waitFor` that comes a moment later still gets it (a plain map loses such a 601),
  *   and nothing is left behind once someone did.
  *
  * Timers never keep the process alive.
@@ -99,7 +99,7 @@ export class UploadRegistry extends Map {
     }
 
     /**
-     * Register an entry (a zca-js-style callback, or anything an upload keeps), dropped after `ttl`.
+     * Register an entry (a plain callback, or anything an upload keeps), dropped after `ttl`.
      *
      * @param {string} key
      * @param {unknown} value
@@ -148,7 +148,7 @@ export class UploadRegistry extends Map {
     }
 
     /**
-     * Hand a settlement to whoever waits for this file. A function entry registered the zca-js way is removed and
+     * Hand a settlement to whoever waits for this file. A function entry registered as a plain callback is removed and
      * called with `{fileUrl: url, fileId}`; every waiter gets `{fileId, url, kind, data}`. With nobody to take it,
      * the settlement is kept for a short while.
      *

@@ -1,7 +1,7 @@
 /**
  * src/core/live-api.js, and `mcp start` handing it to the tools and the notifier.
  *
- * Every login replaces the zca-js API object, and `mcp start` logs in again
+ * Every login replaces the session object, and `mcp start` logs in again
  * after a dropped connection. The MCP tools and the notifier were handed the
  * object once, at start-up, so after the first re-login they kept calling the
  * replaced one: `zalo_get_history`'s socket scan on a stopped listener, every
@@ -14,9 +14,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as acorn from "acorn";
 import { liveApi } from "../../src/core/live-api.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
-/** A fake zca-js API: a method that reports which session answered, and a listener. */
+/** A fake session object: a method that reports which session answered, and a listener. */
 function session(name) {
     return {
         name,

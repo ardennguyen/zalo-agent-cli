@@ -353,7 +353,7 @@ export function classifySyncMessage(msg) {
 }
 
 /**
- * zca-js live-event msgType -> the SAME vocabulary the sync path uses.
+ * Live-event msgType -> the SAME vocabulary the sync path uses.
  *
  * The listener and the mobile sync describe identical things in different
  * words: a photo arrives as `chat.photo` live and as numeric msgType 3 from the
@@ -407,7 +407,7 @@ function liveParams(content) {
  * downloader serves both.
  *
  * @param {{msgType?: string, content?: object|string, msgId?: string|number, cliMsgId?: string|number}} data
- *   the zca-js `msg.data` object
+ *   the listener's `msg.data` object
  * @returns {{type: string, text: string, hasAttachment: boolean, attachments: Array<object>, raw: object}}
  */
 export function classifyLiveMessage(data) {
@@ -491,7 +491,7 @@ export function classifyLiveMessage(data) {
             attachments: attachments.length ? attachments : undefined,
             // The sync path records these; the live path dropped them, so the
             // same message was richer or poorer depending on how it was
-            // captured. zca-js supplies all of them on a live event.
+            // captured. The listener supplies all of them on a live event.
             quote: data?.quote || undefined,
             mentions: data?.mentions?.length ? data.mentions : undefined,
             ttl: data?.ttl ? Number(data.ttl) : undefined,

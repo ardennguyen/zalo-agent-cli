@@ -2,7 +2,7 @@
  * Drive the real CLI against an offline, logged-in session.
  *
  * `runOffline()` spawns `node src/index.js …` with ./offline-session.js
- * preloaded, so the command runs its real action code, zca-js builds its real
+ * preloaded, so the command runs its real action code, the engine builds its real
  * requests, and every request lands decrypted in a log this helper hands back.
  * That is what lets a test assert the request that actually goes out -- host
  * service, path, method and params -- instead of a string in the source.
@@ -104,9 +104,6 @@ export function seedMessage(m) {
  * @param {string} [opts.uid]
  * @param {string|null} [opts.send2me] - null leaves `send2me_id` out of loginInfo
  * @param {object} [opts.responses] - per-path response overrides (see offline-session.js)
- * @param {boolean} [opts.unpatched] - reproduce an install whose zca-js patch did not apply. The send is then
- *   forced to zca-js (`ZALO_ENGINE_ZCA=sendMessage`): the patch only ever lived there, and our own send always
- *   reports its cliMsgId. Goes away with zca-js at the cut-over.
  * @param {number} [opts.timeout]
  * @returns {Promise<{code:number, stdout:string, stderr:string, all:string, requests:object[]}>}
  */
@@ -118,9 +115,7 @@ export async function runOffline(args, opts = {}) {
         ZALO_OFFLINE_LOG: log,
         ZALO_OFFLINE_UID: opts.uid || OWN_UID,
         ZALO_OFFLINE_SEND2ME: opts.send2me === null ? "none" : opts.send2me || SEND2ME_ID,
-        ZALO_OFFLINE_UNPATCHED: opts.unpatched ? "1" : "",
     };
-    if (opts.unpatched) env.ZALO_ENGINE_ZCA = "sendMessage";
     if (opts.responses) {
         const file = join(dir, "responses.json");
         writeFileSync(file, JSON.stringify(opts.responses));

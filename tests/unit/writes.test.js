@@ -1,7 +1,7 @@
 /**
  * src/zalo/writes.js — the web client's state-changing endpoints, checked at the wire, and the guards around them.
  *
- * Each case drives `callWrite` through zca-js's real `request()` into a stub (tests/helpers/web-call.js) and checks what
+ * Each case drives `callWrite` through the session's real HTTP layer into a stub (tests/helpers/web-call.js) and checks what
  * the stub received against what the web client's API module builds for the same call (module `fBUP`, 2026-10-23
  * bundle): the service-map host, the path, GET or POST, and the JSON encrypted into `params`. The expected values are
  * written out by hand from that module, not computed from the table under test. Nothing here talks to Zalo.

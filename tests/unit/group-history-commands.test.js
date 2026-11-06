@@ -2,21 +2,21 @@
  * The three commands that read a group's history, driven end to end offline.
  *
  * `group history`, `msg history -t 1` and `conv delete`'s anchor lookup all
- * called zca-js getGroupChatHistory, which asks {group}/api/group/history --
+ * called the previous engine getGroupChatHistory, which asks {group}/api/group/history --
  * an endpoint Zalo answers with 404. Zalo Web reads a group's history from the
  * cloud-message store instead:
  *
  *   GET {group_cloud_message}/api/cm/getrecentv2?nretry=0
  *       params = AES({groupId, globalMsgId, count, msgIds, imei, src})
  *
- * (agent/work/zalo-web-capture-2026-09-29: comparison-vs-zca-js.md §3e and
+ * (agent/work/zalo-web-capture-2026-09-29: the capture's comparison notes §3e and
  * §5.30, FINDINGS.md §13; the web client's own getCM in bundle 1 @11028626.)
  *
- * Each test runs the real command, in-process, on a real zca-js session whose
+ * Each test runs the real command, in-process, on a real session whose
  * transport is ./fake-zalo-session.js, then asserts what went out on the wire
  * (host, path, method, decrypted params) and what the command did with the
  * answer. Two of the three consumers also read the old response in a shape
- * zca-js never returned -- an array instead of `{groupMsgs}` -- so they could
+ * The previous engine never returned -- an array instead of `{groupMsgs}` -- so they could
  * not have worked even on a 200; asserting their output catches that too.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

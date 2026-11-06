@@ -496,7 +496,7 @@ export const ReadError = CallError;
 /**
  * Build the request for a read without sending it (what {@link callRead} sends; the tests read it).
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string} name - a key of {@link READS}
  * @param {object} [args]
  * @returns {ReturnType<typeof buildCall>}
@@ -512,7 +512,7 @@ export function buildRead(api, name, args = {}) {
 /**
  * Call a read and return the decoded reply.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string} name - a key of {@link READS}
  * @param {object} [args]
  * @returns {Promise<any>} the reply's data

@@ -1,8 +1,9 @@
 /**
- * A frozen clock and a seeded `Math.random`, so the two engines of a differential run see the same time and the
- * same "random" numbers: zca-js stamps clientIds and `zcid_ext` from them, and our session clock reads `Date.now`.
+ * A frozen clock and a seeded `Math.random`, so every run of a case sees the same time and the same "random"
+ * numbers, and its golden record holds still: the session clock reads `Date.now`, and a few ids are drawn from
+ * `Math.random`.
  *
- * Both stubs are process-wide while installed. Install them right around the call being compared and restore
+ * Both stubs are process-wide while installed. Install them right around the call being recorded and restore
  * them in a `finally`; node:test's own timers do not read `Date`, so a test's timeouts keep working.
  */
 

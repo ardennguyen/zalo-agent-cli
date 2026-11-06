@@ -7,7 +7,7 @@
  * and `/api/message/get_crossdb` — are still present in Zalo Web's bundle but
  * have zero call sites in it. A web client whose local database has been wiped
  * restores itself over the WebSocket instead, with cmd 510 (DMs) and 511
- * (groups). zca-js already exposes exactly that as
+ * (groups). The listener already exposes exactly that as
  * `listener.requestOldMessages()` plus the `old_messages` event, so the whole
  * path is drivable — and testable — with a fake listener and no Zalo session.
  *
@@ -26,7 +26,7 @@ const THREAD_USER = 0;
 const THREAD_GROUP = 1;
 
 /**
- * Stands in for a started zca-js Listener. Records which thread types were
+ * Stands in for a started listener. Records which thread types were
  * asked for so the test can assert both were, and lets the test push
  * `old_messages` batches back on its own schedule.
  */
@@ -38,13 +38,13 @@ class FakeListener extends EventEmitter {
     requestOldMessages(threadType) {
         this.requested.push(threadType);
     }
-    /** Deliver a batch the way zca-js does: (messages, threadType). */
+    /** Deliver a batch the way the listener does: (messages, threadType). */
     deliver(messages, threadType) {
         this.emit("old_messages", messages, threadType);
     }
 }
 
-/** A zca-js UserMessage/GroupMessage-shaped record. */
+/** A listener UserMessage/GroupMessage-shaped record. */
 function msg(msgId, threadId, overrides = {}) {
     return {
         threadId,

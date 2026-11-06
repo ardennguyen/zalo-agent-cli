@@ -23,7 +23,7 @@
  *     owns the socket alone; here it would write everything a second time.
  *  2. `getApi()` per call, never a captured api. A daemon that hits a
  *     duplicate-session close re-logs-in and builds a new api object, and a
- *     stage bound to the old one would tap a socket zca-js has already
+ *     stage bound to the old one would tap a socket the listener has already
  *     nulled. This is the same lesson `/send-attachments` learned when it
  *     captured the api instead of a getter.
  */
@@ -153,7 +153,7 @@ function traceRunners(runners, { log, monitor }) {
  * Build the stage runners for `startDaemonChannel({ runners })`.
  *
  * @param {object} args
- * @param {() => object} args.getApi - resolves the daemon's CURRENT zca-js api
+ * @param {() => object} args.getApi - resolves the daemon's CURRENT session
  * @param {string} args.accountName - ownId; picks the account data dir
  * @param {(res: object) => void|Promise<void>} [args.onMessagesRestored] - optional hook after messages restore
  * @param {(name: string) => void|Promise<void>} [args.onSelfName] - optional hook when active account's profile name is refreshed
@@ -210,7 +210,7 @@ export function createSyncRunners({
                 liveStore: false,
                 // Explicit, not left to the default: a CLI that owns the
                 // socket runs one heartbeat across its whole window and turns
-                // this off, but a daemon has no such window -- zca-js pings on
+                // this off, but a daemon has no such window -- the listener pings on
                 // the server's own 180s interval, which is the entire width of
                 // the phone wait. So the restore keeps its own.
                 keepAlive: true,

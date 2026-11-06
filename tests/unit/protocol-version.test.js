@@ -1,8 +1,7 @@
 /**
  * The protocol version this CLI announces to Zalo.
  *
- * zca-js defaults to zpw_ver=685 (`createContext(apiType = 30, apiVersion =
- * 685)`, zca-js dist/context.js); the live Zalo Web client sent 691 on every
+ * The previous engine defaulted to zpw_ver=685; the live Zalo Web client sent 691 on every
  * URL (agent/work/zalo-web-capture-2026-09-29: FINDINGS.md §7, comparison
  * §3g), then 694, and 695 since Zalo Web and PC build 26.11.10. `createZalo()` asks for 695, overridable with ZALO_API_VERSION so
  * a bad bump can be rolled back without a release.
@@ -60,7 +59,7 @@ describe("protocol version (zpw_ver / client_version)", () => {
     before(() => {
         assertSandboxed(CONFIG_DIR);
         assert.equal(CONFIG_DIR, SANDBOX_CONFIG_DIR);
-        process.env.ZALO_JSON_MODE = "1"; // keeps zca-js's login logging off stdout
+        process.env.ZALO_JSON_MODE = "1"; // keeps any login logging off stdout
         fake = installFakeZalo();
     });
 
@@ -85,7 +84,7 @@ describe("protocol version (zpw_ver / client_version)", () => {
         assert.deepEqual(await announced(fake), everywhere("700"));
     });
 
-    it("can roll back to zca-js's 685", async () => {
+    it("can roll back to the previous engine's 685", async () => {
         process.env.ZALO_API_VERSION = "685";
         assert.deepEqual(await announced(fake), everywhere("685"));
     });

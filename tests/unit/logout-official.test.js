@@ -81,7 +81,7 @@ describe("the official logout", () => {
         serveOfficialLogout(fake);
         await serverLogout(api, { probeLogin: async () => "revoked" });
         const by = (path) => fake.requests.find((r) => r.path === path);
-        // zca-js merges headers by key: one spelling each, or a real fetch would join two values into one
+        // The previous engine merges headers by key: one spelling each, or a real fetch would join two values into one
         assert.equal(by("/jr/logout-token").headers.origin, "https://chat.zalo.me");
         assert.equal(by("/jr/logout-token").headers.referer, "https://chat.zalo.me/");
         assert.equal(by("/jr/logout-token").headers.accept, "application/json, text/plain, */*");

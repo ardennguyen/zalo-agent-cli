@@ -101,7 +101,7 @@ describe("zalo_get_group_members", () => {
                 nameCalls.push(ids);
                 if (namesFail) throw namesFail;
                 const out = {};
-                // Keys come back with zca-js's "_0" suffix, as live answers do.
+                // Keys come back with the "_0" suffix, as live answers do.
                 for (const id of ids) if (profiles[id]) out[`${id}_0`] = { displayName: profiles[id] };
                 return { profiles: out };
             },

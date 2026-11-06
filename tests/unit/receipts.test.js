@@ -6,14 +6,14 @@
  * templates below are those captured plaintexts, copied verbatim with the ids
  * replaced by placeholders; each names the capture row it came from.
  *
- * zca-js has builders for both receipts and neither can produce these
+ * The previous engine had builders for both receipts and neither could produce these
  * requests: `sendSeenEvent.js:43-46` and `sendDeliveredEvent.js:38-41` compute
  * `msg.st || 0 === msg.st ? 0 : -1`, which parses as
  * `(msg.st || (0 === msg.st)) ? 0 : -1` and can only ever yield 0 or -1; a DM
- * seen omits `imei`; and zca-js rewrites an own message's `uidFrom` "0" to the
+ * seen omits `imei`; and the listener rewrites an own message's `uidFrom` "0" to the
  * account uid, where the web sends "0". Hence src/core/receipts.js.
  *
- * Everything runs through zca-js's own HTTP seam (`ctx.options.polyfill`):
+ * Everything runs through the session's HTTP seam (`ctx.options.polyfill`):
  * the real apiFactory, the real AES, a fake transport that decrypts each
  * request with a throwaway key. No socket, no session, no network.
  */
@@ -21,9 +21,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, mock } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { GroupMessage, UserMessage } from "zca-js";
+import { GroupMessage, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     sendSeenReceipt,
@@ -31,9 +29,7 @@ import {
     liveReceiptTarget,
     createDeliveredReceipts,
 } from "../../src/core/receipts.js";
-
-const require = createRequire(import.meta.url);
-const zcaUtils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 
 /** Obviously-fake 16-byte AES key and imei. Never a real session secret (AGENTS.md §12). */
 const SECRET_KEY = Buffer.from("0123456789abcdef").toString("base64");
@@ -53,7 +49,7 @@ const HOSTS = {
 };
 
 /**
- * A Zalo api stand-in: the real zca-js apiFactory runs against it, and every
+ * A Zalo api stand-in: the session's bound helpers run against it, and every
  * request it makes is recorded decrypted.
  *
  * @param {object} [opts]
@@ -75,7 +71,7 @@ function harness({ respond = () => ({ status: 0 }) } = {}) {
                 const u = new URL(url);
                 const enc =
                     init.body instanceof URLSearchParams ? init.body.get("params") : u.searchParams.get("params");
-                const plain = enc ? zcaUtils.decodeAES(SECRET_KEY, enc) : null;
+                const plain = enc ? openSession(SECRET_KEY, enc) : null;
                 const rec = {
                     method: init.method || "GET",
                     origin: u.origin,
@@ -92,10 +88,7 @@ function harness({ respond = () => ({ status: 0 }) } = {}) {
                     : {
                           error_code: 0,
                           error_message: "Successful.",
-                          data: zcaUtils.encodeAES(
-                              SECRET_KEY,
-                              JSON.stringify({ error_code: 0, error_message: "", data }),
-                          ),
+                          data: sealSession(SECRET_KEY, JSON.stringify({ error_code: 0, error_message: "", data })),
                       };
                 return new Response(JSON.stringify(body), {
                     status: 200,
@@ -133,10 +126,10 @@ const DM_DELIVERED_OWN_ECHO = String.raw`{"msgInfos":"{\"seen\":0,\"data\":[{\"c
 /** group.A13_create_reminder row 2: group seenv2. */
 const GROUP_SEEN = String.raw`{"msgInfos":"{\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"0\",\"di\":\"<grid>\",\"mt\":\"chat.ecard\",\"st\":3,\"at\":0,\"cmd\":521,\"ts\":\"<ts>\"}],\"grid\":\"<grid>\"}","imei":"<imei>"}`;
 
-/** dm.D13_reminder row 1: DM seenv2 -- senderId, and an imei zca-js leaves out. */
+/** dm.D13_reminder row 1: DM seenv2 -- senderId, and an imei the previous engine leaves out. */
 const DM_SEEN = String.raw`{"msgInfos":"{\"data\":[{\"cmi\":\"<cmi>\",\"gmi\":\"<gmi>\",\"si\":\"<peer>\",\"di\":\"0\",\"mt\":\"webchat\",\"st\":3,\"at\":9,\"cmd\":501,\"ts\":\"<ts>\"}],\"senderId\":\"<peer>\"}","imei":"<imei>"}`;
 
-// ---- Socket frames, as zca-js hands them to the listener ---------------------
+// ---- Socket frames, as the socket hands them to the listener ---------------------
 
 /** A 501/521 row shaped like live/socket.L1_group_echo.json and socket.L4_dm_echo.json. */
 function frame(over = {}) {
@@ -254,8 +247,8 @@ describe("seenv2 — what `conv read` puts on the wire", () => {
     });
 });
 
-describe("deliveredv2 — built from the frame zca-js hands the listener", () => {
-    /** Send one delivered receipt for a zca-js message the way the listener does. */
+describe("deliveredv2 — built from the frame the socket hands the listener", () => {
+    /** Send one delivered receipt for a listener message the way the listener does. */
     async function deliver(msg) {
         const { api, sent } = harness();
         const target = liveReceiptTarget(msg);
@@ -339,7 +332,7 @@ describe("deliveredv2 — built from the frame zca-js hands the listener", () =>
         assert.deepEqual({ st: e.st, at: e.at, cmd: e.cmd }, { st: -1, at: -1, cmd: -1 });
     });
 
-    it("st/at/cmd reach the wire as given, which zca-js's builder cannot do", async () => {
+    it("st/at/cmd reach the wire as given, which the previous engine's builder cannot do", async () => {
         const [e] = entries(await deliver(groupEcho({ st: 5, at: 9 })));
         assert.deepEqual({ st: e.st, at: e.at, cmd: e.cmd }, { st: 5, at: 9, cmd: 521 });
     });

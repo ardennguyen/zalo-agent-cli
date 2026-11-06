@@ -3,7 +3,7 @@
  *
  * Until now these were scattered: the announced version and type in
  * `core/zalo-client.js`, the computer name as a literal in `core/logout.js`
- * (and, separately, inside zca-js), the device label inside `core/sync-v2`,
+ * (and, separately, inside the previous engine), the device label inside `core/sync-v2`,
  * and the browser presets in `utils/device-fingerprint.js`. A version bump
  * meant hunting for all of them. Everything that identifies this client now
  * reads from here, so changing the identity is one edit and one test.
@@ -23,7 +23,7 @@ export const API_TYPE = 30;
 /**
  * The protocol version announced when `ZALO_API_VERSION` is not set:
  * `zpw_ver` on every HTTP and WebSocket URL and `client_version` in the login
- * calls, for our own calls and every call made through zca-js alike. zca-js defaults to 685; the live Zalo Web
+ * calls, for every call alike. The previous engine defaulted to 685; the live Zalo Web
  * and PC clients were on 695 when this was last moved (build 26.11.10, 2026-11-06; it was 694).
  */
 export const DEFAULT_API_VERSION = 695;
@@ -49,7 +49,7 @@ export const API_VERSION_INVALID = "ZALO_API_VERSION_INVALID";
 
 /**
  * The protocol version to announce: `ZALO_API_VERSION` when set (a rollback
- * switch, for example 685 for zca-js's own default), otherwise
+ * switch, for example 685 for the previous engine's default), otherwise
  * {@link DEFAULT_API_VERSION}. An empty or blank value counts as unset.
  *
  * @param {object} [env] - the environment to read, `process.env` by default
@@ -79,7 +79,7 @@ export const QR_FLOW_INVALID = "ZALO_QR_FLOW_INVALID";
 /**
  * Which QR login runs. Only `official` is left: the verified Web sequence (src/zalo/qr-login.js), the default since
  * 2026-10-28, when two live logins with the trusted-device second QR went through (see docs/agent-notes.md). The
- * `legacy` flow (zca-js's own) was removed in 3.0.0: it could not log in an account with a trusted device and
+ * `legacy` flow (the previous engine's) was removed in 3.0.0: it could not log in an account with a trusted device and
  * skipped every later login fix. `ZALO_QR_FLOW=legacy` is refused with a message that says so, so a user who still
  * has it in an `.env` learns why instead of seeing a generic error.
  *

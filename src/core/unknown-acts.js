@@ -2,7 +2,7 @@
  * The control actions this client has no handler for, collected (plan item X10).
  *
  * The server pushes actions to a connected client as `602` frames (`data.actions[{act_type, act, data}]`) and as the
- * `controls[]` of a `601` frame. zca-js reads one kind of 602 (`typing`); a build of Zalo Web handles dozens more, and a
+ * `controls[]` of a `601` frame. The listener reads one kind of 602 (`typing`); a build of Zalo Web handles dozens more, and a
  * new one can appear with any server release. Nothing here changes how a frame is handled. It only notices a name this
  * client does not know, once, and keeps a small local file so that a person (or the next release) can see which actions
  * the server is sending that nobody handles.
@@ -21,7 +21,7 @@ export const CMD_PUSH_ACTIONS = 602;
 /** The control push whose `controls[]` this also reads. */
 export const CMD_PUSH_CONTROLS = 601;
 
-/** 602 actions a handler of this client or of zca-js already reads. */
+/** 602 actions a handler of this client or the listener already reads. */
 const KNOWN_ACTIONS = new Set(["typing"]);
 
 /**

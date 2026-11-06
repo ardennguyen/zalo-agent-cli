@@ -47,7 +47,7 @@ import { startDaemonChannel } from "../../src/core/daemon-channel.js";
 import { registerSyncCommands } from "../../src/commands/sync.js";
 import { registerConvCommands } from "../../src/commands/conv.js";
 import { FAKE, installFakeZalo, loginFake, runCommand } from "./fake-zalo-session.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 const ACCOUNT_DIR = join(CONFIG_DIR, "accounts", FAKE.ownId);
 const DB_PATH = join(ACCOUNT_DIR, "zalo.db");
@@ -196,7 +196,7 @@ function reported(stdout) {
 const allExist = (paths) => paths.every((p) => existsSync(p));
 const noneExist = (paths) => paths.every((p) => !existsSync(p));
 
-/** Our own leave, as zca-js hands it over: isSelf, and we are the member who went. */
+/** Our own leave, as the listener hands it over: isSelf, and we are the member who went. */
 function leaveEvent(threadId, time = LEFT_AT) {
     return {
         type: "leave",
@@ -536,7 +536,7 @@ describe("(c) a conversation that really is gone is still pruned", () => {
     });
 
     it("removing or blocking SOMEONE ELSE does not mark our own group gone", async () => {
-        // zca-js sets isSelf when we are the ACTOR too, so an admin removing a
+        // the listener sets isSelf when we are the ACTOR too, so an admin removing a
         // member got their own group flagged. Red on v2.0-dev: prune deleted it.
         const media = seed("g-admin", { files: 2 });
         for (const type of ["remove_member", "block_member"]) {

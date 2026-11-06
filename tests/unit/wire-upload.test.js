@@ -1,16 +1,13 @@
 /**
- * Attachments on the wire (package UPL, design 4.1; spec-send 2 and 7): `sendMessage` with files and
- * `uploadAttachment`, ours (src/zalo/api/upload.js) against zca-js's on one logged-in context, then against the
- * reviewed golden records (tests/helpers/wire-diff/golden/upload.js).
- *
- * Every difference between the two sides is a row of tests/helpers/wire-diff/allow/upload.js, and each row must
- * really be there. The cases zca-js cannot take part in (it waits forever for a 601, it loses a 601 that comes
- * early, it has no replay, no concurrency bound, no chunk-size fallback) run on our side only, with the session
- * clock frozen and moved by hand, and are checked against their golden record and by direct assertions.
+ * Attachments on the wire (package UPL, design 4.1 and 3.3; spec-send 2 and 7): `sendMessage` with files and
+ * `uploadAttachment` (src/zalo/api/upload.js) on one logged-in context, against the reviewed golden records
+ * (tests/helpers/wire-diff/golden/upload.js) and by direct assertions. The cases that need time to pass (the wait for
+ * a 601, a 601 that comes early, the replay, the concurrency bound, the chunk-size fallback) run with the session
+ * clock frozen and moved by hand.
  *
  * The caption that goes out beside a file is sent through `s.api.sendMessage`, which is package MSG's text half. So
- * that this file tests the upload alone, our side runs with a stand-in text half that records the call and draws the
- * next clientId as MSG's does; zca-js's caption request is checked on its own and then left out of the comparison.
+ * that this file tests the upload alone, the engine here runs with a stand-in text half that records the call and
+ * draws the next clientId as MSG's does.
  *
  * Every id here is fake.
  */
@@ -29,7 +26,6 @@ import {
     CHUNK_TIMEOUT_MS,
     DEFAULT_CHUNK_SIZE,
     FINAL_REPLAY_GRACE_MS,
-    OWN_READY,
     REPLAY_SIZE_STEP,
     TICK_MS,
     replayDelayMs,
@@ -38,25 +34,10 @@ import {
 } from "../../src/zalo/api/upload.js";
 import { startFakeSocket } from "../helpers/fake-zalo/socket.js";
 import { controlBody } from "../helpers/fake-zalo/sync.js";
-import {
-    ALLOW,
-    SEED,
-    T0,
-    TZ,
-    assertSameWire,
-    expectGolden,
-    freezeTime,
-    loginOnce,
-    openPair,
-    seedRandom,
-} from "../helpers/wire-diff/index.js";
-import { requestKind } from "../helpers/wire-diff/allow/upload.js";
+import { SEED, T0, TZ, expectGolden, freezeTime, loginOnce, openWire, seedRandom } from "../helpers/wire-diff/index.js";
 import { normalizeError, normalizeRequest, normalizeResult } from "../helpers/wire-diff/normalize.js";
 import { FILES, IMAGES } from "../fixtures/index.js";
 import { installFakeZalo } from "./fake-zalo-session.js";
-
-/** The rows this file compares with: the upload area's. */
-const ROWS = ALLOW.upload;
 
 const USER = "1000000000000000001";
 const GROUP = "2000000000000000002";
@@ -100,8 +81,8 @@ const photoUrlsOf = (name) => ({
 });
 
 /**
- * The fake's answers for the upload area. A chunk that is not the last answers `finished: 0` with id "-1" (what
- * zca-js's chunk handler expects of one; live uploads so far were all one chunk, so this shape is not verified).
+ * The fake's answers for the upload area. A chunk that is not the last answers `finished: 0` with id "-1" (live
+ * uploads so far were all one chunk, so this shape is not verified).
  *
  * @param {{photoDuplicate?: boolean, photoWithoutUrls?: boolean}} [opts]
  */
@@ -132,9 +113,6 @@ function replies({ photoDuplicate = false, photoWithoutUrls = false } = {}) {
         "/asyncfile/msg": (r) => ({ data: { msgId: msgIdOf(r.params.fileId) } }),
         "/upthumb": { data: { url: "https://thumb.zalo.invalid/gif-thumb.png" } },
         "/gif": (r) => ({ data: { msgId: gifMsgIdOf(r.params.fileName) } }),
-        // zca-js's caption, a text message.
-        "/sms": { data: { msgId: TEXT_MSG_ID } },
-        "/sendmsg": { data: { msgId: TEXT_MSG_ID } },
     };
 }
 
@@ -148,14 +126,14 @@ const fileDone = (id, url) => ({
 /**
  * Play one 601 control the way a listener hands it to the registry.
  *
- * - "zca": zca-js's listener (its `file_done` only): call the entry under the id with `{fileUrl, fileId}`, delete it.
+ * - "callback": the registry used as a plain map: call the entry under the id with `{fileUrl, fileId}`, delete it.
  * - "settle": our listener (src/zalo/listener/listener.js `#settle`): the registry's settle hook alone, with the
  *   whole control as `data`; the registry itself calls a function entry with `{fileUrl, fileId}`.
  *
  * @param {import("../../src/zalo/kernel/session.js").UploadRegistry} reg
  * @param {string} id
  * @param {{url: string|null, kind: string, control: object}} c
- * @param {"zca"|"settle"} listener
+ * @param {"callback"|"settle"} listener
  */
 function playControl(reg, id, { url, kind, control }, listener) {
     if (listener === "settle") {
@@ -171,17 +149,14 @@ function playControl(reg, id, { url, kind, control }, listener) {
 
 /**
  * A `during` hook that plays the listener's `file_done` for each file in turn, once its upload waits (see
- * {@link playControl} for the listeners).
- *
- * In a pair run, zca-js's side always gets zca-js's own listener, the one its uploader was written for.
+ * {@link playControl} for the two ways).
  *
  * @param {import("../../src/zalo/kernel/session.js").UploadRegistry} reg
  * @param {string[]} names
- * @param {"zca"|"settle"} listener - for our side (and for a run on our side alone)
+ * @param {"callback"|"settle"} mode
  */
-function playFileDone(reg, names, listener) {
-    return async (_clock, side) => {
-        const mode = side === "zca" ? "zca" : listener;
+function playFileDone(reg, names, mode) {
+    return async () => {
         for (const name of names) {
             const id = fileIdOf(name);
             await until(() => typeof reg.get(id) === "function", `the upload of ${name} to wait for its 601`);
@@ -191,13 +166,13 @@ function playFileDone(reg, names, listener) {
     };
 }
 
-// ── our side: the upload area plus a stand-in text half ─────────────────
+// ── the engine: the upload area plus a stand-in text half ────────────────
 
 /** Calls the stand-in text half received, with how many requests had gone out before each. */
 const captionCalls = [];
 let currentFake = null;
 
-const UPLOAD_AREA = { name: "upload", factories: [uploadMethods], ready: OWN_READY };
+const UPLOAD_AREA = { name: "upload", factories: [uploadMethods] };
 const CAPTION_AREA = {
     name: "messages",
     factories: [
@@ -208,21 +183,18 @@ const CAPTION_AREA = {
             },
         }),
     ],
-    ready: new Set(["sendText"]),
 };
 
-/** `createApi` for a pair: zca-js as it is; ours with the upload area and the stand-in text half only. */
-function pairCreateApi(ctx, serviceMap, wsUrls, opts = {}) {
-    if (opts.engine === "own")
-        return createApi(ctx, serviceMap, wsUrls, { ...opts, areas: [UPLOAD_AREA, CAPTION_AREA] });
-    return createApi(ctx, serviceMap, wsUrls, opts);
+/** `createApi` with the upload area and the stand-in text half only. */
+function uploadCreateApi(ctx, serviceMap, wsUrls, opts = {}) {
+    return createApi(ctx, serviceMap, wsUrls, { ...opts, areas: [UPLOAD_AREA, CAPTION_AREA] });
 }
 
-/** Open a pair whose engines come from {@link pairCreateApi}. */
-async function openUploadPair(fake = {}) {
-    const pair = await openPair({ fake, zaloOptions: ZALO_OPTIONS, createApi: pairCreateApi });
-    currentFake = pair.fake;
-    return pair;
+/** Open a wire whose engine comes from {@link uploadCreateApi}. */
+async function openUploadWire(fake = {}) {
+    const wire = await openWire({ fake, zaloOptions: ZALO_OPTIONS, createApi: uploadCreateApi });
+    currentFake = wire.fake;
+    return wire;
 }
 
 /**
@@ -237,18 +209,18 @@ function installAnswers(fake, answers) {
 }
 
 /**
- * One call on our side only, under the harness's conditions (frozen clock at T0, seeded random, fixed zone, a
- * freshly built engine), for the cases zca-js cannot take part in.
+ * One call under the harness's conditions (frozen clock at T0, seeded random, fixed zone, a freshly built engine),
+ * for the cases that set raw routes or play controls the harness's `run` does not.
  *
- * @param {Awaited<ReturnType<typeof openUploadPair>>} pair
+ * @param {Awaited<ReturnType<typeof openUploadWire>>} wire
  * @param {string} name
  * @param {unknown[]} args
  * @param {{replies?: Record<string, object|Function>, raw?: (fake: object) => void,
  *   during?: (clock: ReturnType<typeof freezeTime>) => Promise<void>}} [fixture]
  * @returns {Promise<{requests: object[], result: unknown, error: object|null}>}
  */
-async function runOwn(pair, name, args, fixture = {}) {
-    const { fake, ctx } = pair;
+async function runOwn(wire, name, args, fixture = {}) {
+    const { fake, ctx } = wire;
     fake.clearRoutes();
     fixture.raw?.(fake);
     for (const [suffix, answer] of Object.entries(fixture.replies ?? {})) fake.routeAnswer(suffix, answer);
@@ -260,8 +232,7 @@ async function runOwn(pair, name, args, fixture = {}) {
     let result;
     let error = null;
     try {
-        const api = await pairCreateApi(ctx, ctx.loginInfo.zpw_service_map_v3, ctx.loginInfo.zpw_ws, {
-            engine: "own",
+        const api = await uploadCreateApi(ctx, ctx.loginInfo.zpw_service_map_v3, ctx.loginInfo.zpw_ws, {
             now: clock.now,
         });
         const call = Promise.resolve(api[name](...args));
@@ -286,8 +257,24 @@ async function runOwn(pair, name, args, fixture = {}) {
     };
 }
 
-/** A run record under a case name (allow rows and golden entries are matched on it). */
+/** A run record under a case name (golden entries are matched on it). */
 const named = (rec, name) => ({ ...rec, name });
+
+/**
+ * The kind of upload-area request a normalized request is, by its path.
+ *
+ * @param {{path?: string}} req
+ * @returns {"chunk"|"photo"|"file"|"upthumb"|"gif"|null}
+ */
+function requestKind(req) {
+    const p = req?.path ?? "";
+    if (/\/(photo_original|asyncfile)\/upload$/.test(p)) return "chunk";
+    if (p.endsWith("/photo_original/send")) return "photo";
+    if (p.endsWith("/asyncfile/msg")) return "file";
+    if (p.endsWith("/upthumb")) return "upthumb";
+    if (/\/(message|group)\/gif$/.test(p)) return "gif";
+    return null;
+}
 
 /** The requests of one kind. */
 const ofKind = (requests, kind) => requests.filter((r) => requestKind(r) === kind);
@@ -316,22 +303,21 @@ writeFileSync(made.spaced, pattern(500, 2));
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
-// ── zca-js against ours ──────────────────────────────────────────────────
+// ── sends ────────────────────────────────────────────────────────────────
 
-describe("wire: attachments, zca-js against ours", () => {
-    let pair;
+describe("wire: attachments", () => {
+    let wire;
     let reg;
     before(async () => {
-        pair = await openUploadPair();
-        reg = pair.ctx.uploadCallbacks;
+        wire = await openUploadWire();
+        reg = wire.ctx.uploadCallbacks;
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
-    /** Run, compare under `name`, and check our side against its golden record. */
+    /** Run, and check the record against its golden entry under `name`. */
     async function compared(name, method, args, fixture) {
         captionCalls.length = 0;
-        const rec = named(await pair.run(method, args, fixture), name);
-        assertSameWire(rec, ROWS);
+        const rec = named(await wire.run(method, args, fixture), name);
         await expectGolden("upload", name, rec.own);
         return rec;
     }
@@ -401,12 +387,12 @@ describe("wire: attachments, zca-js against ours", () => {
         );
     });
 
-    it("a file to a user waits for file_done, settled the way zca-js's listener does it", async () => {
+    it("a file to a user waits for file_done, settled by calling the registry entry", async () => {
         const rec = await compared(
             "sendMessage/file-dm",
             "sendMessage",
             [{ msg: "", attachments: [FILES.txt.path] }, USER, 0],
-            { replies: replies(), during: playFileDone(reg, ["notes.txt"], "zca") },
+            { replies: replies(), during: playFileDone(reg, ["notes.txt"], "callback") },
         );
         const send = ofKind(rec.own.requests, "file")[0];
         assert.equal(send.params.fileUrl, fileUrlOf("notes.txt"));
@@ -432,7 +418,7 @@ describe("wire: attachments, zca-js against ours", () => {
             "sendMessage/video-as-file",
             "sendMessage",
             [{ msg: "", attachments: [made.clip] }, USER, 0],
-            { replies: replies(), during: playFileDone(reg, ["clip.mp4"], "zca") },
+            { replies: replies(), during: playFileDone(reg, ["clip.mp4"], "callback") },
         );
         assert.equal(rec.own.requests[0].path, "/api/message/asyncfile/upload");
         assert.equal(ofKind(rec.own.requests, "file")[0].params.extension, "mp4");
@@ -470,7 +456,7 @@ describe("wire: attachments, zca-js against ours", () => {
             "sendMessage/mixed",
             "sendMessage",
             [{ msg: "", attachments: [IMAGES.png.path, FILES.pdf.path, IMAGES.gif.path] }, USER, 0],
-            { replies: replies(), during: playFileDone(reg, ["document.pdf"], "zca") },
+            { replies: replies(), during: playFileDone(reg, ["document.pdf"], "callback") },
         );
         const sends = rec.own.requests.filter((r) => ["photo", "file", "gif"].includes(requestKind(r)));
         assert.deepEqual(sends.map(requestKind), ["photo", "file", "gif"], "files in the order given, GIFs last");
@@ -488,32 +474,20 @@ describe("wire: attachments, zca-js against ours", () => {
 
     it("a caption beside a file goes first, through sendMessage, and the file takes the next clientId", async () => {
         captionCalls.length = 0;
-        const raw = await pair.run("sendMessage", [{ msg: "see the file", attachments: [FILES.pdf.path] }, GROUP, 1], {
+        const raw = await wire.run("sendMessage", [{ msg: "see the file", attachments: [FILES.pdf.path] }, GROUP, 1], {
             replies: replies(),
             during: playFileDone(reg, ["document.pdf"], "settle"),
         });
-        // zca-js's caption is a text request, first; it is MSG's to compare, so it leaves the comparison here.
-        const isCaption = (r) => requestKind(r) === null;
-        assert.equal(raw.zca.requests.filter(isCaption).length, 1);
-        assert.ok(isCaption(raw.zca.requests[0]), "zca-js sent the caption before the file");
-        assert.equal(raw.zca.requests[0].params.message, "see the file");
-        // Ours handed it to the text half, before any upload, without the attachments.
+        // The caption is handed to the text half, before any upload, without the attachments.
         assert.equal(captionCalls.length, 1);
         const [call] = captionCalls;
         assert.equal(call.message.msg, "see the file");
         assert.equal("attachments" in call.message, false);
         assert.deepEqual([call.threadId, call.type], [GROUP, 1]);
-        // Our side's first request came after the caption: the fake had the same count then as when our side began.
+        // The first request came after the caption: the fake had the same count then as when the run began.
         assert.equal(call.requestsBefore, currentFake.requests.length - raw.own.requests.length);
         assert.deepEqual(raw.own.result.message, { msgId: TEXT_MSG_ID, cliMsgId: String(T0) });
-
-        const rec = named(
-            { ...raw, zca: { ...raw.zca, requests: raw.zca.requests.filter((r) => !isCaption(r)) } },
-            "sendMessage/caption-separate",
-        );
-        assert.deepEqual(rec.zca.result.message, rec.own.result.message, "the same caption reply on both sides");
-        assertSameWire(rec, ROWS);
-        await expectGolden("upload", "sendMessage/caption-separate", rec.own);
+        await expectGolden("upload", "sendMessage/caption-separate", raw.own);
     });
 
     it("an inner error_code 1 on a chunk is Zalo's 'already uploaded': the photo is sent", async () => {
@@ -523,16 +497,15 @@ describe("wire: attachments, zca-js against ours", () => {
             [{ msg: "", attachments: [IMAGES.png.path] }, USER, 0],
             { replies: replies({ photoDuplicate: true }) },
         );
-        assert.equal(rec.zca.error.code, 1, "zca-js threw on it");
         assert.equal(ofKind(rec.own.requests, "photo")[0].params.rawUrl, photoUrlsOf("image-64x48.png").normalUrl);
     });
 
-    it("uploadAttachment alone gives zca-js's result shape", async () => {
+    it("uploadAttachment alone gives each file's upload result", async () => {
         const rec = await compared(
             "uploadAttachment/image-and-file",
             "uploadAttachment",
             [[IMAGES.png.path, FILES.txt.path], USER, 0],
-            { replies: replies(), during: playFileDone(reg, ["notes.txt"], "zca") },
+            { replies: replies(), during: playFileDone(reg, ["notes.txt"], "callback") },
         );
         assert.deepEqual(
             rec.own.result.map((r) => r.fileType),
@@ -547,12 +520,12 @@ describe("wire: attachments, zca-js against ours", () => {
 // ── limits ───────────────────────────────────────────────────────────────
 
 describe("wire: limits are refused before any request", () => {
-    let pair;
+    let wire;
     before(async () => {
         // 0.002 MB = 2097 bytes: the 4609-byte jpg is over it, the 587-byte png under it.
-        pair = await openUploadPair({ settings: { features: { sharefile: { max_size_share_file_v3: 0.002 } } } });
+        wire = await openUploadWire({ settings: { features: { sharefile: { max_size_share_file_v3: 0.002 } } } });
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     const cases = [
         ["sendMessage/limit-count", Array(11).fill(IMAGES.png.path), "Exceed maximum file of 10"],
@@ -567,25 +540,23 @@ describe("wire: limits are refused before any request", () => {
     for (const [name, files, message] of cases) {
         it(`${name.split("/")[1]}: "${message}"`, async () => {
             const rec = named(
-                await pair.run("sendMessage", [{ msg: "", attachments: files }, USER, 0], { replies: replies() }),
+                await wire.run("sendMessage", [{ msg: "", attachments: files }, USER, 0], { replies: replies() }),
                 name,
             );
-            assertSameWire(rec, ROWS);
             await expectGolden("upload", name, rec.own);
             assert.deepEqual(rec.own.error, { message, code: null });
             assert.equal(rec.own.requests.length, 0);
         });
     }
 
-    it("a refused file stops the caption too (zca-js sent the caption, then refused)", async () => {
+    it("a refused file stops the caption too (the caption is not sent first)", async () => {
         captionCalls.length = 0;
         const rec = named(
-            await pair.run("sendMessage", [{ msg: "a caption", attachments: [made.exe] }, USER, 0], {
+            await wire.run("sendMessage", [{ msg: "a caption", attachments: [made.exe] }, USER, 0], {
                 replies: replies(),
             }),
             "sendMessage/limit-before-caption",
         );
-        assertSameWire(rec, ROWS);
         await expectGolden("upload", "sendMessage/limit-before-caption", rec.own);
         assert.equal(captionCalls.length, 0);
         assert.equal(rec.own.requests.length, 0);
@@ -595,23 +566,22 @@ describe("wire: limits are refused before any request", () => {
 // ── chunks ───────────────────────────────────────────────────────────────
 
 describe("wire: a file in several chunks", () => {
-    let pair;
+    let wire;
     let reg;
     before(async () => {
-        pair = await openUploadPair({ settings: { features: { sharefile: { chunk_size_file: 64000 } } } });
-        reg = pair.ctx.uploadCallbacks;
+        wire = await openUploadWire({ settings: { features: { sharefile: { chunk_size_file: 64000 } } } });
+        reg = wire.ctx.uploadCallbacks;
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     it("200000 bytes at 64000 a chunk: four chunks, each the file's own bytes", async () => {
         const rec = named(
-            await pair.run("sendMessage", [{ msg: "", attachments: [made.big] }, USER, 0], {
+            await wire.run("sendMessage", [{ msg: "", attachments: [made.big] }, USER, 0], {
                 replies: replies(),
-                during: playFileDone(reg, ["big.bin"], "zca"),
+                during: playFileDone(reg, ["big.bin"], "callback"),
             }),
             "sendMessage/file-multi-chunk",
         );
-        assertSameWire(rec, ROWS);
         await expectGolden("upload", "sendMessage/file-multi-chunk", rec.own);
         const chunks = ofKind(rec.own.requests, "chunk");
         const bytes = readFileSync(made.big);
@@ -636,7 +606,7 @@ describe("wire: a file in several chunks", () => {
         let most = 0;
         const answered = [];
         let lastArrivedAfter = null;
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [made.wide] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [made.wide] }, USER, 0], {
             replies: replies(),
             raw: (fake) =>
                 fake.rawRoute(
@@ -687,40 +657,40 @@ describe("wire: the chunk size", () => {
     });
 
     it("a server chunk size too small to use: the whole 4674-byte pdf goes as one chunk of 256000", async () => {
-        const pair = await openUploadPair({ settings: { features: { sharefile: { chunk_size_file: 1000 } } } });
+        const wire = await openUploadWire({ settings: { features: { sharefile: { chunk_size_file: 1000 } } } });
         try {
-            const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.pdf.path] }, USER, 0], {
+            const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [FILES.pdf.path] }, USER, 0], {
                 replies: replies(),
-                during: playFileDone(pair.ctx.uploadCallbacks, ["document.pdf"], "settle"),
+                during: playFileDone(wire.ctx.uploadCallbacks, ["document.pdf"], "settle"),
             });
             await expectGolden("upload", "sendMessage/chunk-fallback", rec);
             const chunks = ofKind(rec.requests, "chunk");
-            // zca-js would have sent five chunks of 1000 bytes.
+            // Five chunks of 1000 bytes would be the server's size taken as it is.
             assert.equal(chunks.length, 1);
             assert.equal(chunks[0].params.totalChunk, 1);
             assert.equal(chunks[0].parts[0].size, readFileSync(FILES.pdf.path).length);
         } finally {
-            pair.close();
+            wire.close();
         }
     });
 });
 
 // ── the wait for the server's word ───────────────────────────────────────
 
-describe("wire: waiting for the upload's URL (our side; zca-js waits forever)", () => {
-    let pair;
+describe("wire: waiting for the upload's URL (bounded, never forever)", () => {
+    let wire;
     let reg;
     before(async () => {
-        pair = await openUploadPair();
-        reg = pair.ctx.uploadCallbacks;
+        wire = await openUploadWire();
+        reg = wire.ctx.uploadCallbacks;
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     const uploadsOf = () => currentFake.requests.filter((r) => r.path.endsWith("/asyncfile/upload"));
 
-    it("a file_done that comes before the wait starts is kept for it (zca-js loses it)", async () => {
+    it("a file_done that comes before the wait starts is kept for it, not lost", async () => {
         const id = fileIdOf("notes.txt");
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
             replies: replies(),
             raw: (fake) =>
                 fake.rawRoute(
@@ -747,7 +717,7 @@ describe("wire: waiting for the upload's URL (our side; zca-js waits forever)", 
 
     it("no file_done: the last chunk is sent again at 30 s and at 120 s, then the upload fails", async () => {
         let start = 0;
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
             replies: replies(),
             during: async (clock) => {
                 start = uploadsOf().length;
@@ -779,7 +749,7 @@ describe("wire: waiting for the upload's URL (our side; zca-js waits forever)", 
     it("a replayed last chunk whose reply carries the URL settles the upload", async () => {
         const id = fileIdOf("data.csv");
         let served = 0;
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.csv.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [FILES.csv.path] }, USER, 0], {
             raw: (fake) =>
                 fake.rawRoute(
                     (r) => r.path.endsWith("/asyncfile/upload"),
@@ -806,7 +776,7 @@ describe("wire: waiting for the upload's URL (our side; zca-js waits forever)", 
     it("the last replay never answers: the upload still fails, FINAL_REPLAY_GRACE_MS after the wait", async () => {
         const id = fileIdOf("notes.txt");
         let served = 0;
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
             raw: (fake) =>
                 fake.rawRoute(
                     (r) => r.path.endsWith("/asyncfile/upload"),
@@ -852,7 +822,7 @@ describe("wire: waiting for the upload's URL (our side; zca-js waits forever)", 
         };
         let rec;
         try {
-            rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
+            rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
                 raw: (fake) =>
                     fake.rawRoute(
                         (r) => r.path.endsWith("/asyncfile/upload"),
@@ -876,7 +846,7 @@ describe("wire: waiting for the upload's URL (our side; zca-js waits forever)", 
             hd: "https://photo.zalo.invalid/h.jpg",
             thumb: "https://photo.zalo.invalid/t.jpg",
         };
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [IMAGES.jpg.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [IMAGES.jpg.path] }, USER, 0], {
             replies: replies({ photoWithoutUrls: true }),
             during: async () => {
                 await until(() => reg.has(id), "the photo's wait");
@@ -899,7 +869,7 @@ describe("wire: waiting for the upload's URL (our side; zca-js waits forever)", 
     });
 
     it("the name on the wire is the base name, whatever separators the path has", async () => {
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [made.spaced] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [made.spaced] }, USER, 0], {
             replies: replies(),
             during: playFileDone(reg, ["report 1.txt"], "settle"),
         });
@@ -936,17 +906,17 @@ describe("wire: waiting for the upload's URL (our side; zca-js waits forever)", 
 // ── the settlement, from either listener ─────────────────────────────────
 
 describe("upload settlement: either listener reaches our wait (upload.js)", () => {
-    let pair;
+    let wire;
     let reg;
     before(async () => {
-        pair = await openUploadPair();
-        reg = pair.ctx.uploadCallbacks;
+        wire = await openUploadWire();
+        reg = wire.ctx.uploadCallbacks;
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     it("our listener on a file_done: the Map entry and the waiter take it, nothing is left behind", async () => {
         const id = fileIdOf("notes.txt");
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
             replies: replies(),
             during: playFileDone(reg, ["notes.txt"], "settle"),
         });
@@ -970,7 +940,7 @@ describe("upload settlement: either listener reaches our wait (upload.js)", () =
             controlId: "1",
             content: { act_type: "photo_success", act: "photo", fileId: id, data: JSON.stringify(urls) },
         };
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [IMAGES.jpg.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [IMAGES.jpg.path] }, USER, 0], {
             replies: replies({ photoWithoutUrls: true }),
             during: async () => {
                 await until(() => typeof reg.get(id) === "function", "the photo's wait");
@@ -1001,13 +971,13 @@ describe("upload settlement: either listener reaches our wait (upload.js)", () =
             content: { act_type: "photo_success", act: "photo", fileId: id, data: JSON.stringify(urls) },
         };
         const sends = () => currentFake.requests.filter((r) => r.path.endsWith("/photo_original/send")).length;
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [IMAGES.jpg.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [IMAGES.jpg.path] }, USER, 0], {
             replies: replies({ photoWithoutUrls: true }),
             during: async () => {
                 const before = sends();
                 await until(() => typeof reg.get(id) === "function", "the photo's wait");
                 // A listener that only calls the Map entry, with one URL, and settles nothing else.
-                playControl(reg, id, { url: urls.org, kind: "photo_success", control }, "zca");
+                playControl(reg, id, { url: urls.org, kind: "photo_success", control }, "callback");
                 await sleep(TICK_MS * 3);
                 // Red if the entry took the one URL for a photo: the photo would have been sent already.
                 assert.equal(sends(), before, "still waiting");
@@ -1026,7 +996,7 @@ describe("upload settlement: either listener reaches our wait (upload.js)", () =
         const id = fileIdOf("notes.txt");
         let theirs = null;
         const other = (d) => (theirs = d);
-        const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
+        const rec = await runOwn(wire, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
             replies: replies(),
             raw: (fake) =>
                 fake.rawRoute(
@@ -1054,47 +1024,6 @@ describe("upload settlement: either listener reaches our wait (upload.js)", () =
         assert.equal(rec.error, null);
         assert.deepEqual(theirs, { fileUrl: fileUrlOf("notes.txt"), fileId: id });
         assert.equal(ofKind(rec.requests, "file")[0].params.fileUrl, fileUrlOf("notes.txt"));
-    });
-});
-
-describe("upload settlement: zca-js's listener over a real socket", () => {
-    it("our upload is settled by zca-js's listener over a real socket, from a real 601 frame", async () => {
-        const sock = await startFakeSocket();
-        const fake = installFakeZalo({ wsUrls: [sock.url] });
-        let zca;
-        try {
-            const { ctx, serviceMap } = await loginOnce(ZALO_OPTIONS);
-            zca = await createApi(ctx, serviceMap, [sock.url], { engine: "zca" });
-            const own = await pairCreateApi(ctx, serviceMap, [sock.url], { engine: "own" });
-            const connected = once(zca.listener, "connected");
-            zca.listener.start();
-            await connected;
-            await until(() => zca.listener.cipherKey, "the socket's key");
-            installAnswers(fake, replies());
-
-            const id = fileIdOf("notes.txt");
-            const sending = own.sendMessage({ msg: "", attachments: [FILES.txt.path] }, USER, 0);
-            await until(() => ctx.uploadCallbacks.has(id), "the upload to wait");
-            sock.pushEncrypted({
-                cmd: 601,
-                sub: 0,
-                version: 1,
-                encrypt: 2,
-                body: controlBody([fileDone(id, fileUrlOf("notes.txt"))]),
-            });
-            const result = await sending;
-
-            const send = fake.requests.find((r) => r.path.endsWith("/asyncfile/msg"));
-            assert.equal(send.params.fileUrl, fileUrlOf("notes.txt"));
-            assert.equal(result.attachment[0].msgId, msgIdOf(id));
-        } finally {
-            if (zca) {
-                zca.listener.on("error", () => {});
-                zca.listener.stop();
-            }
-            fake.uninstall();
-            await sock.close();
-        }
     });
 });
 
@@ -1134,7 +1063,7 @@ describe("upload settlement: our listener over a real socket", () => {
 
     it("our upload, settled by our listener from a real 601 frame: nothing is left in the early cache", async () => {
         await withOurListener(
-            (ctx, map, urls) => pairCreateApi(ctx, map, urls, { engine: "own" }),
+            (ctx, map, urls) => uploadCreateApi(ctx, map, urls),
             async ({ api, ctx, sock, fake }) => {
                 const id = fileIdOf("notes.txt");
                 const sending = api.sendMessage({ msg: "", attachments: [FILES.txt.path] }, USER, 0);
@@ -1151,22 +1080,18 @@ describe("upload settlement: our listener over a real socket", () => {
         );
     });
 
-    it("zca-js's uploader, settled by our listener: its callback gets {fileUrl, fileId}, nothing is left behind", async () => {
+    it("a plain function entry, settled by our listener: it gets {fileUrl, fileId}, nothing is left behind", async () => {
         await withOurListener(
-            (ctx, map, urls) =>
-                createApi(ctx, map, urls, { env: { ZALO_ENGINE_ZCA: "sendMessage", ZALO_ENGINE_OWN: "listener" } }),
-            async ({ api, ctx, sock, fake }) => {
+            (ctx, map, urls) => uploadCreateApi(ctx, map, urls),
+            async ({ ctx, sock }) => {
                 const id = fileIdOf("notes.txt");
-                const sending = api.sendMessage({ msg: "", attachments: [FILES.txt.path] }, USER, 0);
-                // zca-js registers a plain function under the id and waits for nothing else.
-                await until(() => typeof ctx.uploadCallbacks.get(id) === "function", "zca-js's upload to wait");
-                assert.equal(ctx.uploadCallbacks.events.listenerCount(id), 0, "zca-js's side, not ours");
+                // A caller that registers only a function under the id, and waits for nothing else.
+                const got = new Promise((resolve) => ctx.uploadCallbacks.set(id, resolve));
+                assert.equal(ctx.uploadCallbacks.events.listenerCount(id), 0, "no waiter, only the entry");
                 push601(sock, id, "notes.txt");
-                await sending;
-                const send = fake.requests.find((r) => r.path.endsWith("/asyncfile/msg"));
-                // Red if the registry handed the callback the control instead of zca-js's {fileUrl, fileId}.
-                assert.equal(send.params.fileUrl, fileUrlOf("notes.txt"));
-                // Red if settle() also parked the control: the callback took it.
+                // Red if the registry handed the entry the control instead of {fileUrl, fileId}.
+                assert.deepEqual(await got, { fileUrl: fileUrlOf("notes.txt"), fileId: id });
+                // Red if settle() also parked the control: the entry took it.
                 assert.equal(ctx.uploadCallbacks.early.has(id), false);
                 assert.equal(ctx.uploadCallbacks.has(id), false);
             },

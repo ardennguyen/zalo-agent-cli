@@ -198,7 +198,7 @@ export function decodeFrame(parsed, cipherKey, opts = {}) {
  *
  * One deliberate leniency against Web: Web's `_processAuthData` requires the decoded payload's `error_code` to be
  * exactly 0 (else INVALID_AUTH_DATA, 5007). Here a payload that carries no `error_code` at all is accepted, and only
- * a present, non-zero one refuses the session. zca-js never decoded this payload, so a key frame without the field
+ * a present, non-zero one refuses the session. The previous engine never decoded this payload, so a key frame without the field
  * has always opened a session for this client, and nothing reads the field but this check; refusing it would end
  * sessions that work today over a field no consumer uses. An explicit refusal (any non-zero code) is still final.
  * tests/unit/listener-frames.test.js pins both halves.

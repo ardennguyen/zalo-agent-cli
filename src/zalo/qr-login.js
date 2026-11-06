@@ -1,7 +1,7 @@
 /**
  * The QR login, as the official Zalo Web client does it (plan item L15).
  *
- * zca-js's `loginQR` differs from what the captured client sends: it announces `continue=https://zalo.me/pc`
+ * The previous engine's `loginQR` differed from what the captured client sends: it announces `continue=https://zalo.me/pc`
  * to three calls, makes a `verify-client` call the official client never makes, leaves out `cliGenQR`, and
  * ends with a request to `jr/userinfo`. This is the verified sequence instead, all on `id.zalo.me` until the
  * last hop:
@@ -24,7 +24,7 @@
  *     `jr.chat.zalo.me/jr/pushsession` (which sets `zpw_sek`), and the chat page.
  *
  * The session this returns is a cookie jar; {@link loginWithSession} turns it into a logged-in API. Events
- * keep the shape zca-js's callbacks had (the numbers of `QR_EVENT`), so the commands that show the QR did not
+ * keep the shape the callbacks have always had (the numbers of `QR_EVENT`), so the commands that show the QR did not
  * change; the second QR is one more `QR_GENERATED` event, with `data.layer` 2.
  *
  * Why the first version of this sequence failed on 2026-10-27, after it worked on 2026-10-25: the phone answered

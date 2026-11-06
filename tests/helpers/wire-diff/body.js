@@ -8,7 +8,7 @@
 /**
  * The bytes of a request body and the content type a real fetch would send with it.
  *
- * Covers what the engine and zca-js hand to fetch: a string, URLSearchParams, a Buffer or typed array, Node's
+ * Covers what the engine hands to fetch: a string, URLSearchParams, a Buffer or typed array, Node's
  * `FormData` (serialized through `new Response(fd)`, which is also where its boundary comes from), a `Blob`, the
  * `form-data` package's object (its `getBuffer()`), and any async iterable of chunks (a Node stream).
  *

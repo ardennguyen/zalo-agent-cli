@@ -19,10 +19,10 @@ import { createTrustStore } from "../zalo/trust-store.js";
 import { createDrStore, loginWithSession, stopUpkeep } from "../zalo/login.js";
 
 /**
- * Read image dimensions for zca-js's `imageMetadataGetter`.
+ * Read image dimensions for the session's `imageMetadataGetter`.
  *
- * zca-js 2.0.0 dropped its `sharp` dependency and now requires callers to
- * supply this. It is consumed for the inline-image upload paths —
+ * The engine has no image library of its own and asks the caller for this. It
+ * is consumed for the inline-image upload paths —
  * jpg/jpeg/png/webp via getImageMetaData(), gif via getGifMetaData() — and
  * the width/height go straight into the upload params the recipient's
  * client uses to lay the message out.
@@ -43,7 +43,7 @@ import { createDrStore, loginWithSession, stopUpkeep } from "../zalo/login.js";
  *    makes the recipient's layout box the wrong way round, so they are
  *    swapped.
  *
- * Throws rather than returning null: zca-js turns a falsy return into a
+ * Throws rather than returning null: a falsy return would become a
  * generic ZaloApiError, which tells the user nothing about which file was
  * the problem or why.
  *
@@ -118,7 +118,7 @@ export function createProxyFetch(proxyUrl) {
 }
 
 /**
- * The zca-js options every session of this process is built with: what Zalo Web announces, how we log, what
+ * The session options every session of this process is built with: what Zalo Web announces, how we log, what
  * we deliver, and the proxy when there is one. Suppresses logs in JSON mode.
  *
  * @param {string|null} proxyUrl
@@ -128,15 +128,14 @@ export function createProxyFetch(proxyUrl) {
 function buildOptions(proxyUrl) {
     const opts = {
         // What Zalo Web announces, from the protocol profile (src/zalo/profile.js).
-        // zca-js builds every URL's zpw_ver and the login calls' client_version
-        // from these (createContext in its dist/context.js); left unset, it
-        // announces 685.
+        // The login builds every URL's zpw_ver and the login calls'
+        // client_version from these.
         apiType: API_TYPE,
         apiVersion: resolveApiVersion(),
-        // Suppress zca-js internal INFO logs when --json to keep stdout clean
+        // Logging, off in JSON mode (the protocol layer writes nothing either way)
         logging: !process.env.ZALO_JSON_MODE,
         imageMetadataGetter: readImageMetadata,
-        // Deliver our own traffic too. zca-js defaults this off, which is
+        // Deliver our own traffic too. Off would be
         // right for a bot that would otherwise answer itself, and wrong for a
         // local cache: without it, everything the owner sends -- from their
         // phone, from Zalo Web, from this CLI -- is dropped before any handler
@@ -258,7 +257,7 @@ export async function probeSavedLogin(creds, proxyUrl = null, { ownId = null } =
 
 /**
  * Login via QR code with optional proxy: the official Web sequence (src/zalo/qr-login.js), then our own login with
- * the session it produced. `ZALO_QR_FLOW=legacy` (zca-js's own flow) was removed in 3.0.0 and is refused here,
+ * the session it produced. `ZALO_QR_FLOW=legacy` (the previous engine's flow) was removed in 3.0.0 and is refused here,
  * before any request.
  *
  * @param {string|null} proxyUrl

@@ -37,7 +37,7 @@ export function keepAliveSchedule(settings) {
 /**
  * Start the timers for one session.
  *
- * @param {object} ctx - the zca-js context; `ctx.settings` is read on every tick and `ctx.options.polyfill`
+ * @param {object} ctx - the session context; `ctx.settings` is read on every tick and `ctx.options.polyfill`
  *   is wrapped to observe requests
  * @param {object} deps
  * @param {() => Promise<unknown>} deps.keepAlive - one keepalive call

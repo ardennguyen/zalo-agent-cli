@@ -324,16 +324,3 @@ export function conversationMethods(s) {
         updateAutoDeleteChat,
     };
 }
-
-/** Methods whose wire-conversations.test.js differential passes: the switch answers these from our code. */
-export const OWN_READY = new Set([
-    "setMute",
-    "getMute",
-    "addUnreadMark",
-    "getHiddenConversations",
-    "setHiddenConversations",
-    "updateHiddenConversPin",
-    "resetHiddenConversPin",
-    "getAutoDeleteChat",
-    "updateAutoDeleteChat",
-]);

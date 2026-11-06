@@ -1020,23 +1020,3 @@ export function boardMethods(s) {
         listOneOneBoard: (threadId, page, pageSize) => listOneOneBoard(s, threadId, page, pageSize),
     };
 }
-
-/** Methods whose wire-boards.test.js comparison passes: the switch answers these from our code. */
-export const OWN_READY = new Set([
-    "createNote",
-    "editNote",
-    "getListBoard",
-    "createPoll",
-    "getPollDetail",
-    "votePoll",
-    "lockPoll",
-    "sharePoll",
-    "addPollOptions",
-    "createReminder",
-    "editReminder",
-    "removeReminder",
-    "getReminder",
-    "getListReminder",
-    "getReminderResponses",
-    "listOneOneBoard",
-]);

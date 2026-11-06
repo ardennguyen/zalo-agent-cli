@@ -15,7 +15,7 @@
  * What the rules are, and why:
  *
  * - **Down-ness is observed, never inferred from a counter.** A drop reaches us
- *   as either `disconnected` (zca-js retries internally) or `closed` (we
+ *   as either `disconnected` (the supervisor retries) or `closed` (we
  *   re-login). Gap filing used to be gated on a counter incremented only in
  *   `closed`, and `closed` never fires for a code on the server's
  *   close_and_retry_codes list — which is precisely the set of *recoverable*

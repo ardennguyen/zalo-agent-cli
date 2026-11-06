@@ -16,14 +16,14 @@
  * "0" meaning this account -- and `st`, `at`, `cmd`, `ts` are echoed from the
  * socket frame that delivered the message, -1 where a field is missing.
  *
- * zca-js ships a builder for each receipt and neither can produce that:
+ * The previous engine shipped a builder for each receipt and neither could produce that:
  *
  *   - `sendSeenEvent.js:43-46` / `sendDeliveredEvent.js:38-41` compute
  *     `st: msg.st || 0 === msg.st ? 0 : -1`, which parses as
  *     `(msg.st || (0 === msg.st)) ? 0 : -1`: always 0 or -1, never the value.
  *     The same holds for at, cmd and ts.
  *   - A DM seen goes out without `imei`, which the web always sends.
- *   - zca-js rewrites an own message's uidFrom "0" (and a DM's idTo "0") to the
+ *   - the listener rewrites an own message's uidFrom "0" (and a DM's idTo "0") to the
  *     account uid before any handler sees it, so passing its message through
  *     sends our uid where the web sends "0".
  *
@@ -44,7 +44,7 @@ const THREAD_GROUP = THREAD_TYPE.GROUP;
 /** The socket command a message arrives on, which its receipt echoes as `cmd`. */
 export const RECEIPT_CMD = Object.freeze({ [THREAD_USER]: 501, [THREAD_GROUP]: 521 });
 
-/** Zalo's per-call cap, shared by both receipts (zca-js MAX_MESSAGES_PER_SEND, the web's slice(-50)). */
+/** Zalo's per-call cap, shared by both receipts (the web's slice(-50)). */
 export const MAX_RECEIPTS_PER_CALL = 50;
 
 /**
@@ -76,7 +76,7 @@ const NO_RECEIPT_TYPES = new Set(["chat.delete", "chat.undo", "chat.e2ee.replace
  * and `zpw_ver`/`zpw_type` are the ones every session call uses, and an
  * `error_code` other than 0 throws.
  *
- * @param {object} api - a logged-in zca-js api (exposes getContext and zpwServiceMap)
+ * @param {object} api - a logged-in session (exposes getContext and zpwServiceMap)
  * @param {object} opts
  * @param {string} opts.url - endpoint without query
  * @param {object} [opts.query] - extra query parameters (e.g. `{nretry: 0}`)
@@ -165,7 +165,7 @@ function threadOf(threadId, type) {
  * Group: `{"data":[…],"grid":<id>}`; DM: `{"data":[…],"senderId":<peer>}`.
  * Both carry `imei` and go out with `nretry=0`, as captured.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {object} opts
  * @param {string} opts.threadId - group id, or the DM peer's uid
  * @param {0|1} opts.type - 0 user, 1 group
@@ -193,7 +193,7 @@ export async function sendSeenReceipt(api, { threadId, type, messages, signal } 
  * Group: `{"seen":0,"data":[…],"grid":<id>}` plus `imei`; DM: `{"seen":0,"data":[…]}`
  * and no `imei` at all -- the web's DM sender adds none. No `nretry`.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {object} opts
  * @param {string} opts.threadId
  * @param {0|1} opts.type
@@ -218,15 +218,15 @@ export async function sendDeliveredReceipt(api, { threadId, type, messages, seen
 }
 
 /**
- * What a receipt for one live zca-js message event names.
+ * What a receipt for one live listener message event names.
  *
- * zca-js has already rewritten the frame's "0" sender (and a DM's "0"
+ * The listener has already rewritten the frame's "0" sender (and a DM's "0"
  * recipient) to our uid by the time a handler sees it, so the raw values the
  * web echoes are rebuilt from `isSelf`: our own message is `si:"0"`; in a DM
  * the side that is us is "0" (`di:"0"` for an incoming DM, `di:<peer>` for our
  * own); in a group `di` is always the group.
  *
- * @param {object} msg - zca-js `message` event ({threadId, type, isSelf, data})
+ * @param {object} msg - listener `message` event ({threadId, type, isSelf, data})
  * @returns {{threadId: string, type: 0|1, message: object}|null} null when the
  *   message must not be acknowledged (a removal frame) or cannot be named
  */
@@ -385,7 +385,7 @@ export function seenTargetFromCachedRow(row, raw, { threadId, type }) {
  *
  * Neither call can hide the other's failure: each gets its own result.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {object} opts
  * @param {string} opts.threadId
  * @param {0|1} opts.type
@@ -464,7 +464,7 @@ export async function markConversationRead(api, { threadId, type, ownId, rows })
  *
  *   - `attach()` subscribes AFTER the caller's storing handler, and its handler
  *     only queues -- synchronously, inside a try/catch -- so the write has
- *     already happened and nothing can throw back into zca-js's socket loop.
+ *     already happened and nothing can throw back into the listener's socket loop.
  *   - Sending happens later, off the event, and every failure (rejection,
  *     network error, no session during a re-login, a hung request abandoned
  *     after `timeoutMs`) is counted and reported through `log`, rate-limited.
@@ -591,7 +591,7 @@ export function createDeliveredReceipts({
     }
 
     /**
-     * Queue a receipt for one zca-js message event. Never throws.
+     * Queue a receipt for one listener message event. Never throws.
      *
      * @param {object} msg
      * @returns {boolean} whether a receipt was queued
@@ -638,7 +638,7 @@ export function createDeliveredReceipts({
 
     return {
         /**
-         * Subscribe to a zca-js listener's `message` events. Call it AFTER the
+         * Subscribe to a listener's `message` events. Call it AFTER the
          * storing handler, and again on every new listener a re-login creates.
          *
          * @param {import("node:events").EventEmitter} listener - `api.listener`

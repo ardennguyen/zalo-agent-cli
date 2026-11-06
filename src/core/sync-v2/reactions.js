@@ -10,8 +10,8 @@
  * pair returned 28 DM and 50 group reactions with full detail — target msgId,
  * icon, rType and the reacting user — while the local cache held one row.
  *
- * zca-js already speaks the request (`listener.requestOldReactions`) and emits
- * the objects (`old_reactions`), so no patch is needed. Two things it does not
+ * The listener already speaks the request (`listener.requestOldReactions`) and
+ * emits the objects (`old_reactions`). Two things it does not
  * do, which is why this module exists:
  *
  *  1. It surfaces neither `lastActionId` nor `more`, so a caller using only the
@@ -26,7 +26,7 @@
 import { decodeFrame } from "../../zalo/listener/frames.js";
 import { storeLiveReaction } from "../live-store.js";
 
-/** zca-js ThreadType values. */
+/** Thread type values. */
 const THREAD_USER = 0;
 const THREAD_GROUP = 1;
 
@@ -47,7 +47,7 @@ export const DEFAULT_MAX_PAGES = 20;
  * and stop it afterwards — same contract as {@link backfillOverSocket}.
  *
  * @param {object} opts
- * @param {import("zca-js").Listener} opts.listener - a started zca-js listener
+ * @param {import("../../zalo/listener/listener.js").Listener} opts.listener - a started listener
  * @param {number} [opts.timeoutMs=15000] - per-page deadline
  * @param {number} [opts.maxPages=20] - cap per thread type
  * @param {boolean} [opts.applyRemovals=true] - apply backlog entries with an empty
@@ -96,8 +96,7 @@ export async function drainReactions(opts = {}) {
         try {
             const parsed = JSON.parse(buf.subarray(4).toString("utf8"));
             if (typeof parsed.data !== "string") return;
-            // decodeFrame is the repo's own mirror of zca-js's decodeEventData;
-            // the library does not export its internals.
+            // decodeFrame is the listener's own decoder (src/zalo/listener/frames.js).
             const data = decodeFrame(parsed, listener.cipherKey)?.data;
             envelopes.push({ cmd, lastActionId: data?.lastActionId, more: Number(data?.more) || 0 });
         } catch {

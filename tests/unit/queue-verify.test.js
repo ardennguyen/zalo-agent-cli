@@ -46,7 +46,7 @@ function rig(over = {}) {
     const sent = [];
     const logs = [];
     let n = 0;
-    const listener = { ws: { readyState: 1 }, sendWs: (frame, requireId) => sent.push({ frame, requireId }) };
+    const listener = { ws: { readyState: 1 }, sendWs: (frame) => sent.push({ frame }) };
     const verifier = createQueueVerifier({
         getListener: () => listener,
         timers: clock.timers,
@@ -86,8 +86,7 @@ describe("the queue verifier: when an ack goes out", () => {
         assert.equal(clock.live()[0].ms, VERIFY_DEFAULTS.intervalMs);
         clock.fireWhere((t) => t.ms === VERIFY_DEFAULTS.intervalMs);
         assert.equal(sent.length, 1);
-        const { frame, requireId } = sent[0];
-        assert.equal(requireId, false, "the Web shape: no zca-js req_id");
+        const { frame } = sent[0];
         assert.equal(frame.cmd, CMD_VERIFY);
         assert.equal(frame.subCmd, 0);
         assert.deepEqual(frame.data, {

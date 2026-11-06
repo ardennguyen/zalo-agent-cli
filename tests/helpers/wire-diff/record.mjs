@@ -7,7 +7,7 @@
  * Runs `tests/unit/wire-<area>.test.js` with `WIRE_GOLDEN_RECORD=<area>`, so every `expectGolden` of that file
  * collects its case instead of checking it, and the file `tests/helpers/wire-diff/golden/<area>.js` is written
  * when the test process exits. Then formats it with the repo's prettier settings. The parts of the test that do
- * not depend on the golden file (the zca/own comparison, the error cases) still run and must pass.
+ * not depend on the golden file (the direct assertions, the error cases) still run and must pass.
  *
  * Review the diff (`git diff tests/helpers/wire-diff/golden/<area>.js`) before committing: a golden entry is a
  * claim about the wire, and it must hold fake ids only.

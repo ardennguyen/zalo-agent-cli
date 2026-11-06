@@ -2,7 +2,7 @@
  * The socket heartbeat that holds the restore's idle windows open.
  *
  * Background, so nobody "simplifies" this back to `api.keepAlive()`: that
- * method exists in zca-js and is an HTTP GET to `<chat host>/keepalive`. It
+ * method exists on the session and is an HTTP GET to `<chat host>/keepalive`. It
  * never touches the WebSocket, so it cannot keep this socket warm. The frame
  * that does is Zalo's own `cmd 2 / subCmd 1` ping, which the server echoes
  * back -- measured at a 180000 ms interval both in a captured Zalo Web session
@@ -50,7 +50,7 @@ function fakeTimers() {
     };
 }
 
-/** Minimal zca-js Listener stand-in: records frames, fakes a socket. */
+/** Minimal listener stand-in: records frames, fakes a socket. */
 function fakeListener({ readyState = 1 } = {}) {
     const handlers = new Map();
     const ws = {
@@ -72,13 +72,13 @@ function fakeListener({ readyState = 1 } = {}) {
     return {
         ws,
         sent,
-        sendWs(payload, requireId) {
-            sent.push({ payload, requireId });
+        sendWs(payload) {
+            sent.push({ payload });
         },
     };
 }
 
-/** A real `cmd N / subCmd M` frame, header-compatible with zca-js's parser. */
+/** A real `cmd N / subCmd M` frame, header-compatible with the listener's parser. */
 function frame(cmd, subCmd, body = "{}") {
     const b = Buffer.alloc(4 + Buffer.byteLength(body));
     b.writeUInt8(1, 0);
@@ -152,7 +152,6 @@ describe("startKeepAlive scheduling", () => {
         clock.fire();
         assert.equal(L.sent.length, 3);
         assert.deepEqual(L.sent[0].payload, pingPayload(1000));
-        assert.equal(L.sent[0].requireId, false, "the heartbeat carries no req_id, as Zalo Web's does not");
         k.stop();
     });
 
@@ -173,7 +172,7 @@ describe("startKeepAlive scheduling", () => {
         const L = fakeListener();
         const clock = fakeTimers();
         startKeepAlive(L, { intervalMs: 30000, timers: clock.timers });
-        L.ws = null; // zca-js nulls the socket on close
+        L.ws = null; // the listener nulls the socket on close
         clock.fire();
         assert.equal(L.sent.length, 0, "no ping on a dead wire");
         assert.equal(clock.pending(), null, "and no further ticks armed");

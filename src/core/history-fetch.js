@@ -33,13 +33,13 @@
  */
 import { storeHistoryMessage } from "./live-store.js";
 
-/** zca-js ThreadType.Group */
+/** THREAD_TYPE.Group */
 const THREAD_GROUP = 1;
 
 /**
  * Page the account-wide old-message stream, keeping this thread's frames.
  *
- * @param {object} api - zca-js API whose listener is running, or which `connect` starts
+ * @param {object} api - a session whose listener is running, or which `connect` starts
  * @param {string} threadId
  * @param {number} threadType
  * @param {{limit: number, scanLimit: number, timeoutMs: number, fromMsgId: string|null,
@@ -98,7 +98,7 @@ async function scanOldMessages(api, threadId, threadType, { limit, scanLimit, ti
 /**
  * Fetch a conversation's recent history and cache what zalo.db does not hold.
  *
- * @param {object} api - a logged-in zca-js API. Its listener must already be
+ * @param {object} api - a logged-in session. Its listener must already be
  *   running unless `opts.connect` is given; the store needs no socket at all.
  * @param {string} threadId
  * @param {number} threadType - 0 a DM, 1 a group

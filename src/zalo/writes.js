@@ -16,7 +16,7 @@
  *
  * Not here, on purpose, and why (traced in the 2026-10-23 bundles during the closing sweep):
  * - `sendpt`, `sharefile`, `sendmp3`/`voicemp3`, `upthumb` and the local-GIF chunk send: the web client never calls them
- *   (dead code) or zca-js already makes the same request (`asyncfile/*`, `photo_original/*`, the `upthumb` + `gif` chunks);
+ *   (dead code) or the engine already makes the same request (`asyncfile/*`, `photo_original/*`, the `upthumb` + `gif` chunks);
  * - `photo_url`: it only lets a forward skip the download and re-upload; `msg forward` reaches the same result;
  * - the video chunk uploads: the web composer sends a local video as a file (`msg send-file`); only its forward-with-
  *   reupload flow uses them;
@@ -637,7 +637,7 @@ export const WRITE_NAMES = Object.keys(WRITES).sort();
 /**
  * Build the request of a write without sending it.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string} name - a key of {@link WRITES}
  * @param {object} [args]
  * @returns {ReturnType<typeof buildCall>}
@@ -652,7 +652,7 @@ export function buildWrite(api, name, args = {}) {
 /**
  * Make a state-changing call, or, with `dryRun`, show the call without making it.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string} name - a key of {@link WRITES}
  * @param {object} [args]
  * @param {{dryRun?: boolean}} [opts]

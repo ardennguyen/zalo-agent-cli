@@ -177,7 +177,7 @@ describe("tier 4 · message deletion", { skip }, () => {
     // `handled++` is unconditional, so it counted iterations, not recalls.
     // With an empty ledger both were vacuous (0 === 0).
     //
-    // An entry recorded from an attachment send has no cliMsgId — zca-js
+    // An entry recorded from an attachment send has no cliMsgId — the previous engine
     // never stamps one on an attachment response — so -c is omitted and
     // `msg undo` resolves it from zalo.db instead (tier 2 forces a history
     // fetch after each DM attachment so the row is there).
@@ -347,7 +347,7 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
     // ever read it (a repo-wide grep found the declaration and nothing else),
     // so every run added four permanent polls to the group.
     //
-    // There is no `poll delete` — not in the CLI and not in zca-js, which
+    // There is no `poll delete` — not in the CLI and not in the previous engine, which
     // exposes createPoll/lockPoll/vote/unvote/share/addOptions/getPollDetail
     // and no delete. Locking is the only closure available, and it is the
     // same end state tier 3 already settles for. The group's own disperse in

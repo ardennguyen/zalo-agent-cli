@@ -2,7 +2,7 @@
  * A loopback channel to the running daemon, so only one WebSocket is ever open.
  *
  * Zalo permits ONE web session per account. Sending a non-inline attachment
- * needs a socket: zca-js's uploadAttachment() parks the send in
+ * needs a socket: the upload parks the send in
  * ctx.uploadCallbacks and only apis/listen.js can settle it, when the
  * upload-complete control frame arrives. So `msg send-file` opened its own
  * listener -- and if a `listen` or `mcp` daemon was already running, Zalo
@@ -273,7 +273,7 @@ function readJsonBody(req, reply) {
  * Serve the channel for as long as the daemon runs.
  *
  * @param {object} args
- * @param {() => object} args.getApi - resolves the daemon's CURRENT zca-js api.
+ * @param {() => object} args.getApi - resolves the daemon's CURRENT session.
  *   A function, not the object: on a duplicate-session close the daemon
  *   re-logs-in and builds a new api, and an upload parked in the old one's
  *   ctx.uploadCallbacks can never be settled -- the send would hang forever.

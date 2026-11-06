@@ -374,21 +374,3 @@ export function profileMethods(s) {
         getListDevice: () => s.call(LINKED_DEVICES, {}),
     };
 }
-
-/** Methods whose wire-profile.test.js comparison passes: the switch answers these from our code. */
-export const OWN_READY = new Set([
-    "changeAccountAvatar",
-    "updateProfileBio",
-    "updateProfile",
-    "getSettings",
-    "updateSettings",
-    "getAvatarList",
-    "getFullAvatar",
-    "getAvatarUrlProfile",
-    "deleteAvatar",
-    "reuseAvatar",
-    "updateLang",
-    "updateActiveStatus",
-    "lostFocus",
-    "getListDevice",
-]);

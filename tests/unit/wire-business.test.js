@@ -1,11 +1,9 @@
 /**
- * The business area on the wire (design 3.1, package PRF): saved bank accounts, the zBusiness catalog and its
- * product photo upload, quick messages and auto-reply rules, zca-js against src/zalo/api/business.js on one
- * logged-in fake.
+ * The business area on the wire (design 3.1 and 3.3, package PRF): saved bank accounts, the zBusiness catalog and its
+ * product photo upload, quick messages and auto-reply rules, src/zalo/api/business.js on one logged-in fake.
  *
- * Each case has the three parts of design 3.1: (1) `assertSameWire` against the rows of tests/helpers/wire-diff/
- * allow/business.js, which fails on any difference not declared AND on a declared one that is absent; (2) our side
- * against its reviewed golden record; (3) the error answers. The Web-only behavior is also asserted outright.
+ * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
+ * against a literal `{message, code}`. The Web behavior is also asserted outright.
  *
  * Every id here is fake (tests/unit/no-real-ids.test.js).
  */
@@ -15,8 +13,8 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
-import { OWN_READY, PRODUCT_PHOTO, bankHolderName, ruleUids } from "../../src/zalo/api/business.js";
+import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
+import { businessMethods, PRODUCT_PHOTO, bankHolderName, ruleUids } from "../../src/zalo/api/business.js";
 
 const AREA = "business";
 const CATALOG = "3000000000000000001";
@@ -38,39 +36,41 @@ const UPLOADED = Object.freeze({
     hdUrl: "https://photo.zalo.invalid/p/hd.jpg",
 });
 
-/**
- * The allowed differences of one case: the area's rows of that case, plus the global rows.
- *
- * @param {string} name - the case
- * @returns {object[]}
- */
-function allowFor(name) {
-    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
-}
-
-/** The answers every method is run against for part 3, and whether zca-js has the same message for each. */
+/** The answers every method is run against for the error part, and what each must throw. */
 const ERROR_ANSWERS = [
-    { label: "an outer error", error: { outer: { error_code: 102, error_message: "outer failure" } }, sameText: true },
-    { label: "an inner error", error: { inner: { error_code: 114, error_message: "invalid params" } }, sameText: true },
-    { label: "HTTP 500", error: { status: 500 }, sameText: false },
-    { label: "an undecryptable data", error: { undecryptable: true }, sameText: true },
+    {
+        label: "an outer error",
+        error: { outer: { error_code: 102, error_message: "outer failure" } },
+        expected: { message: "outer failure", code: 102 },
+    },
+    {
+        label: "an inner error",
+        error: { inner: { error_code: 114, error_message: "invalid params" } },
+        expected: { message: "invalid params", code: 114 },
+    },
+    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
+    {
+        label: "an undecryptable data",
+        error: { undecryptable: true },
+        expected: { message: "Failed to parse response data", code: null },
+    },
 ];
 
-describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
-    let pair;
+describe("wire: business (src/zalo/api/business.js)", () => {
+    let wire;
     before(async () => {
         assertSandboxed(CONFIG_DIR);
         writeFileSync(IMAGE_PATH, IMAGE_BYTES);
-        pair = await openPair({
+        wire = await openWire({
             zaloOptions: { imageMetadataGetter: async () => ({ width: 300, height: 200, size: IMAGE_BYTES.length }) },
         });
-        // zca-js writes an empty Cookie header for an empty jar and fetch writes none: give every host a cookie.
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+        // Give every host a cookie, so the Cookie header is recorded with a value.
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     /**
-     * Run one case through both engines, check it against its rows and its golden record.
+     * Run one case and check it against its golden record.
      *
      * @param {string} name - the case (golden entry and `case` of its rows)
      * @param {string} method
@@ -78,8 +78,7 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
      * @param {object} fixture
      */
     async function check(name, method, args, fixture) {
-        const rec = await pair.run(method, args, fixture);
-        assertSameWire(rec, allowFor(name));
+        const rec = await wire.run(method, args, fixture);
         await expectGolden(AREA, name, rec.own);
         return rec;
     }
@@ -258,7 +257,7 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
                 [0, 6],
                 [3, 3],
             ]) {
-                const rec = await pair.run(
+                const rec = await wire.run(
                     "createProductCatalog",
                     () => [
                         {
@@ -440,7 +439,7 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
                 ["/api/product/upload/photo", "/api/quickmessage/update"],
             );
             const update = rec.own.requests[1];
-            // Red if media moves after type (zca-js's order): Web updateQuickReplyItem writes media first.
+            // Red if media moves after type (the previous engine's order): Web updateQuickReplyItem writes media first.
             assert.deepEqual(update.paramsOrder, ["itemId", "keyword", "message", "media", "type"]);
             assert.equal(update.params.type, 1);
             assert.equal(update.params.media.items[0].photoId, UPLOADED.photoId);
@@ -493,12 +492,11 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
             assert.deepEqual(rec.own.requests[0].params.uids, [USER]);
         });
 
-        it("createAutoReply: scope 2 with no uids sends an empty list, never [null] (zca-js sent [null])", async () => {
+        it("createAutoReply: scope 2 with no uids sends an empty list, never [null] (the previous engine sent [null])", async () => {
             const payload = { content: "away", isEnable: true, ...WINDOW, scope: 2 };
-            const rec = await pair.run("createAutoReply", [payload], { reply: {} });
+            const rec = await wire.run("createAutoReply", [payload], { reply: {} });
             assert.equal(rec.own.error, null);
             assert.deepEqual(rec.own.requests[0].params.uids, []);
-            assert.deepEqual(rec.zca.requests[0].params.uids, [null], "the quirk this drops");
             assert.deepEqual(ruleUids(3, null), []);
             assert.deepEqual(ruleUids(2, [USER, null]), [USER]);
             assert.deepEqual(ruleUids(0, [USER]), []);
@@ -518,14 +516,14 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
         });
     });
 
-    it("createProductCatalog uploads the files it is given first (zca-js never did: it uploaded only for an empty list)", async () => {
-        const fake = pair.fake;
+    it("createProductCatalog uploads the files it is given first (the previous engine never did: it uploaded only for an empty list)", async () => {
+        const fake = wire.fake;
         fake.clearRoutes();
         fake.routeAnswer("/api/product/upload/photo", { data: UPLOADED });
         fake.routeAnswer("/api/prodcatalog/product/create", { data: { id: PRODUCT } });
         const from = fake.requests.length;
         try {
-            await pair.own.createProductCatalog({
+            await wire.own.createProductCatalog({
                 catalogId: CATALOG,
                 productName: "Tea",
                 price: "1",
@@ -590,25 +588,20 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
             ["deleteAutoReply", [9]],
         ];
         for (const [method, args] of CALLS) {
-            it(`${method}: same code, same text where zca-js has it`, async () => {
+            it(`${method}: the code and message of each error`, async () => {
                 for (const answer of ERROR_ANSWERS) {
-                    // A fresh copy per side: zca-js writes into some payloads.
-                    const rec = await pair.run(method, () => structuredClone(args), { error: answer.error });
-                    const where = `${method}, ${answer.label}`;
-                    assert.ok(rec.own.error, `${where}: our side did not throw`);
-                    assert.ok(rec.zca.error, `${where}: zca-js did not throw`);
-                    assert.equal(rec.own.error.code, rec.zca.error.code, where);
-                    if (answer.sameText) assert.equal(rec.own.error.message, rec.zca.error.message, where);
-                    else assert.equal(rec.own.error.message, "HTTP 500", where);
+                    // A fresh copy per run: a call may write into its payload.
+                    const rec = await wire.run(method, () => structuredClone(args), { error: answer.error });
+                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
                 }
             });
         }
     });
 
-    it("OWN_READY lists every method this file compares", () => {
-        // Red if a method was flipped to our engine without a comparison here, or one compared here was left on zca-js.
+    it("the area defines exactly the methods this file covers", () => {
+        // Red if a method was added to the area without a case here, or one covered here was removed.
         assert.deepEqual(
-            [...OWN_READY].sort(),
+            Object.keys(businessMethods({})).sort(),
             [
                 "addQuickMessage",
                 "createAutoReply",

@@ -1,7 +1,7 @@
 /**
- * Finding zca-js call sites in `src/`, and inferring each argument's kind.
+ * Finding session call sites in `src/`, and inferring each argument's kind.
  *
- * Companion to zca-call-shapes.js, which reads the declared signatures. This
+ * Companion to api-call-shapes.js, which reads the declared signatures. This
  * half reads the calls. Split because the commander rule below is the
  * load-bearing, easiest-to-get-wrong part and deserves its own unit tests.
  *
@@ -17,8 +17,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import * as acorn from "acorn";
 
-/** Receivers whose `.listen` is an HTTP server, not the zca-js listener. */
-export const NOT_ZCA_RECEIVERS = new Set(["server", "app", "webhookServer", "httpServer"]);
+/** Receivers whose `.listen` is an HTTP server, not the session's listener. */
+export const NOT_API_RECEIVERS = new Set(["server", "app", "webhookServer", "httpServer"]);
 
 /**
  * Every .js file under a directory, recursively.
@@ -237,10 +237,10 @@ export function literalKeys(a) {
 }
 
 /**
- * Every zca-js api call site in one file, with each argument's inferred kind.
+ * Every session call site in one file, with each argument's inferred kind.
  *
  * @param {string} file
- * @param {Set<string>} methods - known zca-js method names
+ * @param {Set<string>} methods - the session's method names
  * @param {string} [source] - file contents, read from disk when omitted
  * @returns {{sites: object[], parseError: string|null}}
  */
@@ -309,7 +309,7 @@ export function callSitesIn(file, methods, source) {
             else if (recv.type === "CallExpression") recvName = recv.callee && recv.callee.name;
             else if (recv.type === "MemberExpression") recvName = recv.property && recv.property.name;
         }
-        if (recvName && NOT_ZCA_RECEIVERS.has(recvName)) return;
+        if (recvName && NOT_API_RECEIVERS.has(recvName)) return;
 
         sites.push({
             file,

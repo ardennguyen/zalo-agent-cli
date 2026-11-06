@@ -8,10 +8,10 @@
  *   - a bare array of serialized cookies (what the QR login returns),
  *   - a browser-extension export: `name` instead of `key`, domains with a leading dot.
  *
- * Two behaviors differ from zca-js's jar handling, and both follow the browser (spec-kernel D5, D6):
+ * Two behaviors differ from the previous engine's jar handling, and both follow the browser (spec-kernel D5, D6):
  *   - the `Cookie` header is computed for the full request URL (domain and path), not for its origin only;
  *   - a `Set-Cookie` is stored against the URL of the request that received it, so a cookie with no `Domain`
- *     attribute is kept as a host-only cookie of that host (zca-js filed it under host `null` and never sent it).
+ *     attribute is kept as a host-only cookie of that host (the previous engine filed it under host `null` and never sent it).
  *
  * Nothing here logs: a cookie value is a credential.
  */

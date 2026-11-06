@@ -56,7 +56,7 @@ const opts = { hostOf: serviceHost };
 describe("replay harness: it goes red when a request drifts", () => {
     it("accepts a sequence that conforms, and ignores calls the shapes do not cover", () => {
         const observed = [
-            { method: "GET", host: "registry.npmjs.org", path: "/zca-js", query: {}, form: null },
+            { method: "GET", host: "registry.npmjs.org", path: "/some-package", query: {}, form: null },
             ...sequenceOf(WEB_BOOT),
         ];
         assert.deepEqual(diffSequence(observed, WEB_BOOT), []);
@@ -212,7 +212,7 @@ describe("replay harness: today's code against the official Web client", () => {
             assertConforms(diffSequence(zalo.http.requests.slice(), WEB_BOOT), "our login calls");
         });
 
-        it("asks nobody whether zca-js is current (L5): no npm registry call", () => {
+        it("asks nobody whether it is current (L5): no npm registry call", () => {
             assert.deepEqual(
                 zalo.http.requests.filter((r) => r.host === "registry.npmjs.org"),
                 [],
@@ -283,11 +283,11 @@ describe("replay harness: today's code against the official Web client", () => {
             assertConforms(diffBody(dispose.data, WEB_FRAMES["591"], "591"), "the 591 request");
         });
 
-        it("sends the old-message pull (510) the official way: reqId, not zca-js's req_id (X5)", async () => {
+        it("sends the old-message pull (510) the official way: reqId, not the previous engine's req_id (X5)", async () => {
             api.listener.requestOldMessages(0, null);
             const frame = await zalo.sock.waitFor((f) => f.cmd === 510);
             assertConforms(diffBody(frame.data, WEB_FRAMES.pull, "510"), "the 510 pull");
-            assert.equal("req_id" in frame.data, false, "zca-js's own key is gone");
+            assert.equal("req_id" in frame.data, false, "the previous engine's own key is gone");
             assert.match(frame.data.reqId, /^req_\d+$/);
         });
 

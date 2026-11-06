@@ -14,7 +14,7 @@
  *
  * The daemon here is a real second process (./support/history-daemon.js):
  * startDaemonChannel serving createSyncRunners, as `listen` and `mcp start`
- * wire it, on a real zca-js session over ./fake-zalo-session.js, writing the
+ * wire it, on a real session over ./fake-zalo-session.js, writing the
  * sandbox's zalo.db through its own connection. The CLI is the real command,
  * run in THIS process, with ./support/db-write-spy.js recording every write
  * statement this process makes. Both sides' fake Zalo can serve the same

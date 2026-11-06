@@ -1,5 +1,5 @@
 /**
- * The current session's zca-js API, whichever object that is when it is used.
+ * The current session object, whichever object that is when it is used.
  *
  * `mcp start` logs in again after a dropped connection, and every login
  * replaces the API object (src/core/zalo-client.js `setSession`). What was

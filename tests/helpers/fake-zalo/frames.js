@@ -5,7 +5,7 @@
  * JSON body. The header is plaintext in both directions. Client frames carry
  * the bare JSON payload; server frames carry `{encrypt, data}` where `data` is
  * the JSON text of the reply (`encrypt: 0`, so no cipher key is needed and the
- * real zca-js listener and the real sync decoder read them unchanged).
+ * real listener and the real sync decoder read them unchanged).
  *
  * {@link serverFrameEncrypted} and {@link keyFrame} build the other three
  * kinds (`encrypt` 1, 2, 3) the way the server seals them, for the listener's

@@ -59,11 +59,11 @@ import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
-/** Thread types matching zca-js ThreadType enum */
+/** Thread types matching the engine's THREAD_TYPE (src/zalo/enums.js) */
 const THREAD_USER = 0;
 const THREAD_GROUP = 1;
 
-/** Friend event type → readable label (matches zca-js FriendEventType enum order) */
+/** Friend event type → readable label (the listener's FRIEND_EVENT_TYPE numbers) */
 const FRIEND_EVENT_LABELS = {
     0: "friend_added",
     1: "friend_removed",
@@ -298,7 +298,7 @@ export function registerListenCommand(program) {
                 lastHeartbeatAt = now;
                 // markConnected() means "coverage is good up to now". Stamping
                 // that on a timer with no liveness check kept advancing
-                // lastConnectedAt while the socket was down -- through zca-js's
+                // lastConnectedAt while the socket was down -- through the socket's
                 // internal retry, the 5s re-login wait and the 30s retry wait --
                 // so a crash mid-outage made the NEXT launch compute its
                 // startup-gap from a moment we were not actually connected, and
@@ -534,7 +534,7 @@ export function registerListenCommand(program) {
             /**
              * A message as `listen` reports it: the event object, and its one-line human form.
              *
-             * @param {object} msg - the zca-js message event
+             * @param {object} msg - the listener's message event
              * @param {object} [extra] - fields to add, e.g. `{catchUp: true}`
              * @returns {{data: object, human: string}}
              */
@@ -578,7 +578,7 @@ export function registerListenCommand(program) {
 
             // One stage at a time on this socket -- the lock the daemon
             // channel's routes hold, shared with this daemon's own catch-up --
-            // and one raw reader on the socket for the fields zca-js drops.
+            // and one raw reader on the socket for the fields the listener's events drop.
             // Built once, like the receipter: they outlive every re-login.
             const stageLock = createStageLock();
             // See mcp.js: stage progress, event-loop stalls and refused lookups belong in the log too.
@@ -602,8 +602,8 @@ export function registerListenCommand(program) {
             if (sessionLine) console.error(`[listen] ${sessionLine}`);
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
             // Read state other devices report -- a conversation read on the
-            // phone, an unread mark set or cleared there -- which zca-js
-            // drops. Stored always, like reactions; printed only with
+            // phone, an unread mark set or cleared there -- which the listener's events
+            // drop. Stored always, like reactions; printed only with
             // `--events read`. It rides the tap, which re-arms on every socket.
             createReadStateSync({
                 tap: socketTap,
@@ -752,7 +752,7 @@ export function registerListenCommand(program) {
                 deliveredReceipts.attach(api.listener);
 
                 // Also after the storing handler, and here for the same reason:
-                // the tap reads the envelope fields zca-js drops, and the
+                // the tap reads the envelope fields the listener's events drop, and the
                 // self-heal moves its cursor only past a row already written,
                 // then catches up on every handshake this listener makes.
                 socketTap.attach(api.listener);
@@ -789,7 +789,7 @@ export function registerListenCommand(program) {
                 // --- Typing and upload events (opt-in) ---
                 // Not in the default --events: typing is constant noise, and upload
                 // only matters to a caller that is uploading. Neither is stored.
-                // zca-js also emits `cipher_key`, the session's key material; it is
+                // the listener also emits `cipher_key`, the session's key material; it is
                 // deliberately never subscribed to, so it can reach no log, file or webhook.
                 if (enabledEvents.has("typing")) {
                     api.listener.on("typing", (t) => {
@@ -930,7 +930,7 @@ export function registerListenCommand(program) {
                     // Driven by observed socket state, NOT by reconnectCount.
                     // reconnectCount is incremented only in the `closed` handler,
                     // and `closed` never fires for a code on the server's
-                    // close_and_retry_codes list -- zca-js emits `disconnected`,
+                    // close_and_retry_codes list -- the listener emits `disconnected`,
                     // retries internally, then emits `connected`. Those codes ARE
                     // the recoverable ones, so on the common drop path the old
                     // guard was always false: no gap was filed, and markConnected()
@@ -1040,7 +1040,7 @@ export function registerListenCommand(program) {
             //
             // `createSyncRunners` is handed `getApi`, not an api: this daemon
             // rebuilds one on a duplicate-session close, and a stage bound to
-            // the old object would tap a socket zca-js has already nulled.
+            // the old object would tap a socket the listener has already nulled.
             let channel = null;
             const shutdown = () => {
                 // First, before anything can emit a close event.

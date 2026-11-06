@@ -11,7 +11,7 @@ import {
 } from "./db.js";
 import { storeLiveMessage } from "./live-store.js";
 
-/** zca-js ThreadType values, mirrored so this module doesn't import the enum. */
+/** Thread type values, mirrored so this module doesn't import the enum. */
 const THREAD_TYPE_USER = 0;
 const THREAD_TYPE_GROUP = 1;
 
@@ -205,9 +205,8 @@ export class SyncManager {
      * WebSocket, writing it into the same zalo.db the `listen` daemon uses.
      *
      * Uses socket cmd 510 (DMs) and 511 (groups), subCmd 1, payload
-     * `{first: true, lastId, preIds: []}` — which zca-js already speaks via
-     * `listener.requestOldMessages()` and the `old_messages` event, so no
-     * patch to the library is needed.
+     * `{first: true, lastId, preIds: []}` — which the listener already speaks via
+     * `listener.requestOldMessages()` and the `old_messages` event.
      *
      * MEASURED 2026-09-20, and worth knowing before trusting this: Zalo
      * returned an EMPTY set for both commands on the development account, both
@@ -220,7 +219,7 @@ export class SyncManager {
      * listener, and stop it afterwards. This method only issues the two
      * requests and persists whatever comes back.
      *
-     * @param {import("zca-js").Listener} listener A started zca-js listener.
+     * @param {import("../zalo/listener/listener.js").Listener} listener A started listener.
      * @param {{timeoutMs?: number, onBatch?: (info: object) => void}} [opts]
      * @returns {Promise<{status: string, saved: number, total: number, reason: string}>}
      */

@@ -1,17 +1,13 @@
 /**
- * The groups area on the wire, ours (src/zalo/api/groups.js) against zca-js's, both built by `createApi` on ONE
- * logged-in context (design 3.1, package GRP): all 28 methods.
+ * The groups area on the wire (src/zalo/api/groups.js), built by `createApi` on a logged-in context of the fake
+ * Zalo (design 3.1 and 3.3, package GRP): all 28 methods.
  *
- * Each case has the three parts of design 3.1:
+ * Each case has two parts:
  *
- * 1. `assertSameWire`: every request and the outcome, zca against own. Every difference must be a row of
- *    tests/helpers/wire-diff/allow/groups.js (or a global row), and every declared row must actually be seen, so
- *    the list cannot go stale. Red when our request differs from zca-js's anywhere the Web does not differ.
- * 2. `expectGolden`: our record against its reviewed entry in tests/helpers/wire-diff/golden/groups.js. Red when
- *    our wire changes at all; this is what keeps guarding the wire once zca-js is gone.
- * 3. Error cases: an outer error, an inner error, HTTP 500 and an undecryptable `data`, for every method, plus the
- *    codes the MCP tools read (165 kickout, 166/167 leave). The thrown code is compared always, the message where
- *    zca-js wrote the same text; our side is also checked against a literal, so the case outlives zca-js.
+ * 1. `expectGolden`: our record against its reviewed entry in tests/helpers/wire-diff/golden/groups.js. Red when
+ *    our wire changes at all.
+ * 2. Error cases: an outer error, an inner error, HTTP 500 and an undecryptable `data`, for every method, plus the
+ *    codes the MCP tools read (165 kickout, 166/167 leave), each checked against a literal `{message, code}`.
  *
  * A few cases also assert the Web facts on our side directly (verb, host, key order, member types), so a reader
  * sees them here and not only in the golden file. Every id is fake.
@@ -22,8 +18,8 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { OWN_READY } from "../../src/zalo/api/groups.js";
-import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
+import { groupMethods } from "../../src/zalo/api/groups.js";
+import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 
 const G = "9000000000000000001";
 const G2 = "9000000000000000002";
@@ -85,8 +81,7 @@ const MEMBERS_REPLY = {
 };
 
 /**
- * Every success case: `[case, method, args, reply]`. The case name is the golden entry's name and what the allow
- * rows of a single case (`<method>/<case>`) match on.
+ * Every success case: `[case, method, args, reply]`. The case name is the golden entry's name.
  */
 const CASES = [
     ["getGroupInfo", "getGroupInfo", [G], groupInfoReply([G])],
@@ -171,68 +166,37 @@ const ERROR_CALLS = Object.fromEntries(
     CASES.filter(([name, method]) => name === method).map(([, m, args]) => [m, args]),
 );
 
-/**
- * The allow rows of one case: the global rows, the method's own rows carried over to the case name (unless
- * `inherit` is false: a call refused before any request has no request to differ in), and the case's own rows.
- *
- * @param {string} name - the case
- * @param {string} method
- * @param {{inherit?: boolean}} [opts]
- * @returns {object[]}
- */
-function allowFor(name, method, { inherit = true } = {}) {
-    return ALLOW.groups.flatMap((row) => {
-        if (row.method === "*") return [row];
-        if (row.method === name) return [row];
-        if (inherit && row.method === method) return [{ ...row, method: name }];
-        return [];
-    });
-}
-
-/**
- * Part 1: the two sides of a record are the same, apart from what the case's rows declare.
- *
- * @param {object} rec - a `pair.run` record
- * @param {string} name - the case
- * @param {{inherit?: boolean}} [opts]
- */
-function sameWire(rec, name, opts) {
-    assertSameWire({ ...rec, name }, allowFor(name, rec.name, opts));
-}
-
-describe("groups: ours against zca-js on one context (wire-groups)", () => {
-    let pair;
+describe("groups on the wire (wire-groups)", () => {
+    let wire;
     /** Each case's record, by case name. */
     const recs = {};
 
     before(async () => {
         assertSandboxed(CONFIG_DIR);
         writeFileSync(AVATAR_PATH, AVATAR);
-        pair = await openPair({ zaloOptions: { imageMetadataGetter: async () => ({ ...AVATAR_META }) } });
-        // A cookie every fake host gets, so the Cookie header is compared on a value (the saved login's cookie is
+        wire = await openWire({ zaloOptions: { imageMetadataGetter: async () => ({ ...AVATAR_META }) } });
+        // A cookie every fake host gets, so the Cookie header is recorded with a value (the saved login's cookie is
         // for chat.zalo.me, which no fake host matches).
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://group.zalo.invalid/");
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://group.zalo.invalid/");
         for (const [name, method, args, reply] of CASES) {
-            recs[name] = await pair.run(method, args, { reply });
+            recs[name] = await wire.run(method, args, { reply });
         }
     });
 
-    after(() => pair?.close());
+    after(() => wire?.close());
 
-    it("covers all 28 methods, and lists each of them as own-ready", () => {
-        // Red when a method of the area has no case here, or is missing from (or extra in) OWN_READY.
+    it("covers all 28 methods of the area", () => {
+        // Red when a method of the area has no case here, or a case names a method the area does not have.
         assert.equal(METHODS.length, 28);
-        assert.deepEqual([...OWN_READY].sort(), [...METHODS].sort());
+        assert.deepEqual(Object.keys(groupMethods({})).sort(), [...METHODS].sort());
     });
 
-    describe("every case: the same wire as zca-js but for the declared differences, and its golden record", () => {
+    describe("every case: its golden record", () => {
         for (const [name] of CASES) {
             it(name, async () => {
                 const rec = recs[name];
                 assert.equal(rec.own.error, null, `our side threw: ${JSON.stringify(rec.own.error)}`);
-                assert.equal(rec.zca.error, null, `zca-js threw: ${JSON.stringify(rec.zca.error)}`);
                 assert.ok(rec.own.requests.length >= 1, "our side made its request");
-                sameWire(rec, name);
                 await expectGolden("groups", name, rec.own);
             });
         }
@@ -418,7 +382,7 @@ describe("groups: ours against zca-js on one context (wire-groups)", () => {
     describe("batches", () => {
         it("getGroupInfo asks 100 groups at a time and merges the answers", async () => {
             const ids = groupIds(150);
-            const rec = await pair.run("getGroupInfo", [ids], {
+            const rec = await wire.run("getGroupInfo", [ids], {
                 replies: {
                     "/api/group/getmg-v2": [
                         // One group answered per batch keeps the golden entry small; what matters is the merge.
@@ -437,7 +401,6 @@ describe("groups: ours against zca-js on one context (wire-groups)", () => {
                 "both batches' answers are in it",
             );
             assert.deepEqual(rec.own.result.removedsGroup, ["9000000000000000199"]);
-            sameWire(rec, "getGroupInfo/batches");
             await expectGolden("groups", "getGroupInfo/batches", rec.own);
         });
 
@@ -447,7 +410,7 @@ describe("groups: ours against zca-js on one context (wire-groups)", () => {
                 profiles: Object.fromEntries(list.map((id) => [`${id}_0`, { zaloName: `z${id.slice(-3)}` }])),
                 unchangeds_profile: [],
             });
-            const rec = await pair.run("getGroupMembersInfo", [ids], {
+            const rec = await wire.run("getGroupMembersInfo", [ids], {
                 replies: {
                     "/api/social/group/members": [{ data: profiles([ids[0]]) }, { data: profiles([ids[300]]) }],
                 },
@@ -463,49 +426,44 @@ describe("groups: ours against zca-js on one context (wire-groups)", () => {
                 [`${ids[0]}_0`, `${ids[300]}_0`],
                 "both batches' profiles",
             );
-            sameWire(rec, "getGroupMembersInfo/batches");
             await expectGolden("groups", "getGroupMembersInfo/batches", rec.own);
         });
     });
 
     describe("refusals before any request", () => {
         it("createGroup leaves the own account out of members", async () => {
-            const rec = await pair.run("createGroup", () => [{ name: "With me", members: [FAKE.ownId, U] }], {
+            const rec = await wire.run("createGroup", () => [{ name: "With me", members: [FAKE.ownId, U] }], {
                 reply: { groupId: G, sucessMembers: [U], errorMembers: [] },
             });
             assert.deepEqual(rec.own.requests[0].params.members, [U]);
             assert.deepEqual(rec.own.requests[0].params.memberTypes, [-1]);
-            sameWire(rec, "createGroup/withSelf");
             await expectGolden("groups", "createGroup/withSelf", rec.own);
         });
 
-        it("createGroup refuses an empty name, which zca-js replaced by a timestamp", async () => {
-            const rec = await pair.run("createGroup", () => [{ name: "", members: [U] }], { reply: { groupId: G } });
+        it("createGroup refuses an empty name instead of putting a timestamp in its place", async () => {
+            const rec = await wire.run("createGroup", () => [{ name: "", members: [U] }], { reply: { groupId: G } });
             assert.equal(rec.own.requests.length, 0);
             assert.deepEqual(rec.own.error, { message: "A group name must not be empty", code: null });
-            sameWire(rec, "createGroup/emptyName", { inherit: false });
             await expectGolden("groups", "createGroup/emptyName", rec.own);
         });
 
-        it("createGroup refuses a group with no other member, as zca-js did", async () => {
+        it("createGroup refuses a group with no other member", async () => {
             for (const members of [[], [FAKE.ownId]]) {
-                const rec = await pair.run("createGroup", () => [{ name: "Alone", members }], { reply: {} });
+                const rec = await wire.run("createGroup", () => [{ name: "Alone", members }], { reply: {} });
                 assert.equal(rec.own.requests.length, 0);
                 assert.deepEqual(rec.own.error, { message: "Group must have at least one member", code: null });
-                if (members.length === 0) sameWire(rec, "createGroup/noMember", { inherit: false });
             }
         });
 
-        it("changeGroupName refuses an empty name, which zca-js replaced by a timestamp", async () => {
-            const rec = await pair.run("changeGroupName", ["", G], { reply: "" });
+        it("changeGroupName refuses an empty name instead of putting a timestamp in its place", async () => {
+            const rec = await wire.run("changeGroupName", ["", G], { reply: "" });
             assert.equal(rec.own.requests.length, 0);
             assert.deepEqual(rec.own.error, { message: "A group name must not be empty", code: null });
-            sameWire(rec, "changeGroupName/emptyName", { inherit: false });
             await expectGolden("groups", "changeGroupName/emptyName", rec.own);
         });
     });
 
-    describe("errors: the same code (and message, where zca-js wrote the same text) for every method", () => {
+    describe("errors: the code and message for every method", () => {
         const ERRORS = [
             [
                 "an outer error",
@@ -527,10 +485,8 @@ describe("groups: ours against zca-js on one context (wire-groups)", () => {
         for (const method of METHODS) {
             it(method, async () => {
                 for (const [what, error, expected] of ERRORS) {
-                    const rec = await pair.run(method, ERROR_CALLS[method], { error });
+                    const rec = await wire.run(method, ERROR_CALLS[method], { error });
                     assert.deepEqual(rec.own.error, expected, `${method}, ${what}`);
-                    assert.equal(rec.zca.error?.code, expected.code, `${method}, ${what}: zca-js's code`);
-                    sameWire(rec, method);
                 }
             });
         }
@@ -543,12 +499,11 @@ describe("groups: ours against zca-js on one context (wire-groups)", () => {
                 ["leaveGroup", [G, true], 167],
             ];
             for (const [method, args, code] of cases) {
-                const rec = await pair.run(method, args, {
+                const rec = await wire.run(method, args, {
                     error: { inner: { error_code: code, error_message: "fake" } },
                 });
                 // Red if the code were lost or turned into text: mcp-tools reads e.code for exactly these.
                 assert.deepEqual(rec.own.error, { message: "fake", code }, `${method} ${code}`);
-                sameWire(rec, method);
             }
         });
     });

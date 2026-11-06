@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
@@ -1788,7 +1788,7 @@ describe("zalo_friend", () => {
         assert.equal(out.count, 2);
     });
 
-    it("send passes (message, userId) in zca-js's order, defaults the message to empty, and reports success", async () => {
+    it("send passes (message, userId) in the session's order, defaults the message to empty, and reports success", async () => {
         const fa = friendApi();
         assert.deepEqual(payloadOf(await call(fa, { action: "send", userId: U, message: "Chào bạn" })), {
             action: "send",
@@ -1915,7 +1915,7 @@ describe("zalo_friend alias (bug-reports #7)", () => {
         assert.deepEqual(fa.calls, [], "nothing reached Zalo");
     });
 
-    it("sets the nickname with (alias, userId), the order zca-js takes", async () => {
+    it("sets the nickname with (alias, userId), the order the session takes", async () => {
         const fa = aliasApi();
         const out = payloadOf(await call(fa, { action: "alias", userId: U, alias: "  Ms. Bob  " }));
         assert.deepEqual(out, { action: "alias", success: true, userId: U, alias: "Ms. Bob" });
@@ -1995,7 +1995,7 @@ describe("zalo_group", () => {
     const call = (ga, args, config) =>
         register({ api: ga.api, ...(config && { config }) }).server.call("zalo_group", args);
 
-    it("rename needs a groupId and a non-blank name, and passes (name, groupId), the order zca-js takes", async () => {
+    it("rename needs a groupId and a non-blank name, and passes (name, groupId), the order the session takes", async () => {
         const ga = groupApi();
         const text = async (args) => (await call(ga, args)).content[0].text;
         assert.match(await text({ action: "rename", name: "Team" }), /groupId is required/);
@@ -2040,7 +2040,7 @@ describe("zalo_group", () => {
         });
         const quiet = payloadOf(await call(ga, { action: "leave", groupId: G, silent: true, confirm: true }));
         assert.equal(quiet.silent, true);
-        // Red if the flag is dropped on the way to zca-js, or defaults to silent.
+        // Red if the flag is dropped on the way to the session, or defaults to silent.
         assert.deepEqual(ga.calls, [
             ["leaveGroup", G, false],
             ["leaveGroup", G, true],
@@ -2104,7 +2104,7 @@ describe("zalo_group", () => {
         assert.equal(none.isError, true, "no group id back is a failure, not a success");
     });
 
-    it("add_members passes (userIds, groupId) in zca-js's order and splits the outcome", async () => {
+    it("add_members passes (userIds, groupId) in the session's order and splits the outcome", async () => {
         const ga = groupApi({ addUserToGroup: { errorMembers: [U2], error_data: { 270: [U2] } } });
         const out = payloadOf(await call(ga, { action: "add_members", groupId: G, userIds: [U1, U2] }));
         assert.deepEqual(ga.calls, [["addUserToGroup", [U1, U2], G]]);
@@ -2293,8 +2293,7 @@ describe("zalo_group confirm guard", () => {
 });
 
 describe("zalo_read", () => {
-    const require = createRequire(import.meta.url);
-    const { encodeAES } = createRequire(require.resolve("zca-js"))("./utils.cjs");
+    const encodeAES = sealSession;
     const KEY = Buffer.alloc(16, 0x22).toString("base64");
 
     /** An api whose requests land in `calls`; the reply is a session envelope around `data`. */
@@ -2367,8 +2366,8 @@ describe("zalo_read", () => {
 });
 
 describe("zalo_write", () => {
-    const require = createRequire(import.meta.url);
-    const { encodeAES, decodeAES } = createRequire(require.resolve("zca-js"))("./utils.cjs");
+    const encodeAES = sealSession;
+    const decodeAES = openSession;
     const KEY = Buffer.alloc(16, 0x22).toString("base64");
 
     /** An api whose requests land in `calls`. */

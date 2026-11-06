@@ -25,7 +25,7 @@ before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
-// The shape zca-js emits: the target is inside content, the event's own msgId is the notification.
+// The shape the listener emits: the target is inside content, the event's own msgId is the notification.
 const undoEvent = (content = {}, over = {}) => ({
     threadId: "t1",
     type: 1,
@@ -87,7 +87,7 @@ describe("a recall off the socket (design 6.2: the real Undo, not a hand-built o
     it("a DM recall from a sealed 501 frame normalizes as threadType dm, with the recalled id kept whole", async () => {
         // The frame as the server sends it: JSON text with bare integer ids (globalMsgId past 2^53), sealed as
         // encrypt 2 under the session key, through the listener the engine builds. The tests above build the event
-        // by hand WITH a `type`; zca-js's Undo had none, so every live DM recall came out as "group". Red if the
+        // by hand WITH a `type`; the previous engine's Undo had none, so every live DM recall came out as "group". Red if the
         // listener's Undo loses its type (threadType "group"), or if the id is parsed lossily (msgId rounded).
         const OWN = "1000000000000000009";
         const PEER = "2000000000000000002";

@@ -16,7 +16,7 @@
  * always empty; the uids ride in `memVerList` as `"<uid>_<version>"` strings
  * (e.g. `"1000000000000000001_0"`).
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string} groupId
  * @returns {Promise<{found: boolean, name: string|null, uids: string[], totalMember: number}>}
  *   `found` is false when Zalo's answer does not include the group at all;
@@ -35,15 +35,15 @@ export async function groupMemberUids(api, groupId) {
  * Ask Zalo for the display names of some users (`getGroupMembersInfo`).
  *
  * Zalo Web fetches member profiles the same way when it shows a member list:
- * one request at a time, a bounded number of ids per request. zca-js sends
- * the ids in the request URL, so `batchSize` keeps a large group's lookup from
- * outgrowing one URL. Keys come back as the uid, sometimes with zca-js's
+ * one request at a time, a bounded number of ids per request. The ids go
+ * in the request URL, so `batchSize` keeps a large group's lookup from
+ * outgrowing one URL. Keys come back as the uid, sometimes with the
  * `_0` version suffix; the name is `displayName`, else `zaloName`.
  *
  * Never throws. A batch that fails leaves its uids unnamed and is reported in
  * `errors`, and the batches after it still run.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string[]} uids
  * @param {{batchSize?: number}} [opts] - ids per request; all of them in one request by default
  * @returns {Promise<{names: Map<string, string>, errors: string[]}>} uid → display name, for those found

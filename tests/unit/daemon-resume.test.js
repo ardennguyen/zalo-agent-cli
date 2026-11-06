@@ -57,7 +57,7 @@ describe("waitForDaemonSocket", () => {
         assert.match(logs.at(-1), /reconnected after [\d.]+s; resuming the stage/);
     });
 
-    it("accepts the same api when zca-js reopened a new socket on it, but not the socket that was lost", async () => {
+    it("accepts the same api when the listener reopened a new socket on it, but not the socket that was lost", async () => {
         const c = clock();
         const lostWs = { readyState: OPEN };
         const api = { listener: { ws: lostWs } };

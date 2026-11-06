@@ -8,7 +8,7 @@
  *    reason 3, of every session the dead one left open, before any request, with sessions counted from 1 again;
  *  - sessions are requested up front in a wave, held until the wave is stored, and released together.
  *
- * Everything runs on the real zca-js listener against the fake Zalo's real WebSocket.
+ * Everything runs on the real listener against the fake Zalo's real WebSocket.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, afterEach } from "node:test";
@@ -106,11 +106,11 @@ describe("the keepalive does not double the ping", () => {
         return { sent, listener, timers, fire: () => queued?.() };
     }
 
-    it("on the default cadence, while zca-js is pinging on the server's interval, it only counts echoes", () => {
+    it("on the default cadence, while the listener is pinging on the server's interval, it only counts echoes", () => {
         const r = rig({ pingInterval: {} });
         const ka = startKeepAlive(r.listener, { timers: r.timers });
         r.fire();
-        assert.equal(r.sent.length, 0, "zca-js already sent this interval's ping");
+        assert.equal(r.sent.length, 0, "the listener already sent this interval's ping");
         assert.equal(ka.stats().sent, 0);
         ka.stop();
     });

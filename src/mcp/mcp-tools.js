@@ -89,7 +89,7 @@ import {
 } from "../core/group-admin.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 
-/** Repeat mode codes matching zca-js ReminderRepeatMode enum and src/commands/reminder.js. */
+/** Repeat mode codes matching Zalo's reminder repeat modes and src/commands/reminder.js. */
 const REMINDER_REPEAT_MODES = { none: 0, daily: 1, weekly: 2, monthly: 3 };
 const REMINDER_REPEAT_LABELS = { 0: "none", 1: "daily", 2: "weekly", 3: "monthly" };
 
@@ -118,7 +118,7 @@ function parseReminderTime(val) {
 /**
  * Build the source descriptor `buildForwardReference` expects from a cached message row.
  *
- * @param {object} api - logged-in zca-js API instance
+ * @param {object} api - logged-in session
  * @param {object} row - cached message row from zalo.db
  * @returns {Promise<object>}
  */
@@ -210,7 +210,7 @@ function labelConversationId(threadId, explicit) {
     return resolveThreadType(id, explicit) === THREAD_GROUP ? `g${id}` : id;
 }
 
-/** Thread type constants matching zca-js ThreadType enum */
+/** Thread type constants matching the engine's THREAD_TYPE (src/zalo/enums.js) */
 const THREAD_USER = 0;
 
 /** Thread type for groups — the only kind Zalo delivers mentions in. */
@@ -221,7 +221,7 @@ const threadTypeName = (type) => (Number(type) === THREAD_GROUP ? "group" : "dm"
 
 /**
  * How many member ids `zalo_get_group_members` asks Zalo to name per request.
- * zca-js puts them in the request URL, and Zalo Web asks in bounded batches
+ * The session puts them in the request URL, and Zalo Web asks in bounded batches
  * too; 50 is the batch the group commands already use for `getGroupInfo`.
  */
 const MEMBER_NAME_BATCH = 50;
@@ -290,7 +290,7 @@ function cachedDisplayName(uid) {
 /**
  * This account's own uid, or "" when the session cannot say.
  *
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @returns {string}
  */
 function ownIdOf(api) {
@@ -307,7 +307,7 @@ function ownIdOf(api) {
  * device -- for the tools that list conversations. Empty when the cache
  * cannot answer, so a listing never fails for want of it.
  *
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {string[]} threadIds
  * @returns {Map<string, object>} threadId -> an entry of db.js getReadStates
  */
@@ -328,7 +328,7 @@ function readStatesOf(api, threadIds) {
  * (src/utils/my-documents.js, the same function `msg send me` calls). An
  * explicit `threadType: "group"` is refused, as `msg send me -t 1` is.
  *
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {string} threadId - as the caller gave it
  * @param {"dm"|"group"} [threadTypeIn] - the caller's threadType, if they gave one
  * @returns {null|{threadId: string, notice: string}|{error: string}} null when it is not a self reference
@@ -354,7 +354,7 @@ function selfThread(api, threadId, threadTypeIn) {
  * typed by {@link resolveThreadType}: the caller's explicit threadType, else
  * the cache's.
  *
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {string} threadIdIn - as the caller gave it
  * @param {"dm"|"group"} [threadTypeIn] - the caller's threadType, if they gave one
  * @returns {{threadId: string, threadType: number, notice?: string}|{error: string}} `notice` only for My Documents
@@ -483,7 +483,7 @@ function cacheHistory(threadId, limit, before, nameCache) {
 /**
  * Register all Zalo MCP tools on the server.
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {import("./message-buffer.js").MessageBuffer} buffer
  * @param {import("./thread-filter.js").ThreadFilter} filter
  * @param {object} config - MCP config
@@ -808,7 +808,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const mentions = expanded.mentions;
                 const styles = shiftStyles(converted.styles, expanded.edits);
 
-                // zca-js drops mentions outside a group, so a DM send would
+                // The session drops mentions outside a group, so a DM send would
                 // quietly arrive with the names as plain text and nobody tagged.
                 if (mentions.length > 0 && Number(threadType) !== THREAD_GROUP) {
                     warnings.push(
@@ -829,7 +829,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         console.error("[mcp-tools] cache unavailable for quote:", e.message);
                     }
                     const built = buildQuote(row, { msgId: quoteMsgId, threadId });
-                    // Reported through err() rather than letting zca-js raise a
+                    // Reported through err() rather than letting the session raise a
                     // raw ZaloApiError: "stickers can't be quoted" and "not
                     // cached, fetch the thread" are different problems and the
                     // agent can act on both.
@@ -856,7 +856,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 if (hasLiteralNewline(text)) warnings.push(LITERAL_NEWLINE_WARNING);
 
                 // 1 (important) or 2 (urgent), mapped exactly as `msg send
-                // --urgency` maps it; zca-js turns it into the `metaData:
+                // --urgency` maps it; the session turns it into the `metaData:
                 // {urgency}` Zalo Web sends. "normal" is no urgency at all.
                 const urgency = urgencyIn ? urgencyLevel(urgencyIn) : null;
 
@@ -3035,7 +3035,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     case "alias": {
                         const nick = alias === undefined ? "" : String(alias).trim();
                         if (nick) {
-                            // The same call as the CLI's `friend alias` (zca-js takes the alias first).
+                            // The same call as the CLI's `friend alias` (the session takes the alias first).
                             await api.changeFriendAlias(nick, target);
                             // `contacts.name` is what senderDisplayName and mentions read (db.getDisplayName);
                             // the nickname is the name Zalo will show from now on, so it is written there at once.
@@ -3238,7 +3238,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         return ok({ action, success: true, groupId: gid, userId: target });
                     }
                     case "rename": {
-                        // The same call as the CLI's `group rename` (zca-js takes the name first).
+                        // The same call as the CLI's `group rename` (the session takes the name first).
                         await api.changeGroupName(groupName, gid);
                         return ok({ action, success: true, groupId: gid, name: groupName });
                     }

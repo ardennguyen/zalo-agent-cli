@@ -406,7 +406,7 @@ function writeConversationIndex(mediaRoot, names) {
  * Download the attachments recorded by a transfer sync.
  *
  * @param {object} opts
- * @param {object} [opts.api] - logged-in zca-js api; without it expired URLs cannot be renewed. Its context also
+ * @param {object} [opts.api] - logged-in session; without it expired URLs cannot be renewed. Its context also
  *   gives the downloads the account's proxy, User-Agent and Referer
  * @param {typeof fetch} [opts.fetchImpl] - the fetch the downloads use (tests); default: the account's own
  * @param {string} opts.accountDir - the account's data dir (media lands under `<dir>/media`)

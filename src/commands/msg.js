@@ -181,7 +181,7 @@ function send2meIdOf(api) {
 /**
  * What a forward reference needs to know about its source message.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {object} row - the cached source message
  * @returns {Promise<object>} the input for buildForwardReference, or `{error}`
  */
@@ -312,7 +312,7 @@ function daemonHistoryFailure(r, pid) {
 }
 
 /**
- * TextStyle codes matching zca-js TextStyle enum.
+ * TextStyle codes matching Zalo's text style codes.
  * Used for --style option and markdown parsing.
  */
 const TEXT_STYLES = {
@@ -378,7 +378,7 @@ function parseMarkdownStyles(input) {
 }
 
 /**
- * Extensions zca-js uploads through its inline-image path.
+ * Extensions the session uploads through its inline-image path.
  *
  * uploadAttachment() routes on EXTENSION, not on which CLI command was used:
  * these four resolve their upload promise synchronously, `gif` is split off
@@ -403,7 +403,7 @@ function allInlineImages(paths) {
  *
  * `msg send` reports `result.cliMsgId` off `result.message`, but an
  * attachment send usually has no `result.message` at all: for a single
- * jpg/jpeg/png/webp zca-js folds the caption into the attachment and leaves
+ * jpg/jpeg/png/webp the session folds the caption into the attachment and leaves
  * `message` null. The ids live in `result.attachment` instead -- an array,
  * one entry per file.
  *
@@ -430,9 +430,9 @@ function sentAttachmentIds(result) {
  * Send attachments, bringing the WebSocket listener up first when any of
  * them needs it.
  *
- * zca-js's uploadAttachment() resolves synchronously for inline images, but
+ * The session's uploadAttachment() resolves synchronously for inline images, but
  * for "video" and "others" it registers an entry in ctx.uploadCallbacks and
- * awaits a promise that ONLY apis/listen.js can settle, when the
+ * awaits a promise that ONLY the listener can settle, when the
  * upload-complete control frame arrives. With no listener there is no
  * timeout and no fallback — the await never settles and the command hangs
  * with no output at all.
@@ -525,8 +525,8 @@ async function sendAttachments(api, absPaths, threadId, type, opts) {
 /**
  * Reject with `message` if `promise` hasn't settled within `ms`.
  *
- * Used by the attachment path: zca-js's non-inline upload waits on a
- * WebSocket event with no timeout of its own, so a dropped or missed
+ * Used by the attachment path: a non-inline upload waits on a WebSocket
+ * event, and this bounds the command around it, so a dropped or missed
  * upload-complete frame would otherwise hang the command indefinitely.
  * Better to fail loudly than to look frozen.
  *
@@ -742,7 +742,7 @@ export function registerMsgCommands(program) {
                 styles = shiftStyles(styles, expanded.edits);
                 const mentions = [...parseMentionSpecs(opts.mention), ...expanded.mentions];
 
-                // zca-js drops mentions outside a group, so a `-t 0` send would
+                // The session drops mentions outside a group, so a `-t 0` send would
                 // quietly arrive with the names as plain text and nobody tagged.
                 if (mentions.length > 0 && Number(opts.type) !== 1) {
                     warning("Mentions only apply to group messages — pass -t 1 to tag anyone.");
@@ -774,7 +774,7 @@ export function registerMsgCommands(program) {
                 }
 
                 // Build message content. `urgency` is 1 (important) or 2
-                // (urgent); zca-js turns it into the `metaData: {urgency}`
+                // (urgent); the session turns it into the `metaData: {urgency}`
                 // object Zalo Web sends, on every text endpoint.
                 //
                 // Zalo refuses one oversized message (114 plain, 112 styled), so
@@ -809,13 +809,11 @@ export function registerMsgCommands(program) {
                     }));
                 }
 
-                // The cliMsgId comes back from zca-js, which hands over the
-                // clientId it actually put on the wire (patches/zca-js+2.2.0.patch
-                // — upstream stamps `params.clientId = Date.now()` inside
-                // handleMessage() and returns only {msgId}).
+                // The cliMsgId comes back from the send, which hands over the
+                // clientId it actually put on the wire.
                 //
                 // This used to be a second `Date.now()` read here, taken before
-                // the call. That is a different number from the one zca-js sent,
+                // the call. That is a different number from the one the send put on the wire,
                 // by however long the AES encrypt and the POST took — usually
                 // 0-2ms, never guaranteed equal. So every id `send --json`
                 // printed was a near-miss, and all three things that key on it
@@ -834,10 +832,9 @@ export function registerMsgCommands(program) {
 
                 if (result.message && !cliMsgId) {
                     warning(
-                        "Zalo returned no cliMsgId for this send, so none is reported — the zca-js patch " +
-                            "is missing (run `npx patch-package`). `msg react`/`msg undo`/`msg send --quote` " +
-                            "need one; the local cache gets the real value once `listen` or `sync` sees " +
-                            "Zalo echo the message back.",
+                        "Zalo returned no cliMsgId for this send, so none is reported. " +
+                            "`msg react`/`msg undo`/`msg send --quote` need one; the local cache gets the " +
+                            "real value once `listen` or `sync` sees Zalo echo the message back.",
                     );
                 }
 
@@ -846,8 +843,7 @@ export function registerMsgCommands(program) {
                     // addReaction needs the message's real cliMsgId — with the
                     // msgId in its place Zalo accepts the call and the
                     // reaction never shows up. It used to fall back to exactly
-                    // that on an install whose zca-js patch had not applied;
-                    // now the reaction is skipped and the way to add it later
+                    // that whenever a send came back without one; now the reaction is skipped and the way to add it later
                     // is named. The message itself has already gone out.
                     //
                     // Exit status stays 0: the send succeeded, and a caller
@@ -1200,7 +1196,7 @@ export function registerMsgCommands(program) {
         )
         .action(async (msgId, threadId, reaction, opts) => {
             try {
-                // zca-js addReaction(icon, dest) — dest needs msgId + cliMsgId.
+                // The session's addReaction(icon, dest) — dest needs msgId + cliMsgId.
                 // The cliMsgId used to fall back to the msgId, which Zalo
                 // accepts and never displays. Resolved before getApi(), so an
                 // uncached message is refused without touching the network.
@@ -1238,7 +1234,7 @@ export function registerMsgCommands(program) {
             try {
                 const type = Number(opts.type);
 
-                // zca-js takes deleteMessage(dest, onlyMe) where dest is
+                // The session takes deleteMessage(dest, onlyMe) where dest is
                 // {data: {cliMsgId, msgId, uidFrom}, threadId, type} — NOT
                 // (msgId, threadId, type), which is what this used to pass.
                 // That shape put a bare string where `dest` belongs, so every
@@ -1295,11 +1291,10 @@ export function registerMsgCommands(program) {
                 // only ever necessary for a message this machine never saw.
                 //
                 // `send --json` is a valid source again. It used to print a
-                // second Date.now() of its own -- zca-js stamps the real
-                // clientId inside handleMessage() and upstream returns only
-                // {msgId} -- so the id it gave matched only by luck. The zca-js
-                // patch now hands that clientId back, and `msg send` reports
-                // that value or none at all.
+                // second Date.now() of its own -- the send stamps the real
+                // clientId just before the request -- so the id it gave matched
+                // only by luck. The send now hands that clientId back, and
+                // `msg send` reports that value or none at all.
                 //
                 // The resolution is shared with `zalo_undo`
                 // (src/core/cached-message.js). The refusal exits 0 here, as
@@ -1334,14 +1329,14 @@ export function registerMsgCommands(program) {
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (msgId, threadId, opts) => {
-            // This command could never have worked. zca-js takes
+            // This command could never have worked. The previous engine took
             // `forwardMessage(payload, threadIds, type)` where payload is
             // `{ message: string }` and threadIds is an ARRAY; the old call
             // passed the msgId string as the payload and a bare string as the
             // thread list. `if (!payload.message) throw` fires on the first
             // line of the API, so every invocation died with "Missing message
             // content" before touching the network -- identically for -t 0 and
-            // -t 1, for every message type. The zca-api-surface test did not
+            // -t 1, for every message type. The api-surface test did not
             // catch it because the method does exist; only its arity was wrong.
             const jsonMode = program.opts().json;
             const activeAcc = getActive();
@@ -1497,8 +1492,8 @@ export function registerMsgCommands(program) {
                 // `sent` shape send-image and send-file report. The forward
                 // call mints ONE clientId for the whole call; Zalo echoes it
                 // per target as `clientId`, and sendForward reports it at the
-                // top level as `cliMsgId` (as patches/zca-js+2.2.0.patch does
-                // for zca-js's forwardMessage) -- neither spot alone gives a
+                // top level as `cliMsgId` (as every send of the session does)
+                // -- neither spot alone gives a
                 // caller the {msgId, cliMsgId} pair that `msg undo` needs.
                 // Tier 4 hit exactly that: it recorded the forwarded msgId
                 // with a null id and could not recall the message.

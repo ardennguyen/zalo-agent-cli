@@ -58,7 +58,7 @@ export function pickTransferAfterLogin(controls, { now = Date.now(), maxAgeMs = 
 /**
  * Open the socket of a fresh login, read the key the phone offered, and restore with it.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {string} ownId
  * @param {object} [opts]
  * @param {number|null} [opts.days] - restrict the restore to the last N days (default: full history)
@@ -106,7 +106,7 @@ export async function autoSyncAfterLogin(
         // The control is usually already in the queue by the time the socket is up: ask for it, both queues.
         for (const sub of [1, 0]) {
             if (offer) break;
-            api.listener.sendWs(buildPull(603, sub), false);
+            api.listener.sendWs(buildPull(603, sub));
             await new Promise((r) => setTimeout(r, pullWaitMs));
             offer = pickTransferAfterLogin(controls);
         }

@@ -1,14 +1,11 @@
 /**
- * The boards area on the wire (design 3.1, package BRD): notes, the group board list, polls and reminders, zca-js
- * against src/zalo/api/boards.js on one logged-in fake, plus `listOneOneBoard`, which zca-js never had.
+ * The boards area on the wire (design 3.1 and 3.3, package BRD): notes, the group board list, polls and reminders,
+ * and `listOneOneBoard`, src/zalo/api/boards.js on one logged-in fake.
  *
- * Each case has the three parts of design 3.1: (1) `assertSameWire` against the rows of tests/helpers/wire-diff/
- * allow/boards.js, which fails on any difference not declared AND on a declared one that is absent; (2) our side
- * against its reviewed golden record; (3) the error answers. The Web-only behavior is also asserted outright, so a
- * row that matched by accident cannot hide it.
+ * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers. The Web
+ * behavior is also asserted outright, so a reader sees it here and not only in the golden file.
  *
- * Two calls of ours make a read first that zca-js never made (addPollOptions without votes, editReminder): those
- * cases compare zca-js's one request with our last one, and assert the read on its own.
+ * Two calls make a read first (addPollOptions without votes, editReminder): those cases assert the read on its own.
  *
  * Every id here is fake (tests/unit/no-real-ids.test.js). Bare 19-digit numbers in a reply are written with
  * `JSON.rawJSON`, so the fake serves them as the server would: unquoted.
@@ -22,8 +19,8 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { getBoardItems, initDb } from "../../src/core/db.js";
 import { listOneOneBoard as reExported, syncBoards } from "../../src/core/sync-v2/board.js";
-import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
-import { OWN_READY, boardCursor, boardPage, groupReminderPage, listOneOneBoard } from "../../src/zalo/api/boards.js";
+import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
+import { boardMethods, boardCursor, boardPage, groupReminderPage, listOneOneBoard } from "../../src/zalo/api/boards.js";
 
 const AREA = "boards";
 const GROUP = "2000000000000000003";
@@ -34,22 +31,24 @@ const BIG_UID = "1111111111111111200";
 /** A bare JSON integer of {@link BIG_UID}, as the server sends a uid. */
 const BIG_RAW = JSON.rawJSON(BIG_UID);
 
-/**
- * The allowed differences of one case: the area's rows of that case, plus the global rows.
- *
- * @param {string} name - the case
- * @returns {object[]}
- */
-function allowFor(name) {
-    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
-}
-
-/** The answers every method is run against for part 3, and whether zca-js has the same message for each. */
+/** The answers every method is run against for part 2, and what each must throw. */
 const ERROR_ANSWERS = [
-    { label: "an outer error", error: { outer: { error_code: 102, error_message: "outer failure" } }, sameText: true },
-    { label: "an inner error", error: { inner: { error_code: 114, error_message: "inner failure" } }, sameText: true },
-    { label: "HTTP 500", error: { status: 500 }, sameText: false },
-    { label: "an undecryptable data", error: { undecryptable: true }, sameText: true },
+    {
+        label: "an outer error",
+        error: { outer: { error_code: 102, error_message: "outer failure" } },
+        expected: { message: "outer failure", code: 102 },
+    },
+    {
+        label: "an inner error",
+        error: { inner: { error_code: 114, error_message: "inner failure" } },
+        expected: { message: "inner failure", code: 114 },
+    },
+    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
+    {
+        label: "an undecryptable data",
+        error: { undecryptable: true },
+        expected: { message: "Failed to parse response data", code: null },
+    },
 ];
 
 /** A note as the server answers a create or an edit. */
@@ -95,33 +94,28 @@ const pollReply = () => ({
     num_vote: 1,
 });
 
-describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
-    let pair;
+describe("wire: boards (src/zalo/api/boards.js)", () => {
+    let wire;
 
     before(async () => {
         assertSandboxed(CONFIG_DIR);
-        pair = await openPair();
-        // A cookie for every fake host, so the Cookie header is compared on a value (zca-js writes an empty header
-        // for an empty jar, fetch writes none).
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+        wire = await openWire();
+        // A cookie for every fake host, so the Cookie header is recorded with a value.
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     /**
-     * Run one case through both engines, check it against its rows and its golden record.
+     * Run one case and check it against its golden record.
      *
-     * @param {string} name - the case (golden key and allow `case`)
+     * @param {string} name - the case (golden key)
      * @param {string} method
      * @param {unknown[]} args
      * @param {object} fixture
-     * @param {{ownSkip?: number}} [opts] - `ownSkip`: our leading requests zca-js does not make (a read first);
-     *   zca-js's requests are compared with ours after them
      * @returns {Promise<object>} the record
      */
-    async function check(name, method, args, fixture, { ownSkip = 0 } = {}) {
-        const rec = await pair.run(method, args, fixture);
-        const compared = ownSkip ? { ...rec, own: { ...rec.own, requests: rec.own.requests.slice(ownSkip) } } : rec;
-        assertSameWire(compared, allowFor(name));
+    async function check(name, method, args, fixture) {
+        const rec = await wire.run(method, args, fixture);
         await expectGolden(AREA, name, rec.own);
         return rec;
     }
@@ -209,7 +203,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             assert.equal(rec.own.result.count, 3, "the reply's other keys are kept");
         });
 
-        it("page 2: the cursor of the page before goes out (zca-js always sent 0/0)", async () => {
+        it("page 2: the cursor of the page before goes out (the previous engine always sent 0/0)", async () => {
             // boardCursor reads the last item with a positive id: the poll, by its poll_id.
             const cursor = boardCursor(ITEMS);
             assert.deepEqual(cursor, { lastId: 5, lastType: 3 });
@@ -227,7 +221,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             assert.equal(rec.own.requests[0].params.count, 20, "default count: the Web's page size");
         });
 
-        it("a reply that is a JSON string of a bare array is a list of notes (zca-js crashed on it)", async () => {
+        it("a reply that is a JSON string of a bare array is a list of notes (the previous engine crashed on it)", async () => {
             const rec = await check("board-list-string", "getListBoard", [{ page: 1, count: 20 }, GROUP], {
                 reply: JSON.stringify([{ id: 43, params: '{"title":"From a string"}' }]),
             });
@@ -272,7 +266,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             assert.deepEqual(rec.own.result.options[0].voters, [BIG_UID]);
         });
 
-        it("getPollDetail: GET with params in the query (zca-js POSTed it)", async () => {
+        it("getPollDetail: GET with params in the query (the previous engine POSTed it)", async () => {
             const rec = await check("poll-detail", "getPollDetail", [5], { reply: pollReply() });
             const [req] = rec.own.requests;
             assert.equal(req.method, "GET");
@@ -302,13 +296,13 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             assert.equal(rec.own.result, null);
         });
 
-        it("lockPoll: a success with empty data is done (zca-js failed to parse it)", async () => {
+        it("lockPoll: a success with empty data is done (the previous engine failed to parse it)", async () => {
             const rec = await check("poll-lock-empty", "lockPoll", [5], { error: { plain: "" } });
             assert.equal(rec.own.error, null);
             assert.equal(rec.own.result, null);
         });
 
-        it("lockPoll: a success with no data key at all is done too (zca-js failed to parse it)", async () => {
+        it("lockPoll: a success with no data key at all is done too (the previous engine failed to parse it)", async () => {
             const rec = await check("poll-lock-no-data", "lockPoll", [5], {
                 error: { text: JSON.stringify({ error_code: 0, error_message: "" }), status: 200 },
             });
@@ -342,13 +336,10 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         it("addPollOptions without votes reads the poll and keeps the caller's current votes", async () => {
             // The fixture poll has option 1 voted by this account (voted: true): red if the request carried [].
             const payload = { pollId: 5, options: [{ content: "Bun", voted: false }], votedOptionIds: [] };
-            const rec = await check(
-                "poll-add-options-keep",
-                "addPollOptions",
-                [payload],
-                { replies: { "/api/poll/detail": { data: pollReply() } }, reply: pollReply() },
-                { ownSkip: 1 },
-            );
+            const rec = await check("poll-add-options-keep", "addPollOptions", [payload], {
+                replies: { "/api/poll/detail": { data: pollReply() } },
+                reply: pollReply(),
+            });
             const [read, add] = rec.own.requests;
             assert.equal(read.path, "/api/poll/detail");
             assert.equal(read.method, "GET");
@@ -360,7 +351,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             const poll = pollReply();
             poll.options[0].voted = false;
             poll.options[1].voters = [OWN];
-            const rec = await pair.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun" }] }], {
+            const rec = await wire.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun" }] }], {
                 replies: { "/api/poll/detail": { data: poll } },
                 reply: pollReply(),
             });
@@ -369,25 +360,16 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
     });
 
     describe("polls without a group_poll host", () => {
-        // zca-js cannot even be built on such a map (its getAllGroups reads group_poll[0] at construction), so this
-        // case is ours only: the login's own api and both sides of the pair are our engine (ZALO_ENGINE=own for the
-        // login), and the golden record guards the wire.
+        // A login whose service map has no group_poll host: a missing key fails only the call that needs it.
         let bare;
         before(async () => {
-            pair.close();
-            const engine = process.env.ZALO_ENGINE;
-            process.env.ZALO_ENGINE = "own";
-            try {
-                bare = await openPair({ fake: { omit: ["group_poll"] }, zcaEngine: "own" });
-            } finally {
-                if (engine === undefined) delete process.env.ZALO_ENGINE;
-                else process.env.ZALO_ENGINE = engine;
-            }
+            wire.close();
+            bare = await openWire({ fake: { omit: ["group_poll"] } });
         });
         after(async () => {
             bare?.close();
-            pair = await openPair();
-            pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+            wire = await openWire();
+            wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
         });
 
         it("createPoll falls back to the group host, the Web's own fallback", async () => {
@@ -471,13 +453,13 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
                         : method === "getListReminder"
                           ? [{}, PEER, 2]
                           : [{ title: "x", topicId: 9 }, PEER, 2];
-                const rec = await pair.run(method, args, { reply: {} });
+                const rec = await wire.run(method, args, { reply: {} });
                 assert.deepEqual(rec.own.error, { message: "Thread type is invalid", code: null }, method);
                 assert.equal(rec.own.requests.length, 0, method);
             }
         });
 
-        it("editReminder group: loads the reminder, keeps every field not given (zca-js sent now, '', 0)", async () => {
+        it("editReminder group: loads the reminder, keeps every field not given (the previous engine sent now, '', 0)", async () => {
             const current = {
                 id: 44,
                 type: 0,
@@ -497,7 +479,6 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
                     replies: { "/api/board/topic/getReminder": { data: current } },
                     reply: { ...current, params: '{"title":"Retro v2"}' },
                 },
-                { ownSkip: 1 },
             );
             const [load, update] = rec.own.requests;
             assert.equal(load.path, "/api/board/topic/getReminder");
@@ -520,7 +501,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
 
         it("editReminder group: a field given wins over the loaded one", async () => {
             const current = { id: 44, color: -65536, emoji: "🎂", startTime: T0, params: { title: "Old" }, repeat: 2 };
-            const rec = await pair.run("editReminder", [{ topicId: 44, startTime: T0 + 5, repeat: 0 }, GROUP, 1], {
+            const rec = await wire.run("editReminder", [{ topicId: 44, startTime: T0 + 5, repeat: 0 }, GROUP, 1], {
                 replies: { "/api/board/topic/getReminder": { data: current } },
                 reply: current,
             });
@@ -544,13 +525,10 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
                     params: { title: "Call mom" },
                 },
             ];
-            const rec = await check(
-                "reminder-edit-dm",
-                "editReminder",
-                [{ title: "Call dad", topicId: 9 }, PEER, 0],
-                { replies: { "/api/board/oneone/list": { data: JSON.stringify(list) } }, reply: { reminderId: 9 } },
-                { ownSkip: 1 },
-            );
+            const rec = await check("reminder-edit-dm", "editReminder", [{ title: "Call dad", topicId: 9 }, PEER, 0], {
+                replies: { "/api/board/oneone/list": { data: JSON.stringify(list) } },
+                reply: { reminderId: 9 },
+            });
             const [load, update] = rec.own.requests;
             assert.equal(load.path, "/api/board/oneone/list");
             assert.deepEqual(JSON.parse(load.params.objectData), {
@@ -582,7 +560,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         });
 
         it("editReminder DM: a reminder not in the list is refused, and nothing is written", async () => {
-            const rec = await pair.run("editReminder", [{ title: "x", topicId: 77 }, PEER, 0], {
+            const rec = await wire.run("editReminder", [{ title: "x", topicId: 77 }, PEER, 0], {
                 replies: { "/api/board/oneone/list": { data: JSON.stringify([{ reminderId: 8 }]) } },
                 reply: {},
             });
@@ -661,7 +639,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         });
 
         it("getListReminder group: a bare-array reply is read the same way", async () => {
-            const rec = await pair.run("getListReminder", [{}, GROUP, 1], {
+            const rec = await wire.run("getListReminder", [{}, GROUP, 1], {
                 reply: JSON.stringify(GROUP_LIST.items.map((i) => i.data)),
             });
             assert.deepEqual(rec.own.result, [{ id: "7", startTime: T0 + 1000, params: { title: "Reminder" } }]);
@@ -677,14 +655,13 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         });
     });
 
-    describe("listOneOneBoard (ours only: zca-js has no such call)", () => {
+    describe("listOneOneBoard (ours only: the previous engine had no such call)", () => {
         it("asks /api/board/oneone/list for every kind (board type 0), no imei, and files bare reminders", async () => {
             const board = [
                 { boardType: 2, data: { id: 50, params: '{"title":"pinned"}' } },
                 { reminderId: 9, startTime: T0, params: { title: "Call mom" } },
             ];
-            const rec = await pair.run("listOneOneBoard", [PEER, 2, 50], { reply: JSON.stringify(board) });
-            assert.equal(rec.zca.error.message, "listOneOneBoard is not in zca-js");
+            const rec = await wire.run("listOneOneBoard", [PEER, 2, 50], { reply: JSON.stringify(board) });
             const [req] = rec.own.requests;
             assert.equal(req.method, "GET");
             assert.equal(req.service, "group_board");
@@ -703,14 +680,13 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             await expectGolden(AREA, "oneone-board", rec.own);
         });
 
-        it("asks the same as zca-js's DM reminder list, apart from the board type", async () => {
-            // The request shape zca-js used for this endpoint (getListReminder, type 0), so a drift of ours shows.
-            const rem = await pair.run("getListReminder", [{ page: 1, count: 20 }, PEER, 0], { reply: "[]" });
-            const own = await pair.run("listOneOneBoard", [PEER, 1, 20], { reply: "[]" });
-            const z = JSON.parse(rem.zca.requests[0].params.objectData);
+        it("asks the same as the DM reminder list, apart from the board type", async () => {
+            // The one endpoint serves both, so a drift between the two shows.
+            const rem = await wire.run("getListReminder", [{ page: 1, count: 20 }, PEER, 0], { reply: "[]" });
+            const own = await wire.run("listOneOneBoard", [PEER, 1, 20], { reply: "[]" });
+            const r = JSON.parse(rem.own.requests[0].params.objectData);
             const o = JSON.parse(own.own.requests[0].params.objectData);
-            assert.deepEqual(o, { ...z, board_type: 0 });
-            assert.deepEqual(own.own.requests[0].paramsOrder, rem.zca.requests[0].paramsOrder);
+            assert.deepEqual(o, { ...r, board_type: 0 });
         });
     });
 
@@ -735,17 +711,17 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         });
 
         it("a DM's board is one GET of oneone/list, board type 0, on the logged-in api; the items are stored", async () => {
-            pair.fake.clearRoutes();
-            pair.fake.routeAnswer("/api/board/oneone/list", (req) =>
+            wire.fake.clearRoutes();
+            wire.fake.routeAnswer("/api/board/oneone/list", (req) =>
                 JSON.parse(req.params.objectData).board_type === 0
                     ? { data: JSON.stringify([{ boardType: 2, data: { id: 50, params: '{"title":"pinned"}' } }]) }
                     : { data: "[]" },
             );
-            const from = pair.fake.requests.length;
-            const stats = await syncBoards({ api: pair.own, threads: [{ threadId: PEER, type: "dm" }], delayMs: 0 });
-            pair.fake.clearRoutes();
+            const from = wire.fake.requests.length;
+            const stats = await syncBoards({ api: wire.own, threads: [{ threadId: PEER, type: "dm" }], delayMs: 0 });
+            wire.fake.clearRoutes();
             assert.equal(stats.failed, 0, JSON.stringify(stats.failures));
-            const boards = pair.fake.requests
+            const boards = wire.fake.requests
                 .slice(from)
                 .filter((r) => r.path === "/api/board/oneone/list")
                 .map((r) => JSON.parse(r.params.objectData));
@@ -805,22 +781,17 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             ["getReminderResponses", [44]],
         ];
         for (const [method, args] of CALLS) {
-            it(`${method}(${args.length > 2 ? `type ${args[2]}` : "…"}): the same code as zca-js`, async () => {
+            it(`${method}(${args.length > 2 ? `type ${args[2]}` : "…"}): the code and message of each error`, async () => {
                 for (const answer of ERROR_ANSWERS) {
-                    const rec = await pair.run(method, args, { error: answer.error });
-                    const where = `${method}, ${answer.label}`;
-                    assert.ok(rec.own.error, `${where}: our side did not throw`);
-                    assert.ok(rec.zca.error, `${where}: zca-js did not throw`);
-                    assert.equal(rec.own.error.code, rec.zca.error.code, where);
-                    if (answer.sameText) assert.equal(rec.own.error.message, rec.zca.error.message, where);
-                    else assert.equal(rec.own.error.message, "HTTP 500", where);
+                    const rec = await wire.run(method, args, { error: answer.error });
+                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
                 }
             });
         }
 
         it("listOneOneBoard: Zalo's code is kept", async () => {
             for (const answer of ERROR_ANSWERS) {
-                const rec = await pair.run("listOneOneBoard", [PEER], { error: answer.error });
+                const rec = await wire.run("listOneOneBoard", [PEER], { error: answer.error });
                 assert.ok(rec.own.error, answer.label);
                 const want = answer.error.outer?.error_code ?? answer.error.inner?.error_code ?? null;
                 assert.equal(rec.own.error.code, want, answer.label);
@@ -839,7 +810,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             ],
         };
 
-        it('an error whose data is "[]" is an empty page for every list call (zca-js threw it)', async () => {
+        it('an error whose data is "[]" is an empty page for every list call (the previous engine threw it)', async () => {
             const cases = [
                 ["getListBoard", [{ page: 2, count: 20 }, GROUP], { items: [] }],
                 ["getListReminder", [{ page: 2, count: 20 }, GROUP, 1], []],
@@ -847,19 +818,19 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
                 ["listOneOneBoard", [PEER, 2, 20], { items: [] }],
             ];
             for (const [method, args, empty] of cases) {
-                const rec = await pair.run(method, args, { error: END });
+                const rec = await wire.run(method, args, { error: END });
                 assert.equal(rec.own.error, null, `${method}: ${JSON.stringify(rec.own.error)}`);
                 assert.deepEqual(rec.own.result, empty, method);
             }
             // The same code with any other data is still an error.
-            const other = await pair.run("getListBoard", [{}, GROUP], {
+            const other = await wire.run("getListBoard", [{}, GROUP], {
                 error: { inner: { error_code: 1, error_message: "no more items", data: "x" } },
             });
             assert.equal(other.own.error?.code, 1);
         });
 
         it("editReminder DM: an edit that finds the end of the list says it was not found, and writes nothing", async () => {
-            const rec = await pair.run("editReminder", [{ title: "x", topicId: 77 }, PEER, 0], { error: END });
+            const rec = await wire.run("editReminder", [{ title: "x", topicId: 77 }, PEER, 0], { error: END });
             assert.match(rec.own.error.message, /not found/);
             assert.equal(rec.own.requests.length, 1);
         });
@@ -867,7 +838,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         it("addPollOptions: voting a new option on a single-choice poll drops the old vote, as the Web's dialog does", async () => {
             // The fixture poll is single-choice with option 1 voted by this account: red if [1] went out beside the
             // new vote, which would hold two votes on a one-vote poll.
-            const rec = await pair.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun", voted: true }] }], {
+            const rec = await wire.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun", voted: true }] }], {
                 replies: { "/api/poll/detail": { data: pollReply() } },
                 reply: pollReply(),
             });
@@ -881,7 +852,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         it("addPollOptions: a multi-choice poll keeps the old vote beside the new one", async () => {
             const poll = pollReply();
             poll.allow_multi_choices = true;
-            const rec = await pair.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun", voted: true }] }], {
+            const rec = await wire.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun", voted: true }] }], {
                 replies: { "/api/poll/detail": { data: poll } },
                 reply: poll,
             });
@@ -890,7 +861,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
 
         it("editReminder DM: a bare 19-digit creatorUid goes back whole; none at all is this account", async () => {
             const list = [{ reminderId: 9, creatorUid: BIG_RAW, toUid: JSON.rawJSON(PEER), startTime: T0 }];
-            let rec = await pair.run("editReminder", [{ title: "t", topicId: 9 }, PEER, 0], {
+            let rec = await wire.run("editReminder", [{ title: "t", topicId: 9 }, PEER, 0], {
                 replies: { "/api/board/oneone/list": { data: JSON.stringify(list) } },
                 reply: { reminderId: 9 },
             });
@@ -898,7 +869,7 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
             // Red if the list is parsed without creatorUid in its id keys: 1111111111111111200 rounds.
             assert.equal(JSON.parse(rec.own.requests.at(-1).params.objectData).creatorUid, BIG_UID);
 
-            rec = await pair.run("editReminder", [{ title: "t", topicId: 9 }, PEER, 0], {
+            rec = await wire.run("editReminder", [{ title: "t", topicId: 9 }, PEER, 0], {
                 replies: { "/api/board/oneone/list": { data: JSON.stringify([{ reminderId: 9, startTime: T0 }]) } },
                 reply: { reminderId: 9 },
             });
@@ -908,13 +879,13 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
 
         it("getListReminder DM: creatorUid and toUid come back whole", async () => {
             const list = [{ reminderId: 9, creatorUid: BIG_RAW, toUid: BIG_RAW, startTime: T0 }];
-            const rec = await pair.run("getListReminder", [{}, PEER, 0], { reply: JSON.stringify(list) });
+            const rec = await wire.run("getListReminder", [{}, PEER, 0], { reply: JSON.stringify(list) });
             assert.equal(rec.own.result[0].creatorUid, BIG_UID);
             assert.equal(rec.own.result[0].toUid, BIG_UID);
         });
 
         it("listOneOneBoard files a bare reminder under its reminderId, as the Web does, even beside an id", async () => {
-            const rec = await pair.run("listOneOneBoard", [PEER], {
+            const rec = await wire.run("listOneOneBoard", [PEER], {
                 reply: JSON.stringify([{ reminderId: 9, id: 3, startTime: T0 }]),
             });
             assert.deepEqual(rec.own.result.items, [
@@ -923,8 +894,8 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         });
 
         it("boardPage: page 2 goes out with the cursor of page 1's last item, on the wire", async () => {
-            pair.fake.clearRoutes();
-            pair.fake.routeAnswer("/api/board/list", (req) =>
+            wire.fake.clearRoutes();
+            wire.fake.routeAnswer("/api/board/list", (req) =>
                 req.params.page === 1
                     ? {
                           data: {
@@ -936,14 +907,14 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
                       }
                     : { data: { items: [{ boardType: 1, data: { id: 40 } }] } },
             );
-            const from = pair.fake.requests.length;
+            const from = wire.fake.requests.length;
             let got;
             try {
-                got = await boardPage(pair.own, GROUP, 2, 2);
+                got = await boardPage(wire.own, GROUP, 2, 2);
             } finally {
-                pair.fake.clearRoutes();
+                wire.fake.clearRoutes();
             }
-            const sent = pair.fake.requests
+            const sent = wire.fake.requests
                 .slice(from)
                 .map((r) => [r.params.page, r.params.last_id, r.params.last_type]);
             assert.deepEqual(sent, [
@@ -954,19 +925,19 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         });
 
         it("groupReminderPage: page 2 carries the id of page 1's last topic, a filtered-out note included", async () => {
-            pair.fake.clearRoutes();
-            pair.fake.routeAnswer("/api/board/listReminder", (req) =>
+            wire.fake.clearRoutes();
+            wire.fake.routeAnswer("/api/board/listReminder", (req) =>
                 JSON.parse(req.params.objectData).page === 1
                     ? { data: JSON.stringify(GROUP_LIST_TWO) }
                     : { data: JSON.stringify({ items: [] }) },
             );
-            const from = pair.fake.requests.length;
+            const from = wire.fake.requests.length;
             try {
-                assert.deepEqual(await groupReminderPage(pair.own, GROUP, 2, 2), []);
+                assert.deepEqual(await groupReminderPage(wire.own, GROUP, 2, 2), []);
             } finally {
-                pair.fake.clearRoutes();
+                wire.fake.clearRoutes();
             }
-            const sent = pair.fake.requests.slice(from).map((r) => JSON.parse(r.params.objectData));
+            const sent = wire.fake.requests.slice(from).map((r) => JSON.parse(r.params.objectData));
             // The Web's cursor is the last topic of the page (listByConversation), not the last reminder kept.
             assert.deepEqual(
                 sent.map((o) => [o.page, o.last_id]),
@@ -978,10 +949,10 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
         });
     });
 
-    it("OWN_READY lists every method this file compares", () => {
-        // Red if a method was flipped to our engine without a comparison here, or one compared here was left on zca-js.
+    it("the area defines exactly the methods this file covers", () => {
+        // Red if a method was added to the area without a case here, or one covered here was removed.
         assert.deepEqual(
-            [...OWN_READY].sort(),
+            Object.keys(boardMethods({})).sort(),
             [
                 "addPollOptions",
                 "createNote",

@@ -576,7 +576,7 @@ describe("the real frames of a sync, through the real listener", () => {
                 if (s) applyControl(s, { act: ctl.act, data: ctl.data });
             }
         });
-        for (const r of requests) api.listener.sendWs(r, false);
+        for (const r of requests) api.listener.sendWs(r);
         await new Promise((r) => setTimeout(r, 250));
         return sessions;
     }

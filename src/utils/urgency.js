@@ -3,7 +3,7 @@
  *
  * Zalo Web marks a text message `metaData: {urgency: 1}` (important) or
  * `metaData: {urgency: 2}` (urgent) on the ordinary send endpoints, group and
- * 1-1 alike; zca-js builds that object from `sendMessage({msg, urgency})` and
+ * 1-1 alike; the session builds that object from `sendMessage({msg, urgency})` and
  * ignores any other value. `msg send --urgency` and `zalo_send_message`'s
  * `urgency` both map a name to the level here, so the two cannot drift.
  */

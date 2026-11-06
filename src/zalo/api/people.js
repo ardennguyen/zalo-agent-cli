@@ -5,13 +5,12 @@
  * Every call is one request on the session envelope (kernel/endpoint.js): a JSON body sealed with the session key
  * into `params`, in the query of a GET or the form of a POST, next to `zpw_ver` and `zpw_type`. The wire follows
  * Zalo Web 26.11.10 (agent/docs/zca-replace/spec-people.md, spec-sweep.md 1.2/1.3); where it differs from what
- * zca-js sent, the difference is declared in tests/helpers/wire-diff/allow/people.js and tested in
- * tests/unit/wire-people.test.js:
+ * the previous engine sent, the difference is pinned by tests/unit/wire-people.test.js and its golden records:
  *
- * - profiles and the friend list ask for 160 px avatars, the Web's one profile size (zca-js asked 120);
+ * - profiles and the friend list ask for 160 px avatars, the Web's one profile size (not 120);
  * - `getprofiles/v2` always says `language: "vi"`, as every Web caller does, and sends phonebook version 0 when the
- *   login carried none (zca-js left the key out);
- * - a phone lookup sends `params` once (zca-js put it in the query twice) and turns a leading `0` into `84`
+ *   login carried none (the key is never left out);
+ * - a phone lookup sends `params` once (not twice in the query) and turns a leading `0` into `84`
  *   whatever the session's language (for the multi-phone lookup that rule is ours, see MULTI_BY_PHONES);
  * - a username lookup puts `params` before `zpw_ver`/`zpw_type`, the one Web call in this area that does;
  * - "no sent requests" (code 112) answers `{}` instead of throwing;
@@ -375,7 +374,7 @@ export const LAST_ONLINE = Object.freeze({
  * `GET {friend}/api/friend/profile/multiget`: Web `getMultiUsersByPhones`.
  *
  * The leading `0` -> `84` of {@link webPhone} is our rule here, not one read from the Web's callers of this
- * endpoint: it keeps what the CLI has always sent for a Vietnamese session (zca-js made the same change when the
+ * endpoint: it keeps what the CLI has always sent for a Vietnamese session (the previous engine made the same change when the
  * session language was `vi`), and applies it whatever the language, as `findUser` does.
  */
 export const MULTI_BY_PHONES = Object.freeze({
@@ -702,33 +701,3 @@ export async function readAllAliases(api, { pageSize = 100, maxPages = 1000 } = 
     }
     return out;
 }
-
-/** Methods whose wire-people.test.js comparison passes: the switch answers these from our code. */
-export const OWN_READY = new Set([
-    "getUserInfo",
-    "getAllFriends",
-    "findUser",
-    "findUserByUsername",
-    "getAliasList",
-    "changeFriendAlias",
-    "removeFriendAlias",
-    "sendFriendRequest",
-    "acceptFriendRequest",
-    "rejectFriendRequest",
-    "undoFriendRequest",
-    "getSentFriendRequest",
-    "getFriendRequestStatus",
-    "getFriendRecommendations",
-    "getFriendBoardList",
-    "getFriendOnlines",
-    "getCloseFriends",
-    "removeFriend",
-    "blockUser",
-    "unblockUser",
-    "lastOnline",
-    "getMultiUsersByPhones",
-    "getQR",
-    "getRelatedFriendGroup",
-    "getBizAccount",
-    "blockViewFeed",
-]);

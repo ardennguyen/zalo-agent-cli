@@ -39,6 +39,7 @@ import { loginWithCredentials } from "../../src/core/zalo-client.js";
 import { addAccount } from "../../src/core/accounts.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { _resetErrorLatch } from "../../src/utils/output.js";
+import { parseMultipart, readBody } from "../helpers/wire-diff/body.js";
 
 const require = createRequire(import.meta.url);
 const zu = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
@@ -152,10 +153,17 @@ function mergeSettings(base, over) {
  *   (e.g. a `set-cookie`)
  * @returns {{
  *   requests: Array<{method: string, host: string, path: string, query: object, params: object|null,
- *     headers: object, form: object|null}>,
+ *     headers: object, form: object|null, url: string, queryOrder: string[], rawParams: string|null,
+ *     parts: Array<{name: string|null, filename: string|null, type: string|null, bytes: Buffer}>|null,
+ *     rawBody: Buffer|null}>,
  *   calls: (pathPart: string) => Array<object>,
  *   route: (pathSuffix: string, handler: (req: object) => unknown) => void,
  *   rawRoute: (match: (req: object) => boolean, handler: (req: object) => Response) => void,
+ *   routeAnswer: (pathSuffix: string, answer: object|((req: object) => object)) => void,
+ *   routeSequence: (pathSuffix: string, answers: object[]) => {served: () => number},
+ *   answer: (spec: object, req?: object) => Promise<Response>,
+ *   reverseHost: (host: string) => string|null,
+ *   serviceMap: Record<string, string[]>,
  *   clearRoutes: () => void,
  *   uninstall: () => void,
  * }}
@@ -163,6 +171,23 @@ function mergeSettings(base, over) {
  *   decrypted. A route handler's return value becomes the response's `data`. A raw route answers the
  *   requests its `match` accepts with the `Response` its handler returns, unsealed: for the id.zalo.me
  *   and jr.* pages, which are not Zalo API calls.
+ *
+ *   Each request also keeps what the differential harness (tests/helpers/wire-diff) compares byte for byte:
+ *   `url` (the raw string), `queryOrder` (the query names in wire order), `rawParams` (the encrypted `params`
+ *   string from the query or the form), `parts` (a multipart body split by its boundary, else null) and
+ *   `rawBody` (the body's bytes; not enumerable, so a printed request stays readable).
+ *
+ *   Three intended behavior changes came with that recording (WP0), on top of the additions: `headers` gains
+ *   the `content-type` a real fetch adds for a FormData or URLSearchParams body (what the server receives);
+ *   a urlencoded body sent as a string or bytes fills `form` too, as URLSearchParams always did; and an API
+ *   host's `params` are opened before the raw routes run, so a raw route sees them (params the session key
+ *   cannot open stay null and the request still reaches the raw routes).
+ *
+ *   An answer (`routeAnswer`, `routeSequence`, `answer`) is one of: `{data}` a sealed success; `{inner}` a
+ *   sealed inner envelope (`{error_code, error_message, data?}`), for an inner error code; `{outer}` a plain
+ *   outer envelope, for an outer error code; `{plain}` an unsealed success (`data` as it is); `{status, body?}`
+ *   an HTTP status; `{undecryptable: true}` a success whose `data` no session key opens; `{text, status?,
+ *   headers?}` a raw body; `{hang: true}` no answer until the request is aborted.
  */
 export function installFakeZalo({
     omit = [],
@@ -185,12 +210,34 @@ export function installFakeZalo({
 
     const reply = (body, status = 200) =>
         new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    const sealed = (data) =>
+    const seal = (inner) =>
         reply({
             error_code: 0,
             error_message: "Successful.",
-            data: zu.encodeAES(FAKE.sessionKey, JSON.stringify({ error_code: 0, error_message: "Successful.", data })),
+            data: zu.encodeAES(FAKE.sessionKey, JSON.stringify(inner)),
         });
+    const sealed = (data) => seal({ error_code: 0, error_message: "Successful.", data });
+    const hosts = new Map(Object.entries(serviceMap).map(([k, [base]]) => [new URL(base).host, k]));
+
+    /** The Response for one answer spec (see the JSDoc of the returned `answer`). */
+    async function answer(spec, req) {
+        if (!spec || typeof spec !== "object") throw new Error(`fake-zalo: not an answer: ${JSON.stringify(spec)}`);
+        if (spec.hang) {
+            await new Promise((_, reject) => {
+                req?.signal?.addEventListener("abort", () => reject(req.signal.reason));
+            });
+        }
+        if ("data" in spec) return sealed(spec.data);
+        if ("inner" in spec) return seal(spec.inner);
+        if ("outer" in spec) return reply(spec.outer);
+        if ("plain" in spec) return reply({ error_code: 0, error_message: "", data: spec.plain });
+        if (spec.undecryptable) return reply({ error_code: 0, error_message: "", data: "bm90LWEtc2Vzc2lvbi1jaXBoZXI" });
+        if ("text" in spec) {
+            return new Response(spec.text, { status: spec.status ?? 200, headers: spec.headers ?? {} });
+        }
+        if ("status" in spec) return reply(spec.body ?? {}, spec.status);
+        throw new Error(`fake-zalo: not an answer: ${JSON.stringify(spec)}`);
+    }
 
     /**
      * One scripted answer: `{status}` an HTTP status with an empty body, `{body}` a JSON body, `{hang: true}`
@@ -234,9 +281,37 @@ export function installFakeZalo({
             params: null,
             headers: Object.fromEntries(new Headers(init.headers ?? {})),
             form: init.body instanceof URLSearchParams ? Object.fromEntries(init.body) : null,
+            url: String(input),
+            queryOrder: [...url.searchParams.keys()],
+            rawParams: url.searchParams.get("params"),
+            parts: null,
         };
         Object.defineProperty(req, "signal", { value: init.signal, enumerable: false });
+        Object.defineProperty(req, "rawBody", { value: null, enumerable: false, writable: true });
         requests.push(req);
+
+        // The body as the server receives it: its bytes, the content type a real fetch adds for a FormData or
+        // URLSearchParams body, a urlencoded form however it was handed over, and a multipart body's parts.
+        const body = await readBody(init.body);
+        req.rawBody = body.bytes;
+        if (body.contentType && !req.headers["content-type"]) req.headers["content-type"] = body.contentType;
+        const type = req.headers["content-type"] ?? "";
+        if (body.bytes && !req.form && /^application\/x-www-form-urlencoded/i.test(type)) {
+            req.form = Object.fromEntries(new URLSearchParams(body.bytes.toString("utf8")));
+        }
+        if (body.bytes && /^multipart\//i.test(type)) req.parts = parseMultipart(body.bytes, type);
+        if (req.rawParams === null && typeof req.form?.params === "string") req.rawParams = req.form.params;
+        // An API call's params are opened before any route sees the request, so a raw route's handler and the
+        // record both have them. The login host is not an API host: its params use the login cipher.
+        // Params the session key does not open stay null here, so the request still reaches the raw routes (a
+        // negative test answers it there); only the plain routes below insist on opening them.
+        if (hosts.has(url.host) && req.rawParams) {
+            try {
+                req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, req.rawParams));
+            } catch {
+                req.params = null;
+            }
+        }
 
         for (const raw of rawRoutes) if (raw.match(req)) return raw.handler(req);
 
@@ -306,9 +381,8 @@ export function installFakeZalo({
             );
         }
 
-        const enc =
-            url.searchParams.get("params") ?? (init.body instanceof URLSearchParams ? init.body.get("params") : null);
-        if (enc) req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, enc));
+        const enc = req.rawParams;
+        if (enc && req.params === null) req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, enc));
 
         for (const [suffix, handler] of routes) {
             if (url.pathname.endsWith(suffix)) return sealed(await handler(req));
@@ -322,6 +396,29 @@ export function installFakeZalo({
         calls: (pathPart) => requests.filter((r) => r.path.includes(pathPart)),
         route: (pathSuffix, handler) => routes.set(pathSuffix, handler),
         rawRoute: (match, handler) => rawRoutes.push({ match, handler }),
+        /** Answer every API request whose path ends with `pathSuffix` with one answer, or the one `fn(req)` picks. */
+        routeAnswer: (pathSuffix, spec) =>
+            rawRoutes.push({
+                match: (r) => hosts.has(r.host) && r.path.endsWith(pathSuffix),
+                handler: (r) => answer(typeof spec === "function" ? spec(r) : spec, r),
+            }),
+        /**
+         * Answer successive requests to `pathSuffix` with successive answers (a chunked upload: non-final, final,
+         * a duplicate's code 1); the last one repeats.
+         */
+        routeSequence: (pathSuffix, answers) => {
+            if (!Array.isArray(answers) || answers.length === 0) throw new Error("fake-zalo: no answers to play");
+            let served = 0;
+            rawRoutes.push({
+                match: (r) => hosts.has(r.host) && r.path.endsWith(pathSuffix),
+                handler: (r) => answer(answers[Math.min(served++, answers.length - 1)], r),
+            });
+            return { served: () => served };
+        },
+        answer,
+        /** The service key a fake host stands for (`group-poll.zalo.invalid` -> `group_poll`), or null. */
+        reverseHost: (host) => hosts.get(host) ?? null,
+        serviceMap,
         clearRoutes: () => {
             routes.clear();
             rawRoutes.length = 0;

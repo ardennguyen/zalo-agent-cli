@@ -11,7 +11,15 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { FAKE_CREDENTIALS, installQueuePulls, installTransferSync, startFakeZalo } from "../helpers/fake-zalo/index.js";
+import { decodeFrame } from "../../src/core/sync-v2/index.js";
+import {
+    FAKE_CREDENTIALS,
+    installQueuePulls,
+    installTransferSync,
+    ok,
+    serverFrame,
+    startFakeZalo,
+} from "../helpers/fake-zalo/index.js";
 
 /** A 590 request as the client sends it (the verified field set). */
 function syncRequest(n, type = "message") {
@@ -390,6 +398,134 @@ describe("fake Zalo", () => {
             assert.equal(ack.body.data.err, 211);
             await new Promise((r) => setTimeout(r, 150));
             assert.equal(seen.frames.filter((f) => f.cmd === 601).length, 0);
+        });
+    });
+
+    describe("sealed frames and the key frame", () => {
+        /** A 1-1 message as a 501 push carries it; every id is fake. */
+        const dm = (n) => ({
+            msgId: `500000000000000000${n}`,
+            cliMsgId: `170000000000${n}`,
+            uidFrom: "2000000000000000002",
+            idTo: "0",
+            dName: "Fake Peer",
+            ts: "1700000000000",
+            msgType: "webchat",
+            content: `sealed ${n}`,
+        });
+
+        /** Start the listener and collect the content of every `message` it emits. */
+        async function listen() {
+            const contents = [];
+            api.listener.on("message", (m) => contents.push(m.data.content));
+            const key = once(api.listener, "cipher_key");
+            api.listener.start();
+            const [cipher] = await key;
+            return { contents, cipher };
+        }
+
+        /** Push one 501 per variant and wait for all of their messages. */
+        async function pushVariants(contents) {
+            const variants = [
+                { encrypt: 0 },
+                { encrypt: 1, zip: "zlib" },
+                { encrypt: 1, zip: "gzip" },
+                { encrypt: 2, zip: "zlib" },
+                { encrypt: 2, zip: "gzip" },
+                { encrypt: 3 },
+            ];
+            // One at a time: a listener decodes each frame asynchronously, and a frame that needs no inflate or
+            // AES can overtake one that does, so pushed back to back their messages may arrive out of order.
+            for (const [i, v] of variants.entries()) {
+                assert.ok(zalo.sock.pushEncrypted({ cmd: 501, ...v, body: ok({ msgs: [dm(i)] }) }), "push refused");
+                for (let t = 0; t < 200 && contents.length <= i; t++) await new Promise((r) => setTimeout(r, 10));
+            }
+            return variants.map((_, i) => `sealed ${i}`);
+        }
+
+        it("seals pushes as encrypt 1, 2 and 3 (zlib and gzip) under the 32-byte key the listener took", async () => {
+            zalo = await startFakeZalo();
+            api = await zalo.login();
+            const { contents, cipher } = await listen();
+            assert.equal(cipher, zalo.sock.cipherKey);
+            assert.equal(Buffer.from(cipher, "base64").length, 32);
+            // Red if a sealed frame does not open with the key the listener was handed: its message never comes.
+            assert.deepEqual(contents, await pushVariants(contents));
+        });
+
+        it("hands out a 16-byte key when told to, and seals under it", async () => {
+            zalo = await startFakeZalo();
+            zalo.sock.setCipherKey(Buffer.alloc(16, 5).toString("base64"));
+            api = await zalo.login();
+            const { contents, cipher } = await listen();
+            assert.equal(Buffer.from(cipher, "base64").length, 16);
+            assert.deepEqual(contents, await pushVariants(contents));
+        });
+
+        it("sends the key frame with the handshake's queues sealed under its own key", async () => {
+            const authData = {
+                qCmds: [{ cmd: 510, subCmd: 1, queueName: "510_1" }],
+                ctrl_qCmds: [{ cmd: 603, subCmd: 1, queueName: "603_1" }],
+                bk_cmds: [],
+            };
+            zalo = await startFakeZalo();
+            zalo.sock.setAuthData(authData);
+            api = await zalo.login();
+            const frames = [];
+            // `connected` comes from the socket's open, before any frame: the key frame is the first one seen.
+            api.listener.once("connected", () => api.listener.ws.on("message", (raw) => frames.push(Buffer.from(raw))));
+            const { cipher } = await listen();
+            const keyFrame = frames.find((f) => f.readUInt16LE(1) === 1 && f[3] === 1);
+            assert.ok(keyFrame, "no cmd 1/1 frame reached the client");
+            const top = JSON.parse(keyFrame.subarray(4).toString("utf8"));
+            assert.equal(top.key, cipher);
+            assert.equal(top.encrypt, 2);
+            // Red if the queue lists were sent in the clear or under another key.
+            assert.throws(() => JSON.parse(top.data));
+            assert.deepEqual(decodeFrame(top, top.key), { error_code: 0, error_message: "", data: authData });
+        });
+
+        it("sends a text frame and raw bytes exactly as given, and keeps each client frame's bytes", async () => {
+            zalo = await startFakeZalo();
+            api = await zalo.login();
+            const got = [];
+            api.listener.once("connected", () =>
+                api.listener.ws.on("message", (data, isBinary) => got.push({ data: Buffer.from(data), isBinary })),
+            );
+            await listen();
+            const raw = serverFrame(9999, 7, ok({ x: 1 }));
+            assert.ok(zalo.sock.pushText("not a frame"));
+            assert.ok(zalo.sock.pushRaw(raw));
+            for (let i = 0; i < 100 && got.length < 3; i++) await new Promise((r) => setTimeout(r, 10));
+            const text = got.find((g) => !g.isBinary);
+            assert.equal(text?.data.toString("utf8"), "not a frame");
+            assert.ok(
+                got.some((g) => g.isBinary && g.data.equals(raw)),
+                "the raw frame changed on the way",
+            );
+
+            api.listener.requestOldMessages(0, null);
+            const pull = await zalo.sock.waitFor((f) => f.cmd === 510);
+            assert.equal(pull.raw.readUInt16LE(1), 510);
+            assert.deepEqual(JSON.parse(pull.raw.subarray(4).toString("utf8")), pull.data);
+            assert.equal(Object.keys(pull).includes("raw"), false, "raw bytes must not clutter a printed frame");
+        });
+
+        it("records the upgrade's headers as sent: each name in its own spelling, with its value", async () => {
+            zalo = await startFakeZalo();
+            api = await zalo.login();
+            await listen();
+            const [conn] = zalo.sock.connections;
+            assert.ok(conn.rawHeaders.length >= 2 && conn.rawHeaders.length % 2 === 0);
+            for (let i = 0; i < conn.rawHeaders.length; i += 2) {
+                const value = conn.headers[conn.rawHeaders[i].toLowerCase()];
+                assert.ok(String(value).includes(conn.rawHeaders[i + 1]), `${conn.rawHeaders[i]} is not in headers`);
+            }
+            // The spelling as sent, not as `headers` lower-cases it. Red if rawHeaders were rebuilt from `headers`:
+            // the ws library names its key header `Sec-WebSocket-Key` (mixed case), and zca-js sends `prgama`.
+            const names = conn.rawHeaders.filter((_, i) => i % 2 === 0);
+            assert.ok(names.includes("Sec-WebSocket-Key"), `no case-preserved Sec-WebSocket-Key in ${names}`);
+            assert.ok(names.includes("prgama") && !names.includes("pragma"), `prgama is not spelled as sent: ${names}`);
         });
     });
 

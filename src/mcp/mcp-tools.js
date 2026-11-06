@@ -61,12 +61,15 @@ import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
 import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
 import {
     describeFriendAddError,
+    describeFriendUndoError,
     extractErrorCode,
     friendStatusFrom,
     friendsFrom,
+    readSentRequests,
     receivedRequestsFrom,
     sentRequestsFrom,
 } from "../core/friend-requests.js";
+import { errorCodeOf } from "../zalo/errors.js";
 import {
     CONFIRMED_ACTIONS,
     NOT_A_MEMBER_CODES,
@@ -2964,14 +2967,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     case "status":
                         return ok({ action, ...friendStatusFrom(await api.getFriendRequestStatus(target), target) });
                     case "sent_requests": {
-                        let res = null;
-                        try {
-                            res = await api.getSentFriendRequest();
-                        } catch (e) {
-                            // Zalo answers code 112 when there are none, which is an empty list, not a failure.
-                            if (!/\b112\b/.test(String(e?.message))) throw e;
-                        }
-                        const requests = sentRequestsFrom(res);
+                        // Zalo's "none sent" (112) is an empty list, not a failure.
+                        const requests = sentRequestsFrom(await readSentRequests(api));
                         return ok({ action, count: requests.length, requests });
                     }
                     case "received_requests": {
@@ -3031,9 +3028,15 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
             } catch (e) {
                 console.error("[mcp-tools] zalo_friend error:", e.message);
-                // 'send' keeps the CLI's wording for Zalo's refusal codes (already friends, blocked, ...).
+                // 'send' and 'undo' keep the CLI's wording for Zalo's refusal codes (already friends, blocked,
+                // too many requests taken back, ...), read from the error's code.
+                const code = errorCodeOf(e);
                 const known =
-                    action === "send" ? describeFriendAddError(e.code ?? extractErrorCode(e.message), target) : null;
+                    action === "send"
+                        ? describeFriendAddError(code, target)
+                        : action === "undo"
+                          ? describeFriendUndoError(code, target)
+                          : null;
                 return err(known || e.message);
             }
         },

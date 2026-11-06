@@ -9,7 +9,7 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import net from "node:net";
-import { LoginQRCallbackEventType as E } from "zca-js";
+import { QR_EVENT } from "../../src/zalo/enums.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { QrLoginTimedOut, onceEnter, runQrLogin } from "../../src/core/qr-login-flow.js";
 
@@ -35,9 +35,10 @@ const fakeLogin = (then) => (_proxy, onEvent) =>
         };
         ctl.show = () => {
             ctl.codes++;
-            onEvent({ type: E.QRCodeGenerated, data: { image: "" }, actions: ctl.actions });
+            onEvent({ type: QR_EVENT.QR_GENERATED, data: { image: "" }, actions: ctl.actions });
         };
-        ctl.expire = () => onEvent({ type: E.QRCodeExpired, data: null, actions: ctl.actions });
+        ctl.expire = () => onEvent({ type: QR_EVENT.QR_EXPIRED, data: null, actions: ctl.actions });
+        ctl.scan = (data) => onEvent({ type: QR_EVENT.QR_SCANNED, data, actions: ctl.actions });
         ctl.show();
         then(ctl);
     });
@@ -129,6 +130,37 @@ describe("a QR login and its expired codes", () => {
         assert.ok(err instanceof QrLoginTimedOut, String(err));
         assert.match(err.message, /no new one was asked for/);
         await err.finish("failed", err.message);
+    });
+
+    it("says who scanned the code, with the name and avatar the phone sent", async () => {
+        const lines = [];
+        console.log = (line) => lines.push(String(line));
+        try {
+            const ok = await runQrLogin({
+                jsonMode: true,
+                interactive: false,
+                qrPort: await freePort(),
+                login: fakeLogin((c) =>
+                    setImmediate(() => {
+                        c.scan({ display_name: "Fake Scanner", avatar: "https://avatar.invalid/fake.jpg" });
+                        c.scan({});
+                        c.resolve({ ownId: "1000000000000000001" });
+                    }),
+                ),
+            });
+            await ok.finish("done");
+        } finally {
+            console.log = () => {};
+        }
+        const events = lines.filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
+        // Red if the scanned event is dropped, or the name is read from a field the scan does not carry.
+        assert.deepEqual(
+            events.filter((e) => e.event === "qr_scanned"),
+            [
+                { event: "qr_scanned", name: "Fake Scanner", avatar: "https://avatar.invalid/fake.jpg" },
+                { event: "qr_scanned", name: "unknown", avatar: null },
+            ],
+        );
     });
 
     it("hands a failure through with a way to tell the page", async () => {

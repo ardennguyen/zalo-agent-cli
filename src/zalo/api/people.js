@@ -12,7 +12,7 @@
  * - `getprofiles/v2` always says `language: "vi"`, as every Web caller does, and sends phonebook version 0 when the
  *   login carried none (zca-js left the key out);
  * - a phone lookup sends `params` once (zca-js put it in the query twice) and turns a leading `0` into `84`
- *   whatever the session's language;
+ *   whatever the session's language (for the multi-phone lookup that rule is ours, see MULTI_BY_PHONES);
  * - a username lookup puts `params` before `zpw_ver`/`zpw_type`, the one Web call in this area that does;
  * - "no sent requests" (code 112) answers `{}` instead of throwing;
  * - code 212 on a later alias page is the end of the list, answered as an empty page;
@@ -84,24 +84,37 @@ export function parseBoardTopics(data) {
 }
 
 /**
- * Turn the `status` of each online friend from the JSON text Zalo sends (`{"status": "..."}`) into its text.
+ * The text inside one online friend's `status`, which Zalo sends as JSON text (`{"status": "..."}`); the value
+ * itself when it holds no such text.
+ *
+ * @param {unknown} status
+ * @returns {unknown}
+ */
+function statusTextOf(status) {
+    if (typeof status !== "string") return status;
+    let wrapped;
+    try {
+        wrapped = JSON.parse(status);
+    } catch {
+        return status;
+    }
+    return typeof wrapped?.status === "string" ? wrapped.status : status;
+}
+
+/**
+ * The online-friends reply with each friend's `status` read out of its JSON text. A reply without an `onlines`
+ * list comes back as it is; entries are copied, never changed in place, and an entry without a text status is kept
+ * as it came.
  *
  * @param {unknown} data - the reply's `data`
  * @returns {unknown}
  */
 export function parseOnlineStatuses(data) {
-    if (!data || typeof data !== "object" || !Array.isArray(data.onlines)) return data;
-    for (const online of data.onlines) {
-        if (!online || typeof online.status !== "string") continue;
-        let parsed = null;
-        try {
-            parsed = JSON.parse(online.status);
-        } catch {
-            parsed = null;
-        }
-        if (parsed && typeof parsed.status === "string") online.status = parsed.status;
-    }
-    return data;
+    const onlines = data && typeof data === "object" ? data.onlines : undefined;
+    if (!Array.isArray(onlines)) return data;
+    const read = (entry) =>
+        typeof entry?.status === "string" ? { ...entry, status: statusTextOf(entry.status) } : entry;
+    return { ...data, onlines: onlines.map(read) };
 }
 
 // ── Endpoint definitions (design 1.2) ──────────────────────────────────────────────────────────────────────────
@@ -358,7 +371,13 @@ export const LAST_ONLINE = Object.freeze({
     reply: "session",
 });
 
-/** `GET {friend}/api/friend/profile/multiget`: Web `getMultiUsersByPhones`. */
+/**
+ * `GET {friend}/api/friend/profile/multiget`: Web `getMultiUsersByPhones`.
+ *
+ * The leading `0` -> `84` of {@link webPhone} is our rule here, not one read from the Web's callers of this
+ * endpoint: it keeps what the CLI has always sent for a Vietnamese session (zca-js made the same change when the
+ * session language was `vi`), and applies it whatever the language, as `findUser` does.
+ */
 export const MULTI_BY_PHONES = Object.freeze({
     host: "friend",
     path: "/api/friend/profile/multiget",

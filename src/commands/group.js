@@ -107,7 +107,8 @@ export function registerGroupCommands(program) {
         .description("Show group details")
         .action(async (groupId) => {
             try {
-                const result = await getApi().getGroupInfo(groupId);
+                // getGroupInfo takes a list of group ids, as the Web's getmg-v2 does.
+                const result = await getApi().getGroupInfo([groupId]);
                 output(result, program.opts().json);
             } catch (e) {
                 error(e.message);

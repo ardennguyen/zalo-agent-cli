@@ -185,6 +185,45 @@ describe("current user labels", () => {
         assert.equal(aliases.size, 0);
     });
 
+    /** A page of `n` aliases whose ids start after `from`. */
+    const aliasPage = (from, n, extra = {}) => ({
+        items: Array.from({ length: n }, (_, i) => ({ userId: String(from + i + 1), alias: `A${from + i + 1}` })),
+        ...extra,
+    });
+
+    it("stops at a full page that says hasMore: false, as Zalo Web does", async () => {
+        const pages = [];
+        const aliases = await readUserAliases({
+            getAliasList: async (count, page) => {
+                pages.push(page);
+                return page === 1 ? aliasPage(0, 100, { hasMore: false }) : assert.fail("asked past the last page");
+            },
+        });
+        // Red if a full page is read as "there is more" whatever the reply says.
+        assert.deepEqual(pages, [1]);
+        assert.equal(aliases.size, 100);
+    });
+
+    it("keeps paging a short page that says hasMore: true", async () => {
+        const pages = [];
+        const aliases = await readUserAliases({
+            getAliasList: async (_count, page) => {
+                pages.push(page);
+                return page === 1 ? aliasPage(0, 3, { hasMore: true }) : aliasPage(3, 2, { hasMore: false });
+            },
+        });
+        // Red if a short page ends the list although the reply says more follow.
+        assert.deepEqual(pages, [1, 2]);
+        assert.deepEqual([...aliases.keys()], ["1", "2", "3", "4", "5"]);
+    });
+
+    it("keeps what it read when page 2 answers Zalo's end-of-list (212, an empty page)", async () => {
+        const aliases = await readUserAliases({
+            getAliasList: async (_count, page) => (page === 1 ? aliasPage(0, 100) : { items: [] }),
+        });
+        assert.equal(aliases.size, 100);
+    });
+
     it("does not send opaque unresolved sender IDs to getUserInfo", async () => {
         const rows = await withCurrentSenderNames({ getUserInfo: async () => assert.fail("not a numeric UID") }, [
             { senderId: NOISED, senderName: null },

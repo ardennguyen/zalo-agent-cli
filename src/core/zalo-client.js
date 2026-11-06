@@ -1,18 +1,18 @@
 /**
- * Zalo client wrapper — direct zca-js API calls with proxy support.
+ * Zalo client wrapper: the session's API calls with proxy support.
  * Manages a single Zalo instance per process. Swap on account switch.
  */
 
 import fs from "fs";
 import { basename, join } from "node:path";
 import { imageSizeFromFile } from "image-size/fromFile";
-import { Zalo } from "zca-js";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { getActive } from "./accounts.js";
 import { getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
 import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
+import { secChUaFor } from "../zalo/headers.js";
 import { API_TYPE, API_VERSION_INVALID, resolveApiVersion, resolveQrFlow } from "../zalo/profile.js";
 import { qrLogin } from "../zalo/qr-login.js";
 import { createTrustStore } from "../zalo/trust-store.js";
@@ -154,11 +154,6 @@ function buildOptions(proxyUrl) {
     return opts;
 }
 
-/** A zca-js instance, for the QR login (the saved-session login is our own, src/zalo/login.js). */
-function createZalo(proxyUrl) {
-    return new Zalo(buildOptions(proxyUrl));
-}
-
 /**
  * Whether two serialized cookie jars hold the same cookies: name, value, domain, path and expiry. Access
  * times are ignored, they change on every use.
@@ -262,75 +257,45 @@ export async function probeSavedLogin(creds, proxyUrl = null, { ownId = null } =
 }
 
 /**
- * Login via QR code with optional proxy.
+ * Login via QR code with optional proxy: the official Web sequence (src/zalo/qr-login.js), then our own login with
+ * the session it produced. `ZALO_QR_FLOW=legacy` (zca-js's own flow) was removed in 3.0.0 and is refused here,
+ * before any request.
+ *
  * @param {string|null} proxyUrl
- * @param {function} onQrGenerated - callback(qrData) when QR is ready
- * @returns {object} - {api, ownId}
+ * @param {function} [onQrEvent] - called with every QR event (generated, scanned, declined, expired)
+ * @returns {Promise<{api: object, ownId: string|null}>}
+ * @throws {Error} with `.code === QR_FLOW_INVALID` when ZALO_QR_FLOW is set to anything but `official`
  */
 export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
-    const flow = resolveQrFlow();
-    const zalo = createZalo(proxyUrl);
+    resolveQrFlow();
+    // Throws on a bad ZALO_API_VERSION, also before any request.
+    const zaloOptions = buildOptions(proxyUrl);
 
-    // Zalo's server reads the sec-ch-ua Client Hints headers (not the
-    // User-Agent header) to fill in the "Thiết bị" device label on the
-    // phone's QR-confirm screen. zca-js's own default is internally
-    // inconsistent — a Firefox User-Agent alongside hardcoded Chrome
-    // Client Hints, a combination no real browser produces, and identical
-    // across every zca-js install. Generating a coherent, varied
-    // fingerprint here (once, at initial QR login) fixes both: the device
-    // label becomes accurate, and it's no longer a fixed, correlatable
-    // signal shared by every user of this tool. It persists automatically
-    // for this account afterward via the saved credentials' userAgent
-    // field — see extractCredentials()/loginWithCredentials() below.
+    // Zalo's server reads the sec-ch-ua Client Hints headers (not the User-Agent header) to fill in the
+    // "Thiết bị" device label on the phone's QR-confirm screen. A varied, coherent User-Agent is picked once, at
+    // the initial QR login; the hints are derived from it (src/zalo/headers.js), and it persists for this account
+    // afterward via the saved credentials' userAgent field (extractCredentials()/loginWithCredentials()).
     const fingerprint = generateDeviceFingerprint();
-    info(`Using device fingerprint: Chrome (${fingerprint.secChUaPlatform.replace(/"/g, "")})`);
+    const platform = secChUaFor(fingerprint.userAgent)?.secChUaPlatform ?? "unknown";
+    info(`Using device fingerprint: Chrome (${platform.replace(/"/g, "")})`);
 
-    if (flow === "official") {
-        // The verified Web sequence (src/zalo/qr-login.js), then our own login with the session it produced.
-        const zaloOptions = buildOptions(proxyUrl);
-        const session = await qrLogin({
-            userAgent: fingerprint.userAgent,
-            zaloOptions,
+    const session = await qrLogin({
+        userAgent: fingerprint.userAgent,
+        zaloOptions,
+        apiType: zaloOptions.apiType,
+        apiVersion: zaloOptions.apiVersion,
+        onEvent: onQrEvent,
+        trustStore: createTrustStore(getAccountDir),
+    });
+    const api = await loginWithSession(
+        { imei: session.imei, cookie: session.cookies, userAgent: session.userAgent, language: session.language },
+        {
             apiType: zaloOptions.apiType,
             apiVersion: zaloOptions.apiVersion,
-            onEvent: onQrEvent,
-            trustStore: createTrustStore(getAccountDir),
-        });
-        const api = await loginWithSession(
-            { imei: session.imei, cookie: session.cookies, userAgent: session.userAgent, language: session.language },
-            {
-                apiType: zaloOptions.apiType,
-                apiVersion: zaloOptions.apiVersion,
-                zaloOptions,
-                drStoreFor: (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null),
-            },
-        );
-        const ownId = api.getOwnId?.() || null;
-        setSession(api, ownId);
-        return { api, ownId };
-    }
-
-    const api = await zalo.loginQR(
-        {
-            userAgent: fingerprint.userAgent,
-            secChUa: fingerprint.secChUa,
-            secChUaPlatform: fingerprint.secChUaPlatform,
-            secChUaMobile: fingerprint.secChUaMobile,
-        },
-        (event) => {
-            // Forward every event type (QRCodeGenerated, QRCodeScanned,
-            // QRCodeDeclined, QRCodeExpired) — not just QRCodeGenerated,
-            // which is all this used to pass through (hence the old
-            // "onQrGenerated" name). Callers that only care about the QR
-            // image (account.js's `account login`) are unaffected: they
-            // already call displayQR(event) unconditionally, which no-ops
-            // on event types without an image.
-            if (onQrEvent) {
-                onQrEvent(event);
-            }
+            zaloOptions,
+            drStoreFor: (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null),
         },
     );
-
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
     return { api, ownId };

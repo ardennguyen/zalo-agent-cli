@@ -70,22 +70,27 @@ export function resolveApiVersion(env = process.env) {
 export const QR_FLOW_INVALID = "ZALO_QR_FLOW_INVALID";
 
 /**
- * Which QR login runs: `official` (the verified Web sequence, src/zalo/qr-login.js, the default) or `legacy`
- * (zca-js's own). The official one was the default from 2026-10-25 after a live login worked, was made opt-in on
- * 2026-10-27, when the phone answered "QR is not valid" to it (an account with a trusted device is asked to scan a
- * second QR, which that version did not know), and is the default again since 2026-10-28, when two live logins with the
- * second QR went through (see docs/agent-notes.md).
+ * Which QR login runs. Only `official` is left: the verified Web sequence (src/zalo/qr-login.js), the default since
+ * 2026-10-28, when two live logins with the trusted-device second QR went through (see docs/agent-notes.md). The
+ * `legacy` flow (zca-js's own) was removed in 3.0.0: it could not log in an account with a trusted device and
+ * skipped every later login fix. `ZALO_QR_FLOW=legacy` is refused with a message that says so, so a user who still
+ * has it in an `.env` learns why instead of seeing a generic error.
  *
  * @param {object} [env] - the environment to read, `process.env` by default
- * @returns {"official"|"legacy"}
- * @throws {Error} with `.code === QR_FLOW_INVALID` for any other value
+ * @returns {"official"}
+ * @throws {Error} with `.code === QR_FLOW_INVALID` for `legacy` and for any other value but `official`
  */
 export function resolveQrFlow(env = process.env) {
     const raw = env.ZALO_QR_FLOW;
     const value = raw === undefined ? "" : String(raw).trim().toLowerCase();
-    if (value === "") return "official";
-    if (value === "legacy" || value === "official") return value;
-    const err = new Error(`ZALO_QR_FLOW must be "legacy" or "official", but it is "${raw}". Fix or unset it.`);
+    if (value === "" || value === "official") return "official";
+    const err = new Error(
+        value === "legacy"
+            ? "ZALO_QR_FLOW=legacy was removed in 3.0.0; the official QR login is the only one. " +
+                  "Unset ZALO_QR_FLOW or set it to official."
+            : `ZALO_QR_FLOW can only be "official" (the legacy flow was removed in 3.0.0), but it is "${raw}". ` +
+                  "Fix or unset it.",
+    );
     err.code = QR_FLOW_INVALID;
     throw err;
 }

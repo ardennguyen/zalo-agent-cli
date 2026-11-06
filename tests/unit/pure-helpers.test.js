@@ -19,6 +19,7 @@ import {
 import { maskProxy } from "../../src/utils/proxy-helpers.js";
 import { extractMessageText } from "../../src/utils/extract-message-text.js";
 import { generateDeviceFingerprint } from "../../src/utils/device-fingerprint.js";
+import { secChUaFor } from "../../src/zalo/headers.js";
 import { isNewerVersion } from "../../src/utils/update-check.js";
 
 describe("resolveBankBin", () => {
@@ -160,17 +161,18 @@ describe("extractMessageText", () => {
 });
 
 describe("generateDeviceFingerprint", () => {
-    it("returns all four Client Hint fields", () => {
+    it("returns only the User-Agent: the Client Hints fields went with the legacy QR flow", () => {
         const fp = generateDeviceFingerprint();
-        assert.deepEqual(Object.keys(fp).sort(), ["secChUa", "secChUaMobile", "secChUaPlatform", "userAgent"]);
+        assert.deepEqual(Object.keys(fp), ["userAgent"]);
     });
 
-    it("is internally consistent — the UA's Chrome major matches sec-ch-ua", () => {
+    it("is a Chromium User-Agent, so the hints derived from it name the same Chrome major", () => {
         for (let i = 0; i < 40; i++) {
             const fp = generateDeviceFingerprint();
             const major = fp.userAgent.match(/Chrome\/(\d+)\./)[1];
-            assert.match(fp.secChUa, new RegExp(`"Google Chrome";v="${major}"`));
-            assert.match(fp.secChUa, new RegExp(`"Chromium";v="${major}"`));
+            const hints = secChUaFor(fp.userAgent);
+            assert.match(hints.secChUa, new RegExp(`"Google Chrome";v="${major}"`));
+            assert.match(hints.secChUa, new RegExp(`"Chromium";v="${major}"`));
         }
     });
 
@@ -180,20 +182,22 @@ describe("generateDeviceFingerprint", () => {
         }
     });
 
-    it("pairs the platform hint with the matching UA platform token", () => {
+    it("names a platform whose derived hint matches its UA platform token", () => {
         for (let i = 0; i < 40; i++) {
             const fp = generateDeviceFingerprint();
-            if (fp.secChUaPlatform === '"Windows"') assert.match(fp.userAgent, /Windows NT 10\.0/);
-            else if (fp.secChUaPlatform === '"macOS"') assert.match(fp.userAgent, /Macintosh; Intel Mac OS X/);
-            else assert.fail(`unexpected platform ${fp.secChUaPlatform}`);
+            const platform = secChUaFor(fp.userAgent).secChUaPlatform;
+            if (platform === '"Windows"') assert.match(fp.userAgent, /Windows NT 10\.0/);
+            else if (platform === '"macOS"') assert.match(fp.userAgent, /Macintosh; Intel Mac OS X/);
+            else assert.fail(`unexpected platform ${platform}`);
         }
     });
 
-    it("always reports desktop (?0) — no mobile presets exist", () => {
-        for (let i = 0; i < 20; i++) assert.equal(generateDeviceFingerprint().secChUaMobile, "?0");
+    it("always derives desktop (?0): no mobile presets exist", () => {
+        for (let i = 0; i < 20; i++)
+            assert.equal(secChUaFor(generateDeviceFingerprint().userAgent).secChUaMobile, "?0");
     });
 
-    it("actually varies across calls — a constant fingerprint is the thing to avoid", () => {
+    it("actually varies across calls: a constant fingerprint is the thing to avoid", () => {
         const seen = new Set();
         for (let i = 0; i < 200; i++) seen.add(generateDeviceFingerprint().userAgent);
         assert.ok(seen.size > 1, "fingerprint must not be identical on every call");

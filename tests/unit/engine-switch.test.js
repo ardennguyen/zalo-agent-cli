@@ -211,7 +211,9 @@ describe("createApi on one logged-in context", () => {
                 ctx.uploadCallbacks.settle("fake-file-1", { url: "https://f.invalid/1", data: { x: 1 } }),
                 true,
             );
-            assert.deepEqual(got, { x: 1 });
+            // zca-js's upload merges what its listener would pass, `{fileUrl, fileId}`, into its result; the
+            // control itself (`data`) is for our waiters. Red if settle hands the callback `data` again.
+            assert.deepEqual(got, { fileUrl: "https://f.invalid/1", fileId: "fake-file-1" });
             assert.equal(ctx.uploadCallbacks.has("fake-file-1"), false);
             // A settlement that arrives first is kept for the waiter that comes after it.
             ctx.uploadCallbacks.settle("fake-file-2", { url: "https://f.invalid/2", kind: "file_done", data: {} });

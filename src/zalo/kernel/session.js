@@ -67,10 +67,18 @@ export function createSession({
 /**
  * @typedef {object} UploadSettlement
  * @property {string} fileId
- * @property {string|null} url
- * @property {string|null} kind - "file_done", "video_done", "photo_success", ...
- * @property {unknown} data - the control's whole `data`
+ * @property {string|null} url - the file's URL when the control carries one (`file_done`, `video_done`)
+ * @property {string|null} kind - the control's `act_type`: "file_done", "video_done", "photo_success", ...
+ * @property {unknown} data - what the listener handed over: our listener passes the whole control object (its
+ *   `content` holds `act_type`, `fileId` and `data`); a settlement that came through zca-js's listener carries the
+ *   `{fileUrl, fileId}` that listener builds
  */
+
+/** The keys {@link UploadRegistry#settle} takes. */
+const SETTLE_KEYS = new Set(["url", "kind", "data"]);
+
+/** Marks the entry a waiter registers so that zca-js's listener, which only calls Map entries, reaches it too. */
+const BRIDGE = Symbol("upload-settle-bridge");
 
 /**
  * The registry an upload waits on for the socket's word that the server has the file (the 601 control).
@@ -145,30 +153,49 @@ export class UploadRegistry extends Map {
     }
 
     /**
-     * Hand a settlement to whoever waits for this file. A function entry registered the zca-js way is called with
-     * `data` and removed. With nobody waiting, the settlement is kept for a short while.
+     * Hand a settlement to whoever waits for this file: the listener's hook for the upload controls of a 601
+     * (`file_done`, `video_done`, `photo_success`).
+     *
+     * `info` takes exactly three keys, each optional: `url` (the file's URL, `content.data.url` of a `file_done` or
+     * `video_done`; null for a photo, whose URLs are in `data`), `kind` (the control's `act_type`) and `data` (what
+     * the listener received: our listener passes the whole control object). Any other key is refused, so a caller
+     * cannot hand over a zca-js-shaped `{fileUrl}` and have the URL silently dropped.
+     *
+     * A waiter ({@link UploadRegistry#waitFor}) gets the settlement. A function entry registered the zca-js way
+     * (zca-js's own upload, while it still runs on this registry) is called with `{fileUrl, fileId}`, the argument
+     * zca-js's listener gives it, and removed. With nobody waiting, the settlement is kept for
+     * {@link EARLY_SETTLE_TTL_MS}.
      *
      * @param {string} fileId
-     * @param {{url?: string|null, kind?: string|null, data?: unknown}|object} [info]
+     * @param {{url?: string|null, kind?: string|null, data?: unknown}} [info]
      * @returns {boolean} whether a waiter or a callback took it
+     * @throws {TypeError} for an `info` that is not an object of those keys
      */
     settle(fileId, info = {}) {
+        if (!info || typeof info !== "object" || Array.isArray(info)) {
+            throw new TypeError("settle(fileId, info): info must be {url, kind, data}");
+        }
+        const extra = Object.keys(info).filter((k) => !SETTLE_KEYS.has(k));
+        if (extra.length) throw new TypeError(`settle(fileId, info): unknown key ${extra.join(", ")}`);
         const id = String(fileId);
         const settlement = {
             fileId: id,
-            url: info?.url ?? info?.fileUrl ?? null,
-            kind: info?.kind ?? null,
-            data: info?.data ?? info,
+            url: typeof info.url === "string" ? info.url : null,
+            kind: typeof info.kind === "string" ? info.kind : null,
+            data: info.data ?? null,
         };
         let taken = false;
         const entry = super.get(id);
         if (typeof entry === "function") {
             this.delete(id);
-            taken = true;
-            try {
-                entry(settlement.data);
-            } catch {
-                /* a callback's own failure is its own */
+            // A waiter's own bridge is not called: the waiter is reached below, with the whole settlement.
+            if (!entry[BRIDGE]) {
+                taken = true;
+                try {
+                    entry({ fileUrl: settlement.url, fileId: id });
+                } catch {
+                    /* a callback's own failure is its own */
+                }
             }
         }
         if (this.events.listenerCount(id) > 0) {
@@ -187,6 +214,11 @@ export class UploadRegistry extends Map {
     /**
      * Wait for a file's settlement.
      *
+     * While it waits, a function entry stands under the file's id (unless something else is registered there),
+     * so zca-js's listener, which knows nothing of waiters and only calls the entry it finds, settles it too: the
+     * `{fileUrl, fileId}` it passes arrives as `{url: fileUrl, kind: "file_done", data: {fileUrl, fileId}}`.
+     * Either listener can therefore settle our uploads.
+     *
      * @param {string} fileId
      * @param {{timeoutMs?: number, signal?: AbortSignal}} [opts] - no timeout unless given
      * @returns {Promise<UploadSettlement>}
@@ -202,10 +234,12 @@ export class UploadRegistry extends Map {
         }
         return new Promise((resolve, reject) => {
             let timer = null;
+            let bridge = null;
             const done = () => {
                 clearTimeout(timer);
                 this.events.off(id, onSettle);
                 signal?.removeEventListener("abort", onAbort);
+                if (bridge && super.get(id) === bridge) this.delete(id);
             };
             const onSettle = (s) => {
                 done();
@@ -217,6 +251,16 @@ export class UploadRegistry extends Map {
             };
             if (signal?.aborted) return onAbort();
             this.events.on(id, onSettle);
+            if (!super.has(id)) {
+                bridge = (wsData) =>
+                    this.settle(id, {
+                        url: typeof wsData?.fileUrl === "string" ? wsData.fileUrl : null,
+                        kind: "file_done",
+                        data: wsData ?? null,
+                    });
+                bridge[BRIDGE] = true;
+                this.set(id, bridge);
+            }
             signal?.addEventListener("abort", onAbort, { once: true });
             if (timeoutMs > 0) {
                 timer = setTimeout(() => {

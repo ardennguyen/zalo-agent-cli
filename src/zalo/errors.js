@@ -138,7 +138,7 @@ export function classifyServerError(code) {
 /**
  * The code an error carries, whichever way the library reports it.
  *
- * zca-js's `ZaloApiError` puts the server's code on `.code`; a hand-built error
+ * A `ZaloApiError` puts the server's code on `.code`; a hand-built error
  * may use `.error_code`; a code can also be the only thing a message says.
  *
  * @param {unknown} err
@@ -161,3 +161,39 @@ export const EXIT_CODE = Object.freeze({
     /** The saved login was refused and logging in again did not help. */
     SESSION_REVOKED: 4,
 });
+
+/**
+ * An error Zalo answered (or the transport hit on the way), with Zalo's own `error_code` on `.code`.
+ *
+ * `code` is null when there is none (an HTTP failure, an undecryptable reply); a number is kept as given, 0
+ * included. An HTTP failure also carries `.status`. The message never holds the session context.
+ */
+export class ZaloApiError extends Error {
+    /**
+     * @param {string} message
+     * @param {number|null} [code]
+     */
+    constructor(message, code = null) {
+        super(message);
+        this.name = "ZaloApiError";
+        this.code = typeof code === "number" || typeof code === "string" ? code : null;
+    }
+}
+
+/** The QR login was abandoned on purpose (the caller's `abort()`). */
+export class QrLoginAborted extends ZaloApiError {
+    /** @param {string} [message] */
+    constructor(message = "Operation aborted") {
+        super(message);
+        this.name = "QrLoginAborted";
+    }
+}
+
+/** The person declined the QR login on their phone. */
+export class QrLoginDeclined extends ZaloApiError {
+    /** @param {string} [message] */
+    constructor(message = "Login QR request declined") {
+        super(message);
+        this.name = "QrLoginDeclined";
+    }
+}

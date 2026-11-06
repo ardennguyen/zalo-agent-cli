@@ -22,12 +22,8 @@
  * the token is useless without the key). Steps 4 and 5 need what step 1 and 4 return. What each step did is
  * returned; nothing here claims the device is signed out, that is for the caller's probe to find out.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
 import { COMPUTER_NAME } from "./profile.js";
-
-const require = createRequire(import.meta.url);
-const zu = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
+import { buildUrl, decodeReply, httpRequest, sealParams } from "./kernel/http.js";
 
 const CHAT_ORIGIN = "https://chat.zalo.me";
 const ID_ORIGIN = "https://id.zalo.me";
@@ -36,11 +32,7 @@ const V2_LOGOUT_URL = "https://stg-wpa.chat.zalo.me/api/v2/login/logOut";
 /** The only hosts whose `setsid` URLs are followed: an address read out of a page is not trusted further. */
 const SETSID_HOSTS = new Set(["jr.zaloapp.com", "jr.chat.zalo.me"]);
 
-/**
- * Headers of a call the page's script makes (XHR/fetch). `Accept`, `Origin` and `Referer` are spelled exactly as
- * zca-js's request helper spells its own defaults: it merges by key, so a second spelling would be sent besides
- * the default and a real fetch joins the two into one garbled value.
- */
+/** Headers of a call the page's script makes (XHR/fetch). Names in any case: the transport merges by name. */
 const SCRIPT_HEADERS = {
     Accept: "application/json, text/plain, */*",
     Origin: CHAT_ORIGIN,
@@ -60,7 +52,8 @@ const NAVIGATION_HEADERS = {
 };
 
 /**
- * One request of the sequence, reduced to what the caller reports.
+ * One request of the sequence, reduced to what the caller reports. A redirect is returned as it is (`follow:
+ * "manual"`) unless the step says otherwise: step 4 is a form POST whose answer is read, never followed.
  *
  * @param {object} ctx
  * @param {string} url
@@ -68,8 +61,45 @@ const NAVIGATION_HEADERS = {
  * @returns {Promise<{status: number, text: string}>}
  */
 async function send(ctx, url, init) {
-    const res = await zu.request(ctx, url, { redirect: "manual", ...init });
+    const res = await httpRequest(ctx, url, { follow: "manual", ...init });
     return { status: res.status, text: await res.text().catch(() => "") };
+}
+
+/**
+ * The request that ends the session key (`POST stg-wpa.chat.zalo.me/api/v2/login/logOut`), as Zalo Web sends it:
+ * `params` sealed with the session key, `{time (unix seconds), imei, computer_name}`.
+ *
+ * @param {object} ctx
+ * @returns {{url: string, init: object}}
+ */
+function logoutV2Request(ctx) {
+    const params = sealParams(ctx, {
+        time: Math.floor(Date.now() / 1000),
+        imei: ctx.imei,
+        computer_name: COMPUTER_NAME,
+    });
+    return {
+        url: buildUrl(ctx, V2_LOGOUT_URL, {}),
+        init: {
+            method: "POST",
+            headers: { ...SCRIPT_HEADERS, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ params }),
+        },
+    };
+}
+
+/**
+ * End this session's key, alone (what `logout --keep-session` sends): step 3 of {@link officialLogout}. The reply is
+ * plain; Zalo answers `{error_code: 0, data: 1}`.
+ *
+ * @param {object} api - a logged-in session
+ * @returns {Promise<unknown>} the reply's `data`
+ * @throws {import("./errors.js").ZaloApiError} Zalo's error, or `HTTP <status>`
+ */
+export async function sendLogoutV2(api) {
+    const ctx = api.getContext();
+    const { url, init } = logoutV2Request(ctx);
+    return decodeReply(ctx, await httpRequest(ctx, url, init), { encrypted: false });
 }
 
 /**
@@ -114,7 +144,7 @@ export function setsidUrlsOf(html) {
 /**
  * Run the official logout.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @returns {Promise<{steps: Array<{id: string, ok: boolean, status?: number, error?: string}>}>}
  *   one entry per call made, in order; `setsid` appears once per URL
  */
@@ -148,8 +178,8 @@ export async function officialLogout(api) {
 
     // 2: the device stops counting as active, while the session key still works.
     await run("profile deactive", async () => {
-        const params = zu.encodeAES(ctx.secretKey, JSON.stringify({ imei: ctx.imei }));
-        const url = zu.makeURL(ctx, `${api.zpwServiceMap.profile[0]}/api/social/profile/deactive`, { params });
+        const params = sealParams(ctx, { imei: ctx.imei });
+        const url = buildUrl(ctx, `${api.zpwServiceMap.profile[0]}/api/social/profile/deactive`, { params });
         const { status, text } = await send(ctx, url, { method: "GET", headers: SCRIPT_HEADERS });
         const a = answerOf(text);
         return status < 400 && (a.code === null || a.code === 0)
@@ -159,15 +189,8 @@ export async function officialLogout(api) {
 
     // 3: ends the session key (unix seconds, as the web sends it).
     await run("v2 logout", async () => {
-        const params = zu.encodeAES(
-            ctx.secretKey,
-            JSON.stringify({ time: Math.floor(Date.now() / 1000), imei: ctx.imei, computer_name: COMPUTER_NAME }),
-        );
-        const { status, text } = await send(ctx, zu.makeURL(ctx, V2_LOGOUT_URL, {}), {
-            method: "POST",
-            headers: { ...SCRIPT_HEADERS, "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ params }),
-        });
+        const { url, init } = logoutV2Request(ctx);
+        const { status, text } = await send(ctx, url, init);
         const a = answerOf(text);
         return status < 400 && (a.code === null || a.code === 0)
             ? { ok: true, status }
@@ -201,6 +224,7 @@ export async function officialLogout(api) {
         await run(`setsid ${new URL(url).hostname}`, async () => {
             const { status } = await send(ctx, url, {
                 method: "GET",
+                follow: "jar",
                 headers: {
                     ...NAVIGATION_HEADERS,
                     Referer: `${ID_ORIGIN}/`,
@@ -216,6 +240,7 @@ export async function officialLogout(api) {
     await run("login page", async () => {
         const { status } = await send(ctx, `${ID_ORIGIN}/account?continue=${encodeURIComponent(`${CHAT_ORIGIN}/`)}`, {
             method: "GET",
+            follow: "jar",
             headers: { ...NAVIGATION_HEADERS, Referer: `${ID_ORIGIN}/`, "sec-fetch-site": "same-origin" },
         });
         return status < 400 ? { ok: true, status } : { ok: false, status, error: `HTTP ${status}` };

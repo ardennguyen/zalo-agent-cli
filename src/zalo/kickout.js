@@ -19,23 +19,14 @@
  * cannot learn the reason, for any cause. A kick has already been handled by the time it runs, so failing here is
  * never an error worth raising.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
 import { decryptZCloud } from "../core/sync-v2/zcloud-cipher.js";
-
-const require = createRequire(import.meta.url);
-let utils = null;
-
-/** zca-js internals, located the same way ../core/logout.js does. */
-function zcaUtils() {
-    utils ??= require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return utils;
-}
+import { openSession } from "./kernel/cipher.js";
+import { buildUrl, httpRequest } from "./kernel/http.js";
 
 /**
  * The keys the kickout lookup needs, as the login kept them.
  *
- * @param {object} api - a zca-js API from {@link loginWithSession}
+ * @param {object} api - a session from {@link loginWithSession}
  * @returns {{viewerKey: string, enk: string}|null} null when the server gave this session none
  */
 export function kickoutKeysOf(api) {
@@ -48,9 +39,9 @@ export function kickoutKeysOf(api) {
  *
  * @returns {object|null}
  */
-function openSealed(zu, data, enk) {
+function openSealed(data, enk) {
     try {
-        const text = zu.decodeAES(enk, data);
+        const text = openSession(enk, data);
         if (text) return JSON.parse(text);
     } catch {
         /* not that cipher */
@@ -89,7 +80,7 @@ export function describeKickout(info, settings, lang = "en") {
 /**
  * Ask Zalo why the session ended.
  *
- * @param {object} api - a zca-js API (its session may already be refused)
+ * @param {object} api - a session (its key may already be refused)
  * @param {{viewerKey: string, enk: string}|null} keys - from {@link kickoutKeysOf}
  * @param {object} [opts]
  * @param {number} [opts.timeoutMs]
@@ -100,22 +91,21 @@ export async function fetchKickoutInfo(api, keys, { timeoutMs = 5000 } = {}) {
         return null;
     }
     try {
-        const zu = zcaUtils();
         const ctx = api.getContext();
         const host = ctx.loginInfo?.zpw_service_map_v3?.aext?.[0];
         if (!host) return null;
-        const url = zu.makeURL(ctx, `${host}/api/session/kickout-info`, {});
-        const res = await zu.request(ctx, url, {
+        const url = buildUrl(ctx, `${host}/api/session/kickout-info`, {});
+        const res = await httpRequest(ctx, url, {
             method: "POST",
             body: new URLSearchParams({ token: keys.viewerKey }),
-            signal: AbortSignal.timeout(timeoutMs),
+            timeoutMs,
         });
         const body = JSON.parse(await res.text());
         if (body?.error_code !== undefined && Number(body.error_code) !== 0) return null;
         let data = body?.data;
         if (typeof data === "string" && data !== "") {
             // Sealed with `enk`, which a refused session key does not affect.
-            const inner = openSealed(zu, data, keys.enk);
+            const inner = openSealed(data, keys.enk);
             if (!inner || typeof inner !== "object") return null;
             if (inner.error_code !== undefined && Number(inner.error_code) !== 0) return null;
             data = inner.data ?? inner;
@@ -129,7 +119,7 @@ export async function fetchKickoutInfo(api, keys, { timeoutMs = 5000 } = {}) {
 /**
  * Ask Zalo why the session ended, with the keys the login kept, and add the server's own words for it.
  *
- * @param {object} api - a zca-js API from {@link loginWithSession}
+ * @param {object} api - a session from {@link loginWithSession}
  * @returns {Promise<object|null>} `{kickoutSrc, kickoutTs, src, at, title, text}`, or null when the reason could not
  *   be learned
  */

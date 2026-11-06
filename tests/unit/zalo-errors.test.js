@@ -7,9 +7,12 @@ import assert from "node:assert/strict";
 import {
     CLOSE_CODE,
     EXIT_CODE,
+    QrLoginAborted,
+    QrLoginDeclined,
     RETRY_KEY,
     RETRY_KEY_NUMBER,
     SOCKET_ERROR,
+    ZaloApiError,
     classifyServerError,
     errorCodeOf,
 } from "../../src/zalo/errors.js";
@@ -102,5 +105,30 @@ describe("the tables", () => {
         assert.notEqual(EXIT_CODE.KICKED, EXIT_CODE.SESSION_REVOKED);
         for (const code of Object.values(EXIT_CODE))
             assert.ok(code > 2, `exit code ${code} collides with 1 (error) or 2 (usage)`);
+    });
+});
+
+describe("the error classes", () => {
+    it("ZaloApiError carries Zalo's code where errorCodeOf reads it, 0 included, and null when there is none", () => {
+        const e = new ZaloApiError("session timeout", 102);
+        assert.ok(e instanceof Error);
+        assert.equal(e.name, "ZaloApiError");
+        assert.equal(e.message, "session timeout");
+        assert.equal(errorCodeOf(e), 102);
+        // zca-js turned a code of 0 into null (`code || null`); ours keeps what it was given.
+        assert.equal(new ZaloApiError("x", 0).code, 0);
+        assert.equal(new ZaloApiError("x").code, null);
+        assert.equal(errorCodeOf(new ZaloApiError("x")), null);
+    });
+
+    it("the QR login's two endings are ZaloApiErrors with the messages the login command prints", () => {
+        const aborted = new QrLoginAborted();
+        const declined = new QrLoginDeclined();
+        assert.ok(aborted instanceof ZaloApiError && declined instanceof ZaloApiError);
+        assert.ok(!(aborted instanceof QrLoginDeclined), "an abort is not a decline");
+        assert.equal(aborted.message, "Operation aborted");
+        assert.equal(declined.message, "Login QR request declined");
+        assert.equal(aborted.name, "QrLoginAborted");
+        assert.equal(declined.name, "QrLoginDeclined");
     });
 });

@@ -24,8 +24,8 @@
  *     `jr.chat.zalo.me/jr/pushsession` (which sets `zpw_sek`), and the chat page.
  *
  * The session this returns is a cookie jar; {@link loginWithSession} turns it into a logged-in API. Events
- * keep the shape zca-js's callbacks had, so the commands that show the QR did not change; the second QR is one
- * more `QRCodeGenerated` event, with `data.layer` 2.
+ * keep the shape zca-js's callbacks had (the numbers of `QR_EVENT`), so the commands that show the QR did not
+ * change; the second QR is one more `QR_GENERATED` event, with `data.layer` 2.
  *
  * Why the first version of this sequence failed on 2026-10-27, after it worked on 2026-10-25: the phone answered
  * "QR is not valid" to it twice, and the scan answer carried no name. The captured Web login shows the step it was
@@ -33,18 +33,16 @@
  * QR. That version took the answer for the scan and confirmed on the first code. Why it was not asked for on the 25th
  * is not known. See `docs/agent-notes.md`.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
 import { writeFile } from "node:fs/promises";
-import { LoginQRCallbackEventType, Zalo, ZaloApiError, ZaloApiLoginQRAborted, ZaloApiLoginQRDeclined } from "zca-js";
+import { QR_EVENT } from "./enums.js";
+import { QrLoginAborted, QrLoginDeclined, ZaloApiError } from "./errors.js";
 import { withBrowserHeaders } from "./headers.js";
 import { qrPng } from "./qr-image.js";
 import { TRUST_PLATFORM_WEB, loadTrustWasm, wasmUrlOf } from "./trust-wasm.js";
-
-const require = createRequire(import.meta.url);
-const zcaDir = dirname(require.resolve("zca-js"));
-const zu = require(join(zcaDir, "utils.cjs"));
-const { createContext } = require(join(zcaDir, "context.cjs"));
+import { makeImei } from "./kernel/cipher.js";
+import { loadJar, saveJar } from "./kernel/cookies.js";
+import { httpRequest } from "./kernel/http.js";
+import { createSession } from "./kernel/session.js";
 
 const ID = "https://id.zalo.me";
 const CHAT = "https://chat.zalo.me/";
@@ -74,13 +72,7 @@ const NOT_YET = 8;
 /** Zalo's answer when the phone declined. */
 const DECLINED = -13;
 
-/**
- * Headers of a call the page's script makes to its own origin.
- *
- * `Accept`, `Origin` and `Referer` are spelled exactly as zca-js's request helper spells its own defaults:
- * it merges by key, so a second spelling would be sent besides the default and a real fetch joins the two
- * into one garbled value.
- */
+/** Headers of a call the page's script makes to its own origin (names in any case: the transport merges by name). */
 const POST_HEADERS = {
     Accept: "application/json, text/plain, */*",
     "content-type": "application/x-www-form-urlencoded",
@@ -142,16 +134,17 @@ export async function loadTrustFromPage(ctx, scriptUrl, signal) {
     const common = {
         method: "GET",
         signal,
+        timeoutMs: 0,
         headers: { Accept: "*/*", Referer: `${ID}/`, "sec-fetch-site": "cross-site" },
     };
-    const script = await zu.request(ctx, scriptUrl, {
+    const script = await httpRequest(ctx, scriptUrl, {
         ...common,
         headers: { ...common.headers, "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" },
     });
     const wasmUrl = wasmUrlOf(await script.text());
     if (!wasmUrl) throw new ZaloApiError("The login page names no trusted-device module (its layout changed)");
     if (!wasmCache.has(wasmUrl)) {
-        const wasm = await zu.request(ctx, wasmUrl, {
+        const wasm = await httpRequest(ctx, wasmUrl, {
             ...common,
             headers: { ...common.headers, "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
         });
@@ -170,11 +163,13 @@ export async function loadTrustFromPage(ctx, scriptUrl, signal) {
  * @returns {Promise<{error_code?: number, error_message?: string, data?: any}>}
  */
 async function post(ctx, path, fields, signal) {
-    const res = await zu.request(ctx, `${ID}${path}`, {
+    // A long poll is held open by the server until something happens: no client timeout but the QR's own.
+    const res = await httpRequest(ctx, `${ID}${path}`, {
         method: "POST",
         headers: POST_HEADERS,
         body: new URLSearchParams(fields),
         signal,
+        timeoutMs: 0,
     });
     return res.json();
 }
@@ -209,13 +204,15 @@ async function longPoll(ctx, path, fields, signal) {
  */
 async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, state, loadTrust, trustStore }) {
     const { signal } = controller;
-    ctx.cookie = new Zalo().parseCookies([]); // an empty jar of zca-js's own kind
+    ctx.cookie = loadJar([]);
 
     // 1: the login page, and the build number in its script name.
-    const page = await zu.request(ctx, PAGE_URL, {
+    const page = await httpRequest(ctx, PAGE_URL, {
         method: "GET",
         headers: { ...NAVIGATION_HEADERS, Referer: CHAT, "sec-fetch-site": "same-site" },
         signal,
+        timeoutMs: 0,
+        follow: "jar",
     });
     const html = await page.text();
     const v = buildOf(html);
@@ -227,12 +224,12 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
         clearTimeout(state.timer);
         state.timer = setTimeout(() => {
             controller.abort();
-            emit({ type: LoginQRCallbackEventType.QRCodeExpired, data: null, actions });
+            emit({ type: QR_EVENT.QR_EXPIRED, data: null, actions });
         }, lifetimeMs);
     };
     const show = (qr, image, layer) =>
         emit({
-            type: LoginQRCallbackEventType.QRCodeGenerated,
+            type: QR_EVENT.QR_GENERATED,
             data: { ...qr, image, layer },
             actions: {
                 async saveToFile(path = qrPath) {
@@ -309,7 +306,7 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
         });
         link = { uid: first.chatUid, identity, secret, proof };
     }
-    emit({ type: LoginQRCallbackEventType.QRCodeScanned, data: scanned.data, actions });
+    emit({ type: QR_EVENT.QR_SCANNED, data: scanned.data, actions });
 
     // 6: the phone confirms (or declines); with a proof, the proof goes with it.
     const confirmFields = { continue: CHAT, code };
@@ -331,20 +328,21 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
     clearTimeout(state.timer);
     if (!confirmed) throw new ZaloApiError("Cannot get confirm result");
     if (confirmed.error_code === DECLINED) {
-        emit({ type: LoginQRCallbackEventType.QRCodeDeclined, data: { code }, actions });
-        throw new ZaloApiLoginQRDeclined();
+        emit({ type: QR_EVENT.QR_DECLINED, data: { code }, actions });
+        throw new QrLoginDeclined();
     }
     if (confirmed.error_code !== 0) {
         throw new ZaloApiError(`An error has occurred.\nResponse: ${JSON.stringify(confirmed, null, 2)}`);
     }
 
-    // 7: the id domain hands the session to the chat domain through two redirects. The request helper follows
-    // them itself, one hop at a time, so that the cookie each hop sets is kept.
-    const session = await zu.request(ctx, `${ID}/account/checksession?continue=${CONTINUE_QUERY}`, {
+    // 7: the id domain hands the session to the chat domain through two redirects. They are followed here, one hop
+    // at a time as a browser navigation follows them, so that the cookie each hop sets is kept.
+    const session = await httpRequest(ctx, `${ID}/account/checksession?continue=${CONTINUE_QUERY}`, {
         method: "GET",
-        redirect: "manual",
         headers: { ...NAVIGATION_HEADERS, Referer: PAGE_URL, "sec-fetch-site": "same-origin" },
         signal,
+        timeoutMs: 0,
+        follow: "jar",
     });
     if (!session) throw new ZaloApiError("Cannot get session, login failed");
     await session.text().catch(() => "");
@@ -367,7 +365,7 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
         trustStore?.save(trusted);
     }
     return {
-        cookies: ctx.cookie.toJSON().cookies,
+        cookies: saveJar(ctx.cookie).cookies,
         displayName: scanned.data.display_name ?? null,
         trusted: trusted ? { uid: trusted.uid, masterId: trusted.masterId, companionId: trusted.companionId } : null,
     };
@@ -378,16 +376,16 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
  *
  * @param {object} p
  * @param {string} p.userAgent - the browser identity of this login, kept for every later call
- * @param {object} [p.zaloOptions] - the zca-js options (`polyfill`, `agent`, `logging`, ...)
+ * @param {object} [p.zaloOptions] - the session options (`polyfill`, `agent`, ...)
  * @param {number} p.apiType
  * @param {number} p.apiVersion
- * @param {(event: object) => void} [p.onEvent] - zca-js-shaped events (QRCodeGenerated, Scanned, Expired, Declined)
+ * @param {(event: object) => void} [p.onEvent] - events `{type, data, actions}`, `type` a `QR_EVENT` number
  * @param {string} [p.qrPath] - where `saveToFile()` writes by default
  * @param {number} [p.lifetimeMs] - how long a QR is shown before it expires
  * @param {Function} [p.loadTrust] - `(ctx, scriptUrl, signal) => trust module`, the page's by default
  * @param {{load: Function, save: Function, clear: Function}|null} [p.trustStore] - where the device identity is kept
  * @returns {Promise<{cookies: object[], imei: string, userAgent: string, language: string, trusted: object|null}>}
- * @throws {ZaloApiLoginQRDeclined|ZaloApiLoginQRAborted|ZaloApiError}
+ * @throws {QrLoginDeclined|QrLoginAborted|ZaloApiError}
  */
 export function qrLogin({
     userAgent,
@@ -417,14 +415,14 @@ export function qrLogin({
             },
             abort: () => {
                 stop();
-                reject(new ZaloApiLoginQRAborted());
+                reject(new QrLoginAborted());
             },
         };
 
         const start = () => {
-            const ctx = createContext(apiType, apiVersion);
+            const ctx = createSession({ apiType, apiVersion });
             Object.assign(ctx.options, zaloOptions);
-            ctx.options.checkUpdate = false;
+            ctx.options.logging = false;
             ctx.options.polyfill = withBrowserHeaders(ctx.options.polyfill, userAgent);
             ctx.userAgent = userAgent;
             const mine = { controller: new AbortController(), state: { timer: null }, superseded: false };
@@ -433,9 +431,9 @@ export function qrLogin({
                 (result) => {
                     clearTimeout(mine.state.timer);
                     if (mine.superseded) return;
-                    const imei = zu.generateZaloUUID(userAgent);
+                    const imei = makeImei(userAgent);
                     onEvent?.({
-                        type: LoginQRCallbackEventType.GotLoginInfo,
+                        type: QR_EVENT.GOT_LOGIN_INFO,
                         data: { cookie: result.cookies, imei, userAgent },
                         actions: null,
                     });

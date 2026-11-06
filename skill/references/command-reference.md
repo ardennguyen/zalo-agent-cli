@@ -258,7 +258,7 @@ Multi-account management, each account bound 1:1 to its own dedicated proxy.
 | Command | Description |
 |---------|-------------|
 | `create <threadId> <title> [-t 0\|1] [--time "YYYY-MM-DD HH:mm"] [--emoji <emoji>] [--repeat none\|daily\|weekly\|monthly]` | Create a reminder. `--time` defaults to now if omitted; also accepts ISO format. `--emoji` defaults to ⏰. `--repeat` defaults to `none`. |
-| `list <threadId> [-t 0\|1] [-n, --count <n>]` | List reminders in a thread (default count 20). |
+| `list <threadId> [-t 0\|1] [-n, --count <n>] [-p, --page <n>]` | List reminders in a thread (default count 20, page 1). A group's page 2 and later are reached as Zalo Web reaches them: the pages before are read first for their last id. |
 | `info <reminderId>` | View a reminder's details (title, time, repeat, creator) — **group reminders only**. |
 | `responses <reminderId>` | View who accepted/rejected a (group) reminder. |
 | `edit <reminderId> <threadId> <title> [-t 0\|1] [--time ...] [--emoji ...] [--repeat ...]` | Edit an existing reminder; only the fields you pass are changed. |

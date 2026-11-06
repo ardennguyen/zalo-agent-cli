@@ -4,6 +4,9 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
+import { parseIntAtLeast } from "../utils/parse-options.js";
+import { groupReminderPage } from "../zalo/api/boards.js";
+import { THREAD_TYPE } from "../zalo/enums.js";
 
 /** Repeat mode labels matching Zalo's reminder repeat modes. */
 const REPEAT_MODES = { none: 0, daily: 1, weekly: 2, monthly: 3 };
@@ -70,11 +73,18 @@ export function registerReminderCommands(program) {
         .description("List reminders in a thread")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-n, --count <n>", "Max results", "20")
+        .option("-p, --page <n>", "Page number", parseIntAtLeast(1), 1)
         .action(async (threadId, opts) => {
             try {
                 let result;
                 try {
-                    result = await getApi().getListReminder({ count: Number(opts.count) }, threadId, Number(opts.type));
+                    const count = Number(opts.count);
+                    // A group's page 2 and later carry the last id of the page before, as Zalo Web pages them (and
+                    // as zalo_reminder does); a DM's have no cursor (the Web always sends 0 there).
+                    result =
+                        Number(opts.type) === THREAD_TYPE.GROUP
+                            ? await groupReminderPage(getApi(), threadId, opts.page, count)
+                            : await getApi().getListReminder({ page: opts.page, count }, threadId, Number(opts.type));
                 } catch {
                     result = null;
                 }

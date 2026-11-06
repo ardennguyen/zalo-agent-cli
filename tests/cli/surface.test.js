@@ -353,6 +353,7 @@ const FLAG_CONTRACT = {
     "account export": ["--output"],
     "poll create": ["--multi", "--add-options", "--anonymous", "--hide-preview", "--expire"],
     "reminder create": ["--type", "--time", "--emoji", "--repeat"],
+    "reminder list": ["--type", "--count", "--page"],
     "auto-reply create": ["--enable", "--no-enable", "--start", "--end", "--scope", "--uids"],
     // --no-delivered-receipts is the opt-out for the automatic deliveredv2
     // acks both listeners send, and --no-self-heal the opt-out for the

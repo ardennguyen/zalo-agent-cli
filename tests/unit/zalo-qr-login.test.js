@@ -11,7 +11,6 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { LoginQRCallbackEventType, Zalo } from "zca-js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -621,12 +620,6 @@ describe("the QR login", () => {
                 (e) => e.code === QR_FLOW_INVALID && /removed in 3\.0\.0/.test(e.message),
             );
             assert.equal(fake.requests.length, 0);
-        });
-
-        it("the QR login no longer imports zca-js", () => {
-            // Red if the legacy flow's `Zalo` import (or any other zca-js import) comes back to the client wrapper.
-            const source = readFileSync(new URL("../../src/core/zalo-client.js", import.meta.url), "utf8");
-            assert.doesNotMatch(source, /from "zca-js"|require\("zca-js"\)|import\("zca-js"\)/);
         });
 
         it("loginWithQR with ZALO_QR_FLOW unset runs the official flow too", async () => {

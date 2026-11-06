@@ -28,14 +28,6 @@ export const API_TYPE = 30;
  */
 export const DEFAULT_API_VERSION = 695;
 
-/**
- * The `Accept-Language` every HTTP call announces (src/zalo/kernel/http.js). It is the value this client has sent
- * since its first login (zca-js's fixed one), kept so live sessions see no change: Zalo Web sends whatever the
- * browser's language setting says, and spec-kernel D3 names no single Web value to move to. Changing it is a live
- * check, not an offline one.
- */
-export const ACCEPT_LANGUAGE = "en-US,en;q=0.9";
-
 /** The `computer_name` Zalo Web sends in its login, server-info and logout calls. */
 export const COMPUTER_NAME = "Web";
 

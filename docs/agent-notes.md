@@ -113,8 +113,8 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
-still live next to their module (`src/utils/bank-helpers.test.js`, `src/mcp/*.test.js`). `npm test`
-globs both locations.
+then lived next to their module in `src/`. Since 2026-11-06 every test is under `tests/` (the seven from `src/` moved
+to `tests/unit/` and `tests/cli/`; they had also been shipping in the npm package, which publishes `src/`).
 
 The MCP tool list has drifted before — docs claimed 4 tools while the code registered 7.
 

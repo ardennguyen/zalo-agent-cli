@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "child_process";
 import { resolve } from "path";
 
-const CLI = resolve(import.meta.dirname, "index.js");
+const CLI = resolve(import.meta.dirname, "../../src/index.js");
 
 /**
  * Per-spawn timeout. Every assertion here boots a real `node` process, so a

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MessageBuffer } from "./message-buffer.js";
+import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 
 /** Helper: create a message with a timestamp (default = now) */
 function msg(text, timestamp = Date.now()) {

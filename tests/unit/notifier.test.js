@@ -3,10 +3,10 @@
 // reaches that module transitively, so without the redirect it binds
 // to the real ~/.zalo-agent-cli/. Enforced by
 // tests/cli/sandbox-discipline.test.js.
-import "../../tests/helpers/sandbox.js";
+import "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ZaloNotifier } from "./notifier.js";
+import { ZaloNotifier } from "../../src/mcp/notifier.js";
 
 /** Create a spy api.sendMessage that records calls */
 function makeSpy() {

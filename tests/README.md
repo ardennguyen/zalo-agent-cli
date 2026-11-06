@@ -85,10 +85,9 @@ tests/
     └── tier5-destructive.test.js
 ```
 
-Unit tests for modules under `src/` that predate this folder still sit
-**next to their module** (`src/utils/bank-helpers.test.js`, `src/mcp/*.test.js`)
-per [AGENTS.md](../AGENTS.md) §12, and `npm test` picks up both locations.
-New tests go in `tests/`.
+Every test lives here: none sit next to their module in `src/` (the seven
+that did moved to `tests/unit/` and `tests/cli/` on 2026-11-06), so the npm
+package, which publishes `src/`, carries no tests. See [AGENTS.md](../AGENTS.md) §12.
 
 ---
 
@@ -139,7 +138,7 @@ deliberate test update rather than a silent break for anyone piping to `jq`.
 
 ### Spawn timeouts are a load symptom, not a regression
 
-`src/cli.test.js` boots a real `node` process per assertion. When something
+`tests/cli/cli.test.js` boots a real `node` process per assertion. When something
 else is competing for the machine — parallel agent sessions, a running
 `listen` daemon, a full rebuild — a cold start can outlast the per-spawn
 limit, and `npm test` then reports a handful of `--help` tests as failed. The
@@ -149,7 +148,7 @@ almost exactly the limit.
 Check that before chasing a regression:
 
 ```bash
-node --test src/cli.test.js        # passes alone => the suite is fine
+node --test tests/cli/cli.test.js  # passes alone => the suite is fine
 ```
 
 The limit defaults to 30s. Override it when the default is wrong for the
@@ -645,12 +644,12 @@ import assert from "node:assert/strict";
 
 ### Where a new test goes
 
-| Kind                                                      | Location                                                      |
-| --------------------------------------------------------- | ------------------------------------------------------------- |
-| Pure logic / filesystem, no session                       | `tests/unit/<module>.test.js`                                 |
-| Drives the binary, no session                             | `tests/cli/`                                                  |
-| Needs a live Zalo session                                 | `tests/e2e/tier<N>-*.test.js` — pick the tier by blast radius |
-| New module under `src/` following the existing convention | next to the module (`src/foo/bar.test.js`)                    |
+| Kind                                | Location                                                      |
+| ----------------------------------- | ------------------------------------------------------------- |
+| Pure logic / filesystem, no session | `tests/unit/<module>.test.js`                                 |
+| Drives the binary, no session       | `tests/cli/`                                                  |
+| Needs a live Zalo session           | `tests/e2e/tier<N>-*.test.js` — pick the tier by blast radius |
+| A new module under `src/`           | `tests/unit/<module>.test.js` — never next to the module      |
 
 ### Picking a tier
 

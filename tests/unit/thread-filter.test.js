@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ThreadFilter } from "./thread-filter.js";
+import { ThreadFilter } from "../../src/mcp/thread-filter.js";
 
 /** Helper: create a ThreadFilter with given patterns and keywords */
 function makeFilter(watchThreads = ["dm:*", "group:*"], triggerKeywords = []) {

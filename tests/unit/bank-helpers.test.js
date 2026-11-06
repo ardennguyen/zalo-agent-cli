@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolveBankBin, BIN_TO_DISPLAY, BANK_NAME_TO_BIN } from "./bank-helpers.js";
+import { resolveBankBin, BIN_TO_DISPLAY, BANK_NAME_TO_BIN } from "../../src/utils/bank-helpers.js";
 
 describe("resolveBankBin", () => {
     it("resolves OCB by name", () => {

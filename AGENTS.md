@@ -246,7 +246,7 @@ The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose
 ### Testing rules
 
 - Node built-in runner (`node:test` + `node:assert/strict`) — no external framework.
-- **New tests go under `tests/`**: `unit/` pure logic and filesystem, `cli/` drives the binary, `e2e/` needs a live session. Pre-existing suites next to their module stay there; `npm test` globs both, so a count from one glob is wrong.
+- **Every test lives under `tests/`**: `unit/` pure logic and filesystem, `cli/` drives the binary, `e2e/` needs a live session. Never put a test file in `src/` (it would ship in the npm package; `npm test` globs only `tests/unit` and `tests/cli`).
 - **Never** use real credentials, user IDs, or phone numbers. Offline tests import `tests/helpers/sandbox.js` **first** and assert `assertSandboxed(CONFIG_DIR)`. Real thread ids live only in gitignored `tests/targets.json`.
 - **Identity protection is enforced, not trusted.** `tests/unit/no-real-ids.test.js` fails `npm test` on any 15+-digit run, or 32-character noised id not spelling `NOISED`, in a tracked or unignored file, zip entry or path that is not a fake by its convention. Never copy a value from a live capture, log, `zalo.db` or `targets.json` into a commit; choose a fake that keeps what the test needs (length, past `MAX_SAFE_INTEGER`, a colliding twin, a fixture's byte size). Names have no automatic check — review them.
 - The live suite writes only to ids blessed disposable in `targets.json`; every write helper calls `assertDisposable()`. Gated behind `ZALO_TEST_LIVE=1`, unreachable from `npm test`, destructive tiers behind additive env gates.

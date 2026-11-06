@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { ThreadNameCache } from "./thread-name-cache.js";
+import { ThreadNameCache } from "../../src/mcp/thread-name-cache.js";
 
 /** Create a mock API that returns predictable group/friend data */
 function createMockApi(groups = {}, friends = [], aliases = []) {

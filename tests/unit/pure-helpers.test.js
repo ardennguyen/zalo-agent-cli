@@ -2,7 +2,7 @@
  * Pure helpers with no I/O: bank BIN resolution, proxy masking, message-text
  * extraction, device fingerprinting, and version comparison.
  *
- * `src/utils/bank-helpers.test.js` and `src/utils/proxy-helpers.test.js`
+ * `tests/unit/bank-helpers.test.js` and `tests/unit/proxy-helpers.test.js`
  * already cover the happy paths; what follows targets the edges those
  * suites leave open — the ones that decide whether a command silently does
  * the wrong thing rather than erroring.

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { maskProxy } from "./proxy-helpers.js";
+import { maskProxy } from "../../src/utils/proxy-helpers.js";
 
 describe("maskProxy", () => {
     it("masks password in http URL", () => {

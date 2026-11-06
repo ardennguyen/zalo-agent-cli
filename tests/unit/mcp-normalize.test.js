@@ -30,7 +30,7 @@ const ev = (data, over = {}) => ({
 });
 
 describe("normalizeMessage", () => {
-    it("uses the shared type vocabulary, not zca-js's raw msgType", () => {
+    it("uses the shared type vocabulary, not the previous engine's raw msgType", () => {
         const n = normalizeMessage(
             ev({ msgType: "chat.photo", content: { href: "https://photo-stal-3.zdn.vn/a.jpg" } }),
         );

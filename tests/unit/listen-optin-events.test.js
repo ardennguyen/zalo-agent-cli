@@ -1,5 +1,5 @@
 /**
- * `listen --events typing,upload`: two listener events zca-js emits that nothing consumed.
+ * `listen --events typing,upload`: two listener events the listener emits that nothing consumed.
  *
  * Both are opt-in (not in the default --events), so each handler must sit
  * behind its own `enabledEvents.has(...)` check, or a plain `listen` would
@@ -46,17 +46,17 @@ function subscriptions(event) {
 }
 
 describe("listen's opt-in events", () => {
-    for (const [zcaEvent, flag] of [
+    for (const [listenerEvent, flag] of [
         ["typing", "typing"],
         ["upload_attachment", "upload"],
     ]) {
-        it(`${zcaEvent} is subscribed once, only when --events includes "${flag}"`, () => {
-            const subs = subscriptions(zcaEvent);
-            assert.equal(subs.length, 1, `expected one ${zcaEvent} subscription`);
+        it(`${listenerEvent} is subscribed once, only when --events includes "${flag}"`, () => {
+            const subs = subscriptions(listenerEvent);
+            assert.equal(subs.length, 1, `expected one ${listenerEvent} subscription`);
             // Red if the handler is registered unconditionally: a default `listen` would print it.
             assert.ok(
                 subs[0].guards.some((g) => g.includes(`enabledEvents.has("${flag}")`)),
-                `${zcaEvent} must sit behind enabledEvents.has("${flag}")`,
+                `${listenerEvent} must sit behind enabledEvents.has("${flag}")`,
             );
         });
     }

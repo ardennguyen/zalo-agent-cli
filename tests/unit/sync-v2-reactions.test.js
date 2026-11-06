@@ -7,7 +7,7 @@
  * asks for both on every connect. Measured live: one request pair returned 28
  * direct and 62 group reactions while the cache held one row.
  *
- * The listener is faked here — a started zca-js listener is just an EventEmitter
+ * The listener is faked here — a started listener is just an EventEmitter
  * with `requestOldReactions`, `ws` and `cipherKey` — so the paging, the ordering
  * and the removal semantics are all reachable offline.
  */
@@ -91,7 +91,7 @@ function fakeListener(pages) {
     return l;
 }
 
-// The drain reads `more`/`lastActionId` off the raw socket because zca-js does
+// The drain reads `more`/`lastActionId` off the raw socket because the listener's events do
 // not surface them. Feeding a real encrypted frame in a unit test would test
 // the decoder, not the drain, so the tap is satisfied with a pre-decoded frame.
 function tapPages(listener, pages) {

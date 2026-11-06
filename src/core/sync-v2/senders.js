@@ -12,7 +12,7 @@ export const SENDER_RETRY_DELAYS_MS = Object.freeze([500, 1500]);
  * A sender that does not resolve is asked for again, twice, 0.5 s and 1.5 s later (a lookup that failed once
  * often answers the next time); after that it keeps its original ID, and is not asked for again in this restore.
  *
- * @param {object} api - authenticated zca-js API
+ * @param {object} api - logged-in session
  * @param {Map<string, {id: string, name: string, type: string}>} threadMap
  * @param {object} [options]
  * @param {Function} [options.resolveUsers] - batched global-ID resolver

@@ -19,7 +19,7 @@
  * the string it just built and is the one to reach for.
  */
 
-/** The uid Zalo reserves for @All. zca-js turns it into `type: 1`. */
+/** The uid Zalo reserves for @All. The send turns it into `type: 1`. */
 export const ALL_MENTION_UID = "-1";
 
 /**
@@ -46,7 +46,7 @@ const MENTION_TOKEN = /@\[(-?\d+)\]/g;
  *
  * Kept because scripts pass it; `@[uid]` tokens are the safe way in. Specs
  * that are not three colon-separated parts, or whose pos/len are not numbers,
- * are dropped rather than sent as NaN — zca-js's own filter would discard
+ * are dropped rather than sent as NaN — the send's own filter would discard
  * them anyway, silently and later.
  *
  * @param {string[]} [specs] - raw `pos:uid:len` strings

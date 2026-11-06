@@ -115,7 +115,7 @@ describe("the error classes", () => {
         assert.equal(e.name, "ZaloApiError");
         assert.equal(e.message, "session timeout");
         assert.equal(errorCodeOf(e), 102);
-        // zca-js turned a code of 0 into null (`code || null`); ours keeps what it was given.
+        // The previous engine turned a code of 0 into null (`code || null`); ours keeps what it was given.
         assert.equal(new ZaloApiError("x", 0).code, 0);
         assert.equal(new ZaloApiError("x").code, null);
         assert.equal(errorCodeOf(new ZaloApiError("x")), null);

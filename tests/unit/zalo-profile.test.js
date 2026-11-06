@@ -136,7 +136,7 @@ describe("the profile against the wire", () => {
         delete process.env.ZALO_API_VERSION;
     });
 
-    it("zca-js sends the same computer name and type as the profile in getServerInfo", async () => {
+    it("the login sends the same computer name and type as the profile in getServerInfo", async () => {
         await loginFake();
         const serverInfo = fake.calls("/api/login/getServerInfo").at(-1);
         assert.equal(serverInfo.query.computer_name, COMPUTER_NAME);

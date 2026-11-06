@@ -132,7 +132,7 @@ describe("expandMentions — uid handling", () => {
 });
 
 describe("expandMentions — total mention length stays sendable", () => {
-    it("never exceeds the message length (zca-js rejects that outright)", () => {
+    it("never exceeds the message length (the previous engine rejects that outright)", () => {
         const { text, mentions } = expandMentions(`@[${UID_A}] @[${UID_B}] @[-1]`, resolve);
         const total = mentions.reduce((n, m) => n + m.len, 0);
         assert.ok(total <= text.length, `${total} mention chars in a ${text.length}-char message`);
@@ -217,7 +217,7 @@ function liveRow(over = {}) {
 }
 
 describe("buildQuote", () => {
-    it("rebuilds the payload zca-js needs", () => {
+    it("rebuilds the payload the send needs", () => {
         const { quote, error } = buildQuote(liveRow());
         assert.equal(error, undefined);
         assert.deepEqual(quote, {

@@ -1,6 +1,6 @@
 /**
  * Zalo Official Account API v3.0 client.
- * Wraps OA REST endpoints with native fetch. No dependency on zca-js.
+ * Wraps OA REST endpoints with native fetch. Independent of the personal-account session.
  * Credentials stored in ~/.zalo-agent/oa-credentials.json.
  */
 

@@ -4,7 +4,7 @@
  * Zalo Web sends "Important" and "Urgent" as `metaData: {urgency: 1}` and
  * `metaData: {urgency: 2}` on the ordinary text endpoints, group and 1-1 alike
  * (captures group.A15_important_msg, group.A15b_urgent_msg, dm.D15, dm.D18;
- * comparison-vs-zca-js.md #4, §5.4). zca-js already builds exactly that object
+ * the capture's comparison notes #4, §5.4). the send already builds exactly that object
  * from `sendMessage({msg, urgency})` (`handleUrgency`); the CLI had no way to
  * ask for it.
  *

@@ -1,11 +1,11 @@
 /**
  * `msg pin <msgId>` / `msg unpin <msgId>` -- the requests Zalo Web sends.
  *
- * zca-js has none of these endpoints, so they are custom calls on zca-js's own
+ * The session has no area method for these, so they are custom calls on its own
  * session envelope. The shapes are the captured ones
  * (agent/work/zalo-web-capture-2026-09-29/live/group.A9_pin_message,
  * group.A9b_unpin_message, dm.D9_pin_message, dm.D9b_unpin_message;
- * comparison-vs-zca-js.md #17, §5.17):
+ * the capture's comparison notes #17, §5.17):
  *
  *   group pin    POST {group_board}/api/board/topic/createv2
  *                {grid, type:2, color, emoji:"📌", startTime:-1, duration:-1,
@@ -23,7 +23,7 @@
  * boardVersion:0, imei}` (the web's fetchTopics), which answers
  * `{items, boardVersion}`; a stale version is error 183, after which the web
  * refetches once and retries. The 1-1 version comes from friendboard/list,
- * which zca-js's getFriendBoardList already calls exactly as captured.
+ * which getFriendBoardList already calls exactly as captured.
  *
  * Only text messages are pinned: text is the one kind the capture covers, and
  * each other kind carries its own params blob.
@@ -273,7 +273,7 @@ describe("msg unpin", () => {
     });
 
     it("1-1: a topic that arrives as a JSON string is found and unpinned (spec-people 16.3)", async () => {
-        // zca-js typed the 1-1 board's topics as strings; the engine parses a string topic to its object, so
+        // The previous engine typed the 1-1 board's topics as strings; the engine parses a string topic to its object, so
         // findPinnedTopic, which reads `type` and `params`, finds it next to an object topic.
         const r = await runOffline(["msg", "unpin", D1.msgId], {
             responses: {

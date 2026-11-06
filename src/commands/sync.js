@@ -1110,7 +1110,7 @@ export const RECONNECT_DELAY_MS = 2000;
  * stops the listener itself, so the decision to reconnect is the caller's. A
  * 1006 is NOT in the server's own `close_and_retry_codes`
  * (`settings.features.socket`, measured: 5008 5007 3003 3000 5014 4002 5015
- * 5017 5016), so zca-js will never retry one for us -- without this, a dropped
+ * 5017 5016), so the supervisor will never retry one for us -- without this, a dropped
  * wire ends the run and the phone confirmation it already spent is gone.
  *
  * @param {object} api
@@ -1119,7 +1119,7 @@ export const RECONNECT_DELAY_MS = 2000;
  * @returns {Promise<boolean>} true once a live socket is back
  */
 export async function reconnectListener(api, waitMs = 30000, delayMs = RECONNECT_DELAY_MS) {
-    // zca-js nulls `ws` on close and throws "Already started" while it is set,
+    // The listener nulls `ws` on close and refuses to start again while it is set,
     // so a socket still hanging around has to be put down first.
     if (api?.listener?.ws) await closeListener(api);
     // Web's first retry after a 1006 comes after 2 s (then 3, 5, 8); this one came after 0.5 s.
@@ -1827,7 +1827,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
         // ONE heartbeat for the whole socket window, covering every socket
         // stage and the gaps between them.
         //
-        // The socket is not unpinged without this -- zca-js sends Zalo's
+        // The socket is not unpinged without this -- the listener sends Zalo's
         // `cmd 2/1` ping on the interval the server hands out at login, which
         // this account's login reports as 180000 ms, the same value a captured
         // Zalo Web session used. The problem is that 180 s is the entire width

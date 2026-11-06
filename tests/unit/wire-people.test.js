@@ -126,21 +126,21 @@ describe("wire: people (src/zalo/api/people.js)", () => {
             assert.deepEqual(rec.own.requests[0].params.friend_pversion_map, [`${PEER}_0`]);
         });
 
-        it('language is "vi" even when the session is in English (zca-js sent the session language)', async () => {
+        it('language is "vi" even when the session is in English (the previous engine sent the session language)', async () => {
             const rec = await withCtx({ language: "en" }, () =>
                 check("getUserInfo/lang-en", "getUserInfo", [PEER], { reply }),
             );
             assert.equal(rec.own.requests[0].params.language, "vi");
         });
 
-        it("phonebook_version 0 when the login carried none (zca-js left the key out)", async () => {
+        it("phonebook_version 0 when the login carried none (the previous engine left the key out)", async () => {
             const rec = await withCtx({ extraVer: {} }, () =>
                 check("getUserInfo/no-phonebook", "getUserInfo", [PEER], { reply }),
             );
             assert.equal(rec.own.requests[0].params.phonebook_version, 0);
         });
 
-        it("no uid: refused before any request, with zca-js's message", async () => {
+        it("no uid: refused before any request, with the previous engine's message", async () => {
             const rec = await check("getUserInfo/missing", "getUserInfo", [], { reply });
             assert.equal(rec.own.requests.length, 0);
             assert.deepEqual(rec.own.error, { message: "Missing user id", code: null });
@@ -175,7 +175,7 @@ describe("wire: people (src/zalo/api/people.js)", () => {
         it("GET {friend}/profile/get with params once, reqSrc 40, a leading 0 turned into 84", async () => {
             const rec = await check("findUser", "findUser", [PHONE], { reply });
             const [req] = rec.own.requests;
-            // Red if params went into the query twice again (zca-js's order is the allowed difference).
+            // Red if params went into the query twice again (the previous engine's order).
             assert.deepEqual(req.queryOrder, ["zpw_ver", "zpw_type", "params"]);
             assert.deepEqual(req.params, {
                 phone: "84901234567",
@@ -187,7 +187,7 @@ describe("wire: people (src/zalo/api/people.js)", () => {
             assert.deepEqual(rec.own.result, reply);
         });
 
-        it("0 -> 84 whatever the session language (zca-js did it only for vi)", async () => {
+        it("0 -> 84 whatever the session language (the previous engine did it only for vi)", async () => {
             const rec = await withCtx({ language: "en" }, () =>
                 check("findUser/lang-en", "findUser", [PHONE], { reply }),
             );
@@ -551,7 +551,7 @@ describe("wire: people (src/zalo/api/people.js)", () => {
         });
     });
 
-    describe("errors (part 3): the same code on both sides, the same text where zca-js has it", () => {
+    describe("errors (part 2): the code and message of each answer", () => {
         /** One call per method, with arguments that reach the wire. */
         const CALLS = [
             ["getUserInfo", [PEER]],

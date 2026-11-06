@@ -83,7 +83,7 @@ describe("msg undo requires a cliMsgId", () => {
         assert.match(all, /cliMsgId is required to recall a message/);
         assert.match(all, /not in the local cache/);
         assert.match(all, /listen --json/);
-        // `send --json` is no longer offered: zca-js never returns the
+        // `send --json` is no longer offered: the previous engine never returns the
         // clientId it stamped, so the value send printed was a second
         // Date.now() that matched only by luck.
         assert.doesNotMatch(all, /send --json/);
@@ -98,7 +98,7 @@ describe("msg undo requires a cliMsgId", () => {
 
 describe("conv read needs a message to anchor the seen event on", () => {
     // `sendSeenEvent(messages, type)` takes a message DESCRIPTOR. `conv read`
-    // used to pass the bare threadId string: truthy, so zca-js wrapped it in an
+    // used to pass the bare threadId string: truthy, so the previous engine wrapped it in an
     // array, read `.uidFrom` off a string (undefined), compared
     // `undefined !== undefined` so did NOT throw, and dropped every id field in
     // JSON.stringify. The request reached Zalo as
@@ -393,7 +393,7 @@ describe("msg send --quote guards", () => {
 
 describe("msg send mention guards", () => {
     it("warns that mentions are dropped outside a group", async () => {
-        // zca-js filters mentions for ThreadType.User, so a `-t 0` send would
+        // The session drops mentions in a 1-1 conversation, so a `-t 0` send would
         // otherwise arrive with the names as plain text and nobody tagged.
         const r = await runCli(["msg", "send", TID, "hello @[-1]", "-t", "0"], opts);
         assert.match(r.all, /Mentions only apply to group messages/);

@@ -14,7 +14,7 @@ const SCAN_BATCH = 50;
  * an account starts by finding it. Scans page by page while Zalo says there are
  * more, with a cap so a server that never stops saying so cannot loop us.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {number} accountId
  * @returns {Promise<object|null>} the saved account, or null when no page has it
  */

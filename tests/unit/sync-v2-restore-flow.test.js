@@ -1,7 +1,7 @@
 /**
  * The whole restore (`SyncV2.restore()`), from the first request to the last released session, against the fake
  * phone: acks, release reasons, counters, leftovers, downloads, a decline. The decryption is a stand-in (see
- * tests/helpers/fake-zalo/phone.js); everything else is the real code on the real zca-js listener and a real
+ * tests/helpers/fake-zalo/phone.js); everything else is the real code on the real listener and a real
  * zalo.db.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";

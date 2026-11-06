@@ -16,7 +16,7 @@ const pkg = JSON.parse(readFileSync(join(__dirname, "../../package.json"), "utf8
 /**
  * Create and start MCP server with stdio transport.
  * All logs MUST use console.error() — stdout is reserved for MCP protocol.
- * @param {object} api - zca-js API instance
+ * @param {object} api - session object
  * @param {import("./message-buffer.js").MessageBuffer} buffer
  * @param {import("./thread-filter.js").ThreadFilter} filter
  * @param {object} config - MCP config

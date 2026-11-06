@@ -2,8 +2,7 @@
  * zCloud's params/response cipher — a Node-crypto port of Zalo Web's own.
  *
  * zCloud (`zcld.chat.zalo.me`) does not use the session cipher every other
- * Zalo endpoint uses (the session key with an all-zero IV — zca-js's
- * `encodeAES`/`decodeAES`). Zalo Web's zCloud layer keys a separate AES-CBC
+ * Zalo endpoint uses (the session key with an all-zero IV — src/zalo/kernel/cipher.js). Zalo Web's zCloud layer keys a separate AES-CBC
  * with `enk`, the second half of the account's cloud viewer key pair, and
  * prepends a fresh random IV to every ciphertext:
  *

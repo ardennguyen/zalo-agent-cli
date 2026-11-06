@@ -16,7 +16,7 @@
  *   GET {zcloud}/cloudmedia/info/pc/v2/usage           (12749) -- plan, quota, usage
  *   GET {zcloud}/cloudmedia/info/pc/v1/cloud-settings  (12756) -- per-file limit, opt-in
  *
- * {auth} is https://wpa.chat.zalo.me, the host zca-js logs in against. {zcloud}
+ * {auth} is https://wpa.chat.zalo.me, the host the login talks to. {zcloud}
  * is the service map's `zcloud` entry, falling back to https://zcld.chat.zalo.me
  * exactly as Zalo Web does. "verify_v2" (12761, chosen by the web when the plan
  * is zcloud) is the same path; the client strips the command id before sending,
@@ -185,7 +185,7 @@ function keyPair(obj, source) {
  * params, answered in the ordinary session envelope. The result also replaces
  * the key this session uses for later zCloud calls.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @returns {Promise<{viewerKey: string, enk: string, source: "getCloudViewerKey"}>}
  * @throws {ZCloudError} when the call fails or yields no key (no subscription)
  */
@@ -201,7 +201,7 @@ const familyKeyCache = new WeakMap();
 /**
  * Fetch the family plan's zCloud viewer key pair. A read; it replaces only the family key kept for this session.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @returns {Promise<{viewerKey: string, enk: string, source: "getFamilyViewerKey"}>}
  * @throws {ZCloudError} when the call fails or yields no key (no family plan)
  */

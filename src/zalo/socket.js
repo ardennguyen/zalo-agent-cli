@@ -2,12 +2,12 @@
  * The socket supervisor: keeps one chat socket alive the way the official Zalo
  * Web client does, and stops where it stops (plan items L3, L10, L11, L12, X2).
  *
- * It drives a zca-js `Listener` that is started WITHOUT its own retry: zca-js
- * keeps parsing frames and emitting events; this decides when the socket is
+ * It drives a `Listener` (src/zalo/listener/listener.js) that has no retry of its
+ * own: the listener keeps parsing frames and emitting events; this decides when the socket is
  * dead, when to try again, and when never to.
  *
  * **Dead-socket detection.** A ping goes out right after the key frame and then
- * every `ping_interval` (zca-js sends the periodic ones). Each ping must be
+ * every `ping_interval` (the listener sends the periodic ones). Each ping must be
  * echoed within 5 s. A missed echo is not an immediate drop: the ping is asked
  * again after the server's `5013` delay, up to its `max`, and only then is the
  * socket closed and retried under key `5011`. No echo at all for
@@ -122,7 +122,7 @@ const globalClock = Object.freeze({
  */
 
 /**
- * Supervises one zca-js Listener.
+ * Supervises one listener.
  *
  * Events: `state` `{state, previous}`; `connected` (the key frame arrived: the socket is usable);
  * `disconnected` `{code, reason, wasConnected, requested}`; `retrying` `{key, delayMs, round, rotate, attempt}`;
@@ -134,7 +134,7 @@ const globalClock = Object.freeze({
 export class SocketSupervisor extends EventEmitter {
     /**
      * @param {object} opts
-     * @param {object} opts.listener - a zca-js Listener, not started
+     * @param {object} opts.listener - a listener, not started
      * @param {object} [opts.settings] - from `resolveSocketSettings`
      * @param {number} [opts.endpoints] - how many socket endpoints exist (default: `listener.urls.length`)
      * @param {object} [opts.engine] - a retry engine, built from `settings` when omitted
@@ -204,7 +204,7 @@ export class SocketSupervisor extends EventEmitter {
         this._onOpen = () => this._handleOpen();
         this._onKey = () => this._handleKey();
         this._onDisconnected = (code, reason) => this._handleDisconnected(code, reason);
-        // zca-js raises `error` for every socket error and a close always follows; an emitter with
+        // The listener raises `error` for every socket error and a close always follows; an emitter with
         // no `error` listener throws, so one is always there. The close is what is acted on.
         this._onListenerError = (e) => this.log("debug", `socket error: ${e?.message ?? e?.type ?? "unknown"}`);
         listener.on("connected", this._onOpen);
@@ -212,7 +212,7 @@ export class SocketSupervisor extends EventEmitter {
         listener.on("disconnected", this._onDisconnected);
         listener.on("error", this._onListenerError);
 
-        // Pings are sent by zca-js (and by this class right after the key frame); watching them go out is how
+        // Pings are sent by the listener (and by this class right after the key frame); watching them go out is how
         // an echo is told from silence. The wrapper changes nothing about what is sent.
         this._originalSendWs = listener.sendWs;
         listener.sendWs = (payload, ...rest) => {
@@ -745,9 +745,9 @@ function safeJson(text) {
 }
 
 /**
- * Supervise the listener of a logged-in zca-js API.
+ * Supervise the listener of a logged-in session.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {object} [opts] - anything {@link SocketSupervisor} takes; `settings` defaults to the server's
  *   socket settings from this login, resolved over the defaults
  * @returns {SocketSupervisor}

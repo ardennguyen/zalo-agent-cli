@@ -242,7 +242,7 @@ describe("readAuthFrame", () => {
     });
 
     it("accepts a decoded handshake with no error_code at all (the pinned leniency against Web)", () => {
-        // Web requires error_code === 0. This client accepts an absent code on purpose (see readAuthFrame): zca-js
+        // Web requires error_code === 0. This client accepts an absent code on purpose (see readAuthFrame): the previous engine
         // never read this payload, and tests/unit/sync-v2-zalo-lifecycle.test.js sends exactly such a key frame
         // (`{}` as data). Red if the check becomes Web's strict one; then that file's key frame needs the field.
         assert.deepEqual(readAuthFrame({ key: KEY16, encrypt: 0, data: "{}" }), { key: KEY16, auth: null });

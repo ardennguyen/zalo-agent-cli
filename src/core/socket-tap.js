@@ -1,8 +1,8 @@
 /**
- * A raw reader on the listener's WebSocket that keeps what zca-js throws away.
+ * A raw reader on the listener's WebSocket that keeps what its typed events leave out.
  *
- * zca-js decodes each frame and emits typed events built from one or two of
- * its arrays -- the 501 handler reads only `msgs`, the 521 handler only
+ * The listener decodes each frame and emits typed events built from one or two
+ * of its arrays -- the 501 handler reads only `msgs`, the 521 handler only
  * `groupMsgs`, the 510/511 `old_messages` handler only the message arrays --
  * and keeps nothing of the handshake (cmd 1) but its cipher `key`. Everything
  * else in the envelope is gone before our handlers run:
@@ -15,16 +15,15 @@
  *
  * Zalo Web reads all of it (bundle 1.e0ef5e98…: `processSuccessData` →
  * `queueIds.addLastActionIds(o.queueStatus, …)` @~11109700, `onAuthenticated`
- * reads `data.qCmds` @~11118700). So does this: it listens beside zca-js on the
- * same raw `ws`, decodes each frame with the repo's own mirror of zca-js's
- * decoder, and hands `{cmd, subCmd, body, data}` to whoever subscribed to that
+ * reads `data.qCmds` @~11118700). So does this: it listens beside the listener on
+ * the same raw `ws`, decodes each frame with the listener's own decoder
+ * (src/zalo/listener/frames.js), and hands `{cmd, subCmd, body, data}` to whoever subscribed to that
  * cmd. The reaction backlog drain has done this privately since 2026-09-28
  * (./sync-v2/reactions.js); this is the same technique, shared, for everything
- * that needs a field zca-js drops -- the offline-queue catch-up first
+ * that needs a field the typed events drop -- the offline-queue catch-up first
  * (./self-heal.js), read-state sync and pageMsgs after it.
  *
- * It reads and routes; it never writes, never sends, and never needs a zca-js
- * patch. `listen` and `mcp start` both attach it (AGENTS.md §13).
+ * It reads and routes; it never writes and never sends. `listen` and `mcp start` both attach it (AGENTS.md §13).
  */
 import { decodeFrame } from "../zalo/listener/frames.js";
 
@@ -32,11 +31,11 @@ import { decodeFrame } from "../zalo/listener/frames.js";
 export const CMD_AUTHEN = 1;
 
 /**
- * Read one raw socket frame: zca-js's 4-byte header, then its JSON body.
+ * Read one raw socket frame: the 4-byte header, then its JSON body.
  *
- * The header is `[version, cmd as uint16 LE, subCmd]` (zca-js `getHeader`).
+ * The header is `[version, cmd as uint16 LE, subCmd]` (./frames.js `readHeader`).
  * A body of `{encrypt, data: <string>}` is decoded with the session's cipher
- * key -- the handshake frame carries its own `key`, which zca-js adopts at the
+ * key -- the handshake frame carries its own `key`, which the listener adopts at the
  * same moment -- and any other body is taken as it is.
  *
  * @param {Buffer} buf
@@ -154,7 +153,7 @@ export function createSocketTap({ log = (line) => console.error(line) } = {}) {
         attach(listener) {
             if (!listener) return;
             tapSocket(listener);
-            // zca-js opens a NEW ws on every retry and announces it with
+            // The listener opens a NEW ws on every retry and announces it with
             // `connected` from its onopen, before any frame can arrive -- so
             // re-arming there never misses the handshake.
             if (!watched.has(listener) && typeof listener.on === "function") {

@@ -3,14 +3,14 @@
  *
  * WHY THIS EXISTS, and why it is not `api.keepAlive()`
  * ---------------------------------------------------
- * zca-js exposes `api.keepAlive()`, which looks like the obvious instrument and
+ * The session exposes `api.keepAlive()`, which looks like the obvious instrument and
  * is the wrong one: it is an HTTP GET to `<chat host>/keepalive`
- * (`apis/keepAlive.js`). It touches the session, never the socket, so it cannot
+ * (src/zalo/api/session.js). It touches the session, never the socket, so it cannot
  * keep a WebSocket flow warm.
  *
  * What actually keeps this socket warm is Zalo's own application-level ping --
  * `cmd 2 / subCmd 1` carrying `{eventId}`, which the server echoes back
- * verbatim. zca-js already sends it, on an interval the server hands out at
+ * verbatim. The listener already sends it, on an interval the server hands out at
  * login (`settings.features.socket.ping_interval`, measured at **180000 ms**
  * for this account -- the same value a captured Zalo Web session used).
  *
@@ -36,7 +36,7 @@
 export const PING_CMD = 2;
 export const PING_SUBCMD = 1;
 
-/** What the server advises, and what zca-js and Zalo Web both use. */
+/** What the server advises, and what the listener and Zalo Web both use. */
 export const SERVER_PING_INTERVAL_MS = 180000;
 
 /**
@@ -93,7 +93,7 @@ export function isPingEcho(buf) {
  * rescheduling once the socket is gone -- `sendWs` is a silent no-op on a null
  * socket, so a running timer on a dead wire would just spin.
  *
- * @param {object} listener - a zca-js Listener (needs `sendWs` and `ws`)
+ * @param {object} listener - a listener (needs `sendWs` and `ws`)
  * @param {object} [opts]
  * @param {number} [opts.intervalMs] - heartbeat interval; clamped
  * @param {number} [opts.advisedMs] - the server's advised interval, the default and the ceiling
@@ -144,16 +144,16 @@ export function startKeepAlive(listener, opts = {}) {
 
     const tick = () => {
         if (stopped) return;
-        // A closed socket cannot be kept alive, and zca-js nulls `ws` on close,
+        // A closed socket cannot be kept alive, and the listener nulls `ws` on close,
         // so an absent socket is just as dead as a CLOSING/CLOSED one.
         if (!listener?.ws || listener.ws.readyState > 1) return;
         retap();
-        // zca-js pings on the server's interval from the hello on. A second timer at the same cadence only doubled
+        // The listener pings on the server's interval from the hello on. A second timer at the same cadence only doubled
         // every ping (two 2/1 frames in one millisecond; Web sends one), so on the default cadence this one just
         // keeps counting echoes. A caller that asks for its own interval still gets its own pings.
-        const zcaPings = !opts.intervalMs && Boolean(listener.pingInterval);
+        const listenerPings = !opts.intervalMs && Boolean(listener.pingInterval);
         try {
-            if (!zcaPings) {
+            if (!listenerPings) {
                 listener.sendWs(pingPayload(now()));
                 sent++;
                 onPing({ sent, echoed });

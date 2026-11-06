@@ -51,7 +51,7 @@ export const IMAGES = {
     tiff: f("image-64x48.tiff", { width: 64, height: 48, format: "TIFF", inline: false }),
 };
 
-/** Non-image attachments — the zca-js "others" upload path. */
+/** Non-image attachments — the "others" upload path. */
 export const FILES = {
     txt: f("notes.txt"),
     csv: f("data.csv"),

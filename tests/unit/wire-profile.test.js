@@ -61,7 +61,7 @@ describe("wire: profile (src/zalo/api/profile.js)", () => {
         assertSandboxed(CONFIG_DIR);
         writeFileSync(IMAGE_PATH, IMAGE_BYTES);
         wire = await openWire({ zaloOptions: { imageMetadataGetter: async () => ({ ...IMAGE_META }) } });
-        // zca-js writes an empty Cookie header for an empty jar and fetch writes none: give every host a cookie.
+        // Give every host a cookie, so the Cookie header is recorded with a value.
         wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
         wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.me; Path=/", "https://chat.zalo.me/");
         // Every run clears the fake's routes; put the auth host's answer back each time, ahead of the run's own.
@@ -270,7 +270,7 @@ describe("wire: profile (src/zalo/api/profile.js)", () => {
         it("updateActiveStatus(false): GET deactive with {imei} only", async () => {
             const rec = await check("active-off", "updateActiveStatus", [false], { reply: { status: true } });
             assert.equal(rec.own.requests[0].path, "/api/social/profile/deactive");
-            // Red if the zca-js status: 0 came back.
+            // Red if the old status: 0 came back.
             assert.deepEqual(rec.own.requests[0].params, { imei: FAKE.imei });
         });
 
@@ -316,7 +316,7 @@ describe("wire: profile (src/zalo/api/profile.js)", () => {
             ["getListDevice", []],
         ];
         for (const [method, args] of CALLS) {
-            it(`${method}(${args.map((a) => (a === IMAGE_PATH ? "<image>" : JSON.stringify(a))).join(", ")}): same code, same text where zca-js has it`, async () => {
+            it(`${method}(${args.map((a) => (a === IMAGE_PATH ? "<image>" : JSON.stringify(a))).join(", ")}): the code and message of each error`, async () => {
                 for (const answer of ERROR_ANSWERS) {
                     const rec = await run(method, args, { error: answer.error });
                     assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);

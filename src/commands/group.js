@@ -123,7 +123,7 @@ export function registerGroupCommands(program) {
             try {
                 const count = parseIntAtLeast(1)(opts.count);
                 // Zalo's cloud-message store (/api/cm/getrecentv2), which is
-                // what Zalo Web reads. zca-js's getGroupChatHistory asks
+                // what Zalo Web reads. The previous engine's getGroupChatHistory asked
                 // /api/group/history, which Zalo answers with 404.
                 const result = await getGroupHistory(getApi(), groupId, count);
                 const msgs = result?.groupMsgs || [];
@@ -239,7 +239,7 @@ export function registerGroupCommands(program) {
         .description("Rename a group")
         .action(async (groupId, name) => {
             try {
-                // zca-js declares changeGroupName(name, groupId) — name
+                // The session declares changeGroupName(name, groupId) — name
                 // FIRST. Passing (groupId, name) handed Zalo the group id as
                 // the new name and the name as the group id, so every rename
                 // failed with "Tham số không hợp lệ". Note changeGroupAvatar
@@ -353,9 +353,9 @@ export function registerGroupCommands(program) {
         .description("Join a group via invite link")
         .action(async (link) => {
             try {
-                // zca-js calls this joinGroupLink. There is no joinGroup, so
+                // The session calls this joinGroupLink. There is no joinGroup, so
                 // the command failed on "is not a function" before any network
-                // call -- found by tests/unit/zca-api-surface.test.js.
+                // call -- the kind of defect tests/unit/api-surface.test.js finds.
                 const result = await getApi().joinGroupLink(link);
                 output(result, program.opts().json, () => success("Joined group"));
             } catch (e) {
@@ -680,7 +680,7 @@ export function registerGroupCommands(program) {
         .option("--member-count <n>", "Members per page", parseIntAtLeast(1), 10)
         .action(async (groupId, opts) => {
             try {
-                // zca-js's own call throws when the group has no topic; see core/group-invite.js.
+                // The previous engine's call threw when the group has no topic; see core/group-invite.js.
                 const result = await getInviteBoxInfo(getApi(), {
                     groupId,
                     mpage: opts.memberPage,

@@ -32,7 +32,7 @@ import {
 import { classifyLiveMessage } from "./sync-v2/message-types.js";
 import { resolveCurrentUserNames } from "./current-user-names.js";
 
-/** zca-js ThreadType.User */
+/** THREAD_TYPE.User */
 const THREAD_USER = 0;
 
 /**
@@ -47,7 +47,7 @@ const THREAD_USER = 0;
  * the MCP thread-name cache. Returning "" lets {@link upsertThread} keep
  * whatever is already known instead of renaming the group after its sender.
  *
- * @param {object} msg - the zca-js message event
+ * @param {object} msg - the listener's message event
  * @returns {string} a usable conversation name, or ""
  */
 function nameFromLiveMessage(msg) {
@@ -68,7 +68,7 @@ function nameFromLiveMessage(msg) {
  *                                        is an OBJECT carrying `deleteMsg`.
  *   "Xoa o phia toi" (delete for me) -> an ordinary `message` event with
  *                                        msgType "chat.delete", because its
- *                                        content is an ARRAY, so zca-js's
+ *                                        content is an ARRAY, so the listener's
  *                                        `deleteMsg` check cannot match it.
  *
  * The second one therefore arrives here, in the message path, and must never
@@ -146,7 +146,7 @@ function applyRemoval(target, reason, at) {
 /**
  * Store one live message event.
  *
- * @param {object} msg - the zca-js message event (`{threadId, type, data, isSelf}`)
+ * @param {object} msg - the listener's message event (`{threadId, type, data, isSelf}`)
  * @param {object} [opts]
  * @param {string} [opts.threadName] - authoritative conversation name, when the
  *   caller has one (the MCP server's thread-name cache does). Supplying it
@@ -187,7 +187,7 @@ export function storeLiveMessage(msg, opts = {}) {
             raw_data: info.raw,
             has_attachment: info.hasAttachment,
             // NOT data.status. The live `status` field is an undocumented
-            // enum (zca-js declares only `status: number`) and is not Sync2's
+            // enum (its type was only ever `status: number`) and is not Sync2's
             // MessageStatus, which this column holds: four of the owner's own
             // successfully-sent messages arrived carrying 1, which that column
             // defines as "failed". Delivery state comes from the mobile sync
@@ -221,8 +221,8 @@ export function storeLiveMessage(msg, opts = {}) {
  *
  * Best-effort and non-throwing so it never blocks or drops a live message.
  *
- * @param {object} api - authenticated zca-js API instance
- * @param {object} msg - zca-js message event
+ * @param {object} api - logged-in session
+ * @param {object} msg - listener message event
  * @param {{onSelfName?: (name: string) => boolean|void, nameCache?: object, log?: Function}} [opts]
  * @returns {Promise<{selfUpdated: boolean, dmName: string|null}>}
  */
@@ -366,13 +366,13 @@ function parseContent(content) {
  * over the socket on cmd 610/611, which `sync-reactions` drains through this
  * same writer.
  *
- * @param {object} reaction - the zca-js reaction event
+ * @param {object} reaction - the listener's reaction event
  * @returns {{stored: boolean, reason?: string}}
  */
 /**
  * Store one reaction event against the message it names.
  *
- * @param {object} reaction - a zca-js reaction (live, cmd 612) or a retrieved one (cmd 610/611)
+ * @param {object} reaction - a listener reaction (live, cmd 612) or a retrieved one (cmd 610/611)
  * @param {{source?: string}} [opts] - where it came from, recorded on the row;
  *   the backlog drain passes "backlog" so a retrieved reaction is not
  *   indistinguishable from one seen live
@@ -380,7 +380,7 @@ function parseContent(content) {
  */
 export function storeLiveReaction(reaction, opts = {}) {
     const d = reaction?.data || {};
-    // zca-js parses `content` for a LIVE reaction (cmd 612) but hands it over
+    // The listener parses `content` for a LIVE reaction (cmd 612) but hands it over
     // as a raw JSON string for a retrieved one (cmd 610/611 -> old_reactions).
     // Reading `.rMsg` off the string finds nothing and silently stores no
     // reaction, so one writer has to accept both.
@@ -455,14 +455,14 @@ export function storeLiveReaction(reaction, opts = {}) {
  * rather than left intact — and rather than deleted, so the conversation still
  * shows that something was said and when.
  *
- * @param {object} undo - the zca-js undo event
+ * @param {object} undo - the listener's undo event
  * @returns {{stored: boolean, msgId?: string, reason?: string}}
  */
 export function storeLiveUndo(undo) {
     const d = undo?.data || {};
     // The recalled message is named INSIDE content. The event's own top-level
-    // msgId identifies the notification (zca-js models/Undo.d.ts: TUndo has no
-    // globalMsgId, TUndoContent does), so reading it from there tombstoned the
+    // msgId identifies the notification (the undo has no
+    // globalMsgId, its content does), so reading it from there tombstoned the
     // notification's id -- a row that does not exist -- and every live recall
     // silently updated nothing while reporting success.
     const c = d.content || {};
@@ -485,7 +485,7 @@ export function storeLiveUndo(undo) {
  * reaches the sync as msgType 36 -- so the distinction is recorded locally in
  * the tombstone's `removedAs`.
  *
- * @param {object} msg - the zca-js message event with msgType "chat.delete"
+ * @param {object} msg - the listener's message event with msgType "chat.delete"
  * @returns {{stored: boolean, msgId?: string, reason?: string, mediaRemoved?: boolean}}
  */
 export function storeLiveDelete(msg) {
@@ -504,7 +504,7 @@ export function storeLiveDelete(msg) {
 }
 
 /**
- * Subscribe a zca-js listener so live traffic keeps being stored.
+ * Subscribe a listener so live traffic keeps being stored.
  *
  * Used by the mobile sync, which holds the socket for minutes at a time and
  * would otherwise drop everything arriving on it.
@@ -548,7 +548,7 @@ export function attachLiveStore(listener, onEvent = () => {}) {
 /**
  * Group events that can mean the conversation stopped being ours.
  *
- * zca-js has no distinct "dispersed" event -- a disperse surfaces as the
+ * The listener has no distinct "dispersed" event -- a disperse surfaces as the
  * members leaving -- so these are the signals available. Which member one is
  * about is the whole question; see {@link departureOf}.
  */
@@ -573,14 +573,14 @@ function groupEventTime(event) {
 /**
  * Is this group event our own departure?
  *
- * zca-js sets `isSelf` when we are among the members the event is about OR
+ * The listener sets `isSelf` when we are among the members the event is about OR
  * when we are the one who did it (`sourceId`). For a leave those coincide. For
  * a removal or block they do not: an admin removing someone else gets isSelf
  * too, and reading that as our departure flagged the admin's own group gone,
  * so `prune-orphans` deleted the media of a group they still run. Only
  * `updateMembers` says who went, and reading it needs our own id.
  *
- * @param {object} event - the zca-js group event
+ * @param {object} event - the listener's group event
  * @param {string|undefined} ownId - the account's own uid
  * @returns {"ours"|"not-ours"|"unknown"} unknown: a removal or block with
  *   isSelf set and no ownId to say whether we were removed or did the removing
@@ -613,7 +613,7 @@ function departureOf(event, ownId) {
  * `listen` and `mcp start` must both pass `ownId`: without it a removal cannot
  * be told from one we performed, and it is left alone rather than guessed.
  *
- * @param {object} event - the zca-js group event
+ * @param {object} event - the listener's group event
  * @param {{ownId?: string}} [opts]
  * @returns {{gone: boolean, back: boolean, threadId?: string}}
  */
@@ -673,7 +673,7 @@ const SYSTEM_LINE_EVENTS = new Set([
  * with its own. The whole event payload is kept in raw_data, so nothing the
  * socket delivered is thrown away.
  *
- * @param {object} event - the zca-js group event
+ * @param {object} event - the listener's group event
  * @returns {{stored: boolean, msgId?: string, reason?: string}}
  */
 export function storeGroupEventRow(event) {
@@ -745,7 +745,7 @@ const BOARD_EVENTS = new Set([
 /**
  * Note that a conversation's board changed.
  *
- * @param {object} event - the zca-js group event
+ * @param {object} event - the listener's group event
  * @returns {{stale: boolean, threadId?: string}}
  */
 export function noteBoardChange(event) {
@@ -771,7 +771,7 @@ export function noteBoardChange(event) {
  * receipts that arrive afterwards. These events are the live half of the same
  * field, not UI noise.
  *
- * @param {Array<object>|object} payload - zca-js seen/delivered event
+ * @param {Array<object>|object} payload - listener seen/delivered event
  * @param {number} status - Sync2 MessageStatus (4 received, 5 seen)
  * @returns {{updated: number}}
  */

@@ -13,22 +13,22 @@
  * - Upload: `POST {file}/api/{message|group}/{photo_original|asyncfile}/upload?zpw_ver&zpw_type&params&type`, `type`
  *   2 for a user and 11 for a group, a multipart body with one part `chunkContent` (the chunk's bytes, named after
  *   the file). `params` per chunk: `{totalChunk, fileName, clientId, totalSize, imei, chunkId, toid|grid}`, without
- *   the `isE2EE: 0`/`jxl: 0` zca-js added (the Web's non-E2EE chunk builder has neither). The chunk size is
+ *   the `isE2EE: 0`/`jxl: 0` the previous engine added (the Web's non-E2EE chunk builder has neither). The chunk size is
  *   `chunk_size_file` when it is a number of at least 64000, else 256000. At most three chunks are in flight; the
  *   last chunk goes once every other one has answered, so its reply is the one that says whether the upload
  *   finished. An inner `error_code` 1 on a chunk is Zalo's "already uploaded", an answer, not an error.
  * - A photo's reply carries its URLs. A file's does not: Zalo pushes them later in a 601 control (`file_done`,
  *   `video_done`; `photo_success` for a photo whose reply had none), which the listener hands to
  *   `ctx.uploadCallbacks.settle(fileId, {url, kind, data})` (kernel/session.js). A settlement that came before the
- *   wait is kept for it. While a file waits, a callback stands under its id in `ctx.uploadCallbacks` too, so zca-js's
- *   listener, which only calls the entry it finds with `{fileUrl, fileId}`, settles it as well. When nothing comes,
+ *   wait is kept for it. While a file waits, a callback stands under its id in `ctx.uploadCallbacks` too, so a
+ *   listener that only calls the entry it finds with `{fileUrl, fileId}` settles it as well. When nothing comes,
  *   the last chunk is sent again after the Web's size-bucketed delay (a valid reply carries the URL), and once more
  *   at the overall wait (120 s); the upload fails when that replay gives nothing, or at the latest
  *   {@link FINAL_REPLAY_GRACE_MS} later. No chunk request waits longer than {@link CHUNK_TIMEOUT_MS}.
  * - Send: `photo_original/send` with `{photoId, clientId, desc, width, height, rawUrl, thumbUrl, hdUrl,
  *   normalUrl|oriUrl, (layout), toid|grid, language, (extMsgProp), zsource, ttl, imei}`; `asyncfile/msg` with
  *   `{fileId, checksum, checksumSha, extension, totalSize, fileName, clientId, fType, fileCount, fdata, toid|grid,
- *   fileUrl, zsource, ttl, imei (to a user)}`, spelled `extension` as the Web does (zca-js sent `extention`).
+ *   fileUrl, zsource, ttl, imei (to a user)}`, spelled `extension` as the Web does (not `extention`).
  * - A caption rides on a single photo as its `desc`; otherwise it goes first, as its own text message through
  *   `s.api.sendMessage`. The reply is `{message, attachment}`, `attachment[i]` carrying the `cliMsgId` it was sent
  *   with, files in the order given and GIFs last.
@@ -98,7 +98,7 @@ function extOf(p) {
 }
 
 /**
- * How a file travels: "photo", "gif" or "file", and the type name zca-js gave its upload result.
+ * How a file travels: "photo", "gif" or "file", and the type name of its upload result.
  *
  * @param {string} ext
  * @returns {{route: "photo"|"gif"|"file", fileType: "image"|"gif"|"video"|"others"}}
@@ -373,7 +373,8 @@ function photoUrls(u) {
 
 /**
  * The control's own `data` inside a settlement (our listener passes the whole control as the settlement's `data`;
- * zca-js's listener never makes a settlement, see {@link awaitUrls}), parsed when it came as a JSON string.
+ * a listener that only calls the entry under the id makes none, see {@link awaitUrls}), parsed when it came as a
+ * JSON string.
  *
  * @param {import("../kernel/session.js").UploadSettlement} settlement
  * @returns {object}
@@ -423,7 +424,7 @@ function fromReplay(route, id, data) {
  * Wait for the server's word on an uploaded file: the listener's settlement, or a replayed last chunk.
  *
  * Two listeners can deliver the settlement. Ours calls `ctx.uploadCallbacks.settle(id, {url, kind, data})` with the
- * whole control; zca-js's knows only the Map and calls the function it finds under the id with `{fileUrl, fileId}`.
+ * whole control; one that knows only the Map calls the function it finds under the id with `{fileUrl, fileId}`.
  * So while a file waits, a callback of ours stands under its id (when nothing else is registered there). The
  * callback takes only a `{fileUrl}` that is a non-empty string, and only for a file (a photo needs the whole set of
  * URLs, which only the control has). Under our listener the registry's `settle()` calls that callback and then
@@ -460,7 +461,7 @@ function awaitUrls(s, { route, id, size, replay, cfg, fileName, signal }) {
             if (route !== "file" || typeof url !== "string" || !url) return;
             setImmediate(() => finish(resolve, { fileUrl: url }));
         };
-        /** Stand under the id for zca-js's listener, unless something else is registered there. */
+        /** Stand under the id for a Map-only listener, unless something else is registered there. */
         const plant = () => {
             if (!finished && !s.uploads.has(id)) s.uploads.set(id, bridge);
         };
@@ -642,7 +643,7 @@ async function uploadAll(s, items, where) {
 }
 
 /**
- * The result zca-js's `uploadAttachment` gave for one upload, which this module's `uploadAttachment` keeps.
+ * The result `uploadAttachment` gives for one upload, the shape its callers have always read.
  *
  * @param {object} u
  * @returns {object}
@@ -733,7 +734,7 @@ export function uploadMethods(s) {
         const cfg = uploadSettings(s.ctx);
         const files = checkList(sources, threadId, cfg);
         const group = Number(type) === THREAD_TYPE.GROUP;
-        // zca-js uploaded a GIF through this call as a plain file; so does this one.
+        // A GIF goes up through this call as a plain file, as it always has.
         const items = (await inspect(s.ctx, files, cfg)).map((it) =>
             it.route === "gif" ? { ...it, route: "file", fileType: "others" } : it,
         );

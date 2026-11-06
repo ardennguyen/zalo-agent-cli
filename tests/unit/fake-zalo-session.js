@@ -1,6 +1,6 @@
 /**
  * An offline stand-in for Zalo's login and REST servers, driven through the
- * REAL zca-js login flow, the real API factories and the real CLI commands.
+ * REAL login flow (src/zalo/login.js), the real session object and the real CLI commands.
  *
  * Not a test file (no `.test.js`), so `npm test` does not run it on its own.
  * A test that imports it reaches `src/core/credentials.js` and must import
@@ -8,13 +8,12 @@
  *
  * ## How it intercepts the network
  *
- * zca-js reaches the network only through `ctx.options.polyfill`. With no
+ * The session reaches the network only through `ctx.options.polyfill`. With no
  * proxy configured, that is whatever `globalThis.fetch` was at the moment the
- * login context was created (`createContext()` in zca-js `dist/context.js`).
+ * login context was created (`createSession()` in src/zalo/kernel/session.js).
  * Installing `handle()` as globalThis.fetch before `loginWithCredentials()`
- * therefore routes every request of that session through here: zca-js's npm
- * version probe, `getLoginInfo`, `getServerInfo`, and every API call made on
- * the session afterwards. A request nothing here answers gets an HTTP 404 --
+ * therefore routes every request of that session through here: `getLoginInfo`,
+ * `getServerInfo`, and every API call made on the session afterwards. A request nothing here answers gets an HTTP 404 --
  * which is also exactly what the real server says to a retired endpoint.
  *
  * ## Why no socket can open
@@ -26,9 +25,9 @@
  *
  * ## The login cipher
  *
- * zca-js encrypts getLoginInfo's response key from the `zcid` and `zcid_ext`
- * it sends in the query (`ParamsEncryptor` in zca-js `dist/utils.js`), so this
- * derives the same key the real server does. Every later response is sealed
+ * The login derives getLoginInfo's response key from the `zcid` and `zcid_ext`
+ * it sends in the query (src/zalo/kernel/login-cipher.js), so this derives the
+ * same key the real server does. Every later response is sealed
  * with a throwaway session key. Every id here is fake.
  */
 import { mkdirSync } from "node:fs";
@@ -59,9 +58,8 @@ export const FAKE_CREDENTIALS = Object.freeze({
 });
 
 /**
- * Every service key a zca-js factory reads while the API object is being
- * built, plus the ones this repo's own custom calls use. A key missing here
- * makes `new API()` throw inside login.
+ * Every service key the session's calls read, plus the ones this repo's own
+ * custom calls use. A key missing here fails only the call that needs it.
  */
 const SERVICES = [
     "aext",
@@ -97,7 +95,7 @@ export function serviceHost(key) {
     return `${key.replace(/_/g, "-")}.zalo.invalid`;
 }
 
-/** The subset of server settings zca-js reads while building a session. */
+/** The subset of server settings the previous engine reads while building a session. */
 const SETTINGS = {
     features: {
         sharefile: {
@@ -325,7 +323,7 @@ export function installFakeZalo({
 
         for (const raw of rawRoutes) if (raw.match(req)) return raw.handler(req);
 
-        // zca-js asks npm whether it is current on every login.
+        // A client that asked npm whether it is current would get a 404 (the login never asks).
         if (url.host === "registry.npmjs.org") return reply({}, 404);
 
         if (url.pathname === "/api/login/getLoginInfo") {
@@ -568,10 +566,10 @@ export function serveQrLogin(fake, { scan = [8, 0], confirm = [0], second = fals
 
 /**
  * Register the fake account and log in through the real `loginWithCredentials`,
- * so `getApi()` returns a real zca-js API whose transport is the fake server.
+ * so `getApi()` returns a real session object whose transport is the fake server.
  * Install the fake server first.
  *
- * @returns {Promise<object>} the zca-js API, with `listener.start` disabled
+ * @returns {Promise<object>} the session object, with `listener.start` disabled
  */
 export async function loginFake() {
     addAccount(FAKE.ownId, "Offline test account");

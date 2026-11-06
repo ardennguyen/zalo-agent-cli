@@ -1,6 +1,6 @@
 /**
  * The fake Zalo chat socket: a real WebSocket server on 127.0.0.1, so the real
- * zca-js listener (and, later, our own socket layer) connects to it over a real
+ * listener (and, later, our own socket layer) connects to it over a real
  * TCP connection, exactly as it would to Zalo.
  *
  * What it plays, all scripted by the test:

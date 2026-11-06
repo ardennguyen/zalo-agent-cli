@@ -5,7 +5,7 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 
-/** Repeat mode labels matching zca-js ReminderRepeatMode enum. */
+/** Repeat mode labels matching Zalo's reminder repeat modes. */
 const REPEAT_MODES = { none: 0, daily: 1, weekly: 2, monthly: 3 };
 const REPEAT_LABELS = { 0: "None", 1: "Daily", 2: "Weekly", 3: "Monthly" };
 

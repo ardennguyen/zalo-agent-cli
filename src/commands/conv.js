@@ -49,7 +49,7 @@ async function newestMessageAnchor(api, threadId, type) {
     }
 
     // Source 1: Zalo's cloud-message store, the group history Zalo Web reads
-    // (src/core/group-history.js). zca-js's getGroupChatHistory asked
+    // (src/core/group-history.js). The previous engine's getGroupChatHistory asked
     // /api/group/history, which Zalo answers with 404 -- and this used to read
     // its answer as an array, a shape it never had.
     if (type === 1) {
@@ -148,10 +148,10 @@ function threadTypeOf(value) {
  *
  * `POST {conversation}/api/pinconvers/updatev2` with
  * `{actionType: 1 pin | 2 unpin, conversations: ["g<id>" | "u<id>"], tab: 0}`
- * -- captured for a group and a DM, both directions. zca-js's
- * setPinnedConversations sends the same minus `tab`, so it is not used.
+ * -- captured for a group and a DM, both directions. The previous engine's
+ * setPinnedConversations sent the same minus `tab`, so it is not used.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {{threadId: string, type: 0|1, pinned: boolean}} opts
  * @returns {Promise<object>}
  */
@@ -170,19 +170,19 @@ async function setConversationPinned(api, { threadId, type, pinned }) {
  * `POST {label}/api/archivedchat/update` with
  * `{ids: [{id, type: 1 group | 0 user}], version, actionType: 0 to Other | 1 back, imei}`.
  *
- * `version` is the one decision here. zca-js's updateArchivedChatList sends
- * `Date.now()`. Zalo Web sends the SERVER's version: each captured update
+ * `version` is the one decision here. The previous engine's updateArchivedChatList
+ * sent `Date.now()`. Zalo Web sends the SERVER's version: each captured update
  * carried exactly the `version` the previous response returned, and the first
  * carried the one the web had stored from the server -- 25 days older than the
  * clock. Its archived-chat manager (module FEfs in the web API bundle) keeps
  * that value, refreshes it from `archivedchat/list` at start-up and from every
  * update response, and refetches the list when an answer flags it stale. A CLI
  * run is a fresh client every time, so it does what the web does at start-up:
- * read the list (zca-js's getArchivedChatList, the same GET a fresh web
+ * read the list (getArchivedChatList, the same GET a fresh web
  * session makes) and send the version found there. With no version, nothing
  * is sent.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {{threadId: string, type: 0|1, archived: boolean}} opts
  * @returns {Promise<object>}
  */
@@ -483,7 +483,7 @@ export function registerConvCommands(program, deps = {}) {
         .option("-d, --duration <secs>", "Duration in seconds (-1 = forever)", "-1")
         .action(async (threadId, opts) => {
             try {
-                // zca-js is setMute(params, threadID, type) -- the options
+                // The session's signature is setMute(params, threadID, type) -- the options
                 // object comes FIRST. This used to pass (threadId, type,
                 // duration) positionally, so `params` got the thread id
                 // string, `threadID` got 0 or 1, and the request went out
@@ -507,7 +507,7 @@ export function registerConvCommands(program, deps = {}) {
         .action(async (threadId, opts) => {
             try {
                 // Same arity bug as `mute` above. Unmute is an ACTION, not a
-                // duration of 0 -- zca-js derives the duration itself once
+                // duration of 0 -- the session derives the duration itself once
                 // action is UNMUTE.
                 const result = await getApi().setMute({ action: MUTE_ACTION.UNMUTE }, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Conversation unmuted"));
@@ -524,10 +524,10 @@ export function registerConvCommands(program, deps = {}) {
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
-            // History, so it is not repeated: this used to hand zca-js's
-            // sendSeenEvent the bare threadId -- the request reached Zalo with no
+            // History, so it is not repeated: this used to hand the previous
+            // engine's sendSeenEvent the bare threadId -- the request reached Zalo with no
             // thread id in it -- and, once that was fixed, still went out with
-            // st/at/cmd/ts all -1 (zca-js cannot send real values), no imei on a
+            // st/at/cmd/ts all -1 (that call could not send real values), no imei on a
             // DM, and no removeUnreadMark at all, so it could not undo
             // `conv unread`. Both requests are now built in src/core/receipts.js
             // to match a capture of the real Zalo Web client.
@@ -592,7 +592,7 @@ export function registerConvCommands(program, deps = {}) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
             try {
-                // zca-js names this addUnreadMark (paired with removeUnreadMark
+                // The session names this addUnreadMark (paired with removeUnreadMark
                 // and getUnreadMark). There has never been a markAsUnread, so
                 // every invocation died on "is not a function" before reaching
                 // the network -- which no test caught, because reaching the
@@ -706,7 +706,7 @@ export function registerConvCommands(program, deps = {}) {
                 const api = getApi();
                 const type = Number(opts.type);
 
-                // zca-js exposes deleteChat(lastMessage, threadId, type) — NOT
+                // The session exposes deleteChat(lastMessage, threadId, type) — NOT
                 // deleteConversation(), which this used to call and which does
                 // not exist, so `conv delete` failed on every invocation with
                 // "getApi(...).deleteConversation is not a function".

@@ -14,8 +14,8 @@
  * The rules, and why:
  *
  * - **Runs on every handshake.** The trigger is the cmd 1 handshake frame, read
- *   by ./socket-tap.js, not zca-js's `connected`: the handshake is what makes a
- *   socket usable, it carries the queue list (`qCmds`), and zca-js sets the
+ *   by ./socket-tap.js, not the listener's `connected`: the handshake is what makes a
+ *   socket usable, it carries the queue list (`qCmds`), and the listener sets the
  *   cipher key from it synchronously just before. A daemon start is simply the
  *   first handshake.
  * - **One of our stages at a time.** It takes the daemon's stage lock
@@ -89,7 +89,7 @@ import { CMD_VERIFY, createQueueVerifier, idsOf } from "./queue-verify.js";
 import { controlCursorsOf, readControls } from "./control-queue.js";
 import { describeGap } from "./sync-v2/gap-advice.js";
 
-/** zca-js ThreadType.Group; anything else is a 1-1. */
+/** THREAD_TYPE.Group; anything else is a 1-1. */
 const THREAD_GROUP = 1;
 
 /** Live pushes, and the queue whose cursor each one's envelope carries. */

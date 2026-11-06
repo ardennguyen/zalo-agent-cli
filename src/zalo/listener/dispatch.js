@@ -10,7 +10,7 @@
  *   {error: Error}                                  one item of the frame could not be read
  *
  * An item that cannot be read costs that item only: the rest of the frame is still read (Web parses each reaction
- * and each control on its own; zca-js lost every item after a bad one).
+ * and each control on its own; the previous engine lost every item after a bad one).
  *
  * Pure functions apart from the documented in-place rewrites of the message objects (./models.js): no socket, no
  * output, nothing logged.
@@ -128,7 +128,7 @@ function guarded(out, what, make) {
 }
 
 /**
- * A chat push: every message list, then the receipts (zca-js order: messages in array order, delivered before
+ * A chat push: every message list, then the receipts (the order the engine has always had: messages in array order, delivered before
  * seen). `pageMsgs` (page and official-account conversations) are 1-1 conversations to the engine.
  *
  * @param {string} uid - the own uid

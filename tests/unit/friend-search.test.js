@@ -4,7 +4,7 @@
  * The command matched `displayName` and `zaloName` only. The alias is not in
  * `getAllFriends`; it comes from a separate list (`getAliasList`), so a friend
  * saved as "Arden AI" could not be found by that name. These run the pure
- * matcher, then the real command over zca-js's own HTTP seam with a friend
+ * matcher, then the real command over the session's HTTP seam with a friend
  * list and an alias list.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";

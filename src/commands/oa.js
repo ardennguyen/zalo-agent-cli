@@ -1,6 +1,6 @@
 /**
  * Official Account (OA) commands — manage Zalo OA via REST API v3.0.
- * Independent from zca-js personal account; uses separate OA access token.
+ * Independent from the personal-account session; uses separate OA access token.
  */
 
 import { resolve } from "node:path";

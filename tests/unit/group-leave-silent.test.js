@@ -1,10 +1,10 @@
 /**
  * `group leave -s/--silent`, driven end to end offline.
  *
- * zca-js's `leaveGroup(groupId, silent)` sends `silent: 1|0` to
+ * The previous engine's `leaveGroup(groupId, silent)` sends `silent: 1|0` to
  * {group}/api/group/leave. The command called it with no second argument, so a
  * silent leave was unreachable from the CLI. These run the real command over
- * zca-js's own HTTP seam and read what went out on the wire.
+ * the session's HTTP seam and read what went out on the wire.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";

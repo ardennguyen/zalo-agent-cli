@@ -46,7 +46,7 @@ const ERROR_ANSWERS = [
 ];
 
 /**
- * Open a wire with a cookie in the jar (zca-js writes an empty Cookie header for an empty jar, fetch writes none).
+ * Open a wire with a cookie in the jar, so the Cookie header is recorded with a value.
  *
  * @param {object} [opts] - options of `openWire`
  */
@@ -131,7 +131,7 @@ describe("wire: conversations (src/zalo/api/conversations.js)", () => {
             assert.equal(req.path, "/api/conv/addUnreadMark");
             assert.deepEqual(Object.keys(req.params), ["param"]);
             // Red if the inner JSON were sent as an object, reordered, stamped from another clock, or named a
-            // message nobody gave (zca-js's clock as cliMsgId and "0" as the sender).
+            // message nobody gave (the previous engine's clock as cliMsgId and "0" as the sender).
             assert.equal(
                 req.params.param,
                 JSON.stringify({
@@ -148,7 +148,7 @@ describe("wire: conversations (src/zalo/api/conversations.js)", () => {
             const rec = await check("unread-add-newest", "addUnreadMark", [PEER, 0, last], {
                 reply: { data: '{"updateId":2}', status: 0 },
             });
-            // Red if the newest message were dropped for the clock (zca-js) or the "-1" fallback.
+            // Red if the newest message were dropped for the clock (the previous engine) or the "-1" fallback.
             assert.deepEqual(JSON.parse(rec.own.requests[0].params.param).convsUser, [
                 { id: PEER, cliMsgId: "1699999999999", fromUid: "0", ts: T0 },
             ]);
@@ -276,7 +276,7 @@ describe("wire: conversations (src/zalo/api/conversations.js)", () => {
             ["updateAutoDeleteChat", [0, PEER, 0]],
         ];
         for (const [method, args] of CALLS) {
-            it(`${method}: the same code as zca-js (and the same text where zca-js has it)`, async () => {
+            it(`${method}: the code and message of each error`, async () => {
                 for (const answer of ERROR_ANSWERS) {
                     const rec = await wire.run(method, args, { error: answer.error });
                     assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);

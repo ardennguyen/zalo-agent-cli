@@ -136,7 +136,7 @@ export function registerFriendCommands(program) {
         .option("-m, --msg <text>", "Message to include", "")
         .action(async (userId, opts) => {
             try {
-                // zca-js API signature: sendFriendRequest(msg, userId)
+                // Session signature: sendFriendRequest(msg, userId)
                 const result = await getApi().sendFriendRequest(opts.msg, userId);
                 output(result, program.opts().json, () => success(`Friend request sent to ${userId}`));
             } catch (e) {

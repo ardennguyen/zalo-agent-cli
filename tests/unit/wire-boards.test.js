@@ -203,7 +203,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             assert.equal(rec.own.result.count, 3, "the reply's other keys are kept");
         });
 
-        it("page 2: the cursor of the page before goes out (zca-js always sent 0/0)", async () => {
+        it("page 2: the cursor of the page before goes out (the previous engine always sent 0/0)", async () => {
             // boardCursor reads the last item with a positive id: the poll, by its poll_id.
             const cursor = boardCursor(ITEMS);
             assert.deepEqual(cursor, { lastId: 5, lastType: 3 });
@@ -221,7 +221,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             assert.equal(rec.own.requests[0].params.count, 20, "default count: the Web's page size");
         });
 
-        it("a reply that is a JSON string of a bare array is a list of notes (zca-js crashed on it)", async () => {
+        it("a reply that is a JSON string of a bare array is a list of notes (the previous engine crashed on it)", async () => {
             const rec = await check("board-list-string", "getListBoard", [{ page: 1, count: 20 }, GROUP], {
                 reply: JSON.stringify([{ id: 43, params: '{"title":"From a string"}' }]),
             });
@@ -266,7 +266,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             assert.deepEqual(rec.own.result.options[0].voters, [BIG_UID]);
         });
 
-        it("getPollDetail: GET with params in the query (zca-js POSTed it)", async () => {
+        it("getPollDetail: GET with params in the query (the previous engine POSTed it)", async () => {
             const rec = await check("poll-detail", "getPollDetail", [5], { reply: pollReply() });
             const [req] = rec.own.requests;
             assert.equal(req.method, "GET");
@@ -296,13 +296,13 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             assert.equal(rec.own.result, null);
         });
 
-        it("lockPoll: a success with empty data is done (zca-js failed to parse it)", async () => {
+        it("lockPoll: a success with empty data is done (the previous engine failed to parse it)", async () => {
             const rec = await check("poll-lock-empty", "lockPoll", [5], { error: { plain: "" } });
             assert.equal(rec.own.error, null);
             assert.equal(rec.own.result, null);
         });
 
-        it("lockPoll: a success with no data key at all is done too (zca-js failed to parse it)", async () => {
+        it("lockPoll: a success with no data key at all is done too (the previous engine failed to parse it)", async () => {
             const rec = await check("poll-lock-no-data", "lockPoll", [5], {
                 error: { text: JSON.stringify({ error_code: 0, error_message: "" }), status: 200 },
             });
@@ -459,7 +459,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             }
         });
 
-        it("editReminder group: loads the reminder, keeps every field not given (zca-js sent now, '', 0)", async () => {
+        it("editReminder group: loads the reminder, keeps every field not given (the previous engine sent now, '', 0)", async () => {
             const current = {
                 id: 44,
                 type: 0,
@@ -655,7 +655,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
         });
     });
 
-    describe("listOneOneBoard (ours only: zca-js has no such call)", () => {
+    describe("listOneOneBoard (ours only: the previous engine had no such call)", () => {
         it("asks /api/board/oneone/list for every kind (board type 0), no imei, and files bare reminders", async () => {
             const board = [
                 { boardType: 2, data: { id: 50, params: '{"title":"pinned"}' } },
@@ -810,7 +810,7 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             ],
         };
 
-        it('an error whose data is "[]" is an empty page for every list call (zca-js threw it)', async () => {
+        it('an error whose data is "[]" is an empty page for every list call (the previous engine threw it)', async () => {
             const cases = [
                 ["getListBoard", [{ page: 2, count: 20 }, GROUP], { items: [] }],
                 ["getListReminder", [{ page: 2, count: 20 }, GROUP, 1], []],

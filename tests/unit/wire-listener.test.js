@@ -149,7 +149,7 @@ const SCRIPTS = {
             }),
         },
     ],
-    // spec-listener 7: the Signal pushes. zca-js 2.2.0 reads none of them.
+    // spec-listener 7: the Signal pushes. The previous engine reads none of them.
     e2ee: [
         {
             cmd: 551,

@@ -6,17 +6,16 @@
  * both and Zalo answers "Successful." while the reaction never appears on
  * anyone's screen -- the command's own comment admitted as much. Without `-c`
  * `msg react` did exactly that, and `msg send --react` did it too whenever the
- * send came back without a cliMsgId (an install whose zca-js patch did not
- * apply). `msg undo` and `msg delete` already take the cliMsgId from the local
+ * send came back without a cliMsgId (a send that reported no cliMsgId). `msg undo` and `msg delete` already take the cliMsgId from the local
  * cache; `msg react` now does the same, and refuses rather than send a reaction
  * that cannot show.
  *
  * Every test drives the real CLI against an offline session
- * (./support/offline-session.js) and asserts the request zca-js actually put
+ * (./support/offline-session.js) and asserts the request the engine actually put
  * on the wire, decrypted.
  *
  * Capture this is checked against: agent/work/zalo-web-capture-2026-09-29,
- * group.A5_default and dm.D5_reaction_heart (comparison-vs-zca-js.md #13, §5.13):
+ * group.A5_default and dm.D5_reaction_heart (the capture's comparison notes #13, §5.13):
  * the web sends `cMsgID: <the target's cliMsgId>`, never its msgId.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";

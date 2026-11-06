@@ -8,11 +8,11 @@
  *   `sendLink` (+ `parseLink`), `sendVoice`, `sendVideo` (both by hosted URL, over the forward endpoint),
  *   `sendBankCard`, `sendTypingEvent`, `sendReport`, `scanURL`.
  *
- * Wire facts this follows, from Zalo Web 26.11.10's API module where it and zca-js differ (each difference is a row
- * in tests/helpers/wire-diff/allow/messages.js):
+ * Wire facts this follows, from Zalo Web 26.11.10's API module where it and the previous engine differ (each is
+ * pinned by a golden record in tests/helpers/wire-diff/golden/messages.js):
  *
  * - Every send's params are in Web's key order (Web builds the object, then appends styles `textProperties`,
- *   `metaData {urgency}` and `ttl`, then the thread key). zca-js used its own order.
+ *   `metaData {urgency}` and `ttl`, then the thread key). The previous engine used its own order.
  * - Group text (`/api/group/sendmsg`) carries `imei`; group mention and group quote carry `language`.
  * - A sticker carries `ttl`; `searchSticker` asks for 10 by default; `getStickerCategoryDetail` sends `cid` as a
  *   string.

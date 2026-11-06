@@ -98,7 +98,7 @@ function harness({
                 throw Object.assign(new Error("zpw_sek bị thiếu hoặc không đúng"), { code: 600 });
             }
             if (afterLogout === "network") throw new Error("fetch failed");
-            // What zca-js threw after every successful logout on 2026-09-30.
+            // What the previous engine threw after every successful logout on 2026-09-30.
             if (afterLogout === "empty") throw new Error("Failed to parse response data");
             return { profile: { userId: OWN } };
         },

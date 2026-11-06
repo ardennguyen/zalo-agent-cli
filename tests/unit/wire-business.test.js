@@ -64,7 +64,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
         wire = await openWire({
             zaloOptions: { imageMetadataGetter: async () => ({ width: 300, height: 200, size: IMAGE_BYTES.length }) },
         });
-        // zca-js writes an empty Cookie header for an empty jar and fetch writes none: give every host a cookie.
+        // Give every host a cookie, so the Cookie header is recorded with a value.
         wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
     });
     after(() => wire?.close());
@@ -439,7 +439,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
                 ["/api/product/upload/photo", "/api/quickmessage/update"],
             );
             const update = rec.own.requests[1];
-            // Red if media moves after type (zca-js's order): Web updateQuickReplyItem writes media first.
+            // Red if media moves after type (the previous engine's order): Web updateQuickReplyItem writes media first.
             assert.deepEqual(update.paramsOrder, ["itemId", "keyword", "message", "media", "type"]);
             assert.equal(update.params.type, 1);
             assert.equal(update.params.media.items[0].photoId, UPLOADED.photoId);
@@ -492,7 +492,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             assert.deepEqual(rec.own.requests[0].params.uids, [USER]);
         });
 
-        it("createAutoReply: scope 2 with no uids sends an empty list, never [null] (zca-js sent [null])", async () => {
+        it("createAutoReply: scope 2 with no uids sends an empty list, never [null] (the previous engine sent [null])", async () => {
             const payload = { content: "away", isEnable: true, ...WINDOW, scope: 2 };
             const rec = await wire.run("createAutoReply", [payload], { reply: {} });
             assert.equal(rec.own.error, null);
@@ -516,7 +516,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
         });
     });
 
-    it("createProductCatalog uploads the files it is given first (zca-js never did: it uploaded only for an empty list)", async () => {
+    it("createProductCatalog uploads the files it is given first (the previous engine never did: it uploaded only for an empty list)", async () => {
         const fake = wire.fake;
         fake.clearRoutes();
         fake.routeAnswer("/api/product/upload/photo", { data: UPLOADED });
@@ -588,9 +588,9 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             ["deleteAutoReply", [9]],
         ];
         for (const [method, args] of CALLS) {
-            it(`${method}: same code, same text where zca-js has it`, async () => {
+            it(`${method}: the code and message of each error`, async () => {
                 for (const answer of ERROR_ANSWERS) {
-                    // A fresh copy per side: zca-js writes into some payloads.
+                    // A fresh copy per run: a call may write into its payload.
                     const rec = await wire.run(method, () => structuredClone(args), { error: answer.error });
                     assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
                 }

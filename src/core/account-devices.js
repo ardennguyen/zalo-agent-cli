@@ -1,7 +1,7 @@
 /**
  * The account's linked devices, as `account devices` prints them.
  *
- * Zalo's device list (zca-js `getListDevice`) names one primary device, the phone (`masterId`), and the companions
+ * Zalo's device list (`getListDevice`) names one primary device, the phone (`masterId`), and the companions
  * linked to it: the PC and web clients, and this CLI once it has logged in with the official QR flow (it is a trusted
  * companion device, see docs/agent-notes.md). A companion is `{id, linkId, platform, status, expireTs, encIdentity,
  * encAccSign}`; the last two are the signed identity material, which is never printed.

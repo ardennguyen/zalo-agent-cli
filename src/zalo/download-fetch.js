@@ -18,7 +18,7 @@ export const WEB_REFERER = "https://chat.zalo.me/";
 /**
  * A fetch for downloads, in the account's own identity.
  *
- * @param {object|null|undefined} api - a logged-in zca-js api; anything without a usable context gets the plain
+ * @param {object|null|undefined} api - a logged-in session; anything without a usable context gets the plain
  *   global fetch (a unit test's stand-in, a run with no session)
  * @param {typeof fetch} [fallback] - what to call when the account has no fetch of its own
  * @returns {typeof fetch}
@@ -32,7 +32,7 @@ export function createDownloadFetch(api, fallback = (...a) => fetch(...a)) {
     }
     const userAgent = ctx?.userAgent;
     if (!userAgent) return fallback;
-    // The account's own fetch: the proxy-aware one when a proxy is configured, zca-js's default otherwise.
+    // The account's own fetch: the proxy-aware one when a proxy is configured, the session's default otherwise.
     const inner = typeof ctx?.options?.polyfill === "function" ? ctx.options.polyfill : fallback;
     const identified = (input, init = {}) => {
         const headers = { ...(init.headers ?? {}) };

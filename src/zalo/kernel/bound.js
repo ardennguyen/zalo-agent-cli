@@ -1,10 +1,10 @@
 /**
  * The four helpers the engine's own hand-built calls use, bound to one session: build a URL, seal params, send a
- * request, decode the reply. A drop-in for what those calls took from zca-js's `apiFactory` (spec-kernel 9), so
+ * request, decode the reply. A drop-in for what those calls took from the previous engine's `apiFactory` (spec-kernel 9), so
  * each caller changes one line.
  *
  * The session must be logged in (have its key): a session without one is refused with a plain "not logged in"
- * error, which never carries the context (zca-js put the whole context, imei and cookies included, into its text).
+ * error, which never carries the context (the previous engine put the whole context, imei and cookies included, into its text).
  */
 import { openSession } from "./cipher.js";
 import { buildUrl, decodeReply, httpRequest, sealParams } from "./http.js";

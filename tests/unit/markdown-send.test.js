@@ -1,5 +1,5 @@
 /**
- * Markdown through the senders: what `zalo_send_message` hands to zca-js, and the format setting.
+ * Markdown through the senders: what `zalo_send_message` hands to the session, and the format setting.
  *
  * Zalo showed `**bold**` and `- item` exactly as typed, because a message is plain text plus style ranges and
  * the MCP tool sent plain text. An agent writes Markdown, so the tool now converts it by default.

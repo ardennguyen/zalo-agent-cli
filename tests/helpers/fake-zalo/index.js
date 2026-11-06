@@ -70,7 +70,7 @@ export async function startFakeZalo({ settings = {}, loginError = null, omit = [
          * Log the fake account in through the real `loginWithCredentials`. Unlike
          * `loginFake()`, `listener.start()` is NOT disabled: it dials the fake socket.
          *
-         * @returns {Promise<object>} the zca-js API
+         * @returns {Promise<object>} the session object
          */
         async login() {
             addAccount(FAKE.ownId, "Offline test account");

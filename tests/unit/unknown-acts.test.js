@@ -91,7 +91,7 @@ describe("what gets noted", () => {
         assert.doesNotMatch(readFileSync(file, "utf8"), /private words/);
     });
 
-    it("does not note typing, which zca-js already reads", () => {
+    it("does not note typing, which the listener already reads", () => {
         const file = fresh();
         const acts = createUnknownActs({ file });
         assert.equal(acts.observe(CMD_PUSH_ACTIONS, actions({ act_type: "typing", act: "typing", data: {} })), 0);

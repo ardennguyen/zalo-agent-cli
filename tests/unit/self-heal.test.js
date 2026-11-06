@@ -156,7 +156,7 @@ function daemon({
     return { listener, tap, heal, logs, recovered, lock, api };
 }
 
-/** A message the listener received live, as zca-js hands it over. */
+/** A message the listener received live, as the listener hands it over. */
 const live = (listener, r, group = true) =>
     listener.emit("message", group ? new GroupMessage(OWN, { ...r }) : new UserMessage(OWN, { ...r }));
 
@@ -200,7 +200,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         live(d.listener, row(g1));
         assert.ok(getMessageById(g1), "seed: the listener stored it");
 
-        d.listener.reconnect(); // a NEW ws object, as zca-js makes on retry
+        d.listener.reconnect(); // a NEW ws object, as the listener makes on retry
         await connectAndSettle(d);
 
         const asked = queueRequests(d.listener);
@@ -460,7 +460,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
     });
 
     it("(c) only the answer to its own request counts -- another reader's page on the same cmd is ignored", async () => {
-        // zalo_get_history pages the same 510/511 stream through zca-js, outside
+        // zalo_get_history pages the same 510/511 stream through the listener, outside
         // the stage lock, and its answers carry no reqId of ours. Taking one as
         // a queue page would store the wrong rows and claim coverage from them.
         const foreign = nextId();

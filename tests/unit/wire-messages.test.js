@@ -365,7 +365,7 @@ const CASES = [
         },
     },
     {
-        // An answer with no data object: zca-js throws reading it, ours finds no suggestion.
+        // An answer with no data object: the previous engine throws reading it, ours finds no suggestion.
         name: "getStickers/no-data",
         method: "getStickers",
         args: ["hello"],
@@ -752,7 +752,7 @@ describe("messages: the session's client ids, the hosted HEAD, the URL scan", ()
             .map((r) => normalizeRequest(r, wire.fake))
             .filter((r) => r.params && "clientId" in r.params);
         const onWire = sends.map((r) => String(r.params.clientId));
-        // Red with a clock read per send (zca-js): all 50 would be T0.
+        // Red with a clock read per send (the previous engine): all 50 would be T0.
         assert.equal(new Set(onWire).size, 50, "no two sends share a client id");
         assert.deepEqual(
             onWire,
@@ -780,7 +780,7 @@ describe("messages: the session's client ids, the hosted HEAD, the URL scan", ()
     });
 
     it("waits a bounded time for a HEAD by default", () => {
-        // Red if the default timeout is removed (zca-js waits forever).
+        // Red if the default timeout is removed (the previous engine waits forever).
         assert.ok(HEAD_TIMEOUT_MS > 0 && HEAD_TIMEOUT_MS <= 15000);
     });
 

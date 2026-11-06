@@ -60,7 +60,7 @@ function windowOf(data) {
  * server sent (`features.dr_config`). The official client sends what it stored the same way; -1 and -1 is what a
  * client that has stored nothing sends, so a session without them asks exactly that.
  *
- * @param {object} [api] - a zca-js API from {@link loginWithSession}
+ * @param {object} [api] - a session object from {@link loginWithSession}
  * @returns {{bkt?: number, sptMtn?: number}} empty when the session holds none
  */
 export function maintenanceKeysOf(api) {

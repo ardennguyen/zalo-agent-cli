@@ -2,7 +2,7 @@
  * Self-tests of the fake Zalo (tests/helpers/fake-zalo): the thing every later
  * socket, retry and sync test stands on must itself be trusted first.
  *
- * Everything here runs through the REAL zca-js login and the REAL zca-js
+ * Everything here runs through the REAL login and the REAL
  * listener, which dials the fake's WebSocket server over TCP on 127.0.0.1. Each
  * test says what it asserts on the wire, not what it read back from the fake.
  */
@@ -133,7 +133,7 @@ describe("fake Zalo", () => {
             assert.equal(keys, 1, "the key frame did not come after setAutoAuth(true)");
         });
 
-        it("makes getLoginInfo fail on request: zca-js refuses the session", async () => {
+        it("makes getLoginInfo fail on request: the login refuses the session", async () => {
             zalo = await startFakeZalo({ loginError: { error_code: 70, error_message: "maintenance" } });
             await assert.rejects(zalo.login(), /Đăng nhập thất bại/);
             assert.equal(zalo.http.calls("/api/login/getLoginInfo").length, 1);
@@ -255,7 +255,7 @@ describe("fake Zalo", () => {
             const [messages] = await old;
             assert.deepEqual(messages, []);
             const sent = zalo.sock.framesOf(510, 1).at(-1);
-            // the Web's key (reqId), not zca-js's own (req_id): see src/zalo/pulls.js
+            // the Web's key (reqId), not the previous engine's own (req_id): see src/zalo/pulls.js
             assert.deepEqual(Object.keys(sent.data).sort(), ["first", "lastId", "preIds", "reqId"]);
         });
 
@@ -520,7 +520,7 @@ describe("fake Zalo", () => {
             const names = conn.rawHeaders.filter((_, i) => i % 2 === 0);
             assert.ok(names.includes("Sec-WebSocket-Key"), `no case-preserved Sec-WebSocket-Key in ${names}`);
             assert.ok(names.includes("Pragma") && !names.includes("pragma"), `Pragma is not spelled as sent: ${names}`);
-            assert.ok(!names.includes("prgama"), `zca-js's misspelled prgama went out: ${names}`);
+            assert.ok(!names.includes("prgama"), `the misspelled prgama went out: ${names}`);
         });
     });
 

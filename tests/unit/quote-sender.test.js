@@ -84,7 +84,7 @@ describe("resolveQuoteSender turns a noised id into the real uid", () => {
             zpwServiceMap: { profile: ["https://example.invalid"] },
             getContext: () => {
                 contextAsked = true;
-                // Enough shape for zca-js's apiFactory; the request itself
+                // Enough shape for the session's bound helpers; the request itself
                 // still cannot succeed against an invalid host, which is the
                 // outcome this test is about.
                 return { imei: "test-imei", cookie: "", userAgent: "test", secretKey: "" };

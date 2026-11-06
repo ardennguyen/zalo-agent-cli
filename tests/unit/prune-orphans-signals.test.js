@@ -196,7 +196,7 @@ function reported(stdout) {
 const allExist = (paths) => paths.every((p) => existsSync(p));
 const noneExist = (paths) => paths.every((p) => !existsSync(p));
 
-/** Our own leave, as zca-js hands it over: isSelf, and we are the member who went. */
+/** Our own leave, as the listener hands it over: isSelf, and we are the member who went. */
 function leaveEvent(threadId, time = LEFT_AT) {
     return {
         type: "leave",
@@ -536,7 +536,7 @@ describe("(c) a conversation that really is gone is still pruned", () => {
     });
 
     it("removing or blocking SOMEONE ELSE does not mark our own group gone", async () => {
-        // zca-js sets isSelf when we are the ACTOR too, so an admin removing a
+        // the listener sets isSelf when we are the ACTOR too, so an admin removing a
         // member got their own group flagged. Red on v2.0-dev: prune deleted it.
         const media = seed("g-admin", { files: 2 });
         for (const type of ["remove_member", "block_member"]) {

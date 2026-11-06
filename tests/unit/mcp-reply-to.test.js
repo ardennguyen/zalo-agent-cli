@@ -21,7 +21,7 @@ before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
 
-// The quote zca-js puts on a live message (TQuote).
+// The quote the listener puts on a live message.
 const quote = (over = {}) => ({
     ownerId: "1000000000000000002",
     cliMsgId: 1750000000123,

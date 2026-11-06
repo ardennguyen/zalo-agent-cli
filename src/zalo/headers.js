@@ -1,7 +1,7 @@
 /**
- * The headers a browser adds to every XHR it makes, which zca-js leaves out (plan item L7).
+ * The headers a browser adds to every XHR it makes, which the previous engine left out (plan item L7).
  *
- * zca-js sends `Accept`, `Accept-Language`, `Content-Type`, `Cookie`, `Origin`, `Referer` and `User-Agent`.
+ * The previous engine sent `Accept`, `Accept-Language`, `Content-Type`, `Cookie`, `Origin`, `Referer` and `User-Agent`.
  * A real browser also sends the Client Hints that match its User-Agent, the three `sec-fetch-*` headers
  * and, in Chromium, `priority`. All of these come from the captured Web client; the capture's other extras
  * (`cache-control`, `pragma`, `dnt`) were DevTools and user settings, not the client, and are not sent.

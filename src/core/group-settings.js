@@ -5,7 +5,7 @@
  * the group's WHOLE setting object. Nothing in it means "leave this alone", so
  * a field sent wrong is a field changed. The command used to send `opts.X ??
  * false` for its eight toggles, which turned every toggle the user did not name
- * OFF. zca-js's `updateGroupSettings` then sent `setTopicOnly` (never exposed
+ * OFF. The previous engine's `updateGroupSettings` then sent `setTopicOnly` (never exposed
  * by the CLI) as 0, left `addMemberOnly` out, and hard-coded `bannFeature: 0,
  * dirtyMedia: 0, banDuration: 0, blocked_members: []` on every call.
  *
@@ -13,7 +13,7 @@
  * capture; byte offsets into that file):
  *
  *   ~10948180  the request builder: `{...setting, grid, imei}`, AES-encrypted
- *              into `params=` on a GET. The same request zca-js builds.
+ *              into `params=` on a GET. The same request the previous engine built.
  *   ~4235006   the settings panel: its state starts as
  *              `{...groupInfo.setting, blocked_members: []}` and is refreshed
  *              from a forced re-read of the group.
@@ -41,7 +41,7 @@
  *   one where `[]` means "replace the block list with nothing". Unverified live.
  *
  *   addMemberOnly — carried at its current value, as both web paths do.
- *   zca-js comments it out ("very tricky, any idea?"); the web never changes it
+ *   the previous engine commented it out; the web never changes it
  *   directly, and its panel shows join approval as on when either it or
  *   joinAppr is set.
  *
@@ -71,7 +71,7 @@ export const SETTING_FLAGS = Object.freeze({
 });
 
 /**
- * Every field of zca-js's `GroupSetting` (models/Group.d.ts, none optional).
+ * Every field of a group's `setting` as Zalo reports it (none optional).
  * Each one is sent back verbatim, so each one has to have been read: a setting
  * missing any of them is refused. If a live read shows Zalo legitimately omits
  * one, relax it here and in tests/unit/group-settings.test.js together.
@@ -127,7 +127,7 @@ export function settingChangesFromOptions(opts) {
 /**
  * The group's current setting object, exactly as Zalo reports it.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string} groupId
  * @returns {Promise<object>} a copy of `gridInfoMap[groupId].setting`
  * @throws {Error} when the setting cannot be read completely
@@ -155,10 +155,10 @@ export async function readGroupSetting(api, groupId) {
 }
 
 /**
- * Send a complete setting object: zca-js's updateGroupSettings request, minus
+ * Send a complete setting object: the previous engine's updateGroupSettings request, minus
  * the fields it hard-codes. Same endpoint, same service, same envelope.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string} groupId
  * @param {object} setting - the full setting to store
  * @returns {Promise<*>} Zalo's `data` (an empty string for this endpoint)
@@ -180,7 +180,7 @@ async function sendGroupSetting(api, groupId, setting) {
  * cannot be read completely. When every requested value is already in place
  * nothing is sent either — that is reported, not refused.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string} groupId
  * @param {Record<string, 0|1>} changes - from settingChangesFromOptions()
  * @returns {Promise<{groupId: string, sent: boolean, changed: object, unchanged: object, settings: object,

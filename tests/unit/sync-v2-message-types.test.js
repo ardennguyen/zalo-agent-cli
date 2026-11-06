@@ -429,7 +429,7 @@ describe("nothing the phone sent is dropped", () => {
 });
 
 describe("classifyLiveMessage — one vocabulary for both capture paths", () => {
-    it("maps every zca-js live type into the sync vocabulary", () => {
+    it("maps every live listener type into the sync vocabulary", () => {
         // Stored verbatim, `WHERE type='photo'` misses every listener row and
         // `WHERE type='chat.photo'` misses every synced one.
         const expected = {

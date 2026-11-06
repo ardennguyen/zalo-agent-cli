@@ -58,7 +58,7 @@ export function pickTransferAfterLogin(controls, { now = Date.now(), maxAgeMs = 
 /**
  * Open the socket of a fresh login, read the key the phone offered, and restore with it.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {string} ownId
  * @param {object} [opts]
  * @param {number|null} [opts.days] - restrict the restore to the last N days (default: full history)

@@ -1,6 +1,6 @@
 /**
  * The socket supervisor (src/zalo/socket.js), against the fake Zalo: a real
- * WebSocket server on 127.0.0.1 and the real zca-js listener.
+ * WebSocket server on 127.0.0.1 and the real listener.
  *
  * Every timing is a few milliseconds so the suite stays fast; what each test
  * checks is the behavior of the official client the supervisor follows:
@@ -192,7 +192,7 @@ describe("socket supervisor", () => {
 
         it("closes under 5016 when no echo has come for ping_max_timeout, even if no ping is pending", async () => {
             await rig({
-                server: { ping_interval: 600_000 }, // zca-js sends no periodic ping inside this test
+                server: { ping_interval: 600_000 }, // the listener sends no periodic ping inside this test
                 settings: { ping_max_timeout: 120 },
                 timing: { pingTimeoutMs: 60_000 },
             });

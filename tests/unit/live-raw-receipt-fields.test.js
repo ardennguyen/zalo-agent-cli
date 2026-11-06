@@ -106,7 +106,7 @@ describe("the listener's own write path stores them in zalo.db", () => {
     });
 
     it("a group echo written by storeLiveMessage reads back with st/at/cmd", () => {
-        // GroupMessage is zca-js's own model: this is the object `listen` and
+        // GroupMessage is the listener's own model: this is the object `listen` and
         // `mcp start` receive for a 521 frame.
         const r = storeLiveMessage(new GroupMessage(OWN, groupFrame()));
         assert.equal(r.stored, true, r.reason);

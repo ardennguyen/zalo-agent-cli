@@ -68,7 +68,7 @@ function makeGidDecrypt(api) {
 /**
  * Resolve opaque 1-1 global-noised ids to real numeric user ids + names.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session
  * @param {string[]} globalIds - the 32-char ids (partition without the `oneone/` prefix)
  * @param {(m: string) => void} [log]
  * @returns {Promise<Map<string, {id: string, name: string}>>} globalId -> {id, name}

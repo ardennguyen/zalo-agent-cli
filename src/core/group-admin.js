@@ -10,7 +10,7 @@ import { toIso } from "./friend-requests.js";
 
 /**
  * Zalo's error codes for leaving a group the account is not in. 167 ("Không thể rời nhóm") was measured on a live
- * account by leaving a group a second time; 166 is the code zca-js documents on `leaveGroup` for the same situation
+ * account by leaving a group a second time; 166 is the code the previous engine documented on `leaveGroup` for the same situation
  * and has not been seen.
  */
 export const NOT_A_MEMBER_CODES = Object.freeze([166, 167]);
@@ -80,7 +80,7 @@ export function groupInfoFrom(result, groupId) {
 /**
  * The outcome of `createGroup`.
  *
- * zca-js spells the success list `sucessMembers`; both spellings are read so a
+ * Zalo spells the success list `sucessMembers`; both spellings are read so a
  * fixed typo upstream does not empty it. Zalo's list includes the account that
  * created the group (measured live: asking for one member returns two ids), so
  * `added` keeps only the members that were asked for.

@@ -1,7 +1,7 @@
 /**
  * src/core/read-state.js -- the read state other devices report (M4).
  *
- * zca-js drops both carriers: the `clearUnreads` rows (cmds 504/524, and a
+ * The listener's events drop both carriers: the `clearUnreads` rows (cmds 504/524, and a
  * field of every chat envelope and offline page) that say "this conversation
  * is read through message N", and the 601 `mark_unread` control that sets or
  * clears the manual unread flag. Without them a conversation the human read

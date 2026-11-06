@@ -15,9 +15,9 @@
  *   message, undo, reaction, old_messages, old_reactions, group_event, friend_event, typing, upload_attachment,
  *   delivered_messages, seen_messages  see ./dispatch.js
  *
- * What it does as Web does, where zca-js did otherwise (each an ALLOW row in tests/helpers/wire-diff/allow/
- * listener.js):
- *  - the upgrade headers are a browser's (`Pragma`, not zca-js's misspelled `prgama`), and the `Cookie` is computed
+ * What it does as Web does, where the previous engine did otherwise (each pinned by tests/unit/wire-listener.test.js
+ * and its golden records):
+ *  - the upgrade headers are a browser's (`Pragma`, not a misspelled `prgama`), and the `Cookie` is computed
  *    from the jar at every `start()`, for the socket's own host;
  *  - text frames are ignored by the `isBinary` flag (Web reads array buffers only);
  *  - frames that come before the handshake are held and read after it, and sends other than pings wait for it
@@ -412,7 +412,7 @@ export class Listener extends EventEmitter {
 
     /**
      * An upload the server finished: one `settle(fileId, {url, kind, data})` with the whole control as `data`. The
-     * registry (src/zalo/kernel/session.js) calls a callback registered the zca-js way with `{fileUrl, fileId}`
+     * registry (src/zalo/kernel/session.js) calls a callback registered as a plain entry with `{fileUrl, fileId}`
      * and hands the waiters the settlement. A plain Map (no `settle`) only gets its callback called and removed.
      */
     #settle({ fileId, url, kind, control }) {

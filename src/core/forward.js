@@ -15,14 +15,14 @@
  * plus the group id for a group, the peer's uid for a 1-1, the send2me id for
  * My Documents. Verified offline against the 2026-09-29 capture: the captured
  * group-source forward's id is exactly that md5
- * (agent/work/zalo-web-capture-2026-09-29/comparison-vs-zca-js.md §5.16).
+ * (the 2026-09-29 Zalo Web capture's comparison notes, §5.16).
  *
  * `ts` is the source message's send time -- `sendDttm` in the web's message
  * model, which for any message the web did not send itself is the server
  * timestamp (`sendDttm: e.ts`). `logSrcType` classifies the source
  * conversation, and the decorLog's `st` IS that logSrcType (the web maps
  * st -> logSrcType), so it is 2 for a group source and 1 for a 1-1.
- * zca-js's forwardMessage hardcodes `st: 1`, which is right only for a 1-1
+ * The previous engine's forwardMessage hardcoded `st: 1`, which is right only for a 1-1
  * source; that is why the request is sent from here instead.
  *
  * Only a first-level forward is built (fwLvl 1, rootMsgRef = the source
@@ -156,14 +156,13 @@ export function buildForwardReference({ cliMsgId, senderUid, threadId, isGroup, 
 /**
  * Send one mforward request with `reference` and `decorLog` exactly as given.
  *
- * Same endpoint and parameter layout as zca-js's forwardMessage (and as the
+ * Same endpoint and parameter layout as the previous engine's forwardMessage (and as the
  * capture): `grids[]` for groups, `toIds[]` plus `imei` for 1-1s, the message
  * info as nested JSON strings. The clientId that went on the wire is stamped
- * onto the result as `cliMsgId`, as patches/zca-js+2.2.0.patch does for
- * forwardMessage, so the caller can report the {msgId, cliMsgId} pair that
+ * onto the result as `cliMsgId`, as every send of the session does, so the caller can report the {msgId, cliMsgId} pair that
  * `msg undo` needs.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {{message: string, reference: object, decorLog: object, ttl?: number}} payload
  * @param {string[]} threadIds - the targets, all of one kind
  * @param {number} type - 0 for users, 1 for groups

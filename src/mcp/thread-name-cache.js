@@ -31,7 +31,7 @@ export class ThreadNameCache {
     /**
      * Initialize cache by fetching all groups and friends from Zalo API.
      * Batches group info requests (50 per batch) to avoid rate limits.
-     * @param {object} api - zca-js API instance
+     * @param {object} api - session object
      */
     async init(api) {
         const start = Date.now();

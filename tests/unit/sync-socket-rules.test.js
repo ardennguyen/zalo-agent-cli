@@ -1,7 +1,7 @@
 /**
  * Static guards on how src/commands/sync.js may touch the socket.
  *
- * zca-js's stop() resets the listener synchronously, and the socket's onclose
+ * The listener's stop() resets it synchronously, and the socket's onclose
  * resets it AGAIN later, after stop() has returned. So a stage that stops the
  * listener and a later one that restarts it race: the late reset nulls the new
  * socket and every send after it is a silent no-op. `zalo-agent sync` avoids
@@ -9,7 +9,7 @@
  * holds while nothing else in the file starts a listener of its own.
  *
  * The file had three hand-copied connect handshakes before this. Same
- * technique as tests/unit/zca-api-surface.test.js: read the source, fail the
+ * technique as tests/unit/api-surface.test.js: read the source, fail the
  * build on a pattern the offline suite cannot otherwise reach.
  */
 import { describe, it } from "node:test";

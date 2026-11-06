@@ -1,7 +1,7 @@
 /**
  * Group chat history from Zalo's cloud-message store.
  *
- * zca-js's getGroupChatHistory asks `{group}/api/group/history`, which Zalo
+ * The previous engine's getGroupChatHistory asked `{group}/api/group/history`, which Zalo
  * answers with HTTP 404. Zalo Web reads a group's history from a different
  * service -- the cloud-message ("cm") store:
  *
@@ -11,7 +11,7 @@
  *
  * Sources, all under agent/work/zalo-web-capture-2026-09-29/: the web
  * client's own `getCM` (bundles/1.*.js @11028626), the captures in
- * live/group.A1-A4.json, comparison-vs-zca-js.md §3e and §5.30, FINDINGS §13.
+ * live/group.A1-A4.json, its comparison notes §3e and §5.30, FINDINGS §13.
  *
  * What the evidence establishes, and what it does not:
  *
@@ -32,7 +32,7 @@
  *   content are dropped, and rows are de-duplicated on cliMsgId + sender, as
  *   Zalo Web's `checkDupMessageFromCloud` does.
  *
- * `group_cloud_message` is declared in zca-js's own LoginInfo type
+ * `group_cloud_message` was declared in the previous engine's own LoginInfo type
  * (zpw_service_map_v3, dist/context.d.ts). A session whose map lacks it gets a
  * clear error rather than a request to "undefined".
  *
@@ -135,12 +135,12 @@ async function fetchPage(api, host, { groupId, globalMsgId, src, old }) {
 /**
  * Fetch a group's newest messages from Zalo's cloud-message store.
  *
- * A drop-in for zca-js's `getGroupChatHistory(groupId, count)`, whose endpoint
- * is retired: it resolves to `{groupMsgs, more}` with each message a zca-js
+ * A drop-in for the previous engine's `getGroupChatHistory(groupId, count)`, whose endpoint
+ * is retired: it resolves to `{groupMsgs, more}` with each message a listener
  * `GroupMessage` (`.data`, `.isSelf`, `.threadId`), so a caller that read the
  * old call's `groupMsgs` and `more` reads this unchanged.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session
  * @param {string} groupId - numeric group id; a leading "g" is stripped, as Zalo Web does
  * @param {number} [count=50] - how many of the newest messages to return, a whole number >= 1
  * @param {object} [opts]

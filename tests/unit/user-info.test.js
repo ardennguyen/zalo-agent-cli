@@ -21,7 +21,7 @@ import {
 import { resolveCurrentUserNames } from "../../src/core/current-user-names.js";
 
 const ids = (n) => Array.from({ length: n }, (_, i) => String(1000 + i));
-/** An error shaped like zca-js's: a code and a message. */
+/** An error shaped like the session's: a code and a message. */
 const zaloError = (code, message) => Object.assign(new Error(message), { code });
 
 /** A sleep that records its waits instead of waiting. */

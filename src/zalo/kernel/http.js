@@ -1,7 +1,7 @@
 /**
  * The transport every Zalo call goes through: URLs, headers, cookies, redirects, timeouts, and the reply envelope.
  *
- * Wire facts this follows (spec-kernel 6-8; Zalo Web's HTTP client `fBUP`), with the points where zca-js differed:
+ * Wire facts this follows (spec-kernel 6-8; Zalo Web's HTTP client `fBUP`), with the points where the previous engine differed:
  *
  * - URL (D1): `zpw_ver` and `zpw_type` come first, then the endpoint's own parameters in insertion order, each value
  *   escaped with `encodeURIComponent`. The login host's calls carry no version pair (`{version: false}`).

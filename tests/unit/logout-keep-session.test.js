@@ -5,7 +5,7 @@
  *
  * What is pinned is the logoutV2 the Web sends (cmd 12743): `POST stg-wpa.chat.zalo.me/api/v2/login/logOut`, the
  * common params in the query, and a form whose only field is `params`, sealed with the session key, holding
- * exactly `{time, imei, computer_name, language}` in that order, with `time` in unix SECONDS. The patched zca-js
+ * exactly `{time, imei, computer_name, language}` in that order, with `time` in unix SECONDS. The old logoutV2
  * call this replaces sent milliseconds and no `language`. Also: a refused logoutV2 does not stop the probe, and a probe that fails to parse prints nothing
  * (the protocol layer never writes to stdout, so no logging switch is needed around it any more).
  */
@@ -98,7 +98,7 @@ describe("logout --keep-session sends Zalo Web's logoutV2", () => {
         assert.equal(sent.imei, FAKE_CREDENTIALS.imei);
         assert.equal(sent.computer_name, "Web");
         assert.equal(sent.language, FAKE_CREDENTIALS.language);
-        // Red if `time` goes back to milliseconds, which the patched zca-js logoutV2 sent.
+        // Red if `time` goes back to milliseconds, which the old logoutV2 sent.
         assert.ok(
             Number.isInteger(sent.time) && sent.time >= before && sent.time <= after,
             `time is unix seconds, got ${sent.time}`,

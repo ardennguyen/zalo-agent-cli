@@ -2,7 +2,7 @@
  * Our chat socket listener (src/zalo/listener/listener.js) on its own, over a real WebSocket to the fake Zalo socket
  * (tests/helpers/fake-zalo/socket.js): the lifecycle order the engine's 71 call sites depend on
  * (agent/docs/zca-replace/design.md 4.1, row L2; spec-listener 1.2 and 14), and the places where it follows Zalo Web
- * instead of zca-js.
+ * instead of the previous engine.
  *
  * Every id is fake. The context is built by hand (no login), so each case controls the jar, the ping interval and
  * the clock.
@@ -257,7 +257,7 @@ describe("before the handshake", () => {
         r.listener.sendWs({ version: 1, cmd: 2, subCmd: 1, data: { eventId: 1 } });
         r.listener.sendWs({ version: 1, cmd: 511, subCmd: 1, data: { first: true, reqId: "req_b" } });
         await sleep(80);
-        // Red if sends went out on an open socket before the server accepted the session (zca-js did).
+        // Red if sends went out on an open socket before the server accepted the session (the previous engine did).
         assert.deepEqual(r.sock.received, []);
         r.sock.pushRaw(keyFrame({ key: r.sock.cipherKey }));
         await r.sock.waitFor((f) => f.cmd === 511);
@@ -362,7 +362,7 @@ describe("upgrade", () => {
         await until(() => r.names().includes("closed"), "closed");
         r.ctx.cookie.setCookieSync("zpw_sek=fake-sek-second; Domain=chat.zalo.me; Path=/", "https://chat.zalo.me/");
         await startKeyed(r);
-        // Red if the cookie string were computed once, when the listener was built (zca-js did).
+        // Red if the cookie string were computed once, when the listener was built (the previous engine did).
         assert.match(r.sock.connections[1].headers.cookie, /zpw_sek=fake-sek-second/);
     });
 
@@ -515,7 +515,7 @@ describe("upload settlement (601)", () => {
         const control = fileDone("9000002", "https://f.invalid/2");
         r.sock.push(601, 0, ok({ controls: [control] }));
         await until(() => r.names().includes("upload_attachment"), "upload_attachment");
-        // The waiter comes after the 601: zca-js lost such a settlement.
+        // The waiter comes after the 601: the previous engine lost such a settlement.
         const s = await r.ctx.uploadCallbacks.waitFor("9000002", { timeoutMs: 1000 });
         assert.equal(s.url, "https://f.invalid/2");
         assert.equal(s.kind, "file_done");

@@ -86,7 +86,7 @@ const STATUS_RECEIVED = 4;
 const STATUS_SEEN = 5;
 
 /**
- * Normalize a raw zca-js message event into the buffer's message shape.
+ * Normalize a raw listener message event into the buffer's message shape.
  *
  * Classification comes from the shared `classifyLiveMessage`, the same
  * function the listener and the mobile sync use, so an agent reading
@@ -95,7 +95,7 @@ const STATUS_SEEN = 5;
  * raw `chat.photo` strings this used to emit, which never matched anything
  * else in the tool.
  *
- * @param {object} msg - Raw zca-js message event
+ * @param {object} msg - Raw listener message event
  * @param {object} [info] - Pre-computed classification, when the caller has one
  * @returns {object} Normalized message
  */
@@ -132,7 +132,7 @@ export function normalizeMessage(msg, info = null) {
 }
 
 /**
- * Normalize a zca-js `undo` (recall) event into the same shape as a buffered message, so a
+ * Normalize a listener `undo` (recall) event into the same shape as a buffered message, so a
  * long-poll waiter wakes for it and zalo_get_messages lists it in order with the messages.
  *
  * `msgId` is the RECALLED message (what every tool calls a message), not the notification's own
@@ -140,7 +140,7 @@ export function normalizeMessage(msg, info = null) {
  * target is named inside `content` (see storeLiveUndo); a recall that names neither a global nor
  * a client id cannot be attributed and is not normalized.
  *
- * @param {object} undo - Raw zca-js undo event
+ * @param {object} undo - Raw listener undo event
  * @returns {object|null} Normalized recall event, or null when it names no message
  */
 export function normalizeUndo(undo) {
@@ -479,7 +479,7 @@ export function registerMCPCommands(program) {
 
             // Safety net: redirect ALL console.log to stderr for the entire MCP process.
             // Stdout is the MCP JSON-RPC transport — any non-JSON output corrupts the stream.
-            // This catches rogue prints from dependencies (zca-js, chalk, etc.) that we can't control.
+            // This catches rogue prints from dependencies (chalk, etc.) that we can't control.
             console.log = (...args) => console.error(...args);
 
             // This server now opens the account's WebSocket *and* writes to
@@ -802,7 +802,7 @@ export function registerMCPCommands(program) {
             const mcpHeartbeatTimer = setInterval(() => lifecycle.heartbeat(), HEARTBEAT_MS);
 
             // The same catch-up `listen` runs (AGENTS.md §13): one stage at a
-            // time on this socket, a raw reader for the fields zca-js drops, and
+            // time on this socket, a raw reader for the fields the listener's events drop, and
             // the offline-queue pull on every handshake (src/core/self-heal.js).
             // `stageLock` is the one created before the server above.
             const socketTap = createSocketTap({ log: (line) => console.error(`[mcp] ${line}`) });
@@ -880,7 +880,7 @@ export function registerMCPCommands(program) {
             /**
              * Attach Zalo listener handlers to the current API instance.
              * Must be called again after each re-login with the new API instance.
-             * @param {object} api - zca-js API instance
+             * @param {object} api - session object
              */
             function attachListenerHandlers(api) {
                 health.attach(api.listener);

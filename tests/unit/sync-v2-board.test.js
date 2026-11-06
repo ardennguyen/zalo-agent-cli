@@ -112,7 +112,7 @@ const GROUP_REMINDER = {
     type: 1,
 };
 
-/** Minimal stub of the zca-js surface syncBoards touches. */
+/** Minimal stub of the session surface syncBoards touches. */
 function stubApi({ board = [], reminders = [], fail = {} } = {}) {
     const calls = { board: [], reminder: [] };
     return {
@@ -363,7 +363,7 @@ describe("syncBoards", () => {
 });
 
 describe("BOARD_TYPES", () => {
-    it("matches zca-js BoardType", () => {
+    it("matches Zalo's board types", () => {
         assert.deepEqual(BOARD_TYPES, { 1: "note", 2: "pinned_message", 3: "poll" });
     });
 });
@@ -421,7 +421,7 @@ describe("syncBoards per-thread outcome", () => {
 });
 
 describe("describeZaloError", () => {
-    // Measured: zca-js hands over the literal string "null" as the message when
+    // Measured: the session hands over the literal string "null" as the message when
     // the server's error_message is null, and the numeric code is the only
     // signal. A live board pass printed 165 failures, every one as "null".
     it("falls back to the code when the message is the string null", () => {

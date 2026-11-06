@@ -22,7 +22,7 @@
  */
 import { nextReqId } from "./req-id.js";
 
-/** zca-js ThreadType.User; anything else is a group. */
+/** THREAD_TYPE.User; anything else is a group. */
 const THREAD_USER = 0;
 
 /** The queue pulls the captured client sends on connect, in its order, as `[cmd, subCmd]`. */

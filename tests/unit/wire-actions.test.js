@@ -103,7 +103,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             assert.deepEqual(rec.own.error, { message: "The recall window for this message has passed", code: 211 });
         });
 
-        it("a known group visibility goes out as given (zca-js always sent 0)", async () => {
+        it("a known group visibility goes out as given (the previous engine always sent 0)", async () => {
             const rec = await wire.run("undo", [{ msgId: MSG_ID, cliMsgId: CLI_MSG_ID, visibility: 1 }, GROUP, 1], {
                 reply: {},
             });
@@ -131,7 +131,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             });
         });
 
-        it("DM, received message: destId is this account's own uid (the Web's rule; zca-js put the peer)", async () => {
+        it("DM, received message: destId is this account's own uid (the Web's rule; the previous engine put the peer)", async () => {
             const rec = await check("delete-dm-received", "deleteMessage", [target(PEER, PEER, 0), true], {
                 reply: {},
             });
@@ -218,7 +218,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             const rec = await check("react-invalid-type", "addReaction", ["/-heart", dest(PEER, 2)], {
                 reply: { msgIds: "[]" },
             });
-            // Red if the type check moved after the request, or went away (zca-js 2.2.0 fails on the URL instead).
+            // Red if the type check moved after the request, or went away (the previous engine fails on the URL instead).
             assert.equal(rec.own.requests.length, 0);
             assert.deepEqual(rec.own.error, { message: "Thread type is invalid", code: null });
             for (const type of [undefined, "x", -1]) {
@@ -240,7 +240,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
         };
         for (const [method, args] of Object.entries(CALLS)) {
             it(method, async () => {
-                // Red if the method built a request for an unknown thread type (zca-js 2.2.0 sends the DM call).
+                // Red if the method built a request for an unknown thread type (the previous engine sends the DM call).
                 for (const type of [2, -1, "x", ""]) {
                     const rec = await wire.run(method, args(type), { reply: {} });
                     assert.equal(rec.own.requests.length, 0, `${method}, type ${JSON.stringify(type)}`);
@@ -277,7 +277,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
     });
 
     describe("unread marks", () => {
-        it("getUnreadMark keeps a 19-digit id whole where zca-js rounds it", async () => {
+        it("getUnreadMark keeps a 19-digit id whole where the previous engine rounded it", async () => {
             const inner = `{"convsGroup":[{"id":${LOSSY},"cliMsgId":${CLI_MSG_ID},"fromUid":${TWIN},"ts":5}],"convsUser":[]}`;
             const rec = await check("unread-get", "getUnreadMark", [], { reply: { data: inner, status: 0 } });
             const [req] = rec.own.requests;
@@ -317,7 +317,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             assert.deepEqual(rec.own.result, { data: { status: 1 }, status: 0 });
         });
 
-        it("removeUnreadMark (group) is the same order zca-js already wrote", async () => {
+        it("removeUnreadMark (group) is the same order the previous engine already wrote", async () => {
             const rec = await check("unread-remove-group", "removeUnreadMark", [GROUP, 1], {
                 reply: { data: '{"status":1}', status: 0 },
             });
@@ -336,7 +336,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             assert.deepEqual(rec.own.result, { conversations: [`g${GROUP}`, `u${PEER}`], version: 4 });
         });
 
-        it("getPinConversations: error 212 is an empty list, version 0, where zca-js threw", async () => {
+        it("getPinConversations: error 212 is an empty list, version 0, where the previous engine threw", async () => {
             const rec = await check("pins-212", "getPinConversations", [], {
                 error: { inner: { error_code: 212, error_message: "No pinned conversation" } },
             });
@@ -385,7 +385,7 @@ describe("wire: actions (src/zalo/api/actions.js)", () => {
             assert.deepEqual(rec.own.result, { labelData: [LABEL], version: 3, lastUpdateTime: 9 });
         });
 
-        it("getLabels takes an empty or already-open labelData as it is (zca-js would throw)", async () => {
+        it("getLabels takes an empty or already-open labelData as it is (the previous engine would throw)", async () => {
             for (const [labelData, want] of [
                 ["", []],
                 [[LABEL], [LABEL]],
@@ -479,7 +479,7 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
     });
     after(() => wire?.close());
 
-    it("tags a conversation with one manage/update call after reading the list (zca-js sends the full list)", async () => {
+    it("tags a conversation with one manage/update call after reading the list (the previous engine sent the full list)", async () => {
         const wanted = [{ ...CURRENT[0], conversations: [`g${GROUP}`, PEER] }, CURRENT[1]];
         const after = { labelData: JSON.stringify(wanted), version: 6, lastUpdateTime: 11 };
         const rec = await wire.run("updateLabels", [{ labelData: wanted, version: 5 }], {

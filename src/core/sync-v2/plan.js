@@ -8,7 +8,7 @@
  *     asks the owner to confirm twice. This holds whichever socket the stage
  *     runs on: handing it to a daemon removes the second WebSocket, not the
  *     confirmation;
- *   - the socket opens at most once. zca-js's stop() resets the listener, and
+ *   - the socket opens at most once. The listener's stop() resets it, and
  *     the socket's own onclose resets it AGAIN, asynchronously, after stop()
  *     has returned -- so a stage that stops the listener and a later stage that
  *     restarts it race, and the late reset nulls the new socket. Every socket

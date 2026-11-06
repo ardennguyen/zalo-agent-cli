@@ -26,7 +26,7 @@
  * two queues its `lastId` is the pushed message's msgId
  * (live/socket.L1_group_echo.json, socket.L4_dm_echo.json).
  *
- * zca-js already sends this request shape (`listener.requestOldMessages`) but
+ * The listener already sends this request shape (`listener.requestOldMessages`) but
  * only ever with `first:true`, and its `old_messages` event drops `more`,
  * `lastActionId` and `queueStatus` -- so a queue longer than one page could
  * never be finished. This module sends through `listener.sendWs` and reads
@@ -36,7 +36,7 @@
 import { nextReqId } from "../zalo/req-id.js";
 import { idsOf } from "./queue-verify.js";
 
-/** zca-js ThreadType values. */
+/** Thread type values. */
 const THREAD_USER = 0;
 const THREAD_GROUP = 1;
 
@@ -130,7 +130,7 @@ function request({ listener, tap, queue, data, timeoutMs, onFrame }) {
             // Only the answer to THIS request. The server echoes reqId (every
             // captured 510/511 answer does), while another reader of the same
             // stream -- zalo_get_history, or `msg history`'s scan, which page it
-            // through zca-js outside this request -- gets answers without ours.
+            // through the listener outside this request -- gets answers without ours.
             // Taking one of those would store the wrong page and claim coverage
             // from it; an answer we cannot match is a timeout instead.
             if (String(frame.data?.reqId ?? "") !== data.reqId) return;
@@ -158,7 +158,7 @@ function request({ listener, tap, queue, data, timeoutMs, onFrame }) {
  * Drain one offline queue from a cursor, as `doGetOffline` / `onGotOffline` do.
  *
  * @param {object} args
- * @param {object} args.listener - a zca-js Listener whose socket is open and authenticated
+ * @param {object} args.listener - a listener whose socket is open and authenticated
  * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap - attached to that listener
  * @param {{cmd: number, subCmd: number, queueName: string}} args.queue
  * @param {string} args.lastId - the cursor: the last queue id this session holds

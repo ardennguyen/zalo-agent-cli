@@ -63,7 +63,7 @@ const USER_ID = /^\d+$/;
 
 /**
  * What a reply quotes, in the reply shape every MCP message carries as `replyTo`, from the quote Zalo puts on
- * the message (zca-js `TQuote` on a live event; the same object a restore keeps). Null when there is no quote or
+ * the message (the `quote` of a live event; the same object a restore keeps). Null when there is no quote or
  * it names no message.
  *
  * @param {object|null|undefined} quote
@@ -232,13 +232,13 @@ export function isNumericUid(id) {
 /**
  * The sender's real numeric uid.
  *
- * A listener row already holds it (zca-js rewrites the own "0" to the uid). A
+ * A listener row already holds it (the listener rewrites the own "0" to the uid). A
  * row the mobile sync restored holds a noised id instead, which Zalo will not
  * accept in a pin or a forward reference; it decodes through the same
  * /api/gid/decrypt the sync path uses for conversation ids. gid.js is imported
  * lazily so the common path pays nothing for it.
  *
- * @param {object} api - a logged-in zca-js API (only used for a noised id)
+ * @param {object} api - a logged-in session (only used for a noised id)
  * @param {string|null} senderId - the row's senderId
  * @param {string|null} ownId - this account's uid
  * @returns {Promise<{uid: string}|{error: string}>}

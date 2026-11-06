@@ -226,7 +226,7 @@ describe("conv read — clears the manual unread mark AND sends the web's seenv2
         const param = JSON.parse(unread.params.param);
         assert.equal(typeof param.convsGroupData[0].ts, "number");
         param.convsGroupData[0].ts = "<ts>";
-        // group.C3c_mark_read_menu, compared structurally: zca-js builds it and owns its key order.
+        // group.C3c_mark_read_menu, compared structurally: the previous engine builds it and owns its key order.
         assert.deepEqual(param, {
             convsGroup: [grid],
             convsUser: [],

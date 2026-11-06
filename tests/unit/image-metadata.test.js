@@ -1,7 +1,7 @@
 /**
  * src/core/zalo-client.js → readImageMetadata()
  *
- * zca-js calls this as its `imageMetadataGetter`. The width/height go
+ * The session calls this as its `imageMetadataGetter`. The width/height go
  * straight into the upload params the recipient's client uses to lay the
  * message out, so wrong numbers mean wrongly-rendered image messages and a
  * thrown error aborts the send.
@@ -14,7 +14,7 @@
  *      displayed dimensions are transposed — the everyday case being a phone
  *      photo. These tests pin the transpose.
  *
- *   2. **A descriptive throw instead of null.** A falsy return makes zca-js
+ *   2. **A descriptive throw instead of null.** A falsy return would make the session
  *      raise a generic "Failed to get image metadata" that names neither the
  *      file nor the reason.
  *
@@ -84,7 +84,7 @@ describe("readImageMetadata — dimensions from real encoder output", () => {
         assert.deepEqual([large.width, large.height], [200, 120]);
     });
 
-    it("returns plain positive integers — zca-js does arithmetic on these", async () => {
+    it("returns plain positive integers — the upload does arithmetic on these", async () => {
         const meta = await readImageMetadata(IMAGES.png.path);
         for (const k of ["width", "height", "size"]) {
             assert.equal(typeof meta[k], "number", `${k} must be a number`);
@@ -92,7 +92,7 @@ describe("readImageMetadata — dimensions from real encoder output", () => {
         }
     });
 
-    it("returns exactly the three keys zca-js consumes", async () => {
+    it("returns exactly the three keys the upload consumes", async () => {
         const meta = await readImageMetadata(IMAGES.png.path);
         assert.deepEqual(Object.keys(meta).sort(), ["height", "size", "width"]);
     });
@@ -155,7 +155,7 @@ describe("readImageMetadata — formats beyond Zalo's inline set", () => {
 
 describe("readImageMetadata — failure modes", () => {
     // The contract is "throw with something actionable", NOT "return null".
-    // zca-js turns a falsy return into a generic ZaloApiError naming neither
+    // a falsy return becomes into a generic ZaloApiError naming neither
     // the file nor the cause.
 
     for (const [key, fx] of Object.entries(FILES)) {

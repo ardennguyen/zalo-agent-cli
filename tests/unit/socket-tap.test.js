@@ -1,7 +1,7 @@
 /**
  * src/core/socket-tap.js -- the raw reader on the listener's WebSocket.
  *
- * zca-js decodes each frame and emits typed events, throwing away everything
+ * The listener decodes each frame and emits typed events, throwing away everything
  * else in the envelope: `queueStatus`, `lastActionId`, `more`, `evict`,
  * `resetLastActionId`, `clearUnreads`, `pageMsgs`, and the handshake's
  * `qCmds` (apis/listen.js keeps only the cipher `key` of cmd 1). The tap
@@ -33,7 +33,7 @@ describe("socket tap", () => {
         assert.equal(got[521].length, 1);
         assert.equal(got[521][0].cmd, 521);
         assert.equal(got[521][0].subCmd, 0);
-        // Red if the tap hands over only what zca-js keeps.
+        // Red if the tap hands over only what the listener keeps.
         assert.deepEqual(got[521][0].data.queueStatus, { "511_1": { lastId: "7" } });
         assert.equal(got[521][0].data.lastActionId, "11");
     });
@@ -47,7 +47,7 @@ describe("socket tap", () => {
         tap.on(521, (f) => seen.push(f.data.n));
 
         listener.push(521, 0, { data: { n: 1 } });
-        listener.reconnect(); // zca-js builds a new ws on retry
+        listener.reconnect(); // the listener builds a new ws on retry
         listener.push(521, 0, { data: { n: 2 } });
 
         // Red if the tap stayed on the dead socket (no 2) or doubled up.
@@ -142,7 +142,7 @@ describe("socket tap", () => {
         assert.equal(errors.length, 1);
     });
 
-    it("readFrame reads the header the way zca-js does", () => {
+    it("readFrame reads the header the way the listener does", () => {
         const f = readFrame(serverFrame(511, 1, { error_code: 0, data: { more: 0 } }));
         assert.equal(f.cmd, 511);
         assert.equal(f.subCmd, 1);

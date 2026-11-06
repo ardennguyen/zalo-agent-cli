@@ -315,7 +315,7 @@ describe("tier 3 · group rename", { skip }, () => {
 
     // REGRESSION GUARD — rename used to fail every single time.
     //
-    // group.js called changeGroupName(groupId, name) but zca-js declares
+    // group.js called changeGroupName(groupId, name) but the previous engine declares
     // changeGroupName(name, groupId) — the arguments were swapped, so Zalo
     // got the group id as the new name and rejected the call with
     // "Tham số không hợp lệ". (changeGroupAvatar(source, groupId) right
@@ -478,7 +478,7 @@ describe("tier 3 · message history and local cache", { skip }, () => {
             assert.equal(r.ok, true, r.error);
             assert.equal(String(r.data.threadId), T.dm.threadId);
             // "dm", not "user": the CLI reports the thread type in its own
-            // vocabulary, which does not mirror zca-js's ThreadType.User.
+            // vocabulary, which does not mirror the previous engine's ThreadType.User.
             assert.equal(r.data.threadType, "dm");
             assert.ok(Array.isArray(r.data.messages));
         },

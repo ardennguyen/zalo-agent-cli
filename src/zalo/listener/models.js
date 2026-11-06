@@ -12,13 +12,13 @@
  * rewrite already being done, and on `isSelf` to put the "0" back when it echoes a message to the wire. A caller
  * that must keep its row untouched passes a copy.
  *
- * Differences from the zca-js classes these replace: `Undo` has a `type` (zca-js left it out, so every recall looked
+ * Differences from the classes these replace: `Undo` has a `type` (they left it out, so every recall looked
  * like a group recall to `normalizeUndo` in src/commands/mcp.js); a quote without an `ownerId` is left without one
- * (zca-js wrote the text "undefined"); a receipt without its uid list is treated as not this account's instead of
+ * (they wrote the text "undefined"); a receipt without its uid list is treated as not this account's instead of
  * throwing; and uids are compared as strings, so an id parsed as a number still matches.
  */
 
-/** Thread types (zca-js `ThreadType`; the engine's THREAD_TYPE has the same numbers). */
+/** Thread types (the engine's THREAD_TYPE has the same numbers). */
 const USER = 0;
 const GROUP = 1;
 

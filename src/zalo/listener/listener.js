@@ -54,13 +54,10 @@ import {
 import { dispatchFrame, isDispatched } from "./dispatch.js";
 
 /**
- * Names the switch of ../api.js answers from this module by default (`ZALO_ENGINE=own` and `ZALO_ENGINE_OWN=listener`
- * reach it regardless). Held empty for one reason outside this package: tests/unit/fake-zalo.test.js ("records the
- * upgrade's headers as sent") asserts zca-js's misspelled `prgama` header, which this listener corrects. With
- * "listener" in this set the whole offline suite passes but that one assertion; once it asserts the case-preserved
- * `Pragma` instead, this becomes `new Set(["listener"])`.
+ * Names the switch of ../api.js answers from this module by default: the listener is ours unless `ZALO_ENGINE=zca`
+ * or `ZALO_ENGINE_ZCA=listener` asks for zca-js's.
  */
-export const OWN_READY = new Set();
+export const OWN_READY = new Set(["listener"]);
 
 /** Where Zalo Web's page lives: the `Origin` of the upgrade. */
 export const CHAT_ORIGIN = "https://chat.zalo.me";

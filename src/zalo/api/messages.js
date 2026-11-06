@@ -699,17 +699,11 @@ export function messageMethods(s) {
 }
 
 /**
- * Methods whose wire-messages.test.js comparison passes: the switch answers these from our code.
- *
- * `sendText` passes too but is held back: tests/unit/msg-react-cache.test.js reproduces "a send that reports no
- * cliMsgId" by stripping it from zca-js's `sendMessage` (ZALO_OFFLINE_UNPATCHED in tests/unit/support/), which our
- * send never reaches. Add it here once tests/unit/support/offline-cli.js also sets `ZALO_ENGINE_ZCA=sendMessage`
- * for that mode (a file this package does not own).
+ * Methods whose wire-messages.test.js comparison passes: the switch answers these from our code. `sendText` is the
+ * text half of the composed `sendMessage` (src/zalo/api.js).
  */
-export const HELD_BACK = Object.freeze(["sendText"]);
-
-/** @see HELD_BACK */
 export const OWN_READY = new Set([
+    "sendText",
     "sendCard",
     "sendSticker",
     "searchSticker",

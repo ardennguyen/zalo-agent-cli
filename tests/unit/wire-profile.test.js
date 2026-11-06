@@ -330,10 +330,9 @@ describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
         }
     });
 
-    it("OWN_READY lists the methods this file compares, except the two an older test still pins to zca-js", () => {
+    it("OWN_READY lists the methods this file compares", () => {
         // Red if a method was flipped to our engine without a comparison here, or one compared here was left on
-        // zca-js. updateActiveStatus and lostFocus pass here but stay on zca-js until tests/unit/zca-gap-commands
-        // .test.js stops asserting zca-js's {status: 0} and sealed {} (not this package's file).
+        // zca-js.
         assert.deepEqual(
             [...OWN_READY].sort(),
             [
@@ -344,7 +343,9 @@ describe("wire: profile (zca-js against src/zalo/api/profile.js)", () => {
                 "getFullAvatar",
                 "getListDevice",
                 "getSettings",
+                "lostFocus",
                 "reuseAvatar",
+                "updateActiveStatus",
                 "updateLang",
                 "updateProfile",
                 "updateProfileBio",

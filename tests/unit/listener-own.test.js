@@ -130,7 +130,8 @@ afterEach(async () => {
 describe("listener module", () => {
     it("is what api.js loads: createListener and an OWN_READY set", async () => {
         assert.ok(OWN_READY instanceof Set);
-        // api.js builds this listener for the own engine (and, once OWN_READY names it, by default).
+        // api.js builds this listener for the own engine and, since OWN_READY names it, by default.
+        assert.ok(OWN_READY.has("listener"));
         const api = await createApi(makeCtx(), {}, ["wss://ws1-msg.chat.zalo.me/"], { engine: "own", areas: [] });
         assert.ok(api.listener instanceof Listener, "api.js did not load src/zalo/listener/listener.js");
         const l = createListener(makeCtx(), ["wss://ws1-msg.chat.zalo.me/"]);

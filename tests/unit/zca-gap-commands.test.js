@@ -218,7 +218,8 @@ describe("zca-js gap commands over the wire", () => {
             ok(r);
             const req = one("/api/group/link/ginfo");
             assert.equal(req.host, serviceHost("group"));
-            assert.deepEqual(req.params, { link, avatar_size: 120, member_avatar_size: 120, mpage: 2 });
+            // Zalo Web's 160 px avatars (src/zalo/api/groups.js, the API module's avatar size; zca-js asked for 120).
+            assert.deepEqual(req.params, { link, avatar_size: 160, member_avatar_size: 160, mpage: 2 });
             assert.equal(r.out.name, "Linked");
         });
 
@@ -280,7 +281,8 @@ describe("zca-js gap commands over the wire", () => {
             assert.equal(fake.calls("/deactive").length, 0);
             fake.requests.length = 0;
             ok(await run(registerProfileCommands, ["profile", "active", "off"], route));
-            assert.deepEqual(one("/api/social/profile/deactive").params, { status: 0, imei: FAKE.imei });
+            // Zalo Web's deactive seals the imei only (src/zalo/api/profile.js); zca-js also sent status 0.
+            assert.deepEqual(one("/api/social/profile/deactive").params, { imei: FAKE.imei });
             assert.equal(fake.calls("/ping").length, 0);
         });
 
@@ -310,8 +312,11 @@ describe("zca-js gap commands over the wire", () => {
                 }),
             );
             const req = one("/api/social/profile/changefgtobg");
+            // Zalo Web's lostFocus is a POST with no params and no body: only the common query.
             assert.equal(req.method, "POST");
-            assert.deepEqual(req.params, {});
+            assert.equal(req.params, null);
+            assert.equal(req.form, null);
+            assert.equal(req.rawParams, null);
         });
 
         it("catalog register on/off sends enable 1/0", async () => {

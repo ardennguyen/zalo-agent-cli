@@ -22,7 +22,7 @@ import "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createApi } from "../../src/zalo/api.js";
-import { HEAD_TIMEOUT_MS, HELD_BACK, OWN_READY, messageMethods } from "../../src/zalo/api/messages.js";
+import { HEAD_TIMEOUT_MS, OWN_READY, messageMethods } from "../../src/zalo/api/messages.js";
 import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
 import { normalizeRequest } from "../helpers/wire-diff/normalize.js";
 
@@ -812,9 +812,7 @@ describe("messages, our side alone", () => {
     it("lists every method it defines in OWN_READY, sendText included, so the switch answers them from our code", () => {
         const names = Object.keys(messageMethods({ ctx: {}, call: async () => null, now: () => 0 }));
         assert.ok(names.includes("sendText"));
-        // Red when a method is added without its wire test passing and being marked, or marked and removed. The
-        // held-back names (src/zalo/api/messages.js HELD_BACK says why) pass here too and are listed apart.
-        assert.deepEqual([...OWN_READY, ...HELD_BACK].sort(), names.sort());
-        for (const name of HELD_BACK) assert.ok(!OWN_READY.has(name), `${name} is held back, not ready`);
+        // Red when a method is added without its wire test passing and being marked, or marked and removed.
+        assert.deepEqual([...OWN_READY].sort(), names.sort());
     });
 });

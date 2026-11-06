@@ -388,5 +388,7 @@ export const OWN_READY = new Set([
     "deleteAvatar",
     "reuseAvatar",
     "updateLang",
+    "updateActiveStatus",
+    "lostFocus",
     "getListDevice",
 ]);

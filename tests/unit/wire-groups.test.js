@@ -212,12 +212,10 @@ describe("groups: ours against zca-js on one context (wire-groups)", () => {
 
     after(() => pair?.close());
 
-    it("covers all 28 methods, and lists each of them as own-ready but the one another test still pins", () => {
+    it("covers all 28 methods, and lists each of them as own-ready", () => {
         // Red when a method of the area has no case here, or is missing from (or extra in) OWN_READY.
-        // getGroupLinkInfo passes here too; zca-gap-commands.test.js still expects zca-js's 120 px avatars.
-        const held = ["getGroupLinkInfo"];
         assert.equal(METHODS.length, 28);
-        assert.deepEqual([...OWN_READY].sort(), METHODS.filter((m) => !held.includes(m)).sort());
+        assert.deepEqual([...OWN_READY].sort(), [...METHODS].sort());
     });
 
     describe("every case: the same wire as zca-js but for the declared differences, and its golden record", () => {

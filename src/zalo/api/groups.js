@@ -630,13 +630,7 @@ export function groupMethods(s) {
     };
 }
 
-/**
- * Methods whose wire-groups.test.js comparison passes: the switch answers these from our code.
- *
- * All 28 pass. `getGroupLinkInfo` is left out for now only because tests/unit/zca-gap-commands.test.js ("group
- * link-preview") pins zca-js's 120 px avatar size, and that file is not this package's to edit; once it expects 160
- * (the Web's size), the name goes in here.
- */
+/** Methods whose wire-groups.test.js comparison passes (all 28): the switch answers these from our code. */
 export const OWN_READY = new Set([
     "getGroupInfo",
     "getAllGroups",
@@ -660,6 +654,7 @@ export const OWN_READY = new Set([
     "enableGroupLink",
     "disableGroupLink",
     "getGroupLinkDetail",
+    "getGroupLinkInfo",
     "getGroupInviteBoxList",
     "joinGroupInviteBox",
     "deleteGroupInviteBox",

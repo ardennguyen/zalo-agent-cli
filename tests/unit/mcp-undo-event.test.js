@@ -9,11 +9,17 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { normalizeUndo, normalizeMessage, buildMCPWebhookPayload } from "../../src/commands/mcp.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
+import { createSession } from "../../src/zalo/kernel/session.js";
+import { loadJar } from "../../src/zalo/kernel/cookies.js";
+import { createListener } from "../../src/zalo/listener/listener.js";
+import { API_TYPE, DEFAULT_API_VERSION } from "../../src/zalo/profile.js";
+import { startFakeSocket } from "../helpers/fake-zalo/socket.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -74,6 +80,49 @@ describe("normalizeUndo", () => {
     it("returns null for a recall that names no message at all", () => {
         assert.equal(normalizeUndo(undoEvent({ globalMsgId: 0, cliMsgId: 0 })), null);
         assert.equal(normalizeUndo({ threadId: "t1", type: 0, data: {} }), null);
+    });
+});
+
+describe("a recall off the socket (design 6.2: the real Undo, not a hand-built one)", () => {
+    it("a DM recall from a sealed 501 frame normalizes as threadType dm, with the recalled id kept whole", async () => {
+        // The frame as the server sends it: JSON text with bare integer ids (globalMsgId past 2^53), sealed as
+        // encrypt 2 under the session key, through the listener the engine builds. The tests above build the event
+        // by hand WITH a `type`; zca-js's Undo had none, so every live DM recall came out as "group". Red if the
+        // listener's Undo loses its type (threadType "group"), or if the id is parsed lossily (msgId rounded).
+        const OWN = "1000000000000000009";
+        const PEER = "2000000000000000002";
+        const text =
+            '{"error_code":0,"error_message":"","data":{"msgs":[{"actionId":"7000000000000000007",' +
+            '"msgId":"5000000000000000005","cliMsgId":"1750000009001","msgType":"chat.undo",' +
+            `"uidFrom":"${PEER}","idTo":"0","dName":"Fake Peer","ts":"1750000009000","status":1,` +
+            '"content":{"globalMsgId":1000000000000000001,"cliMsgId":2,"deleteMsg":1,' +
+            `"srcId":${PEER},"destId":${OWN}},"notify":"1","ttl":0,"uin":"0","cmd":501,"st":3,"at":5}]}}`;
+        const sock = await startFakeSocket();
+        const ctx = createSession({ apiType: API_TYPE, apiVersion: DEFAULT_API_VERSION, selfListen: true });
+        ctx.cookie = loadJar([{ key: "zpw_sek", value: "fake-sek", domain: "chat.zalo.me", path: "/" }]);
+        ctx.userAgent = "Mozilla/5.0 (offline test)";
+        ctx.uid = OWN;
+        ctx.settings = { features: { socket: { ping_interval: 60000 } } };
+        const listener = createListener(ctx, [sock.url]);
+        listener.on("error", () => {});
+        try {
+            const key = once(listener, "cipher_key");
+            listener.start();
+            await key;
+            const got = once(listener, "undo");
+            assert.ok(sock.pushEncrypted({ cmd: 501, encrypt: 2, body: text }));
+            const [undo] = await got;
+            const e = normalizeUndo(undo);
+            assert.equal(undo.type, 0);
+            assert.equal(e.threadType, "dm");
+            assert.equal(e.threadId, PEER);
+            assert.equal(e.msgId, "1000000000000000001");
+            assert.equal(e.cliMsgId, "2");
+            assert.equal(e.senderId, PEER);
+        } finally {
+            listener.stop();
+            await sock.close();
+        }
     });
 });
 

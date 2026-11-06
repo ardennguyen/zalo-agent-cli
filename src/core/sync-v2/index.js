@@ -47,6 +47,7 @@ import { createSenderResolver } from "./senders.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
 import { startKeepAlive } from "./keepalive.js";
 import { DEVICE_LABEL } from "../../zalo/profile.js";
+import { decodeFrame } from "../../zalo/listener/frames.js";
 import { REQUEST_FAILURE, SyncRequestError, createSessionStore, createSyncChannel } from "./channel.js";
 import { createBatchDownloader } from "./download.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
@@ -260,43 +261,12 @@ function decompress(p) {
 }
 
 /**
- * Decode a Zalo WebSocket frame body (the `{encrypt, data}` envelope) using the
- * per-session transport cipher key (the `key` field of the cmd 1/1 handshake
- * frame). Mirrors zca-js's decodeEventData without importing its internals.
- * encrypt: 0=plain JSON, 1=inflate-only, 2=AES-128-GCM+inflate, 3=GCM only.
- *
- * @param {{encrypt: number, data: string}} parsed
- * @param {string} cipherKey - base64 AES key from the handshake.
+ * Decode a Zalo WebSocket frame body (the `{encrypt, data}` envelope) with the per-session cipher key (the `key` of
+ * the cmd 1/1 handshake frame): encrypt 0 plain JSON, 1 inflate only, 2 AES-GCM then inflate, 3 AES-GCM only. The
+ * decoder lives with the listener (src/zalo/listener/frames.js) and is re-exported here, so the listener, the raw
+ * tap and sync-v2 share one copy.
  */
-export function decodeFrame(parsed, cipherKey) {
-    if (parsed.encrypt === 0) return JSON.parse(parsed.data);
-    const raw = Buffer.from(parsed.encrypt === 1 ? parsed.data : decodeURIComponent(parsed.data), "base64");
-    let plain = raw;
-    if (parsed.encrypt !== 1) {
-        if (!cipherKey || raw.length < 48) throw new Error("missing cipher key or short frame");
-        const iv = raw.subarray(0, 16);
-        const aad = raw.subarray(16, 32);
-        const body = raw.subarray(32);
-        const ct = body.subarray(0, body.length - 16);
-        const tag = body.subarray(body.length - 16);
-        const key = Buffer.from(cipherKey, "base64");
-        const decipher = crypto.createDecipheriv(key.length === 16 ? "aes-128-gcm" : "aes-256-gcm", key, iv);
-        decipher.setAAD(aad);
-        decipher.setAuthTag(tag);
-        plain = Buffer.concat([decipher.update(ct), decipher.final()]);
-    }
-    // encrypt 1/2 wrap the payload with zlib OR gzip (pako auto-detects both);
-    // zlib.unzipSync handles either. encrypt 3 is uncompressed.
-    let out = plain;
-    if (parsed.encrypt !== 3) {
-        try {
-            out = zlib.unzipSync(plain);
-        } catch {
-            out = zlib.inflateRawSync(plain);
-        }
-    }
-    return JSON.parse(out.toString("utf8"));
-}
+export { decodeFrame };
 
 /**
  * Has a sync session delivered everything it was asked for?

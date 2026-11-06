@@ -26,7 +26,7 @@
  * It reads and routes; it never writes, never sends, and never needs a zca-js
  * patch. `listen` and `mcp start` both attach it (AGENTS.md §13).
  */
-import { decodeFrame } from "./sync-v2/index.js";
+import { decodeFrame } from "../zalo/listener/frames.js";
 
 /** The handshake: its answer carries the cipher key and the queue lists. */
 export const CMD_AUTHEN = 1;

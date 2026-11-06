@@ -43,7 +43,9 @@ const BY_ACT = new Map([
 ]);
 
 /**
- * Acts the listener drops. A friend request arrives twice, as `req` and as `req_v2`; only `req_v2` becomes an event.
+ * Acts the listener drops. A friend request arrives twice, as `req` and as `req_v2`
+ * (agent/docs/zca-replace/spec-listener.md 2.5, the `fr` row); only `req_v2` becomes an event, so one request is
+ * announced once.
  */
 export const SKIPPED_FRIEND_ACTS = Object.freeze(["req"]);
 

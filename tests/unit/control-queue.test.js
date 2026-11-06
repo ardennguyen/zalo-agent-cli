@@ -22,6 +22,8 @@ describe("readControls", () => {
                 control("13", "group", "join"),
                 control("14", "fr", "req"),
                 control("15", "file_done", "file_done"),
+                control("16", "video_done", "video_done"),
+                control("17", "photo_success", "photo"),
             ],
         });
         assert.deepEqual(
@@ -29,9 +31,13 @@ describe("readControls", () => {
             [
                 ["11", "sync", "sync-v2", true],
                 ["12", "read-state", "read-state", true],
-                ["13", "group-event", "zca-js", true],
-                ["14", "friend-event", "zca-js", true],
-                ["15", "upload", "zca-js", true],
+                // The listener (src/zalo/listener/dispatch.js) handles these now; the video and photo forms of an
+                // upload settlement are its too (design 1.4). Red if one of them were left nameless.
+                ["13", "group-event", "listener", true],
+                ["14", "friend-event", "listener", true],
+                ["15", "upload", "listener", true],
+                ["16", "upload", "listener", true],
+                ["17", "upload", "listener", true],
             ],
         );
     });

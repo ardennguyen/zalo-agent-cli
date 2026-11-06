@@ -33,7 +33,11 @@ const GROUP = "3000000000000000003";
 const BIG = "1234567890123456789";
 
 const KEY16 = crypto.randomBytes(16).toString("base64");
+const KEY24 = crypto.randomBytes(24).toString("base64");
 const KEY32 = crypto.randomBytes(32).toString("base64");
+
+/** The AES-GCM of a raw key, by its length (what WebCrypto picks from the key it imports). */
+const gcmFor = (k) => ({ 16: "aes-128-gcm", 24: "aes-192-gcm", 32: "aes-256-gcm" })[k.length];
 
 /**
  * Build an inbound envelope the way the server does: JSON text -> (zip) -> (seal) -> base64, URI-encoded when
@@ -47,7 +51,7 @@ function envelope({ text, encrypt, key, zip = "zlib" }) {
     const k = Buffer.from(key, "base64");
     const iv = crypto.randomBytes(16);
     const aad = crypto.randomBytes(16);
-    const c = crypto.createCipheriv(k.length === 16 ? "aes-128-gcm" : "aes-256-gcm", k, iv);
+    const c = crypto.createCipheriv(gcmFor(k), k, iv);
     c.setAAD(aad);
     const sealed = Buffer.concat([iv, aad, c.update(packed), c.final(), c.getAuthTag()]);
     return { encrypt, data: encodeURIComponent(sealed.toString("base64")) };
@@ -174,6 +178,17 @@ describe("decodeFrame", () => {
         }
     });
 
+    it("opens a 24-byte key as AES-192-GCM, both sealed encodings", () => {
+        // Web imports the key with WebCrypto, which takes any AES size. Red if the decoder only knew 16 and 32 bytes
+        // (it would refuse the key) or picked the cipher by a fixed size (the tag would not verify).
+        for (const encrypt of [2, 3]) {
+            const env = envelope({ text: JSON.stringify(BODY), encrypt, key: KEY24 });
+            assert.deepEqual(decodeFrame(env, KEY24), BODY, `encrypt ${encrypt}`);
+            const wrong = crypto.randomBytes(24).toString("base64");
+            assert.throws(() => decodeFrame(env, wrong), /unable to authenticate|auth/i);
+        }
+    });
+
     it("throws on a key of an AES-impossible size", () => {
         const env = envelope({ text: "{}", encrypt: 2, key: KEY16 });
         assert.throws(() => decodeFrame(env, crypto.randomBytes(20).toString("base64")), /20 bytes/);
@@ -228,6 +243,15 @@ describe("readAuthFrame", () => {
 
     it("hands back the key alone when the handshake has no data", () => {
         assert.deepEqual(readAuthFrame({ key: KEY16 }), { key: KEY16, auth: null });
+    });
+
+    it("accepts a decoded handshake with no error_code at all (the pinned leniency against Web)", () => {
+        // Web requires error_code === 0. This client accepts an absent code on purpose (see readAuthFrame): zca-js
+        // never read this payload, and tests/unit/sync-v2-zalo-lifecycle.test.js sends exactly such a key frame
+        // (`{}` as data). Red if the check becomes Web's strict one; then that file's key frame needs the field.
+        assert.deepEqual(readAuthFrame({ key: KEY16, encrypt: 0, data: "{}" }), { key: KEY16, auth: null });
+        const sealed = envelope({ text: JSON.stringify({ data: auth }), encrypt: 2, key: KEY16 });
+        assert.deepEqual(readAuthFrame({ key: KEY16, ...sealed }), { key: KEY16, auth });
     });
 
     it("refuses a handshake without a key, with a refusing error_code, or with data under another key", () => {

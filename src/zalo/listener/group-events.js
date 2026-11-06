@@ -10,7 +10,10 @@
  * Pure functions. Ids are compared as strings, so an id the parser left as a number still matches.
  */
 
-/** The `type` names, in the order the engine has always known them. */
+/**
+ * The `type` names, in the order agent/docs/zca-replace/spec-listener.md 2.6 lists them (the vocabulary the engine
+ * has always read; `listen` prints `group_${type}` and gates on these names).
+ */
 export const GROUP_EVENT_TYPES = Object.freeze([
     "join_request",
     "join",
@@ -18,30 +21,32 @@ export const GROUP_EVENT_TYPES = Object.freeze([
     "remove_member",
     "block_member",
     "update_setting",
+    "update_avatar",
     "update",
     "new_link",
     "add_admin",
     "remove_admin",
     "new_pin_topic",
     "update_pin_topic",
-    "reorder_pin_topic",
+    "update_topic",
     "update_board",
     "remove_board",
-    "update_topic",
+    "reorder_pin_topic",
     "unpin_topic",
     "remove_topic",
     "accept_remind",
     "reject_remind",
     "remind_topic",
-    "update_avatar",
 ]);
 
 /** The `type` of an act outside {@link GROUP_EVENT_TYPES}. */
 export const GROUP_EVENT_UNKNOWN = "unknown";
 
 /**
- * Acts the listener drops. The server sends `join_reject` beside `join_accept` when an admin approves a join
- * request (Web treats the two as one approval update), so emitting it would announce a rejection that did not happen.
+ * Acts the listener drops. When an admin approves a join request the server sends `join_reject` beside
+ * `join_accept`; Zalo Web's group act enum (bundle 26.11.10 @~1521167) handles the two as one "approval update"
+ * and never announces a rejection from it (agent/docs/zca-replace/spec-listener.md 2.5 and 3, "Group acts"), so
+ * emitting it would report a rejection that did not happen.
  */
 export const SKIPPED_GROUP_ACTS = Object.freeze(["join_reject"]);
 

@@ -41,11 +41,8 @@
  * and msg history's fetch write Zalo-reported rows; history writes
  * insert-if-absent; msg send writes nothing (AGENTS.md §13).
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { GroupMessage } from "zca-js";
-
-const require = createRequire(import.meta.url);
+import { boundUtils } from "../zalo/kernel/bound.js";
+import { GroupMessage } from "../zalo/listener/models.js";
 
 /** Zalo Web's MessageConstants.MAX_MSG_ID, `(BigInt(2) ** BigInt(63)).toString()`: start from the newest. */
 export const NEWEST_MSG_ID = "9223372036854775808";
@@ -70,14 +67,6 @@ const PAGE_DELAY_MS = 150;
 const UID_SCALAR = /(\\*)"(uidFrom|uidTo|uid|ownerId)\1"(\s*):(\s*)(-?\d+)(?![\d.eE])/g;
 /** The same keys holding an array of bare integers. */
 const UID_ARRAY = /(\\*)"(uidFrom|uidTo|uid|ownerId)\1"(\s*):(\s*)\[([^[\]{}"]*)\]/g;
-
-let _utils = null;
-/** zca-js internals (apiFactory, makeURL, request, resolve), located as ./sync-v2/gid.js does. */
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -135,15 +124,12 @@ function parsePage(raw) {
 /** One request to the cloud-message store. */
 async function fetchPage(api, host, { groupId, globalMsgId, src, old }) {
     const url = `${host}/api/cm/${old ? "getoldv2" : "getrecentv2"}`;
-    const call = zcaUtils().apiFactory()((_api, ctx, utils) => async () => {
-        // Key order as Zalo Web builds it.
-        const params = { groupId, globalMsgId, count: CM_PAGE_SIZE, msgIds: [], imei: ctx.imei, src };
-        const enc = utils.encodeAES(JSON.stringify(params));
-        if (!enc) throw new Error("failed to encrypt group history params");
-        const resp = await utils.request(utils.makeURL(url, { nretry: 0, params: enc }), { method: "GET" });
-        return utils.resolve(resp);
-    })(api.getContext(), api);
-    return parsePage(await call());
+    const utils = boundUtils(api);
+    // Key order as Zalo Web builds it.
+    const params = { groupId, globalMsgId, count: CM_PAGE_SIZE, msgIds: [], imei: api.getContext().imei, src };
+    const enc = utils.encodeAES(JSON.stringify(params));
+    const resp = await utils.request(utils.makeURL(url, { nretry: 0, params: enc }), { method: "GET" });
+    return parsePage(await utils.resolve(resp));
 }
 
 /**

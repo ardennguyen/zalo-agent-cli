@@ -8,7 +8,7 @@
  *
  * The web also calls `logoutV2` — POST /api/v2/login/logOut on whatever
  * `getDevDomainV3()` returns, which live is the staging host `stg-wpa` — but only
- * as an extra step behind a server flag. Our patched zca-js implements that one,
+ * as an extra step behind a server flag (`sendLogoutV2` in src/zalo/official-logout.js),
  * and until 2026-09-30 it was the only call `logout` and `account remove` made.
  * The session survived it (tier 5). docs/agent-notes.md has how that went
  * unnoticed; the short version is that "ended" was claimed without looking.
@@ -23,17 +23,15 @@
  * and the phone stops listing it. What is described above is the `keepSession` path
  * (`logout --keep-session`): it ends the session key and nothing more, as before.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
 import { getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
 import { COMPUTER_NAME } from "../zalo/profile.js";
 import { errorCodeOf } from "../zalo/errors.js";
-import { officialLogout } from "../zalo/official-logout.js";
+import { boundUtils } from "../zalo/kernel/bound.js";
+import { officialLogout, sendLogoutV2 } from "../zalo/official-logout.js";
 import { TRUST_FILE } from "../zalo/trust-store.js";
-
-const require = createRequire(import.meta.url);
 
 /** Zalo Web's logout endpoint: the auth domain, not a service-map host. */
 export const PRODUCTION_LOGOUT_URL = "https://wpa.chat.zalo.me/api/login/logOut";
@@ -46,51 +44,43 @@ export const PRODUCTION_LOGOUT_URL = "https://wpa.chat.zalo.me/api/login/logOut"
  */
 const SESSION_REJECTED = new Set([600]);
 
-let _utils = null;
-/** zca-js internals, located the same way ./sync-v2/board.js does. */
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
-
 /**
  * Send Zalo Web's production logout.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session API
  * @returns {Promise<*>} the response's `data`, decoded if it arrives encrypted
  * @throws {Error} carrying `.code` when Zalo answers with a non-zero error_code
  */
 async function productionLogout(api) {
-    const zu = zcaUtils();
-    const call = zu.apiFactory()((_api, ctx, utils) => async () => {
-        const url = utils.makeURL(PRODUCTION_LOGOUT_URL, {
-            time: Math.floor(Date.now() / 1000),
-            client_version: ctx.API_VERSION,
-            type: ctx.API_TYPE,
-            imei: ctx.imei,
-            computer_name: COMPUTER_NAME,
+    const utils = boundUtils(api);
+    const ctx = api.getContext();
+    const url = utils.makeURL(PRODUCTION_LOGOUT_URL, {
+        time: Math.floor(Date.now() / 1000),
+        client_version: ctx.API_VERSION,
+        type: ctx.API_TYPE,
+        imei: ctx.imei,
+        computer_name: COMPUTER_NAME,
+    });
+    const resp = await utils.request(url, { method: "GET" });
+    // Nobody has captured this call's response. logoutV2 answered in plain
+    // JSON, so read it unencrypted; if `data` turns out to be an encrypted
+    // string, decode it and honour an error code inside it.
+    const data = await utils.resolve(resp, undefined, false);
+    if (typeof data !== "string" || !data) return data;
+    const opened = utils.decodeAES(data);
+    if (opened === null) return data; // not an encrypted payload
+    let inner;
+    try {
+        inner = JSON.parse(opened);
+    } catch {
+        return data;
+    }
+    if (inner?.error_code !== undefined && Number(inner.error_code) !== 0) {
+        throw Object.assign(new Error(inner.error_message || `error_code ${inner.error_code}`), {
+            code: inner.error_code,
         });
-        const resp = await utils.request(url, { method: "GET" });
-        // Nobody has captured this call's response. logoutV2 answered in plain
-        // JSON, so read it unencrypted; if `data` turns out to be an encrypted
-        // string, decode it and honour an error code inside it.
-        const data = await utils.resolve(resp, undefined, false);
-        if (typeof data !== "string" || !data) return data;
-        let inner;
-        try {
-            inner = JSON.parse(zu.decodeAES(ctx.secretKey, data));
-        } catch {
-            return data; // not an encrypted payload
-        }
-        if (inner?.error_code !== undefined && Number(inner.error_code) !== 0) {
-            throw Object.assign(new Error(inner.error_message || `error_code ${inner.error_code}`), {
-                code: inner.error_code,
-            });
-        }
-        return inner?.data ?? inner;
-    })(api.getContext(), api);
-    return call();
+    }
+    return inner?.data ?? inner;
 }
 
 /**
@@ -125,27 +115,20 @@ async function probeSavedLogin(saved) {
 }
 
 /**
- * Probe the session key with the call `whoami` makes, with zca-js's logging off for this one call.
+ * Probe the session key with the call `whoami` makes. The probe is expected to fail after a working logout
+ * (measured 2026-09-30: an empty reply, "Failed to parse response data", every time); the protocol layer writes
+ * nothing to stdout, so the failure is only reported, never printed.
  *
  * @param {object} api
  * @returns {Promise<{verdict: "ended"|"still-answers"|"unverified", probeError?: string}>}
  */
 async function probeSessionKey(api) {
-    // The probe is expected to fail after a working logout, and zca-js logs
-    // that failure with a raw stack trace (measured 2026-09-30: an empty reply,
-    // "Failed to parse response data", every time). Its logger reads
-    // ctx.options.logging on each call, so silence it for this call only.
-    const options = typeof api.getContext === "function" ? api.getContext()?.options : null;
-    const logging = options?.logging;
-    if (options) options.logging = false;
     try {
         await api.fetchAccountInfo();
         return { verdict: "still-answers" };
     } catch (e) {
         if (SESSION_REJECTED.has(Number(e?.code))) return { verdict: "ended" };
         return { verdict: "unverified", probeError: e.message };
-    } finally {
-        if (options) options.logging = logging;
     }
 }
 
@@ -156,7 +139,7 @@ async function probeSessionKey(api) {
  * `fetchAccountInfo`, and, when the saved login is given, it is tried in a new login. "Signed out" is claimed
  * only for a saved login Zalo then refuses. With `keepSession` it is the old key-only logout instead.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session API
  * @param {object} [opts]
  * @param {boolean} [opts.keepSession] - only end this session's key (the pre-v3.0 behavior)
  * @param {{creds: object, proxy?: string|null, ownId?: string|null}|null} [opts.savedLogin] - the saved login to
@@ -179,7 +162,8 @@ export async function serverLogout(api, { keepSession = false, savedLogin = null
  * End this session's KEY at Zalo's servers (the pre-v3.0 logout, `--keep-session`).
  *
  * The production logout runs FIRST, while the session key is still valid, then
- * the optional staging `logoutV2` (best-effort), then a `fetchAccountInfo`
+ * the optional staging `logoutV2` (best-effort; Zalo Web's form: `params` sealed
+ * with the session key, `time` in unix seconds), then a `fetchAccountInfo`
  * probe. Order matters: measured live 2026-09-30, running `logoutV2` first
  * kills the in-process session key, and the production call then answers
  * "Invalid Param". Sent first, the production call succeeds ("Successful.").
@@ -192,7 +176,7 @@ export async function serverLogout(api, { keepSession = false, savedLogin = null
  * the user at the phone for a server-side revoke. This helper only reports what
  * the server calls did; it never claims the login ended.
  *
- * @param {object} api - a logged-in zca-js API
+ * @param {object} api - a logged-in session API
  * @returns {Promise<{
  *   v2: {ok: boolean, error?: string},
  *   production: {ok: boolean, error?: string, code?: number|null},
@@ -210,22 +194,18 @@ export async function keySessionLogout(api) {
         result.production = { ok: false, error: e.message, code: e.code ?? null };
     }
 
-    if (typeof api.logoutV2 === "function") {
-        try {
-            await api.logoutV2();
-            result.v2 = { ok: true };
-        } catch (e) {
-            result.v2 = { ok: false, error: e.message };
-        }
-    } else {
-        result.v2 = { ok: false, error: "logoutV2 is not available (unpatched zca-js)" };
+    try {
+        await sendLogoutV2(api);
+        result.v2 = { ok: true };
+    } catch (e) {
+        result.v2 = { ok: false, error: e.message };
     }
 
     Object.assign(result, await probeSessionKey(api));
     return result;
 }
 
-/** zca-js's words for a reply with no body — what the probe got after every successful logout. */
+/** The words for a reply with no body — what the probe got after every successful logout. */
 const EMPTY_REPLY = /Failed to parse response data/;
 
 /**

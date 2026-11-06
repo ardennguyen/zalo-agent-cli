@@ -18,10 +18,12 @@
  * request that goes out, and that "ended" is only ever claimed after Zalo has
  * rejected a follow-up call.
  *
- * Transport: `ctx.options.polyfill` is zca-js's own HTTP seam, so the real
- * request builder runs with no socket, no session and no network. `logoutV2` and
- * `fetchAccountInfo` are fakes on the api object, because what matters about
- * them here is order and outcome, not their wire format.
+ * Transport: `ctx.options.polyfill` is the session's HTTP seam, so the real
+ * request builders (the production logout here, `sendLogoutV2` of
+ * src/zalo/official-logout.js) run with no socket, no session and no network.
+ * `fetchAccountInfo` is a fake on the api object, because what matters about it
+ * here is order and outcome, not its wire format. logoutV2's wire form is
+ * pinned in logout-keep-session.test.js.
  */
 
 import { assertSandboxed } from "../helpers/sandbox.js";
@@ -51,7 +53,7 @@ const ROOT = join(import.meta.dirname, "..", "..");
  * @param {object} [opts.logoutBody] - JSON the fake Zalo answers the production call with
  * @param {"ok"|"fail"} [opts.v2] - how the staging logoutV2 behaves
  * @param {"rejected"|"answers"|"network"} [opts.afterLogout] - how the follow-up probe behaves
- * @returns {{api: object, calls: string[], requests: object[]}}
+ * @returns {{api: object, calls: string[], requests: object[]}} `requests` holds the production calls only
  */
 function harness({
     logoutBody = { error_code: 0, error_message: "Successful.", data: 1 },
@@ -70,24 +72,25 @@ function harness({
         options: {
             logging: false,
             async polyfill(url, options) {
-                calls.push("production");
-                requests.push({ url, method: options?.method ?? "GET", body: options?.body ?? null });
-                return {
+                const answer = (body) => ({
                     ok: true,
                     status: 200,
                     headers: { get: () => null },
-                    json: async () => logoutBody,
-                };
+                    json: async () => body,
+                });
+                if (String(url).includes("/api/v2/login/logOut")) {
+                    calls.push("v2");
+                    if (v2 === "fail") return answer({ error_code: -1, error_message: "staging refused" });
+                    return answer({ error_code: 0, error_message: "Successful.", data: 1 });
+                }
+                calls.push("production");
+                requests.push({ url, method: options?.method ?? "GET", body: options?.body ?? null });
+                return answer(logoutBody);
             },
         },
     };
     const api = {
         getContext: () => ctx,
-        async logoutV2() {
-            calls.push("v2");
-            if (v2 === "fail") throw new Error("staging refused");
-            return 1;
-        },
         async fetchAccountInfo() {
             calls.push("probe");
             if (afterLogout === "rejected") {
@@ -143,6 +146,7 @@ describe("serverLogout --keep-session sends Zalo Web's production logout", () =>
         assert.deepEqual(calls, ["production", "v2", "probe"]);
         assert.equal(result.production.ok, true);
         assert.equal(result.v2.ok, false, "a staging failure is recorded, not hidden");
+        assert.match(result.v2.error, /staging refused/, "with Zalo's own words");
     });
 
     it("reports a production rejection instead of swallowing it", async () => {
@@ -180,25 +184,6 @@ describe("serverLogout --keep-session claims the session ended only after seeing
         // Red if any thrown error is read as proof of logout.
         assert.equal(result.verdict, "unverified");
         assert.match(result.probeError, /fetch failed/);
-    });
-
-    it("runs the probe with zca-js logging off, then restores it", async () => {
-        // The probe's failure is the expected outcome of a working logout, and
-        // zca-js printed it as a raw stack trace. Red if the probe logs again,
-        // or if logging stays off for the rest of the process.
-        const { api } = harness({ afterLogout: "empty" });
-        api.getContext().options.logging = true;
-        const probe = api.fetchAccountInfo;
-        let loggingDuringProbe;
-        api.fetchAccountInfo = async () => {
-            loggingDuringProbe = api.getContext().options.logging;
-            return probe();
-        };
-
-        await serverLogout(api, KEEP);
-
-        assert.equal(loggingDuringProbe, false);
-        assert.equal(api.getContext().options.logging, true);
     });
 
     it("an empty reply after an accepted logout says so, but never as a success", async () => {

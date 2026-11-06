@@ -50,18 +50,7 @@
  * banned, `banDuration` is seconds). `bannFeature` never appears in the web
  * bundles by name. All three are sent back exactly as read.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-
-const require = createRequire(import.meta.url);
-
-let _utils = null;
-/** zca-js internals, located the same way ./sync-v2/gid.js does. */
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
+import { boundUtils } from "../zalo/kernel/bound.js";
 
 /**
  * CLI flag -> the GroupSetting key it toggles. Each flag also has a `--no-`
@@ -174,17 +163,14 @@ export async function readGroupSetting(api, groupId) {
  * @param {object} setting - the full setting to store
  * @returns {Promise<*>} Zalo's `data` (an empty string for this endpoint)
  */
-function sendGroupSetting(api, groupId, setting) {
-    const zu = zcaUtils();
+async function sendGroupSetting(api, groupId, setting) {
     const base = `${api.zpwServiceMap.group[0]}/api/group/setting/update`;
-    const call = zu.apiFactory()((_api, ctx, utils) => async () => {
-        const params = { ...setting, grid: groupId, imei: ctx.imei };
-        const enc = utils.encodeAES(JSON.stringify(params));
-        if (!enc) throw new Error("failed to encrypt group setting params");
-        const resp = await utils.request(utils.makeURL(base, { params: enc }), { method: "GET" });
-        return utils.resolve(resp);
-    })(api.getContext(), api);
-    return call();
+    const utils = boundUtils(api);
+    const params = { ...setting, grid: groupId, imei: api.getContext().imei };
+    const resp = await utils.request(utils.makeURL(base, { params: utils.encodeAES(JSON.stringify(params)) }), {
+        method: "GET",
+    });
+    return utils.resolve(resp);
 }
 
 /**

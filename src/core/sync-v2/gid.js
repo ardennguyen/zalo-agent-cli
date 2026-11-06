@@ -13,23 +13,11 @@
  * We then batch `getUserInfo(userIds)` for display names. Left groups have no
  * per-item endpoint server-side, so they stay unresolved (matches Zalo Web).
  *
- * Built on zca-js's own request/crypto (`apiFactory` + bound `utils`) so the
- * authenticated envelope is exactly what the profile API expects; zca-js is
- * located via `require.resolve` so this survives whatever node_modules layout.
+ * Built on the kernel's bound session helpers (src/zalo/kernel/bound.js), so the
+ * authenticated envelope is the one every session call sends.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { boundUtils } from "../../zalo/kernel/bound.js";
 import { isRateLimitError, runPacedBatches } from "../user-info.js";
-
-const require = createRequire(import.meta.url);
-
-let _utils = null;
-/** zca-js's internal utils (apiFactory/makeURL/encodeAES/request), located robustly. */
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
 
 /** A failed `gid/decrypt` batch is asked for twice more, after these pauses, before it counts as failed (Y9). */
 export const GID_RETRY_DELAYS_MS = Object.freeze([500, 1500]);
@@ -64,16 +52,17 @@ const NAME_BATCH = 100;
 
 /** Build the authenticated `/api/gid/decrypt` caller bound to this session. */
 function makeGidDecrypt(api) {
-    const zu = zcaUtils();
     const base = `${api.zpwServiceMap.profile[0]}/api/gid/decrypt`;
-    return zu.apiFactory()((_api, ctx, utils) => async (globalIds) => {
+    // Built now, so a session that cannot make the call is refused here, before any batch.
+    const utils = boundUtils(api);
+    const ctx = api.getContext();
+    return async (globalIds) => {
         const enc = utils.encodeAES(JSON.stringify({ globalUids: JSON.stringify(globalIds), imei: ctx.imei }));
-        if (!enc) throw new Error("failed to encrypt gid params");
         const resp = await utils.request(utils.makeURL(base, { params: enc }), { method: "GET" });
         const result = await utils.resolve(resp);
         // response shape: resolve() -> { data: { <globalId>: <userId> } } (or the map directly)
         return result && typeof result.data === "object" ? result.data : result || {};
-    })(api.getContext(), api);
+    };
 }
 
 /**

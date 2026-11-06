@@ -2020,8 +2020,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     // As `msg forward`: a size the cache knows spares the HEAD, and one still needed is bounded.
                     video: async () =>
                         api.sendVideo(videoResendOptions(c, row.localPath), threadId, Number(threadType)),
-                    voice: async () =>
-                        api.sendVoice(voiceResendOptions(c), threadId, Number(threadType)),
+                    voice: async () => api.sendVoice(voiceResendOptions(c), threadId, Number(threadType)),
                     photo: resendLocal,
                     file: resendLocal,
                     gif: resendLocal,

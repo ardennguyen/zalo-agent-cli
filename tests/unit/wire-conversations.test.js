@@ -123,23 +123,43 @@ describe("wire: conversations (zca-js against src/zalo/api/conversations.js)", (
     });
 
     describe("addUnreadMark", () => {
-        it("DM: {param: JSON} with the Web's fixed order {convsGroup, convsUser, imei}", async () => {
+        it('DM, newest message unknown: {param: JSON} in the Web\'s order, "-1" for both message ids', async () => {
             const rec = await check("unread-add-dm", "addUnreadMark", [PEER, 0], {
                 reply: { data: '{"updateId":1}', status: 0 },
             });
             const [req] = rec.own.requests;
             assert.equal(req.path, "/api/conv/addUnreadMark");
             assert.deepEqual(Object.keys(req.params), ["param"]);
-            // Red if the inner JSON were sent as an object, reordered, or stamped from another clock.
+            // Red if the inner JSON were sent as an object, reordered, stamped from another clock, or named a
+            // message nobody gave (zca-js's clock as cliMsgId and "0" as the sender).
             assert.equal(
                 req.params.param,
                 JSON.stringify({
                     convsGroup: [],
-                    convsUser: [{ id: PEER, cliMsgId: String(T0), fromUid: "0", ts: T0 }],
+                    convsUser: [{ id: PEER, cliMsgId: "-1", fromUid: "-1", ts: T0 }],
                     imei: FAKE.imei,
                 }),
             );
             assert.deepEqual(rec.own.result, { data: { updateId: 1 }, status: 0 });
+        });
+
+        it("DM, newest message given: the entry names its cliMsgId and sender, as the Web's does", async () => {
+            const last = { cliMsgId: "1699999999999", fromUid: "0" };
+            const rec = await check("unread-add-newest", "addUnreadMark", [PEER, 0, last], {
+                reply: { data: '{"updateId":2}', status: 0 },
+            });
+            // Red if the newest message were dropped for the clock (zca-js) or the "-1" fallback.
+            assert.deepEqual(JSON.parse(rec.own.requests[0].params.param).convsUser, [
+                { id: PEER, cliMsgId: "1699999999999", fromUid: "0", ts: T0 },
+            ]);
+        });
+
+        it('a sender id or client id given alone is not enough: both go out as "-1"', async () => {
+            for (const last of [{ cliMsgId: "1699999999999" }, { fromUid: PEER2 }, { cliMsgId: "", fromUid: "0" }]) {
+                const rec = await pair.run("addUnreadMark", [PEER, 0, last], { reply: { data: "{}", status: 0 } });
+                const [entry] = JSON.parse(rec.own.requests[0].params.param).convsUser;
+                assert.deepEqual([entry.cliMsgId, entry.fromUid], ["-1", "-1"], JSON.stringify(last));
+            }
         });
 
         it("group: the entry in convsGroup", async () => {
@@ -147,10 +167,7 @@ describe("wire: conversations (zca-js against src/zalo/api/conversations.js)", (
                 reply: { data: '{"updateId":1}', status: 0 },
             });
             const inner = JSON.parse(rec.own.requests[0].params.param);
-            assert.deepEqual(
-                inner.convsGroup.map((e) => e.id),
-                [GROUP],
-            );
+            assert.deepEqual(inner.convsGroup, [{ id: GROUP, cliMsgId: "-1", fromUid: "-1", ts: T0 }]);
             assert.deepEqual(inner.convsUser, []);
         });
     });

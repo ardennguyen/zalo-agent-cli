@@ -36,6 +36,12 @@ export function parsePinnedId(raw) {
 }
 
 /**
+ * The pinned-list entry that is not a conversation: Zalo Web skips `m1` when it reads the list (spec-actions 7.3),
+ * so it is neither a pin nor an unresolved id here.
+ */
+export const PINNED_NOT_A_CONVERSATION = "m1";
+
+/**
  * Resolve a precision-lost numeric id to the one cached thread it came from.
  *
  * @param {number|string} lossy - the id as zca-js returned it
@@ -83,6 +89,7 @@ export async function syncConvState({ api, now = Date.now(), threads } = {}) {
         const res = await api.getPinConversations();
         pinnedIds = new Set();
         for (const raw of res?.conversations || []) {
+            if (String(raw ?? "") === PINNED_NOT_A_CONVERSATION) continue;
             const { threadId } = parsePinnedId(raw);
             // Only conversations the cache knows: a pin for a thread we have
             // never seen has nothing to attach to, and inventing a row would

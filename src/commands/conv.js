@@ -12,7 +12,7 @@ import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads, f
 import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readStateLabel } from "../core/read-state.js";
 import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
-import { markConversationRead, zaloPost } from "../core/receipts.js";
+import { markConversationRead, unreadMarkAnchor, zaloPost } from "../core/receipts.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
 
 /**
@@ -112,6 +112,24 @@ async function newestMessageAnchor(api, threadId, type) {
 const SEEN_ANCHOR_SCAN_DEPTH = 50;
 
 const ANCHOR_SCAN_DEPTH = 200;
+
+/**
+ * The newest cached message of a thread, as `addUnreadMark` names it, or null when the cache has none (or there is
+ * no cache on this machine). Never throws: the mark is still sent without it.
+ *
+ * @param {string} threadId
+ * @returns {{cliMsgId: string, fromUid: string}|null}
+ */
+function newestMessageForUnreadMark(threadId) {
+    try {
+        const activeAcc = getActive();
+        if (!activeAcc) return null;
+        initDb(getAccountDbPath(activeAcc.ownId));
+        return unreadMarkAnchor(getMessages(String(threadId), SEEN_ANCHOR_SCAN_DEPTH), { ownId: activeAcc.ownId });
+    } catch {
+        return null;
+    }
+}
 
 /** Build the deleteChat anchor triple, or null when any part is missing. */
 function toAnchor(ownerId, cliMsgId, globalMsgId) {
@@ -579,7 +597,12 @@ export function registerConvCommands(program, deps = {}) {
                 // every invocation died on "is not a function" before reaching
                 // the network -- which no test caught, because reaching the
                 // network is exactly what the offline suite cannot do.
-                const result = await getApi().addUnreadMark(threadId, Number(opts.type));
+                //
+                // Zalo Web pins the mark to the conversation's newest message
+                // (its cliMsgId and sender), so the cache is read for it; with
+                // none cached the Web's "-1" goes out instead.
+                const last = newestMessageForUnreadMark(threadId);
+                const result = await zaloApi().addUnreadMark(threadId, Number(opts.type), last);
                 output(result, program.opts().json, () => success("Marked as unread"));
             } catch (e) {
                 error(e.message);

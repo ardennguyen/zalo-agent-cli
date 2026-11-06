@@ -557,7 +557,7 @@ export default {
                     zpw_type: "30",
                 },
                 params: {
-                    param: '{"convsGroup":[],"convsUser":[{"id":"1000000000000000002","cliMsgId":"1700000000000","fromUid":"0","ts":1700000000000}],"imei":"00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef"}',
+                    param: '{"convsGroup":[],"convsUser":[{"id":"1000000000000000002","cliMsgId":"-1","fromUid":"-1","ts":1700000000000}],"imei":"00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef"}',
                 },
                 paramsOrder: ["param"],
                 headers: {
@@ -595,7 +595,7 @@ export default {
                     zpw_type: "30",
                 },
                 params: {
-                    param: '{"convsGroup":[{"id":"2000000000000000003","cliMsgId":"1700000000000","fromUid":"0","ts":1700000000000}],"convsUser":[],"imei":"00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef"}',
+                    param: '{"convsGroup":[{"id":"2000000000000000003","cliMsgId":"-1","fromUid":"-1","ts":1700000000000}],"convsUser":[],"imei":"00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef"}',
                 },
                 paramsOrder: ["param"],
                 headers: {
@@ -617,6 +617,44 @@ export default {
         result: {
             data: {
                 updateId: 1,
+            },
+            status: 0,
+        },
+    },
+    "unread-add-newest": {
+        requests: [
+            {
+                method: "POST",
+                service: "conversation",
+                path: "/api/conv/addUnreadMark",
+                queryOrder: ["zpw_ver", "zpw_type"],
+                query: {
+                    zpw_ver: "695",
+                    zpw_type: "30",
+                },
+                params: {
+                    param: '{"convsGroup":[],"convsUser":[{"id":"1000000000000000002","cliMsgId":"1699999999999","fromUid":"0","ts":1700000000000}],"imei":"00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef"}',
+                },
+                paramsOrder: ["param"],
+                headers: {
+                    accept: "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    "content-type": "application/x-www-form-urlencoded",
+                    cookie: "wire=fake-w",
+                    origin: "https://chat.zalo.me",
+                    referer: "https://chat.zalo.me/",
+                    "user-agent": "Mozilla/5.0 (offline test)",
+                },
+                form: {},
+                formOrder: ["params"],
+                parts: null,
+                body: null,
+            },
+        ],
+        error: null,
+        result: {
+            data: {
+                updateId: 2,
             },
             status: 0,
         },

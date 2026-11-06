@@ -245,6 +245,98 @@ export default {
         error: null,
         result: "",
     },
+    "changeGroupAvatar/half-size": {
+        requests: [
+            {
+                method: "POST",
+                service: "file",
+                path: "/api/group/upavatar",
+                queryOrder: ["zpw_ver", "zpw_type", "params"],
+                query: {
+                    zpw_ver: "695",
+                    zpw_type: "30",
+                },
+                params: {
+                    grid: "9000000000000000001",
+                    avatarSize: 160,
+                    clientId: "123456789012345678905:13 15/11/2023",
+                    originWidth: 1080,
+                    originHeight: 20,
+                    imei: "00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef",
+                },
+                paramsOrder: ["grid", "avatarSize", "clientId", "originWidth", "originHeight", "imei"],
+                headers: {
+                    accept: "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    "content-type": "multipart/form-data; boundary=<boundary>",
+                    cookie: "wire=fake-w",
+                    origin: "https://chat.zalo.me",
+                    referer: "https://chat.zalo.me/",
+                    "user-agent": "Mozilla/5.0 (offline test)",
+                },
+                form: null,
+                formOrder: null,
+                parts: [
+                    {
+                        name: "fileContent",
+                        filename: "blob",
+                        type: "image/jpeg",
+                        size: 15,
+                        sha256: "04eda1ead7c1ac7c122e53c4982c4d011cca90a926d3257688f056595084d0cc",
+                    },
+                ],
+                body: null,
+            },
+        ],
+        error: null,
+        result: "",
+    },
+    "changeGroupAvatar/no-size": {
+        requests: [
+            {
+                method: "POST",
+                service: "file",
+                path: "/api/group/upavatar",
+                queryOrder: ["zpw_ver", "zpw_type", "params"],
+                query: {
+                    zpw_ver: "695",
+                    zpw_type: "30",
+                },
+                params: {
+                    grid: "9000000000000000001",
+                    avatarSize: 160,
+                    clientId: "123456789012345678905:13 15/11/2023",
+                    originWidth: 1080,
+                    originHeight: 1080,
+                    imei: "00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef",
+                },
+                paramsOrder: ["grid", "avatarSize", "clientId", "originWidth", "originHeight", "imei"],
+                headers: {
+                    accept: "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    "content-type": "multipart/form-data; boundary=<boundary>",
+                    cookie: "wire=fake-w",
+                    origin: "https://chat.zalo.me",
+                    referer: "https://chat.zalo.me/",
+                    "user-agent": "Mozilla/5.0 (offline test)",
+                },
+                form: null,
+                formOrder: null,
+                parts: [
+                    {
+                        name: "fileContent",
+                        filename: "blob",
+                        type: "image/jpeg",
+                        size: 15,
+                        sha256: "04eda1ead7c1ac7c122e53c4982c4d011cca90a926d3257688f056595084d0cc",
+                    },
+                ],
+                body: null,
+            },
+        ],
+        error: null,
+        result: "",
+    },
     changeGroupName: {
         requests: [
             {

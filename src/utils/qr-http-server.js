@@ -385,29 +385,39 @@ export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080
         const jsonMode = process.env.ZALO_JSON_MODE === "1";
         let publicIp = null;
 
-        // Auto-detect public IP for VPS users
-        try {
-            const res = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(3000) });
-            publicIp = (await res.text()).trim() || null;
-        } catch {}
+        // A public address only means something when the page listens on the network (--qr-url): bound to
+        // loopback, as by default, it answers on this machine alone, and the address it used to print could not work.
+        if (exposeOnLan) {
+            try {
+                const res = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(3000) });
+                publicIp = (await res.text()).trim() || null;
+            } catch {}
+        }
 
         if (jsonMode) {
             console.log(
                 JSON.stringify({
                     event: "qr_server",
                     port: actualPort,
+                    lan: exposeOnLan,
                     localUrl: `http://localhost:${actualPort}/qr`,
                     imageUrl: `http://localhost:${actualPort}/qr.png`,
                     publicUrl: publicIp ? `http://${publicIp}:${actualPort}/qr` : null,
                     publicImageUrl: publicIp ? `http://${publicIp}:${actualPort}/qr.png` : null,
                 }),
             );
-        } else {
+        } else if (exposeOnLan) {
             info(`QR available at: http://localhost:${actualPort}/qr`);
             if (publicIp) info(`On VPS, open: http://${publicIp}:${actualPort}/qr`);
             else info(`On VPS, open: http://<your-server-ip>:${actualPort}/qr`);
             info(`If firewall blocks, run: sudo ufw allow ${actualPort}/tcp`);
             info(`Or copy QR file: scp user@vps:~/.zalo-agent-cli/qr.png ./qr.png`);
+        } else {
+            info(`QR available at: http://localhost:${actualPort}/qr (this machine only)`);
+            info(
+                `On a VPS: ssh -L ${actualPort}:127.0.0.1:${actualPort} <server>, then open http://localhost:${actualPort}/qr here; ` +
+                    "or log in with --qr-url to open the page to the network.",
+            );
         }
     });
 

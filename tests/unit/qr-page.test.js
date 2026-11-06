@@ -214,6 +214,42 @@ describe("the QR page and the process that serves it", () => {
     });
 });
 
+describe("where the QR page says it can be opened", () => {
+    const announce = async (lan) => {
+        const lines = [];
+        const asked = [];
+        const realFetch = globalThis.fetch;
+        const log = console.log;
+        globalThis.fetch = async (url) => {
+            asked.push(String(url));
+            return { text: async () => "203.0.113.7" };
+        };
+        console.log = (l) => lines.push(l);
+        process.env.ZALO_JSON_MODE = "1";
+        const port = await freePort();
+        const server = startQrServer(join(mkdtempSync(join(CONFIG_DIR, "qrlan-")), "qr.png"), port, [port], lan);
+        await new Promise((r) => setTimeout(r, 150));
+        server.close();
+        console.log = log;
+        globalThis.fetch = realFetch;
+        delete process.env.ZALO_JSON_MODE;
+        return { event: JSON.parse(lines.find((l) => l.includes("qr_server"))), asked };
+    };
+
+    it("bound to this machine, offers no public address and asks nobody for one", async () => {
+        // It used to print http://<public ip>:18927/qr on every login, a page that answered only on loopback.
+        const { event, asked } = await announce(false);
+        assert.deepEqual([event.lan, event.publicUrl], [false, null]);
+        assert.deepEqual(asked, []);
+    });
+
+    it("opened to the network (--qr-url), gives the public address", async () => {
+        const { event } = await announce(true);
+        assert.equal(event.lan, true);
+        assert.match(event.publicUrl, /^http:\/\/203\.0\.113\.7:\d+\/qr$/);
+    });
+});
+
 describe("the QR page at the end of the login", () => {
     let dir;
     let realFetch;

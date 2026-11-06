@@ -2,7 +2,7 @@
 
 [English](official-account.md)
 
-Quản lý Zalo Official Account qua API v3.0 chính thức. Độc lập hoàn toàn với tài khoản cá nhân (zca-js).
+Quản lý Zalo Official Account qua API v3.0 chính thức. Độc lập hoàn toàn với tài khoản cá nhân (API không chính thức).
 
 > **Lưu ý:** Một số API cần upgrade OA tier. Xem [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing).
 
@@ -299,7 +299,7 @@ zalo-agent oa whoami --oa-id shop2
 
 | | `zalo-agent` (personal) | `zalo-agent oa` (official) |
 |---|---|---|
-| API | Unofficial (zca-js) | Official (Zalo OA API v3.0) |
+| API | Unofficial (giao thức Zalo Web) | Official (Zalo OA API v3.0) |
 | Auth | QR code login | OAuth 2.0 |
 | Scope | Tài khoản cá nhân | Official Account |
 | Risk | Có thể bị ban | An toàn, API chính thức |

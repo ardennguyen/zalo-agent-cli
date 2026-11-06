@@ -2,14 +2,14 @@
 
 Real sample media, committed on purpose. ~15 KB total.
 
-| File                                                | What it covers                                                                         |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `image-64x48.png`                                   | PNG branch of `readImageMetadata()` (big-endian dims at fixed offsets)                 |
-| `image-64x48.jpg`                                   | JPEG branch — segment-chain walk to the SOFn marker                                    |
-| `image-200x120.jpg`                                 | A second JPEG, so a hard-coded 64×48 cannot pass by accident                           |
-| `image-64x48.gif`                                   | GIF branch (little-endian dims) **and** zca-js's separate `getGifMetaData` upload path |
-| `image-1x1.webp`                                    | WebP branch, lossy `VP8 ` variant                                                      |
-| `notes.txt` `data.csv` `document.pdf` `archive.zip` | The zca-js `"others"` upload path — the one that needs a live WebSocket listener       |
+| File                                                | What it covers                                                                |
+| --------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `image-64x48.png`                                   | PNG branch of `readImageMetadata()` (big-endian dims at fixed offsets)        |
+| `image-64x48.jpg`                                   | JPEG branch — segment-chain walk to the SOFn marker                           |
+| `image-200x120.jpg`                                 | A second JPEG, so a hard-coded 64×48 cannot pass by accident                  |
+| `image-64x48.gif`                                   | GIF branch (little-endian dims) **and** the engine's separate GIF upload path |
+| `image-1x1.webp`                                    | WebP branch, lossy `VP8 ` variant                                             |
+| `notes.txt` `data.csv` `document.pdf` `archive.zip` | The `"others"` upload path — the one that needs a live WebSocket listener     |
 
 `VP8L` and `VP8X` WebP variants are covered by synthetic headers built inside
 `tests/unit/image-metadata.test.js`, since the function only reads the header.

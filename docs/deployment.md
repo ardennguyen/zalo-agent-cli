@@ -72,7 +72,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 > `tests/unit/listener-lifecycle-rules.test.js` holds both to the same gap rules (each builds a `SyncManager` and files a startup gap), and `tests/unit/self-heal-wiring.test.js` runs its wiring checks against both files. Loss detection is therefore no longer a reason to pick one over the other: pick `mcp start` for MCP bots (and webhook push / long-polling), `listen` for a CLI-only webhook or JSONL consumer.
 
 > [!NOTE]
-> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new zca-js API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 27 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
+> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 27 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 What `daemon-channel.js` actually is
 
@@ -255,7 +255,7 @@ Build order that keeps each step shippable: **(1)** a token→profile map, bindi
 
 - **Node.js 22.19 or later.** `package.json` says `engines.node: ">=22"`, but the effective floor is set by the locked dependencies: at this commit the lockfile resolves `undici` 8.10.2 (`">=22.19.0"`) and `commander` 15.0.0 (`">=22.12.0"`). CI runs Node 22 only (`.github/workflows/ci.yml`). `better-sqlite3` 13 is a native module, so reinstall after changing the Node major.
 - **Linux (x64 or arm64) is the right production target.** The tool is developed mostly on Windows and runs there (the header of `daemon-channel.js` says so), but systemd gives you the restart, log and signal handling this workload needs. macOS works for development.
-- **Install scripts.** The engine ships `zca-js` already patched inside its own tarball (`"bundleDependencies": ["zca-js"]`); `"prepare": "patch-package"` runs only for a development or `github:` install, never for a registry install (`AGENTS.md` §13, enforced by `tests/unit/packaging.test.js`). The host must still run `better-sqlite3`'s install script for its native binary. `allowScripts` in `package.json` lists `better-sqlite3@13.0.3` and the CLI itself.
+- **Install scripts.** The engine's protocol layer is its own code under `src/zalo/`, so a registry install patches nothing and runs no `prepare` step (`tests/unit/packaging.test.js`). The host must still run `better-sqlite3`'s install script for its native binary. `allowScripts` in `package.json` lists `better-sqlite3@13.0.3` and the CLI itself.
 - The phone-backed restore fetches Zalo's `libzproto` and protobuf assets from `chat.zalo.me` on first use and caches them under `accounts/<ownId>/sync/zproto-cache/` (`src/core/sync-v2/assets.js`), inside the directory the unit makes writable (§4.2).
 - If Python is absent, that is fine: it is optional in the `zalo-mcp` wrapper, which skips it (`INSTALLATION.md`, prerequisites).
 
@@ -339,7 +339,7 @@ Every live message is written synchronously on the event loop (`storeLiveMessage
 > node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
 > npm view @ardennguyen/zalo-agent-cli versions
 > ```
-> If you do run the wrapper: never run `npm install` inside a deployed `zalo-mcp` folder, use `./zalo-mcp.sh update` (or `.\zalo-mcp.ps1 update`), and take the wrapper from `ardennguyen/zalo-mcp`, not the upstream repository it was forked from (`AGENTS.md` §9).
+> If you do run the wrapper: never run `npm install` inside a deployed `zalo-mcp` folder, use `./zalo-mcp.sh update` (or `.\zalo-mcp.ps1 update`), and take the wrapper only from `ardennguyen/zalo-mcp`, never from a fork (`AGENTS.md` §9).
 
 **For a production server, you can also install the engine directly** and run `zalo-agent mcp start` under systemd (§4.2) so there is no extra wrapper process and you can pin an exact version and upgrade deliberately (`zalo-agent update` installs `@latest`).
 
@@ -653,7 +653,7 @@ Under systemd the unit already spreads start-up (`sleep $((RANDOM % 30))`) and r
 
 ### 5.1 The account can be banned — design for it
 
-The personal-account surface (`msg`, `friend`, `group`, `listen`, `mcp`, …) runs on the **unofficial** API via `zca-js`. `AGENTS.md` §1 and `DISCLAIMER.md` are explicit: **the account can be banned.** `zca-js` tracks a moving target, and `patches/` holds patch-package patches against it that must be regenerated on every `zca-js` bump (`AGENTS.md` §13).
+The personal-account surface (`msg`, `friend`, `group`, `listen`, `mcp`, …) runs on the **unofficial** API: the engine speaks the protocol Zalo Web uses (`src/zalo/`). `AGENTS.md` §1 and `DISCLAIMER.md` are explicit: **the account can be banned.** Zalo changes that protocol when it ships a new Web build, so a request that worked can stop working until the engine follows it.
 
 Operational consequences, in order of importance:
 

@@ -97,7 +97,7 @@ zalo-mcp login   # or: npm run login (from inside the installed zalo-mcp/ folder
 A QR code prints in the terminal, and a local HTTP server also serves it at `http://127.0.0.1:18927/qr` — loopback only; `--qr-url` binds it to every interface for a headless machine, and anyone who reaches it before it expires can sign in as this account. Scan it with the **Zalo app's QR Scanner** (not the phone's regular camera) and confirm on the phone. If you decline on the phone, the CLI reports it immediately instead of waiting out the 60-second QR timeout.
 
 > **Storage:** `~/.zalo-agent-cli/` (mode `0600`).
-> **Risk:** this is an unofficial API (via `zca-js`) — heavy/automated use can get the account banned. Don't use your primary personal account.
+> **Risk:** this is an unofficial API (the protocol Zalo Web uses) — heavy/automated use can get the account banned. Don't use your primary personal account.
 
 ### B. Zalo Official Account (official API v3.0)
 ```bash
@@ -400,10 +400,10 @@ See [`.env.example`](.env.example) for a template.
 | `ZALO_MEDIA_DIR` | Root directory for downloaded media `<threadId>/` and `_conversations.json` across all commands (default `<DATA_DIR>/<ownId>/media`; also overridable via `--media-dir`) |
 | `ZALO_OA_DIR` | Directory for Official Account `oa-credentials.json` (default `~/.zalo-agent`; also overridable via `--oa-dir`) |
 | `ZALO_AGENT_NO_UPDATE_CHECK` | Set to any value to disable the background update-version check |
-| `ZALO_API_VERSION` | Protocol version announced to Zalo (`zpw_ver` / `client_version`), on the HTTP calls and the WebSocket URL alike. Default `695` (the live Zalo Web value); set `685` to roll back to zca-js's default. Must be a positive whole number — `0685`, `6.91`, `1e3`, `0x2b3`, `-685` and `0` are refused before Zalo is contacted, so a bad value fails every login rather than quietly falling back. Whitespace-only counts as unset. Only logins read it. |
-| `ZALO_QR_FLOW` | Which QR login `login` uses: `official` (the default: the sequence Zalo Web makes, no `verify-client`, `continue=https://chat.zalo.me/`, the session redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device) or `legacy` (zca-js's own). Anything else is refused before Zalo is contacted. Only QR logins read it |
+| `ZALO_API_VERSION` | Protocol version announced to Zalo (`zpw_ver` / `client_version`), on the HTTP calls and the WebSocket URL alike. Default `695` (the live Zalo Web value); set an older value such as `685` to roll back. Must be a positive whole number — `0685`, `6.91`, `1e3`, `0x2b3`, `-685` and `0` are refused before Zalo is contacted, so a bad value fails every login rather than quietly falling back. Whitespace-only counts as unset. Only logins read it. |
+| `ZALO_QR_FLOW` | Which QR login `login` uses: `official` (the default: the sequence Zalo Web makes, no `verify-client`, `continue=https://chat.zalo.me/`, the session redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device). It is the only QR login: `legacy` was removed in 3.0.0 and, like any value other than `official`, is refused before Zalo is contacted. Only QR logins read it |
 | `ZALO_NET_PROBE` | What a daemon asks to learn whether the network is up while its socket is down (every 10 s). A URL, by default a global search engine's lightweight page; `off` assumes the network is always up and contacts nothing but Zalo |
-| `ZALO_JSON_MODE` | Set automatically by the CLI in `--json` and `mcp` modes to suppress `zca-js` stdout logs. Don't set it by hand |
+| `ZALO_JSON_MODE` | Set automatically by the CLI in `--json` and `mcp` modes, so that stdout carries only machine-readable output. Don't set it by hand |
 | `ZALO_MCP_HTTP_PORT` | Read by `mcp start` and the `zalo-mcp` wrapper as the fallback `--http` port (supports `ZALO_MCP_HTTP_PORT_<ownId>`) |
 | `ZALO_MCP_HOST` | Default bind address for `mcp start --http` (supports `ZALO_MCP_HOST_<ownId>`) |
 | `ZALO_MCP_AUTH_TOKEN` | Bearer token for `mcp start --http` and fallback OAuth 2.0 client secret (supports `ZALO_MCP_AUTH_TOKEN_<ownId>`) |

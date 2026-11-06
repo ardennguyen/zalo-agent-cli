@@ -2,7 +2,7 @@
 
 [Tiếng Việt](official-account.vi.md)
 
-Manage a Zalo Official Account via the official Zalo OA REST API v3.0 — completely independent from personal Zalo accounts (`zca-js`).
+Manage a Zalo Official Account via the official Zalo OA REST API v3.0 — completely independent from personal Zalo accounts (the unofficial API).
 
 > **Note:** Several OA APIs require a paid OA tier. See [zalo.cloud/oa/pricing](https://zalo.cloud/oa/pricing).
 
@@ -299,7 +299,7 @@ zalo-agent oa whoami --oa-id shop2
 
 | | `zalo-agent` (personal) | `zalo-agent oa` (official) |
 |---|---|---|
-| API | Unofficial (`zca-js`) | Official (Zalo OA API v3.0) |
+| API | Unofficial (Zalo Web's protocol) | Official (Zalo OA API v3.0) |
 | Auth | QR code login | OAuth 2.0 |
 | Scope | Personal Zalo account | Official Account |
 | Risk | Account can be banned | Safe — sanctioned official API |

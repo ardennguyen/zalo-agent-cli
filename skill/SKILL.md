@@ -59,7 +59,7 @@ zalo-agent login --sync
 # Headless (re-use previously exported credentials)
 zalo-agent login --credentials ./creds.json
 ```
-The QR login is Zalo Web's own sequence (the default; `ZALO_QR_FLOW=legacy` selects zca-js's). An account that has a trusted device is asked to scan a second QR once more, and the CLI becomes a trusted companion device on the account (visible in the phone's linked devices).
+The QR login is Zalo Web's own sequence (the only one: `ZALO_QR_FLOW=legacy` was removed in 3.0.0 and is refused). An account that has a trusted device is asked to scan a second QR once more, and the CLI becomes a trusted companion device on the account (visible in the phone's linked devices).
 CRITICAL: each QR lasts about 100 s; run in the background (`&`) a login shows up to 5 codes, then ends with `Login timed out`. QR server is temporary and local-only. Scan via **Zalo app QR Scanner** (NOT camera).
 Details: `references/login-flow.md`
 
@@ -276,7 +276,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_note` | Create/edit group notes, list group board items, or pin/unpin a cached text message | `action`, `groupId?`, `threadId?`, `noteId?`, `title?`, `pin?`, `msgId?` |
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll | `action`, `groupId?`, `pollId?`, `question?`, `options?`, `optionIds?` |
 | `zalo_wait_for_message` | Long-poll the live message buffer for the next incoming watched message without manual polling (mirrors `GET /events/wait`) | `threadId?`, `since?`, `timeoutSec` (default 55, max 300) |
-| `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) | `action` (`list`｜`assign`｜`unassign`｜`update`), `labelId?`, `labelText?`, `threadId?`, `threadIds?`, `labelData?`, `version?` |
+| `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) | `action` (`list`｜`assign`｜`unassign`｜`update`), `labelId?`, `labelText?`, `threadId?`, `threadIds?`, `threadType?` (`"dm"`｜`"group"`; default: each thread's stored type), `labelData?`, `version?` |
 | `zalo_group` | Leave, inspect, create, rename and change the membership of a group (`zalo_get_group_members` lists who is in one) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`｜`rename`), `groupId?`, `name?` (`create`, `rename`), `userIds?`, `userId?`, `silent?`, `confirm?` (must be `true` for `leave` and `remove_member`) |
 | `zalo_friend` | Friend requests and friends: relationship status, sent and received requests, send / accept / reject / cancel a request, list friends, set or remove a friend's nickname, list nicknames | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`｜`alias`｜`alias_list`), `userId?`, `message?`, `alias?` (empty removes), `limit?` |
 | `zalo_read` | Run one of Zalo Web's read-only endpoints that no other tool covers (sticker and GIF catalogs and search, profile rank, block list, nicknames, status…), or list them with their arguments | `name?` (omit to list), `args?` (by the read's argument names; ids are strings) |

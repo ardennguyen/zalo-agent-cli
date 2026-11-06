@@ -667,6 +667,7 @@ Liệt kê, gắn nhãn (`assign`), gỡ nhãn (`unassign`), hoặc cập nhật
 | `labelText` | string (tuỳ chọn) | Tên nhãn (không phân biệt hoa/thường khi `assign`/`unassign`) |
 | `threadId` | string (tuỳ chọn) | Một hội thoại cần gắn/gỡ nhãn |
 | `threadIds` | string[] (tuỳ chọn) | Nhiều hội thoại cần gắn/gỡ nhãn cùng lúc |
+| `threadType` | `"dm"` hoặc `"group"` (tuỳ chọn) | Loại của mọi `threadId`/`threadIds` đưa vào. Bỏ trống thì dùng loại đã lưu của từng hội thoại. Nhãn lưu một nhóm dưới dạng `g<groupId>`, như Zalo; gỡ nhãn một nhóm cũng xoá id nhóm trần mà các bản trước đã lưu |
 | `labelData`, `version` | tuỳ chọn | Dữ liệu nhãn đầy đủ và `version` cho `action: "update"` |
 
 ### `zalo_group`
@@ -720,7 +721,7 @@ Thực hiện một trong các lời gọi **thay đổi trạng thái** của Z
 | `dryRun` | boolean (tuỳ chọn) | Trả về yêu cầu sẽ gửi và không gửi gì; không cần `confirm` |
 | `confirm` | boolean (tuỳ chọn) | Phải là `true` cho một lời gọi thật; thiếu thì tool báo lỗi và không gọi Zalo |
 
-Kết quả: `{writes: [...]}` khi không có `name`; `{dryRun: true, request: {method, host, path, body}}` với `dryRun`; `{name, data}` với `data` là phần trả lời của Zalo khi gửi thật. Những thứ cố ý không có ở đây (các luồng tải lên mà zca-js đã làm hoặc client web không dùng, biên nhận, luồng tài khoản/thông tin đăng nhập, cuộc gọi, E2EE, …) và lý do nằm trong `skill/references/command-reference.md`, mục `write`.
+Kết quả: `{writes: [...]}` khi không có `name`; `{dryRun: true, request: {method, host, path, body}}` với `dryRun`; `{name, data}` với `data` là phần trả lời của Zalo khi gửi thật. Những thứ cố ý không có ở đây (các luồng tải lên mà engine đã tự làm hoặc client web không dùng, biên nhận, luồng tài khoản/thông tin đăng nhập, cuộc gọi, E2EE, …) và lý do nằm trong `skill/references/command-reference.md`, mục `write`.
 
 ### `zalo_friend`
 Kiểm tra, liệt kê và xử lý lời mời kết bạn, liệt kê bạn bè, đặt/xóa biệt danh — tương đương các lệnh `friend request-status`, `sent-requests`, `recommendations`, `add`, `accept`, `reject`, `undo-request`, `list`, `alias`, `alias-remove` và `alias-list`.
@@ -867,7 +868,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 ## Kiến trúc
 
 ```
-Zalo WebSocket (zca-js listener)
+Zalo WebSocket (listener của engine, `src/zalo/listener/`)
      ↓
 Ring Buffer (in-memory, mỗi thread giữ tối đa bufferMaxSize tin, tự dọn theo bufferMaxAge)
      ↓
@@ -883,7 +884,7 @@ Claude Code / Gemini / MCP Client
 - **Bền vững**: mọi tin nhắn nhận được đều ghi vào `~/.zalo-agent-cli/accounts/<ownId>/zalo.db` (qua `core/live-store.js`, cùng đường ghi với `listen` và mobile sync), kèm reaction, thu hồi, trạng thái đã nhận/đã xem, và cờ "đã rời nhóm". Restart **không** mất dữ liệu nữa — chỉ ring buffer (con trỏ đọc tăng dần) là trong bộ nhớ
 - **Một session / một account**: `mcp start` giữ `daemon.lock` như `listen`. Chạy cả hai cùng account sẽ bị từ chối kèm thông báo rõ, thay vì để Zalo âm thầm ngắt một trong hai socket
 - **Thu hồi / xoá**: `mcp start` áp dụng cả hai loại xoá của Zalo lên đúng tin nhắn bị xoá (thu hồi cho mọi người → event `undo`; xoá ở phía tôi → `message` với `msgType: chat.delete`), thay vì lưu thành tin mới; media đã tải về cũng bị xoá theo
-- **Tin nhắn của chính bạn**: `selfListen` đã bật, nên mọi tin bạn gửi từ điện thoại/Zalo Web/CLI đều được ghi vào cache (trước đây bị thư viện bỏ trước khi tới handler). Bộ lọc `watchThreads` chỉ ảnh hưởng tới buffer mà agent đọc
+- **Tin nhắn của chính bạn**: `selfListen` đã bật, nên mọi tin bạn gửi từ điện thoại/Zalo Web/CLI đều được ghi vào cache (trước đây bị bỏ trước khi tới handler). Bộ lọc `watchThreads` chỉ ảnh hưởng tới buffer mà agent đọc
 - **Bộ lọc chỉ lọc buffer**: `watchThreads` và bộ lọc nhiễu quyết định agent *thấy* gì; cache vẫn lưu đầy đủ
 - **Media auto-download**: ảnh/audio/video nhận được tự tải nền, tổ chức theo thư mục thread; `zalo_view_media` mở file có sẵn hoặc tải trước khi mở
 

@@ -97,7 +97,7 @@ zalo-mcp login   # hoặc: npm run login (từ bên trong thư mục zalo-mcp/)
 Mã QR sẽ hiển thị trên terminal, đồng thời một HTTP server cục bộ cũng phục vụ mã QR tại `http://127.0.0.1:18927/qr` (chỉ lắng nghe loopback; thêm `--qr-url` để mở trên mọi interface cho máy chủ không có giao diện đồ họa — lưu ý bất kỳ ai truy cập được URL này trước khi QR hết hạn đều có thể đăng nhập vào tài khoản). Quét mã bằng **trình Quét mã QR trong ứng dụng Zalo** (không dùng camera thường của điện thoại) và xác nhận trên điện thoại. Nếu bạn bấm từ chối trên điện thoại, CLI sẽ báo lỗi và thoát ngay thay vì chờ hết 60 giây timeout.
 
 > **Lưu trữ:** `~/.zalo-agent-cli/` (quyền `0600`).
-> **Rủi ro:** đây là API không chính thức (qua `zca-js`) — lạm dụng tự động hóa tần suất cao có thể khiến tài khoản bị khóa/ban. Không nên dùng tài khoản cá nhân chính của bạn.
+> **Rủi ro:** đây là API không chính thức (giao thức mà Zalo Web dùng) — lạm dụng tự động hóa tần suất cao có thể khiến tài khoản bị khóa/ban. Không nên dùng tài khoản cá nhân chính của bạn.
 
 ### B. Zalo Official Account (API chính thức v3.0)
 ```bash
@@ -398,10 +398,10 @@ Xem file mẫu tại [`.env.example`](.env.example).
 | `ZALO_MEDIA_DIR` | Thư mục gốc chứa media tải về `<threadId>/` và `_conversations.json` cho mọi lệnh (mặc định `<DATA_DIR>/<ownId>/media`; tương đương `--media-dir`) |
 | `ZALO_OA_DIR` | Thư mục chứa `oa-credentials.json` của Official Account (mặc định `~/.zalo-agent`; tương đương `--oa-dir`) |
 | `ZALO_AGENT_NO_UPDATE_CHECK` | Đặt bất kỳ giá trị nào để tắt kiểm tra phiên bản mới chạy ngầm |
-| `ZALO_API_VERSION` | Phiên bản giao thức công bố với Zalo (`zpw_ver` / `client_version`) trên cả HTTP và WebSocket. Mặc định `695` (giá trị Zalo Web hiện tại); đặt `685` nếu muốn quay về mặc định cũ của `zca-js`. Phải là số nguyên dương hợp lệ. |
-| `ZALO_QR_FLOW` | Cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự Zalo Web, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng phiên qua `jr.zaloapp.com` và `jr.chat.zalo.me`, kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm) hoặc `legacy` (của zca-js). Giá trị khác bị từ chối trước khi liên hệ Zalo. Chỉ đăng nhập QR đọc biến này |
+| `ZALO_API_VERSION` | Phiên bản giao thức công bố với Zalo (`zpw_ver` / `client_version`) trên cả HTTP và WebSocket. Mặc định `695` (giá trị Zalo Web hiện tại); đặt một giá trị cũ hơn như `685` nếu muốn quay lại. Phải là số nguyên dương hợp lệ. |
+| `ZALO_QR_FLOW` | Cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự Zalo Web, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng phiên qua `jr.zaloapp.com` và `jr.chat.zalo.me`, kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm). Đây là cách đăng nhập QR duy nhất: `legacy` đã bị bỏ ở 3.0.0 và, như mọi giá trị khác `official`, bị từ chối trước khi liên hệ Zalo. Chỉ đăng nhập QR đọc biến này |
 | `ZALO_NET_PROBE` | Thứ daemon hỏi để biết mạng còn hoạt động hay không khi socket đang đứt (mỗi 10 giây). Một URL, mặc định là một trang nhẹ của công cụ tìm kiếm toàn cầu; `off` coi như mạng luôn hoạt động và không liên hệ nơi nào ngoài Zalo |
-| `ZALO_JSON_MODE` | Được CLI tự động đặt ở chế độ `--json` và `mcp` để chặn log stdout của `zca-js`. Không cần tự đặt bằng tay |
+| `ZALO_JSON_MODE` | Được CLI tự động đặt ở chế độ `--json` và `mcp`, để stdout chỉ chứa kết quả dạng máy đọc được. Không cần tự đặt bằng tay |
 | `ZALO_MCP_HTTP_PORT` | Cổng fallback cho `--http` của `mcp start` và wrapper `zalo-mcp` (hỗ trợ hậu tố theo tài khoản `ZALO_MCP_HTTP_PORT_<ownId>`) |
 | `ZALO_MCP_HOST` | Địa chỉ bind mặc định cho `mcp start --http` (hỗ trợ `ZALO_MCP_HOST_<ownId>`) |
 | `ZALO_MCP_AUTH_TOKEN` | Bearer token cho `mcp start --http` và làm OAuth 2.0 client secret dự phòng (hỗ trợ `ZALO_MCP_AUTH_TOKEN_<ownId>`) |

@@ -521,6 +521,11 @@ describe("fake Zalo", () => {
                 const value = conn.headers[conn.rawHeaders[i].toLowerCase()];
                 assert.ok(String(value).includes(conn.rawHeaders[i + 1]), `${conn.rawHeaders[i]} is not in headers`);
             }
+            // The spelling as sent, not as `headers` lower-cases it. Red if rawHeaders were rebuilt from `headers`:
+            // the ws library names its key header `Sec-WebSocket-Key` (mixed case), and zca-js sends `prgama`.
+            const names = conn.rawHeaders.filter((_, i) => i % 2 === 0);
+            assert.ok(names.includes("Sec-WebSocket-Key"), `no case-preserved Sec-WebSocket-Key in ${names}`);
+            assert.ok(names.includes("prgama") && !names.includes("pragma"), `prgama is not spelled as sent: ${names}`);
         });
     });
 

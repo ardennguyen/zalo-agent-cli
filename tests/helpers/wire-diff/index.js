@@ -74,7 +74,8 @@ function installAnswers(fake, { reply, replies = {}, error } = {}) {
  * @returns {Promise<{
  *   own: object, zca: object, ctx: object, fake: ReturnType<typeof installFakeZalo>, standIn: boolean,
  *   run: (name: string, args?: unknown[]|((side: "zca"|"own") => unknown[]),
- *     fixture?: {reply?: unknown, replies?: Record<string, object|object[]>, error?: object}) => Promise<object>,
+ *     fixture?: {reply?: unknown, replies?: Record<string, object|object[]>, error?: object,
+ *       during?: (clock: ReturnType<typeof freezeTime>, side: "zca"|"own") => unknown}) => Promise<object>,
  *   close: () => void,
  * }>}
  *   `run` calls `api[name](...args)` on each engine in turn (zca first), each time on a freshly built engine
@@ -83,6 +84,14 @@ function installAnswers(fake, { reply, replies = {}, error } = {}) {
  *   side made (tests/helpers/wire-diff/normalize.js), the value it returned, or the `{message, code}` it threw.
  *   Pass `args` as a function when an engine may change them (it gets a fresh array per side). The answers
  *   replace any route a test set on `fake` before.
+ *
+ *   The clock is installed before each side's engine is built, and that engine gets it as `{now: clock.now}`
+ *   (the `s.now()` injection of design 1.2), so a clock the engine captures while being built is the frozen
+ *   one too. Time stands still for the whole call: a method that waits until `s.now()` has moved (an upload's
+ *   replay-last-chunk delay, a settle timeout) moves on only when the test moves the clock. `fixture.during`
+ *   is called with the run's clock (`advance(ms)`, `set(t)`, `now()`) and the side once the call has started,
+ *   and the call's result is awaited after it returns; node:test's timers and `setTimeout` keep real time, so
+ *   `during` can wait for a request with them. A `during` that throws fails the run.
  */
 export async function openPair({
     fake: fakeOptions = {},
@@ -99,34 +108,66 @@ export async function openPair({
     try {
         const { ctx, serviceMap, wsUrls } = await loginOnce(zaloOptions);
         const engines = { zca: zcaEngine, own: ownEngine };
-        const build = (side) => resolved.createApi(ctx, serviceMap, wsUrls, { engine: engines[side] });
+        // `now` is the session clock injection of design 1.2 (`s.now()`); zca-js ignores it and reads the stubbed
+        // `Date.now`. The engines built here, outside any run, keep the real clock: they back `pair.own`/`pair.zca`.
+        const build = (side, clock) =>
+            resolved.createApi(
+                ctx,
+                serviceMap,
+                wsUrls,
+                clock ? { engine: engines[side], now: clock.now } : { engine: engines[side] },
+            );
         const apis = { zca: await build("zca"), own: await build("own") };
 
         async function run(name, args = [], fixture = {}) {
             const out = { name, args: normalizeValue(typeof args === "function" ? args("zca") : args) };
             for (const side of ["zca", "own"]) {
-                apis[side] = await build(side);
                 fake.clearRoutes();
                 installAnswers(fake, fixture);
                 const from = fake.requests.length;
+                // The clock, Math.random and the zone go in BEFORE the engine is built: an engine that binds
+                // `Date.now` or seeds its clientId source while it is being built must see t0, not the real time.
                 const zone = process.env.TZ;
                 process.env.TZ = tz;
                 const clock = freezeTime(t0);
                 const random = seedRandom(seed);
                 let result;
                 let error = null;
+                let harnessError = null;
                 try {
+                    try {
+                        apis[side] = await build(side, clock);
+                    } catch (e) {
+                        // An engine that cannot be built is not a difference to record: the run fails.
+                        harnessError = e;
+                        throw e;
+                    }
                     const fn = apis[side][name];
                     if (typeof fn !== "function") throw new Error(`the ${side} engine has no method ${name}`);
-                    result = await fn.apply(apis[side], typeof args === "function" ? args(side) : args);
+                    const callArgs = typeof args === "function" ? args(side) : args;
+                    const call = Promise.resolve(fn.apply(apis[side], callArgs));
+                    if (typeof fixture.during === "function") {
+                        // Handled here so a call that fails while `during` still waits is not an unhandled rejection;
+                        // `await call` below still sees the failure.
+                        call.catch(() => {});
+                        try {
+                            await fixture.during(clock, side);
+                        } catch (e) {
+                            harnessError = e;
+                            throw e;
+                        }
+                    }
+                    result = await call;
                 } catch (e) {
-                    error = normalizeError(e);
+                    if (!harnessError) error = normalizeError(e);
                 } finally {
                     random.restore();
                     clock.restore();
                     if (zone === undefined) delete process.env.TZ;
                     else process.env.TZ = zone;
                 }
+                // A failing build or `during` is the harness's or the test's problem, not something the call did.
+                if (harnessError) throw harnessError;
                 out[side] = {
                     requests: fake.requests.slice(from).map((r) => normalizeRequest(r, fake)),
                     result: error ? undefined : normalizeResult(result),

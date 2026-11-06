@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { decodeFrame } from "../../src/core/sync-v2/index.js";
@@ -40,6 +41,8 @@ import { normalizeError, normalizeUpgrade, normalizeValue } from "../helpers/wir
 import { parseMultipart, readBody } from "../helpers/wire-diff/body.js";
 import { resolveCreateApi, standInCreateApi } from "../helpers/wire-diff/engines.js";
 import { keyFrame, sealFrameData } from "../helpers/fake-zalo/frames.js";
+import { settle } from "../helpers/wire-diff/listener-pair.js";
+import { installFakeZalo } from "./fake-zalo-session.js";
 
 const GROUP = "1000000000000000001";
 const PEER = "2000000000000000002";
@@ -709,5 +712,126 @@ describe("wire-diff harness", () => {
             assert.deepEqual([kf.readUInt16LE(1), kf[3], top.encrypt], [1, 1, 2]);
             assert.deepEqual(decodeFrame(top, top.key).data, { qCmds: [1] });
         });
+    });
+});
+
+describe("wire-diff harness: the run's clock", () => {
+    /**
+     * An engine in the shape of design 1.2: `s.now()` is `opts.now ?? Date.now`, bound while the engine is built,
+     * and its clientId source is seeded from the clock at build time too. `wait` resolves only once `s.now()` has
+     * moved by `ms`, as an upload's replay-last-chunk delay does.
+     */
+    function clockEngine(_ctx, _map, _ws, opts = {}) {
+        const now = opts.now ?? Date.now;
+        const bound = Date.now;
+        let last = Date.now();
+        return {
+            stamp: async () => ({
+                injected: typeof opts.now === "function",
+                now: now(),
+                bound: bound(),
+                next: (last = Math.max(now(), last + 1)),
+            }),
+            wait: async (ms, tries = 400) => {
+                const from = now();
+                for (let i = 0; i < tries && now() - from < ms; i++) await new Promise((r) => setTimeout(r, 5));
+                return now() - from >= ms ? "moved" : "stood still";
+            },
+        };
+    }
+
+    it("installs the clock before it builds each engine and injects it: a clock bound at build time reads t0", async () => {
+        const pair = await openPair({ createApi: clockEngine });
+        try {
+            const rec = await pair.run("stamp");
+            // Red if run() builds the engine before freezing time: `now`, `bound` and `next` would be the real
+            // time (and `next` would differ between the sides), or if `now` were not passed to createApi.
+            const want = { injected: true, now: T0, bound: T0, next: T0 + 1 };
+            assert.deepEqual(rec.zca.result, want);
+            assert.deepEqual(rec.own.result, want);
+            assertSameWire(rec, []);
+        } finally {
+            pair.close();
+        }
+    });
+
+    it("hands the run's clock to `during`, so a wait measured against s.now() can be moved on", async () => {
+        const pair = await openPair({ createApi: clockEngine });
+        try {
+            const sides = [];
+            const rec = await pair.run("wait", [5000], {
+                during: (clock, side) => {
+                    sides.push(side);
+                    clock.advance(5000);
+                },
+            });
+            // Red if `during` were not called, or got another clock than the one the engine reads.
+            assert.deepEqual(sides, ["zca", "own"]);
+            assert.equal(rec.zca.result, "moved");
+            assert.equal(rec.own.result, "moved");
+            // Without `during` time stands still for the whole call.
+            assert.equal((await pair.run("wait", [5, 10])).own.result, "stood still");
+            await assert.rejects(
+                pair.run("stamp", [], {
+                    during: () => {
+                        throw new Error("the test's own mistake");
+                    },
+                }),
+                /the test's own mistake/,
+            );
+        } finally {
+            pair.close();
+        }
+    });
+});
+
+describe("wire-diff harness: listener settle", () => {
+    it("after a push, waits for the first event even when it comes later than one quiet interval", async () => {
+        let n = 0;
+        setTimeout(() => (n = 2), 80);
+        // Red with a settle that returns after the first quiet interval: n would still be 0.
+        await settle(() => n, { quietMs: 10, maxMs: 2000, from: 0, growMs: 1000 });
+        assert.equal(n, 2);
+    });
+
+    it("waits until both listeners emitted as many events, up to its limit", async () => {
+        let zca = 1;
+        const own = 2;
+        setTimeout(() => (zca = 2), 80);
+        // Red without the balance check: the count is stable from the start, so it would return before zca caught up.
+        await settle(() => zca + own, { quietMs: 10, maxMs: 2000, balanced: () => zca === own });
+        assert.equal(zca, 2);
+        const t0 = performance.now();
+        await settle(() => 1, { quietMs: 10, maxMs: 100, balanced: () => false });
+        assert.ok(performance.now() - t0 >= 95, "a lasting imbalance ends at maxMs");
+    });
+
+    it("a frame nobody reacts to costs growMs, not maxMs", async () => {
+        const t0 = performance.now();
+        await settle(() => 0, { quietMs: 10, maxMs: 2000, from: 0, growMs: 50 });
+        assert.ok(performance.now() - t0 < 1000);
+    });
+});
+
+describe("wire-diff harness: the fake's early params", () => {
+    it("lets a request whose params no session key opens reach a raw route, with params null", async () => {
+        const fake = installFakeZalo();
+        try {
+            const host = fake.serviceMap.group[0];
+            let seen;
+            fake.rawRoute(
+                (r) => r.path.endsWith("/negative"),
+                (r) => {
+                    seen = r.params;
+                    return new Response("answered by the raw route", { status: 200 });
+                },
+            );
+            // Red if the early decrypt threw again: the fetch would reject before the raw route ran.
+            const res = await fetch(`${host}/api/group/negative?params=not-a-session-cipher`);
+            assert.equal(await res.text(), "answered by the raw route");
+            assert.equal(seen, null);
+        } finally {
+            fake.uninstall();
+        }
     });
 });

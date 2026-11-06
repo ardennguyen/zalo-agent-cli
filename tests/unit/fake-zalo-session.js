@@ -175,8 +175,13 @@ function mergeSettings(base, over) {
  *   Each request also keeps what the differential harness (tests/helpers/wire-diff) compares byte for byte:
  *   `url` (the raw string), `queryOrder` (the query names in wire order), `rawParams` (the encrypted `params`
  *   string from the query or the form), `parts` (a multipart body split by its boundary, else null) and
- *   `rawBody` (the body's bytes; not enumerable, so a printed request stays readable). A urlencoded body sent
- *   as a string or bytes fills `form` too, as URLSearchParams always did.
+ *   `rawBody` (the body's bytes; not enumerable, so a printed request stays readable).
+ *
+ *   Three intended behavior changes came with that recording (WP0), on top of the additions: `headers` gains
+ *   the `content-type` a real fetch adds for a FormData or URLSearchParams body (what the server receives);
+ *   a urlencoded body sent as a string or bytes fills `form` too, as URLSearchParams always did; and an API
+ *   host's `params` are opened before the raw routes run, so a raw route sees them (params the session key
+ *   cannot open stay null and the request still reaches the raw routes).
  *
  *   An answer (`routeAnswer`, `routeSequence`, `answer`) is one of: `{data}` a sealed success; `{inner}` a
  *   sealed inner envelope (`{error_code, error_message, data?}`), for an inner error code; `{outer}` a plain
@@ -298,7 +303,15 @@ export function installFakeZalo({
         if (req.rawParams === null && typeof req.form?.params === "string") req.rawParams = req.form.params;
         // An API call's params are opened before any route sees the request, so a raw route's handler and the
         // record both have them. The login host is not an API host: its params use the login cipher.
-        if (hosts.has(url.host) && req.rawParams) req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, req.rawParams));
+        // Params the session key does not open stay null here, so the request still reaches the raw routes (a
+        // negative test answers it there); only the plain routes below insist on opening them.
+        if (hosts.has(url.host) && req.rawParams) {
+            try {
+                req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, req.rawParams));
+            } catch {
+                req.params = null;
+            }
+        }
 
         for (const raw of rawRoutes) if (raw.match(req)) return raw.handler(req);
 

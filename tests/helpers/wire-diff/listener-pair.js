@@ -7,6 +7,7 @@
  * A test that uses it must import tests/helpers/sandbox.js first. Every id here is fake.
  */
 import { once } from "node:events";
+import { performance } from "node:perf_hooks";
 import { installOfficialPulls } from "../../../src/zalo/pulls.js";
 import { installFakeZalo } from "../../unit/fake-zalo-session.js";
 import { startFakeSocket } from "../fake-zalo/socket.js";
@@ -37,21 +38,40 @@ function pushStep(sock, frame) {
 }
 
 /**
- * Wait until nothing new happened for `quietMs` (no event on either listener, no frame from either client).
+ * Wait until a frame's effects have landed on both listeners, or `maxMs` has passed.
+ *
+ * With `from` (the count before a push) it first waits until the count has grown at all, for at most `growMs`: a
+ * sealed frame is opened on the threadpool (crypto.subtle, inflate), so on a loaded machine its first event can
+ * take longer than one quiet interval, and a count that has not moved yet does not mean the frame is done. A frame
+ * both listeners ignore costs `growMs`. Then it waits until the count stayed the same for `quietMs` and
+ * `balanced()` holds (both listeners emitted as many events), so one side that is still decoding is waited for.
+ * An imbalance that lasts (a real difference) ends at `maxMs`, and the comparison reports it.
+ *
+ * Measured with `performance.now()`, so a test that froze `Date` does not stop it.
  *
  * @param {() => number} count - grows with every event and frame
- * @param {number} quietMs
- * @param {number} maxMs
+ * @param {object} opts
+ * @param {number} opts.quietMs
+ * @param {number} opts.maxMs
+ * @param {number|null} [opts.from] - the count before the push; null when nothing was pushed
+ * @param {number} [opts.growMs] - how long to wait for the first change after a push
+ * @param {() => boolean} [opts.balanced] - true when both sides have caught up with each other
  * @returns {Promise<void>}
  */
-async function settle(count, quietMs, maxMs) {
-    const until = Date.now() + maxMs;
-    let seen = -1;
-    while (Date.now() < until) {
+export async function settle(count, { quietMs, maxMs, from = null, growMs = 250, balanced = () => true }) {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const started = performance.now();
+    const until = started + maxMs;
+    if (from !== null) {
+        const growUntil = Math.min(until, started + growMs);
+        while (count() === from && performance.now() < growUntil) await sleep(5);
+    }
+    let seen = count();
+    while (performance.now() < until) {
+        await sleep(quietMs);
         const now = count();
-        if (now === seen) return;
+        if (now === seen && balanced()) return;
         seen = now;
-        await new Promise((r) => setTimeout(r, quietMs));
     }
 }
 
@@ -65,6 +85,9 @@ async function settle(count, quietMs, maxMs) {
  * @param {"own"|"zca"} [opts.ownEngine] - what plays the "own" side; "zca" for the harness's self-test
  * @param {"own"|"zca"} [opts.zcaEngine]
  * @param {number} [opts.quietMs] - how long nothing must happen for a frame's events to count as settled
+ * @param {number} [opts.sealedQuietMs] - the same after a frame sealed as encrypt 1-3 (inflated or decrypted
+ *   off the main thread, so its events can come later)
+ * @param {number} [opts.growMs] - how long to wait, after a push, for anything to happen at all
  * @param {Function} [opts.createApi]
  * @returns {Promise<{
  *   zca: object, own: object, sockets: {zca: object, own: object},
@@ -86,6 +109,8 @@ export async function openListenerPair({
     ownEngine = "own",
     zcaEngine = "zca",
     quietMs = 25,
+    sealedQuietMs = 100,
+    growMs = 250,
     createApi,
 } = {}) {
     const resolved = createApi ? { createApi } : await resolveCreateApi();
@@ -126,6 +151,8 @@ export async function openListenerPair({
 
     const count = () =>
         recorders.zca.count() + recorders.own.count() + sockets.zca.received.length + sockets.own.received.length;
+    const balanced = () => recorders.zca.count() === recorders.own.count();
+    const wait = (opts = {}) => settle(count, { quietMs, maxMs: 2000, balanced, growMs, ...opts });
     const snapshot = () => ({
         zca: recorders.zca.events.slice(),
         own: recorders.own.events.slice(),
@@ -146,18 +173,20 @@ export async function openListenerPair({
             apis.zca.listener.start();
             apis.own.listener.start();
             await Promise.all([...connected, sockets.zca.waitForConnection(), sockets.own.waitForConnection()]);
-            await settle(count, quietMs, 2000);
+            await wait();
         },
         async play(script) {
             for (const frame of script) {
+                const from = count();
                 const sent = [pushStep(sockets.zca, frame), pushStep(sockets.own, frame)];
                 if (!sent[0] || !sent[1]) throw new Error("wire-diff: a socket was not open to play a frame on");
-                await settle(count, quietMs, 2000);
+                const sealed = !frame.raw && typeof frame.text !== "string" && frame.encrypt >= 1;
+                await wait({ from, quietMs: sealed ? Math.max(quietMs, sealedQuietMs) : quietMs });
             }
             return snapshot();
         },
         snapshot,
-        settle: () => settle(count, quietMs, 2000),
+        settle: () => wait(),
         close,
     };
 }

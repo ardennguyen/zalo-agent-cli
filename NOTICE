@@ -73,9 +73,7 @@ license itself requires that shared modifications stay under CC BY-NC-SA
 5. Third-party notices
 -----------------------------------------------------------------------
 
-Early versions of this project began from zalo-agent-cli and used zca-js
-(https://github.com/RFS-ADRENO/zca-js,
-Copyright (c) 2024 - 2025 RFS-ADRENO, truong9c2208, JustKemForFun);
+Early versions of this project began from zalo-agent-cli and used zca-js;
 the current engine is an independent implementation.
 
 zalo-agent-cli, the earlier MIT-licensed project

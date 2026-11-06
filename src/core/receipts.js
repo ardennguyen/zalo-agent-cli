@@ -27,22 +27,19 @@
  *     account uid before any handler sees it, so passing its message through
  *     sends our uid where the web sends "0".
  *
- * Hence this module: the requests are built here, on zca-js's own apiFactory,
- * the pattern src/core/sync-v2/board.js uses for calls zca-js lacks.
+ * Hence this module: the requests are built here, on the kernel's bound
+ * helpers, the pattern the other hand-built calls (./sync-v2/gid.js) use.
  *
  * Read receipts are kept OFF on purpose, so nothing here sends seenv2 on its
  * own: `conv read` is the only caller. The listener's automatic receipt is
  * deliveredv2 only -- what every Zalo client sends when a message arrives.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { boundUtils } from "../zalo/kernel/bound.js";
+import { THREAD_TYPE } from "../zalo/enums.js";
 import { LIVE_MSG_TYPES } from "./sync-v2/message-types.js";
 
-const require = createRequire(import.meta.url);
-
-/** zca-js ThreadType. */
-const THREAD_USER = 0;
-const THREAD_GROUP = 1;
+const THREAD_USER = THREAD_TYPE.USER;
+const THREAD_GROUP = THREAD_TYPE.GROUP;
 
 /** The socket command a message arrives on, which its receipt echoes as `cmd`. */
 export const RECEIPT_CMD = Object.freeze({ [THREAD_USER]: 501, [THREAD_GROUP]: 521 });
@@ -70,21 +67,14 @@ export const DELIVERED_QUEUE_DELAY_MS = 150;
  */
 const NO_RECEIPT_TYPES = new Set(["chat.delete", "chat.undo", "chat.e2ee.replace"]);
 
-let _utils = null;
-/** zca-js internals, located the way ./sync-v2/board.js and ./sync-v2/gid.js do it. */
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
-
 /**
  * POST `params=<session-AES(JSON)>` to a Zalo endpoint and resolve its answer.
  *
- * The shared transport for calls zca-js lacks or builds wrong: the receipts
- * here, and `conv pin` / `conv archive`. It runs on zca-js's own apiFactory, so
- * the session key, headers, cookies, proxy and `zpw_ver`/`zpw_type` are exactly
- * the ones every zca-js call uses, and an `error_code` other than 0 throws.
+ * The shared transport for calls the session object lacks or builds wrong: the
+ * receipts here, and `conv pin` / `conv archive`. It runs on the kernel's bound
+ * helpers (src/zalo/kernel/bound.js), so the session key, headers, cookies, proxy
+ * and `zpw_ver`/`zpw_type` are the ones every session call uses, and an
+ * `error_code` other than 0 throws.
  *
  * @param {object} api - a logged-in zca-js api (exposes getContext and zpwServiceMap)
  * @param {object} opts
@@ -95,17 +85,14 @@ function zcaUtils() {
  * @returns {Promise<any>} the decrypted response `data`
  */
 export async function zaloPost(api, { url, query = {}, params, signal }) {
-    const call = zcaUtils().apiFactory()((_api, ctx, utils) => async () => {
-        const enc = utils.encodeAES(JSON.stringify(params(ctx)));
-        if (!enc) throw new Error("Failed to encrypt params");
-        const response = await utils.request(utils.makeURL(url, query), {
-            method: "POST",
-            body: new URLSearchParams({ params: enc }),
-            ...(signal ? { signal } : {}),
-        });
-        return utils.resolve(response);
-    })(api.getContext(), api);
-    return call();
+    const utils = boundUtils(api);
+    const enc = utils.encodeAES(JSON.stringify(params(api.getContext())));
+    const response = await utils.request(utils.makeURL(url, query), {
+        method: "POST",
+        body: new URLSearchParams({ params: enc }),
+        ...(signal ? { signal } : {}),
+    });
+    return utils.resolve(response);
 }
 
 /** A numeric frame field as the web sends it: the value, or -1 when absent. */

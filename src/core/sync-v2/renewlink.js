@@ -18,20 +18,11 @@
  *      the sync payload and are preserved on the attachment record, but only
  *      the Zalo mobile client can act on them.
  *
- * Built on zca-js's apiFactory so the authenticated envelope matches what the
- * file service expects, the same way ./gid.js reaches /api/gid/decrypt.
+ * Built on the kernel's bound session helpers so the authenticated envelope
+ * matches what the file service expects, the same way ./gid.js reaches
+ * /api/gid/decrypt.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-
-const require = createRequire(import.meta.url);
-
-let _utils = null;
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
+import { boundUtils } from "../../zalo/kernel/bound.js";
 
 /**
  * Zalo Web strips its internal `jxl` marker before sending a URL back for
@@ -51,13 +42,14 @@ function isGroupThread(threadType) {
 /**
  * Build a renewlink caller bound to this session.
  *
- * @param {object} api - logged-in zca-js api
+ * @param {object} api - logged-in session api
  * @returns {(req: object) => Promise<object>}
  */
 export function makeRenewLink(api) {
-    const zu = zcaUtils();
     const base = `${api.zpwServiceMap.file[0]}/api/message/renewlink`;
-    return zu.apiFactory()((_api, ctx, utils) => async ({ threadId, threadType, msgType, msgInfo, clientId }) => {
+    const utils = boundUtils(api);
+    const ctx = api.getContext();
+    return async ({ threadId, threadType, msgType, msgInfo, clientId }) => {
         const info = {
             ...msgInfo,
             normalUrl: removeJxlProtocol(msgInfo.normalUrl),
@@ -78,13 +70,12 @@ export function makeRenewLink(api) {
             isGroup: isGroupThread(threadType) ? 1 : 0,
         };
         const enc = utils.encodeAES(JSON.stringify(params));
-        if (!enc) throw new Error("failed to encrypt renewlink params");
         const resp = await utils.request(utils.makeURL(base), {
             method: "POST",
             body: new URLSearchParams({ params: enc }),
         });
         return utils.resolve(resp);
-    })(api.getContext(), api);
+    };
 }
 
 /**

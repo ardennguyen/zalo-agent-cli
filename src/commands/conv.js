@@ -3,7 +3,7 @@
  * mute, unmute, read, unread, delete.
  */
 
-import { MuteAction } from "zca-js";
+import { MUTE_ACTION } from "../zalo/enums.js";
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
@@ -473,7 +473,7 @@ export function registerConvCommands(program, deps = {}) {
                 // time: `conv mute` had never once worked. Same defect, and
                 // the same shape, as the `msg delete` arity bug.
                 const result = await getApi().setMute(
-                    { duration: Number(opts.duration), action: MuteAction.MUTE },
+                    { duration: Number(opts.duration), action: MUTE_ACTION.MUTE },
                     threadId,
                     Number(opts.type),
                 );
@@ -491,7 +491,7 @@ export function registerConvCommands(program, deps = {}) {
                 // Same arity bug as `mute` above. Unmute is an ACTION, not a
                 // duration of 0 -- zca-js derives the duration itself once
                 // action is UNMUTE.
-                const result = await getApi().setMute({ action: MuteAction.UNMUTE }, threadId, Number(opts.type));
+                const result = await getApi().setMute({ action: MUTE_ACTION.UNMUTE }, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Conversation unmuted"));
             } catch (e) {
                 error(e.message);

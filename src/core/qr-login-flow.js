@@ -8,7 +8,7 @@
  * once, up to `MAX_CODES` codes, and then the login ends. Either way it never waits forever.
  */
 
-import { LoginQRCallbackEventType } from "zca-js";
+import { QR_EVENT } from "../zalo/enums.js";
 import { loginWithQR } from "./zalo-client.js";
 import { displayQR, getQRPath } from "../utils/qr-display.js";
 import { noteQrExpired, noteQrOutcome, noteQrScanned, startQrServer } from "../utils/qr-http-server.js";
@@ -95,7 +95,7 @@ export async function runQrLogin({
 
     const onEvent = (event) => {
         switch (event.type) {
-            case LoginQRCallbackEventType.QRCodeGenerated:
+            case QR_EVENT.QR_GENERATED:
                 closeOffer();
                 codes++;
                 displayQR(event);
@@ -103,7 +103,7 @@ export async function runQrLogin({
                 if (!server) server = startQrServer(getQRPath(), qrPort, [qrPort, 8080, 3000, 9000], qrUrl);
                 break;
 
-            case LoginQRCallbackEventType.QRCodeScanned: {
+            case QR_EVENT.QR_SCANNED: {
                 // What Zalo Web shows the moment the phone scans: the account's name.
                 const name = event.data?.display_name || "unknown";
                 noteQrScanned(event.data?.display_name || "");
@@ -116,13 +116,13 @@ export async function runQrLogin({
                 break;
             }
 
-            case LoginQRCallbackEventType.QRCodeDeclined:
+            case QR_EVENT.QR_DECLINED:
                 // The login rejects right after this; this is the immediate heads-up.
                 if (jsonMode) console.log(JSON.stringify({ event: "qr_declined" }));
                 else warning("Login declined on phone.");
                 break;
 
-            case LoginQRCallbackEventType.QRCodeExpired:
+            case QR_EVENT.QR_EXPIRED:
                 onExpired(event.actions);
                 break;
 

@@ -58,7 +58,7 @@
  * it. Zalo Web does not verify offline batches either (`skip_offline_verify`, bundle @~13896600): acknowledging
  * them is this client's own choice, so the server can drop what it delivered.
  */
-import { GroupMessage, UserMessage, Undo } from "zca-js";
+import { GroupMessage, UserMessage, Undo } from "../zalo/listener/models.js";
 import {
     getMessageById,
     getMessages,
@@ -311,7 +311,7 @@ export function createSelfHeal({
         const out = { added: [], untouched: 0, removals: 0, newest: null, oldestTs: null, older: 0, failed: 0 };
         for (const raw of rows) {
             if (!raw || typeof raw !== "object") continue;
-            const row = { ...raw }; // zca-js's models rewrite their data in place
+            const row = { ...raw }; // the message models rewrite their data in place
             const ts = Number(row.ts);
             if (Number.isFinite(ts) && ts > 0) out.oldestTs = out.oldestTs === null ? ts : Math.min(out.oldestTs, ts);
             // lastId means "after this" in every use Zalo Web makes of it; a
@@ -325,7 +325,7 @@ export function createSelfHeal({
                     !Array.isArray(content) &&
                     Object.hasOwn(content, "deleteMsg")
                 ) {
-                    // A recall: zca-js turns exactly this shape into its `undo` event.
+                    // A recall: the listener turns exactly this shape into its `undo` event.
                     if (storeLiveUndo(new Undo(ownId, row, isGroup)).stored) out.removals++;
                     continue;
                 }

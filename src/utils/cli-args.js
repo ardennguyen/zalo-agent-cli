@@ -5,7 +5,7 @@
  * Each throws an Error whose message says what was accepted, so the command's
  * catch block can print it as the usage error. None touches Zalo.
  */
-import { ReportReason, UpdateLangAvailableLanguages } from "zca-js";
+import { REPORT_REASON, UPDATE_LANG } from "../zalo/enums.js";
 
 /**
  * `--type <n>`: 0 = user, 1 = group.
@@ -40,21 +40,21 @@ export function parseOnOff(value, what = "value") {
  * `vi` / `en`, as zca-js's `updateLang` takes them (it sends `VI` / `EN`).
  *
  * @param {string} value
- * @returns {string} an UpdateLangAvailableLanguages value
+ * @returns {string} an UPDATE_LANG value
  * @throws {Error} for any other language
  */
 export function parseLanguage(value) {
     const key = String(value).trim().toUpperCase();
-    if (key in UpdateLangAvailableLanguages) return UpdateLangAvailableLanguages[key];
-    throw new Error(`language must be one of: ${Object.keys(UpdateLangAvailableLanguages).join(", ").toLowerCase()}`);
+    if (key in UPDATE_LANG) return UPDATE_LANG[key];
+    throw new Error(`language must be one of: ${Object.keys(UPDATE_LANG).join(", ").toLowerCase()}`);
 }
 
 /** The reasons `msg report` accepts, by name. */
 export const REPORT_REASONS = Object.freeze({
-    sensitive: ReportReason.Sensitive,
-    annoy: ReportReason.Annoy,
-    fraud: ReportReason.Fraud,
-    other: ReportReason.Other,
+    sensitive: REPORT_REASON.SENSITIVE,
+    annoy: REPORT_REASON.ANNOY,
+    fraud: REPORT_REASON.FRAUD,
+    other: REPORT_REASON.OTHER,
 });
 
 /**

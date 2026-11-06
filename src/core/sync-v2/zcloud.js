@@ -66,8 +66,7 @@
  * unit-tested against that client's own cipher, but this module's tests do not
  * talk to the live server.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { boundUtils } from "../../zalo/kernel/bound.js";
 import {
     backfillCloudZKeys,
     getCloudItemByMsgId,
@@ -80,16 +79,7 @@ import {
 } from "../db.js";
 import { decryptZCloud, encodeZCloudParams } from "./zcloud-cipher.js";
 
-const require = createRequire(import.meta.url);
-
-let _utils = null;
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
-
-/** Where the viewer key is issued: Zalo Web's authDomain, zca-js's login host. */
+/** Where the viewer key is issued: Zalo Web's authDomain, the session's login host. */
 const AUTH_DOMAIN = "https://wpa.chat.zalo.me";
 /** Zalo Web's fallback when the service map lacks `zcloud` (getMediaCloudDomain). */
 const ZCLOUD_DOMAIN = "https://zcld.chat.zalo.me";
@@ -168,9 +158,9 @@ function cloudDomains(api) {
     return urls.length ? urls : [ZCLOUD_DOMAIN];
 }
 
-/** Run `fn(ctx, utils)` inside zca-js's authenticated request envelope. */
-function withZca(api, fn) {
-    return zcaUtils().apiFactory()((_api, ctx, utils) => fn(ctx, utils))(api.getContext(), api);
+/** Run `fn(ctx, utils)` with the session's bound request helpers (src/zalo/kernel/bound.js). */
+async function withSession(api, fn) {
+    return fn(api.getContext(), boundUtils(api));
 }
 
 // ── the viewer key ──────────────────────────────────────────────────────────
@@ -225,7 +215,7 @@ export async function getFamilyViewerKey(api) {
 async function fetchViewerKey(api, path, source) {
     let data;
     try {
-        data = await withZca(api, async (_ctx, utils) => {
+        data = await withSession(api, async (_ctx, utils) => {
             const resp = await utils.request(utils.makeURL(`${AUTH_DOMAIN}${path}`), { method: "GET" });
             return utils.resolve(resp);
         });
@@ -318,7 +308,7 @@ async function decodeZCloudReply(resp, enk) {
 
 /** One GET to zCloud with a given key pair, exactly as Zalo Web builds it. */
 function sendZCloud(api, path, params, key, base) {
-    return withZca(api, async (_ctx, utils) => {
+    return withSession(api, async (_ctx, utils) => {
         let url = utils.makeURL(`${base}${path}`);
         if (params) url += `&params=${encodeZCloudParams(params, key.enk)}`;
         const resp = await utils.request(url, { method: "GET", headers: { "cloud-viewer-key": key.viewerKey } });

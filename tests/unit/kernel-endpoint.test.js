@@ -1,0 +1,64 @@
+/**
+ * The table runner (src/zalo/kernel/endpoint.js) with an endpoint's `bigIdKeys`: the reply is opened with the
+ * session key and parsed through json-ids.js `preParse`, so a 19-digit id under a listed key arrives as a string
+ * with every digit. Every id, key and host here is fake.
+ */
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { sealSession } from "../../src/zalo/kernel/cipher.js";
+import { callEndpoint } from "../../src/zalo/kernel/endpoint.js";
+
+const KEY = Buffer.alloc(16, 9).toString("base64");
+
+/** A fake id past Number.MAX_SAFE_INTEGER whose twin (…678) rounds to the same double. */
+const BIG_ID = "4123456789012345679";
+
+/** A logged-in api whose transport answers every call with `inner`, sealed with the session key. */
+function apiAnswering(innerText) {
+    const seen = [];
+    const ctx = {
+        API_TYPE: 30,
+        API_VERSION: 695,
+        secretKey: KEY,
+        imei: "fake-imei",
+        userAgent: "Mozilla/5.0 (offline test)",
+        options: {
+            polyfill: async (url, init) => {
+                seen.push({ url: String(url), ...init });
+                const body = JSON.stringify({ error_code: 0, error_message: "", data: sealSession(KEY, innerText) });
+                return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+            },
+        },
+    };
+    return { api: { getContext: () => ctx, zpwServiceMap: { chat: ["https://chat.zalo.invalid"] } }, seen };
+}
+
+/** What the server writes: the ids as bare JSON numbers, at the top and inside a list. */
+const INNER = `{"error_code":0,"error_message":"","data":{"msgId":${BIG_ID},"msgIds":[${BIG_ID},7],"ts":1700000000000}}`;
+
+const DEF = {
+    host: "chat",
+    path: "/api/fake/read",
+    method: "get",
+    body: () => ({ imei: "fake-imei" }),
+};
+
+describe("callEndpoint with bigIdKeys", () => {
+    it("keeps every digit of a 19-digit id under a listed key, as a string", async () => {
+        const { api, seen } = apiAnswering(INNER);
+        const data = await callEndpoint(api, { ...DEF, bigIdKeys: ["msgId", "msgIds"] }, {});
+        assert.equal(seen.length, 1);
+        assert.equal(new URL(seen[0].url).pathname, "/api/fake/read");
+        // Red if the reply is parsed with a plain JSON.parse: the id would come back as the rounded number.
+        assert.equal(data.msgId, BIG_ID);
+        assert.deepEqual(data.msgIds, [BIG_ID, "7"], "every bare integer in a listed array becomes a string");
+        assert.equal(data.ts, 1700000000000, "a key that is not listed stays a number");
+    });
+
+    it("loses the digits without bigIdKeys (the control: the reply above really carries a number)", async () => {
+        const { api } = apiAnswering(INNER);
+        const data = await callEndpoint(api, DEF, {});
+        assert.equal(typeof data.msgId, "number");
+        assert.notEqual(String(data.msgId), BIG_ID, "a double cannot hold this id");
+    });
+});

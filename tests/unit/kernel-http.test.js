@@ -227,6 +227,41 @@ describe("httpRequest: redirects", () => {
         }
     });
 
+    it("drops a caller's own content type on the GET a 302 turns a POST into, and keeps it on a 307", async () => {
+        // The case above leaves the content type to the transport. Here the caller writes it, in its own spelling:
+        // the hop builds its headers from the caller's, so a GET hop that kept it would carry a content type for a
+        // body it does not have. Red if the 302 hop keeps "Content-Type", or if the 307 hop loses it.
+        for (const [status, kept] of [
+            [302, false],
+            [307, true],
+        ]) {
+            const { ctx, seen } = session((url) =>
+                url.endsWith("/start") ? redirect("https://id.zalo.me/next", status) : new Response("ok"),
+            );
+            await httpRequest(ctx, "https://id.zalo.me/start", {
+                method: "POST",
+                body: new URLSearchParams({ token: "fake" }),
+                headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+                follow: "jar",
+            });
+            assert.equal(seen.length, 2, `${status}: one hop`);
+            assert.equal(
+                seen[0].headers["content-type"],
+                "application/x-www-form-urlencoded;charset=UTF-8",
+                `${status}: the POST carries the caller's value`,
+            );
+            const hopTypes = Object.keys(seen[1].headers).filter((k) => k.toLowerCase() === "content-type");
+            if (kept) {
+                assert.equal(seen[1].method, "POST");
+                assert.deepEqual(hopTypes, ["content-type"], "a 307 keeps the body and its type");
+            } else {
+                assert.equal(seen[1].method, "GET");
+                assert.deepEqual(hopTypes, [], "a GET hop sends no content type in any spelling");
+                assert.equal("body" in seen[1], false);
+            }
+        }
+    });
+
     it("gives up after the hop limit instead of looping", async () => {
         const { ctx, seen } = session((url) => redirect(url.endsWith("/a") ? "/b" : "/a"));
         await assert.rejects(httpRequest(ctx, "https://id.zalo.me/a", { follow: "jar" }), /Too many redirects/);

@@ -203,7 +203,7 @@ describe("createApi on one logged-in context", () => {
             assert.equal(zca.listener.userAgent, ctx.userAgent);
         });
 
-        it("zca-js's uploads and listener use our registry: a callback it registers is settled by ours", async () => {
+        it("our registry keeps the Map interface zca-js's uploads and listener use: a function entry is called by settle", async () => {
             let got = null;
             ctx.uploadCallbacks.set("fake-file-1", (data) => (got = data));
             assert.equal(typeof ctx.uploadCallbacks.get("fake-file-1"), "function");
@@ -233,8 +233,62 @@ describe("createApi on one logged-in context", () => {
             assert.ok(ctx.cookie instanceof CookieJar);
         });
 
-        it("keeps zca-js quiet: logging is off on the context, so nothing it does reaches stdout", () => {
+        it("keeps zca-js quiet: a call of its that fails to parse writes nothing to stdout", async () => {
             assert.equal(ctx.options.logging, false);
+            fake.rawRoute(
+                (r) => r.path === "/api/social/profile/me-v2",
+                () => new Response("<html>not json</html>", { status: 200 }),
+            );
+            const zca = await createApi(ctx, map, WS, { engine: "zca" });
+            /** Run `fn` with stdout captured, and return what it tried to write. */
+            const captured = async (fn) => {
+                const written = [];
+                const write = process.stdout.write;
+                process.stdout.write = (chunk, ...rest) => {
+                    written.push(String(chunk));
+                    const cb = rest.find((x) => typeof x === "function");
+                    if (cb) cb();
+                    return true;
+                };
+                try {
+                    await fn();
+                } finally {
+                    process.stdout.write = write;
+                }
+                return written.join("");
+            };
+            const fails = () =>
+                assert.rejects(zca.fetchAccountInfo(), (e) => /Failed to parse response data/.test(e.message));
+            // The control: with logging on, the same failure prints zca-js's ERROR line. Without it, an empty capture
+            // below would prove only that the capture sees nothing.
+            ctx.options.logging = true;
+            let loud;
+            try {
+                loud = await captured(fails);
+            } finally {
+                ctx.options.logging = false;
+            }
+            assert.match(loud, /Failed to parse response data/, "the capture sees zca-js's log line");
+            // Red if the context we build turns zca-js's logging back on: its parse failure would print here.
+            assert.equal(await captured(fails), "");
+            fake.clearRoutes();
+        });
+
+        it("getOwnId is a string on both engines, even for a uid parsed as a number past 2^53", async () => {
+            // `2 ** 60` is past Number.MAX_SAFE_INTEGER and still prints as plain digits. Red if getOwnId hands the
+            // number back as it is (zca-js's own getOwnId returns ctx.uid unchanged).
+            const uid = ctx.uid;
+            ctx.uid = 2 ** 60;
+            try {
+                for (const engine of ["own", "zca"]) {
+                    const api = await createApi(ctx, map, WS, { engine, areas: [], listenerModule: null });
+                    assert.equal(typeof api.getOwnId(), "string", engine);
+                    assert.equal(api.getOwnId(), String(2 ** 60), engine);
+                    assert.match(api.getOwnId(), /^\d{19}$/, `${engine}: digits, no exponent`);
+                }
+            } finally {
+                ctx.uid = uid;
+            }
         });
     });
 });

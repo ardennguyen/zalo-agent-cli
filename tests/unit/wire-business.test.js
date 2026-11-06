@@ -16,7 +16,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
-import { OWN_READY, bankHolderName } from "../../src/zalo/api/business.js";
+import { OWN_READY, PRODUCT_PHOTO, bankHolderName, ruleUids } from "../../src/zalo/api/business.js";
 
 const AREA = "business";
 const CATALOG = "3000000000000000001";
@@ -252,6 +252,31 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
             assert.deepEqual(rec.own.error, { message: "Maximum 5 media files are allowed", code: null });
         });
 
+        it("createProductCatalog: files that would pass 5 photos are refused before any upload", async () => {
+            // Red if the files are uploaded first and counted after: 6 uploads, then the refusal.
+            for (const [urls, files] of [
+                [0, 6],
+                [3, 3],
+            ]) {
+                const rec = await pair.run(
+                    "createProductCatalog",
+                    () => [
+                        {
+                            catalogId: CATALOG,
+                            productName: "Tea",
+                            price: "1",
+                            description: "",
+                            product_photos: Array.from({ length: urls }, (_, i) => `${PHOTO_URL}?${i}`),
+                            files: Array.from({ length: files }, () => IMAGE_PATH),
+                        },
+                    ],
+                    { reply: UPLOADED },
+                );
+                assert.deepEqual(rec.own.requests, [], `${urls} URLs + ${files} files: nothing sent`);
+                assert.deepEqual(rec.own.error, { message: "Maximum 5 media files are allowed", code: null });
+            }
+        });
+
         it("updateProductCatalog: product_id first, the caller's create_time kept", async () => {
             const payload = () => [
                 {
@@ -315,6 +340,10 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
             );
             assert.equal(req.parts[0].size, IMAGE_BYTES.length);
             assert.deepEqual(rec.own.result, UPLOADED);
+        });
+
+        it("uploadProductPhoto is marked not verified until a live run (no Web method shows its fields)", () => {
+            assert.equal(PRODUCT_PHOTO.verified, false);
         });
 
         it("registerCatalog: enable 1 / 0", async () => {
@@ -394,6 +423,30 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
             });
         });
 
+        it("updateQuickMessage with a photo: uploads it, then sends media before type, in the Web's order", async () => {
+            const rec = await ok(
+                "quick-update-media",
+                "updateQuickMessage",
+                [{ keyword: "pic", title: "A photo", media: IMAGE_PATH }, 7],
+                {
+                    replies: {
+                        "/api/product/upload/photo": { data: UPLOADED },
+                        "/api/quickmessage/update": { data: {} },
+                    },
+                },
+            );
+            assert.deepEqual(
+                rec.own.requests.map((r) => r.path),
+                ["/api/product/upload/photo", "/api/quickmessage/update"],
+            );
+            const update = rec.own.requests[1];
+            // Red if media moves after type (zca-js's order): Web updateQuickReplyItem writes media first.
+            assert.deepEqual(update.paramsOrder, ["itemId", "keyword", "message", "media", "type"]);
+            assert.equal(update.params.type, 1);
+            assert.equal(update.params.media.items[0].photoId, UPLOADED.photoId);
+            assert.equal(update.params.media.items[0].normalUrl, UPLOADED.normalUrl);
+        });
+
         it("removeQuickMessage: GET {itemIds}; one id becomes a list", async () => {
             let rec = await ok("quick-remove", "removeQuickMessage", [[7, 8]], { reply: {} });
             // GET, as Web's deleteQuickReplyItem (@11694122) sends it (spec-sweep 1.3 read it as post).
@@ -438,6 +491,17 @@ describe("wire: business (zca-js against src/zalo/api/business.js)", () => {
             const payload = { content: "away", isEnable: false, ...WINDOW, scope: 2, uids: USER };
             const rec = await ok("auto-reply-create-chosen", "createAutoReply", [payload], { reply: {} });
             assert.deepEqual(rec.own.requests[0].params.uids, [USER]);
+        });
+
+        it("createAutoReply: scope 2 with no uids sends an empty list, never [null] (zca-js sent [null])", async () => {
+            const payload = { content: "away", isEnable: true, ...WINDOW, scope: 2 };
+            const rec = await pair.run("createAutoReply", [payload], { reply: {} });
+            assert.equal(rec.own.error, null);
+            assert.deepEqual(rec.own.requests[0].params.uids, []);
+            assert.deepEqual(rec.zca.requests[0].params.uids, [null], "the quirk this drops");
+            assert.deepEqual(ruleUids(3, null), []);
+            assert.deepEqual(ruleUids(2, [USER, null]), [USER]);
+            assert.deepEqual(ruleUids(0, [USER]), []);
         });
 
         it("updateAutoReply: the id after cliLang, params in the query", async () => {

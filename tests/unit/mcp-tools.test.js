@@ -1415,6 +1415,84 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(listed.count, 1);
     });
 
+    it("zalo_note list page 2 carries the cursor of page 1's last item, as Zalo Web pages the board", async () => {
+        const calls = [];
+        const { server } = register({
+            api: {
+                getListBoard: async (opts, gid) => {
+                    calls.push([opts, gid]);
+                    return opts.page === 1
+                        ? {
+                              items: [
+                                  { boardType: 1, data: { id: 41 } },
+                                  { boardType: 3, data: { poll_id: 7 } },
+                              ],
+                          }
+                        : { items: [{ boardType: 1, data: { id: 40 } }] };
+                },
+            },
+        });
+        const listed = payloadOf(await server.call("zalo_note", { action: "list", groupId: "g1", page: 2, count: 2 }));
+        // Red if page 2 goes out with the 0/0 cursor (page number only), which can skip or repeat items.
+        assert.deepEqual(calls, [
+            [{ page: 1, count: 2, lastId: 0, lastType: 0 }, "g1"],
+            [{ page: 2, count: 2, lastId: 7, lastType: 3 }, "g1"],
+        ]);
+        assert.equal(listed.count, 1);
+        assert.equal(listed.items[0].data.id, 40);
+    });
+
+    it("zalo_note list past the end does not ask for the page after a short one", async () => {
+        const calls = [];
+        const { server } = register({
+            api: {
+                getListBoard: async (opts) => {
+                    calls.push(opts.page);
+                    return { items: [{ boardType: 1, data: { id: 41 } }] };
+                },
+            },
+        });
+        const listed = payloadOf(await server.call("zalo_note", { action: "list", groupId: "g1", page: 3, count: 2 }));
+        assert.deepEqual(calls, [1], "page 1 was short: nothing after it");
+        assert.equal(listed.count, 0);
+    });
+
+    it("zalo_reminder list page 2 of a group carries last_id; a DM's goes by page number", async () => {
+        const calls = [];
+        const page1 = [{ id: "r1", startTime: 1 }];
+        // The page's cursor as the reply reader leaves it: the last topic (a note, filtered out) and the page size.
+        Object.defineProperty(page1, "page", { value: { lastId: "n9", size: 2 } });
+        const { server } = register({
+            api: {
+                getListReminder: async (opts, tid, type) => {
+                    calls.push([opts, tid, type]);
+                    return opts.page === 1 ? page1 : [{ id: "r0", startTime: 1 }];
+                },
+            },
+        });
+        const listed = payloadOf(
+            await server.call("zalo_reminder", {
+                action: "list",
+                threadId: "g1",
+                threadType: "group",
+                page: 2,
+                count: 2,
+            }),
+        );
+        assert.deepEqual(calls, [
+            [{ page: 1, count: 2, lastId: 0 }, "g1", 1],
+            [{ page: 2, count: 2, lastId: "n9" }, "g1", 1],
+        ]);
+        assert.deepEqual(
+            listed.reminders.map((r) => r.id),
+            ["r0"],
+        );
+
+        calls.length = 0;
+        await server.call("zalo_reminder", { action: "list", threadId: "u1", threadType: "dm", page: 2, count: 2 });
+        assert.deepEqual(calls, [[{ page: 2, count: 2 }, "u1", 0]]);
+    });
+
     it("zalo_poll dispatches create, info, vote, unvote, add_options, lock, and share", async () => {
         const calls = [];
         const { server } = register({

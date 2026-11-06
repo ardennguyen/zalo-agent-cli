@@ -540,16 +540,20 @@ describe("tier 3 · polls (vote lifecycle)", { skip }, () => {
         const info = await runJson(["poll", "info", pollId], live(T));
         assert.equal(info.ok, true, info.error);
 
-        const optionId =
-            (info.data?.options || [])[0]?.votedMemberIds !== undefined ? String(info.data.options[0].id ?? 0) : null;
+        // A poll detail names its options by `option_id` (spec-boards 6). The
+        // old guard read `votedMemberIds`, which no reply carries, so the vote
+        // and unvote were skipped on every run.
+        const optionId = info.data?.options?.[0]?.option_id;
+        assert.ok(
+            optionId !== undefined && optionId !== null,
+            `no option_id in ${JSON.stringify(info.data?.options).slice(0, 200)}`,
+        );
 
         // vote / unvote / lock were crash-only asserted, so all three could
         // fail on every invocation and stay green. Demand success.
-        if (optionId !== null) {
-            await ok(["poll", "vote", pollId, optionId], "poll vote");
-            await sleep(600);
-            await ok(["poll", "unvote", pollId], "poll unvote");
-        }
+        await ok(["poll", "vote", pollId, String(optionId)], "poll vote");
+        await sleep(600);
+        await ok(["poll", "unvote", pollId], "poll unvote");
 
         // Locking is the reversible end-state for a poll — there is no
         // `poll delete`, so a locked poll is as closed as it gets.

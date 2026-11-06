@@ -69,7 +69,8 @@ describe("the official logout", () => {
         assert.deepEqual(by("/jr/logout-token").form, { continue: "https://chat.zalo.me/" });
         assert.deepEqual(by("/api/social/profile/deactive").params, { imei: FAKE_CREDENTIALS.imei });
         const v2 = by("/api/v2/login/logOut").params;
-        assert.deepEqual(Object.keys(v2).sort(), ["computer_name", "imei", "time"]);
+        assert.deepEqual(Object.keys(v2), ["time", "imei", "computer_name", "language"]);
+        assert.equal(v2.language, "vi");
         assert.equal(v2.computer_name, "Web");
         assert.ok(v2.time < 1e11, "time is unix seconds, not milliseconds");
         assert.deepEqual(by("/account/logout").form, { token: "tok-xyz" });

@@ -309,7 +309,8 @@ const isZero = (code) => code !== undefined && code !== null && Number(code) ===
  * @param {boolean} [opts.envelope] - return `{data, code, message}` instead of the data alone
  * @returns {Promise<any>}
  * @throws {ZaloApiError} `HTTP <status>` (code null, `.status` set) for a non-2xx; Zalo's message and code for an
- *   outer or inner error; "Failed to parse response data" (no code) when the body or `data` does not open
+ *   outer or inner error, with that envelope's `data` on `.data` when it had one; "Failed to parse response data"
+ *   (no code) when the body or `data` does not open
  */
 export async function decodeReply(ctx, response, opts = {}) {
     const { encrypted = true, okCodes = [], emptyOn = null, parse = JSON.parse, envelope = false } = opts;
@@ -328,7 +329,11 @@ export async function decodeReply(ctx, response, opts = {}) {
             return { value: answer(structuredClone(emptyOn[String(n)]), n, message) };
         }
         if (okCodes.includes(n)) return { value: answer(env?.data ?? null, n, message) };
-        throw new ZaloApiError(env?.error_message ?? `Zalo answered error ${code}`, Number.isFinite(n) ? n : null);
+        throw new ZaloApiError(
+            env?.error_message ?? `Zalo answered error ${code}`,
+            Number.isFinite(n) ? n : null,
+            env?.data ?? undefined,
+        );
     };
 
     let outer;

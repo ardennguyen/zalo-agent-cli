@@ -90,6 +90,16 @@ export default [
         why: "Web createQuickReplyItem (@11693495) writes {keyword, message, media, type, imei}",
     },
 
+    // updateQuickMessage with a photo: the Web's key order {itemId, keyword, message, media, type} (@11693816).
+    {
+        method: "updateQuickMessage",
+        case: "quick-update-media",
+        field: "paramsOrder",
+        zca: ["itemId", "keyword", "message", "type", "media"],
+        own: ["itemId", "keyword", "message", "media", "type"],
+        why: "Web updateQuickReplyItem (@11693816) writes {itemId, keyword, message, media, type}",
+    },
+
     // Auto-reply writes: the params ride in the query, no body.
     ...autoReplyRows("createAutoReply", ["auto-reply-create", "auto-reply-create-chosen"], "createAutoReply", 11692077),
     ...autoReplyRows("updateAutoReply", "auto-reply-update", "updateAutoReply", 11692503),

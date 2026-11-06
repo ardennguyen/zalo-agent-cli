@@ -30,6 +30,7 @@ import { searchPage } from "../core/search.js";
 import { parsePeriod } from "../utils/date-range.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
+import { boardPage, groupReminderPage } from "../zalo/api/boards.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
 import {
     cachedCliMsgId,
@@ -2256,7 +2257,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 if (action === "list") {
                     let result = null;
                     try {
-                        result = await api.getListReminder({ page, count }, threadId, Number(threadType));
+                        // A group's page 2 and later carry the cursor of the page before, as Zalo Web pages them;
+                        // a DM's have none (the Web always sends 0 there) and go by page number.
+                        result =
+                            Number(threadType) === THREAD_GROUP
+                                ? await groupReminderPage(api, threadId, page, count)
+                                : await api.getListReminder({ page, count }, threadId, Number(threadType));
                     } catch {
                         result = null;
                     }
@@ -2406,7 +2412,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
                 if (action === "list") {
                     if (!groupId) return err("groupId is required for action='list'.");
-                    const result = await api.getListBoard({ page, count }, groupId);
+                    // Page 2 and later carry the cursor of the page before, as Zalo Web pages the board.
+                    const result = await boardPage(api, groupId, page, count);
                     return ok({
                         action,
                         groupId,

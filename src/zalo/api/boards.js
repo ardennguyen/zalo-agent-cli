@@ -19,10 +19,16 @@
  *   (a group one through `getReminder`, a DM one from the DM list), as the Web edits a loaded reminder. Before, an
  *   edit without a time moved the reminder to the moment of the edit, and one without a repeat reset it.
  * - `addPollOptions` sends the caller's current votes as `voted_option_ids` (read from the poll first) unless the
- *   caller names them: the Web's list is the full selection after the change, so an empty one cleared them.
+ *   caller names them: the Web's list is the full selection after the change, so an empty one cleared them. On a
+ *   single-choice poll, voting a new option drops the old vote, as the Web's vote dialog unchecks the other options
+ *   (`_onCheck`, @2427557) before it reads the checked ones (`getCheckedIdsList`, @2435416).
  * - Reminder replies keep `topicId`, `reminderId`, `id` and `eventId` as strings (the Web's reminder id keys,
  *   @2604923); a `params` that arrives as a JSON string is opened into an object.
  * - `lockPoll` takes a success with no `data` as done (the Web reads only the outer code of `/api/poll/end`).
+ * - A list call answered with an error whose `data` is the string `"[]"` is an empty page: the Web's board manager
+ *   reads that answer as "no more" (`getGroupBoardList` @1578806, `getGroupBoardOneOneList` @1580053).
+ * - A DM's reminder replies keep `creatorUid`, `creatorId` and `toUid` as strings too (ours, not a Web key list:
+ *   `editReminder` sends the loaded creator back, and a rounded uid would name somebody else).
  *
  * `listOneOneBoard` (moved here from src/core/sync-v2/board.js) asks a DM's board for every kind of item.
  *
@@ -62,6 +68,12 @@ export const POLL_ID_KEYS = Object.freeze(["creator", "voters"]);
 
 /** The keys the Web quotes in a reminder reply. */
 export const REMINDER_ID_KEYS = Object.freeze(["topicId", "reminderId", "id", "eventId"]);
+
+/**
+ * The keys kept as strings in a DM reminder reply: the reminder ids, and the uids a DM reminder carries, because
+ * `editReminder` sends the loaded creator back.
+ */
+export const DM_REMINDER_ID_KEYS = Object.freeze([...REMINDER_ID_KEYS, "creatorUid", "creatorId", "toUid"]);
 
 /** The uid lists of a reminder's responses: kept as strings too. */
 export const RESPONSE_ID_KEYS = Object.freeze(["acceptMember", "rejectMember"]);
@@ -192,9 +204,43 @@ export function openOptionalReply(ctx, data, keys) {
     const code = inner?.error_code;
     if (code !== undefined && code !== null && Number(code) !== 0) {
         const n = Number(code);
-        throw new ZaloApiError(inner?.error_message ?? `Zalo answered error ${code}`, Number.isFinite(n) ? n : null);
+        throw new ZaloApiError(
+            inner?.error_message ?? `Zalo answered error ${code}`,
+            Number.isFinite(n) ? n : null,
+            inner?.data ?? undefined,
+        );
     }
     return inner?.data ?? null;
+}
+
+/**
+ * Whether an error is Zalo's "no more" answer to a list: an error whose `data` is the string `"[]"`, which the Web's
+ * board manager reads as the end of the list (@1578806, @1580053).
+ *
+ * @param {unknown} e
+ * @returns {boolean}
+ */
+export function isEndOfList(e) {
+    return e instanceof ZaloApiError && e.data === "[]";
+}
+
+/**
+ * Run a list endpoint. Zalo's "no more" answer ({@link isEndOfList}) is the empty list the endpoint's own reader
+ * makes of `"[]"`; every other error is thrown as it came.
+ *
+ * @param {object} target - a session handle `s`, or the api object
+ * @param {object} def - a list definition (its `transform` reads `"[]"` as an empty list)
+ * @param {object} args
+ * @returns {Promise<any>}
+ * @throws {ZaloApiError} Zalo's own error, other than the end of the list
+ */
+export async function callList(target, def, args) {
+    try {
+        return await callEndpoint(target, def, args);
+    } catch (e) {
+        if (isEndOfList(e)) return def.transform("[]", args);
+        throw e;
+    }
 }
 
 // ── Reply readers ───────────────────────────────────────────────────────
@@ -232,6 +278,10 @@ export function boardListReply(data) {
  * A group reminder list as the Web reads `/api/board/listReminder`: the reply (a JSON string) is a bare array or
  * `{items: [{boardType, data}]}`; the reminders are the topic items whose `startTime` is a positive number.
  *
+ * The page's cursor is read before that filter, as the Web reads it (`listByConversation`, web-startup @1005569):
+ * the array carries it as a non-enumerable `page` property, `{lastId, size}`, the id (`reminderId`, else `id`) of
+ * the page's last topic and how many topics the page held. {@link groupReminderPage} pages with it.
+ *
  * @param {any} data
  * @returns {object[]} the reminders, `params` opened
  */
@@ -240,11 +290,12 @@ export function groupReminderListReply(data) {
     let entries = [];
     if (Array.isArray(v)) entries = v.map((d) => ({ boardType: BOARD_TYPE.TOPIC, data: d }));
     else if (Array.isArray(v?.items)) entries = v.items;
-    return entries
-        .filter((e) => Number(e?.boardType) === BOARD_TYPE.TOPIC && e.data)
-        .map((e) => e.data)
-        .filter((d) => typeof d.startTime === "number" && d.startTime > 0)
-        .map(openParams);
+    const topics = entries.filter((e) => Number(e?.boardType) === BOARD_TYPE.TOPIC && e.data).map((e) => e.data);
+    const reminders = topics.filter((d) => typeof d.startTime === "number" && d.startTime > 0).map(openParams);
+    const last = topics.at(-1);
+    const lastId = last ? (last.reminderId ?? last.id ?? 0) : 0;
+    Object.defineProperty(reminders, "page", { value: { lastId, size: topics.length } });
+    return reminders;
 }
 
 /**
@@ -264,7 +315,8 @@ export function dmReminderListReply(data) {
 
 /**
  * A DM's whole board (`/api/board/oneone/list`, board type 0) as `{items: [{boardType, data}]}`. An item that comes
- * without its board type is a reminder (the Web files each one as a topic, its `reminderId` as `id`).
+ * without its board type is a reminder: the Web files each one as a topic (`GNOTICE_TOPIC`, 1) whose `id` is its
+ * `reminderId` (`getGroupBoardOneOneList`, @1578940). Unlike the Web, the item keeps its `reminderId` too.
  *
  * @param {any} data
  * @returns {{items: Array<{boardType: number, data: object}>}}
@@ -279,7 +331,7 @@ export function dmBoardReply(data) {
         .filter((e) => e && typeof e === "object")
         .map((e) => {
             if ("boardType" in e && e.data) return e;
-            return { boardType: BOARD_TYPE.TOPIC, data: { ...e, id: e.id ?? e.reminderId } };
+            return { boardType: BOARD_TYPE.TOPIC, data: { ...e, id: e.reminderId ?? e.id } };
         });
     for (const item of items) {
         if (Number(item.boardType) !== BOARD_TYPE.POLL) openParams(item.data);
@@ -495,7 +547,7 @@ export const REMINDER_CREATE_DM = Object.freeze({
     method: "post",
     body: (a, ctx) => ({ objectData: dmReminderObject(a, { update: false }), imei: ctx.imei }),
     reply: "session",
-    bigIdKeys: REMINDER_ID_KEYS,
+    bigIdKeys: DM_REMINDER_ID_KEYS,
     transform: topicReply,
 });
 
@@ -507,7 +559,7 @@ export const REMINDER_UPDATE_DM = Object.freeze({
     method: "post",
     body: (a) => ({ objectData: dmReminderObject(a, { update: true }) }),
     reply: "session",
-    bigIdKeys: REMINDER_ID_KEYS,
+    bigIdKeys: DM_REMINDER_ID_KEYS,
     transform: topicReply,
 });
 
@@ -585,7 +637,7 @@ export const ONEONE_LIST = Object.freeze({
         }),
     }),
     reply: "session",
-    bigIdKeys: REMINDER_ID_KEYS,
+    bigIdKeys: DM_REMINDER_ID_KEYS,
     transform: (data, a) => (a.boardType === BOARD_TYPE.ALL ? dmBoardReply(data) : dmReminderListReply(data)),
 });
 
@@ -614,7 +666,7 @@ export const REMINDER_RESPONSES = Object.freeze({
  * @throws {ZaloApiError} Zalo's own error
  */
 export function listOneOneBoard(target, threadId, page = 1, pageSize = PAGE_SIZE) {
-    return callEndpoint(target, ONEONE_LIST, { threadId, boardType: BOARD_TYPE.ALL, page, count: pageSize });
+    return callList(target, ONEONE_LIST, { threadId, boardType: BOARD_TYPE.ALL, page, count: pageSize });
 }
 
 /**
@@ -631,12 +683,27 @@ async function currentReminder(s, reminderId, threadId, type) {
     if (type === THREAD_TYPE.GROUP) return (await s.call(REMINDER_GET, { reminderId })) ?? {};
     const want = String(reminderId);
     for (let page = 1; page <= EDIT_LOOKUP_PAGES; page++) {
-        const list = await s.call(ONEONE_LIST, { threadId, boardType: BOARD_TYPE.TOPIC, page, count: PAGE_SIZE });
+        const list = await callList(s, ONEONE_LIST, { threadId, boardType: BOARD_TYPE.TOPIC, page, count: PAGE_SIZE });
         const found = list.find((r) => String(r.reminderId ?? r.id) === want);
         if (found) return found;
         if (list.length < PAGE_SIZE) break;
     }
     throw new ZaloApiError("The reminder to edit was not found in this conversation");
+}
+
+/**
+ * The creator a DM reminder edit sends back: the loaded reminder's (`creatorUid`, else `creatorId`), else this
+ * account, which is the only one that can have made a reminder it finds with no creator.
+ *
+ * @param {object} reminder - the loaded reminder
+ * @param {string|number} ownId
+ * @returns {string}
+ */
+export function creatorOf(reminder, ownId) {
+    for (const v of [reminder?.creatorUid, reminder?.creatorId]) {
+        if (v !== undefined && v !== null && v !== "") return String(v);
+    }
+    return String(ownId);
 }
 
 /**
@@ -656,6 +723,54 @@ export function votedOptionIds(poll, ownId) {
         if (o.voted === true || voters.includes(String(ownId))) out.push(id);
     }
     return out;
+}
+
+/**
+ * One page of a group's board, reached the way Zalo Web pages it: page 2 and later carry the cursor of the page
+ * before (`boardCursor`), so the pages before the one asked are read first. A short page on the way means there is
+ * nothing after it, and `{items: []}` is the answer without asking further.
+ *
+ * @param {{getListBoard: Function}} api - a logged-in api
+ * @param {string} groupId
+ * @param {number} [page] - from 1
+ * @param {number} [count] - items per page
+ * @returns {Promise<{items: Array<{boardType: number, data: object}>}>}
+ * @throws {ZaloApiError} Zalo's own error, from any page on the way
+ */
+export async function boardPage(api, groupId, page = 1, count = PAGE_SIZE) {
+    let cursor = { lastId: 0, lastType: 0 };
+    for (let p = 1; p < page; p++) {
+        const items = (await api.getListBoard({ page: p, count, ...cursor }, groupId))?.items ?? [];
+        if (items.length < count) return { items: [] };
+        cursor = boardCursor(items);
+    }
+    return api.getListBoard({ page, count, ...cursor }, groupId);
+}
+
+/**
+ * One page of a group's reminders, reached the way Zalo Web pages them: page 2 and later carry `lastId`, the id of
+ * the last topic of the page before (read off the reply, {@link groupReminderListReply}), so the pages before the one
+ * asked are read first. A page that held fewer topics than asked means there is nothing after it. A DM's reminders
+ * have no cursor (the Web always sends `last_id` 0 there) and are asked for by page number alone.
+ *
+ * @param {{getListReminder: Function}} api - a logged-in api
+ * @param {string} groupId
+ * @param {number} [page] - from 1
+ * @param {number} [count] - reminders per page
+ * @returns {Promise<object[]>} the reminders
+ * @throws {ZaloApiError} Zalo's own error, from any page on the way
+ */
+export async function groupReminderPage(api, groupId, page = 1, count = PAGE_SIZE) {
+    let lastId = 0;
+    for (let p = 1; p < page; p++) {
+        const list = await api.getListReminder({ page: p, count, lastId }, groupId, THREAD_TYPE.GROUP);
+        const got = Array.isArray(list) ? list : [];
+        const size = got.page?.size ?? got.length;
+        if (size < count) return [];
+        const last = got.at(-1);
+        lastId = got.page?.lastId ?? last?.reminderId ?? last?.id ?? 0;
+    }
+    return api.getListReminder({ page, count, lastId }, groupId, THREAD_TYPE.GROUP);
 }
 
 /**
@@ -700,7 +815,7 @@ export function boardMethods(s) {
          * @returns {Promise<{items: Array<{boardType: number, data: object}>}>}
          */
         getListBoard: (options, groupId) =>
-            s.call(BOARD_LIST, {
+            callList(s, BOARD_LIST, {
                 groupId,
                 page: options?.page ?? 1,
                 count: options?.count ?? PAGE_SIZE,
@@ -770,7 +885,8 @@ export function boardMethods(s) {
         /**
          * Add options to a poll. `votedOptionIds` is this account's whole selection afterwards; when it is empty or
          * absent, the poll is read first and the current votes are kept (the Web sends them, and an empty list
-         * would clear them).
+         * would clear them), except on a single-choice poll where a new option is voted: that vote replaces the
+         * old one, so none is kept (the Web's `_onCheck` unchecks the others).
          *
          * @param {{pollId: number|string, options: Array<{content: string, voted?: boolean}>,
          *   votedOptionIds?: Array<number|string>}} payload
@@ -778,14 +894,16 @@ export function boardMethods(s) {
          */
         addPollOptions: async (payload) => {
             const pollId = payload?.pollId;
-            let voted = Array.isArray(payload?.votedOptionIds) ? payload.votedOptionIds : [];
-            if (voted.length === 0) {
-                voted = votedOptionIds(await s.call(POLL_DETAIL, { pollId }), s.ctx.uid);
-            }
             const fresh = (Array.isArray(payload?.options) ? payload.options : []).map((o) => ({
                 content: o?.content,
                 voted: Boolean(o?.voted),
             }));
+            let voted = Array.isArray(payload?.votedOptionIds) ? payload.votedOptionIds : [];
+            if (voted.length === 0) {
+                const poll = await s.call(POLL_DETAIL, { pollId });
+                const replaced = !poll?.allow_multi_choices && fresh.some((o) => o.voted);
+                voted = replaced ? [] : votedOptionIds(poll, s.ctx.uid);
+            }
             return s.call(POLL_ADD_OPTIONS, { pollId, newOptions: JSON.stringify(fresh), votedOptionIds: voted });
         },
 
@@ -830,7 +948,7 @@ export function boardMethods(s) {
             const a = {
                 threadId,
                 topicId,
-                creatorUid: String(cur.creatorUid ?? cur.creatorId ?? ""),
+                creatorUid: creatorOf(cur, s.ctx.uid),
                 color: typeof cur.color === "number" ? cur.color : TOPIC_COLOR,
                 emoji: options?.emoji ?? cur.emoji ?? REMINDER_EMOJI,
                 startTime: options?.startTime ?? cur.startTime ?? s.now(),
@@ -878,9 +996,9 @@ export function boardMethods(s) {
             const page = options?.page ?? 1;
             const count = options?.count ?? PAGE_SIZE;
             if (kind === THREAD_TYPE.GROUP) {
-                return s.call(REMINDER_LIST_GROUP, { threadId, page, count, lastId: options?.lastId ?? 0 });
+                return callList(s, REMINDER_LIST_GROUP, { threadId, page, count, lastId: options?.lastId ?? 0 });
             }
-            return s.call(ONEONE_LIST, { threadId, boardType: BOARD_TYPE.TOPIC, page, count });
+            return callList(s, ONEONE_LIST, { threadId, boardType: BOARD_TYPE.TOPIC, page, count });
         },
 
         /**

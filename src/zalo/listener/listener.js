@@ -312,13 +312,15 @@ export class Listener extends EventEmitter {
         if (!isBinary || this.ws !== ws) return;
         const buf = Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
         const head = readHeader(buf);
-        if (!head || buf.length === HEADER_BYTES) return;
+        if (!head) return;
         const { version, cmd, subCmd } = head;
 
+        // Any echo of a ping clears the guard, a bare header included: it needs no body to say the server answered.
         if (cmd === CMD_PING) {
             this.#pingSentAt = 0;
             return;
         }
+        if (buf.length === HEADER_BYTES) return;
         if (cmd === CMD_KICK && version === 1 && subCmd === 0) {
             if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
                 try {

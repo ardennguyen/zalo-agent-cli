@@ -35,6 +35,7 @@ import { setUserInfoLogger } from "../core/user-info.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
+import { createUndecryptableNotice } from "../core/e2ee-notice.js";
 import { createCloudVerifier } from "../core/cloud-verify.js";
 import { attachUnknownActs } from "../core/unknown-acts.js";
 import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
@@ -831,6 +832,8 @@ export function registerMCPCommands(program) {
                 file: voiceTextFile(accountDir),
                 log: (line) => console.error(`[mcp] ${line}`),
             });
+            // End-to-end encrypted messages this client cannot read: the first is named in the log, the rest counted.
+            const undecryptable = createUndecryptableNotice({ log: (line) => console.error(`[mcp] ${line}`) });
             const selfHeal = createSelfHeal({
                 getApi,
                 tap: socketTap,
@@ -882,6 +885,10 @@ export function registerMCPCommands(program) {
             function attachListenerHandlers(api) {
                 health.attach(api.listener);
                 api.listener.on("message", (msg) => {
+                    // A message Zalo re-sent (534) that is already stored was buffered when it was stored; self-heal
+                    // owns re-pushes, so it is not buffered or posted twice.
+                    if (selfHeal.isRepeatedRepush(msg)) return;
+                    undecryptable.note(msg);
                     // Persist FIRST and unconditionally. The buffer is what an
                     // agent polls; the cache is the durable record, and it must
                     // not depend on whether a thread happens to be watched or

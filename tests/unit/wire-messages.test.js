@@ -22,7 +22,7 @@ import "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createApi } from "../../src/zalo/api.js";
-import { HEAD_TIMEOUT_MS, OWN_READY, messageMethods } from "../../src/zalo/api/messages.js";
+import { ENDPOINTS, HEAD_TIMEOUT_MS, OWN_READY, messageMethods } from "../../src/zalo/api/messages.js";
 import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
 import { normalizeRequest } from "../helpers/wire-diff/normalize.js";
 
@@ -354,6 +354,29 @@ const CASES = [
         check(own) {
             assert.equal(own.requests[0].path, "/api/message/sticker/suggest/stickers");
             assert.deepEqual(own.result, [21000, 21001]);
+        },
+    },
+    {
+        // Zalo suggests GIFs only: no `sugg_sticker` list at all.
+        name: "getStickers/no-suggestions",
+        method: "getStickers",
+        args: ["hello"],
+        fixture: { reply: { sugg_gif: [], sugg_guggy: [] } },
+        check(own) {
+            // Red when the list is read unguarded (`data.sugg_sticker.map`): that throws instead.
+            assert.equal(own.error, null);
+            assert.deepEqual(own.result, []);
+        },
+    },
+    {
+        // An answer with no data object: zca-js throws reading it, ours finds no suggestion.
+        name: "getStickers/no-data",
+        method: "getStickers",
+        args: ["hello"],
+        fixture: { reply: null },
+        check(own) {
+            assert.equal(own.error, null);
+            assert.deepEqual(own.result, []);
         },
     },
     {
@@ -807,6 +830,17 @@ describe("messages, our side alone", () => {
         const made = pair.fake.requests.slice(from).map((r) => normalizeRequest(r, pair.fake));
         assert.equal(made.length, 1, "no HEAD");
         assert.deepEqual(JSON.parse(made[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl: m4a, fileSize: 321 });
+    });
+
+    it("gives up on a URL scan Zalo does not answer after 5 s, Web's scanUrl timeout, not the 10 s default", async () => {
+        pair.fake.clearRoutes();
+        pair.fake.routeAnswer("/scanurl", { hang: true });
+        const started = Date.now();
+        // Red when the endpoint loses its own timeout: the kernel's default then gives up after 10 s, not 5.
+        await assert.rejects(api.scanURL("https://example.invalid/page"), /did not answer within 5 s/);
+        const waited = Date.now() - started;
+        assert.ok(waited >= 4500 && waited < 9000, `waited ${waited} ms`);
+        assert.equal(ENDPOINTS.scanUrl.timeoutMs, 5000);
     });
 
     it("lists every method it defines in OWN_READY, sendText included, so the switch answers them from our code", () => {

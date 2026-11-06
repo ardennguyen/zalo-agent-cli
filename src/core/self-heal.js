@@ -52,6 +52,11 @@
  *   is acknowledged once every message in it is committed; an offline page once its rows were written without a
  *   failure; a message the server re-sends as a `534` is stored first and acknowledged after. An item whose row
  *   did not commit is not acknowledged, so the server delivers it again.
+ * - **A re-sent message is announced once** (design 6.1, FX 11). Our listener announces a `534` as `message` too,
+ *   after the tap stored it here and handed it on through `onRecovered`. `isRepeatedRepush` tells `listen` and
+ *   `mcp start` that such a message is already stored, so neither prints, buffers nor posts it a second time. The
+ *   `534` ids are noted even with self-heal off (read only: nothing sent, nothing written), so a re-push of a
+ *   message the daemon already got live stays one event there too.
  *
  * Out of scope here, on purpose: the 533/570 resend path (the server asking us for ids it says we hold). It
  * repairs a push lost in transit on a live socket; the catch-up above is a cursor pull and does not depend on
@@ -99,6 +104,9 @@ const CMD_CONTROL = 601;
 /** A server re-push of a message it noticed we never confirmed (534), in the envelope of 501/521. */
 const CMD_PUSH_MISS = 534;
 
+/** At most this many re-pushed (534) message ids are remembered until their `message` event; the oldest go first. */
+const REPUSH_MAX = 2000;
+
 /** How long a live push waits for its rows to be stored before it is forgotten (never acknowledged). */
 const AWAIT_MS = 10 * 60 * 1000;
 const AWAIT_MAX = 500;
@@ -138,8 +146,9 @@ const baseReason = (reason) => String(reason || "gap").replace(/^(uncovered:)+/,
  * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap - the daemon's socket tap
  * @param {ReturnType<import("./daemon-channel.js").createStageLock>} [args.lock] - the
  *   stage lock the daemon channel holds; without one the catch-up runs unguarded
- * @param {boolean} [args.enabled=true] - false (`--no-self-heal`): subscribe to
- *   nothing, send nothing, write nothing
+ * @param {boolean} [args.enabled=true] - false (`--no-self-heal`): send nothing,
+ *   write nothing, and subscribe to nothing but the read-only note of `534` ids
+ *   that `isRepeatedRepush` answers from
  * @param {(line: string) => void} [args.log] - one line per run; stderr only
  * @param {(items: Array<{msg: object, info: object}>) => void} [args.onRecovered] -
  *   the messages a run stored that the cache never had, oldest first, for the
@@ -150,6 +159,7 @@ const baseReason = (reason) => String(reason || "gap").replace(/^(uncovered:)+/,
  * @param {boolean} [args.acks=true] - acknowledge stored queue items to Zalo (`532`); false sends nothing of the kind
  * @returns {{attach: (listener: object) => void, run: (reason?: string) => Promise<object>,
  *   settled: () => Promise<void>, noteDelivered: (msg: object) => void,
+ *   isRepeatedRepush: (msg: object) => boolean,
  *   cursor: (queueName: string) => {id: string, ts: number}|null}}
  */
 export function createSelfHeal({
@@ -174,6 +184,8 @@ export function createSelfHeal({
                   log: (line) => say(line),
               })
             : null;
+    /** The message ids of `534` frames whose `message` events have not come yet, oldest first. */
+    const repushed = new Set();
     /** Live pushes whose rows are not all stored yet: {queueName, ids, msgIds: Set, at}. */
     const awaiting = [];
     const attached = new WeakSet();
@@ -675,6 +687,39 @@ export function createSelfHeal({
         }
     }
 
+    /** A 534 frame: note its message ids before the listener announces them (the tap sees a frame first). */
+    function noteRepushIds(frame) {
+        const d = frame.data;
+        if (!d) return;
+        for (const key of ["msgs", "groupMsgs", "pageMsgs"]) {
+            for (const row of Array.isArray(d[key]) ? d[key] : []) {
+                if (!isId(row?.msgId)) continue;
+                const id = String(row.msgId);
+                repushed.delete(id);
+                repushed.add(id);
+                if (repushed.size > REPUSH_MAX) repushed.delete(repushed.values().next().value);
+            }
+        }
+    }
+
+    /**
+     * True for the `message` event of a message the server re-sent (534) that zalo.db already holds: it was stored
+     * and announced already (live, or by the re-push handling above), so the daemon must not announce it again. A
+     * re-sent message that is not stored yet is false: the daemon announces and stores it as a live one. Each id
+     * answers true once.
+     */
+    function isRepeatedRepush(msg) {
+        const id = msg?.data?.msgId;
+        if (!isId(id) || !repushed.has(String(id))) return false;
+        repushed.delete(String(id));
+        try {
+            return !!getMessageById(String(id));
+        } catch {
+            return false;
+        }
+    }
+
+    if (tap) tap.on(CMD_PUSH_MISS, noteRepushIds);
     if (enabled && tap) {
         tap.on(CMD_AUTHEN, () => {
             // A new connection: what was waiting to be acknowledged belonged to the old one.
@@ -707,6 +752,7 @@ export function createSelfHeal({
             return running ? running.then(() => {}) : Promise.resolve();
         },
         noteDelivered,
+        isRepeatedRepush,
         cursor: (queueName) => readCursor(queueName),
         /** The queue acknowledgements so far, or null when they are off. */
         queueAcks: () => verifier?.stats() ?? null,

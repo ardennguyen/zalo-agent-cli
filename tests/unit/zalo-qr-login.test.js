@@ -11,6 +11,7 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { LoginQRCallbackEventType, Zalo } from "zca-js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -589,16 +590,50 @@ describe("the QR login", () => {
     });
 
     describe("the switch", () => {
-        it("ZALO_QR_FLOW defaults to the official flow (legacy is opt in), and takes only legacy or official", () => {
+        it("ZALO_QR_FLOW defaults to the official flow and takes only official; legacy is refused as removed", () => {
             assert.equal(resolveQrFlow({}), "official");
             assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "  " }), "official");
             assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "official" }), "official");
-            assert.equal(resolveQrFlow({ ZALO_QR_FLOW: " Legacy " }), "legacy");
-            assert.equal(resolveQrFlow({ ZALO_QR_FLOW: "legacy" }), "legacy");
+            assert.equal(resolveQrFlow({ ZALO_QR_FLOW: " Official " }), "official");
+            // Red if legacy is accepted again, or refused with the generic message that does not say why.
+            for (const legacy of ["legacy", " Legacy "]) {
+                assert.throws(
+                    () => resolveQrFlow({ ZALO_QR_FLOW: legacy }),
+                    (e) => e.code === QR_FLOW_INVALID && /ZALO_QR_FLOW=legacy was removed in 3\.0\.0/.test(e.message),
+                );
+            }
             assert.throws(
                 () => resolveQrFlow({ ZALO_QR_FLOW: "new" }),
-                (e) => e.code === QR_FLOW_INVALID && /ZALO_QR_FLOW/.test(e.message) && /"new"/.test(e.message),
+                (e) =>
+                    e.code === QR_FLOW_INVALID &&
+                    /ZALO_QR_FLOW/.test(e.message) &&
+                    /"new"/.test(e.message) &&
+                    !/"legacy"/.test(e.message),
             );
+        });
+
+        it("loginWithQR with ZALO_QR_FLOW=legacy is refused with the 3.0.0 message before any request", async () => {
+            process.env.ZALO_QR_FLOW = "legacy";
+            serveQrLogin(fake);
+            // Red if a legacy branch still runs: zca-js's loginQR would reach id.zalo.me first.
+            await assert.rejects(
+                loginWithQR(null, () => {}),
+                (e) => e.code === QR_FLOW_INVALID && /removed in 3\.0\.0/.test(e.message),
+            );
+            assert.equal(fake.requests.length, 0);
+        });
+
+        it("the QR login no longer imports zca-js", () => {
+            // Red if the legacy flow's `Zalo` import (or any other zca-js import) comes back to the client wrapper.
+            const source = readFileSync(new URL("../../src/core/zalo-client.js", import.meta.url), "utf8");
+            assert.doesNotMatch(source, /from "zca-js"|require\("zca-js"\)|import\("zca-js"\)/);
+        });
+
+        it("loginWithQR with ZALO_QR_FLOW unset runs the official flow too", async () => {
+            serveQrLogin(fake);
+            const { ownId } = await loginWithQR(null, () => {});
+            assert.equal(ownId, FAKE.ownId);
+            assert.ok(fake.requests.some((r) => r.path === "/api/login/getLoginInfo"));
         });
 
         it("loginWithQR with ZALO_QR_FLOW=official runs this flow, then our own login, and returns a session", async () => {

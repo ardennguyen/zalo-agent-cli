@@ -14,6 +14,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
+    ACCEPT_LANGUAGE,
     API_TYPE,
     API_VERSION_INVALID,
     CHROME_VERSIONS,
@@ -28,6 +29,8 @@ import {
     resolveApiVersion,
 } from "../../src/zalo/profile.js";
 import { generateDeviceFingerprint } from "../../src/utils/device-fingerprint.js";
+import { secChUaFor } from "../../src/zalo/headers.js";
+import { ACCEPT_LANGUAGE as HTTP_ACCEPT_LANGUAGE } from "../../src/zalo/kernel/http.js";
 import { installFakeZalo, loginFake } from "./fake-zalo-session.js";
 
 describe("resolveApiVersion", () => {
@@ -104,10 +107,12 @@ describe("browser presets", () => {
         const seen = new Set();
         for (let i = 0; i < 4000 && seen.size < expected.size; i++) {
             const fp = generateDeviceFingerprint();
-            const key = `${fp.userAgent}|${fp.secChUaPlatform}`;
+            // The hints every request sends are derived from the User-Agent (src/zalo/headers.js).
+            const hints = secChUaFor(fp.userAgent);
+            const key = `${fp.userAgent}|${hints.secChUaPlatform}`;
             assert.ok(expected.has(key), `generator produced a fingerprint outside the presets: ${key}`);
             const major = /Chrome\/(\d+)\./.exec(fp.userAgent)[1];
-            assert.match(fp.secChUa, new RegExp(`"Chromium";v="${major}", "Google Chrome";v="${major}"`));
+            assert.match(hints.secChUa, new RegExp(`"Chromium";v="${major}", "Google Chrome";v="${major}"`));
             seen.add(key);
         }
         assert.equal(seen.size, expected.size, "some preset is never produced");
@@ -139,6 +144,17 @@ describe("the profile against the wire", () => {
         assert.equal(serverInfo.query.computer_name, COMPUTER_NAME);
         assert.equal(serverInfo.query.type, String(API_TYPE));
         assert.equal(serverInfo.query.client_version, String(DEFAULT_API_VERSION));
+    });
+
+    it("every call of a login announces the profile's Accept-Language, the value live sessions have sent", async () => {
+        await loginFake();
+        // Red if the transport hard-codes its own value again instead of reading the profile's.
+        assert.equal(HTTP_ACCEPT_LANGUAGE, ACCEPT_LANGUAGE);
+        // Red if the value moves without a live check: Zalo has only ever seen this one from us.
+        assert.equal(ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+        const calls = fake.requests.filter((r) => r.host.endsWith("zalo.me"));
+        assert.ok(calls.length > 0, "the login made calls to Zalo");
+        for (const r of calls) assert.equal(r.headers["accept-language"], ACCEPT_LANGUAGE, r.path);
     });
 });
 

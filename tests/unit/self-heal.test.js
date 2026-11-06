@@ -31,7 +31,7 @@ import {
     setMessageLocalPath,
     setMessageStatus,
 } from "../../src/core/db.js";
-import { storeLiveMessage } from "../../src/core/live-store.js";
+import { storeLiveMessage, storeLiveUndo } from "../../src/core/live-store.js";
 import { createStageLock, startDaemonChannel, syncViaDaemon } from "../../src/core/daemon-channel.js";
 import { createSocketTap } from "../../src/core/socket-tap.js";
 import { createSelfHeal } from "../../src/core/self-heal.js";
@@ -131,6 +131,7 @@ function daemon({
     now,
     store = storeLiveMessage,
     acks,
+    storeUndo,
 } = {}) {
     const listener = fakeListener({ respond });
     const tap = createSocketTap();
@@ -148,6 +149,7 @@ function daemon({
         maxPages: 4,
         now,
         acks,
+        storeUndo,
     });
     listener.on("message", (m) => store(m));
     tap.attach(listener);
@@ -155,6 +157,12 @@ function daemon({
     listener.emit("connected");
     return { listener, tap, heal, logs, recovered, lock, api };
 }
+
+/** A `storeUndo` that notes each recall's `[type, isGroup, threadId]`, then stores it as the daemon does. */
+const recording = (into) => (undo) => {
+    into.push([undo.type, undo.isGroup, undo.threadId]);
+    return storeLiveUndo(undo);
+};
 
 /** A message the listener received live, as the listener hands it over. */
 const live = (listener, r, group = true) =>
@@ -311,7 +319,8 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
                 destId: GROUP,
             },
         });
-        const d = daemon({ respond: scripted({ 511: [page(511, [undo])] }) });
+        const undos = [];
+        const d = daemon({ respond: scripted({ 511: [page(511, [undo])] }), storeUndo: recording(undos) });
         live(d.listener, row(said));
 
         await connectAndSettle(d);
@@ -320,6 +329,8 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         // sender withdrew it, and the cache would still show it.
         assert.equal(getMessageById(said).type, "deleted", "the recall was not applied");
         assert.equal(getMessageById(undoId), null, "the recall notification was stored as a message");
+        // Red if self-heal builds the group queue's recall as a 1-1 one (the isGroup flag swapped).
+        assert.deepEqual(undos, [[1, true, GROUP]]);
     });
 
     it("(b) a 1-1 recall from the user queue (510) is applied too, read as a 1-1 recall", async () => {
@@ -330,15 +341,18 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
             msgType: "chat.undo",
             content: { globalMsgId: said, cliMsgId: String(tsOf(said) + 3), deleteMsg: 0, srcId: PEER, destId: OWN },
         });
-        const d = daemon({ respond: scripted({ 510: [page(510, [undo])] }) });
+        const undos = [];
+        const d = daemon({ respond: scripted({ 510: [page(510, [undo])] }), storeUndo: recording(undos) });
         live(d.listener, row(said, { group: false }), false);
 
         await connectAndSettle(d);
 
-        // Red if the user queue's recalls are skipped. The recall's thread type does not reach zalo.db (a recall is
-        // matched by its message ids), so the type self-heal gives it is pinned on the model below.
+        // Red if the user queue's recalls are skipped.
         assert.equal(getMessageById(said).type, "deleted", "the 1-1 recall was not applied");
         assert.equal(getMessageById(undoId), null, "the recall notification was stored as a message");
+        // The recall's thread type does not reach zalo.db (a recall is matched by its message ids), so it is read off
+        // the Undo self-heal hands the store. Red if the user queue's recall is built as a group one.
+        assert.deepEqual(undos, [[0, false, PEER]]);
     });
 
     it("(c) a gap inside the covered window is resolved", async () => {

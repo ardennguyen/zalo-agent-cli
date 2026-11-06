@@ -157,6 +157,8 @@ const baseReason = (reason) => String(reason || "gap").replace(/^(uncovered:)+/,
  * @param {number} [args.timeoutMs] - wait per page
  * @param {number} [args.maxPages] - pages per queue
  * @param {boolean} [args.acks=true] - acknowledge stored queue items to Zalo (`532`); false sends nothing of the kind
+ * @param {(undo: Undo) => {stored: boolean}} [args.storeUndo] - writes a recall found on a queue page; the live
+ *   store's by default. A seam for tests: the recall's thread type does not reach zalo.db.
  * @returns {{attach: (listener: object) => void, run: (reason?: string) => Promise<object>,
  *   settled: () => Promise<void>, noteDelivered: (msg: object) => void,
  *   isRepeatedRepush: (msg: object) => boolean,
@@ -173,6 +175,7 @@ export function createSelfHeal({
     timeoutMs = DEFAULT_PAGE_TIMEOUT_MS,
     maxPages = DEFAULT_MAX_PAGES,
     acks = true,
+    storeUndo = storeLiveUndo,
 } = {}) {
     const cursors = new Map();
     // Tells Zalo which queue items are safely stored (Y10). Nothing is handed to it before the commit.
@@ -338,7 +341,7 @@ export function createSelfHeal({
                     Object.hasOwn(content, "deleteMsg")
                 ) {
                     // A recall: the listener turns exactly this shape into its `undo` event.
-                    if (storeLiveUndo(new Undo(ownId, row, isGroup)).stored) out.removals++;
+                    if (storeUndo(new Undo(ownId, row, isGroup)).stored) out.removals++;
                     continue;
                 }
                 const msg = isGroup ? new GroupMessage(ownId, row) : new UserMessage(ownId, row);

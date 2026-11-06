@@ -17,7 +17,7 @@ sleep 5
 
 # 4. Tell user the URL
 echo "Open http://$SERVER_IP:18927/qr in browser"
-echo "Scan with Zalo app > QR Scanner (NOT camera). Expires in 60 seconds."
+echo "Scan with Zalo app > QR Scanner (NOT camera). Each code lasts about 100 seconds."
 
 # 5. After user confirms scan, verify
 zalo-agent status
@@ -34,7 +34,7 @@ Firewall must allow at least one of these ports for remote access.
 | scanned | Prints the scanning account's display name and avatar URL, prompts to confirm on the phone |
 | declined | Fails immediately with "Login declined on phone" (`QRCodeDeclined` / `qr_declined` in `--json`) |
 | second QR | the default flow (`ZALO_QR_FLOW=legacy` turns it off), on an account with a trusted device: after the first scan the QR is replaced by a new one to scan once more (`event: "qr"` with `layer: 2` in `--json`; the browser page says so too) |
-| expired | Auto-retries with a fresh QR |
+| expired | With `--json` or no terminal: a fresh QR at once, up to 5 codes, then `login_error` (`Login timed out: …`). At a terminal: waits for Enter or the page's "Get a new code", up to 5 minutes |
 
 ### Auto sync at login (`--sync`)
 Tick **auto sync** on the phone's QR confirmation screen, and run `zalo-agent login --sync` (add `--sync-days <n>` for a recent window). The phone sends a short-lived key with the login; the restore starts at once with it and the phone does **not** ask for the "ĐỒNG BỘ NGAY" tap. If auto sync was not ticked, or the key is more than two minutes old, nothing is started: run `zalo-agent sync` as usual. `--sync` is never started by a daemon on its own.

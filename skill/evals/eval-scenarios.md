@@ -38,10 +38,10 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 5. Wait for QR server → `sleep 5`
 6. Tell user QR URL → `http://{IP}:18927/qr`
 7. Instruct: scan with Zalo app QR Scanner, NOT camera
-8. Mention QR expires in 60 seconds
+8. Mention each QR lasts about 100 seconds, and a background login ends after 5 codes
 9. Wait for confirmation → verify with `zalo-agent status`
 
-**Must include:** `--qr-url`, background `&`, QR Scanner instruction, 60s expiry
+**Must include:** `--qr-url`, background `&`, QR Scanner instruction, ~100 s per code
 **Must NOT:** Run foreground, suggest ASCII QR, suggest regular camera
 
 ---

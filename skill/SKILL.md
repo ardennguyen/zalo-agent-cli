@@ -60,7 +60,7 @@ zalo-agent login --sync
 zalo-agent login --credentials ./creds.json
 ```
 The QR login is Zalo Web's own sequence (the default; `ZALO_QR_FLOW=legacy` selects zca-js's). An account that has a trusted device is asked to scan a second QR once more, and the CLI becomes a trusted companion device on the account (visible in the phone's linked devices).
-CRITICAL: QR expires 60s. QR server is temporary and local-only. Scan via **Zalo app QR Scanner** (NOT camera).
+CRITICAL: each QR lasts about 100 s; run in the background (`&`) a login shows up to 5 codes, then ends with `Login timed out`. QR server is temporary and local-only. Scan via **Zalo app QR Scanner** (NOT camera).
 Details: `references/login-flow.md`
 
 ### Messaging
@@ -375,7 +375,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - **1 db writer per account** — `daemon.lock` enforces it; `account remove` and `logout --purge` refuse while a `listen` daemon holds it
 - `cliMsgId` required for: react, undo, and rebuilding a `--quote` payload → get from `--json send` (the real wire id, not a guess) or `--json listen`; `msg delete`/`msg undo` also find it in the local cache on their own
 - Mentions only in groups (`-t 1`)
-- QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting out the 60s timeout
+- QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting for the code to expire
 - `sync-mobile` is the real history restore and is now the default path; it deliberately prompts the phone once (that is the data source). `--socket` does not restore history and never prompts. The old `--legacy` flag is gone: passing it is an unknown-option error.
 - `sync-mobile` restores full history by default. Suggest `--days <n>` when the user only needs recent messages — on a busy account that is the difference between ~50 message rounds and a handful
 - 1 proxy per account recommended (shared proxies risk a ban)

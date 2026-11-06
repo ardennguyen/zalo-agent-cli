@@ -99,7 +99,7 @@ h1{margin:0 0 4px;font-size:18px;font-weight:600}
 button{padding:8px 18px;border:0;border-radius:6px;background:#0068ff;color:#fff;font:inherit;font-weight:600;cursor:pointer}
 button:disabled{opacity:.6;cursor:default}
 .failed h1{color:#c4271b}
-.hidden{display:none}
+.hidden{display:none!important}
 .lang{margin:14px 0 0;font-size:13px;color:#8593a3}
 .lang span{margin:0 8px}
 .lang a{color:#5b6b7c;text-decoration:none}

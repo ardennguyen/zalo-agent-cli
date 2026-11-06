@@ -174,6 +174,10 @@ describe("the QR page", () => {
             assert.match(html, new RegExp(`id="${id}"`), id);
         assert.match(html, /fetch\('\/refresh',\{method:'POST'\}\)/);
         assert.match(html, /ended='gone'/, "a page whose command is gone says so instead of waiting forever");
+        // Live 2026-11-06: `.frame .expired{display:flex}` outranked `.hidden{display:none}`, so a fresh code showed
+        // "QR code expired" with no button. Hidden has to win over every display rule on the page.
+        assert.match(html, /\.hidden\{display:none!important\}/);
+        assert.match(html, /class="expired hidden" id="expired"/, "the overlay starts hidden");
     });
 
     it("answers 404 for anything else", async () => {

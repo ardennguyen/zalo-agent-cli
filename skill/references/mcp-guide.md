@@ -340,8 +340,13 @@ Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức
 |-----|------|--------|
 | `threadId` | string | ID thread cần lấy lịch sử |
 | `threadType` | `"dm"` hoặc `"group"` (tuỳ chọn) | Loại hội thoại |
-| `limit` | number (mặc định 50, tối đa 200) | Số tin tối đa |
+| `limit` | number (mặc định 50, tối đa 200; tối đa 1000 khi có khoảng thời gian) | Số tin tối đa |
 | `lastMsgId` | string (tuỳ chọn) | Cursor phân trang — lấy từ `cursor` của lần gọi trước |
+| `before` | number (tuỳ chọn) | Đường cache: chỉ lấy tin cũ hơn mốc này (epoch ms, `cursor` của lần trước) |
+| `since` / `until` | number (tuỳ chọn) | Một khoảng thời gian (epoch ms, tính cả hai mốc) |
+| `last` | string (tuỳ chọn) | Khoảng gần nhất tính tới bây giờ: `12h`, `7d`, `2w`, `3m`, `1y` (thay cho `since`) |
+
+**Theo khoảng thời gian (3.0):** có `since`, `until` hoặc `last` thì tool chỉ đọc cache và trả các tin trong khoảng đó **từ cũ đến mới**, tối đa `limit` tin mỗi trang, kèm `hasMore` và `nextSince`: gọi lại với `since: nextSince` (giữ nguyên `until`) để lấy phần tiếp, không trùng và không sót tin. Không cần lùi từng trang 200 tin để tới một ngày. Khoảng không có tin trong cache trả `count: 0` kèm `note`; tool không hỏi server cho khoảng thời gian (server chỉ có tin từ lần đăng nhập này). Không dùng chung với `before`/`lastMsgId`.
 
 **Kết quả mẫu:**
 ```json

@@ -256,7 +256,7 @@ Gửi tin nhắn văn bản, tệp/ảnh đính kèm (`filePath` hoặc `files`)
 
 Văn bản mà Zalo sẽ từ chối nếu gửi thành một tin (quá 3000 byte UTF-8 gồm chữ và, với tin có định dạng, cả JSON của các style — mỗi chữ Hán là 3 byte, mỗi mục gạch đầu dòng thêm một style) được chia thành nhiều tin như Zalo Web: cắt ở xuống dòng, không có thì ở cuối câu hoặc dấu cách (cả dấu câu của chữ Hán, Devanagari, Ả Rập, Thái, Miến Điện, Khmer… như `。` `।` `؟` `។`), gửi lần lượt cách nhau 300 ms. `urgency` và `quoteMsgId` chỉ áp dụng cho tin đầu. Khi có chia, kết quả có thêm `splitInto` và `parts[]` (`messageId`, `cliMsgId` của từng tin); `messageId`/`cliMsgId` ở ngoài là của tin đầu. Nếu một tin bị Zalo từ chối, các tin sau không được gửi và thông báo lỗi nêu đã gửi được bao nhiêu tin.
 
-`threadId: "me"` được hiểu đúng như `msg send me`: tin đi vào My Documents, một thread 1-1 riêng có id là `send2me_id` của phiên đăng nhập (không phải uid của bạn — Zalo từ chối uid đó). Tool từ chối, không gửi gì, nếu kèm `threadType: 1` hoặc nếu phiên không báo `send2me_id`. Khi gửi vào My Documents, kết quả có thêm `threadId` thật và `notice`.
+`threadId: "me"` được hiểu đúng như `msg send me`: tin đi vào My Documents, một thread 1-1 riêng có id là `send2me_id` của phiên đăng nhập (không phải uid của bạn — Zalo từ chối uid đó). Tool từ chối, không gửi gì, nếu kèm `threadType: "group"` hoặc nếu phiên không báo `send2me_id`. Khi gửi vào My Documents, kết quả có thêm `threadId` thật và `notice`.
 
 **Kết quả mẫu:**
 ```json

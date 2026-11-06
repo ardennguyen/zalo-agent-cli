@@ -7,33 +7,56 @@ A release's section is added under `[Unreleased]` as the work lands and renamed 
 commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`). Entries before
 2.0.0 were never written down and are not reconstructed here — `git log v1.6.2` is the record.
 
-## [Unreleased] — 3.0.0, on `v3.0-dev`
+## [Unreleased]
 
-#### Since 2026-11-04 (not in the draft notes below)
+## [3.0.0] — 2026-11-06
 
-- fix(mcp): **a recall now reaches the agent.** When someone recalls a message, `zalo_wait_for_message` wakes and `zalo_get_messages` lists an entry with `type` `"undo"` whose `msgId` is the recalled message (`null` when only its `cliMsgId` is known) and whose `text` is empty; the webhook carries it as `event: "undo"`. The cache was already updated; nothing was shown to an agent, so a message it had read could vanish without a word (bug-reports #3).
-- feat(mcp): **`zalo_group` `rename`** (`groupId` + `name`), the MCP side of `group rename`; no `confirm` needed, a rename is reversible (bug-reports #6).
-- feat(mcp): **`zalo_friend` `alias` and `alias_list`** (`userId` + `alias`; an empty `alias` removes the nickname), the MCP side of `friend alias` / `alias-remove` / `alias-list`. The nickname is written to the local contacts at once, so `senderDisplayName` and `@[userId]` mentions use it without a CLI fallback; after a removal the profile name is fetched to take its place (bug-reports #7).
+### What's changed since v2.5.9
 
-### What's changed since v2.5.7
+3.0 makes the CLI behave toward Zalo the way Zalo Web does: it logs in, stays connected, signs out and restores history by the same steps, and it reports what it did and what it could not do. The MCP tools speak one vocabulary, which is the one breaking change for programs (see the usage notices).
 
-3.0 makes the CLI behave toward Zalo the way Zalo Web does: it logs in, stays connected, signs out and restores history by the same steps, and it reports what it did and what it could not do.
+#### MCP contract (breaking)
+
+- feat!: **one name for each id, in every MCP input and reply.** A message's id is `msgId` and a user's is `userId` (a message's author is `senderId`); `threadType` is the word `"dm"` or `"group"`, in inputs and in replies. The old names are gone: a live message has no `id` (nor do the webhook and `/events/wait` payloads), a send reply has no `messageId`, a group member has no `uid`, and `zalo_list_conversations` has no separate `type`. `zalo_view_media` takes `msgId` and `zalo_delete_message` takes `senderId`. Models copy a name from one reply into the next call, and the old mix made them call tools with the wrong field names — [`c4e558b`](https://github.com/ardennguyen/zalo-agent-cli/commit/c4e558b), [`530060c`](https://github.com/ardennguyen/zalo-agent-cli/commit/530060c)
+- feat: **clearer tool descriptions and server instructions.** Every tool and parameter says what it does, when to use it, where each id comes from and what it returns, and the server sends its instructions when a client connects — [`c4e558b`](https://github.com/ardennguyen/zalo-agent-cli/commit/c4e558b)
+
+#### MCP messages
+
+- fix: **a long-poller no longer loses messages when the daemon restarts.** The buffer's cursor started again from 1 after a restart, so a client that came back with its saved `since` silently skipped every message that arrived before the new counter passed it. Cursors now start at the clock when the daemon starts (an epoch-ms-sized number), above anything an earlier run handed out, and a `since` beyond the newest buffered message is read as stale: from the start of the buffer, which can repeat a message but never skips one. `zalo_mark_read` with such a cursor marks nothing. Applies to `zalo_get_messages`, `zalo_wait_for_message`, `GET /events/wait` and `mcp wait` — [`ade58b8`](https://github.com/ardennguyen/zalo-agent-cli/commit/ade58b8)
+- feat: **a reply says what it replies to.** Every message from `zalo_get_messages`, `zalo_wait_for_message`, `zalo_get_history` (cache and server) and `zalo_search_messages`, and the webhook payload, carries `replyTo`: `{ msgId, cliMsgId, senderId, senderName, text, timestamp, hasAttachment }` of the quoted message, or `null`. It was always `null`, so an agent could not tell what "look at this" pointed at. `senderId` is `null` when Zalo gives only an encrypted author id (a message restored from the phone) — [`ade58b8`](https://github.com/ardennguyen/zalo-agent-cli/commit/ade58b8)
+- fix: **a recall reaches the agent.** `zalo_wait_for_message` wakes and `zalo_get_messages` lists an entry with `type` `"undo"` whose `msgId` is the recalled message (`null` when only its `cliMsgId` is known); the webhook carries it as `event: "undo"` — [`8ffb5b9`](https://github.com/ardennguyen/zalo-agent-cli/commit/8ffb5b9)
+- feat: **`zalo_group` `rename`**, and **`zalo_friend` `alias` / `alias_list`** (an empty `alias` removes the nickname; `senderDisplayName` follows at once) — [`81e2747`](https://github.com/ardennguyen/zalo-agent-cli/commit/81e2747)
+- feat: **`zalo_search_messages` searches the way `msg search` does**: accent-insensitive by default (`accents: "exact"` to match them), filters by sender, period and type, pages with a cursor, and returns a highlighted snippet, optional context messages and how far back the cache reaches — [`99e17aa`](https://github.com/ardennguyen/zalo-agent-cli/commit/99e17aa)
+- feat: `zalo_send_message` warns when the text has a backslash and an `n` and no line break (Zalo shows them as typed); the text is still sent as written — [`c4e558b`](https://github.com/ardennguyen/zalo-agent-cli/commit/c4e558b)
+- fix: **a long text goes out as several messages, in any script, instead of being refused** (over 3000 bytes: split at a line break, else a sentence end or a space, never inside a character, an emoji or an @-mention, 300 ms apart) — [`5736fb9`](https://github.com/ardennguyen/zalo-agent-cli/commit/5736fb9), [`2c0b3a1`](https://github.com/ardennguyen/zalo-agent-cli/commit/2c0b3a1)
 
 #### Login and sessions
 
 - feat: **the official QR login is the default.** It follows the sequence Zalo Web makes, including the second QR an account with a trusted device is asked for (the CLI then appears in the phone's linked-device list as one companion entry, and a later login links as the same entry). `ZALO_QR_FLOW=legacy` selects the previous flow — [`5063855`](https://github.com/ardennguyen/zalo-agent-cli/commit/5063855), [`1722efc`](https://github.com/ardennguyen/zalo-agent-cli/commit/1722efc)
-- feat: **`login --sync`** starts a phone-backed restore right after the QR login, with no extra tap on the phone when the account allows it — [`b9a2890`](https://github.com/ardennguyen/zalo-agent-cli/commit/b9a2890)
+- feat: **`login --sync [--sync-days <n>]`** starts a phone-backed restore right after the QR login, with no extra tap on the phone when the account allows it — [`b9a2890`](https://github.com/ardennguyen/zalo-agent-cli/commit/b9a2890)
 - feat: **logout signs the device out**, by the six steps Zalo Web makes, and says so only after checking that the saved login is refused. `--keep-session` keeps the old behavior — [`9405743`](https://github.com/ardennguyen/zalo-agent-cli/commit/9405743)
-- feat: saved-session logins are made by this CLI itself (Zalo Web API version 694, the browser's headers, the account's own profile call, cookies written back), and a kick says why it happened — [`d3c8846`](https://github.com/ardennguyen/zalo-agent-cli/commit/d3c8846), [`b9a2890`](https://github.com/ardennguyen/zalo-agent-cli/commit/b9a2890)
-- feat: `listen` and `mcp start` keep their socket by Zalo's rules: reconnect after a pause, never retry a kick (exit code 3) or a refused login (exit code 4), wait out maintenance — [`57748d7`](https://github.com/ardennguyen/zalo-agent-cli/commit/57748d7), [`47e4360`](https://github.com/ardennguyen/zalo-agent-cli/commit/47e4360)
-- feat: `account devices` lists the linked devices readably and marks which one is this CLI; `account status` reports the zBusiness package and its limits and the zCloud plan, usage and expiry (`--json` for a program; also `zalo_read` with `name: "account-status"`) — [`b523fbb`](https://github.com/ardennguyen/zalo-agent-cli/commit/b523fbb)
+- feat: saved-session logins are made by this CLI itself, as Zalo Web makes them (API version 694, the browser's headers, the account's own profile call, cookies written back), with no call to the npm registry — [`d3c8846`](https://github.com/ardennguyen/zalo-agent-cli/commit/d3c8846)
+- feat: `listen` and `mcp start` keep their socket by Zalo's rules: reconnect after a pause by Zalo's own table, never retry a kick (**exit code 3**) or a login Zalo keeps refusing (**exit code 4**), wait out maintenance; the shipped systemd unit does not restart on either — [`57748d7`](https://github.com/ardennguyen/zalo-agent-cli/commit/57748d7), [`47e4360`](https://github.com/ardennguyen/zalo-agent-cli/commit/47e4360)
+- fix: **a kick says why it happened.** The daemon asked Zalo for the reason but exited before the answer came, so the reason never showed. It now waits up to 5 s and logs `Zalo says why: …` before it exits — [`b9a2890`](https://github.com/ardennguyen/zalo-agent-cli/commit/b9a2890), [`ade58b8`](https://github.com/ardennguyen/zalo-agent-cli/commit/ade58b8)
+- feat: **`fleet status`, `--status` and the health endpoints say why a socket is not up**: `maintenance`, `relogin` or `kicked`. A daemon that has exited on a kick leaves `kicked.json` in the account folder (removed at its next connect), so `fleet status` shows the account as `kicked`, not `stopped` — [`47e4360`](https://github.com/ardennguyen/zalo-agent-cli/commit/47e4360), [`ade58b8`](https://github.com/ardennguyen/zalo-agent-cli/commit/ade58b8)
+- feat: the end date of a login is shown (`whoami`, `--status`, `zalo_session_days_left` in the metrics), with a warning from 14 days before: Zalo never renews a web login, so a new QR login is then due — [`e575e90`](https://github.com/ardennguyen/zalo-agent-cli/commit/e575e90)
+- feat: `account devices` lists the linked devices readably and marks which one is this CLI; `account status` reports the zBusiness package and its limits and the zCloud plan, usage and expiry (`--json`; also `zalo_read` with `name: "account-status"`) — [`b523fbb`](https://github.com/ardennguyen/zalo-agent-cli/commit/b523fbb), [`b0f3648`](https://github.com/ardennguyen/zalo-agent-cli/commit/b0f3648)
 
 #### Restoring history from the phone
 
-- feat: **a restore runs the way Zalo Web and PC run it**: the whole history in one run, conversations asked in waves and released one at a time, a dropped connection resumed (up to three times), a conversation the phone cannot serve skipped alone, what an earlier run settled not asked again, Ctrl+C that keeps what arrived. A restore that could not save everything ends as partial, never as success — [`096308b`](https://github.com/ardennguyen/zalo-agent-cli/commit/096308b), [`f663bdc`](https://github.com/ardennguyen/zalo-agent-cli/commit/f663bdc), [`7d9838c`](https://github.com/ardennguyen/zalo-agent-cli/commit/7d9838c)
-- feat: the daemon replays what happened while it was away (group and friend events, pins made on another device) on every connect — [`114c9e7`](https://github.com/ardennguyen/zalo-agent-cli/commit/114c9e7), [`392ea32`](https://github.com/ardennguyen/zalo-agent-cli/commit/392ea32)
+- feat: **a restore runs the way Zalo Web and PC run it**: the whole history in one run, conversations asked in waves and released one at a time, a dropped connection resumed (up to three times), a conversation the phone cannot serve skipped alone, what an earlier run settled not asked again (`--full-resync` asks for everything), Ctrl+C that keeps what arrived. A restore that could not save everything ends as partial, never as success — [`096308b`](https://github.com/ardennguyen/zalo-agent-cli/commit/096308b), [`f663bdc`](https://github.com/ardennguyen/zalo-agent-cli/commit/f663bdc), [`7d9838c`](https://github.com/ardennguyen/zalo-agent-cli/commit/7d9838c)
+- fix: **a "no" on the phone is a no**: a declined restore prompt fails the run and records nothing as restored — [`47e4360`](https://github.com/ardennguyen/zalo-agent-cli/commit/47e4360)
+- fix: queue items are acknowledged only after they are written, and sessions a stopped run left open are released at the next start — [`6f2cb70`](https://github.com/ardennguyen/zalo-agent-cli/commit/6f2cb70), [`f184097`](https://github.com/ardennguyen/zalo-agent-cli/commit/f184097)
+- feat: the daemon replays what happened while it was away (group and friend events, unread marks and pins set on another device) on every connect — [`114c9e7`](https://github.com/ardennguyen/zalo-agent-cli/commit/114c9e7), [`392ea32`](https://github.com/ardennguyen/zalo-agent-cli/commit/392ea32)
 - feat: **`msg search`** searches the local cache the way Zalo does: accents and case ignored, indexed — [`99e17aa`](https://github.com/ardennguyen/zalo-agent-cli/commit/99e17aa)
 - fix: restore and media downloads use the account's own proxy, User-Agent and the Web client's Referer, and a restore stops before asking the phone when the server has sync turned off for the account — [`238d6eb`](https://github.com/ardennguyen/zalo-agent-cli/commit/238d6eb)
+- fix: **a proxied account can log in again**, and a restore no longer hides messages it could not save — [`e575e90`](https://github.com/ardennguyen/zalo-agent-cli/commit/e575e90)
+
+#### Media
+
+- feat: **attachments download two at a time** (was four), as Zalo Web fetches, because a burst is what the CDN answers with 403 and 429. **`sync` and `sync-media` take `--media-limit <n>`** to cap one run; what it leaves out stays pending and the run says how many — [`530060c`](https://github.com/ardennguyen/zalo-agent-cli/commit/530060c)
+- fix: **a photo Zalo serves as JPEG XL is saved as a JPEG.** The download asks for the photo's JPEG twin, as Zalo Web does when it cannot decode JPEG XL, so `zalo_view_media` and the media folder hold a `.jpg` that viewers and models can open — [`ade58b8`](https://github.com/ardennguyen/zalo-agent-cli/commit/ade58b8)
+- fix: **a photo with only an HD or a thumbnail link is downloaded.** It counted as having an attachment but was never fetched, so it stayed without a local file through every sync — [`ade58b8`](https://github.com/ardennguyen/zalo-agent-cli/commit/ade58b8)
 
 #### zCloud
 
@@ -43,16 +66,19 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 #### Everything else Zalo Web can do
 
-- feat: **`read list|run`** (41 read-only calls) and **`write list|run`** (27 state-changing calls, behind a dry run and a confirmation), also as the MCP tools `zalo_read` and `zalo_write` — [`54b36c9`](https://github.com/ardennguyen/zalo-agent-cli/commit/54b36c9), [`9a98960`](https://github.com/ardennguyen/zalo-agent-cli/commit/9a98960)
-- fix: **a proxied account can log in again**, and a restore no longer hides messages it could not save — [`59e6f6a`](https://github.com/ardennguyen/zalo-agent-cli/commit/59e6f6a)
+- feat: **`read list|run`** (41 read-only calls) and **`write list|run`** (27 state-changing calls, behind a dry run and a confirmation), also as the MCP tools `zalo_read` and `zalo_write` — [`54b36c9`](https://github.com/ardennguyen/zalo-agent-cli/commit/54b36c9), [`9a98960`](https://github.com/ardennguyen/zalo-agent-cli/commit/9a98960), [`a4603c5`](https://github.com/ardennguyen/zalo-agent-cli/commit/a4603c5)
 - Surface: 230 CLI commands in 27 command groups, 27 MCP tools.
 
 ### Usage notices
 
-- **Logging in** now follows the official sequence by default; on an account with a trusted device you scan two QR codes in turn. The CLI shows in the phone's linked-device list. `logout` keeps this identity for the next login; `logout --purge` and `account remove` delete it, and Zalo keeps listing the entry until you remove it on the phone.
+- **Breaking, MCP clients and webhook receivers:** read `msgId` (not `id` or `messageId`) and `userId` (not `uid`); send `threadType` as `"dm"` or `"group"` (a number is refused); call `zalo_view_media` with `msgId` and `zalo_delete_message` with `senderId`. The CLI is unchanged (`-t 0|1`).
+- **MCP cursors are large numbers now** (they start at the clock). A client that stores a cursor needs no change; one that assumed a small counter from 1 should not.
+- **Logging in** follows the official sequence by default; on an account with a trusted device you scan two QR codes in turn. The CLI shows in the phone's linked-device list. `logout` keeps this identity for the next login; `logout --purge` and `account remove` delete it, and Zalo keeps listing the entry until you remove it on the phone.
 - **`logout`** signs the device out at Zalo. Use `--keep-session` for the old behavior.
+- A kicked or refused daemon exits with code 3 or 4 and is not restarted by the shipped systemd unit: log in again (or close the other session) and start it yourself.
+- `sync` and `sync-media` fetch two files at a time; pass `-c <n>` for more, or `--media-limit <n>` to stop a run early.
 - `friend close` is retired by Zalo, and `friend online` is answered with a 404 on the current build; both say so.
-- Wrapper: `@ardennguyen/zalo-mcp` users get 3.0 after the wrapper is updated (`npm install -g @ardennguyen/zalo-mcp@latest`, or `zalo-mcp.ps1 update` / `zalo-mcp.sh update`).
+- Wrapper: `@ardennguyen/zalo-mcp` users get 3.0 with wrapper 3.0.0 (`npm install -g @ardennguyen/zalo-mcp@latest`, or `zalo-mcp.ps1 update` / `zalo-mcp.sh update`).
 
 ## [2.5.9] — 2026-10-29
 
@@ -498,7 +524,8 @@ npm install -g @ardennguyen/zalo-agent-cli@2.0.0
 
 Commands, flags and defaults: `skill/references/command-reference.md`. Operating it on a server: `docs/deployment.md`.
 
-[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v2.5.9...v3.0-dev
+[Unreleased]: https://github.com/ardennguyen/zalo-agent-cli/compare/v3.0.0...v3.0-dev
+[3.0.0]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v3.0.0
 [2.5.9]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v2.5.9
 [2.5.8]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v2.5.8
 [2.5.7]: https://github.com/ardennguyen/zalo-agent-cli/releases/tag/v2.5.7

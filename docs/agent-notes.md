@@ -109,7 +109,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3660** as of 2026-10-29 (3650 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3702** as of 2026-11-06 (3692 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -516,6 +516,10 @@ so default media is purged along with the account. Attachments written outside t
 configured `media.downloadDir` survive `logout --purge`, `logout --delete-history` and
 `account remove`. That gap is documented as a warning in `Security.md` / `Bảo-Mật.md` and
 `INSTALLATION.md`, and is **not** fixed in code.
+
+**A custom `media.downloadDir` survives a purge.** `wipeAccountDir()` removes only `CONFIG_DIR/accounts/<ownId>`, so
+media written to a directory named in `mcp-config.json` stays behind after `logout --purge` or `account remove`.
+Documented in `INSTALLATION.md`; not fixed (moved here from AGENTS.md §13 on 2026-11-06 for the byte budget).
 
 ### Every text attachment was downloaded and thrown away (2026-09-29)
 
@@ -1117,6 +1121,16 @@ Zalo answers with error 112); `login.js` keeps it in the context and `src/zalo/k
 can hand every supervisor a `kickoutInfo` that needs no key from the caller. The reply is sealed with `enk`, not the
 session key a kick has just ended, in the session cipher's shape. The host logs the server's own words for the source
 (`kick_out_config`) and the time. The lookup returns null for any failure and never raises: the kick is already handled.
+
+**The reason used to be lost (fixed 2026-11-06).** The supervisor emitted `kicked` and only then asked for the reason,
+and the daemons' `onKicked` calls `process.exit(3)`, so the process was gone before the answer came and the "Zalo says
+why" line never printed (the tests emitted `kickout-info` on a stub and could not see it). `kicked` now carries the
+lookup as `reason` (a promise that resolves to the answer or null, never rejecting); the host waits for it at most
+`KICK_REASON_WAIT_MS` (5 s), then writes `kicked.json` (`via`, `at`, `reason`) in the account folder and exits. The
+next `connected` removes the file. Without it a kicked daemon was simply gone: `fleet status` said `stopped`, the
+`kicked` state of the health snapshot lived only as long as the process, and nothing on disk said a kick ended it.
+There is no `--takeover` flag: the way back is to stop the other session (or accept losing it) and start the daemon,
+which clears the marker when it connects.
 
 ## The saved-session login is ours, and what it sends (v3.0, 2026-10-25)
 

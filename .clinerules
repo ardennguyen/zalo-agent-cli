@@ -195,7 +195,6 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 | `INSTALLATION.{md,vi.md}`, `docs/deployment.{md,vi.md}` | Install/update flow, MCP transport/daemon flags, or config keys |
 | `docs/configuration.{md,vi.md}`, `docs/config-samples/**`, wiki `Configuration` ⇄ `Cấu-Hình` | An env var, `mcp-config.json` key, or MCP HTTP/webhook behavior changes (`config-samples.test.js` enforces the samples) |
 | `CHANGELOG.md` | Every user-visible change, under `## [Unreleased]` as it lands; renamed to the version in the bump commit |
-| `docs/decisions/*.md` | An architectural decision is made or reversed (one file per decision, dated) |
 | `tests/README.md` | A suite moves, a gate or the test count changes, a manual check is added |
 | `docs/agent-notes.md` | The background behind a rule here changes, or a new incident is worth recording |
 | `zalo-agent-cli-wiki/*.md` | A command's behavior changes — **update the EN + VN pair together** |
@@ -232,7 +231,7 @@ The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose
 ## 11. Agent artifacts
 
 - Long-form docs, plans and artifacts go in the project, **not** an agent's default `brain` directory: markdown → `agent/docs/`; generated code, scripts, media → `agent/work/`; temporary scratch → the session scratch directory only.
-- `agent/` is gitignored. Anything that must reach another clone belongs in `docs/`. **Release notes go in `CHANGELOG.md` and decisions in `docs/decisions/` — never only in `agent/docs/`.**
+- `agent/` is gitignored. Anything that must reach another clone belongs in `docs/`. **Release notes go in `CHANGELOG.md`.** Decision records stay local in `docs/decisions/` (gitignored, like `agent/`).
 - A document covering **both** repos goes into `agent/docs/` in both, named so the copies do not collide.
 
 ---

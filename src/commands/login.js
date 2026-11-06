@@ -22,6 +22,7 @@ import { runQrLogin } from "../core/qr-login-flow.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 
 /**
  * `login --sync`: restore the history at once with the key the phone offers when "auto sync" is ticked at the QR
@@ -95,6 +96,8 @@ export function registerLoginCommands(program) {
 
                     const creds = extractCredentials();
                     saveCredentials(ownId, creds);
+                    // A new login ends a kick: `fleet status` stops saying `kicked` before the daemon is back.
+                    clearKickMarker(kickFile(getAccountDir(ownId)));
                     addAccount(ownId, displayName, proxy);
                     success(`Logged in as ${displayName} (${ownId})`);
                 } catch (e) {
@@ -128,6 +131,7 @@ export function registerLoginCommands(program) {
 
                 const creds = extractCredentials();
                 saveCredentials(ownId, creds);
+                clearKickMarker(kickFile(getAccountDir(ownId)));
                 addAccount(ownId, displayName, opts.proxy);
 
                 if (jsonMode) {

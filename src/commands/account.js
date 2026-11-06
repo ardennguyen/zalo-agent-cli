@@ -22,6 +22,7 @@ import { listAccounts, getActive, setActive, addAccount, removeAccount, getAccou
 import { serverLogout, reportLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { runQrLogin } from "../core/qr-login-flow.js";
+import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 
 export function registerAccountCommands(program) {
@@ -79,6 +80,8 @@ export function registerAccountCommands(program) {
 
                 const creds = extractCredentials();
                 saveCredentials(ownId, creds);
+                // A new login ends a kick: `fleet status` stops saying `kicked` before the daemon is back.
+                clearKickMarker(kickFile(getAccountDir(ownId)));
                 addAccount(ownId, displayName, opts.proxy);
                 success(
                     `Account logged in: ${displayName} (${ownId})${opts.proxy ? ` via ${maskProxy(opts.proxy)}` : ""}`,

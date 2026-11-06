@@ -1127,7 +1127,7 @@ and the daemons' `onKicked` calls `process.exit(3)`, so the process was gone bef
 why" line never printed (the tests emitted `kickout-info` on a stub and could not see it). `kicked` now carries the
 lookup as `reason` (a promise that resolves to the answer or null, never rejecting); the host waits for it at most
 `KICK_REASON_WAIT_MS` (5 s), then writes `kicked.json` (`via`, `at`, `reason`) in the account folder and exits. The
-next `connected` removes the file. Without it a kicked daemon was simply gone: `fleet status` said `stopped`, the
+next `connected` removes the file, and so does a successful `login` or `account login`. Without it a kicked daemon was simply gone: `fleet status` said `stopped`, the
 `kicked` state of the health snapshot lived only as long as the process, and nothing on disk said a kick ended it.
 There is no `--takeover` flag: the way back is to stop the other session (or accept losing it) and start the daemon,
 which clears the marker when it connects.

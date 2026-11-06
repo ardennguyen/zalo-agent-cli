@@ -1,4 +1,11 @@
 import { runPacedBatches, userInfoLog } from "./user-info.js";
+import { readAllAliases } from "../zalo/api/people.js";
+
+/** Aliases asked per page. */
+const ALIAS_PAGE_SIZE = 100;
+
+/** Pages read before the alias list is given up on as endless. */
+const MAX_ALIAS_PAGES = 1000;
 
 /** The default `log`: silent unless a daemon registered a sink with `setUserInfoLogger`. */
 const NO_LOG = () => {};
@@ -15,21 +22,28 @@ export async function readUserAliases(api, log = () => {}) {
     const aliases = new Map();
     try {
         if (typeof api?.getAliasList !== "function") return aliases;
-        for (let page = 1; page <= 1000; page++) {
-            const result = await api.getAliasList(100, page);
-            if (!Array.isArray(result?.items)) throw new Error("invalid alias page");
-            let added = 0;
-            for (const item of result.items) {
-                if (item.userId && typeof item.alias === "string" && item.alias.trim()) {
-                    const uid = String(item.userId);
-                    if (!aliases.has(uid)) added++;
-                    aliases.set(uid, item.alias);
-                }
+        // readAllAliases pages the way Zalo Web does (`hasMore`, a full page, 212 past page 1). This wrapper keeps
+        // this function's own contract on top: a malformed page, a page that repeats ids already read, or running
+        // past the page cap fails the whole read instead of handing back part of the list.
+        const seen = new Set();
+        const checked = {
+            getAliasList: async (count, page) => {
+                if (page > MAX_ALIAS_PAGES) throw new Error("alias pagination limit reached");
+                const result = await api.getAliasList(count, page);
+                if (!Array.isArray(result?.items)) throw new Error("invalid alias page");
+                const ids = result.items.map((item) => String(item?.userId ?? ""));
+                if (ids.length && ids.every((id) => seen.has(id))) throw new Error("alias pagination did not advance");
+                for (const id of ids) seen.add(id);
+                return result;
+            },
+        };
+        const items = await readAllAliases(checked, { pageSize: ALIAS_PAGE_SIZE, maxPages: MAX_ALIAS_PAGES + 1 });
+        for (const item of items) {
+            if (item?.userId && typeof item.alias === "string" && item.alias.trim()) {
+                aliases.set(String(item.userId), item.alias);
             }
-            if (result.items.length < 100) return aliases;
-            if (!added) throw new Error("alias pagination did not advance");
         }
-        throw new Error("alias pagination limit reached");
+        return aliases;
     } catch {
         log("current aliases unavailable; falling back to profile names or UIDs");
         return new Map();

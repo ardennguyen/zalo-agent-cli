@@ -34,6 +34,7 @@ import { join } from "node:path";
 import { CONFIG_DIR, loadCredentials, saveCredentials } from "../../src/core/credentials.js";
 import { acquireLock, releaseLock } from "../../src/core/lock.js";
 import { serverLogout, describeLogout, finishLocalLogout, logoutNeedsSession } from "../../src/core/logout.js";
+import { sealSession } from "../../src/zalo/kernel/cipher.js";
 
 assertSandboxed(CONFIG_DIR);
 
@@ -158,6 +159,29 @@ describe("serverLogout --keep-session sends Zalo Web's production logout", () =>
         assert.equal(result.production.ok, false);
         assert.equal(result.production.code, 102);
         assert.match(result.production.error, /improperly submitted/);
+    });
+
+    it("a plain-text `data` that is not sealed is an answer, not a failure", async () => {
+        const { api } = harness({ logoutBody: { error_code: 0, error_message: "Successful.", data: "logged out" } });
+        const result = await serverLogout(api, KEEP);
+
+        // Red if a `data` string that the session key does not open is read as an error.
+        assert.equal(result.production.ok, true, JSON.stringify(result.production));
+    });
+
+    it("a sealed `data` with an inner error code is that error, with the inner code", async () => {
+        const { api } = harness();
+        const key = api.getContext().secretKey;
+        const sealed = sealSession(key, JSON.stringify({ error_code: 214, error_message: "fake inner refusal" }));
+        const { api: sealedApi } = harness({
+            logoutBody: { error_code: 0, error_message: "Successful.", data: sealed },
+        });
+        const result = await serverLogout(sealedApi, KEEP);
+
+        // Red if only the outer envelope's code is honored: the outer one says "Successful.".
+        assert.equal(result.production.ok, false);
+        assert.equal(result.production.code, 214);
+        assert.match(result.production.error, /fake inner refusal/);
     });
 });
 

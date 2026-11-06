@@ -5,7 +5,8 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
-import { describeFriendAddError, extractErrorCode } from "../core/friend-requests.js";
+import { describeFriendAddError, describeFriendUndoError, readSentRequests } from "../core/friend-requests.js";
+import { errorCodeOf } from "../zalo/errors.js";
 import { readUserAliases } from "../core/current-user-names.js";
 import { searchFriends } from "../core/friend-search.js";
 
@@ -140,7 +141,7 @@ export function registerFriendCommands(program) {
                 output(result, program.opts().json, () => success(`Friend request sent to ${userId}`));
             } catch (e) {
                 // Map Zalo error codes to actionable messages
-                const code = e.code || extractErrorCode(e.message);
+                const code = errorCodeOf(e);
                 error(describeFriendAddError(code, userId) || `Friend request failed (code ${code}): ${e.message}`);
             }
         });
@@ -216,8 +217,11 @@ export function registerFriendCommands(program) {
                         error(`No user found for username "${username}"`);
                         return;
                     }
-                    info(`User ID: ${result.uid || "?"}`);
-                    info(`Name: ${result.displayName || result.zaloName || "?"}`);
+                    // Zalo answers a username lookup in snake_case (`display_name`, `zalo_name`), as a phone
+                    // lookup; the camelCase names are read too, as `friend find` reads them.
+                    const name = result.display_name || result.displayName || result.zalo_name || result.zaloName;
+                    info(`User ID: ${result.uid || result.userId || "?"}`);
+                    info(`Name: ${name || "?"}`);
                 });
             } catch (e) {
                 error(`Find username failed: ${e.message}`);
@@ -288,7 +292,7 @@ export function registerFriendCommands(program) {
                 const result = await getApi().undoFriendRequest(userId);
                 output(result, program.opts().json, () => success(`Friend request to ${userId} cancelled`));
             } catch (e) {
-                error(`Undo friend request failed: ${e.message}`);
+                error(describeFriendUndoError(errorCodeOf(e), userId) || `Undo friend request failed: ${e.message}`);
             }
         });
 
@@ -297,21 +301,21 @@ export function registerFriendCommands(program) {
         .description("List all sent friend requests")
         .action(async () => {
             try {
-                const result = await getApi().getSentFriendRequest();
+                // Zalo's "none sent" (112) arrives as `{}`.
+                const result = await readSentRequests(getApi());
                 output(result, program.opts().json, () => {
-                    const entries = Object.entries(result || {});
+                    const entries = Object.entries(result);
+                    if (!entries.length) {
+                        info("No sent friend requests");
+                        return;
+                    }
                     info(`${entries.length} sent request(s)`);
                     for (const [uid, req] of entries) {
                         console.log(`  ${uid}  ${req.displayName || req.zaloName || "?"}`);
                     }
                 });
             } catch (e) {
-                // Code 112 = no friend requests
-                if (String(e.message).includes("112")) {
-                    info("No sent friend requests");
-                } else {
-                    error(`Get sent requests failed: ${e.message}`);
-                }
+                error(`Get sent requests failed: ${e.message}`);
             }
         });
 

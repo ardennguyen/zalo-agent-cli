@@ -1662,11 +1662,23 @@ describe("zalo_friend", () => {
             message: "hi",
             requestedAt: new Date(1790000000 * 1000).toISOString(),
         });
-        // Red if Zalo's "no requests" error is surfaced as a failure instead of an empty list.
-        const none = await call(friendApi({ getSentFriendRequest: new Error("Zalo error (112)") }), {
+        // The engine answers Zalo's "no requests" (112) with {}; an error that still carries code 112 reads the same.
+        const empty = await call(friendApi({ getSentFriendRequest: {} }), { action: "sent_requests" });
+        assert.deepEqual(payloadOf(empty), { action: "sent_requests", count: 0, requests: [] });
+        // Red if Zalo's "no requests" error is surfaced as a failure instead of an empty list. The code is on `.code`:
+        // our errors never write it into the message, so a message test could not see it.
+        const none = await call(
+            friendApi({ getSentFriendRequest: Object.assign(new Error("Zalo error"), { code: 112 }) }),
+            {
+                action: "sent_requests",
+            },
+        );
+        assert.deepEqual(payloadOf(none), { action: "sent_requests", count: 0, requests: [] });
+        // Red if the code is still parsed out of the text: "112" in a message is not Zalo's code.
+        const text = await call(friendApi({ getSentFriendRequest: new Error("boom (112)") }), {
             action: "sent_requests",
         });
-        assert.deepEqual(payloadOf(none), { action: "sent_requests", count: 0, requests: [] });
+        assert.equal(text.isError, true);
         const broken = await call(friendApi({ getSentFriendRequest: new Error("boom (500)") }), {
             action: "sent_requests",
         });
@@ -1713,10 +1725,10 @@ describe("zalo_friend", () => {
     });
 
     it("send explains Zalo's refusals in the CLI's words, and passes an unknown failure through", async () => {
-        const refused = await call(friendApi({ sendFriendRequest: new Error("Zalo error (225)") }), {
-            action: "send",
-            userId: U,
-        });
+        const refused = await call(
+            friendApi({ sendFriendRequest: Object.assign(new Error("Zalo error"), { code: 225 }) }),
+            { action: "send", userId: U },
+        );
         assert.equal(refused.isError, true);
         assert.match(refused.content[0].text, /Already friends with 9100000000000000001/);
         const unknown = await call(friendApi({ sendFriendRequest: new Error("weird (999)") }), {
@@ -1724,6 +1736,22 @@ describe("zalo_friend", () => {
             userId: U,
         });
         assert.match(unknown.content[0].text, /weird \(999\)/);
+    });
+
+    it("undo explains Zalo's 301 (too many requests taken back) and passes another failure through", async () => {
+        const limit = await call(
+            friendApi({ undoFriendRequest: Object.assign(new Error("Zalo error"), { code: 301 }) }),
+            { action: "undo", userId: U },
+        );
+        assert.equal(limit.isError, true);
+        // Red without the 301 wording: Zalo's own text says nothing about waiting.
+        assert.match(limit.content[0].text, /Try again in 24 hours \(code 301\)/);
+        assert.match(limit.content[0].text, new RegExp(U));
+        const other = await call(
+            friendApi({ undoFriendRequest: Object.assign(new Error("not found"), { code: 999 }) }),
+            { action: "undo", userId: U },
+        );
+        assert.match(other.content[0].text, /not found/);
     });
 
     it("accept, reject and undo each call their own Zalo method with the user id", async () => {

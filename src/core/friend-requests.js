@@ -8,15 +8,25 @@
  * sent us, with their message in `recommInfo.message`; type 1 is an ordinary
  * suggestion. `friend recommendations` already labels them `[request]`.
  *
- * Nothing here talks to Zalo or writes zalo.db: these are pure reshapers of
- * what the zca-js calls return, plus the error wording for the writes.
+ * Nothing here writes zalo.db: these are reshapers of what the engine's
+ * friend calls return, plus the error wording for the writes. Zalo's error
+ * code is read from the error's `.code`, never out of its message.
  */
+import { errorCodeOf } from "../zalo/errors.js";
 
-/** zca-js FriendRecommendationsType.ReceivedFriendRequest. */
+/** The recommendations feed's item type for a request someone sent us. */
 export const RECEIVED_FRIEND_REQUEST = 2;
 
+/** Zalo's code for "this account has no open sent friend requests" (`/api/friend/requested/list`). */
+export const NO_SENT_REQUESTS = 112;
+
+/** Zalo's code for "too many friend requests taken back": Zalo Web says to wait 24 hours. */
+export const UNDO_LIMIT_REACHED = 301;
+
 /**
- * The numeric error code in a zca-js error message such as "... (225)".
+ * The numeric error code in a message such as "... (225)".
+ *
+ * Kept for the group actions of `zalo_group`, which still fall back to it; the friend paths read `.code` only.
  *
  * @param {unknown} msg
  * @returns {number|null}
@@ -45,6 +55,42 @@ export function describeFriendAddError(code, userId) {
         224: "Zalo says the friend list is full (224).",
     };
     return map[String(code)];
+}
+
+/**
+ * What a failed "take back a friend request" means, for the codes that have a meaning of their own.
+ *
+ * @param {number|string|null|undefined} code - Zalo's error code
+ * @param {string} userId
+ * @returns {string|undefined} undefined for a code with no specific wording
+ */
+export function describeFriendUndoError(code, userId) {
+    if (Number(code) === UNDO_LIMIT_REACHED) {
+        return (
+            `Zalo refused to cancel the friend request to ${userId}: too many requests were taken back ` +
+            `recently. Try again in 24 hours (code ${UNDO_LIMIT_REACHED}).`
+        );
+    }
+    return undefined;
+}
+
+/**
+ * The friend requests this account sent and that are still open, keyed by userId; `{}` when there are none.
+ *
+ * The engine already answers Zalo's "none sent" (112) with `{}`; an error that still carries code 112 reads the
+ * same, so "no requests" is never reported as a failure.
+ *
+ * @param {{getSentFriendRequest: () => Promise<Record<string, object>|null>}} api
+ * @returns {Promise<Record<string, object>>}
+ */
+export async function readSentRequests(api) {
+    try {
+        const res = await api.getSentFriendRequest();
+        return res && typeof res === "object" ? res : {};
+    } catch (e) {
+        if (errorCodeOf(e) === NO_SENT_REQUESTS) return {};
+        throw e;
+    }
 }
 
 /**

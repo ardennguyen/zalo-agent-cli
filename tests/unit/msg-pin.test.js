@@ -272,6 +272,23 @@ describe("msg unpin", () => {
         assert.deepEqual(Object.keys(unpin.params), ["conversationId", "topics", "version", "lang", "imei"]);
     });
 
+    it("1-1: a topic that arrives as a JSON string is found and unpinned (spec-people 16.3)", async () => {
+        // zca-js typed the 1-1 board's topics as strings; the engine parses a string topic to its object, so
+        // findPinnedTopic, which reads `type` and `params`, finds it next to an object topic.
+        const r = await runOffline(["msg", "unpin", D1.msgId], {
+            responses: {
+                "/api/friendboard/list": {
+                    data: [{ id: "920000087", type: 0, params: "{}" }, JSON.stringify(pinnedTopic("920000089", D1))],
+                    version: 1790000000334,
+                },
+            },
+        });
+        assert.equal(r.code, 0, r.all);
+        assert.deepEqual(only(r, "/api/friendboard/multi_unpin").params.topics, [
+            { topicId: "920000089", topicType: 2 },
+        ]);
+    });
+
     it("an uncached message can still be unpinned when its thread is named", async () => {
         const pinnedElsewhere = { ...G1, msgId: "7100000000099", cliMsgId: "1700000000099" };
         const r = await runOffline(["msg", "unpin", pinnedElsewhere.msgId, GROUP, "-t", "1"], {

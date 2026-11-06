@@ -36,6 +36,7 @@ import { createStageLock, startDaemonChannel, syncViaDaemon } from "../../src/co
 import { createSocketTap } from "../../src/core/socket-tap.js";
 import { createSelfHeal } from "../../src/core/self-heal.js";
 import { fakeListener } from "./support/fake-socket.js";
+import { Undo } from "../../src/zalo/listener/models.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-self-heal-"));
 let dbSeq = 0;
@@ -319,6 +320,25 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         // Red if removals are skipped, as a history fetch skips them: the
         // sender withdrew it, and the cache would still show it.
         assert.equal(getMessageById(said).type, "deleted", "the recall was not applied");
+        assert.equal(getMessageById(undoId), null, "the recall notification was stored as a message");
+    });
+
+    it("(b) a 1-1 recall from the user queue (510) is applied too, read as a 1-1 recall", async () => {
+        const said = nextId();
+        const undoId = nextId();
+        const undo = row(undoId, {
+            group: false,
+            msgType: "chat.undo",
+            content: { globalMsgId: said, cliMsgId: String(tsOf(said) + 3), deleteMsg: 0, srcId: PEER, destId: OWN },
+        });
+        const d = daemon({ respond: scripted({ 510: [page(510, [undo])] }) });
+        live(d.listener, row(said, { group: false }), false);
+
+        await connectAndSettle(d);
+
+        // Red if the user queue's recalls are skipped. The recall's thread type does not reach zalo.db (a recall is
+        // matched by its message ids), so the type self-heal gives it is pinned on the model below.
+        assert.equal(getMessageById(said).type, "deleted", "the 1-1 recall was not applied");
         assert.equal(getMessageById(undoId), null, "the recall notification was stored as a message");
     });
 
@@ -829,5 +849,22 @@ describe("X4: the 601 control queues", () => {
         );
         await sleep(0);
         assert.deepEqual(d.listener.sent, []);
+    });
+});
+
+describe("self-heal: the recall it builds from a queue page", () => {
+    // self-heal builds `new Undo(ownId, row, queue.threadType === GROUP)`: the user queue (510) gives a 1-1 recall,
+    // the group queue (511) a group recall.
+    const recall = (group) =>
+        row(nextId(), { group, msgType: "chat.undo", content: { globalMsgId: "5300001", deleteMsg: 0 } });
+
+    it("a row from the user queue is a 1-1 recall in the peer's thread", () => {
+        const u = new Undo(OWN, recall(false), false);
+        assert.deepEqual([u.type, u.isGroup, u.threadId], [0, false, PEER]);
+    });
+
+    it("a row from the group queue is a group recall in the group's thread", () => {
+        const g = new Undo(OWN, recall(true), true);
+        assert.deepEqual([g.type, g.isGroup, g.threadId], [1, true, GROUP]);
     });
 });

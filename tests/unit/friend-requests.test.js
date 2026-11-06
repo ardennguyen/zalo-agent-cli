@@ -10,10 +10,13 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     RECEIVED_FRIEND_REQUEST,
+    NO_SENT_REQUESTS,
     describeFriendAddError,
+    describeFriendUndoError,
     extractErrorCode,
     friendStatusFrom,
     friendsFrom,
+    readSentRequests,
     receivedRequestsFrom,
     sentRequestsFrom,
     toIso,
@@ -130,5 +133,32 @@ describe("error wording shared with `friend add`", () => {
         for (const code of [221, 223, 224]) assert.ok(describeFriendAddError(code, "9"), `code ${code}`);
         assert.equal(describeFriendAddError(999, "9"), undefined, "an unknown code is left for the caller to report");
         assert.equal(describeFriendAddError(null, "9"), undefined);
+    });
+});
+
+describe("undo wording and the sent-requests read", () => {
+    it("names Zalo's 301 (too many requests taken back) and leaves other codes to the caller", () => {
+        assert.match(describeFriendUndoError(301, "9"), /request to 9: too many requests were taken back/);
+        assert.match(describeFriendUndoError("301", "9"), /24 hours/);
+        assert.equal(describeFriendUndoError(999, "9"), undefined);
+        assert.equal(describeFriendUndoError(null, "9"), undefined);
+    });
+
+    it("reads Zalo's 'none sent' as {}, by the error's code, never by its text", async () => {
+        const api = (answer) => ({
+            getSentFriendRequest: async () => {
+                if (answer instanceof Error) throw answer;
+                return answer;
+            },
+        });
+        assert.equal(NO_SENT_REQUESTS, 112);
+        assert.deepEqual(await readSentRequests(api({})), {});
+        assert.deepEqual(await readSentRequests(api(null)), {});
+        assert.deepEqual(await readSentRequests(api(Object.assign(new Error("x"), { code: 112 }))), {});
+        assert.deepEqual(await readSentRequests(api(Object.assign(new Error("x"), { code: "112" }))), {});
+        await assert.rejects(readSentRequests(api(new Error("Zalo error (112)"))), /Zalo error \(112\)/);
+        await assert.rejects(readSentRequests(api(Object.assign(new Error("other"), { code: 500 }))), /other/);
+        const one = { 1: { userId: "1" } };
+        assert.deepEqual(await readSentRequests(api(one)), one);
     });
 });

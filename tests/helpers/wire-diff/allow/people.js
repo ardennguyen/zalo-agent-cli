@@ -174,13 +174,13 @@ export default [
         why: "the same: no sealed body at all (@11609873)",
     },
 
-    // getMultiUsersByPhones: the same 0 -> 84 rule as findUser.
+    // getMultiUsersByPhones: the same 0 -> 84 rule as findUser; here the rule is ours (see MULTI_BY_PHONES).
     {
         method: "getMultiUsersByPhones",
         case: "getMultiUsersByPhones/lang-en",
         field: "params.phones.0",
         zca: "0901234567",
         own: "84901234567",
-        why: "the Web's phone paths turn a leading 0 into 84 whatever the UI language (spec-people 3.3), as findUser",
+        why: "our rule, not one read from the Web's multiget callers: keep the CLI's 0 -> 84 (zca-js did it for a vi session) whatever the language, as findUser does (spec-people 3.3)",
     },
 ];

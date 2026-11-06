@@ -42,6 +42,17 @@ export function parsePinnedId(raw) {
 export const PINNED_NOT_A_CONVERSATION = "m1";
 
 /**
+ * The entries of a pinned-conversation list that are conversations: the list without {@link
+ * PINNED_NOT_A_CONVERSATION}, as Zalo Web reads it. `conv pinned` and the pin sync both read the list through this.
+ *
+ * @param {unknown} list - `getPinConversations().conversations`
+ * @returns {Array<string|number>} the entries kept, in order ([] for anything not an array)
+ */
+export function pinnedConversations(list) {
+    return (Array.isArray(list) ? list : []).filter((raw) => String(raw ?? "") !== PINNED_NOT_A_CONVERSATION);
+}
+
+/**
  * Resolve a precision-lost numeric id to the one cached thread it came from.
  *
  * @param {number|string} lossy - the id as the call returned it
@@ -88,8 +99,7 @@ export async function syncConvState({ api, now = Date.now(), threads } = {}) {
     try {
         const res = await api.getPinConversations();
         pinnedIds = new Set();
-        for (const raw of res?.conversations || []) {
-            if (String(raw ?? "") === PINNED_NOT_A_CONVERSATION) continue;
+        for (const raw of pinnedConversations(res?.conversations)) {
             const { threadId } = parsePinnedId(raw);
             // Only conversations the cache knows: a pin for a thread we have
             // never seen has nothing to attach to, and inventing a row would

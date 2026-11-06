@@ -12,6 +12,7 @@ import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads, f
 import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readStateLabel } from "../core/read-state.js";
 import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
+import { pinnedConversations } from "../core/sync-v2/conv-state.js";
 import { markConversationRead, unreadMarkAnchor, zaloPost } from "../core/receipts.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
 
@@ -395,8 +396,9 @@ export function registerConvCommands(program, deps = {}) {
         .description("List pinned conversations")
         .action(async () => {
             try {
-                const result = await getApi().getPinConversations();
-                output(result, program.opts().json);
+                const result = await zaloApi().getPinConversations();
+                // Zalo's `m1` entry is not a conversation; Web skips it (spec-actions 7.3), as the pin sync does.
+                output({ ...result, conversations: pinnedConversations(result?.conversations) }, program.opts().json);
             } catch (e) {
                 error(e.message);
             }

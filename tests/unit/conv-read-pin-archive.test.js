@@ -450,6 +450,19 @@ describe("conv pin / unpin — pinconvers/updatev2 with the web's tab:0", () => 
     });
 });
 
+describe("conv pinned — the list Web reads, without Zalo's m1 entry", () => {
+    it("prints the pinned conversations and leaves out `m1` (spec-actions 7.3)", async () => {
+        const g = freshGroup();
+        const u = freshPeer();
+        const { api, sent } = harness(() => ({ conversations: [`g${g}`, "m1", `u${u}`], version: 7 }));
+        const r = await conv(["pinned"], api, { json: true });
+        assert.equal(sent.length, 1);
+        assert.equal(sent[0].path, "/api/pinconvers/list");
+        // Red when `conv pinned` prints the list as Zalo answers it: "m1" is in the middle.
+        assert.deepEqual(JSON.parse(r.stdout), { conversations: [`g${g}`, `u${u}`], version: 7 });
+    });
+});
+
 describe("conv archive / unarchive — archivedchat/update with the server's version", () => {
     const SERVER_VERSION = 1700000123000;
 

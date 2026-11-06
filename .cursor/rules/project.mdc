@@ -50,7 +50,7 @@ Two separate API surfaces live in one binary, and **must never be conflated**:
 
 | Surface | API | Credentials | Risk |
 |---|---|---|---|
-| Personal (`msg`, `friend`, `group`, `listen`, `mcp`, …) | **Unofficial** ([zca-js](https://github.com/RFS-ADRENO/zca-js)), QR login | `~/.zalo-agent-cli/` | Account can be banned |
+| Personal (`msg`, `friend`, `group`, `listen`, `mcp`, …) | **Unofficial** (own protocol layer, from Zalo Web's wire format), QR login | `~/.zalo-agent-cli/` | Account can be banned |
 | Official Account (`oa …`) | **Official** Zalo OA REST v3.0, OAuth 2.0 | `~/.zalo-agent/` (no `-cli`) | None — sanctioned |
 
 The unofficial-API disclaimer is deliberately suppressed for `oa` commands.
@@ -177,7 +177,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 ## 9. Deployment (`V:/zalo_mcp` and other `zalo-mcp` installs)
 
 - **Never** run `npm install` in a deployed `zalo-mcp` folder — only `zalo-mcp.ps1 update` (Windows) or `bash zalo-mcp.sh update` (Linux/macOS).
-- Pull from **`ardennguyen/zalo-mcp`** — *not* the original PhucMPham repo. Its scripts install the engine from npm (`@ardennguyen/zalo-agent-cli`): a deploy runs a published version, never a branch.
+- Pull from **`ardennguyen/zalo-mcp`** only — never a fork. Its scripts install the engine from npm (`@ardennguyen/zalo-agent-cli`): a deploy runs a published version, never a branch.
 
 ---
 
@@ -202,7 +202,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 
 ### Numbers quoted across many docs
 
-CLI commands (**230**), command groups (**27** containers), MCP tools (**27**), OA commands (**32**), offline tests (**3734** as of 2026-11-06). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
+CLI commands (**230**), command groups (**27** containers), MCP tools (**27**), OA commands (**32**), offline tests (**4737** as of 2026-11-06). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`.
 
@@ -261,7 +261,7 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
 - **MCP names are one vocabulary.** One concept, one name in every tool input and reply (`msgId`, `userId`, `senderId`, `threadId`, `cliMsgId`); the table is in `docs/agent-notes.md`, `tests/unit/mcp-naming.test.js` enforces it.
 - **Never run `zalo-agent login` from an elevated shell**: admin-owned credentials make `logout --purge` and `account remove` fail with `EPERM`.
 - **A kick is terminal, and the socket supervisor owns every retry.** `src/zalo/socket.js` and `src/core/socket-host.js` keep the socket by Zalo's own table; a duplicate session exits with code 3 (after logging Zalo's reason and leaving `kicked.json`), a refused login with 4. Never add a reconnect loop, or a restart on those codes, anywhere else.
-- **`src/zalo/` is the protocol layer; zca-js is only endpoint wrappers** (D2; replacing it is D28, after 3.0). Login, socket, logout and sync transport go through `src/zalo/`. Zalo's own Web/PC code is a comparison oracle: read it, never run or copy it.
+- **`src/zalo/` is the whole protocol layer** (kernel, endpoint modules, listener), written from Zalo Web's wire format: a request must match what Zalo Web sends, and a deliberate difference is an `allow` row with its reason (`tests/helpers/wire-diff/`). Zalo's own Web/PC code is a comparison oracle: read it, never run or copy it.
 - **Honest identity.** What identifies this client (version, type 30, device label, headers) lives only in `src/zalo/profile.js` (D3, D4).
 - **Capture findings stay local** (D11): HARs, bundles and probe output live in `agent/`; tests use hand-written shapes.
 - **Line endings are pinned by `.gitattributes`** (`tests/fixtures/** -text`, else LF). **Never fix a mangled fixture with `git add --renormalize .` or a broad `git add`**: it stages the corruption.
@@ -271,6 +271,5 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
 - **`listen` and `mcp start` are two entry points to the same socket. Any asymmetry between them is a defect.** Both track coverage gaps through `src/core/listener-lifecycle.js` and self-heal them (`src/core/self-heal.js`); down-ness is observed, never inferred from a counter, and a deliberate stop is not a drop.
 - **One db writer per account**, enforced by `daemon.lock`. With a `listen`/`mcp` daemon up, `msg history`'s fetch and write run in the daemon (its `history` stage, `src/core/history-fetch.js`); the CLI only displays, and exits 1 rather than fetching beside a daemon that cannot answer.
 - **Message rows have exactly three writers: the listener, sync, and `msg history`'s fetch** (insert-if-absent — it never modifies or removes a row already cached). Nothing else writes to `zalo.db`; `msg send` stores nothing, not even a looked-up name. A message you just sent is therefore not quotable, forwardable or recallable until the listener sees its echo or a `msg history` fetch returns it; say so plainly.
-- **Unofficial API.** `patches/` holds patch-package patches against zca-js, applied by `prepare` and shipped **inside the tarball** via `bundleDependencies` — never a consumer `postinstall`, which cannot reach a hoisted `zca-js`. Bumping `zca-js` means a new patch *and* a re-pinned exact version (`tests/unit/packaging.test.js`).
 - **One media downloader, one layout.** `src/core/sync-v2/media.js` is the only one; everything writes to `accounts/<ownId>/media/<threadId>/`. **Folders are thread IDs, never names** — a name can carry a path separator and changes on rename. `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` overrides the root for the MCP server only.
 - **`zalo-mcp` is a pass-through launcher that serves a published engine**: it forwards every flag and subcommand to `zalo-agent`, so a tool or flag added here reaches it only once published to npm and updated.

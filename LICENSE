@@ -6,9 +6,8 @@ This work is licensed under the Creative Commons Attribution-NonCommercial-
 ShareAlike 4.0 International License (CC BY-NC-SA 4.0), reproduced below.
 https://creativecommons.org/licenses/by-nc-sa/4.0/
 
-This project is derived from MIT-licensed software: zalo-agent-cli by
-PhucMPham, and it ships a patched copy of zca-js (MIT). Those original
-portions remain under the MIT License; the required MIT notices are
+Any portions that originate from the earlier MIT-licensed project this
+one began from remain under the MIT License; the required MIT notice is
 reproduced in the NOTICE file, together with how to credit this project
 and how to request a commercial license.
 

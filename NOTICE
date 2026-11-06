@@ -59,14 +59,11 @@ license itself requires that shared modifications stay under CC BY-NC-SA
 4. Material not covered by CC BY-NC-SA 4.0
 -----------------------------------------------------------------------
 
-- This project is derived from zalo-agent-cli by PhucMPham, released under
-  the MIT License. The MIT License continues to apply to the portions that
-  originate from that project.
-- The package ships a patched copy of zca-js, released under the MIT License
-  (its own LICENSE file is inside the package, in node_modules/zca-js). The
-  patches in patches/ are applied to it; the result stays under the MIT
-  License, not CC BY-NC-SA 4.0. The other bundled dependencies likewise carry
-  their own license files in node_modules/.
+- Any portions that originate from the earlier MIT-licensed project named
+  in section 5 remain under the MIT License, whose notice is reproduced
+  there.
+- The dependencies npm installs with the package carry their own licenses
+  in their own folders under node_modules/.
 - Versions of this project published before this license change
   (zalo-agent-cli 2.0.0 and earlier) were released under the MIT License. Copies
   obtained under those terms remain MIT-licensed; this license applies to
@@ -76,37 +73,17 @@ license itself requires that shared modifications stay under CC BY-NC-SA
 5. Third-party notices
 -----------------------------------------------------------------------
 
-zalo-agent-cli (upstream)
+Early versions of this project began from zalo-agent-cli and used zca-js
+(https://github.com/RFS-ADRENO/zca-js,
+Copyright (c) 2024 - 2025 RFS-ADRENO, truong9c2208, JustKemForFun);
+the current engine is an independent implementation.
+
+zalo-agent-cli, the earlier MIT-licensed project
 https://github.com/PhucMPham/zalo-agent-cli
 
     MIT License
 
     Copyright (c) 2026
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the "Software"), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE.
-
-zca-js
-https://github.com/RFS-ADRENO/zca-js
-
-    MIT License
-
-    Copyright (c) 2024 - 2025 RFS-ADRENO, truong9c2208, JustKemForFun
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal

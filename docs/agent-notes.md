@@ -21,8 +21,9 @@ src/
 │   ├── poll.js   reminder.js  auto-reply.js  quick-msg.js  label.js  catalog.js
 │   ├── listen.js sync.js  mcp.js
 │   └── oa.js     oa-init.js   oa-listen.js
+├── zalo/                 # The protocol layer: kernel/, api/, listener/, login, socket (see below)
 ├── core/                 # Session, storage, and sync primitives
-│   ├── zalo-client.js    # zca-js API singleton + autoLogin/clearSession
+│   ├── zalo-client.js    # API singleton + autoLogin/clearSession
 │   ├── credentials.js    # CONFIG_DIR (~/.zalo-agent-cli), 0600 credential files
 │   ├── accounts.js       # Multi-account registry + per-account data dir wipe
 │   ├── oa-client.js      # Official OA REST client
@@ -47,7 +48,6 @@ src/
 skill/                    # Agent-facing skill (SKILL.md + references/ + evals/)
 docs/official-account.md  # Full OA reference (Vietnamese)
 docs/agent-notes.md       # This file
-patches/                  # patch-package patches against zca-js
 tests/                    # Test suite — see tests/README.md
 ├── helpers/              # sandbox (temp HOME), CLI harness, target guard, live gates
 ├── unit/                 # Offline: accounts, credentials, lock, db, mcp-config, oa-client, helpers
@@ -109,7 +109,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3734** as of 2026-11-06 (3724 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **4737** as of 2026-11-06 (4727 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -260,102 +260,60 @@ npmjs.com (repository, workflow filename, environment left empty) before suspect
 
 ---
 
-## Why the patched zca-js is bundled, not patched on install (§13)
+## The protocol layer is ours (§13)
 
-We patch zca-js to add `logoutV2`, and to modify `loginQR` and `sendMessage`. Without them `logout` and `account remove` die on
-"is not a function". Getting that patched copy into a consumer's tree took two goes, both found on
-2026-09-29 against npm 11.17.0 / Node 24.19.0.
+From 3.0.0 the engine speaks Zalo's protocol with its own code. No third-party Zalo client is installed,
+patched or bundled, and nothing runs at install time except `better-sqlite3`'s native build. Every request is
+written from Zalo Web's wire format: captures and the Web bundles are read as an oracle, never copied or run
+(D11), and a difference from Zalo Web is either fixed or recorded with its reason.
 
-**First defect — the tarball would not install at all.** `postinstall: patch-package` with
-patch-package in `devDependencies` and `patches/` missing from `files`: the install ran a binary
-that was not there, against patches that were not shipped, and aborted with
-`'patch-package' is not recognized`, exit 1, before `node_modules/zca-js` existed. Fixed in
-1b182da by moving patch-package to `dependencies` and adding `patches/` to `files`.
+### Where each piece lives
 
-**Second defect — the fix only worked for `npm i -g`.** patch-package resolves `node_modules/zca-js`
-relative to its own cwd, which is the installed package directory.
+- `src/zalo/kernel/` — what every call shares: the session context a login fills in (`session.js`), the session
+  cipher for `params` and replies (`cipher.js`), the login cipher used before a session key exists
+  (`login-cipher.js`), the cookie jar (`cookies.js`), the transport with Zalo Web's header sets, redirects,
+  timeouts and reply envelope (`http.js`), the table runner every endpoint definition goes through
+  (`endpoint.js`), the bound helpers for hand-built calls (`bound.js`), and lossless ids in JSON text
+  (`json-ids.js`).
+- `src/zalo/api/*.js` — the endpoints, one module per area: `messages`, `upload`, `actions`, `conversations`,
+  `groups`, `people`, `profile`, `business`, `boards`, `session`. Each module's docblock lists the wire facts it
+  follows and the behavior that is ours rather than Zalo's.
+- `src/zalo/api.js` — composes the areas into the one api object that commands, MCP tools and the daemon read
+  (the MCP tools and the daemon through `src/core/live-api.js`, so a re-login is followed).
+- `src/zalo/listener/` — the chat socket: frame header and payload decoding (`frames.js`), routing to typed
+  events (`dispatch.js`), the event objects (`models.js`, `group-events.js`, `friend-events.js`), and the socket
+  itself (`listener.js`).
+- `src/zalo/{login,qr-login,official-logout,kickout,socket,retry,maintenance}.js` — logins, logout, the kick
+  reason, the socket supervisor and its retry table. The identity this client announces (API version, type 30,
+  device label, headers) lives only in `src/zalo/profile.js` (D3, D4).
+- `src/zalo/{reads,writes,web-call}.js` — the `read` / `write` tables of the web client's other endpoints.
 
-- Global install: npm nests dependencies under the package, so `zca-js` is right where
-  patch-package looks. It printed `zca-js@2.2.0 ✔` and the patch applied.
-- Installed as a *dependency*: npm **hoists** `zca-js` to the consumer's root. patch-package cannot
-  see it and fails with `Patch file found for package zca-js which is not present at
-  node_modules/zca-js` — but the install still exits 0, so the patch silently did nothing and
-  `logoutV2` was simply absent at runtime.
+### The wire-diff golden files
 
-That second case is not hypothetical: `zalo-mcp` takes this package as a plain dependency and its
-`zalo-mcp.ps1` / `.sh` update path runs `npm install @ardennguyen/zalo-agent-cli@latest`.
+`tests/unit/wire-<area>.test.js` drives each area through the fake Zalo and records what went on the wire:
+method, host, path, the decrypted `params` with their key order, and the reply the caller gets. Each case is
+checked against `tests/helpers/wire-diff/golden/<area>.js`, a reviewed `.js` module with fake ids only (not a file
+under `tests/fixtures/`, so the CRLF trap does not apply). `tests/helpers/wire-diff/allow/<area>.js` lists every
+intended difference from Zalo Web with a `why` that names the Web method.
 
-**The arrangement now.** Stop patching in the consumer's tree at all:
+To change a request on purpose: change the code, run `node tests/helpers/wire-diff/record.mjs <area>`, read
+`git diff tests/helpers/wire-diff/golden/<area>.js` line by line, and commit the golden file with the code. A
+golden entry is a claim about the wire; a rewrite nobody read is how a wrong value would hide.
 
-- `prepare: patch-package` — runs on a dev `npm install`, on a `github:` install, and before
-  `npm pack`/`publish`, so `node_modules/zca-js` is always patched before the tarball is built.
-  It does **not** run for a consumer installing the published tarball.
-- `bundleDependencies: ["zca-js"]` — `npm pack` copies that patched tree into the tarball, and npm
-  unpacks it nested under our package where hoisting cannot reach it. npm still resolves and
-  installs zca-js's own 8 dependencies, placing them beside it.
-- patch-package is back in `devDependencies`: consumers never run it, and the `github:` path gets
-  devDependencies anyway (verified — npm installs them so `prepare` can run).
+### Watching for a new Zalo Web build
 
-This is why `bundleDependencies` must never be dropped and `zca-js` must stay pinned to the exact
-version its patch filename names. `tests/unit/packaging.test.js` fails the build on either.
+Zalo ships Web builds without notice, and a protocol change shows up first as a refused request, a new error code
+or an unknown frame, not as a crash. When a build changes:
 
-Verified on all three install paths — local dependency, global, and `git+file://` standing in for
-`github:` — with the resolved zca-js carrying `dist/apis/logoutV2.js` in each. Re-run that check by
-packing and installing into an empty directory; the tarball is ~2 MB because it carries zca-js.
-
-### Both of zca-js's builds are patched, deliberately
-
-zca-js ships two trees — ESM at `dist/` and CJS at `dist/cjs/` — and its exports map wires
-`"require": "./dist/cjs/index.cjs"`. Until 2026-09-29 only the ESM half was patched, on the
-reasoning that this package is `"type": "module"` and so can never load the CJS bundle. That
-reasoning was correct and is still asserted, but it was the wrong conclusion: a library that
-ships two entry points should not have one that works and one that silently lacks `logoutV2`,
-every client-id stamp, and the
-device-fingerprint client hints. "Correct today because nothing takes that path" is not the same
-as correct.
-
-The patch now covers both, which is why it is ~1,700 lines across 31 files rather than ~900
-across 16. Mirroring is mechanical but not free:
-
-- The CJS twins are rollup output — `var X = require('./p.cjs')` with namespaced access
-  (`Enum.ThreadType`, `ZaloApiError.ZaloApiError`) and a trailing `exports.X = X`. The function
-  bodies are otherwise byte-identical to the ESM ones, so the edits transfer directly.
-- Five of the files are **created**, not edited, so the CJS side needed five new `.cjs` files
-  plus require + constructor wiring in `dist/cjs/apis.cjs`. A patched file that is never wired
-  onto the API class is invisible to a per-file check — that is what the call-shape assertion in
-  `tests/unit/send-apis-return-client-id.test.js` exists to catch.
-- `loginQR` is functional, not cosmetic. `src/core/zalo-client.js` puts `secChUa` /
-  `secChUaMobile` / `secChUaPlatform` on ctx; without the mirror the CJS build would ignore the
-  fingerprint and always claim Chrome 130 on Windows.
-
-Three assertions pin it: the patch touches both trees, it creates the four methods in both, and
-this package stays ESM. All are mutation-tested. **Mutation-test any assertion you add here** —
-the first version of the parity check matched `response.cliMsgId =`, which also matches the
-helper's own body, so deleting a call site still looked patched. It was decorative and reading it
-did not reveal that; breaking the code and watching the test stay green did.
-
-### Why a stale zca-js cannot reach the tarball
-
-`bundleDependencies` packs the **working tree's** `node_modules/zca-js`, which raises the obvious
-worry: pack from a checkout whose patch was never applied and you ship unpatched bytes silently.
-
-That is not reachable through the normal path, for a reason worth writing down rather than
-rediscovering:
-
-- `npm pack` and `npm publish` both run `prepare` themselves, so `patch-package` re-applies
-  immediately before anything is packed.
-- `.github/workflows/publish.yml` is `npm ci`, lint, test, then `npm publish --access public --provenance` —
-  no `--ignore-scripts` anywhere — and `npm config get ignore-scripts` is false on this machine.
-
-So only an explicit scripts-disabled pack could ship a stale copy. If you ever add
-`--ignore-scripts` to the release workflow, or npm changes when `prepare` runs, that guarantee is
-gone and the patch has to be verified in the tarball instead of assumed.
-
-Re-verified at `eea5680`, after the patch gained three hunks for attachment `cliMsgId`: all three
-install paths resolve zca-js at `node_modules/@ardennguyen/zalo-agent-cli/node_modules/zca-js` —
-nested under the package where hoisting cannot reach it — each carrying the patched bytes.
-Verifying the bytes arrive is not the same as verifying runtime behaviour; that was proved
-separately over a live socket.
+1. Capture the new build's bundles and a HAR of the flows touched (login, a send, a sync) into `agent/`. They stay
+   local (D11).
+2. Diff the new bundles' API modules and socket handlers against the previous capture: endpoint paths, the
+   `params` each call seals and their order, command ids, and the version the client announces.
+3. For each difference, change the area module, re-record its golden file and review it, and add or update the
+   `allow` row if we deliberately differ.
+4. If the announced version moved, update `DEFAULT_API_VERSION` in `src/zalo/profile.js` (its comment records the
+   build and date) and the docs that quote it.
+5. Run the gate, then the live tiers that cover the changed flows before releasing.
 
 ---
 
@@ -623,9 +581,9 @@ Found in a single day, all by the same mechanism, none by reading code:
 
 | Command | Defect |
 |---|---|
-| `msg forward` | zca-js is `forwardMessage(payload, threadIds, type)` with `payload = {message}` and `threadIds` an **array**. The CLI passed the msgId string as the payload and a bare string as the thread list, so the API threw "Missing message content" on its first line — every type, both `-t 0` and `-t 1`. |
+| `msg forward` | The API is `forwardMessage(payload, threadIds, type)` with `payload = {message}` and `threadIds` an **array**. The CLI passed the msgId string as the payload and a bare string as the thread list, so the API threw "Missing message content" on its first line — every type, both `-t 0` and `-t 1`. |
 | `msg delete` | The same shape. |
-| `conv mute` | zca-js is `setMute(params, threadID, type)` with the **options object first**. The CLI passed `(threadId, type, duration)` positionally, so `params` got the thread id string and the request went out with `toid: 0`. |
+| `conv mute` | The API is `setMute(params, threadID, type)` with the **options object first**. The CLI passed `(threadId, type, duration)` positionally, so `params` got the thread id string and the request went out with `toid: 0`. |
 | `conv unmute` | The same call. |
 
 A fifth, different defect sat alongside them: **attachment sends always delivered**, but the
@@ -659,7 +617,7 @@ All five were invisible in normal operation, which is why none had a test. Fixed
 
 **A1 — the reconnect that actually happens recorded nothing, then claimed it had.** Gap filing sat
 behind `if (reconnectCount > 0)`, and `reconnectCount` is incremented only in the `closed` handler.
-Measured against a local `ws` server: **`closed` never fires for any code on zca-js's
+Measured against a local `ws` server: **`closed` never fires for any code on the old listener's
 `close_and_retry_codes` list** — it emits `disconnected`, retries internally, then emits
 `connected`. Those codes are precisely the *recoverable* ones, so on the ordinary drop path no
 `sync_gaps` row was written, nothing was printed, and `markConnected()` then asserted coverage over
@@ -713,7 +671,7 @@ wrong and was corrected.
 
 The tempting fix had a real cost behind it: Zalo's send response is `{msgId, cliMsgId}` with no
 timestamp, so a self-written row's `ts` would be an approximation (`Number(cliMsgId)`, the clock
-reading zca-js actually posted) that only self-corrects once the listener catches up. And AGENTS.md
+reading the send actually posted) that only self-corrects once the listener catches up. And AGENTS.md
 §13 already says one db writer per account, while an audit found `msg.js` and `conv.js` writing
 without taking the lock — so "just write it" would have been a decision about an existing invariant
 violation, not a fresh one.
@@ -1084,11 +1042,11 @@ never edited by v3.0 work. What differs while v3.0 is in progress:
 
 ## The socket supervisor, and what a phone's "no" looks like (v3.0, 2026-10-24)
 
-**Where it lives.** `src/zalo/socket.js` keeps one socket alive (it drives a zca-js `Listener` that is started
+**Where it lives.** `src/zalo/socket.js` keeps one socket alive (it drives the engine's `Listener`, started
 with no retry of its own); `src/zalo/retry.js` is the arithmetic of "when do I try again";
 `src/core/socket-host.js` is what `listen` and `mcp start` do around it, written once so the two cannot differ.
 
-**A duplicate session ends the daemon.** The old recovery ladder (zca-js retries, then a login after 5 s, again after
+**A duplicate session ends the daemon.** The old recovery ladder (the listener's own retries, then a login after 5 s, again after
 30 s, then exit) reconnected on a duplicate-session close until its retries ran out. Each reconnect evicted the
 other session, which reconnected and evicted this one: the flapping §13 describes, produced by the daemon itself.
 Now the duplicate frame (`cmd 3000`), a frame with `error_code 600` or an HTTP 600 puts the supervisor in a terminal
@@ -1101,7 +1059,7 @@ has `RestartPreventExitStatus=3 4`, so neither is restarted into the same state.
 mapped to a key by the official client's rules (1006 asks the network first, 1001-1015 is `internal`, Zalo's own
 codes keep their number), the delay is spread by `retry_noise_factor` and a week of persisted error history, a
 spent key rotates to the next endpoint, and after that the delay is Fibonacci and never ends. A key the server did
-not describe waits the last default delay; zca-js threw a TypeError there.
+not describe waits the last default delay; the old listener threw a TypeError there.
 Differences, all on the slow side: the counters start over only after a connection has stayed authenticated for a
 minute, and a close that nobody asked for is brought back by the 10 s interval check.
 
@@ -1134,8 +1092,8 @@ which clears the marker when it connects.
 
 ## The saved-session login is ours, and what it sends (v3.0, 2026-10-25)
 
-**Where it lives.** `src/zalo/login.js` logs in with a saved session and hands the result to zca-js's own `API`
-class, so every API factory, the listener and the patched calls are unchanged. `Zalo.login()` is no longer used for
+**Where it lives.** `src/zalo/login.js` logs in with a saved session and hands the result to the engine's api
+object (`createApi` in `src/zalo/api.js`), which every area module and the listener read. `Zalo.login()` is no longer used for
 this (the QR login still is). `src/zalo/headers.js` adds the browser headers, `src/zalo/upkeep.js` the two timers.
 
 **What the official Web client does, and we now do:** `getServerInfo`, then `getLoginInfo`, then `getServerInfo`
@@ -1146,7 +1104,7 @@ stored. The first adds `viewerKey` when one is stored, the second `floatMenuPos`
 `zpw_ver`, no `zpw_type`. Parameters are encrypted unless the server's `authen.encryption.enable` says otherwise,
 and an answer of error 19000 means "not encrypted, please": we ask once more without encryption. HTTP 500-504 on
 `getLoginInfo` is asked again every 10 s for up to 120 s; every login call has a 10 s timeout; the npm registry
-is not asked whether zca-js is current. The server's key is `setttings` (three t's) in some answers; both spellings
+is never asked anything. The server's key is `setttings` (three t's) in some answers; both spellings
 are read.
 
 **Cookies are written back.** When a login changed the cookie jar (name, value, domain, path or expiry; access times
@@ -1164,10 +1122,9 @@ for one (`alway_keepalive`, or a `keepalive_duration`; 120 s when 0), is reset b
 keepalive traffic. (The official client's code defaults the duration to 120 s when it is 0; whether it then really
 sends one was not seen in the capture. This is the more cautious reading.)
 
-**The offline CLI preload stubs the login calls, not `Zalo.prototype.login`.** `tests/unit/support/offline-session.js`
-used to replace that method; our login never calls it, so the preload now answers `getServerInfo` and
-`getLoginInfo` at the fetch level and the real login code runs in every offline CLI test. An unpatched
-`sendMessage` (`ZALO_OFFLINE_UNPATCHED`) is reproduced by a setter on `API.prototype`.
+**The offline CLI preload stubs the login calls, not a login method.** `tests/unit/support/offline-session.js`
+used to replace `Zalo.prototype.login`; our login never calls it, so the preload now answers `getServerInfo` and
+`getLoginInfo` at the fetch level and the real login code runs in every offline CLI test.
 
 ## `logout` signs the device out, and says so only after looking (v3.0, 2026-10-25)
 
@@ -1201,7 +1158,7 @@ not before: a wiki push is public immediately.
 
 ## The official QR login (v3.0, 2026-10-25; the second QR added 2026-10-27)
 
-`src/zalo/qr-login.js` is the QR login the captured Web client makes. zca-js's flow differs: it announces
+`src/zalo/qr-login.js` is the QR login the captured Web client makes. The legacy flow (removed in 3.0.0) differed: it announces
 `continue=https://zalo.me/pc` to three calls, calls `verify-client` (which the official client never does), leaves out
 `cliGenQR`, and ends with a `jr/userinfo` request. The official sequence is the login page (whose script name carries the
 build `v`), `logininfo`, `generate` with `cliGenQR=1`, the `waiting-scan` long poll (asked again while the answer is 8),
@@ -1252,7 +1209,7 @@ and a stand-in for the module is asserted on in the unit tests. **Live, 2026-10-
 went through with `cliGenQR=1`: the first scan was answered with status 4, the second QR (layer 2) was scanned, the phone's
 Confirm ended the login, and the saved session answered `whoami` and `status` from a separate process. The second login
 found the saved identity and went through the same two scans. So the official flow is the default again
-(`resolveQrFlow`, the docs that name it); `ZALO_QR_FLOW=legacy` selects zca-js's. Checked afterwards (`account devices`): the list shows one CLI entry after the two logins, so the relink works. The live run also showed that the browser tab's
+(`resolveQrFlow`, the docs that name it); `ZALO_QR_FLOW=legacy`, which selected the old flow, was removed in 3.0.0. Checked afterwards (`account devices`): the list shows one CLI entry after the two logins, so the relink works. The live run also showed that the browser tab's
 keep-alive connection held the process open after the login; the QR server now unrefs its connections.
 
 **The QR page.** `src/utils/qr-http-server.js` serves a plain login page (white card, the QR in a frame with blue corners,
@@ -1261,7 +1218,7 @@ choice, then the browser's language, with a switch under the card. It follows th
 replaced by the second one, who scanned it, and when it is done. Text that comes from the phone is set as text, never
 markup. The command-line login prints the same hint for the second QR and `--json` gives each QR a `layer`.
 
-**A header trap that cost a real bug.** zca-js's request helper merges headers by key, case-sensitively, and spells its
+**A header trap that cost a real bug.** The old request helper merged headers by key, case-sensitively, and spells its
 own defaults `Accept`, `Origin` and `Referer`. A caller that passes `origin` besides it sends both, and a real fetch
 joins them into one value (`https://chat.zalo.me, https://id.zalo.me`). The fake records headers through `Headers`, which
 joins the same way, so the tests assert the exact value. The fake also follows a redirect itself unless the caller said
@@ -1320,7 +1277,7 @@ answers `{error: 0, reqId}`. **Still not seen:** the server's own settings for o
 
 **One request counter, and `reqId` on every pull (X5, Y7).** `src/zalo/req-id.js` is the process-wide `req_<n>` counter
 the sync channel, the offline-queue drain and the pulls share. `installOfficialPulls` makes the listener's old-message
-and old-reaction pulls (510, 511, 610, 611) send `{first, reqId, lastId, preIds}`: zca-js sent `req_id`, a key Web never
+and old-reaction pulls (510, 511, 610, 611) send `{first, reqId, lastId, preIds}`: the old listener sent `req_id`, a key Web never
 sends. `src/zalo/pulls.js` also has builders for the connect-time requests we do not send (the pulls of 515, 517, 518
 and 603, the key-id request 564, the conversation-state request 577, the paged action list 537). They are not wired
 to anything: what the server answers to them has not been decoded in a session of ours, and a pull may consume what it
@@ -1458,7 +1415,7 @@ the channel is a separate change.
 supervisor and for the wait after a login that failed with 70. The names `bkt` and `spt_mtn` are the Web bundle's.
 What 71 means is still an inference (an announced window; it does not block).
 
-**The official QR is the default** (`ZALO_QR_FLOW=legacy` selects zca-js's); see the section above.
+**The official QR is the only QR login** (`ZALO_QR_FLOW=legacy` was removed in 3.0.0); see the section above.
 
 **Decided against, with the reason.**
 - *Copy-then-delete when a Windows rename keeps failing (X7).* Not added. A copy over the target is not atomic: a
@@ -1469,11 +1426,12 @@ What 71 means is still an inference (an announced window; it does not block).
   either list (`conv archive` reads the list from Zalo each time it needs the version), so there is nothing to refresh.
 - *Domain rotation and the `config_vesion` refresh (L2d, L2e).* The login has one host, and the refresh needs the
   keepalive answer, which has not been seen. Left until a live capture shows it.
-- *A red-first reproduction of zca-js's TypeError on a missing `retries` entry (L11a).* The supervisor never lets
-  zca-js retry (`retryOnClose: false`), and the retry engine's tests pin the replacement (an undescribed key waits the
-  last default delay, key 3003 included). A test of the upstream defect itself would only test zca-js.
+- *A red-first reproduction of the old listener's TypeError on a missing `retries` entry (L11a).* The supervisor
+  never lets the listener retry (`retryOnClose: false`), and the retry engine's tests pin the replacement (an
+  undescribed key waits the last default delay, key 3003 included). The old listener is gone, so there is nothing
+  left to reproduce.
 - *Encrypt 2 and 3 on the fake socket (P0).* The fake plays plain frames. The cipher path our own code reads
-  (`decodeFrame`, used by the restore and the socket tap) has unit tests for both; zca-js decodes the live frames.
+  (`decodeFrame`, used by the restore and the socket tap) has unit tests for both, and the listener's frame decoder (`src/zalo/listener/frames.js`) has its own.
 
 **Still needs a live session (a QR login).** `agent/work/probe-pulls.mjs` (local, not committed) sends the pulls 564, 537,
 577, 515, 517, 518 and 603 one at a time to the test account and prints only the shape of each answer; it refuses to
@@ -1701,7 +1659,7 @@ account from several groups (`grids`, `member`), not several members from one.
 
 **Left out, and what would be needed.** (1) The sending flows that upload or re-send content: `photo_url` is a re-send path
 whose request goes through a helper (`transformParams`, then `_postSendMsg`) that adds fields; `sendpt`, `sharefile`,
-`sendmp3`/`voicemp3`, the GIF and video chunk uploads and `upthumb` are multi-step uploads; zca-js already sends images,
+`sendmp3`/`voicemp3`, the GIF and video chunk uploads and `upthumb` are multi-step uploads; the engine already sends images,
 files and videos. A local mp3 as a voice message can be had by uploading the file the way `msg send-file` does and sending
 the URL with `msg send-voice`. Building them needs a capture of the web client sending each. (2) `convlabel/manage/*` and
 `blocksharing/*`: only their paths and command ids are in the bundle files read; the callers are in lazily loaded modules,
@@ -1876,7 +1834,7 @@ from the web client and stay unverified here; another account may have the flag.
 | `closefr/update`, `profile/mode` | no replacement exists; the web client's toggle is an empty function and the feature flag is off |
 
 Closed as covered, dead code, or not worth a command: `sendpt`, `sharefile`, `sendmp3`, `voicemp3`, `upthumb`, the local GIF
-chunk send (zca-js makes the same request), `photo_url` (a forward's shortcut), the video chunk uploads (the web composer
+chunk send (the engine makes the same request), `photo_url` (a forward's shortcut), the video chunk uploads (the web composer
 sends a local video as a file), `mediastore/remove`, `sticker/personalized/update`, the v1 variants, `action/query`, and the
 legacy and reaction receipts and `subtab/seen` (the owner did not pick the receipts; the v2 forms are sent). Credential and
 account flows, calls, E2EE, LAN friends, zBusiness and eKYC, and the zCloud calls that cost money or acknowledge onboarding are
@@ -1915,7 +1873,7 @@ local report) showed what they are, and the answer is not the same for all of th
 (`src/core/control-replay.js`, called by `src/core/self-heal.js`, so `listen` and `mcp start` do it identically and
 `--no-self-heal` turns it off). Each page is handed to the listener as a `601` push: the frame's command is rewritten and
 the bytes are emitted on the socket as a binary message (`ws` gives its `onmessage` consumers text unless told the frame
-is binary, and zca-js ignores a non-Buffer; a test on the real zca-js listener caught that). zca-js then emits the same
+is binary, and the listener ignores a non-Buffer; a test on the real listener caught that). The listener then emits the same
 `group_event` and `friend_event` it emits for a live push, and everything that reads `601` here (unread marks, transcripts,
 the unknown-action collector, the cursor keeper) sees it. It never asks without a saved cursor (a first pull would replay
 everything the server still holds), never acknowledges, and says when the server reports it dropped entries. The control
@@ -1952,7 +1910,7 @@ same). Their reports are local, in `agent/work/research-sync-drop/` (decision D1
 committed). What they agree on, all read in the sources:
 
 - **Nothing is sent before the server's hello (cmd 1/1) has been processed**; the first frame after it is a ping
-  (capture: +7 ms), then one ping every 180 s. Ours: no ping for 180 s, then two in the same millisecond (zca-js's timer
+  (capture: +7 ms), then one ping every 180 s. Ours: no ping for 180 s, then two in the same millisecond (the listener's timer
   and ours), and after a reconnect the first 590 went out 1 ms *before* the hello.
 - **Every socket starts by releasing the sessions of the one before** (`cleanOldSyncSession`, reason 3, back to back,
   before any 590; capture After-CS6). We never released a dead socket's sessions: 39 were open on the phone at the second
@@ -1969,7 +1927,7 @@ committed). What they agree on, all read in the sources:
 **What changed** (`src/core/sync-v2/`, `src/commands/sync.js`):
 
 - `connectListener` resolves on the hello (`cipher_key`), not on open, and pings at once; the keepalive no longer doubles
-  zca-js's ping on the default cadence; `reconnectListener` pauses 2 s (`RECONNECT_DELAY_MS`).
+  the listener's ping on the default cadence; `reconnectListener` pauses 2 s (`RECONNECT_DELAY_MS`).
 - After a reconnect the channel releases every session it still holds with reason 3 (`releaseAbandoned`, one at a time)
   and counts `ussidx` again (0 for a repeated conversation round, 1 for a resumed message round: Web restarts per sync).
 - A wave is up to 30 sessions (was 4), requested up front, held until the wave is stored, then released together; a 590

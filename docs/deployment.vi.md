@@ -72,7 +72,7 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 > Chọn `mcp start` khi dùng MCP bots (kèm hỗ trợ webhook và long-polling), hoặc chọn `listen` khi chỉ cần đẩy toàn bộ các loại sự kiện ra webhook/JSONL thuần CLI.
 
 > [!NOTE]
-> **Các MCP tools của `mcp start` tự động đi theo phiên đăng nhập mới sau khi re-login.** Khi bộ giám sát không giữ được socket trên phiên hiện tại (Zalo từ chối phiên, hoặc sau 8 lần thử liên tiếp vẫn không có socket dùng được), socket host tự xử lý bên trong tiến trình: `clearSession()`, sau đó đăng nhập, tạo đối tượng API `zca-js` mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, daemon channel, trình tải media và cả 25 MCP tools đều đi qua `liveApi(getApi)` (`src/core/live-api.js`) nên luôn gọi đúng phiên hiện hành. Trong vài giây đang re-login, lệnh gọi tool sẽ báo `"The Zalo session is logging in again after a dropped connection; try again in a few seconds."`
+> **Các MCP tools của `mcp start` tự động đi theo phiên đăng nhập mới sau khi re-login.** Khi bộ giám sát không giữ được socket trên phiên hiện tại (Zalo từ chối phiên, hoặc sau 8 lần thử liên tiếp vẫn không có socket dùng được), socket host tự xử lý bên trong tiến trình: `clearSession()`, sau đó đăng nhập, tạo đối tượng API mới (`loginWithCredentials` trong `src/core/zalo-client.js`). Các handler của listener, self-heal, daemon channel, trình tải media và cả 27 MCP tools đều đi qua `liveApi(getApi)` (`src/core/live-api.js`) nên luôn gọi đúng phiên hiện hành. Trong vài giây đang re-login, lệnh gọi tool sẽ báo `"The Zalo session is logging in again after a dropped connection; try again in a few seconds."`
 
 ### 1.2 Bản chất của `daemon-channel.js`
 
@@ -185,7 +185,7 @@ flowchart TB
 
 - **Node.js 22.19 trở lên.**
 - **Linux (x64 hoặc arm64) hoặc Windows/macOS.** Trên Linux, `systemd` giúp quản lý khởi động lại, nhật ký và tín hiệu dừng; ngoài ra bạn cũng có thể dùng trực tiếp cờ chạy nền `-d, --daemon`, `--status`, `--stop` tích hợp sẵn trên mọi hệ điều hành.
-- Engine đóng gói sẵn bản vá `zca-js` bên trong tarball (`"bundleDependencies": ["zca-js"]`), và `better-sqlite3` biên dịch/tải binary gốc khi cài đặt.
+- Lớp giao thức của engine là mã của chính dự án (`src/zalo/`), nên khi cài từ npm không có bước vá hay `prepare` nào; chỉ `better-sqlite3` biên dịch/tải binary gốc khi cài đặt.
 
 ### 3.2 CPU và RAM
 

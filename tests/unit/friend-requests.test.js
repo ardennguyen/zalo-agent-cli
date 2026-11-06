@@ -14,6 +14,7 @@ import {
     describeFriendAddError,
     describeFriendUndoError,
     extractErrorCode,
+    friendAddFailure,
     friendStatusFrom,
     friendsFrom,
     readSentRequests,
@@ -133,6 +134,14 @@ describe("error wording shared with `friend add`", () => {
         for (const code of [221, 223, 224]) assert.ok(describeFriendAddError(code, "9"), `code ${code}`);
         assert.equal(describeFriendAddError(999, "9"), undefined, "an unknown code is left for the caller to report");
         assert.equal(describeFriendAddError(null, "9"), undefined);
+    });
+
+    it("friend add's failure line names a code only when the error has one", () => {
+        // Red if the line is built as `(code ${code})` whatever the error: a network error printed "(code null)".
+        assert.equal(friendAddFailure(new Error("fetch failed"), "9"), "Friend request failed: fetch failed");
+        const coded = Object.assign(new Error("odd"), { code: 999 });
+        assert.equal(friendAddFailure(coded, "9"), "Friend request failed (code 999): odd");
+        assert.match(friendAddFailure(Object.assign(new Error("x"), { code: 225 }), "9"), /Already friends with 9/);
     });
 });
 

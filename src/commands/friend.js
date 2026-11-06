@@ -5,7 +5,7 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
-import { describeFriendAddError, describeFriendUndoError, readSentRequests } from "../core/friend-requests.js";
+import { describeFriendUndoError, friendAddFailure, readSentRequests } from "../core/friend-requests.js";
 import { errorCodeOf } from "../zalo/errors.js";
 import { readUserAliases } from "../core/current-user-names.js";
 import { searchFriends } from "../core/friend-search.js";
@@ -140,9 +140,8 @@ export function registerFriendCommands(program) {
                 const result = await getApi().sendFriendRequest(opts.msg, userId);
                 output(result, program.opts().json, () => success(`Friend request sent to ${userId}`));
             } catch (e) {
-                // Map Zalo error codes to actionable messages
-                const code = errorCodeOf(e);
-                error(describeFriendAddError(code, userId) || `Friend request failed (code ${code}): ${e.message}`);
+                // Zalo's error codes as actionable messages; no "(code null)" for an error without one.
+                error(friendAddFailure(e, userId));
             }
         });
 

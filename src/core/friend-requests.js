@@ -58,6 +58,22 @@ export function describeFriendAddError(code, userId) {
 }
 
 /**
+ * The line `friend add` prints when a friend request fails: the specific wording for a known code, else Zalo's code
+ * (when the error carries one) and its message.
+ *
+ * @param {Error|object} err - the error the send threw
+ * @param {string} userId
+ * @returns {string}
+ */
+export function friendAddFailure(err, userId) {
+    const code = errorCodeOf(err);
+    const known = describeFriendAddError(code, userId);
+    if (known) return known;
+    const why = err?.message ?? String(err);
+    return code === null ? `Friend request failed: ${why}` : `Friend request failed (code ${code}): ${why}`;
+}
+
+/**
  * What a failed "take back a friend request" means, for the codes that have a meaning of their own.
  *
  * @param {number|string|null|undefined} code - Zalo's error code

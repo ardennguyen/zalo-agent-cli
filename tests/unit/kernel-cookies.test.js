@@ -1,12 +1,10 @@
 /**
- * The cookie jar (src/zalo/kernel/cookies.js) against zca-js's `parseCookies` and its request helper's cookie
- * handling: a saved login in any of the three shapes on disk must load to the same cookies, and the `Cookie` header
- * must be what zca-js sent except where the browser rule differs (D5: the full URL's path counts; D6: a host-only
- * `Set-Cookie` is kept for its host). Every value is fake.
+ * The cookie jar (src/zalo/kernel/cookies.js): a saved login in any of the three shapes on disk must load to the same
+ * cookies, and the `Cookie` header follows the browser rules (D5: the full URL's path counts, so a `/api` cookie
+ * goes to `/api/x` and not to `/`; D6: a host-only `Set-Cookie` is kept for its host). Every value is fake.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { Zalo } from "zca-js";
 import { cookieHeader, loadJar, saveJar, setCookiesOf, storeSetCookies } from "../../src/zalo/kernel/cookies.js";
 
 const SERIALIZED = {
@@ -53,8 +51,14 @@ const URLS = [
     "https://jr.zaloapp.com/jr/syncsession",
 ];
 
-/** What zca-js put in the Cookie header: the jar's answer for the URL's origin (its request helper). */
-const zcaHeader = (jar, url) => jar.getCookieStringSync(new URL(url).origin);
+/** The Cookie header each URL gets from any of the three shapes, its cookies sorted by name. */
+const EXPECTED = {
+    "https://chat.zalo.me/": "zpsid=fake-zpsid; zpw_sek=fake-sek",
+    // D5: the /api cookie goes to a path under /api, and only there.
+    "https://tt-chat1-wpa.chat.zalo.me/api/x": "only_api=fake-api; zpsid=fake-zpsid; zpw_sek=fake-sek",
+    "https://id.zalo.me/account": "zpsid=fake-zpsid",
+    "https://jr.zaloapp.com/jr/syncsession": "",
+};
 
 describe("loading a saved jar", () => {
     for (const [shape, saved] of Object.entries({
@@ -62,29 +66,12 @@ describe("loading a saved jar", () => {
         "bare array": BARE_ARRAY,
         "browser export": BROWSER_EXPORT,
     })) {
-        it(`loads the ${shape} shape to the cookies zca-js loads, without touching the input`, () => {
+        it(`loads the ${shape} shape to the same cookies, without touching the input`, () => {
             const before = structuredClone(saved);
             const ours = loadJar(saved);
-            assert.deepEqual(saved, before, "the saved credentials are not modified (zca-js strips the dots)");
-            const theirs = new Zalo().parseCookies(structuredClone(saved));
-            for (const url of URLS) {
-                const path = new URL(url).pathname;
-                if (path.startsWith("/api")) {
-                    // D5: a browser sends a /api cookie to /api/x; zca-js asked for the origin and never did.
-                    assert.match(cookieHeader(ours, url), /only_api=fake-api/, url);
-                    assert.doesNotMatch(zcaHeader(theirs, url), /only_api/, url);
-                    const strip = (s) =>
-                        s
-                            .split("; ")
-                            .filter((c) => !c.startsWith("only_api="))
-                            .sort()
-                            .join("; ");
-                    assert.equal(strip(cookieHeader(ours, url)), strip(zcaHeader(theirs, url)), url);
-                } else {
-                    const sorted = (s) => s.split("; ").filter(Boolean).sort().join("; ");
-                    assert.equal(sorted(cookieHeader(ours, url)), sorted(zcaHeader(theirs, url)), url);
-                }
-            }
+            assert.deepEqual(saved, before, "the saved credentials are not modified (no leading dot is stripped)");
+            const sorted = (s) => s.split("; ").filter(Boolean).sort().join("; ");
+            for (const url of URLS) assert.equal(sorted(cookieHeader(ours, url)), EXPECTED[url], url);
             assert.match(cookieHeader(ours, "https://chat.zalo.me/"), /zpw_sek=fake-sek/);
             assert.match(cookieHeader(ours, "https://id.zalo.me/"), /zpsid=fake-zpsid/);
             assert.doesNotMatch(cookieHeader(ours, "https://id.zalo.me/"), /zpw_sek/, "chat.zalo.me's stays there");
@@ -134,7 +121,7 @@ describe("Set-Cookie", () => {
         assert.match(cookieHeader(jar, "https://id.zalo.me/"), /wide=fake-1/);
         assert.doesNotMatch(cookieHeader(jar, "https://id.zalo.me/"), /chat=|hostonly=/);
         assert.match(cookieHeader(jar, "https://tt-chat1-wpa.chat.zalo.me/api/x"), /chat=fake-2/);
-        // D6: zca-js filed a cookie without Domain under host "null" and never sent it again.
+        // D6: a cookie without Domain is kept for the host that set it, and sent there again.
         assert.match(cookieHeader(jar, "https://wpa.chat.zalo.me/api/x"), /hostonly=fake-3/);
         assert.doesNotMatch(cookieHeader(jar, "https://chat.zalo.me/"), /hostonly/, "host-only means that host only");
     });

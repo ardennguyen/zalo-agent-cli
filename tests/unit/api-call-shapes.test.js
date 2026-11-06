@@ -1,7 +1,7 @@
 /**
- * Every zca-js method must be called with the SHAPE its signature declares.
+ * Every session method must be called with the SHAPE its signature declares.
  *
- * `zca-api-surface.test.js` asserts each method EXISTS. This asserts we call
+ * `api-surface.test.js` asserts each method EXISTS. This asserts we call
  * it correctly. Neither subsumes the other, and the gap between them is
  * where five commands hid — each of which had never worked once:
  *
@@ -16,27 +16,22 @@
  * caught the error and printed a clean ✗ with exit 0 — indistinguishable
  * from "the server said no". `conv mute` shipped that way for its whole life.
  *
- * Signatures come from the `.d.ts` beside each api file, never a list kept
- * here: a hand-kept list rots at the first zca-js bump and then lies, which
- * is worse than not checking at all.
- *
- * Built from agent/docs/audit_zca-call-shapes.md, which established the
- * method against 182 call sites. Read §7 of that document before trusting a
- * green run — the residual risk is stated in "what this cannot see" below.
+ * Signatures come from the JSDoc `@param` comments of the methods themselves
+ * (src/zalo/api/*.js and src/zalo/api.js), never a list kept here: a
+ * hand-kept list rots at the first change and then lies, which is worse than
+ * not checking at all. The method was established against 182 call sites; the
+ * residual risk is stated in "what this cannot see" below.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { existsSync, readFileSync } from "node:fs";
 
-import { buildTypeTable, extractSignatures, resolveKind, splitTopLevel } from "../helpers/zca-call-shapes.js";
-import { jsFiles, callSitesIn, findEvasions, commanderPositionals } from "../helpers/zca-call-sites.js";
-import { compareCall, nameAffinity, kindCompatible, normaliseName } from "../helpers/zca-call-compare.js";
+import { extractSignatures, jsdocParams, jsdocType, resolveKind, splitTopLevel } from "../helpers/api-call-shapes.js";
+import { jsFiles, callSitesIn, findEvasions, commanderPositionals } from "../helpers/api-call-sites.js";
+import { compareCall, nameAffinity, kindCompatible, normaliseName } from "../helpers/api-call-compare.js";
 
 const ROOT = join(import.meta.dirname, "..", "..");
-const DIST = join(ROOT, "node_modules", "zca-js", "dist");
-const APIS = join(DIST, "apis");
 const SRC = join(ROOT, "src");
 
 /**
@@ -47,9 +42,8 @@ const SRC = join(ROOT, "src");
  * hand-maintained list that the whole test exists to avoid.
  */
 const ALLOWLIST = [
-    // Empty but for the entry below, and that is the point: src/ calls every
-    // zca-js method with the shape its signature declares, except where our
-    // own engine's method deliberately takes more (named, with the reason).
+    // Empty, and that is the point: src/ calls every method with the shape
+    // its signature declares.
     //
     // It had one entry when this test was written -- `conv read`, which had
     // never marked anything as read -- and the "still corresponds to a real
@@ -58,18 +52,10 @@ const ALLOWLIST = [
     // the mechanism working, not a formality. An allowlist without it
     // quietly becomes the second hand-maintained list this test exists to
     // avoid.
-    {
-        file: "src/commands/conv.js",
-        method: "addUnreadMark",
-        reason:
-            "our engine's addUnreadMark (src/zalo/api/conversations.js) takes a third argument, the conversation's " +
-            "newest message, which Zalo Web names in the mark; zca-js's two-argument signature ignores it. Goes with " +
-            "zca-js at the cut-over.",
-    },
 ];
 
-const table = buildTypeTable(DIST);
-const signatures = extractSignatures(APIS, table);
+const table = new Map();
+const { signatures, undocumented } = extractSignatures(join(SRC, "zalo"));
 const methods = new Set(signatures.keys());
 
 /** Every call site in src/, paired with its declared signature. */
@@ -99,24 +85,68 @@ function analyse() {
     return { findings, stats };
 }
 
-describe("zca-js call shapes — the extractor itself", () => {
+describe("api call shapes — the extractor itself", () => {
     // Guard rails. A test that silently stops testing is worse than no test,
-    // and that is exactly what a zca-js bump would cause here if the emitted
-    // .d.ts shape changed and the extractor quietly returned nothing.
+    // and that is exactly what a change of the comment style would cause here
+    // if the extractor quietly returned nothing.
 
-    it("parsed a plausible number of factory signatures", () => {
+    it("parsed a signature for every method of the session object", () => {
         assert.ok(
-            signatures.size >= 150,
-            `only ${signatures.size} signatures extracted — zca-js probably changed its emitted ` +
+            signatures.size >= 140,
+            `only ${signatures.size} signatures extracted — the area modules probably changed their ` +
                 `shape and this test is now checking almost nothing`,
         );
+        for (const name of ["sendMessage", "getContext", "getOwnId", "keepAlive", "setMute", "undo"]) {
+            assert.ok(signatures.has(name), `no signature for ${name}`);
+        }
+    });
+
+    it("every method that takes arguments documents them, one @param per parameter", () => {
+        assert.deepEqual(undocumented, [], "these methods have no @param comment to check their callers against");
+        const drifted = [...signatures]
+            .filter(([, s]) => s.arity !== null && s.params.length !== s.arity)
+            .map(([n, s]) => `${s.source}: ${n} takes ${s.arity}, documents ${s.params.length}`);
+        assert.deepEqual(drifted, [], "a comment has drifted from its method");
     });
 
     it("resolved object keys for most object parameters", () => {
         const objs = [...signatures.values()].flatMap((s) => s.params).filter((p) => p.kind === "object");
         const keyed = objs.filter((p) => p.keys && p.keys.length);
-        assert.ok(objs.length >= 40, `only ${objs.length} object parameters found`);
-        assert.ok(keyed.length >= 40, `only ${keyed.length} of ${objs.length} object parameters resolved keys`);
+        assert.ok(objs.length >= 30, `only ${objs.length} object parameters found`);
+        assert.ok(keyed.length >= 30, `only ${keyed.length} of ${objs.length} object parameters resolved keys`);
+    });
+
+    it("reads JSDoc: optional and dotted names, object literals with commas, nested braces", () => {
+        const body = [
+            "* Something.",
+            " *",
+            " * @param {{page?: number, count?: number}} [opts] - a page",
+            " * @param {string|{data: Uint8Array, metadata?: {width?: number}}} file",
+            " * @param {object} target",
+            " * @param {string} target.msgId",
+            " * @param {number} [target.type=0]",
+            " * @returns {Promise<any>}",
+        ].join("\n");
+        const params = jsdocParams(body);
+        assert.deepEqual(
+            params.map((p) => [p.name, p.optional]),
+            [
+                ["opts", true],
+                ["file", false],
+                ["target", false],
+                ["target.msgId", false],
+                ["target.type", true],
+            ],
+        );
+        assert.deepEqual(resolveKind(jsdocType(params[0].type), table), {
+            kind: "object",
+            keys: ["page", "count"],
+            requiredKeys: [],
+        });
+        assert.equal(resolveKind(jsdocType(params[1].type), table).kind, "union");
+        assert.equal(resolveKind(jsdocType("0|1"), table).kind, "primitive");
+        assert.equal(resolveKind(jsdocType("Function"), table).kind, "function");
+        assert.equal(resolveKind(jsdocType("any"), table).kind, "unknown");
     });
 
     it("splits unions BEFORE testing for an array suffix", () => {
@@ -128,23 +158,20 @@ describe("zca-js call shapes — the extractor itself", () => {
     });
 
     it("does not count the > of an arrow as a closing bracket", () => {
-        // zca-js documents SendVideoOptions with "5.5s => 5.5 * 1000 = 5500".
-        // Counting that > as a close truncated the type at `duration`, so
-        // `width` and `height` read as undeclared and two CORRECT calls were
-        // reported SUSPECT.
-        const video = resolveKind("SendVideoOptions", table);
-        assert.ok(video.keys.includes("width"), "comment text truncated the type body");
-        assert.ok(video.keys.includes("height"));
+        // A callback parameter inside an object type ends in "=> ...". Counting
+        // that > as a close truncated the type there, so the keys after it read
+        // as undeclared and correct calls were reported SUSPECT.
+        const t = jsdocType("{onBatch: (info: object) => void, width: number, height: number}");
+        assert.deepEqual(resolveKind(t, table).keys, ["onBatch", "width", "height"]);
         assert.deepEqual(splitTopLevel("(a: string) => void, b: number", ","), ["(a: string) => void", "b: number"]);
     });
 
     it("reads the signatures of the methods the known defects involved", () => {
         for (const [method, shape] of [
-            ["setMute", ["object", "primitive", "enum"]],
+            ["setMute", ["object", "primitive", "primitive"]],
             ["deleteMessage", ["object", "primitive"]],
-            ["forwardMessage", ["object", "array", "enum"]],
-            ["sendSeenEvent", ["union", "enum"]],
-            ["undo", ["object", "primitive", "enum"]],
+            ["undo", ["object", "primitive", "primitive"]],
+            ["removeReminder", ["primitive", "primitive", "primitive"]],
         ]) {
             const sig = signatures.get(method);
             assert.ok(sig, `${method} signature not extracted`);
@@ -157,35 +184,7 @@ describe("zca-js call shapes — the extractor itself", () => {
     });
 });
 
-describe("zca-js call shapes — the declarations are telling the truth", () => {
-    // The patch edits .js files. If a declaration were stale, every verdict
-    // resting on it would be worthless, so the parameter LIST of each called
-    // method is re-read from the implementation and compared.
-    it("every called method's .js parameter list matches its .d.ts", () => {
-        const called = new Set();
-        for (const file of jsFiles(SRC)) {
-            for (const s of callSitesIn(file, methods).sites) called.add(s.method);
-        }
-        assert.ok(called.size >= 100, `only ${called.size} distinct methods found at call sites`);
-
-        const drifted = [];
-        for (const method of called) {
-            const jsPath = join(APIS, `${method}.js`);
-            if (!existsSync(jsPath)) continue;
-            const js = readFileSync(jsPath, "utf8");
-            const m = js.match(new RegExp(`return async function ${method}\\s*\\(([^)]*)\\)`));
-            if (!m) continue;
-            const jsNames = splitTopLevel(m[1], ",").map((p) => p.split("=")[0].trim());
-            const dtsNames = signatures.get(method).params.map((p) => p.name);
-            if (jsNames.join(",") !== dtsNames.join(",")) {
-                drifted.push(`${method}: .js(${jsNames.join(", ")}) vs .d.ts(${dtsNames.join(", ")})`);
-            }
-        }
-        assert.deepEqual(drifted, [], "a declaration has drifted from its implementation");
-    });
-});
-
-describe("zca-js call shapes — nothing can evade the scanner", () => {
+describe("api call shapes — nothing can evade the scanner", () => {
     it("no dynamic dispatch, spread, destructuring or .call/.apply/.bind on an api method", () => {
         // The scanner walks straight past all of these and reports nothing,
         // so their absence is asserted rather than assumed.
@@ -203,7 +202,7 @@ describe("zca-js call shapes — nothing can evade the scanner", () => {
     });
 });
 
-describe("zca-js call shapes — src/ calls every method correctly", () => {
+describe("api call shapes — src/ calls every method correctly", () => {
     const { findings } = analyse();
 
     it("reports no call whose shape contradicts its signature", () => {
@@ -233,7 +232,7 @@ describe("zca-js call shapes — src/ calls every method correctly", () => {
     });
 });
 
-describe("zca-js call shapes — the checker can actually fail", () => {
+describe("api call shapes — the checker can actually fail", () => {
     // Falsifiability, proven rather than asserted. One deliberate defect per
     // class, run through the real pipeline. The fixtures are inline strings
     // rather than files on disk: it keeps the defect next to the assertion
@@ -267,19 +266,21 @@ describe("zca-js call shapes — the checker can actually fail", () => {
     it("catches an options object passed last instead of first — the conv mute defect", () => {
         const r = check(wrap(`await getApi().setMute(threadId, Number(opts.type), Number(opts.duration));`));
         assert.equal(r.structural.verdict, "WRONG", "the real conv mute bug must be caught");
-        assert.match(r.structural.reasons.join(" "), /argument 1 is primitive but params is declared object/);
+        assert.match(r.structural.reasons.join(" "), /argument 1 is primitive but options is declared object/);
     });
 
-    it("catches a bare value where an array is declared — the msg forward defect", () => {
-        const r = check(wrap(`await getApi().forwardMessage({ message: "hi" }, threadId, 1);`));
-        assert.equal(r.structural.verdict, "WRONG");
-        assert.match(r.structural.reasons.join(" "), /threadIds is declared array/);
+    it("catches an object where a value or a list is declared — the msg forward defect's class", () => {
+        // msg forward handed one shape where another was declared; here an
+        // options object where `string|string[]` is.
+        const r = check(wrap(`await getApi().getMultiUsersByPhones({ phone: threadId });`));
+        assert.equal(r.structural.verdict, "WRONG", r.structural.reasons.join("; "));
+        assert.match(r.structural.reasons.join(" "), /phoneNumbers is declared union/);
     });
 
-    it("catches a bare value where a union of object|array is declared — the conv read defect", () => {
-        const r = check(wrap(`await getApi().sendSeenEvent(threadId, 1);`));
+    it("catches a bare value where an object is declared — the conv read defect", () => {
+        const r = check(wrap(`await getApi().deleteMessage(threadId, false);`));
         assert.equal(r.structural.verdict, "WRONG");
-        assert.match(r.structural.reasons.join(" "), /messages is declared union/);
+        assert.match(r.structural.reasons.join(" "), /target is declared object/);
     });
 
     it("catches an omitted required argument", () => {
@@ -309,7 +310,7 @@ describe("zca-js call shapes — the checker can actually fail", () => {
     it("catches a two-string transposition that the structural pass CANNOT see", () => {
         // The entire reason for a second detector. `removeReminder` takes
         // (reminderId, threadId, type) — the first two are both plain
-        // strings, so NOTHING structural distinguishes the right order from
+        // values, so NOTHING structural distinguishes the right order from
         // the wrong one. Only the names give it away.
         const src =
             `const p = {};\n` +
@@ -340,7 +341,7 @@ describe("zca-js call shapes — the checker can actually fail", () => {
     });
 });
 
-describe("zca-js call shapes — the commander rule", () => {
+describe("api call shapes — the commander rule", () => {
     // The load-bearing part: it is what makes a bare identifier decidable,
     // and four of the five known defects pass bare identifiers. The audit's
     // first design, comparing literal types only, caught one of four.
@@ -398,7 +399,7 @@ describe("zca-js call shapes — the commander rule", () => {
     });
 });
 
-describe("zca-js call shapes — what this cannot see", () => {
+describe("api call shapes — what this cannot see", () => {
     // Stated as executable notes rather than prose, so they stay true.
 
     it("cannot see a transposition between same-typed, uninformatively-named variables", () => {
@@ -422,8 +423,9 @@ describe("zca-js call shapes — what this cannot see", () => {
 
     it("says nothing about response shapes, which is a separate class", () => {
         // `msg forward` also read `result.fail` when Zalo sends
-        // {success, failed}. No signature check can see that: .d.ts return
-        // types describe what zca-js declares, not what the server sends.
+        // {success, failed}. No signature check can see that: a documented
+        // return type describes what the method declares, not what the server
+        // sends.
         assert.ok(kindCompatible("unknown", { kind: "object" }), "unknown is never a mismatch");
         assert.equal(normaliseName("threadIDs"), normaliseName("thread_id"));
     });

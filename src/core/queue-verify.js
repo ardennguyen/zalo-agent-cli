@@ -131,7 +131,7 @@ export function createQueueVerifier({
                 reqId: entry.reqId,
             },
         };
-        getListener().sendWs(frame, false);
+        getListener().sendWs(frame);
         counts.sent++;
         entry.timer = timers.setTimeout(() => onSilence(entry), VERIFY_DEFAULTS.replyTimeoutMs);
         entry.timer?.unref?.();

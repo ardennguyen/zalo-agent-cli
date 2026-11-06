@@ -130,14 +130,16 @@ describe("socket supervisor", () => {
             assert.equal(sup.status().retryAttempts, 0);
         });
 
-        it("keeps the sendWs wrapper invisible: other frames still carry their request id", async () => {
+        it("keeps the sendWs wrapper invisible: other frames go out as they were given", async () => {
             await rig();
             sup.start();
             await until(() => sup.state === "connected", "connected");
-            // a frame sent the plain zca-js way (requireId defaulting to true), through the wrapper
-            api.listener.sendWs({ version: 1, cmd: 510, subCmd: 1, data: { first: true, lastId: null, preIds: [] } });
+            // a frame sent through the supervisor's wrapper, with its own reqId
+            const data = { first: true, reqId: "req_fake", lastId: null, preIds: [] };
+            api.listener.sendWs({ version: 1, cmd: 510, subCmd: 1, data: { ...data } });
             const frame = await zalo.sock.waitFor((f) => f.cmd === 510);
-            assert.match(frame.data.req_id, /^req_\d+$/);
+            // Red if the wrapper (or the listener) added a key, such as a req_id, or dropped one.
+            assert.deepEqual(frame.data, data);
         });
 
         it("stays connected while the server echoes every ping", async () => {

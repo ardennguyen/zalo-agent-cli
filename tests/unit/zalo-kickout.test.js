@@ -1,18 +1,15 @@
 /**
- * Asking Zalo why a session ended (src/zalo/kickout.js), through the real zca-js
+ * Asking Zalo why a session ended (src/zalo/kickout.js), through the real
  * request path against the fake server.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
 import { describeKickout, fetchKickoutInfo, kickoutKeysOf, lookupKickout } from "../../src/zalo/kickout.js";
 import { encryptZCloud } from "../../src/core/sync-v2/zcloud-cipher.js";
+import { sealSession } from "../../src/zalo/kernel/cipher.js";
 import { FAKE, installFakeZalo, loginFake, serviceHost } from "./fake-zalo-session.js";
-
-const zu = createRequire(import.meta.url)(join(dirname(createRequire(import.meta.url).resolve("zca-js")), "utils.cjs"));
 
 describe("fetchKickoutInfo", () => {
     let fake;
@@ -35,7 +32,7 @@ describe("fetchKickoutInfo", () => {
     /** Answer the lookup the way Zalo does: sealed with enk, in the session cipher's shape; not with the session key. */
     const seal = {
         zcloud: (json, key) => encryptZCloud(json, key),
-        session: (json, key) => zu.encodeAES(key, json),
+        session: (json, key) => sealSession(key, json),
     };
     const answerSealed = (data, key = ZC.enk, cipher = "session") =>
         fake.rawRoute(
@@ -116,7 +113,7 @@ describe("fetchKickoutInfo", () => {
                 new Response(
                     JSON.stringify({
                         error_code: 0,
-                        data: zu.encodeAES(ZC.enk, JSON.stringify({ error_code: 5, data: null })),
+                        data: sealSession(ZC.enk, JSON.stringify({ error_code: 5, data: null })),
                     }),
                     { status: 200 },
                 ),
@@ -169,7 +166,7 @@ describe("fetchKickoutInfo", () => {
     });
 
     it("returns null when there is no aext host to ask", async () => {
-        // zca-js cannot build an API without the host, so take it away after login.
+        // Taken away after login, so the login itself still has every host.
         api.getContext().loginInfo.zpw_service_map_v3.aext = [];
         assert.equal(await fetchKickoutInfo(api, KEYS), null);
         assert.equal(fake.calls("/api/session/kickout-info").length, 0);

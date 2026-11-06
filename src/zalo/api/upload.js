@@ -862,6 +862,3 @@ export function uploadMethods(s) {
 
     return { sendAttachments, uploadAttachment };
 }
-
-/** Methods whose wire-upload.test.js differential passes: the switch answers these from our code. */
-export const OWN_READY = new Set(["sendAttachments", "uploadAttachment"]);

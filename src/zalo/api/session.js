@@ -43,6 +43,3 @@ export function sessionMethods(s) {
         fetchAccountInfo: () => s.call(ME_V2, {}),
     };
 }
-
-/** Methods whose wire-kernel.test.js comparison passes: the switch answers these from our code. */
-export const OWN_READY = new Set(["keepAlive", "fetchAccountInfo"]);

@@ -20,7 +20,6 @@ import { createApi } from "../../src/zalo/api.js";
 import {
     CLOSE_DUPLICATE,
     Listener,
-    OWN_READY,
     cookieUrlOf,
     createListener,
     upgradeHeaders,
@@ -128,11 +127,8 @@ afterEach(async () => {
 });
 
 describe("listener module", () => {
-    it("is what api.js loads: createListener and an OWN_READY set", async () => {
-        assert.ok(OWN_READY instanceof Set);
-        // api.js builds this listener for the own engine and, since OWN_READY names it, by default.
-        assert.ok(OWN_READY.has("listener"));
-        const api = await createApi(makeCtx(), {}, ["wss://ws1-msg.chat.zalo.me/"], { engine: "own", areas: [] });
+    it("is what api.js builds: createListener", async () => {
+        const api = await createApi(makeCtx(), {}, ["wss://ws1-msg.chat.zalo.me/"], { areas: [] });
         assert.ok(api.listener instanceof Listener, "api.js did not load src/zalo/listener/listener.js");
         const l = createListener(makeCtx(), ["wss://ws1-msg.chat.zalo.me/"]);
         assert.ok(l instanceof Listener);
@@ -154,7 +150,7 @@ describe("listener module", () => {
 
     it("sendWs without a socket does nothing", () => {
         const l = createListener(makeCtx(), ["ws://127.0.0.1:1/"]);
-        assert.doesNotThrow(() => l.sendWs({ version: 1, cmd: 510, subCmd: 1, data: {} }, false));
+        assert.doesNotThrow(() => l.sendWs({ version: 1, cmd: 510, subCmd: 1, data: {} }));
     });
 });
 
@@ -257,9 +253,9 @@ describe("before the handshake", () => {
         const connected = once(r.listener, "connected");
         r.listener.start();
         await connected;
-        r.listener.sendWs({ version: 1, cmd: 510, subCmd: 1, data: { first: true, reqId: "req_a" } }, false);
-        r.listener.sendWs({ version: 1, cmd: 2, subCmd: 1, data: { eventId: 1 } }, false);
-        r.listener.sendWs({ version: 1, cmd: 511, subCmd: 1, data: { first: true, reqId: "req_b" } }, false);
+        r.listener.sendWs({ version: 1, cmd: 510, subCmd: 1, data: { first: true, reqId: "req_a" } });
+        r.listener.sendWs({ version: 1, cmd: 2, subCmd: 1, data: { eventId: 1 } });
+        r.listener.sendWs({ version: 1, cmd: 511, subCmd: 1, data: { first: true, reqId: "req_b" } });
         await sleep(80);
         // Red if sends went out on an open socket before the server accepted the session (zca-js did).
         assert.deepEqual(r.sock.received, []);
@@ -273,6 +269,17 @@ describe("before the handshake", () => {
                 [511, "req_b"],
             ],
         );
+    });
+
+    it("sends a frame's data as it was given: no req_id or any other key is added", async () => {
+        const r = await rig();
+        const connected = once(r.listener, "connected");
+        r.listener.start();
+        await connected;
+        const data = { first: true, lastId: null, preIds: [] };
+        r.listener.sendWs({ version: 1, cmd: 510, subCmd: 1, data: { ...data } });
+        const frame = await r.sock.waitFor((f) => f.cmd === 510);
+        assert.deepEqual(frame.data, data);
     });
 
     it("holds frames that came before the key and reads them after it, sealed ones included", async () => {
@@ -322,7 +329,7 @@ describe("ping", () => {
         assert.equal(r.sock.framesOf(2, 1).length, 1);
         r.sock.setPong(true);
         // The echo of a ping sent from outside (the supervisor) clears the guard too.
-        r.listener.sendWs({ version: 1, cmd: 2, subCmd: 1, data: { eventId: 7 } }, false);
+        r.listener.sendWs({ version: 1, cmd: 2, subCmd: 1, data: { eventId: 7 } });
         await until(() => r.sock.framesOf(2, 1).length >= 4, "pings to resume once echoes come");
     });
 

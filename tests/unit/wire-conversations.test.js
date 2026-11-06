@@ -1,10 +1,9 @@
 /**
- * The conversations area on the wire (design 3.1, package ACT): mute, the unread mark, hidden chats and their PIN,
- * and auto-delete, zca-js against src/zalo/api/conversations.js on one logged-in fake.
+ * The conversations area on the wire (design 3.1 and 3.3, package ACT): mute, the unread mark, hidden chats and their
+ * PIN, and auto-delete, src/zalo/api/conversations.js on one logged-in fake.
  *
- * Each case has the three parts of design 3.1: (1) `assertSameWire` against the rows of tests/helpers/wire-diff/
- * allow/conversations.js, which fails on any difference not declared AND on a declared one that is absent; (2) our
- * side against its reviewed golden record; (3) the error answers. The Web-only behavior is also asserted outright.
+ * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
+ * against a literal `{message, code}`. The Web behavior is also asserted outright.
  *
  * Every id here is fake (tests/unit/no-real-ids.test.js).
  */
@@ -13,8 +12,8 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
-import { OWN_READY, secondsUntil8am } from "../../src/zalo/api/conversations.js";
+import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
+import { conversationMethods, secondsUntil8am } from "../../src/zalo/api/conversations.js";
 
 const AREA = "conversations";
 const PEER = "1000000000000000002";
@@ -26,47 +25,48 @@ const BEFORE_8AM = 10_000;
 const T_AFTER_8AM = T0 + 4 * 3600 * 1000;
 const AFTER_8AM = 82_000;
 
-/**
- * The allowed differences of one case: the area's rows of that case, plus the global rows.
- *
- * @param {string} name - the case
- * @returns {object[]}
- */
-function allowFor(name) {
-    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
-}
-
-/** The answers every method is run against for part 3, and whether zca-js has the same message for each. */
+/** The answers every method is run against for the error part, and what each must throw. */
 const ERROR_ANSWERS = [
-    { label: "an outer error", error: { outer: { error_code: 102, error_message: "outer failure" } }, sameText: true },
-    { label: "an inner error", error: { inner: { error_code: 114, error_message: "inner failure" } }, sameText: true },
-    { label: "HTTP 500", error: { status: 500 }, sameText: false },
-    { label: "an undecryptable data", error: { undecryptable: true }, sameText: true },
+    {
+        label: "an outer error",
+        error: { outer: { error_code: 102, error_message: "outer failure" } },
+        expected: { message: "outer failure", code: 102 },
+    },
+    {
+        label: "an inner error",
+        error: { inner: { error_code: 114, error_message: "inner failure" } },
+        expected: { message: "inner failure", code: 114 },
+    },
+    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
+    {
+        label: "an undecryptable data",
+        error: { undecryptable: true },
+        expected: { message: "Failed to parse response data", code: null },
+    },
 ];
 
 /**
- * Open a pair with a cookie in the jar (zca-js writes an empty Cookie header for an empty jar, fetch writes none).
+ * Open a wire with a cookie in the jar (zca-js writes an empty Cookie header for an empty jar, fetch writes none).
  *
- * @param {object} [opts] - options of `openPair`
+ * @param {object} [opts] - options of `openWire`
  */
 async function open(opts) {
     assertSandboxed(CONFIG_DIR);
-    const pair = await openPair(opts);
-    pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
-    return pair;
+    const wire = await openWire(opts);
+    wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+    return wire;
 }
 
-describe("wire: conversations (zca-js against src/zalo/api/conversations.js)", () => {
-    let pair;
+describe("wire: conversations (src/zalo/api/conversations.js)", () => {
+    let wire;
     before(async () => {
-        pair = await open();
+        wire = await open();
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
-    /** Run one case through both engines, check it against its rows and its golden record. */
+    /** Run one case and check it against its golden record. */
     async function check(name, method, args, fixture) {
-        const rec = await pair.run(method, args, fixture);
-        assertSameWire(rec, allowFor(name));
+        const rec = await wire.run(method, args, fixture);
         await expectGolden(AREA, name, rec.own);
         return rec;
     }
@@ -156,7 +156,7 @@ describe("wire: conversations (zca-js against src/zalo/api/conversations.js)", (
 
         it('a sender id or client id given alone is not enough: both go out as "-1"', async () => {
             for (const last of [{ cliMsgId: "1699999999999" }, { fromUid: PEER2 }, { cliMsgId: "", fromUid: "0" }]) {
-                const rec = await pair.run("addUnreadMark", [PEER, 0, last], { reply: { data: "{}", status: 0 } });
+                const rec = await wire.run("addUnreadMark", [PEER, 0, last], { reply: { data: "{}", status: 0 } });
                 const [entry] = JSON.parse(rec.own.requests[0].params.param).convsUser;
                 assert.deepEqual([entry.cliMsgId, entry.fromUid], ["-1", "-1"], JSON.stringify(last));
             }
@@ -213,10 +213,8 @@ describe("wire: conversations (zca-js against src/zalo/api/conversations.js)", (
 
         it("updateHiddenConversPin refuses anything but four digits before any request", async () => {
             for (const pin of ["123", "12345", "abcd", ""]) {
-                const rec = await pair.run("updateHiddenConversPin", [pin], { reply: {} });
+                const rec = await wire.run("updateHiddenConversPin", [pin], { reply: {} });
                 assert.equal(rec.own.requests.length, 0, pin);
-                assert.equal(rec.zca.requests.length, 0, pin);
-                assert.deepEqual(rec.own.error, rec.zca.error, pin);
             }
         });
 
@@ -259,7 +257,7 @@ describe("wire: conversations (zca-js against src/zalo/api/conversations.js)", (
             ["setHiddenConversations", [true, [PEER], 9]],
             ["updateAutoDeleteChat", [0, PEER, "x"]],
         ]) {
-            const rec = await pair.run(method, args, { reply: {} });
+            const rec = await wire.run(method, args, { reply: {} });
             assert.equal(rec.own.requests.length, 0, method);
             assert.equal(rec.own.error?.message, "Thread type is invalid", method);
         }
@@ -280,22 +278,17 @@ describe("wire: conversations (zca-js against src/zalo/api/conversations.js)", (
         for (const [method, args] of CALLS) {
             it(`${method}: the same code as zca-js (and the same text where zca-js has it)`, async () => {
                 for (const answer of ERROR_ANSWERS) {
-                    const rec = await pair.run(method, args, { error: answer.error });
-                    const where = `${method}, ${answer.label}`;
-                    assert.ok(rec.own.error, `${where}: our side did not throw`);
-                    assert.ok(rec.zca.error, `${where}: zca-js did not throw`);
-                    assert.equal(rec.own.error.code, rec.zca.error.code, where);
-                    if (answer.sameText) assert.equal(rec.own.error.message, rec.zca.error.message, where);
-                    else assert.equal(rec.own.error.message, "HTTP 500", where);
+                    const rec = await wire.run(method, args, { error: answer.error });
+                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
                 }
             });
         }
     });
 
-    it("OWN_READY lists every method this file compares", () => {
-        // Red if a method was flipped to our engine without a comparison here, or one compared here was left on zca-js.
+    it("the area defines exactly the methods this file covers", () => {
+        // Red if a method was added to the area without a case here, or one covered here was removed.
         assert.deepEqual(
-            [...OWN_READY].sort(),
+            Object.keys(conversationMethods({})).sort(),
             [
                 "addUnreadMark",
                 "getAutoDeleteChat",
@@ -312,15 +305,14 @@ describe("wire: conversations (zca-js against src/zalo/api/conversations.js)", (
 });
 
 describe("wire: setMute until 8 AM after 8 AM (tomorrow's 08:00)", () => {
-    let pair;
+    let wire;
     before(async () => {
-        pair = await open({ t0: T_AFTER_8AM });
+        wire = await open({ t0: T_AFTER_8AM });
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     it("counts to tomorrow's 08:00 local time", async () => {
-        const rec = await pair.run("setMute", [{ duration: "until8AM", action: 1 }, PEER, 0], { reply: {} });
-        assertSameWire(rec, allowFor("mute-until-8am-late"));
+        const rec = await wire.run("setMute", [{ duration: "until8AM", action: 1 }, PEER, 0], { reply: {} });
         await expectGolden(AREA, "mute-until-8am-late", rec.own);
         assert.equal(rec.own.requests[0].params.duration, AFTER_8AM);
         assert.equal(rec.own.requests[0].params.startTime, T_AFTER_8AM / 1000);

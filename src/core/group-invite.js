@@ -9,7 +9,7 @@
  * zca-js's own session envelope, and unpacks the topic's JSON-in-JSON params
  * only when there is a topic.
  */
-import { customCall, getWithParams } from "./zca-custom.js";
+import { customCall, getWithParams } from "../zalo/session-call.js";
 
 /**
  * Parse a topic's `params`, which Zalo sends as a JSON string whose `extra`

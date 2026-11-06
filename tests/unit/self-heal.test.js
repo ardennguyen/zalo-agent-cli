@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { GroupMessage, UserMessage } from "zca-js";
+import { GroupMessage, Undo, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     initDb,
@@ -36,7 +36,6 @@ import { createStageLock, startDaemonChannel, syncViaDaemon } from "../../src/co
 import { createSocketTap } from "../../src/core/socket-tap.js";
 import { createSelfHeal } from "../../src/core/self-heal.js";
 import { fakeListener } from "./support/fake-socket.js";
-import { Undo } from "../../src/zalo/listener/models.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-self-heal-"));
 let dbSeq = 0;

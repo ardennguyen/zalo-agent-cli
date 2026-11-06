@@ -47,7 +47,7 @@ import { startDaemonChannel } from "../../src/core/daemon-channel.js";
 import { registerSyncCommands } from "../../src/commands/sync.js";
 import { registerConvCommands } from "../../src/commands/conv.js";
 import { FAKE, installFakeZalo, loginFake, runCommand } from "./fake-zalo-session.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 const ACCOUNT_DIR = join(CONFIG_DIR, "accounts", FAKE.ownId);
 const DB_PATH = join(ACCOUNT_DIR, "zalo.db");

@@ -205,7 +205,7 @@ export function createSyncChannel({
     }
 
     function send(frame) {
-        getListener().sendWs(frame, false);
+        getListener().sendWs(frame);
     }
 
     /** One send and its ack, retried per the official rules. */

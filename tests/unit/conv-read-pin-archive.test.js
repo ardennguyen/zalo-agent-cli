@@ -3,40 +3,30 @@
  * the real command handlers down to the request that reaches Zalo.
  *
  * Each command is parsed by commander exactly as the CLI parses it, with one
- * substitution: the Zalo api comes from a harness in which zca-js's own
- * apiFactory, AES and (for removeUnreadMark / getArchivedChatList) its own API
- * functions run against a fake transport that decrypts every request with a
- * throwaway key. What is asserted is that decrypted request -- host, path,
+ * substitution: the Zalo api is the engine's own session object
+ * (src/zalo/api.js), built on a context whose fetch is a fake transport that
+ * decrypts every request with a throwaway key. What is asserted is that decrypted request -- host, path,
  * method, params -- compared with a capture of the real Zalo Web client
  * (build 826674fb31d2af1b2b59, zpw_ver 691). Templates name their capture row.
  *
  * `conv read` also reads the local cache, so its rows are written the way the
- * listener writes them: a zca-js message model through storeLiveMessage().
+ * listener writes them: a listener message model through storeLiveMessage().
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, mock } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Command } from "commander";
-import { GroupMessage, UserMessage } from "zca-js";
+import { GroupMessage, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { addAccount } from "../../src/core/accounts.js";
 import { initDb, insertMessage } from "../../src/core/db.js";
 import { storeLiveMessage } from "../../src/core/live-store.js";
 import { registerConvCommands } from "../../src/commands/conv.js";
-
-const require = createRequire(import.meta.url);
-const zcaUtils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-const ZCA_DIST = new URL(".", import.meta.resolve("zca-js"));
-const { removeUnreadMarkFactory } = await import(new URL("apis/removeUnreadMark.js", ZCA_DIST));
-const { getArchivedChatListFactory } = await import(new URL("apis/getArchivedChatList.js", ZCA_DIST));
-// Bound too, so a regression back to zca-js's receipt builders is caught on the
-// wire (st/at/cmd collapse to 0) rather than as "is not a function".
-const { sendSeenEventFactory } = await import(new URL("apis/sendSeenEvent.js", ZCA_DIST));
-const { setPinnedConversationsFactory } = await import(new URL("apis/setPinnedConversations.js", ZCA_DIST));
-const { updateArchivedChatListFactory } = await import(new URL("apis/updateArchivedChatList.js", ZCA_DIST));
+import { createApi } from "../../src/zalo/api.js";
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 
 /** Obviously-fake 16-byte AES key and imei (AGENTS.md §12). */
 const SECRET_KEY = Buffer.from("0123456789abcdef").toString("base64");
@@ -57,7 +47,7 @@ const HOSTS = {
 };
 
 /**
- * A logged-in zca-js api stand-in whose requests are recorded decrypted.
+ * A logged-in session on a fake transport, whose requests are recorded decrypted.
  *
  * @param {(rec: object) => any} [respond] - the response `data` for a request, or
  *   `{ zaloError: {code, message} }`
@@ -77,7 +67,7 @@ function harness(respond = () => ({ status: 0 })) {
                 const u = new URL(url);
                 const enc =
                     init.body instanceof URLSearchParams ? init.body.get("params") : u.searchParams.get("params");
-                const plain = enc ? zcaUtils.decodeAES(SECRET_KEY, enc) : null;
+                const plain = enc ? openSession(SECRET_KEY, enc) : null;
                 const rec = {
                     method: init.method || "GET",
                     origin: u.origin,
@@ -93,10 +83,7 @@ function harness(respond = () => ({ status: 0 })) {
                     : {
                           error_code: 0,
                           error_message: "Successful.",
-                          data: zcaUtils.encodeAES(
-                              SECRET_KEY,
-                              JSON.stringify({ error_code: 0, error_message: "", data }),
-                          ),
+                          data: sealSession(SECRET_KEY, JSON.stringify({ error_code: 0, error_message: "", data })),
                       };
                 return new Response(JSON.stringify(body), {
                     status: 200,
@@ -105,15 +92,8 @@ function harness(respond = () => ({ status: 0 })) {
             },
         },
     };
-    const api = {
-        zpwServiceMap: Object.fromEntries(Object.entries(HOSTS).map(([k, v]) => [k, [v]])),
-        getContext: () => ctx,
-    };
-    api.removeUnreadMark = removeUnreadMarkFactory(ctx, api);
-    api.getArchivedChatList = getArchivedChatListFactory(ctx, api);
-    api.sendSeenEvent = sendSeenEventFactory(ctx, api);
-    api.setPinnedConversations = setPinnedConversationsFactory(ctx, api);
-    api.updateArchivedChatList = updateArchivedChatListFactory(ctx, api);
+    const serviceMap = Object.fromEntries(Object.entries(HOSTS).map(([k, v]) => [k, [v]]));
+    const api = createApi(ctx, serviceMap, [], { createListener: () => new EventEmitter() });
     return { api, sent };
 }
 

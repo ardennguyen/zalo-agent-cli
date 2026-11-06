@@ -3,17 +3,13 @@
  * the payload decoder (encrypt 0-3, zlib and gzip, 16- and 32-byte keys), the handshake reader, and Web's lossless
  * id pass.
  *
- * Every frame here is built by the test from a hand-written body with fake ids. Part of the file is a differential
- * test against zca-js's own decoder (`decodeEventData`), run as the other side: those cases are marked and are
- * deleted at the cut-over, when zca-js leaves the tree; the rest keep guarding the format on their own.
+ * Every frame here is built by the test from a hand-written body with fake ids.
  */
 import "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import zlib from "node:zlib";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
 import {
     CHAT_CMDS,
     CTRL_CMDS,
@@ -371,28 +367,8 @@ describe("preParse (Web's lossless id pass)", () => {
     });
 });
 
-// ── Differential against zca-js's decoder (deleted at the cut-over, design section 3.3) ─────────────────────────
-
-const require = createRequire(import.meta.url);
-const zcaUtils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-
-/**
- * zca-js's decoded value as plain objects (its big-number parser builds objects without Object.prototype) with its
- * BigNumbers written as their digits, for comparison.
- */
-const normalizeBig = (v) => JSON.parse(JSON.stringify(v, (_k, x) => (x?._isBigNumber ? x.toFixed() : x)));
-
-describe("decodeFrame against zca-js decodeEventData", () => {
-    for (const row of MATRIX) {
-        it(`decodes ${row.name} to the same payload`, async () => {
-            const env = envelope({ text: JSON.stringify(BODY), ...row });
-            const zca = normalizeBig(await zcaUtils.decodeEventData(env, row.key));
-            assert.deepEqual(decodeFrame(env, row.key ?? null), zca);
-            assert.equal(zca.data.msgs[0].content, "Xin chào 👋", "the oracle itself decoded the text");
-        });
-    }
-
-    it("fails where zca-js fails: short payload, missing key, wrong key, unknown encrypt", async () => {
+describe("decodeFrame: refusals and the id pass", () => {
+    it("fails on a short payload, a missing key, a wrong key and an unknown encrypt", () => {
         const cases = [
             { encrypt: 2, data: encodeURIComponent(crypto.randomBytes(47).toString("base64")), key: KEY16 },
             { ...envelope({ text: "{}", encrypt: 2, key: KEY16 }), key: null },
@@ -400,25 +376,17 @@ describe("decodeFrame against zca-js decodeEventData", () => {
             { encrypt: 4, data: "{}", key: KEY16 },
         ];
         for (const { key, ...env } of cases) {
-            await assert.rejects(zcaUtils.decodeEventData(env, key), `zca-js accepted ${JSON.stringify(env)}`);
-            assert.throws(() => decodeFrame(env, key), `ours accepted ${JSON.stringify(env)}`);
+            assert.throws(() => decodeFrame(env, key), `accepted ${JSON.stringify(env)}`);
         }
     });
 
-    it("differs on ids exactly as Web does (an asserted difference, not a hidden one)", async () => {
+    it("reads ids as Web does: listed keys as strings, every digit kept; unlisted big integers lossy", () => {
         const text = `{"data":{"msgId":5,"uidFrom":${BIG},"ts":${BIG}}}`;
         const env = envelope({ text, encrypt: 2, key: KEY16 });
-        const zca = normalizeBig(await zcaUtils.decodeEventData(env, KEY16)).data;
         const own = decodeFrame(env, KEY16, { idKeys: CHAT_ID_KEYS }).data;
-        // Same: a big id under a listed key keeps every digit on both sides.
-        assert.equal(own.uidFrom, BIG);
-        assert.equal(zca.uidFrom, BIG);
-        // Different 1: a small integer under a listed key is a string here, a number in zca-js.
-        assert.equal(own.msgId, "5");
-        assert.equal(zca.msgId, 5);
-        // Different 2: a big integer under an unlisted key is lossy here (as in Web) and exact in zca-js.
-        assert.equal(zca.ts, BIG);
-        assert.equal(typeof own.ts, "number");
-        assert.notEqual(String(own.ts), BIG);
+        assert.equal(own.uidFrom, BIG, "a big id under a listed key keeps every digit");
+        assert.equal(own.msgId, "5", "a small integer under a listed key is a string");
+        assert.equal(typeof own.ts, "number", "a big integer under an unlisted key is a number");
+        assert.notEqual(String(own.ts), BIG, "and lossy, as in Web");
     });
 });

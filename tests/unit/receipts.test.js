@@ -21,9 +21,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, mock } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { GroupMessage, UserMessage } from "zca-js";
+import { GroupMessage, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     sendSeenReceipt,
@@ -31,9 +29,7 @@ import {
     liveReceiptTarget,
     createDeliveredReceipts,
 } from "../../src/core/receipts.js";
-
-const require = createRequire(import.meta.url);
-const zcaUtils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 
 /** Obviously-fake 16-byte AES key and imei. Never a real session secret (AGENTS.md §12). */
 const SECRET_KEY = Buffer.from("0123456789abcdef").toString("base64");
@@ -75,7 +71,7 @@ function harness({ respond = () => ({ status: 0 }) } = {}) {
                 const u = new URL(url);
                 const enc =
                     init.body instanceof URLSearchParams ? init.body.get("params") : u.searchParams.get("params");
-                const plain = enc ? zcaUtils.decodeAES(SECRET_KEY, enc) : null;
+                const plain = enc ? openSession(SECRET_KEY, enc) : null;
                 const rec = {
                     method: init.method || "GET",
                     origin: u.origin,
@@ -92,10 +88,7 @@ function harness({ respond = () => ({ status: 0 }) } = {}) {
                     : {
                           error_code: 0,
                           error_message: "Successful.",
-                          data: zcaUtils.encodeAES(
-                              SECRET_KEY,
-                              JSON.stringify({ error_code: 0, error_message: "", data }),
-                          ),
+                          data: sealSession(SECRET_KEY, JSON.stringify({ error_code: 0, error_message: "", data })),
                       };
                 return new Response(JSON.stringify(body), {
                     status: 200,

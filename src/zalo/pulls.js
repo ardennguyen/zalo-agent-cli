@@ -1,8 +1,8 @@
 /**
  * The requests the Web client sends when a socket connects and when it pulls a queue (plan items X5 and X6).
  *
- * Every pull has the same shape, `{first, reqId, lastId, preIds}`; zca-js's own `requestOldMessages` sent
- * `{first, lastId, preIds}` and let `sendWs` add `req_id`, a key the Web client never sends. Here:
+ * Every pull has the same shape, `{first, reqId, lastId, preIds}`: the request id rides in `data` as `reqId`, never
+ * as `req_id`, a key the Web client never sends. Here:
  *
  *  - {@link installOfficialPulls} makes a listener send its two old-message pulls (510, 511) and its two
  *    old-reaction pulls (610, 611) the Web way;
@@ -108,10 +108,10 @@ export async function pageActionList(ask, { maxItem = 50, maxPages = 20 } = {}) 
 }
 
 /**
- * Make a listener send its old-message and old-reaction pulls the Web way: with `reqId`, not zca-js's `req_id`.
+ * Make a listener send its old-message and old-reaction pulls the Web way: with `reqId`, never `req_id`.
  * Safe to call twice.
  *
- * @param {object} listener - a zca-js Listener (needs `sendWs`)
+ * @param {object} listener - a listener (needs `sendWs`)
  * @returns {object} the same listener
  */
 export function installOfficialPulls(listener) {
@@ -120,7 +120,7 @@ export function installOfficialPulls(listener) {
     const pull = (users, groups) =>
         function pullQueue(threadType, lastMsgId = null) {
             const cmd = threadType === THREAD_USER ? users : groups;
-            this.sendWs(buildPull(cmd, 1, { lastId: lastMsgId }), false);
+            this.sendWs(buildPull(cmd, 1, { lastId: lastMsgId }));
         };
     listener.requestOldMessages = pull(510, 511);
     listener.requestOldReactions = pull(610, 611);

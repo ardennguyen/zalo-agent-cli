@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
@@ -2293,8 +2293,7 @@ describe("zalo_group confirm guard", () => {
 });
 
 describe("zalo_read", () => {
-    const require = createRequire(import.meta.url);
-    const { encodeAES } = createRequire(require.resolve("zca-js"))("./utils.cjs");
+    const encodeAES = sealSession;
     const KEY = Buffer.alloc(16, 0x22).toString("base64");
 
     /** An api whose requests land in `calls`; the reply is a session envelope around `data`. */
@@ -2367,8 +2366,8 @@ describe("zalo_read", () => {
 });
 
 describe("zalo_write", () => {
-    const require = createRequire(import.meta.url);
-    const { encodeAES, decodeAES } = createRequire(require.resolve("zca-js"))("./utils.cjs");
+    const encodeAES = sealSession;
+    const decodeAES = openSession;
     const KEY = Buffer.alloc(16, 0x22).toString("base64");
 
     /** An api whose requests land in `calls`. */

@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as acorn from "acorn";
 import { liveApi } from "../../src/core/live-api.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 /** A fake zca-js API: a method that reports which session answered, and a listener. */
 function session(name) {

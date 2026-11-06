@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as acorn from "acorn";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 import {
     CMD_PUSH_ACTIONS,
     CMD_PUSH_CONTROLS,

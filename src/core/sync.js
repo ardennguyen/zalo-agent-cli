@@ -220,7 +220,7 @@ export class SyncManager {
      * listener, and stop it afterwards. This method only issues the two
      * requests and persists whatever comes back.
      *
-     * @param {import("zca-js").Listener} listener A started zca-js listener.
+     * @param {import("../zalo/listener/listener.js").Listener} listener A started listener.
      * @param {{timeoutMs?: number, onBatch?: (info: object) => void}} [opts]
      * @returns {Promise<{status: string, saved: number, total: number, reason: string}>}
      */

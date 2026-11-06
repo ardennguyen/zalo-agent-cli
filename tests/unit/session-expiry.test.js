@@ -19,7 +19,7 @@ import {
     sessionExpiryFor,
     sessionExpiryOf,
 } from "../../src/core/session-expiry.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2026-10-27T00:00:00Z");

@@ -154,7 +154,7 @@ export function startKeepAlive(listener, opts = {}) {
         const zcaPings = !opts.intervalMs && Boolean(listener.pingInterval);
         try {
             if (!zcaPings) {
-                listener.sendWs(pingPayload(now()), false);
+                listener.sendWs(pingPayload(now()));
                 sent++;
                 onPing({ sent, echoed });
             }

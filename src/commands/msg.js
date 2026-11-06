@@ -834,10 +834,9 @@ export function registerMsgCommands(program) {
 
                 if (result.message && !cliMsgId) {
                     warning(
-                        "Zalo returned no cliMsgId for this send, so none is reported — the zca-js patch " +
-                            "is missing (run `npx patch-package`). `msg react`/`msg undo`/`msg send --quote` " +
-                            "need one; the local cache gets the real value once `listen` or `sync` sees " +
-                            "Zalo echo the message back.",
+                        "Zalo returned no cliMsgId for this send, so none is reported. " +
+                            "`msg react`/`msg undo`/`msg send --quote` need one; the local cache gets the " +
+                            "real value once `listen` or `sync` sees Zalo echo the message back.",
                     );
                 }
 

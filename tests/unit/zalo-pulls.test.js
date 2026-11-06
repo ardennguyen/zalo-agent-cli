@@ -159,15 +159,15 @@ describe("paging the action list (537)", () => {
 describe("installOfficialPulls", () => {
     const fakeListener = () => {
         const sent = [];
-        return { sent, sendWs: (payload, requireId) => sent.push({ payload, requireId }) };
+        return { sent, sendWs: (payload, ...rest) => sent.push({ payload, rest }) };
     };
 
-    it("sends the old-message pulls with reqId, and never lets sendWs add zca-js's req_id", () => {
+    it("sends the old-message pulls with reqId, and no req_id", () => {
         const l = installOfficialPulls(fakeListener());
         l.requestOldMessages(0, "11");
         l.requestOldMessages(1);
         assert.deepEqual(
-            l.sent.map((s) => [s.payload.cmd, s.payload.subCmd, s.payload.data.lastId, s.requireId]),
+            l.sent.map((s) => [s.payload.cmd, s.payload.subCmd, s.payload.data.lastId, "req_id" in s.payload.data]),
             [
                 [510, 1, "11", false],
                 [511, 1, null, false],
@@ -187,7 +187,9 @@ describe("installOfficialPulls", () => {
             l.sent.map((s) => s.payload.cmd),
             [610, 611],
         );
-        assert.ok(l.sent.every((s) => s.requireId === false && /^req_\d+$/.test(s.payload.data.reqId)));
+        assert.ok(l.sent.every((s) => !("req_id" in s.payload.data) && /^req_\d+$/.test(s.payload.data.reqId)));
+        // sendWs takes the frame alone.
+        assert.ok(l.sent.every((s) => s.rest.length === 0));
     });
 
     it("is safe to call twice and on nothing", () => {

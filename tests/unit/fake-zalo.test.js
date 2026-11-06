@@ -311,8 +311,8 @@ describe("fake Zalo", () => {
 
         it("a completed run: ack, statuses 3 then 4, batches, status 5, then dispose acks", async () => {
             const { sync, seen } = await ready({ outcome: "complete", batchesPerRequest: 2, expectedRequests: 2 });
-            api.listener.sendWs(syncRequest(1, "conversation"), false);
-            api.listener.sendWs(syncRequest(2), false);
+            api.listener.sendWs(syncRequest(1, "conversation"));
+            api.listener.sendWs(syncRequest(2));
 
             const ack = await seen.waitFor((f) => f.cmd === 590);
             assert.deepEqual(Object.keys(ack.body.data).sort(), ["err", "reqId", "ts"]);
@@ -340,15 +340,12 @@ describe("fake Zalo", () => {
             const reply = seen.frames.find((f) => f.cmd === 601);
             assert.deepEqual(Object.keys(reply.body.data.queueStatus).sort(), ["603_0", "603_1", "604_0"]);
 
-            api.listener.sendWs(
-                {
-                    version: 1,
-                    cmd: 591,
-                    subCmd: 0,
-                    data: { data: { syncId: "sync-1", toDevice: 0, reason: 1 }, reqId: "disp-1" },
-                },
-                false,
-            );
+            api.listener.sendWs({
+                version: 1,
+                cmd: 591,
+                subCmd: 0,
+                data: { data: { syncId: "sync-1", toDevice: 0, reason: 1 }, reqId: "disp-1" },
+            });
             const disposeAck = await seen.waitFor((f) => f.cmd === 591);
             assert.equal(disposeAck.body.data.reqId, "disp-1");
             assert.deepEqual(sync.disposals, [{ syncId: "sync-1", reason: 1, reqId: "disp-1" }]);
@@ -363,17 +360,14 @@ describe("fake Zalo", () => {
 
         it("a declined run: statuses 3 then 6, no batches, and the dispose is still acknowledged", async () => {
             const { seen } = await ready({ outcome: "declined" });
-            api.listener.sendWs(syncRequest(1, "conversation"), false);
+            api.listener.sendWs(syncRequest(1, "conversation"));
             await seen.waitFor((f) => f.cmd === 601 && f.body.data.controls.some((c) => c.content.data.status === 6));
-            api.listener.sendWs(
-                {
-                    version: 1,
-                    cmd: 591,
-                    subCmd: 0,
-                    data: { data: { syncId: "sync-1", toDevice: 0, reason: 2 }, reqId: "disp-1" },
-                },
-                false,
-            );
+            api.listener.sendWs({
+                version: 1,
+                cmd: 591,
+                subCmd: 0,
+                data: { data: { syncId: "sync-1", toDevice: 0, reason: 2 }, reqId: "disp-1" },
+            });
             await seen.waitFor((f) => f.cmd === 591);
             assert.deepEqual(statusesOf(seen), [3, 6]);
             const batches = seen.frames
@@ -385,7 +379,7 @@ describe("fake Zalo", () => {
 
         it("a waiting run: status 3 and then silence", async () => {
             const { seen } = await ready({ outcome: "waiting" });
-            api.listener.sendWs(syncRequest(1, "conversation"), false);
+            api.listener.sendWs(syncRequest(1, "conversation"));
             await seen.waitFor((f) => f.cmd === 601);
             await new Promise((r) => setTimeout(r, 150));
             assert.deepEqual(statusesOf(seen), [3]);
@@ -393,7 +387,7 @@ describe("fake Zalo", () => {
 
         it("an ack error means no progress frames at all", async () => {
             const { seen } = await ready({ outcome: "complete", ackError: 211 });
-            api.listener.sendWs(syncRequest(1, "conversation"), false);
+            api.listener.sendWs(syncRequest(1, "conversation"));
             const ack = await seen.waitFor((f) => f.cmd === 590);
             assert.equal(ack.body.data.err, 211);
             await new Promise((r) => setTimeout(r, 150));

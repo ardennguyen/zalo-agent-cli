@@ -697,25 +697,3 @@ export function messageMethods(s) {
         scanURL,
     };
 }
-
-/**
- * Methods whose wire-messages.test.js comparison passes: the switch answers these from our code. `sendText` is the
- * text half of the composed `sendMessage` (src/zalo/api.js).
- */
-export const OWN_READY = new Set([
-    "sendText",
-    "sendCard",
-    "sendSticker",
-    "searchSticker",
-    "getStickers",
-    "getStickersDetail",
-    "getStickerCategoryDetail",
-    "parseLink",
-    "sendLink",
-    "sendVoice",
-    "sendVideo",
-    "sendBankCard",
-    "sendTypingEvent",
-    "sendReport",
-    "scanURL",
-]);

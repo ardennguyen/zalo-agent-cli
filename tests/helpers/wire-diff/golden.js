@@ -1,7 +1,7 @@
 /**
  * Golden wire records: what our engine sends and returns for each case of an area, kept as a reviewed `.js`
- * module in `golden/<area>.js` (fake ids only). They outlive zca-js: once the differential side is removed in
- * the cut-over, they are what keeps guarding the wire.
+ * module in `golden/<area>.js` (fake ids only). They are what guards the wire: a change to what the engine sends
+ * or returns shows as a difference from a reviewed record.
  *
  * `expectGolden(area, name, rec.own)` compares one case with its entry. To (re)write an area's file from our side:
  *
@@ -112,7 +112,7 @@ export function flushGolden() {
  *
  * @param {string} area
  * @param {string} name - the case, unique in the area (e.g. "getGroupInfo" or "getGroupInfo/array")
- * @param {{requests: object[], result?: unknown, error?: object|null}} ownRecord - `rec.own` of a `pair.run`
+ * @param {{requests: object[], result?: unknown, error?: object|null}} ownRecord - `rec.own` of a `wire.run`
  * @param {{dir?: string}} [opts] - another golden folder (the harness's own self-test)
  * @returns {Promise<void>}
  */

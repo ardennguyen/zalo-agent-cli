@@ -38,7 +38,7 @@
  */
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
-import { customCall, postWithParams } from "./zca-custom.js";
+import { customCall, postWithParams } from "../zalo/session-call.js";
 import { HEAD_TIMEOUT_MS } from "../zalo/api/messages.js";
 
 /** A forwarded video with no geometry in its cached params goes out as this (Zalo refuses one without any). */

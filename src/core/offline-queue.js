@@ -144,8 +144,8 @@ function request({ listener, tap, queue, data, timeoutMs, onFrame }) {
             resolve(frame.body || {});
         });
         try {
-            // requireId false: the web's request carries `reqId`, not zca-js's `req_id`.
-            listener.sendWs({ version: 1, cmd: queue.cmd, subCmd: queue.subCmd, data }, false);
+            // The web's request carries its own `reqId` in `data`.
+            listener.sendWs({ version: 1, cmd: queue.cmd, subCmd: queue.subCmd, data });
         } catch {
             clearTimeout(timer);
             off();

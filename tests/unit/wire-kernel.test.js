@@ -1,45 +1,38 @@
 /**
- * The kernel's own calls on the wire, ours against zca-js's, both built by `createApi` on ONE logged-in context
- * (design 3.1, the differential for K1): keepAlive, fetchAccountInfo, and the bound helpers makeURL, request and
- * resolve that the engine's hand-built calls use (src/zalo/kernel/bound.js against zca-js's `apiFactory` utils).
+ * The kernel's own calls on the wire, built by `createApi` on a logged-in context of the fake Zalo (design 3.1 and
+ * 3.3, package K1): keepAlive, fetchAccountInfo, and the bound helpers makeURL, request and resolve that the engine's
+ * hand-built calls use (src/zalo/kernel/bound.js).
  *
- * Each case has the three parts of design 3.1: `assertSameWire` (zca against own, every difference declared in
- * tests/helpers/wire-diff/allow/kernel.js or as a global row, and every declared difference present), then
- * `expectGolden("kernel", ...)` (our side against its reviewed record), and the error cases.
+ * Each case is checked against its reviewed record (`expectGolden("kernel", ...)`), and the error cases against a
+ * literal `{message, code}`.
  *
- * The bound helpers are not methods of the session object, so the engines this file builds carry four test-only
- * methods (`kernelMakeURL`, `kernelGet`, `kernelPost`, `kernelResolve`) that run the same steps through each
- * side's helpers: ours from `boundUtils(api)`, zca-js's from its own `apiFactory`.
+ * The bound helpers are not methods of the session object, so the engine this file builds carries four test-only
+ * methods (`kernelMakeURL`, `kernelGet`, `kernelPost`, `kernelResolve`) that run the same steps through
+ * `boundUtils(api)`.
  */
 import "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
 import { createApi } from "../../src/zalo/api.js";
 import { boundUtils } from "../../src/zalo/kernel/bound.js";
-import { ALLOW, FAKE, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
+import { FAKE, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import { serviceHost } from "./fake-zalo-session.js";
-
-const require = createRequire(import.meta.url);
-const zcaUtils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
 
 /** The fake endpoint the bound-helper cases call. */
 const FAKE_PATH = "/api/group/fake";
 
 /**
- * `createApi` plus the four bound-helper methods, each run through the helpers of the side being built.
+ * `createApi` plus the four bound-helper methods, each run through the session's bound helpers.
  *
  * @param {object} ctx
  * @param {Record<string, string[]>} serviceMap
  * @param {string[]} wsUrls
- * @param {{engine: "own"|"zca"}} opts
- * @returns {Promise<object>}
+ * @param {object} opts
+ * @returns {object}
  */
-async function createApiWithHelpers(ctx, serviceMap, wsUrls, opts) {
-    const api = await createApi(ctx, serviceMap, wsUrls, opts);
-    const helpers = () =>
-        opts.engine === "zca" ? zcaUtils.apiFactory()((_a, _c, utils) => utils)(ctx, api) : boundUtils(api);
+function createApiWithHelpers(ctx, serviceMap, wsUrls, opts) {
+    const api = createApi(ctx, serviceMap, wsUrls, opts);
+    const helpers = () => boundUtils(api);
     const base = `${serviceMap.group[0]}${FAKE_PATH}`;
     return Object.assign(api, {
         /** makeURL: the query's names in wire order, and its values. */
@@ -64,25 +57,24 @@ async function createApiWithHelpers(ctx, serviceMap, wsUrls, opts) {
     });
 }
 
-describe("the kernel's calls, zca-js against ours on one context", () => {
-    let pair;
+describe("the kernel's calls on the wire", () => {
+    let wire;
 
     before(async () => {
-        pair = await openPair({ createApi: createApiWithHelpers });
-        // A cookie every fake host gets, so the Cookie header is compared on a value, not on two empty ones.
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+        wire = await openWire({ createApi: createApiWithHelpers });
+        // A cookie every fake host gets, so the Cookie header is recorded with a value.
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
-    /** Part 1 and 2 of a case: zca against own (as `name` for the allow rows), then own against its golden entry. */
-    async function check(rec, golden, name = rec.name) {
-        assertSameWire({ ...rec, name }, ALLOW.kernel);
+    /** A case against its golden entry. */
+    async function check(rec, golden) {
         await expectGolden("kernel", golden, rec.own);
     }
 
     describe("keepAlive", () => {
         it("asks GET {chat}/keepalive with the sealed {imei}, and returns the plain data", async () => {
-            const rec = await pair.run("keepAlive", [], {
+            const rec = await wire.run("keepAlive", [], {
                 replies: { "/keepalive": { plain: { config_vesion: 7 } } },
             });
             await check(rec, "keepAlive");
@@ -94,8 +86,8 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
             assert.deepEqual(rec.own.result, { config_vesion: 7 });
         });
 
-        it("throws the same message and code for an outer error", async () => {
-            const rec = await pair.run("keepAlive", [], {
+        it("throws Zalo's message and code for an outer error", async () => {
+            const rec = await wire.run("keepAlive", [], {
                 replies: { "/keepalive": { outer: { error_code: 102, error_message: "session timeout" } } },
             });
             await check(rec, "keepAlive/outer-error");
@@ -103,16 +95,16 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
         });
 
         it("throws no Zalo code for HTTP 500 (the message is ours: HTTP <status>)", async () => {
-            const rec = await pair.run("keepAlive", [], { replies: { "/keepalive": { status: 500 } } });
-            await check(rec, "keepAlive/http-500", "keepAlive#http500");
+            const rec = await wire.run("keepAlive", [], { replies: { "/keepalive": { status: 500 } } });
+            await check(rec, "keepAlive/http-500");
             assert.deepEqual(rec.own.error, { message: "HTTP 500", code: null });
         });
     });
 
     describe("fetchAccountInfo", () => {
-        it("asks me-v2 the Web way (params, os, browser) where zca-js asks with no params, same answer", async () => {
+        it("asks me-v2 the Web way (params, os, browser) and returns the answer", async () => {
             const profile = { profile: { userId: "1000000000000000001" } };
-            const rec = await pair.run("fetchAccountInfo", [], {
+            const rec = await wire.run("fetchAccountInfo", [], {
                 replies: { "/api/social/profile/me-v2": { data: profile } },
             });
             await check(rec, "fetchAccountInfo");
@@ -120,16 +112,16 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
             assert.deepEqual(rec.own.result, profile);
         });
 
-        it("throws the same message and code for an inner error", async () => {
-            const rec = await pair.run("fetchAccountInfo", [], {
+        it("throws Zalo's message and code for an inner error", async () => {
+            const rec = await wire.run("fetchAccountInfo", [], {
                 replies: { "/api/social/profile/me-v2": { inner: { error_code: 114, error_message: "fake inner" } } },
             });
             await check(rec, "fetchAccountInfo/inner-error");
             assert.deepEqual(rec.own.error, { message: "fake inner", code: 114 });
         });
 
-        it("throws the same message, and no code, for a data no session key opens", async () => {
-            const rec = await pair.run("fetchAccountInfo", [], {
+        it("throws a message, and no code, for a data no session key opens", async () => {
+            const rec = await wire.run("fetchAccountInfo", [], {
                 replies: { "/api/social/profile/me-v2": { undecryptable: true } },
             });
             await check(rec, "fetchAccountInfo/undecryptable");
@@ -138,15 +130,14 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
     });
 
     describe("the bound helpers (makeURL, request, resolve)", () => {
-        it("makeURL: the same names and values, ours in the Web's order", async () => {
-            const rec = await pair.run("kernelMakeURL", [{ params: "a+b/c=", grid: "fake" }]);
+        it("makeURL: the names and values in the Web's order", async () => {
+            const rec = await wire.run("kernelMakeURL", [{ params: "a+b/c=", grid: "fake" }]);
             await check(rec, "makeURL");
             assert.equal(rec.own.result.order, "zpw_ver,zpw_type,params,grid");
-            assert.equal(rec.zca.result.order, "params,grid,zpw_ver,zpw_type");
         });
 
-        it("request + resolve: a sealed GET through both, the same request and the same data", async () => {
-            const rec = await pair.run("kernelGet", [{ grid: "fake-grid" }], {
+        it("request + resolve: a sealed GET, its request and its data", async () => {
+            const rec = await wire.run("kernelGet", [{ grid: "fake-grid" }], {
                 replies: { [FAKE_PATH]: (req) => ({ data: { echo: req.params } }) },
             });
             await check(rec, "request/get");
@@ -154,8 +145,8 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
             assert.deepEqual(rec.own.result, { echo: { grid: "fake-grid" } });
         });
 
-        it("request: a sealed form POST through both, the same request", async () => {
-            const rec = await pair.run("kernelPost", [{ a: 1 }], {
+        it("request: a sealed form POST", async () => {
+            const rec = await wire.run("kernelPost", [{ a: 1 }], {
                 replies: { [FAKE_PATH]: (req) => ({ data: { echo: req.params } }) },
             });
             await check(rec, "request/post");
@@ -166,13 +157,13 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
             assert.deepEqual(rec.own.result, { echo: { a: 1 } });
         });
 
-        it("resolve: the same message and code for an undecryptable data and a non-JSON body", async () => {
+        it("resolve: the message and code for an undecryptable data and a non-JSON body", async () => {
             const bodies = {
                 undecryptable: JSON.stringify({ error_code: 0, data: "not-a-ciphertext" }),
                 "not-json": "<html>",
             };
             for (const [name, body] of Object.entries(bodies)) {
-                const rec = await pair.run("kernelResolve", [body]);
+                const rec = await wire.run("kernelResolve", [body]);
                 await check(rec, `resolve/${name}`);
                 assert.deepEqual(rec.own.error, { message: "Failed to parse response data", code: null }, name);
             }
@@ -181,6 +172,6 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
 
     it("the cases above ran against the fake hosts of this login", () => {
         // Guards the fixture, not the kernel: a golden file recorded against another host map would hide nothing.
-        assert.equal(pair.own.zpwServiceMap.group[0], `https://${serviceHost("group")}`);
+        assert.equal(wire.own.zpwServiceMap.group[0], `https://${serviceHost("group")}`);
     });
 });

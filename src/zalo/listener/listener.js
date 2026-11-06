@@ -53,12 +53,6 @@ import {
 } from "./frames.js";
 import { dispatchFrame, isDispatched } from "./dispatch.js";
 
-/**
- * Names the switch of ../api.js answers from this module by default: the listener is ours unless `ZALO_ENGINE=zca`
- * or `ZALO_ENGINE_ZCA=listener` asks for zca-js's.
- */
-export const OWN_READY = new Set(["listener"]);
-
 /** Where Zalo Web's page lives: the `Origin` of the upgrade. */
 export const CHAT_ORIGIN = "https://chat.zalo.me";
 
@@ -158,8 +152,6 @@ export class Listener extends EventEmitter {
     #pendingOut = [];
     /** When the outstanding ping went out, or 0. */
     #pingSentAt = 0;
-    /** The next `req_<n>` of a send that asks for one. */
-    #reqSeq = 0;
 
     /**
      * @param {object} ctx - the logged-in context (`cookie` jar, `userAgent`, `uid`, `settings`, `options.agent`,
@@ -233,23 +225,16 @@ export class Listener extends EventEmitter {
     }
 
     /**
-     * Send one frame: `{version, cmd, subCmd, data}`, the header then the JSON of `data`. Without a socket it does
-     * nothing. Before the handshake a ping is dropped and anything else waits for it, in order.
-     *
-     * Every engine call passes `requireId = false`: its requests carry their own `reqId` in `data`, as Web's do. A
-     * call that leaves the flag out gets a `req_id: "req_<n>"` added to its `data` object, as the old surface did,
-     * so a caller written against it sends what it always sent.
+     * Send one frame: `{version, cmd, subCmd, data}`, the header then the JSON of `data`, as it is: a request that
+     * needs an id carries its own `reqId` in `data`, as Web's do. Without a socket it does nothing. Before the
+     * handshake a ping is dropped and anything else waits for it, in order.
      *
      * @param {{version?: number, cmd: number, subCmd: number, data?: object}} payload
-     * @param {boolean} [requireId] - add `data.req_id` (default true; the engine always passes false)
      * @throws {TypeError} for a header field out of range (see ./frames.js `encodeFrame`)
      */
-    sendWs(payload, requireId = true) {
+    sendWs(payload) {
         const ws = this.ws;
         if (!ws) return;
-        const data = payload?.data;
-        if (requireId && data && typeof data === "object" && !Array.isArray(data))
-            data.req_id = `req_${this.#reqSeq++}`;
         const frame = encodeFrame(payload);
         if (ws.readyState !== WebSocket.OPEN || !this.cipherKey) {
             if (isPing(payload)) return;
@@ -268,7 +253,7 @@ export class Listener extends EventEmitter {
      * @param {string|null} [lastId]
      */
     requestOldMessages(threadType, lastId = null) {
-        this.sendWs(buildPull(threadType === THREAD_USER ? 510 : 511, 1, { lastId }), false);
+        this.sendWs(buildPull(threadType === THREAD_USER ? 510 : 511, 1, { lastId }));
     }
 
     /**
@@ -278,7 +263,7 @@ export class Listener extends EventEmitter {
      * @param {string|null} [lastId]
      */
     requestOldReactions(threadType, lastId = null) {
-        this.sendWs(buildPull(threadType === THREAD_USER ? 610 : 611, 1, { lastId }), false);
+        this.sendWs(buildPull(threadType === THREAD_USER ? 610 : 611, 1, { lastId }));
     }
 
     // ---- internals -----------------------------------------------------------------------------------------
@@ -462,7 +447,7 @@ export class Listener extends EventEmitter {
             const sentAt = this.#pingSentAt;
             if (sentAt && this.#now() - sentAt < outstandingMs) return;
             try {
-                this.sendWs({ version: 1, cmd: CMD_PING, subCmd: 1, data: { eventId: this.#now() } }, false);
+                this.sendWs({ version: 1, cmd: CMD_PING, subCmd: 1, data: { eventId: this.#now() } });
             } catch {
                 /* a send on a closing socket */
             }

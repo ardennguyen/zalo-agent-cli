@@ -1,8 +1,8 @@
 /**
- * The commands that wrap zca-js calls the CLI had never used, driven end to end offline.
+ * The commands that wrap session calls the CLI had never used, driven end to end offline.
  *
- * A gap sweep found 21 zca-js methods with no command. Each now has one, and
- * each test here runs the real command over zca-js's own HTTP seam
+ * A gap sweep found 21 session methods with no command. Each now has one, and
+ * each test here runs the real command over the session's HTTP seam
  * (./fake-zalo-session.js), then checks what went out on the wire -- service
  * host, path, method and decrypted params -- and what the command printed from
  * the answer. A command that reached the wrong endpoint, swapped two
@@ -25,7 +25,7 @@ const U = "9100000000000000001";
 const U2 = "9100000000000000002";
 const G = "7000000000000000001";
 
-describe("zca-js gap commands over the wire", () => {
+describe("gap commands over the wire", () => {
     let fake;
 
     before(async () => {
@@ -178,7 +178,7 @@ describe("zca-js gap commands over the wire", () => {
             assert.deepEqual(Object.keys(r.out), [U, U2]);
         });
 
-        it("common-groups sends the ids as a JSON string, the way zca-js does", async () => {
+        it("common-groups sends the ids as a JSON string", async () => {
             const r = await run(registerFriendCommands, ["friend", "common-groups", U, U2], {
                 "/api/friend/group/related": () => ({ groupRelateds: { [U]: [G] } }),
             });
@@ -218,7 +218,7 @@ describe("zca-js gap commands over the wire", () => {
             ok(r);
             const req = one("/api/group/link/ginfo");
             assert.equal(req.host, serviceHost("group"));
-            // Zalo Web's 160 px avatars (src/zalo/api/groups.js, the API module's avatar size; zca-js asked for 120).
+            // Zalo Web's 160 px avatars (src/zalo/api/groups.js, the API module's avatar size, not 120).
             assert.deepEqual(req.params, { link, avatar_size: 160, member_avatar_size: 160, mpage: 2 });
             assert.equal(r.out.name, "Linked");
         });
@@ -235,7 +235,7 @@ describe("zca-js gap commands over the wire", () => {
             assert.equal(r.out.groupInfo.groupId, G);
         });
 
-        it("invite-info works for a group with no topic (zca-js's own call throws there) and unpacks one that has it", async () => {
+        it("invite-info works for a group with no topic (no throw there) and unpacks one that has it", async () => {
             // A group without a pinned message comes back with no `topic` at all.
             let r = await run(registerGroupCommands, ["group", "invite-info", G], {
                 "/api/group/inv-box/inv-info": () => ({ groupInfo: { groupId: G }, inviterInfo: { id: U } }),
@@ -281,7 +281,7 @@ describe("zca-js gap commands over the wire", () => {
             assert.equal(fake.calls("/deactive").length, 0);
             fake.requests.length = 0;
             ok(await run(registerProfileCommands, ["profile", "active", "off"], route));
-            // Zalo Web's deactive seals the imei only (src/zalo/api/profile.js); zca-js also sent status 0.
+            // Zalo Web's deactive seals the imei only (src/zalo/api/profile.js), no status.
             assert.deepEqual(one("/api/social/profile/deactive").params, { imei: FAKE.imei });
             assert.equal(fake.calls("/ping").length, 0);
         });

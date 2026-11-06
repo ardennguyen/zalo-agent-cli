@@ -47,7 +47,7 @@ export const DEFAULT_MAX_PAGES = 20;
  * and stop it afterwards — same contract as {@link backfillOverSocket}.
  *
  * @param {object} opts
- * @param {import("zca-js").Listener} opts.listener - a started zca-js listener
+ * @param {import("../../zalo/listener/listener.js").Listener} opts.listener - a started listener
  * @param {number} [opts.timeoutMs=15000] - per-page deadline
  * @param {number} [opts.maxPages=20] - cap per thread type
  * @param {boolean} [opts.applyRemovals=true] - apply backlog entries with an empty

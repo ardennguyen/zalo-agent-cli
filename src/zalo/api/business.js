@@ -641,30 +641,3 @@ export function businessMethods(s) {
         deleteAutoReply: (id) => s.call(AUTO_REPLY_DELETE, { id }),
     };
 }
-
-/** Methods whose wire-business.test.js comparison passes: the switch answers these from our code. */
-export const OWN_READY = new Set([
-    "getListBank",
-    "getListBankAccount",
-    "createBankAccount",
-    "updateBankAccount",
-    "deleteBankAccount",
-    "getCatalogList",
-    "createCatalog",
-    "updateCatalog",
-    "deleteCatalog",
-    "getProductCatalogList",
-    "createProductCatalog",
-    "updateProductCatalog",
-    "deleteProductCatalog",
-    "uploadProductPhoto",
-    "registerCatalog",
-    "getQuickMessageList",
-    "addQuickMessage",
-    "updateQuickMessage",
-    "removeQuickMessage",
-    "getAutoReplyList",
-    "createAutoReply",
-    "updateAutoReply",
-    "deleteAutoReply",
-]);

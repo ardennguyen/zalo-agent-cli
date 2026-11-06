@@ -290,11 +290,7 @@ describe("fleet needs no Zalo session", () => {
         for (const args of [["status"], ["ports"], ["start", "--dry-run", "--stagger", "0"], ["stop"]]) {
             const r = await fleet(...args);
             const text = stripAnsi(r.all);
-            assert.doesNotMatch(
-                text,
-                /Auto-login|Logged in as|session|zca-js is up to date/i,
-                `fleet ${args.join(" ")}: ${text}`,
-            );
+            assert.doesNotMatch(text, /Auto-login|Logged in as|session/i, `fleet ${args.join(" ")}: ${text}`);
         }
     });
 

@@ -422,7 +422,7 @@ export class SocketSupervisor extends EventEmitter {
     _sendPing() {
         if (this._state !== "connected" || !this.listener.ws) return;
         try {
-            this.listener.sendWs({ version: 1, cmd: 2, subCmd: 1, data: { eventId: this.clock.now() } }, false);
+            this.listener.sendWs({ version: 1, cmd: 2, subCmd: 1, data: { eventId: this.clock.now() } });
         } catch (e) {
             this.log("debug", `ping not sent: ${e.message}`);
         }

@@ -1,14 +1,14 @@
 /**
- * A logged-in zca-js session that never touches the network.
+ * A logged-in session that never touches the network.
  *
  * Preloaded into a child `node src/index.js …` through
  * `NODE_OPTIONS=--import=<this file's URL>` (see ./offline-cli.js). It replaces
  * `globalThis.fetch` with a stub server that answers the two login calls
  * (`getServerInfo`, `getLoginInfo`), so the CLI's own login (src/zalo/login.js)
- * runs for real and builds zca-js's real `API`; the CLI then runs its actual
- * action code and zca-js builds its actual requests. Every request -- zca-js's
- * own and the custom calls this repo builds on zca-js's `apiFactory` -- goes
- * through `ctx.options.polyfill`, which here:
+ * runs for real and builds the engine's real session object (src/zalo/api.js); the CLI
+ * then runs its actual action code and the engine builds its actual requests.
+ * Every request -- the area methods' and the custom calls this repo builds on
+ * the session's bound helpers -- goes through `globalThis.fetch`, which here:
  *
  *   1. decrypts `params` with a throwaway session key, exactly as the server would,
  *   2. appends `{method, service, path, query, params}` as one JSON line to ZALO_OFFLINE_LOG, together with
@@ -30,18 +30,12 @@
  *                             <data>                                  answer with this data
  *                             { "__error": { "code": n, "message": s } }  answer with a Zalo error
  *                             { "__sequence": [answer, answer, …] }   one per call, last one repeats
- *   ZALO_OFFLINE_UNPATCHED  "1" strips the cliMsgId patches/zca-js+2.2.0.patch
- *                           stamps onto a send result, to reproduce an install
- *                           where the patch did not apply (upstream returns only
- *                           {msgId})
  */
 import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
-import { API } from "zca-js";
+import { openSession, sealSession } from "../../../src/zalo/kernel/cipher.js";
+import { deriveEnk, sealLogin } from "../../../src/zalo/kernel/login-cipher.js";
 import { parseMultipart, readBody } from "../../helpers/wire-diff/body.js";
-
-const DIST = new URL(".", import.meta.resolve("zca-js"));
-const { encodeAES, decodeAES, ParamsEncryptor } = await import(new URL("utils.js", DIST).href);
 
 /** Throwaway 128-bit session key. Only this process and its log ever see it. */
 const KEY = Buffer.alloc(16, 7).toString("base64");
@@ -62,9 +56,8 @@ const OVERRIDES = (() => {
 })();
 
 /**
- * Every service key zca-js or this repo resolves, mapped to a host that names
- * it. zca-js reads `zpwServiceMap.<key>[0]` in each factory at construction
- * time, so a missing key fails the whole login, not just one call.
+ * Every service key the engine resolves, mapped to a host that names it. A
+ * missing key fails only the call that needs it.
  */
 const SERVICES = [
     "aext",
@@ -99,7 +92,7 @@ const newMsgId = () => String(nextId++);
  *
  * @param {string} path
  * @param {object|null} params - the decrypted request params
- * @returns {unknown} what zca-js's `resolve()` should hand back as `data`
+ * @returns {unknown} what the session's reply decoding should hand back as `data`
  */
 function cannedData(path, params) {
     if (/\/api\/(message\/sms|group\/sendmsg|group\/mention|group\/quote|message\/quote)$/.test(path)) {
@@ -135,7 +128,7 @@ function envelope(data, error) {
     const inner = error
         ? { error_code: error.code ?? 1, error_message: error.message ?? "offline stub error" }
         : { error_code: 0, error_message: "", data };
-    const body = { error_code: 0, error_message: "Successful.", data: encodeAES(KEY, JSON.stringify(inner)) };
+    const body = { error_code: 0, error_message: "Successful.", data: sealSession(KEY, JSON.stringify(inner)) };
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 }
 
@@ -170,7 +163,7 @@ async function offlineFetch(url, init = {}) {
     if (typeof form?.params === "string") enc = form.params;
     if (!enc && u.searchParams.get("params")) enc = u.searchParams.get("params");
     const rawParams = enc;
-    let params = enc ? decodeAES(KEY, enc) : null;
+    let params = enc ? openSession(KEY, enc) : null;
     try {
         params = params ? JSON.parse(params) : params;
     } catch {
@@ -209,7 +202,7 @@ async function offlineFetch(url, init = {}) {
 /** How many times each path has been called in this process, for `__sequence`. */
 const calls = new Map();
 
-/** Only what zca-js reads while constructing the API: the Listener walks `socket.retries` in its constructor, send/upload read `sharefile`. */
+/** The server settings the session reads: the socket's retry table, and `sharefile` for uploads. */
 const SETTINGS = {
     features: {
         sharefile: { max_file: 10, max_size_share_file_v3: 1024, chunk_size_file: 3145728, restricted_ext_file: [] },
@@ -227,11 +220,8 @@ globalThis.fetch = async (url, init) => {
         return json({ error_code: 0, error_message: "", data: { settings: SETTINGS, extra_ver: {} } });
     }
     if (u.pathname === "/api/login/getLoginInfo") {
-        // zca-js seals the answer with a key derived from zcid and zcid_ext: derive the same one.
-        const keyer = new ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
-        keyer.zcid = u.searchParams.get("zcid");
-        keyer.zcid_ext = u.searchParams.get("zcid_ext");
-        keyer.createEncryptKey();
+        // The answer is sealed with a key derived from zcid and zcid_ext: derive the same one.
+        const enk = deriveEnk(u.searchParams.get("zcid"), u.searchParams.get("zcid_ext"));
         const loginInfo = {
             uid: UID,
             zpw_enk: KEY,
@@ -239,33 +229,9 @@ globalThis.fetch = async (url, init) => {
             zpw_ws: ["wss://ws.offline.invalid/"],
             ...(SEND2ME && SEND2ME !== "none" ? { send2me_id: SEND2ME } : {}),
         };
-        const payload = JSON.stringify({ error_code: 0, error_message: "", data: loginInfo });
-        return json({
-            error_code: 0,
-            error_message: "",
-            data: ParamsEncryptor.encodeAES(keyer.getEncryptKey(), payload, "base64", false),
-        });
+        const payload = { error_code: 0, error_message: "", data: loginInfo };
+        return json({ error_code: 0, error_message: "", data: sealLogin(enk, payload) });
     }
     if (u.hostname.endsWith(".offline.invalid")) return offlineFetch(url, init);
     throw new Error(`offline test session: refusing to fetch ${url}`);
 };
-
-// Reproduce an install where the cliMsgId patch did not apply: every API object assigns its `sendMessage`
-// in its constructor, so a setter on the prototype sees the assignment and can wrap it.
-if (process.env.ZALO_OFFLINE_UNPATCHED === "1") {
-    Object.defineProperty(API.prototype, "sendMessage", {
-        configurable: true,
-        set(patchedSend) {
-            Object.defineProperty(this, "sendMessage", {
-                configurable: true,
-                writable: true,
-                enumerable: true,
-                value: async (...args) => {
-                    const result = await patchedSend(...args);
-                    if (result?.message) delete result.message.cliMsgId;
-                    return result;
-                },
-            });
-        },
-    });
-}

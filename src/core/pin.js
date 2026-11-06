@@ -2,7 +2,7 @@
  * Pin and unpin a message the way Zalo Web does.
  *
  * zca-js has none of these endpoints, so they are custom calls on its session
- * envelope (./zca-custom.js). Each shape is the one captured from Zalo Web on
+ * envelope (src/zalo/session-call.js). Each shape is the one captured from Zalo Web on
  * 2026-09-29 (agent/work/zalo-web-capture-2026-09-29/live/group.A9_pin_message,
  * group.A9b_unpin_message, dm.D9_pin_message, dm.D9b_unpin_message):
  *
@@ -22,7 +22,7 @@
  * Only text messages: text is the kind the capture covers, and every other
  * kind carries its own params blob.
  */
-import { customCall, getWithParams, postWithParams } from "./zca-custom.js";
+import { customCall, getWithParams, postWithParams } from "../zalo/session-call.js";
 
 /** A pinned message's board topic type (the web's MSG_TOPIC). */
 export const PINNED_MESSAGE_TOPIC = 2;

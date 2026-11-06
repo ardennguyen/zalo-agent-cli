@@ -32,7 +32,7 @@ import { API_TYPE, DEFAULT_API_VERSION } from "../../src/zalo/profile.js";
 import { createListener } from "../../src/zalo/listener/listener.js";
 import { startFakeSocket } from "../helpers/fake-zalo/socket.js";
 import { ok } from "../helpers/fake-zalo/frames.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 // Fake ids (tests/unit/no-real-ids.test.js): past 2^53 where an id would be.
 const OWN = "1000000000000000071";

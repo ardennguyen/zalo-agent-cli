@@ -32,8 +32,7 @@
  * with a throwaway session key. Every id here is fake.
  */
 import { mkdirSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Command } from "commander";
 import { loginWithCredentials } from "../../src/core/zalo-client.js";
 import { addAccount } from "../../src/core/accounts.js";
@@ -41,8 +40,8 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { _resetErrorLatch } from "../../src/utils/output.js";
 import { parseMultipart, readBody } from "../helpers/wire-diff/body.js";
 
-const require = createRequire(import.meta.url);
-const zu = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
+import { deriveEnk, sealLogin } from "../../src/zalo/kernel/login-cipher.js";
 
 /** Fake identities. The uid is deliberately past 2^53, as real Zalo uids are. */
 export const FAKE = Object.freeze({
@@ -112,6 +111,17 @@ const SETTINGS = {
     },
     keepalive: { alway_keepalive: 0, keepalive_duration: 0, time_deactive: 0 },
 };
+
+/**
+ * The key a login answer is sealed with: the one the server derives from the `zcid` and `zcid_ext` the request
+ * carries in its query.
+ *
+ * @param {URL} url - the getLoginInfo request
+ * @returns {string}
+ */
+function loginKeyOf(url) {
+    return deriveEnk(url.searchParams.get("zcid"), url.searchParams.get("zcid_ext"));
+}
 
 /** Deep-merge plain objects; arrays and scalars in `over` replace the base value. */
 function mergeSettings(base, over) {
@@ -214,7 +224,7 @@ export function installFakeZalo({
         reply({
             error_code: 0,
             error_message: "Successful.",
-            data: zu.encodeAES(FAKE.sessionKey, JSON.stringify(inner)),
+            data: sealSession(FAKE.sessionKey, JSON.stringify(inner)),
         });
     const sealed = (data) => seal({ error_code: 0, error_message: "Successful.", data });
     const hosts = new Map(Object.entries(serviceMap).map(([k, [base]]) => [new URL(base).host, k]));
@@ -307,7 +317,7 @@ export function installFakeZalo({
         // negative test answers it there); only the plain routes below insist on opening them.
         if (hosts.has(url.host) && req.rawParams) {
             try {
-                req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, req.rawParams));
+                req.params = JSON.parse(openSession(FAKE.sessionKey, req.rawParams));
             } catch {
                 req.params = null;
             }
@@ -322,19 +332,10 @@ export function installFakeZalo({
             const step = loginScript.shift();
             if (step?.sealedEnvelope) {
                 // an envelope sealed with the key the request asked for, as Zalo answers a login it refuses
-                const keyer = new zu.ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
-                keyer.zcid = url.searchParams.get("zcid");
-                keyer.zcid_ext = url.searchParams.get("zcid_ext");
-                keyer.createEncryptKey();
                 return reply({
                     error_code: 0,
                     error_message: "",
-                    data: zu.ParamsEncryptor.encodeAES(
-                        keyer.getEncryptKey(),
-                        JSON.stringify(step.sealedEnvelope),
-                        "base64",
-                        false,
-                    ),
+                    data: sealLogin(loginKeyOf(url), step.sealedEnvelope),
                 });
             }
             if (step) return scripted(step, init);
@@ -356,16 +357,8 @@ export function installFakeZalo({
             };
             // A request without zcid was sent unencrypted: answer it the same way.
             if (!url.searchParams.get("zcid")) return reply({ error_code: 0, error_message: "", data: loginInfo });
-            const keyer = new zu.ParamsEncryptor({ type: 30, imei: "derive", firstLaunchTime: 1 });
-            keyer.zcid = url.searchParams.get("zcid");
-            keyer.zcid_ext = url.searchParams.get("zcid_ext");
-            keyer.createEncryptKey();
-            const payload = JSON.stringify({ error_code: 0, error_message: "", data: loginInfo });
-            return reply({
-                error_code: 0,
-                error_message: "",
-                data: zu.ParamsEncryptor.encodeAES(keyer.getEncryptKey(), payload, "base64", false),
-            });
+            const payload = { error_code: 0, error_message: "", data: loginInfo };
+            return reply({ error_code: 0, error_message: "", data: sealLogin(loginKeyOf(url), payload) });
         }
 
         if (url.pathname === "/api/login/getServerInfo") {
@@ -382,7 +375,7 @@ export function installFakeZalo({
         }
 
         const enc = req.rawParams;
-        if (enc && req.params === null) req.params = JSON.parse(zu.decodeAES(FAKE.sessionKey, enc));
+        if (enc && req.params === null) req.params = JSON.parse(openSession(FAKE.sessionKey, enc));
 
         for (const [suffix, handler] of routes) {
             if (url.pathname.endsWith(suffix)) return sealed(await handler(req));

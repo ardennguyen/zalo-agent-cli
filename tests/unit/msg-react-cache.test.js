@@ -133,17 +133,4 @@ describe("msg send --react", () => {
         const rMsg = reactedMessage(requestsTo(r.requests, "/api/message/reaction"));
         assert.equal(rMsg.cMsgID, sent.params.clientId, "the reaction must name the message that was just sent");
     });
-
-    it("skips the reaction when the send reports no cliMsgId, instead of keying it on the msgId", async () => {
-        // An install where patches/zca-js+2.2.0.patch did not apply: upstream
-        // zca-js returns only {msgId}. The message still goes out; the reaction
-        // must not, because keyed on the msgId it would be invisible.
-        const r = await runOffline(["msg", "send", PEER, "offline unpatched send", "--react", "/-heart"], {
-            unpatched: true,
-        });
-        assert.equal(requestsTo(r.requests, "/api/message/sms").length, 1, "the message itself is still sent");
-        assert.deepEqual(requestsTo(r.requests, "/reaction"), [], r.all);
-        assert.match(r.all, /--react/, "says the reaction was skipped");
-        assert.match(r.all, /msg react/, "and how to react once the id is known");
-    });
 });

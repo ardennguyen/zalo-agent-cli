@@ -72,8 +72,8 @@ function fakeListener({ readyState = 1 } = {}) {
     return {
         ws,
         sent,
-        sendWs(payload, requireId) {
-            sent.push({ payload, requireId });
+        sendWs(payload) {
+            sent.push({ payload });
         },
     };
 }
@@ -152,7 +152,6 @@ describe("startKeepAlive scheduling", () => {
         clock.fire();
         assert.equal(L.sent.length, 3);
         assert.deepEqual(L.sent[0].payload, pingPayload(1000));
-        assert.equal(L.sent[0].requireId, false, "the heartbeat carries no req_id, as Zalo Web's does not");
         k.stop();
     });
 

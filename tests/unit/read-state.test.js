@@ -37,7 +37,7 @@ import {
 import { createSocketTap } from "../../src/core/socket-tap.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { fakeListener } from "./support/fake-socket.js";
-import { walkAst } from "../helpers/zca-call-sites.js";
+import { walkAst } from "../helpers/api-call-sites.js";
 
 // Fakes by the convention in no-real-ids.test.js; both past MAX_SAFE_INTEGER.
 const GROUP = "9000000000000000011";

@@ -1,13 +1,13 @@
 /**
- * A stand-in for a logged-in zca-js session, for the tests of the web-call tables (reads and writes): the api's
- * requests land in `calls` through zca-js's own HTTP seam (`ctx.options.polyfill`), so what is under test is what
- * goes out on the wire. Keys, ids and hosts are throwaway constants (AGENTS.md §12).
+ * A stand-in for a logged-in session, for the tests of the web-call tables (reads and writes): the api's requests
+ * land in `calls` through the session's HTTP seam (`ctx.options.polyfill`), so what is under test is what goes out
+ * on the wire. Keys, ids and hosts are throwaway constants (AGENTS.md §12).
  */
-import { createRequire } from "node:module";
+import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 
-const require = createRequire(import.meta.url);
-const zcaRequire = createRequire(require.resolve("zca-js"));
-export const { encodeAES, decodeAES } = zcaRequire("./utils.cjs");
+/** The session cipher, under the names the tests use. */
+export const encodeAES = sealSession;
+export const decodeAES = openSession;
 
 export const SESSION_KEY = Buffer.alloc(16, 0x11).toString("base64");
 export const IMEI = "test-imei-0000";

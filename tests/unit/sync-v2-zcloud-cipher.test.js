@@ -10,10 +10,13 @@
  *   decryptAES(b64,  enk) = split the first 16 bytes off as the iv, then the same
  *   encodeParams(obj)     = encodeURIComponent(encryptAES(JSON.stringify(obj), enk))
  *
- * The oracle below is that module re-run with crypto-js — the library the web
- * client itself calls — resolved from zca-js's own dependency tree. It is not
- * the module under test, so a green run means our Node-crypto implementation is
- * byte-compatible with the client, not merely consistent with itself.
+ * The fixed vectors below were produced once by that module re-run with
+ * crypto-js (the library the web client itself calls), with a chosen IV in
+ * place of the random one, and reviewed when they were written down. They are
+ * not made by the module under test, so a green run means our Node-crypto
+ * implementation reads what the client writes, not merely that it agrees with
+ * itself. The other direction is pinned by restating the format with Node's
+ * cipher: the IV our ciphertext carries, then AES-CBC of the plaintext under it.
  *
  * Keys are throwaway constants. Nothing here is a real enk (AGENTS.md §12).
  */
@@ -21,11 +24,8 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { createCipheriv } from "node:crypto";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-
-const require = createRequire(import.meta.url);
-const CryptoJS = createRequire(require.resolve("zca-js"))("crypto-js");
 
 /** Obviously fake keys: 32 and 16 bytes of a repeated byte. */
 const ENK_256 = Buffer.alloc(32, 0x5a).toString("base64");
@@ -37,25 +37,30 @@ const cipher = () => import("../../src/core/sync-v2/zcloud-cipher.js");
 
 const bytes = (b64) => Uint8Array.from(Buffer.from(b64, "base64"));
 
-/** Zalo Web `98yS.encryptAES(t, n)`, line for line. */
-function webEncryptAES(t, n) {
-    const e = CryptoJS.enc.Base64.parse(n);
-    const a = CryptoJS.lib.WordArray.random(16);
-    const s = CryptoJS.AES.encrypt(t, e, { iv: a, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }).ciphertext;
-    return a.concat(s).toString(CryptoJS.enc.Base64);
-}
+/**
+ * The web client's `encryptAES` of PAYLOAD under ENK_256 with the IV 00 01 .. 0f, and of "short key" under ENK_128
+ * with the IV f0 e0 .. 00.
+ */
+const WEB_SEALED_256 =
+    "AAECAwQFBgcICQoLDA0OD6LMz1Z2VZZ5Q7FsT0Ob/HEGm6pQuo1I0pNcyw1qUHr4mlwQ8nLd0kNNyM05rlqmG67spLYB4TfeXPyc86Pz0M1Qrofk2Ax2" +
+    "LlDtYEOvjOSBSwdZYu13d+5+ZmYAyH56Ng==";
+const WEB_SEALED_128 = "8ODQwLCgkIBwYFBAMCAQAFMtDiWsfd/xKeKRn8gLT98=";
 
-/** Zalo Web `98yS.decryptAES(t, n)`, line for line. */
-function webDecryptAES(t, n) {
-    const e = bytes(n);
-    const a = bytes(t);
-    const s = a.slice(0, 16);
-    const r = a.slice(16, a.length);
-    return CryptoJS.AES.decrypt(
-        { ciphertext: CryptoJS.lib.WordArray.create(r), salt: "" },
-        CryptoJS.lib.WordArray.create(e),
-        { iv: CryptoJS.lib.WordArray.create(s), mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 },
-    ).toString(CryptoJS.enc.Utf8);
+/**
+ * The format, restated: the first 16 bytes are the IV, the rest AES-CBC-PKCS7 of the plaintext under the key
+ * base64decode(enk) and that IV.
+ *
+ * @param {string} ct - base64
+ * @param {string} enk - base64
+ * @param {string} plaintext
+ * @returns {boolean}
+ */
+function isWebFormat(ct, enk, plaintext) {
+    const raw = Buffer.from(ct, "base64");
+    const key = Buffer.from(enk, "base64");
+    const c = createCipheriv(`aes-${key.length * 8}-cbc`, key, raw.subarray(0, 16));
+    const expected = Buffer.concat([c.update(plaintext, "utf8"), c.final()]);
+    return raw.subarray(16).equals(expected);
 }
 
 const PAYLOAD = { lastNoiseId: "jYCdDehHGa+w3Z9nD0fWzA==", loadType: 1, listNoiseIds: [], note: "xin chào" };
@@ -86,29 +91,31 @@ describe("zcloud-cipher", () => {
         assert.equal(decryptZCloud(b, ENK_256), "same plaintext");
     });
 
-    it("what it encrypts, the web client's own decryptAES reads", async () => {
+    it("what it encrypts is in the web client's format: the IV, then AES-CBC under it", async () => {
         const { encryptZCloud } = await cipher();
         const ct = encryptZCloud(JSON.stringify(PAYLOAD), ENK_256);
-        assert.deepEqual(JSON.parse(webDecryptAES(ct, ENK_256)), PAYLOAD);
+        assert.ok(isWebFormat(ct, ENK_256, JSON.stringify(PAYLOAD)));
+        // The restatement can fail: the right bytes under another key are not the format.
+        assert.equal(isWebFormat(ct, OTHER_ENK, JSON.stringify(PAYLOAD)), false);
     });
 
-    it("what the web client's encryptAES produces, it decrypts", async () => {
+    it("what the web client's encryptAES produced, it decrypts", async () => {
         const { decryptZCloud } = await cipher();
-        const ct = webEncryptAES(JSON.stringify(PAYLOAD), ENK_256);
-        assert.deepEqual(JSON.parse(decryptZCloud(ct, ENK_256)), PAYLOAD);
+        assert.deepEqual(JSON.parse(decryptZCloud(WEB_SEALED_256, ENK_256)), PAYLOAD);
+        assert.ok(isWebFormat(WEB_SEALED_256, ENK_256, JSON.stringify(PAYLOAD)), "the restatement reads it too");
     });
 
     it("keys the cipher with base64decode(enk), so a 16-byte enk is AES-128 on both sides", async () => {
         const { encryptZCloud, decryptZCloud } = await cipher();
-        assert.equal(webDecryptAES(encryptZCloud("short key", ENK_128), ENK_128), "short key");
-        assert.equal(decryptZCloud(webEncryptAES("short key", ENK_128), ENK_128), "short key");
+        assert.ok(isWebFormat(encryptZCloud("short key", ENK_128), ENK_128, "short key"));
+        assert.equal(decryptZCloud(WEB_SEALED_128, ENK_128), "short key");
     });
 
     it("encodes params as encodeURIComponent(base64(iv ‖ ciphertext))", async () => {
         const { encodeZCloudParams } = await cipher();
         const encoded = encodeZCloudParams(PAYLOAD, ENK_256);
         assert.doesNotMatch(encoded, /[+/=]/, "base64's + / = must arrive percent-encoded");
-        assert.deepEqual(JSON.parse(webDecryptAES(decodeURIComponent(encoded), ENK_256)), PAYLOAD);
+        assert.ok(isWebFormat(decodeURIComponent(encoded), ENK_256, JSON.stringify(PAYLOAD)));
     });
 
     it("does not hand back plaintext for a ciphertext made with another key", async () => {

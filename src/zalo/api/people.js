@@ -702,33 +702,3 @@ export async function readAllAliases(api, { pageSize = 100, maxPages = 1000 } = 
     }
     return out;
 }
-
-/** Methods whose wire-people.test.js comparison passes: the switch answers these from our code. */
-export const OWN_READY = new Set([
-    "getUserInfo",
-    "getAllFriends",
-    "findUser",
-    "findUserByUsername",
-    "getAliasList",
-    "changeFriendAlias",
-    "removeFriendAlias",
-    "sendFriendRequest",
-    "acceptFriendRequest",
-    "rejectFriendRequest",
-    "undoFriendRequest",
-    "getSentFriendRequest",
-    "getFriendRequestStatus",
-    "getFriendRecommendations",
-    "getFriendBoardList",
-    "getFriendOnlines",
-    "getCloseFriends",
-    "removeFriend",
-    "blockUser",
-    "unblockUser",
-    "lastOnline",
-    "getMultiUsersByPhones",
-    "getQR",
-    "getRelatedFriendGroup",
-    "getBizAccount",
-    "blockViewFeed",
-]);

@@ -1044,7 +1044,7 @@ export function connectListener(api, waitMs) {
         // that asked for sessions 1 ms ahead of the hello was closed again within seconds.
         const onHello = () => {
             try {
-                api.listener.sendWs(pingPayload(), false);
+                api.listener.sendWs(pingPayload());
             } catch {
                 /* a socket that cannot take a ping is reported by the close that follows */
             }

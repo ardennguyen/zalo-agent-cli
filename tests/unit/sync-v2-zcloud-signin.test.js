@@ -15,10 +15,10 @@
  *   quota    GET  zcld /cloudmedia/info/pc/v2/usage, /cloudmedia/info/pc/v1/cloud-settings
  *   replies  error_code 0 or -904 accepted; `data` decrypted with enk, first 16 bytes = IV
  *
- * Every request below runs through zca-js's real `request()` into a stub fetch
- * (`ctx.options.polyfill`, zca-js's own HTTP seam). The stub decrypts `params`
- * with the web client's `98yS.decryptAES` re-run in crypto-js — not with the
- * module under test — so these assertions are about the bytes on the wire.
+ * Every request below runs through the session's real HTTP layer into a stub
+ * fetch (`ctx.options.polyfill`). The stub decrypts `params` with the zCloud
+ * cipher, which tests/unit/sync-v2-zcloud-cipher.test.js pins to the web
+ * client's own bytes, so these assertions are about the bytes on the wire.
  *
  * Keys, ids and viewer keys are throwaway constants (AGENTS.md §12). No socket,
  * no session, no network.
@@ -30,15 +30,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getCloudItems, getCloudItemByMsgId } from "../../src/core/db.js";
 import * as zcloud from "../../src/core/sync-v2/zcloud.js";
-
-const require = createRequire(import.meta.url);
-const zcaRequire = createRequire(require.resolve("zca-js"));
-const CryptoJS = zcaRequire("crypto-js");
-const { encodeAES } = zcaRequire("./utils.cjs");
+import { decryptZCloud, encryptZCloud } from "../../src/core/sync-v2/zcloud-cipher.js";
+import { sealSession } from "../../src/zalo/kernel/cipher.js";
 
 // ── throwaway material ──────────────────────────────────────────────────────
 const SESSION_KEY = Buffer.alloc(16, 0x11).toString("base64");
@@ -61,30 +57,10 @@ const P = {
     settings: "/cloudmedia/info/pc/v1/cloud-settings",
 };
 
-// ── the web client's cipher (98yS @2868035), as the oracle ──────────────────
-const bytes = (b64) => Uint8Array.from(Buffer.from(b64, "base64"));
-
-function webEncryptAES(t, n) {
-    const e = CryptoJS.enc.Base64.parse(n);
-    const a = CryptoJS.lib.WordArray.random(16);
-    const s = CryptoJS.AES.encrypt(t, e, { iv: a, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }).ciphertext;
-    return a.concat(s).toString(CryptoJS.enc.Base64);
-}
-
-function webDecryptAES(t, n) {
-    const e = bytes(n);
-    const a = bytes(t);
-    return CryptoJS.AES.decrypt(
-        { ciphertext: CryptoJS.lib.WordArray.create(a.slice(16, a.length)), salt: "" },
-        CryptoJS.lib.WordArray.create(e),
-        { iv: CryptoJS.lib.WordArray.create(a.slice(0, 16)), mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 },
-    ).toString(CryptoJS.enc.Utf8);
-}
-
 /** A recorded request's `params`, decrypted the way zCloud's server would. */
 function plain(call, enk = ENK) {
     assert.equal(typeof call?.params, "string", "zCloud params travel in the query string");
-    return JSON.parse(webDecryptAES(call.params, enk));
+    return JSON.parse(decryptZCloud(call.params, enk));
 }
 
 // ── fake transport ──────────────────────────────────────────────────────────
@@ -97,12 +73,12 @@ const sessionOk = (data) =>
     response({
         error_code: 0,
         error_message: "Successful.",
-        data: encodeAES(SESSION_KEY, JSON.stringify({ error_code: 0, error_message: "", data })),
+        data: sealSession(SESSION_KEY, JSON.stringify({ error_code: 0, error_message: "", data })),
     });
 
 /** A zCloud reply: `data` is the payload itself, encrypted with enk. */
 const cloudOk = (payload, enk = ENK) =>
-    response({ error_code: 0, error_message: "Successful.", data: webEncryptAES(JSON.stringify(payload), enk) });
+    response({ error_code: 0, error_message: "Successful.", data: encryptZCloud(JSON.stringify(payload), enk) });
 
 const cloudErr = (code, message) => response({ error_code: code, error_message: message });
 
@@ -110,7 +86,7 @@ const cloudErr = (code, message) => response({ error_code: code, error_message: 
  * A logged-in-looking api whose every HTTP request lands in `calls`.
  *
  * @param {object} [opts]
- * @param {object} [opts.loginInfo] - what zca-js keeps as ctx.loginInfo
+ * @param {object} [opts.loginInfo] - what the login keeps as ctx.loginInfo
  * @param {Record<string, (call: object) => object>} [opts.routes] - pathname -> reply
  */
 function harness({ loginInfo = { zcloud: { viewer_key: VK_LOGIN, enk: ENK } }, routes = {} } = {}) {
@@ -455,7 +431,7 @@ describe("zCloud responses and paging", () => {
                     response({
                         error_code: -904,
                         error_message: "",
-                        data: webEncryptAES(JSON.stringify(page([addItem("nz-904")])), ENK),
+                        data: encryptZCloud(JSON.stringify(page([addItem("nz-904")])), ENK),
                     }),
             },
         });
@@ -673,7 +649,7 @@ describe("zCloud transport failures follow the web client's rules", () => {
                     response({
                         error_code: -5,
                         error_message: "nope",
-                        data: webEncryptAES(JSON.stringify({ reason: "over-quota" }), ENK),
+                        data: encryptZCloud(JSON.stringify({ reason: "over-quota" }), ENK),
                     }),
             },
         });

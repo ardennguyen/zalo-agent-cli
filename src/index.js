@@ -47,7 +47,7 @@ import { success, error, warning } from "./utils/output.js";
 attachDaemonLogIfChild();
 
 const DISCLAIMER =
-    "This tool uses unofficial Zalo APIs (zca-js) — your account may be banned. Use at your own risk. | Tool này dùng API Zalo không chính thức (zca-js) — account có thể bị ban. Tự chịu trách nhiệm.";
+    "This tool uses unofficial Zalo APIs — your account may be banned. Use at your own risk. | Tool này dùng API Zalo không chính thức — account có thể bị ban. Tự chịu trách nhiệm.";
 
 const program = new Command();
 
@@ -84,9 +84,9 @@ program
             oaDir: globalOpts.oaDir,
         });
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
-        // Suppress zca-js internal logs in JSON mode to keep stdout clean for piping
+        // JSON mode keeps stdout clean for piping, and MCP uses stdout as its transport
         if (globalOpts.json || cmdName === "mcp") {
-            // Suppress zca-js stdout logs: JSON mode needs clean output, MCP uses stdout as transport
+            // Every human-facing line goes elsewhere (src/utils/output.js reads this)
             process.env.ZALO_JSON_MODE = "1";
         } else if (cmdName !== "oa") {
             // OA commands use official Zalo API — no disclaimer needed

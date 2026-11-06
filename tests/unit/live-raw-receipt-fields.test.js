@@ -19,7 +19,7 @@ import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { GroupMessage, UserMessage } from "zca-js";
+import { GroupMessage, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getMessages } from "../../src/core/db.js";
 import { storeLiveMessage } from "../../src/core/live-store.js";

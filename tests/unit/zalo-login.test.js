@@ -9,9 +9,9 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir, loadCredentials, saveCredentials } from "../../src/core/credentials.js";
 import { loginWithCredentials, clearSession } from "../../src/core/zalo-client.js";
 import {
@@ -25,8 +25,15 @@ import {
 import { browserHeadersFor, fetchSiteOf, secChUaFor, withBrowserHeaders } from "../../src/zalo/headers.js";
 import { FAKE, FAKE_CREDENTIALS, installFakeZalo } from "./fake-zalo-session.js";
 
-const require = createRequire(import.meta.url);
-const zu = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
+/**
+ * The signkey the official client computes: the MD5 of "zsecure", the call's name and every value in key order,
+ * each as text (a null as "null").
+ */
+function expectedSignKey(kind, fields) {
+    let text = `zsecure${kind}`;
+    for (const k of Object.keys(fields).sort()) text += String(fields[k]);
+    return createHash("md5").update(text).digest("hex");
+}
 
 const CHROME_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36";
@@ -51,7 +58,7 @@ describe("the server-info query", () => {
         assert.equal(q.sp_mtn, -1);
         assert.equal(q.bkt, -1);
         const { signkey, ...fields } = q;
-        assert.equal(signkey, zu.getSignKey("getserverinfo", fields));
+        assert.equal(signkey, expectedSignKey("getserverinfo", fields));
     });
 
     it("signs every field it sends, so a changed field changes the key", () => {
@@ -63,7 +70,7 @@ describe("the server-info query", () => {
         // the key is the md5 the official client computes: "zsecure" + type + the values sorted by key name
         const q = buildServerInfoQuery({ ...base, viewerKey: "vk", floatMenuPos: true });
         const { signkey, ...fields } = q;
-        assert.equal(signkey, zu.getSignKey("getserverinfo", fields));
+        assert.equal(signkey, expectedSignKey("getserverinfo", fields));
         assert.equal(fields.floatMenuPos, null);
     });
 
@@ -165,7 +172,7 @@ describe("the login against the fake Zalo", () => {
             const { signkey, ...rest } = r.query;
             const typed = { ...rest, type: Number(rest.type), client_version: Number(rest.client_version) };
             if ("floatMenuPos" in typed) typed.floatMenuPos = null;
-            assert.equal(signkey, zu.getSignKey("getserverinfo", typed), `${r.path} signkey`);
+            assert.equal(signkey, expectedSignKey("getserverinfo", typed), `${r.path} signkey`);
         }
     });
 

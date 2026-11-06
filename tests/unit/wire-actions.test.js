@@ -1,11 +1,10 @@
 /**
- * The actions area on the wire (design 3.1, package ACT): undo, deleteMessage, addReaction, deleteChat, the unread
- * marks, the pinned and archived lists, and the labels, zca-js against src/zalo/api/actions.js on one logged-in fake.
+ * The actions area on the wire (design 3.1 and 3.3, package ACT): undo, deleteMessage, addReaction, deleteChat, the
+ * unread marks, the pinned and archived lists, and the labels, src/zalo/api/actions.js on one logged-in fake.
  *
- * Each case has the three parts of design 3.1: (1) `assertSameWire` against the rows of tests/helpers/wire-diff/
- * allow/actions.js, which fails on any difference not declared AND on a declared one that is absent; (2) our side
- * against its reviewed golden record; (3) the error answers. The Web-only behavior is also asserted outright, so a
- * row that matched by accident cannot hide it.
+ * Each case has two parts: (1) our record against its reviewed golden record; (2) the error answers, each checked
+ * against a literal `{message, code}`. The Web behavior is also asserted outright, so a reader sees it here and not
+ * only in the golden file.
  *
  * Every id here is fake (tests/unit/no-real-ids.test.js).
  */
@@ -13,8 +12,8 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
-import { OWN_READY, planLabelCalls } from "../../src/zalo/api/actions.js";
+import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
+import { actionMethods, planLabelCalls } from "../../src/zalo/api/actions.js";
 
 const AREA = "actions";
 const PEER = "1000000000000000002";
@@ -27,48 +26,48 @@ const CLI_MSG_ID = "1700000000123";
 const LOSSY = "4123456789012345678";
 const TWIN = "4123456789012345679";
 
-/**
- * The allowed differences of one case: the area's rows of that case, plus the global rows.
- *
- * @param {string} name - the case
- * @returns {object[]}
- */
-function allowFor(name) {
-    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
-}
-
-/** The answers every method is run against for part 3, and whether zca-js has the same message for each. */
+/** The answers every method is run against for part 2, and what each must throw. */
 const ERROR_ANSWERS = [
-    { label: "an outer error", error: { outer: { error_code: 102, error_message: "outer failure" } }, sameText: true },
-    { label: "an inner error", error: { inner: { error_code: 114, error_message: "inner failure" } }, sameText: true },
-    { label: "HTTP 500", error: { status: 500 }, sameText: false },
-    { label: "an undecryptable data", error: { undecryptable: true }, sameText: true },
+    {
+        label: "an outer error",
+        error: { outer: { error_code: 102, error_message: "outer failure" } },
+        expected: { message: "outer failure", code: 102 },
+    },
+    {
+        label: "an inner error",
+        error: { inner: { error_code: 114, error_message: "inner failure" } },
+        expected: { message: "inner failure", code: 114 },
+    },
+    { label: "HTTP 500", error: { status: 500 }, expected: { message: "HTTP 500", code: null } },
+    {
+        label: "an undecryptable data",
+        error: { undecryptable: true },
+        expected: { message: "Failed to parse response data", code: null },
+    },
 ];
 
-describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
-    let pair;
+describe("wire: actions (src/zalo/api/actions.js)", () => {
+    let wire;
 
     before(async () => {
         assertSandboxed(CONFIG_DIR);
-        pair = await openPair();
-        // A cookie for every fake host, so the Cookie header is compared on a value (zca-js writes an empty header
-        // for an empty jar, fetch writes none).
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+        wire = await openWire();
+        // A cookie for every fake host, so the Cookie header is recorded with a value.
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     /**
-     * Run one case through both engines, check it against its rows and its golden record.
+     * Run one case and check it against its golden record.
      *
-     * @param {string} name - the case (golden key and allow `case`)
+     * @param {string} name - the case (golden key)
      * @param {string} method
      * @param {unknown[]} args
      * @param {object} fixture
      * @returns {Promise<object>} the record
      */
     async function check(name, method, args, fixture) {
-        const rec = await pair.run(method, args, fixture);
-        assertSameWire(rec, allowFor(name));
+        const rec = await wire.run(method, args, fixture);
         await expectGolden(AREA, name, rec.own);
         return rec;
     }
@@ -105,7 +104,7 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
         });
 
         it("a known group visibility goes out as given (zca-js always sent 0)", async () => {
-            const rec = await pair.run("undo", [{ msgId: MSG_ID, cliMsgId: CLI_MSG_ID, visibility: 1 }, GROUP, 1], {
+            const rec = await wire.run("undo", [{ msgId: MSG_ID, cliMsgId: CLI_MSG_ID, visibility: 1 }, GROUP, 1], {
                 reply: {},
             });
             assert.equal(rec.own.requests[0].params.visibility, 1);
@@ -223,7 +222,7 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
             assert.equal(rec.own.requests.length, 0);
             assert.deepEqual(rec.own.error, { message: "Thread type is invalid", code: null });
             for (const type of [undefined, "x", -1]) {
-                const r = await pair.run("addReaction", ["/-heart", dest(PEER, type)], { reply: {} });
+                const r = await wire.run("addReaction", ["/-heart", dest(PEER, type)], { reply: {} });
                 assert.equal(r.own.requests.length, 0, String(type));
                 assert.equal(r.own.error.message, "Thread type is invalid", String(type));
             }
@@ -243,7 +242,7 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
             it(method, async () => {
                 // Red if the method built a request for an unknown thread type (zca-js 2.2.0 sends the DM call).
                 for (const type of [2, -1, "x", ""]) {
-                    const rec = await pair.run(method, args(type), { reply: {} });
+                    const rec = await wire.run(method, args(type), { reply: {} });
                     assert.equal(rec.own.requests.length, 0, `${method}, type ${JSON.stringify(type)}`);
                     assert.deepEqual(rec.own.error, { message: "Thread type is invalid", code: null });
                 }
@@ -291,7 +290,6 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
             assert.equal(entry.fromUid, TWIN);
             assert.equal(entry.cliMsgId, CLI_MSG_ID);
             assert.equal(entry.ts, 5, "a key outside the id list stays a number");
-            assert.equal(rec.zca.result.data.convsGroup[0].id, Number(LOSSY), "zca-js rounds it (the reason for this)");
         });
 
         it("getUnreadMark passes an answer without a JSON string through", async () => {
@@ -346,7 +344,7 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
             assert.deepEqual(rec.own.result, { conversations: [], version: 0 });
             // Red if the empty list were one shared object a caller could change for the next call.
             rec.own.result.conversations.push("x");
-            const again = await pair.run("getPinConversations", [], {
+            const again = await wire.run("getPinConversations", [], {
                 error: { inner: { error_code: 212, error_message: "No pinned conversation" } },
             });
             assert.deepEqual(again.own.result, { conversations: [], version: 0 });
@@ -392,7 +390,7 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
                 ["", []],
                 [[LABEL], [LABEL]],
             ]) {
-                const rec = await pair.run("getLabels", [], { reply: { labelData, version: 3, lastUpdateTime: 9 } });
+                const rec = await wire.run("getLabels", [], { reply: { labelData, version: 3, lastUpdateTime: 9 } });
                 assert.equal(rec.own.error, null);
                 assert.deepEqual(rec.own.result.labelData, want);
             }
@@ -436,24 +434,19 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
             ["updateLabels", [{ labelData: [], version: 1 }]],
         ];
         for (const [method, args] of CALLS) {
-            it(`${method}: the same code as zca-js (and the same text where zca-js has it)`, async () => {
+            it(`${method}: the code and message of each error answer`, async () => {
                 for (const answer of ERROR_ANSWERS) {
-                    const rec = await pair.run(method, args, { error: answer.error });
-                    const where = `${method}, ${answer.label}`;
-                    assert.ok(rec.own.error, `${where}: our side did not throw`);
-                    assert.ok(rec.zca.error, `${where}: zca-js did not throw`);
-                    assert.equal(rec.own.error.code, rec.zca.error.code, where);
-                    if (answer.sameText) assert.equal(rec.own.error.message, rec.zca.error.message, where);
-                    else assert.equal(rec.own.error.message, "HTTP 500", where);
+                    const rec = await wire.run(method, args, { error: answer.error });
+                    assert.deepEqual(rec.own.error, answer.expected, `${method}, ${answer.label}`);
                 }
             });
         }
     });
 
-    it("OWN_READY lists every method this file compares", () => {
-        // Red if a method was flipped to our engine without a comparison here, or one compared here was left on zca-js.
+    it("the area defines exactly the methods this file covers", () => {
+        // Red if a method was added to the area without a case here, or one covered here was removed.
         assert.deepEqual(
-            [...OWN_READY].sort(),
+            Object.keys(actionMethods({})).sort(),
             [
                 "addReaction",
                 "deleteChat",
@@ -471,7 +464,7 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
 });
 
 describe("wire: labels when the server asks for the per-label calls (update_label_version 2)", () => {
-    let pair;
+    let wire;
     const CURRENT = [
         { id: 1, text: "Work", color: "#0068FF", offset: 0, conversations: [`g${GROUP}`], createTime: 5 },
         { id: 2, text: "Old", color: "#D91B1B", offset: 1, conversations: [], createTime: 6 },
@@ -479,24 +472,23 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
 
     before(async () => {
         assertSandboxed(CONFIG_DIR);
-        pair = await openPair({
+        wire = await openWire({
             fake: { settings: { features: { chat_label: { api: { update_label_version: 2 } } } } },
         });
-        pair.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
+        wire.ctx.cookie.setCookieSync("wire=fake-w; Domain=zalo.invalid; Path=/", "https://chat.zalo.invalid/");
     });
-    after(() => pair?.close());
+    after(() => wire?.close());
 
     it("tags a conversation with one manage/update call after reading the list (zca-js sends the full list)", async () => {
         const wanted = [{ ...CURRENT[0], conversations: [`g${GROUP}`, PEER] }, CURRENT[1]];
         const after = { labelData: JSON.stringify(wanted), version: 6, lastUpdateTime: 11 };
-        const rec = await pair.run("updateLabels", [{ labelData: wanted, version: 5 }], {
+        const rec = await wire.run("updateLabels", [{ labelData: wanted, version: 5 }], {
             replies: {
                 "/api/convlabel/get": { data: { labelData: JSON.stringify(CURRENT), version: 5, lastUpdateTime: 10 } },
                 "/api/convlabel/update": { data: after },
                 "/api/convlabel/manage/update": { data: { ...after, oldVersion: 5 } },
             },
         });
-        assertSameWire(rec, allowFor("labels-v2"));
         await expectGolden(AREA, "labels-v2", rec.own);
         const [read, update] = rec.own.requests;
         assert.equal(read.path, "/api/convlabel/get");
@@ -512,13 +504,12 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
     });
 
     it("refuses with 230 after the read when the list moved past the caller's version", async () => {
-        const rec = await pair.run("updateLabels", [{ labelData: CURRENT, version: 3 }], {
+        const rec = await wire.run("updateLabels", [{ labelData: CURRENT, version: 3 }], {
             replies: {
                 "/api/convlabel/get": { data: { labelData: JSON.stringify(CURRENT), version: 5, lastUpdateTime: 10 } },
                 "/api/convlabel/update": { inner: { error_code: 230, error_message: "Label version mismatch" } },
             },
         });
-        assertSameWire(rec, allowFor("labels-v2-conflict"));
         await expectGolden(AREA, "labels-v2-conflict", rec.own);
         assert.equal(rec.own.requests.length, 1, "nothing is written after a conflict");
         assert.equal(rec.own.error.code, 230);
@@ -528,7 +519,7 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
         const wanted = [CURRENT[0], { text: "New", color: "#4BC377", emoji: "", conversations: [PEER] }];
         const added = { id: 3, text: "New", color: "#4BC377", offset: 1, conversations: [PEER], createTime: 7 };
         const after = { labelData: JSON.stringify([CURRENT[0], added]), version: 7, lastUpdateTime: 12 };
-        const rec = await pair.run("updateLabels", [{ labelData: wanted, version: 5 }], {
+        const rec = await wire.run("updateLabels", [{ labelData: wanted, version: 5 }], {
             replies: {
                 "/api/convlabel/get": { data: { labelData: JSON.stringify(CURRENT), version: 5, lastUpdateTime: 10 } },
                 "/api/convlabel/update": { data: after },
@@ -538,7 +529,6 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
                 "/api/convlabel/manage/add": { data: { ...after, oldVersion: 6 } },
             },
         });
-        assertSameWire(rec, allowFor("labels-v2-add-delete"));
         await expectGolden(AREA, "labels-v2-add-delete", rec.own);
         const [, del, add] = rec.own.requests;
         assert.deepEqual(
@@ -556,7 +546,7 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
 
     it("is not atomic: a call that fails mid-plan leaves the calls before it applied, and throws", async () => {
         const wanted = [CURRENT[0], { text: "New", color: "#4BC377", conversations: [] }];
-        const rec = await pair.run("updateLabels", [{ labelData: wanted, version: 5 }], {
+        const rec = await wire.run("updateLabels", [{ labelData: wanted, version: 5 }], {
             replies: {
                 "/api/convlabel/get": { data: { labelData: JSON.stringify(CURRENT), version: 5, lastUpdateTime: 10 } },
                 "/api/convlabel/update": { data: {} },
@@ -599,7 +589,7 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
 
     it("sends nothing past the read when the list is already as asked, and answers the list read", async () => {
         const read = { labelData: JSON.stringify(CURRENT), version: 5, lastUpdateTime: 10 };
-        const rec = await pair.run("updateLabels", [{ labelData: CURRENT, version: 5 }], {
+        const rec = await wire.run("updateLabels", [{ labelData: CURRENT, version: 5 }], {
             replies: { "/api/convlabel/get": { data: read } },
         });
         assert.equal(rec.own.requests.length, 1);

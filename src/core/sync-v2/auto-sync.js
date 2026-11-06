@@ -106,7 +106,7 @@ export async function autoSyncAfterLogin(
         // The control is usually already in the queue by the time the socket is up: ask for it, both queues.
         for (const sub of [1, 0]) {
             if (offer) break;
-            api.listener.sendWs(buildPull(603, sub), false);
+            api.listener.sendWs(buildPull(603, sub));
             await new Promise((r) => setTimeout(r, pullWaitMs));
             offer = pickTransferAfterLogin(controls);
         }

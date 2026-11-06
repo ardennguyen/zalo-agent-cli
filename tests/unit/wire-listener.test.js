@@ -1,18 +1,13 @@
 /**
- * The listener, zca-js against ours (agent/docs/zca-replace/design.md 3.2): one login, zca-js's listener on fake socket
- * A and ours on fake socket B, the same frames played to both, and every event, every frame each sent and each
- * upgrade compared. The differences are not hidden: each is a row of tests/helpers/wire-diff/allow/listener.js (with
- * the Web behavior it follows) and must be present, and our side of every script is also pinned by a golden entry
- * (tests/helpers/wire-diff/golden/listener.js), which keeps guarding the wire after zca-js leaves (design 3.3).
+ * The listener on the wire (design 3.2 and 3.3): one login, our listener on a fake socket, frames played to it, and
+ * every event, every frame it sent and its upgrade pinned by a golden entry (tests/helpers/wire-diff/golden/listener.js).
  *
  * One script per spec-listener item (5-11), plus the 534 re-push. Every id is fake.
  */
 import "../helpers/sandbox.js";
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { openListenerPair } from "../helpers/wire-diff/listener-pair.js";
-import { assertSameListener } from "../helpers/wire-diff/compare.js";
-import { ALLOW } from "../helpers/wire-diff/allow.js";
+import { openListenerWire } from "../helpers/wire-diff/listener-wire.js";
 import { expectGolden } from "../helpers/wire-diff/golden.js";
 import { FAKE } from "./fake-zalo-session.js";
 
@@ -316,39 +311,34 @@ function goldenSent(frames) {
     });
 }
 
-describe("listener: zca-js against ours, one script per spec-listener item", () => {
-    let lp;
+describe("listener: one script per spec-listener item", () => {
+    let lw;
     const played = {};
     const sent = {};
 
     before(async () => {
-        lp = await openListenerPair();
-        await lp.start();
-        // Both clients send the official pulls the same way.
-        lp.zca.listener.requestOldMessages(0, null);
-        lp.own.listener.requestOldMessages(0, null);
-        await lp.settle();
-        sent.pull = lp.snapshot();
+        lw = await openListenerWire();
+        await lw.start();
+        // The official pull for old messages.
+        lw.own.listener.requestOldMessages(0, null);
+        await lw.settle();
+        sent.pull = lw.snapshot();
         for (const [name, script] of Object.entries(SCRIPTS)) {
-            const before = lp.snapshot();
-            const after = await lp.play(script);
+            const before = lw.snapshot();
+            const after = await lw.play(script);
             played[name] = {
-                zca: after.zca.slice(before.zca.length),
                 own: after.own.slice(before.own.length),
-                zcaSent: after.zcaSent.slice(before.zcaSent.length),
                 ownSent: after.ownSent.slice(before.ownSent.length),
-                headers: after.headers,
             };
         }
     });
 
     after(async () => {
-        await lp?.close();
+        await lw?.close();
     });
 
-    it("upgrades and handshakes as declared, and sends the same pull", async () => {
-        const rec = { ...sent.pull, zca: sent.pull.zca, own: sent.pull.own };
-        assertSameListener(rec, ALLOW.listener, { name: "handshake" });
+    it("upgrades, handshakes and sends the pull as its golden record says", async () => {
+        const rec = sent.pull;
         // The client version in the URL is masked: a protocol-version bump is not a listener change.
         const upgrade = { ...rec.headers.own, url: rec.headers.own.url.replace(/zpw_ver=\d+/, "zpw_ver=<ver>") };
         await expectGolden("listener", "handshake", {
@@ -358,12 +348,10 @@ describe("listener: zca-js against ours, one script per spec-listener item", () 
     });
 
     for (const name of Object.keys(SCRIPTS)) {
-        it(`${name}: the same events and frames, apart from the declared differences`, async () => {
+        it(`${name}: the events and frames of its golden record`, async () => {
             const p = played[name];
-            // Red if a script played nothing at all (a frame not delivered would make both sides empty and equal).
-            assert.ok(p.zca.length + p.own.length > 0, `${name}: no events on either side`);
-            // The upgrade is compared once, in the handshake case.
-            assertSameListener({ ...p, headers: { zca: null, own: null } }, ALLOW.listener, { name });
+            // Red if a script played nothing at all (a frame not delivered would leave the record empty).
+            assert.ok(p.own.length > 0, `${name}: no events`);
             await expectGolden("listener", name, {
                 requests: [],
                 result: { events: p.own, sent: goldenSent(p.ownSent) },

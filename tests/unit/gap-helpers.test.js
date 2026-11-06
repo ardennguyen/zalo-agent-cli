@@ -4,7 +4,6 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ReportReason } from "zca-js";
 import {
     REPORT_REASONS,
     parseLanguage,
@@ -34,7 +33,7 @@ describe("parseOnOff", () => {
 });
 
 describe("parseLanguage", () => {
-    it("maps vi/en to the codes zca-js sends and refuses others", () => {
+    it("maps vi/en to the codes Zalo takes and refuses others", () => {
         assert.equal(parseLanguage("vi"), "VI");
         assert.equal(parseLanguage(" EN "), "EN");
         assert.throws(() => parseLanguage("fr"), /language must be one of: vi, en/);
@@ -42,20 +41,20 @@ describe("parseLanguage", () => {
 });
 
 describe("parseReportReason", () => {
-    it("maps each named reason to zca-js's code", () => {
-        assert.deepEqual(parseReportReason("sensitive"), { reason: ReportReason.Sensitive });
-        assert.deepEqual(parseReportReason("Annoy"), { reason: ReportReason.Annoy });
-        assert.deepEqual(parseReportReason("fraud"), { reason: ReportReason.Fraud });
+    it("maps each named reason to Zalo's code (0 other, 1 sensitive, 2 annoy, 3 fraud)", () => {
+        assert.deepEqual(parseReportReason("sensitive"), { reason: 1 });
+        assert.deepEqual(parseReportReason("Annoy"), { reason: 2 });
+        assert.deepEqual(parseReportReason("fraud"), { reason: 3 });
         assert.deepEqual(Object.keys(REPORT_REASONS), ["sensitive", "annoy", "fraud", "other"]);
     });
 
     it("'other' carries trimmed text and needs it", () => {
-        assert.deepEqual(parseReportReason("other", "  scam  "), { reason: ReportReason.Other, content: "scam" });
+        assert.deepEqual(parseReportReason("other", "  scam  "), { reason: 0, content: "scam" });
         assert.throws(() => parseReportReason("other"), /needs the details/);
         assert.throws(() => parseReportReason("other", "   "), /needs the details/);
     });
 
-    it("refuses text with any other reason (zca-js would drop it silently) and unknown reasons", () => {
+    it("refuses text with any other reason (it would be dropped silently) and unknown reasons", () => {
         assert.throws(() => parseReportReason("fraud", "details"), /only sent with --reason other/);
         assert.throws(() => parseReportReason("rude"), /--reason must be one of/);
     });

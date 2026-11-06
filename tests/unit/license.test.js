@@ -1,6 +1,7 @@
 /**
- * The license: CC BY-NC-SA 4.0 from 2.0.1 on, with the MIT notices of what the
- * package derives from and bundles kept alongside it.
+ * The license: CC BY-NC-SA 4.0 from 2.0.1 on, with the MIT notice of what the
+ * package derives from kept alongside it, and a credit to the endpoint library
+ * the protocol layer replaced.
  *
  * Releases up to 2.0.0 were MIT. MIT requires the upstream copyright and
  * permission notice to travel with any substantial portion of that code, so the
@@ -37,20 +38,16 @@ describe("license", () => {
         }
     });
 
-    it("keeps the MIT notices the package is required to carry", () => {
+    it("keeps the MIT notice the package is required to carry, and its credits", () => {
         const notice = read("NOTICE");
         // The upstream this project is derived from.
         assert.match(
             notice,
             /https:\/\/github\.com\/PhucMPham\/zalo-agent-cli\n\n {4}MIT License\n\n {4}Copyright \(c\) 2026\n/,
         );
-        // zca-js is bundled, patched, in the tarball: its copyright line must be the one it ships with.
-        const zcaLicense = readFileSync(join(ROOT, "node_modules", "zca-js", "LICENSE"), "utf8");
-        const holder = zcaLicense.match(/^Copyright \(c\) (.+)$/m)?.[1]?.trim();
-        assert.ok(holder, "could not read the bundled zca-js copyright line");
-        // Red if zca-js changes hands or years and NOTICE keeps quoting the old line.
-        assert.ok(notice.includes(`Copyright (c) ${holder}`), `NOTICE must quote zca-js's "${holder}"`);
-        assert.match(notice, /https:\/\/github\.com\/RFS-ADRENO\/zca-js/);
+        // No file of the replaced endpoint library ships any more, so no license of it travels with the package;
+        // the owner's ruling keeps a short credit line to it in NOTICE.
+        assert.match(notice, /zca-js/, "NOTICE keeps its credit line");
     });
 
     it("tells people how to get a commercial license, and that earlier versions stay MIT", () => {

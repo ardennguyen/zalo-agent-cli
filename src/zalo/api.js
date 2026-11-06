@@ -2,32 +2,23 @@
  * The session object the engine uses: every Zalo call by name, the listener, the context.
  *
  * `createApi(ctx, serviceMap, wsUrls)` builds a session handle `s` (design 1.2), hands it to every area module's
- * factory (`src/zalo/api/<area>.js`, each exporting one `<name>Methods(s)` factory and an `OWN_READY` set), and
- * returns one plain object with ordinary own properties: `zpwServiceMap`, `listener`, `getContext()`, `getOwnId()`,
- * every method of the area factories, and the composed `sendMessage(message, threadId, type)`.
- *
- * ## The transition switch (build week only; removed at the cut-over, design 2 and 5)
- *
- * While the area modules land one by one, each method is answered by our code or by zca-js on the same context:
- *
- *   ZALO_ENGINE=zca   every method and the listener from zca-js
- *   ZALO_ENGINE=own   every method from our code; a method we do not have yet throws "<name> is not in the own
- *                     engine yet" (what the inventory run looks for)
- *   otherwise         ZALO_ENGINE_ZCA=a,b forces those to zca-js, ZALO_ENGINE_OWN=c,d to ours; every other name is
- *                     ours when some area lists it in `OWN_READY`, zca-js's otherwise
- *
- * `opts.engine` ("own" or "zca") overrides `ZALO_ENGINE` for one call (the differential harness builds one of each
- * on one context). The listener is the name `listener` in the same lists. The composed `sendMessage` goes by the
- * name of the half it needs, `sendText` or `sendAttachments` (or `sendMessage` named in a list, for both).
- *
- * zca-js is imported only when something resolves to it (and, under ZALO_ENGINE=own, to learn which names it has, so
- * the ones we lack can throw by name). Its methods run on the same `ctx`.
+ * factory (`src/zalo/api/<area>.js`, each exporting one `<name>Methods(s)` factory), and returns one plain object
+ * with ordinary own properties: `zpwServiceMap`, `listener`, `getContext()`, `getOwnId()`, every method of the area
+ * factories, and the composed `sendMessage(message, threadId, type)`.
  */
-import { EventEmitter } from "node:events";
-import { fileURLToPath } from "node:url";
 import { createClientIds } from "./kernel/session.js";
 import { callEndpoint, hostOf } from "./kernel/endpoint.js";
-import { OWN_READY as SESSION_READY, sessionMethods } from "./api/session.js";
+import { sessionMethods } from "./api/session.js";
+import { messageMethods } from "./api/messages.js";
+import { uploadMethods } from "./api/upload.js";
+import { actionMethods } from "./api/actions.js";
+import { conversationMethods } from "./api/conversations.js";
+import { groupMethods } from "./api/groups.js";
+import { peopleMethods } from "./api/people.js";
+import { profileMethods } from "./api/profile.js";
+import { businessMethods } from "./api/business.js";
+import { boardMethods } from "./api/boards.js";
+import { createListener } from "./listener/listener.js";
 
 /**
  * @typedef {object} Session
@@ -41,123 +32,21 @@ import { OWN_READY as SESSION_READY, sessionMethods } from "./api/session.js";
  * @property {object} api - the composed session object
  */
 
-/** The area modules under ./api/, in the order their factories run. A missing file is a package not landed yet. */
-export const AREA_MODULES = Object.freeze([
-    "messages",
-    "upload",
-    "actions",
-    "conversations",
-    "groups",
-    "people",
-    "profile",
-    "business",
-    "boards",
+/** The area modules under ./api/, in the order their factories run. */
+export const AREAS = Object.freeze([
+    { name: "messages", factories: [messageMethods] },
+    { name: "upload", factories: [uploadMethods] },
+    { name: "actions", factories: [actionMethods] },
+    { name: "conversations", factories: [conversationMethods] },
+    { name: "groups", factories: [groupMethods] },
+    { name: "people", factories: [peopleMethods] },
+    { name: "profile", factories: [profileMethods] },
+    { name: "business", factories: [businessMethods] },
+    { name: "boards", factories: [boardMethods] },
 ]);
 
-const LISTENER_MODULE = "./listener/listener.js";
-
-/** Names that are not switched: they are the session itself. */
+/** Names the session object defines itself; no area may define them. */
 const RESERVED = new Set(["zpwServiceMap", "listener", "getContext", "getOwnId", "sendMessage"]);
-
-const ENGINES = new Set(["own", "zca"]);
-
-/** A comma list from the environment, as a set. */
-const listOf = (v) =>
-    new Set(
-        String(v ?? "")
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean),
-    );
-
-/**
- * The whole-session engine the environment (or the caller) asks for, if any.
- *
- * @param {Record<string, string|undefined>} env
- * @param {string|undefined} [engine] - the caller's override
- * @returns {"own"|"zca"|null}
- * @throws {Error} for a value that is neither
- */
-function modeOf(env, engine) {
-    const mode = engine ?? env.ZALO_ENGINE;
-    if (mode === undefined || mode === null || mode === "") return null;
-    if (!ENGINES.has(mode)) throw new Error(`ZALO_ENGINE must be "own" or "zca", not "${mode}"`);
-    return mode;
-}
-
-/**
- * Which engine answers a name.
- *
- * @param {string} name - a method name, or "listener"
- * @param {object} [opts]
- * @param {Record<string, string|undefined>} [opts.env] - `process.env` by default
- * @param {Set<string>} [opts.ready] - every area's `OWN_READY`, merged
- * @param {"own"|"zca"} [opts.engine] - overrides `ZALO_ENGINE`
- * @returns {"own"|"zca"}
- */
-export function engineFor(name, { env = process.env, ready = new Set(), engine } = {}) {
-    const mode = modeOf(env, engine);
-    if (mode) return mode;
-    if (listOf(env.ZALO_ENGINE_ZCA).has(name)) return "zca";
-    if (listOf(env.ZALO_ENGINE_OWN).has(name)) return "own";
-    return ready.has(name) ? "own" : "zca";
-}
-
-/** Import a module of ours that may not exist yet; null when the file is absent. */
-async function importIfPresent(spec) {
-    const file = fileURLToPath(new URL(spec, import.meta.url));
-    try {
-        return await import(spec);
-    } catch (e) {
-        if (e?.code === "ERR_MODULE_NOT_FOUND" && String(e.message).includes(file)) return null;
-        throw e;
-    }
-}
-
-let areasLoaded = null;
-
-/**
- * The area modules present in this tree, each as `{name, factories, ready}`.
- *
- * @returns {Promise<Array<{name: string, factories: Function[], ready: Set<string>}>>}
- * @throws {Error} for an area module that exports no `<name>Methods` factory
- */
-export function loadAreas() {
-    areasLoaded ??= (async () => {
-        const out = [];
-        for (const name of AREA_MODULES) {
-            const mod = await importIfPresent(`./api/${name}.js`);
-            if (!mod) continue;
-            const factories = Object.entries(mod)
-                .filter(([k, v]) => typeof v === "function" && /Methods$/.test(k))
-                .map(([, v]) => v);
-            if (!factories.length) throw new Error(`src/zalo/api/${name}.js exports no <name>Methods factory`);
-            out.push({ name, factories, ready: mod.OWN_READY instanceof Set ? mod.OWN_READY : new Set() });
-        }
-        return out;
-    })();
-    return areasLoaded;
-}
-
-/** A method we do not have yet. */
-function notOwnYet(name) {
-    return async () => {
-        throw new Error(`${name} is not in the own engine yet`);
-    };
-}
-
-/** The listener of a session whose own listener has not landed yet: refuses to start, by name. */
-function notOwnListener() {
-    const listener = new EventEmitter();
-    const refuse = () => {
-        throw new Error("listener is not in the own engine yet");
-    };
-    listener.start = refuse;
-    listener.stop = () => {};
-    listener.sendWs = refuse;
-    listener.ws = null;
-    return listener;
-}
 
 /**
  * Build the session object.
@@ -166,22 +55,18 @@ function notOwnListener() {
  * @param {Record<string, string[]>} serviceMap - the login's `zpw_service_map_v3`
  * @param {string[]} wsUrls - the login's `zpw_ws`
  * @param {object} [opts]
- * @param {"own"|"zca"} [opts.engine] - every method from one engine (overrides `ZALO_ENGINE`)
- * @param {Record<string, string|undefined>} [opts.env] - `process.env` by default
  * @param {() => number} [opts.now] - the clock
- * @param {Array<{name: string, factories: Function[], ready: Set<string>}>} [opts.areas] - the area modules (tests);
- *   the ones in ./api/ otherwise
- * @param {{createListener: Function, OWN_READY?: Set<string>}|null} [opts.listenerModule] - ours (tests); the one
- *   in ./listener/ otherwise
- * @returns {Promise<object>}
+ * @param {Array<{name: string, factories: Function[]}>} [opts.areas] - the area modules (tests); {@link AREAS}
+ *   otherwise
+ * @param {(ctx: object, wsUrls: string[]) => object} [opts.createListener] - the listener's builder (tests); ours
+ *   (./listener/listener.js) otherwise
+ * @returns {object}
+ * @throws {Error} when two area modules define one name, or an area defines a reserved one
  */
-export async function createApi(ctx, serviceMap, wsUrls, opts = {}) {
-    const env = opts.env ?? process.env;
+export function createApi(ctx, serviceMap, wsUrls, opts = {}) {
     const now = opts.now ?? Date.now;
-    const mode = modeOf(env, opts.engine);
-    const areas = opts.areas ?? (await loadAreas());
-    const listenerModule =
-        opts.listenerModule !== undefined ? opts.listenerModule : await importIfPresent(LISTENER_MODULE);
+    const areas = opts.areas ?? AREAS;
+    const buildListener = opts.createListener ?? createListener;
 
     const api = {};
     /** @type {Session} */
@@ -195,79 +80,36 @@ export async function createApi(ctx, serviceMap, wsUrls, opts = {}) {
         api,
     };
 
-    const own = {};
-    const ready = new Set(SESSION_READY);
-    const allAreas = [{ name: "session", factories: [sessionMethods], ready: SESSION_READY }, ...areas];
-    for (const area of allAreas) {
-        for (const factory of area.factories) {
-            for (const [name, fn] of Object.entries(factory(s))) {
-                if (Object.hasOwn(own, name)) throw new Error(`${name} is defined by two area modules`);
-                own[name] = fn;
-            }
-        }
-        for (const name of area.ready) ready.add(name);
-    }
-    for (const name of listenerModule?.OWN_READY ?? []) ready.add(name);
-    const choose = (name) => engineFor(name, { env, ready, engine: opts.engine });
-
-    // zca-js, on this same context, when anything resolves to it.
-    let zca = null;
-    if (mode !== "own") {
-        const { API } = await import("zca-js");
-        zca = new API(ctx, serviceMap, wsUrls);
-    } else {
-        try {
-            const { API } = await import("zca-js");
-            zca = new API(ctx, serviceMap, wsUrls);
-        } catch {
-            zca = null; // only its names were wanted
-        }
-    }
-    const zcaNames = zca
-        ? Object.keys(zca).filter((k) => typeof zca[k] === "function" && !RESERVED.has(k) && !k.startsWith("_"))
-        : [];
-
     api.zpwServiceMap = serviceMap;
     api.getContext = () => ctx;
     api.getOwnId = () => String(ctx.uid);
-    for (const name of new Set([...Object.keys(own), ...zcaNames])) {
-        if (RESERVED.has(name)) continue;
-        const engine = mode === "own" ? "own" : choose(name);
-        if (engine === "own") api[name] = own[name] ?? notOwnYet(name);
-        else if (zca && typeof zca[name] === "function") api[name] = zca[name];
-        else if (mode === "zca") api[name] = notInZca(name);
-        else api[name] = own[name];
+    const defined = new Set();
+    for (const area of [{ name: "session", factories: [sessionMethods] }, ...areas]) {
+        for (const factory of area.factories) {
+            for (const [name, fn] of Object.entries(factory(s))) {
+                if (RESERVED.has(name)) throw new Error(`${name} is the session's own; area ${area.name} redefines it`);
+                if (defined.has(name)) throw new Error(`${name} is defined by two area modules`);
+                defined.add(name);
+                api[name] = fn;
+            }
+        }
     }
 
-    const lists = { zca: listOf(env.ZALO_ENGINE_ZCA), own: listOf(env.ZALO_ENGINE_OWN) };
+    /**
+     * Send a message: with attachments it goes up as files (the text, if any, as their caption), any other as text.
+     *
+     * @param {string|{msg?: string, attachments?: string|string[], quote?: object, mentions?: object[],
+     *   styles?: object[], urgency?: number, ttl?: number}} message - text, or text with its options
+     * @param {string} threadId - the user or group id
+     * @param {0|1} [type] - 0 user (default), 1 group
+     * @returns {Promise<{message: object|null, attachment: object[]}>}
+     */
     api.sendMessage = (message, threadId, type) => {
         const attachments = message && typeof message === "object" ? message.attachments : undefined;
-        const half = (Array.isArray(attachments) ? attachments.length : attachments ? 1 : 0)
-            ? "sendAttachments"
-            : "sendText";
-        let engine = mode;
-        if (!engine && lists.zca.has("sendMessage")) engine = "zca";
-        if (!engine && lists.own.has("sendMessage")) engine = "own";
-        engine ??= choose(half);
-        if (engine === "zca" && zca) return zca.sendMessage(message, threadId, type);
-        if (typeof own[half] !== "function") return notOwnYet(half)();
-        return own[half](message, threadId, type);
+        const count = Array.isArray(attachments) ? attachments.length : attachments ? 1 : 0;
+        return count ? api.sendAttachments(message, threadId, type) : api.sendText(message, threadId, type);
     };
 
-    if (choose("listener") === "own") {
-        api.listener =
-            typeof listenerModule?.createListener === "function"
-                ? listenerModule.createListener(ctx, wsUrls)
-                : notOwnListener();
-    } else {
-        api.listener = zca.listener;
-    }
+    api.listener = buildListener(ctx, wsUrls);
     return api;
-}
-
-/** A name forced to zca-js that zca-js does not have. */
-function notInZca(name) {
-    return async () => {
-        throw new Error(`${name} is not in zca-js`);
-    };
 }

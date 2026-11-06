@@ -27,7 +27,7 @@ export const PICKED_HEADERS = Object.freeze([
 const VOLATILE_UPGRADE_HEADERS = new Set(["host", "sec-websocket-key"]);
 
 /**
- * True for a json-bigint BigNumber (bignumber.js), which zca-js hands out for integers past 2^53.
+ * True for a json-bigint BigNumber (bignumber.js), as a JSON parser that keeps integers past 2^53 hands them out.
  *
  * @param {unknown} v
  * @returns {boolean}

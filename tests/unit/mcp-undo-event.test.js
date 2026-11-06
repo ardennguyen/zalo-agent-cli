@@ -55,7 +55,8 @@ describe("normalizeUndo", () => {
             data: { msgId: "m1", ts: "1", content: "hi", msgType: "webchat", uidFrom: "u9", dName: "Nine" },
         });
         const undo = normalizeUndo(undoEvent());
-        assert.deepEqual(Object.keys(undo).sort(), [...Object.keys(msg), "cliMsgId"].sort());
+        // A message carries its own cliMsgId too since 3.0.0 (a phone reply names what it quotes by it).
+        assert.deepEqual(Object.keys(undo).sort(), Object.keys(msg).sort());
         assert.equal(undo.threadId, "t1");
         assert.equal(undo.threadType, "group");
         assert.equal(undo.senderId, "u9");

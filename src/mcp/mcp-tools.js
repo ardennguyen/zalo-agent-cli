@@ -39,6 +39,7 @@ import {
     recallCliMsgId,
     quotedReply,
     cachedReplyTo,
+    resolveReplyTo,
 } from "../core/cached-message.js";
 import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
 import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
@@ -378,6 +379,7 @@ function cacheHistory(threadId, limit, before, nameCache) {
     const messages = rows
         .map((m) => ({
             msgId: m.msgId,
+            cliMsgId: cachedCliMsgId(m) ?? undefined,
             threadId: m.threadId,
             senderId: m.senderId || null,
             senderName: m.senderName || null,
@@ -1049,13 +1051,14 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     const isText = typeof rawContent === "string";
                     return {
                         msgId: d.msgId,
+                        cliMsgId: d.cliMsgId ? String(d.cliMsgId) : undefined,
                         threadId: f.threadId,
                         senderId: d.uidFrom || null,
                         senderName: d.dName || null,
                         text: isText ? rawContent : extractMessageText(rawContent, d.msgType),
                         timestamp: d.ts ? Number(d.ts) : null,
                         type: isText ? "text" : d.msgType || "attachment",
-                        replyTo: quotedReply(d.quote),
+                        replyTo: resolveReplyTo(quotedReply(d.quote), f.threadId),
                     };
                 });
 

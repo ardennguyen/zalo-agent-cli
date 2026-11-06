@@ -10,7 +10,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
-import { quotedReply } from "../core/cached-message.js";
+import { quotedReply, resolveReplyTo } from "../core/cached-message.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { updateAccountName } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir, MEDIA_DIR } from "../core/credentials.js";
@@ -105,6 +105,8 @@ export function normalizeMessage(msg, info = null) {
     return {
         // `msgId`, the name every tool takes and every reply uses (3.0 dropped the older `id`).
         msgId: data.msgId,
+        // The id the sender's client gave it: a reply from the phone names the message it quotes by this one.
+        cliMsgId: data.cliMsgId ? String(data.cliMsgId) : null,
         threadId: msg.threadId,
         threadType: msg.type === 0 ? "dm" : "group",
         senderId: data.uidFrom || null,
@@ -124,7 +126,7 @@ export function normalizeMessage(msg, info = null) {
               }
             : null,
         // What this message replies to, so an agent can tell what "look at this" points at (bug-reports #8).
-        replyTo: quotedReply(data.quote),
+        replyTo: resolveReplyTo(quotedReply(data.quote), msg.threadId),
     };
 }
 
@@ -993,6 +995,8 @@ export function registerMCPCommands(program) {
 
                 api.listener.on("disconnected", (code) => {
                     if (lifecycle.isStopping()) return;
+                    // After a kick the socket host has already said why it is not reconnecting.
+                    if (socketHost.kicked()) return;
                     console.error(`[mcp] Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);
                     if (!lifecycle.isDown()) reconnectCount++;
                     lifecycle.noteDown();

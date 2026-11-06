@@ -12,7 +12,7 @@
  * the active account's first, and `mcp start` opened it at start-up.
  */
 
-import { getMessageById } from "./db.js";
+import { findMessageByClientId, getMessageById } from "./db.js";
 
 /**
  * `raw_data` as an object, whatever shape its writer used.
@@ -96,7 +96,30 @@ export function quotedReply(quote) {
  * @returns {ReturnType<typeof quotedReply>}
  */
 export function cachedReplyTo(row) {
-    return quotedReply(parseRawData(row?.raw_data).quote);
+    return resolveReplyTo(quotedReply(parseRawData(row?.raw_data).quote), row?.threadId);
+}
+
+/**
+ * Fill in `replyTo.msgId` from the cache when the quote named the message only by its client id.
+ *
+ * A reply sent from the phone quotes with `globalMsgId: "0"` and the quoted message's `cliMsgId` (seen live
+ * 2026-11-06), so without this `replyTo.msgId` was null and nothing tied the reply to the message it answers. Left
+ * as it is when the message is not cached, or no database is open in this process.
+ *
+ * @param {ReturnType<typeof quotedReply>} replyTo
+ * @param {string|number|null} [threadId] - the reply's thread, where the quoted message is
+ * @param {{find?: Function}} [o] - the client-id lookup, `findMessageByClientId` by default
+ * @returns {ReturnType<typeof quotedReply>}
+ */
+export function resolveReplyTo(replyTo, threadId = null, { find = findMessageByClientId } = {}) {
+    if (!replyTo || replyTo.msgId || !replyTo.cliMsgId) return replyTo;
+    try {
+        const row = find(replyTo.cliMsgId, threadId);
+        if (row?.msgId) return { ...replyTo, msgId: String(row.msgId) };
+    } catch {
+        /* no database open here */
+    }
+    return replyTo;
 }
 
 /**

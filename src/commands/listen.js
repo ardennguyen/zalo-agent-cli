@@ -936,6 +936,8 @@ export function registerListenCommand(program) {
 
                 api.listener.on("disconnected", (code, _reason) => {
                     if (stopping) return;
+                    // After a kick the socket host has already said why it is not reconnecting.
+                    if (socketHost.kicked()) return;
                     warning(`Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);
                     // First drop wins: a flapping socket that emits several
                     // `disconnected` before one `connected` is ONE outage, and the

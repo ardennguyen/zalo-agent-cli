@@ -3,9 +3,7 @@
  */
 
 import { readFileSync, unlinkSync } from "fs";
-import { LoginQRCallbackEventType } from "zca-js";
 import {
-    loginWithQR,
     loginWithCredentials,
     extractCredentials,
     clearSession,
@@ -19,8 +17,8 @@ import { getDaemonStatus } from "../core/daemon-channel.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { serverLogout, reportLogout, finishLocalLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
-import { displayQR, getQRPath } from "../utils/qr-display.js";
-import { noteQrScanned, startQrServer } from "../utils/qr-http-server.js";
+import { getQRPath } from "../utils/qr-display.js";
+import { runQrLogin } from "../core/qr-login-flow.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
@@ -111,84 +109,15 @@ export function registerLoginCommands(program) {
             if (opts.proxy) info(`Using proxy: ${maskProxy(opts.proxy)}`);
             if (!jsonMode) info("Generating QR code... Scan with Zalo mobile app.");
 
-            let qrServer = null;
+            let login = null;
             try {
-                const { ownId } = await loginWithQR(opts.proxy, (event) => {
-                    switch (event.type) {
-                        case LoginQRCallbackEventType.QRCodeGenerated:
-                            displayQR(event);
-                            // The QR is a login token, so the HTTP view binds
-                            // loopback unless --qr-url explicitly asks for LAN
-                            // exposure (the VPS/headless case the flag exists
-                            // for). It used to bind 0.0.0.0 unconditionally,
-                            // handing anyone on the network a usable login QR
-                            // on every `zalo-agent login`.
-                            if (!qrServer) {
-                                qrServer = startQrServer(
-                                    getQRPath(),
-                                    opts.qrPort || 18927,
-                                    [opts.qrPort || 18927, 8080, 3000, 9000],
-                                    Boolean(opts.qrUrl),
-                                );
-                            }
-                            break;
-
-                        case LoginQRCallbackEventType.QRCodeScanned: {
-                            // Mirrors what real Zalo Web shows the instant the
-                            // phone scans: the account's name (and avatar URL,
-                            // since we don't inline-fetch/render images here)
-                            // — zca-js already hands this through in
-                            // event.data, it was just never surfaced.
-                            const name = event.data?.display_name || "unknown";
-                            noteQrScanned(event.data?.display_name || "");
-                            if (jsonMode) {
-                                console.log(
-                                    JSON.stringify({
-                                        event: "qr_scanned",
-                                        name,
-                                        avatar: event.data?.avatar || null,
-                                    }),
-                                );
-                            } else {
-                                info(`Scanned by ${name} — confirm on your phone to finish logging in.`);
-                                if (event.data?.avatar) info(`Avatar: ${event.data.avatar}`);
-                            }
-                            break;
-                        }
-
-                        case LoginQRCallbackEventType.QRCodeDeclined:
-                            // The zca-js patch now rejects loginQR()'s promise
-                            // right after firing this event, so the catch
-                            // block below reports the terminal failure — this
-                            // is just the immediate heads-up, matching how
-                            // real Zalo Web reacts the instant you decline.
-                            if (jsonMode) {
-                                console.log(JSON.stringify({ event: "qr_declined" }));
-                            } else {
-                                warning("Login declined on phone.");
-                            }
-                            break;
-
-                        case LoginQRCallbackEventType.QRCodeExpired:
-                            // Without this, a callback-style login (which is
-                            // what this CLI always uses) never calls
-                            // actions.retry()/abort() itself, so zca-js just
-                            // leaves the QR expired and the whole login hangs
-                            // forever instead of refreshing — auto-retry here
-                            // matches upstream zca-js's own no-callback
-                            // default behavior.
-                            if (jsonMode) {
-                                console.log(JSON.stringify({ event: "qr_expired" }));
-                            } else {
-                                info("QR expired — generating a new one...");
-                            }
-                            event.actions?.retry?.();
-                            break;
-
-                        default:
-                            break;
-                    }
+                login = await runQrLogin({
+                    proxy: opts.proxy,
+                    jsonMode,
+                    qrPort: opts.qrPort || 18927,
+                    qrUrl: Boolean(opts.qrUrl),
                 });
+                const { ownId } = login;
 
                 // Fetch display name from Zalo profile
                 let displayName = opts.name || "";
@@ -206,6 +135,8 @@ export function registerLoginCommands(program) {
                 } else {
                     success(`Logged in as ${displayName} (${ownId})`);
                 }
+                // The QR page says so too, and closes once it has.
+                await login.finish("done");
                 if (opts.sync) await runAutoSync(ownId, opts);
             } catch (e) {
                 if (jsonMode) {
@@ -213,9 +144,8 @@ export function registerLoginCommands(program) {
                 } else {
                     error(`Login failed: ${e.message}`);
                 }
+                await (login?.finish ?? e.finish)?.("failed", e.message);
                 process.exit(1);
-            } finally {
-                if (qrServer) qrServer.close();
             }
         });
 

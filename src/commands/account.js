@@ -6,7 +6,6 @@
 import { writeFileSync, chmodSync, existsSync } from "fs";
 import { resolve, join } from "path";
 import {
-    loginWithQR,
     loginWithCredentials,
     extractCredentials,
     clearSession,
@@ -22,8 +21,7 @@ import { createTrustStore } from "../zalo/trust-store.js";
 import { listAccounts, getActive, setActive, addAccount, removeAccount, getAccount } from "../core/accounts.js";
 import { serverLogout, reportLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
-import { displayQR, getQRPath } from "../utils/qr-display.js";
-import { startQrServer } from "../utils/qr-http-server.js";
+import { runQrLogin } from "../core/qr-login-flow.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 
 export function registerAccountCommands(program) {
@@ -61,14 +59,15 @@ export function registerAccountCommands(program) {
             if (opts.proxy) info(`Using proxy: ${maskProxy(opts.proxy)}`);
             info("Generating QR code... Scan with Zalo mobile app.");
 
-            let qrServer = null;
+            let login = null;
             try {
-                const { ownId } = await loginWithQR(opts.proxy, (event) => {
-                    displayQR(event);
-                    if (!qrServer) {
-                        qrServer = startQrServer(getQRPath());
-                    }
+                // The same QR flow as `login`: the page says how it ended, and an expired code is offered again.
+                login = await runQrLogin({
+                    proxy: opts.proxy,
+                    jsonMode: process.env.ZALO_JSON_MODE === "1",
+                    qrUrl: Boolean(opts.qrUrl),
                 });
+                const { ownId } = login;
 
                 // Fetch display name from Zalo profile
                 let displayName = opts.name || "";
@@ -84,10 +83,10 @@ export function registerAccountCommands(program) {
                 success(
                     `Account logged in: ${displayName} (${ownId})${opts.proxy ? ` via ${maskProxy(opts.proxy)}` : ""}`,
                 );
+                await login.finish("done");
             } catch (e) {
                 error(`Login failed: ${e.message}`);
-            } finally {
-                if (qrServer) qrServer.close();
+                await (login?.finish ?? e.finish)?.("failed", e.message);
             }
         });
 

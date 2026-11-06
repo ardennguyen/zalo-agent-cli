@@ -10,7 +10,14 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { PAGE_TEXT, noteQrLayer, noteQrScanned, startQrServer } from "../../src/utils/qr-http-server.js";
+import {
+    PAGE_TEXT,
+    noteQrExpired,
+    noteQrLayer,
+    noteQrOutcome,
+    noteQrScanned,
+    startQrServer,
+} from "../../src/utils/qr-http-server.js";
 import { qrPng } from "../../src/zalo/qr-image.js";
 
 const freePort = () =>
@@ -140,6 +147,35 @@ describe("the QR page", () => {
         assert.equal((await fetch(`${base}/status?x=1`)).status, 200);
     });
 
+    it("says when the code expired, and replaces it once when the page asks", async () => {
+        const status = async () => (await fetch(`${base}/status`)).json();
+        let asked = 0;
+        noteQrExpired(() => asked++);
+        assert.deepEqual([(await status()).expired, (await status()).canRefresh], [true, true]);
+        assert.equal((await fetch(`${base}/refresh`)).status, 404, "a GET never replaces it");
+        assert.equal((await fetch(`${base}/refresh`, { method: "POST" })).status, 200);
+        assert.equal((await fetch(`${base}/refresh`, { method: "POST" })).status, 409, "only once");
+        assert.equal(asked, 1);
+        noteQrLayer(1);
+        assert.equal((await status()).expired, false, "a new code is not expired");
+        assert.equal((await fetch(`${base}/refresh`, { method: "POST" })).status, 409, "nothing to replace");
+    });
+
+    it("says an expired code cannot be replaced any more, when nothing can replace it", async () => {
+        noteQrExpired(null);
+        const d = await (await fetch(`${base}/status`)).json();
+        assert.deepEqual([d.expired, d.canRefresh], [true, false]);
+        noteQrLayer(1);
+    });
+
+    it("has the words and the button for an expired code, a failed login and an ended command", async () => {
+        const html = await (await fetch(`${base}/qr`)).text();
+        for (const id of ["expired", "refresh", "failed", "failedMsg"])
+            assert.match(html, new RegExp(`id="${id}"`), id);
+        assert.match(html, /fetch\('\/refresh',\{method:'POST'\}\)/);
+        assert.match(html, /ended='gone'/, "a page whose command is gone says so instead of waiting forever");
+    });
+
     it("answers 404 for anything else", async () => {
         assert.equal((await fetch(`${base}/etc/passwd`)).status, 404);
     });
@@ -171,5 +207,71 @@ describe("the QR page and the process that serves it", () => {
         const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { timeout: 3500 });
         assert.equal(run.error, undefined, `the process stayed up: ${run.error}`);
         assert.equal(run.status, 0, String(run.stderr));
+    });
+});
+
+describe("the QR page at the end of the login", () => {
+    let dir;
+    let realFetch;
+
+    before(() => {
+        dir = mkdtempSync(join(CONFIG_DIR, "qrend-"));
+        realFetch = globalThis.fetch;
+        globalThis.fetch = (url, ...rest) =>
+            String(url).includes("ipify") ? Promise.reject(new Error("offline")) : realFetch(url, ...rest);
+        process.env.ZALO_JSON_MODE = "1";
+    });
+
+    after(() => {
+        globalThis.fetch = realFetch;
+        delete process.env.ZALO_JSON_MODE;
+        rmSync(dir, { recursive: true, force: true });
+    });
+
+    const open = async () => {
+        const log = console.log;
+        console.log = () => {};
+        const port = await freePort();
+        const server = startQrServer(join(dir, "qr.png"), port, [port], false);
+        await new Promise((r) => setTimeout(r, 100));
+        console.log = log;
+        return { server, base: `http://127.0.0.1:${port}` };
+    };
+
+    it("stays up until the open page has read that the login is done, then goes", async () => {
+        // Closing at once (the old way) left the page polling nothing: it never said "logged in".
+        const { server, base } = await open();
+        await realFetch(`${base}/status`); // a page is open
+        noteQrOutcome("done");
+        const finished = server.finish({ graceMs: 3000 });
+        const d = await (await realFetch(`${base}/status`)).json();
+        assert.equal(d.loggedIn, true);
+        await finished;
+        await assert.rejects(realFetch(`${base}/status`), "closed once the page knew");
+    });
+
+    it("tells the page why the login failed", async () => {
+        const { server, base } = await open();
+        await realFetch(`${base}/status`);
+        noteQrOutcome("failed", "Login declined");
+        const finished = server.finish({ graceMs: 3000 });
+        const d = await (await realFetch(`${base}/status`)).json();
+        assert.deepEqual([d.loggedIn, d.outcome, d.message], [false, "failed", "Login declined"]);
+        await finished;
+    });
+
+    it("does not wait for a page nobody opened, nor for ever for one that stopped asking", async () => {
+        const quiet = await open();
+        noteQrOutcome("done");
+        const t0 = Date.now();
+        await quiet.server.finish({ graceMs: 3000 });
+        assert.ok(Date.now() - t0 < 500, "no page: at once");
+
+        const left = await open();
+        await realFetch(`${left.base}/status`);
+        noteQrOutcome("done");
+        const t1 = Date.now();
+        await left.server.finish({ graceMs: 300 });
+        assert.ok(Date.now() - t1 >= 250, "waited for the page's poll");
     });
 });

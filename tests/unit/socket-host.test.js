@@ -43,6 +43,9 @@ class FakeSupervisor extends EventEmitter {
         this.calls.push("continueChecking");
         this.watched = window;
     }
+    status() {
+        return { kickedVia: this.kickedVia ?? null };
+    }
 }
 
 const loginError = (message, code) => Object.assign(new Error(message), code === undefined ? {} : { code });
@@ -183,6 +186,15 @@ describe("socket host", () => {
             await new Promise((r) => setImmediate(r));
             assert.equal(made.length, 1, "a kicked daemon started another supervisor");
             assert.deepEqual(sleeps, [], "a kicked daemon asked for a new login");
+        });
+
+        it("says it was kicked, so the close that follows is not logged as a drop to retry", () => {
+            const h = host();
+            assert.equal(h.kicked(), false, "before any supervisor");
+            const sup = h.start({});
+            assert.equal(h.kicked(), false);
+            sup.kickedVia = "error-600";
+            assert.equal(h.kicked(), true);
         });
 
         it("is ignored during a deliberate shutdown", () => {

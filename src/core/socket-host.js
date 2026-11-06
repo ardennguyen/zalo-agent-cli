@@ -296,6 +296,8 @@ export function createSocketHost({
         start,
         reloginNow,
         current: () => supervisor,
+        /** Whether another session took the account: the close that follows a kick is not a drop to retry. */
+        kicked: () => Boolean(supervisor?.status?.().kickedVia),
         /** Stop for good: cancel any wait, close the socket. */
         async stop() {
             abort.abort();

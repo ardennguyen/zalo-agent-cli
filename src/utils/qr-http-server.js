@@ -10,17 +10,43 @@ import { info } from "./output.js";
 
 /**
  * Where the login is, for the page: which QR is on screen (the first, or the second an account with a trusted
- * device is asked to scan) and who scanned it. Set by the login command as the events arrive.
+ * device is asked to scan), who scanned it, whether it expired (and what asks for a new one), and how the login
+ * ended. Set by the login as the events arrive.
  */
-const qrState = { layer: 1, scanned: null };
+const qrState = { layer: 1, scanned: null, expired: false, refresh: null, outcome: null, message: "" };
 
 /**
- * Note which QR the page should say it is showing.
+ * Note which QR the page should say it is showing. A new code is never expired.
  * @param {number} [layer] - 1 for the first QR, 2 for the one scanned after it
  */
 export function noteQrLayer(layer = 1) {
     qrState.layer = layer;
+    qrState.expired = false;
+    qrState.refresh = null;
     if (layer === 1) qrState.scanned = null;
+}
+
+/**
+ * Note that the code on screen expired. The page then offers a new one, which calls `refresh` (once); with no
+ * `refresh` it can only say so.
+ * @param {(() => void)|null} refresh
+ */
+export function noteQrExpired(refresh) {
+    qrState.expired = true;
+    qrState.scanned = null;
+    qrState.refresh = typeof refresh === "function" ? refresh : null;
+}
+
+/**
+ * Note how the login ended, for the page to say.
+ * @param {"done"|"failed"} outcome
+ * @param {string} [message] - why it failed
+ */
+export function noteQrOutcome(outcome, message = "") {
+    qrState.outcome = outcome;
+    qrState.message = String(message || "");
+    qrState.expired = false;
+    qrState.refresh = null;
 }
 
 /**
@@ -67,6 +93,12 @@ h1{margin:0 0 4px;font-size:18px;font-weight:600}
 .note{min-height:42px;margin:0;color:#5b6b7c;font-size:14px}
 .note b{color:#081c36;font-weight:600}
 .done h1{color:#0a7d33}
+.frame .expired{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  background:rgba(255,255,255,.93);font-weight:600}
+.frame.off img{filter:blur(3px);opacity:.35}
+button{padding:8px 18px;border:0;border-radius:6px;background:#0068ff;color:#fff;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+.failed h1{color:#c4271b}
 .hidden{display:none}
 .lang{margin:14px 0 0;font-size:13px;color:#8593a3}
 .lang span{margin:0 8px}
@@ -92,6 +124,14 @@ export const PAGE_TEXT = Object.freeze({
         confirmNote: "Tap Confirm in the Zalo app to finish logging in.",
         doneTitle: "You are logged in",
         doneSub: "You can close this page. The command line is ready.",
+        expiredTitle: "QR code expired",
+        expiredNote: "Get a new code to keep logging in.",
+        expiredGone: "Run the login command again for a new code.",
+        refresh: "Get a new code",
+        failedTitle: "Login failed",
+        failedSub: "See the command line for details, then run the login again.",
+        goneTitle: "The login command has ended",
+        goneSub: "See the command line for how it went.",
         qrAlt: "QR code",
     }),
     vi: Object.freeze({
@@ -107,6 +147,14 @@ export const PAGE_TEXT = Object.freeze({
         confirmNote: "Nhấn Xác nhận trong ứng dụng Zalo để hoàn tất đăng nhập.",
         doneTitle: "Đã đăng nhập thành công",
         doneSub: "Bạn có thể đóng trang này. Dòng lệnh đã sẵn sàng.",
+        expiredTitle: "Mã QR đã hết hạn",
+        expiredNote: "Lấy mã mới để tiếp tục đăng nhập.",
+        expiredGone: "Chạy lại lệnh đăng nhập để có mã mới.",
+        refresh: "Lấy mã mới",
+        failedTitle: "Đăng nhập thất bại",
+        failedSub: "Xem chi tiết ở dòng lệnh, rồi chạy lại lệnh đăng nhập.",
+        goneTitle: "Lệnh đăng nhập đã kết thúc",
+        goneSub: "Xem kết quả ở dòng lệnh.",
         qrAlt: "Mã QR",
     }),
 });
@@ -133,16 +181,19 @@ function loginPage(imageUrl, version) {
 <div class="card" id="login">
 <h1 id="title">${en.title}</h1>
 <p class="sub" id="sub">${en.sub}</p>
-<div class="frame"><i></i><i></i><i></i><i></i><img id="qr" src="${imageUrl}" alt="${en.qrAlt}"></div>
+<div class="frame" id="frame"><i></i><i></i><i></i><i></i><img id="qr" src="${imageUrl}" alt="${en.qrAlt}">
+<div class="expired hidden" id="expired"><span id="expiredTitle">${en.expiredTitle}</span><button type="button" id="refresh">${en.refresh}</button></div></div>
 <p class="note" id="note">${en.note}</p>
 ${LANGUAGE_SWITCH}
 </div>
 <div class="card done hidden" id="done"><h1 id="doneTitle">${en.doneTitle}</h1>
 <p class="sub" id="doneSub">${en.doneSub}</p></div>
+<div class="card failed hidden" id="failed"><h1 id="failedTitle">${en.failedTitle}</h1>
+<p class="sub" id="failedMsg"></p><p class="note" id="failedSub">${en.failedSub}</p></div>
 <script>
-// Poll /status: swap in each new QR, say which one this is, and notice the end of the login.
+// Poll /status: swap in each new QR, say which one this is, offer a new code when it expires, and say how it ended.
 const TEXT=${JSON.stringify(PAGE_TEXT)};
-let version=${JSON.stringify(version)},layer=1,scanned=null;
+let version=${JSON.stringify(version)},layer=1,scanned=null,expired=false,canRefresh=false,ended=null,why='',misses=0,timer=null;
 const $=(id)=>document.getElementById(id);
 const saved=()=>{try{return localStorage.getItem('zalo-agent-lang')}catch{return null}};
 const asked=new URLSearchParams(location.search).get('lang');
@@ -154,7 +205,22 @@ function render(){
   $('qr').alt=t.qrAlt;
   $('doneTitle').textContent=t.doneTitle;
   $('doneSub').textContent=t.doneSub;
-  if(scanned!==null){
+  $('login').classList.toggle('hidden',ended!==null);
+  $('done').classList.toggle('hidden',ended!=='done');
+  $('failed').classList.toggle('hidden',ended!=='failed'&&ended!=='gone');
+  $('failedTitle').textContent=ended==='gone'?t.goneTitle:t.failedTitle;
+  $('failedMsg').textContent=ended==='gone'?'':why;
+  $('failedSub').textContent=ended==='gone'?t.goneSub:t.failedSub;
+  $('frame').classList.toggle('off',expired);
+  $('expired').classList.toggle('hidden',!expired);
+  $('expiredTitle').textContent=t.expiredTitle;
+  $('refresh').textContent=t.refresh;
+  $('refresh').classList.toggle('hidden',!canRefresh);
+  if(expired){
+    $('title').textContent=t.expiredTitle;
+    $('sub').textContent=t.sub;
+    $('note').textContent=canRefresh?t.expiredNote:t.expiredGone;
+  }else if(scanned!==null){
     $('title').textContent=t.confirmTitle;
     $('sub').textContent=scanned;
     $('note').textContent=t.confirmNote;
@@ -174,17 +240,33 @@ document.querySelectorAll('[data-lang]').forEach((a)=>a.addEventListener('click'
   try{localStorage.setItem('zalo-agent-lang',lang)}catch{}
   render();
 }));
+$('refresh').addEventListener('click',async()=>{
+  $('refresh').disabled=true;
+  try{await fetch('/refresh',{method:'POST'})}catch{}
+  $('refresh').disabled=false;
+  poll();
+});
 render();
 async function poll(){
+  if(ended)return;
   try{
-    const d=await (await fetch('/status')).json();
-    if(d.loggedIn){$('login').classList.add('hidden');$('done').classList.remove('hidden');return}
-    if(d.qrVersion&&d.qrVersion!==version){version=d.qrVersion;$('qr').src='/qr.png?v='+version}
-    layer=d.layer||1;scanned=d.scanned;render();
-  }catch{}
+    const d=await (await fetch('/status',{cache:'no-store'})).json();
+    misses=0;
+    if(d.loggedIn)ended='done';
+    else if(d.outcome==='failed'){ended='failed';why=d.message||''}
+    else{
+      if(d.qrVersion&&d.qrVersion!==version){version=d.qrVersion;$('qr').src='/qr.png?v='+version}
+      layer=d.layer||1;scanned=d.scanned;expired=Boolean(d.expired);canRefresh=Boolean(d.canRefresh);
+    }
+  }catch{
+    // The command serves this page only while the login runs: gone means it ended, and the terminal says how.
+    if(++misses>=3)ended='gone';
+  }
+  render();
+  if(ended&&timer){clearInterval(timer);timer=null}
 }
 poll();
-setInterval(poll,1500);
+timer=setInterval(poll,1500);
 </script>
 </body></html>`;
 }
@@ -206,7 +288,18 @@ setInterval(poll,1500);
  */
 export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080, 3000, 9000], exposeOnLan = false) {
     const bindHost = exposeOnLan ? "0.0.0.0" : "127.0.0.1";
+    qrState.outcome = null;
+    qrState.message = "";
+    // Whether a page is open (it polls /status), and who waits for it to have read how the login ended.
+    let pageOpen = false;
+    let outcomeSeen = null;
+    const seenOutcome = () => {
+        const done = outcomeSeen;
+        outcomeSeen = null;
+        done?.();
+    };
     const server = http.createServer(async (req, res) => {
+        if ((req.url || "").startsWith("/status")) pageOpen = true;
         // The path decides, not the query: `/qr?lang=vi` is the page, `/qr.png?v=1` is the image.
         const path = (req.url || "/").split("?")[0];
         if (path === "/qr" || path === "/") {
@@ -234,20 +327,34 @@ export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080
             res.end(img);
         } else if (path === "/status") {
             // Login status endpoint for browser polling
-            let loggedIn = false;
-            try {
-                const { isLoggedIn } = await import("../core/zalo-client.js");
-                loggedIn = isLoggedIn();
-            } catch {}
-            res.writeHead(200, { "Content-Type": "application/json" });
+            let loggedIn = qrState.outcome === "done";
+            if (qrState.outcome === null) {
+                try {
+                    const { isLoggedIn } = await import("../core/zalo-client.js");
+                    loggedIn = isLoggedIn();
+                } catch {}
+            }
+            res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
             res.end(
                 JSON.stringify({
                     loggedIn,
                     qrVersion: qrVersion(qrImagePath),
                     layer: qrState.layer,
                     scanned: qrState.scanned,
+                    expired: qrState.expired,
+                    canRefresh: qrState.expired && qrState.refresh !== null,
+                    outcome: qrState.outcome,
+                    message: qrState.outcome === "failed" ? qrState.message : "",
                 }),
             );
+            if (qrState.outcome !== null) seenOutcome();
+        } else if (path === "/refresh" && req.method === "POST") {
+            // The page's "Get a new code": only an expired code is replaced, and only once.
+            const refresh = qrState.expired ? qrState.refresh : null;
+            qrState.refresh = null;
+            res.writeHead(refresh ? 200 : 409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: Boolean(refresh) }));
+            if (refresh) refresh();
         } else {
             res.writeHead(404);
             res.end("Not found");
@@ -316,12 +423,39 @@ export function startQrServer(qrImagePath, port = 18927, tryPorts = [18927, 8080
 
     tryListen();
 
+    const close = () => {
+        try {
+            server.close();
+        } catch {}
+    };
     return {
         url: `http://localhost:${port}/qr`,
-        close: () => {
-            try {
-                server.close();
-            } catch {}
-        },
+        close,
+        /**
+         * Close once an open page has read how the login ended (`noteQrOutcome` first), or after `graceMs`. Closing at
+         * once left the page polling a server that was gone, so it never said "logged in". With no page open, at once.
+         * @param {{graceMs?: number}} [o]
+         * @returns {Promise<void>}
+         */
+        finish: ({ graceMs = 4000 } = {}) =>
+            new Promise((resolve) => {
+                if (!pageOpen) {
+                    close();
+                    resolve();
+                    return;
+                }
+                // This timer is what keeps the process up for the page's last poll: the server itself is unref'd.
+                const timer = setTimeout(() => done(), graceMs);
+                const done = () => {
+                    clearTimeout(timer);
+                    outcomeSeen = null;
+                    // a moment for the answer to leave before the server goes
+                    setTimeout(() => {
+                        close();
+                        resolve();
+                    }, 50);
+                };
+                outcomeSeen = done;
+            }),
     };
 }

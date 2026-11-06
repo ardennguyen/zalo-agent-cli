@@ -44,10 +44,10 @@ Tick **auto sync** on the phone's QR confirmation screen, and run `zalo-agent lo
 |-------|-----|
 | QR won't scan | Use browser QR (`--qr-url`), NOT terminal ASCII |
 | Port blocked | Open port in firewall: `ufw allow 18927` |
-| QR expired | Re-run `zalo-agent login --qr-url &` |
+| QR expired | At a terminal: press Enter, or click "Get a new code" on the page (the login ends after 5 min without one). In the background or with `--json`, up to 5 codes are shown, then the login ends with `Login timed out: …`: re-run `zalo-agent login --qr-url &` |
 | Already logged in | `zalo-agent logout` first |
 | Wrong QR scanner | Must use **Zalo app → QR Scanner**, NOT phone camera |
-| Declined on phone | Login exits immediately with "Login declined on phone" (does not hang until the 60s QR timeout) — just re-run `zalo-agent login --qr-url &` |
+| Declined on phone | Login exits immediately with "Login declined on phone" (does not hang until the QR expires); the page says "Login failed" too — just re-run `zalo-agent login --qr-url &` |
 
 ## Method 2: Headless (Credentials File)
 No human interaction. For automation, CI, server migration.

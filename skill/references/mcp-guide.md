@@ -219,7 +219,7 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 ```json
 {
   "messages": [
-    { "msgId": "msg123", "threadId": "uid456", "threadType": "dm", "senderId": "uid789", "senderName": "Phúc", "text": "Xin chào", "timestamp": 1710000000000, "type": "text", "replyTo": null, "threadName": "Phúc", "readOnZalo": false }
+    { "msgId": "msg123", "cliMsgId": "1710000000000", "threadId": "uid456", "threadType": "dm", "senderId": "uid789", "senderName": "Phúc", "text": "Xin chào", "timestamp": 1710000000000, "type": "text", "replyTo": null, "threadName": "Phúc", "readOnZalo": false }
   ],
   "cursor": 1762400000042,
   "hasMore": false
@@ -229,7 +229,7 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 
 **Cursor qua một lần khởi động lại daemon (3.0):** buffer chỉ nằm trong bộ nhớ, nhưng bot thường lưu cursor của mình. Trước 3.0 bộ đếm chạy lại từ 1 sau mỗi lần daemon khởi động lại, nên một bot quay lại với `since=107` bỏ qua im lặng mọi tin đến trước khi bộ đếm vượt 107. Giờ cursor của daemon bắt đầu từ đồng hồ (epoch-ms lúc khởi động), luôn lớn hơn cursor cũ; và một `since` lớn hơn tin mới nhất trong buffer được coi là cursor cũ: đọc lại từ đầu buffer (có thể lặp vài tin, không bao giờ mất tin). `zalo_mark_read` với cursor cũ như vậy không đánh dấu gì. Đừng giả định cursor là số nhỏ hay liên tục từ 1.
 
-**`replyTo` (3.0):** một tin trả lời (trích dẫn) tin khác mang `replyTo` = `{ msgId, cliMsgId, senderId, senderName, text, timestamp, hasAttachment }` của tin được trích; tin không trích dẫn có `replyTo: null`. Có ở `zalo_get_messages`, `zalo_wait_for_message`, `zalo_get_history` (cả cache lẫn server) và `zalo_search_messages`, và trong webhook. `senderId` là `null` khi Zalo chỉ cho một id đã mã hóa (tin khôi phục từ điện thoại); `text` rỗng và `hasAttachment: true` khi tin được trích là ảnh hay file.
+**`replyTo` (3.0):** một tin trả lời (trích dẫn) tin khác mang `replyTo` = `{ msgId, cliMsgId, senderId, senderName, text, timestamp, hasAttachment }` của tin được trích; tin không trích dẫn có `replyTo: null`. Có ở `zalo_get_messages`, `zalo_wait_for_message`, `zalo_get_history` (cả cache lẫn server) và `zalo_search_messages`, và trong webhook. `senderId` là `null` khi Zalo chỉ cho một id đã mã hóa (tin khôi phục từ điện thoại); `text` rỗng và `hasAttachment: true` khi tin được trích là ảnh hay file. Tin trả lời gửi từ điện thoại chỉ nêu `cliMsgId` của tin được trích (Zalo để `globalMsgId` là 0): `msgId` khi đó được tìm lại trong cache theo `cliMsgId` trong cùng hội thoại, và là `null` nếu tin đó chưa có trong cache. Mỗi tin cũng mang `cliMsgId` của chính nó, nên vẫn so khớp được `replyTo.cliMsgId` với tin trước đó.
 
 Một tin bị thu hồi cũng xuất hiện trong danh sách này (và đánh thức `zalo_wait_for_message`) dưới dạng một mục có `type` là `"undo"`: `msgId` là tin đã bị thu hồi (`null` nếu Zalo chỉ cho biết `cliMsgId`), `text` rỗng, và tin cũ không còn trong cache. Thu hồi do chính tài khoản làm (qua `zalo_undo`) không được đưa vào.
 

@@ -109,7 +109,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **3702** as of 2026-11-06 (3692 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **3721** as of 2026-11-06 (3711 pass, 10 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1518,6 +1518,16 @@ a kick by Zalo Web ends the saved session, and the next start needs a QR. The `k
 `settings.features.kick_out_config[src]`: source 2 is titled "Device changed" ("You previously logged into Zalo on a
 different browser"). The listener now logs that text and the time. Treating 3003 `KICKOUT_BY_WORKER` as terminal at once was considered and not done: 3003 is also in
 Zalo's retry list, and a wrong guess would end a healthy daemon.
+
+**The 3.0.0 live check, 2026-11-06.** On the new code, one Zalo Web login (a fresh QR login on the same account)
+logged the kick (error 600), then `Zalo says why: Device changed …` 80 ms later, wrote `kicked.json` and `fleet status`
+said `kicked`; the next connect removed the marker. A Web tab already logged in to another account kicks nothing. An
+unread mark set on the phone while the daemon was stopped came back with the 603 replay (`replayed 1 control(s)`).
+`friend alias` and `alias-list` are not routed through the daemon: each makes its own HTTP login, opens no socket and
+does not disturb the daemon (the daemon logs the resulting `alias update` control as unhandled). **A reply sent from the
+phone quotes with `globalMsgId: "0"`** and only the quoted message's `cliMsgId` (equal to that message's own
+`cliMsgId` in the cache); `replyTo.msgId` is therefore resolved from the cache by thread and `cliMsgId`
+(`resolveReplyTo` in `src/core/cached-message.js`), and every message carries its own `cliMsgId`.
 
 **Auto sync at login (Y8), 2026-10-26.** With "auto sync" ticked on the phone's QR confirmation, the phone puts two
 `transfer_sync2 / transfer_after_login` controls in the control queues (603_1 and 603_0), stamped at the login:

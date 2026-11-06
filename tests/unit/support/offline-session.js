@@ -11,7 +11,10 @@
  * through `ctx.options.polyfill`, which here:
  *
  *   1. decrypts `params` with a throwaway session key, exactly as the server would,
- *   2. appends `{method, service, path, params}` as one JSON line to ZALO_OFFLINE_LOG,
+ *   2. appends `{method, service, path, query, params}` as one JSON line to ZALO_OFFLINE_LOG, together with
+ *      what the wire-diff harness compares: `url`, `queryOrder`, `rawParams` (the encrypted string),
+ *      `headers` (lower-cased), `form` (a urlencoded body's fields), and `parts` (a multipart body's parts
+ *      as `{name, filename, type, size, sha256}`),
  *   3. answers with a canned success (overridable per path).
  *
  * Any request to a host that is not the stub's own throws, so no code path can
@@ -32,8 +35,10 @@
  *                           where the patch did not apply (upstream returns only
  *                           {msgId})
  */
+import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { API } from "zca-js";
+import { parseMultipart, readBody } from "../../helpers/wire-diff/body.js";
 
 const DIST = new URL(".", import.meta.resolve("zca-js"));
 const { encodeAES, decodeAES, ParamsEncryptor } = await import(new URL("utils.js", DIST).href);
@@ -143,9 +148,28 @@ function envelope(data, error) {
  */
 async function offlineFetch(url, init = {}) {
     const u = new URL(url);
+    const headers = Object.fromEntries(new Headers(init.headers ?? {}));
+    const body = await readBody(init.body);
+    if (body.contentType && !headers["content-type"]) headers["content-type"] = body.contentType;
+    const type = headers["content-type"] ?? "";
+    const form =
+        body.bytes && /^application\/x-www-form-urlencoded/i.test(type)
+            ? Object.fromEntries(new URLSearchParams(body.bytes.toString("utf8")))
+            : null;
+    const parts =
+        body.bytes && /^multipart\//i.test(type)
+            ? (parseMultipart(body.bytes, type) ?? []).map((p) => ({
+                  name: p.name,
+                  filename: p.filename,
+                  type: p.type,
+                  size: p.bytes.length,
+                  sha256: createHash("sha256").update(p.bytes).digest("hex"),
+              }))
+            : null;
     let enc = null;
-    if (init.body instanceof URLSearchParams) enc = init.body.get("params");
+    if (typeof form?.params === "string") enc = form.params;
     if (!enc && u.searchParams.get("params")) enc = u.searchParams.get("params");
+    const rawParams = enc;
     let params = enc ? decodeAES(KEY, enc) : null;
     try {
         params = params ? JSON.parse(params) : params;
@@ -157,7 +181,19 @@ async function offlineFetch(url, init = {}) {
     if (LOG) {
         appendFileSync(
             LOG,
-            JSON.stringify({ method: init.method || "GET", service, path: u.pathname, query, params }) + "\n",
+            JSON.stringify({
+                method: init.method || "GET",
+                service,
+                path: u.pathname,
+                query,
+                params,
+                url: String(url),
+                queryOrder: [...u.searchParams.keys()],
+                rawParams,
+                headers,
+                form,
+                parts,
+            }) + "\n",
         );
     }
     const call = (calls.get(u.pathname) || 0) + 1;

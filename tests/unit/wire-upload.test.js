@@ -149,38 +149,35 @@ const fileDone = (id, url) => ({
  * Play one 601 control the way a listener hands it to the registry.
  *
  * - "zca": zca-js's listener (its `file_done` only): call the entry under the id with `{fileUrl, fileId}`, delete it.
- * - "l2": our listener as built on wp/l2 (src/zalo/listener/listener.js `#settle`): call and delete the entry under
- *   the id with `{fileUrl, fileId}` first, then `settle(id, {url, kind, data: control})`.
- * - "settle": the settle hook alone (design 1.4), with the whole control as `data`.
+ * - "settle": our listener (src/zalo/listener/listener.js `#settle`): the registry's settle hook alone, with the
+ *   whole control as `data`; the registry itself calls a function entry with `{fileUrl, fileId}`.
  *
  * @param {import("../../src/zalo/kernel/session.js").UploadRegistry} reg
  * @param {string} id
  * @param {{url: string|null, kind: string, control: object}} c
- * @param {"zca"|"l2"|"settle"} listener
+ * @param {"zca"|"settle"} listener
  */
 function playControl(reg, id, { url, kind, control }, listener) {
-    if (listener !== "settle") {
-        const cb = reg.get(id);
-        if (typeof cb === "function") {
-            reg.delete(id);
-            cb({ fileUrl: url, fileId: id });
-        }
-        if (listener === "zca") return;
+    if (listener === "settle") {
+        reg.settle(id, { url, kind, data: control });
+        return;
     }
-    reg.settle(id, { url, kind, data: control });
+    const cb = reg.get(id);
+    if (typeof cb === "function") {
+        reg.delete(id);
+        cb({ fileUrl: url, fileId: id });
+    }
 }
 
 /**
  * A `during` hook that plays the listener's `file_done` for each file in turn, once its upload waits (see
  * {@link playControl} for the listeners).
  *
- * In a pair run, zca-js's side always gets zca-js's own listener: L2's order would leave zca-js's file_done in the
- * registry's early cache (L2 calls `settle()` after the Map entry took it, and nobody else waits), where our side's
- * wait would then find it before the test could play its own control.
+ * In a pair run, zca-js's side always gets zca-js's own listener, the one its uploader was written for.
  *
  * @param {import("../../src/zalo/kernel/session.js").UploadRegistry} reg
  * @param {string[]} names
- * @param {"zca"|"l2"|"settle"} listener - for our side (and for a run on our side alone)
+ * @param {"zca"|"settle"} listener - for our side (and for a run on our side alone)
  */
 function playFileDone(reg, names, listener) {
     return async (_clock, side) => {
@@ -418,12 +415,12 @@ describe("wire: attachments, zca-js against ours", () => {
         assert.equal(send.params.clientId, T0);
     });
 
-    it("a file to a group, settled the way our listener (L2) does it: the Map entry, then the settle hook", async () => {
+    it("a file to a group, settled the way our listener does it: the settle hook", async () => {
         const rec = await compared(
             "sendMessage/file-group",
             "sendMessage",
             [{ msg: "", attachments: [FILES.csv.path] }, GROUP, 1],
-            { replies: replies(), during: playFileDone(reg, ["data.csv"], "l2") },
+            { replies: replies(), during: playFileDone(reg, ["data.csv"], "settle") },
         );
         const send = ofKind(rec.own.requests, "file")[0];
         assert.equal(send.params.fileUrl, fileUrlOf("data.csv"));
@@ -493,7 +490,7 @@ describe("wire: attachments, zca-js against ours", () => {
         captionCalls.length = 0;
         const raw = await pair.run("sendMessage", [{ msg: "see the file", attachments: [FILES.pdf.path] }, GROUP, 1], {
             replies: replies(),
-            during: playFileDone(reg, ["document.pdf"], "l2"),
+            during: playFileDone(reg, ["document.pdf"], "settle"),
         });
         // zca-js's caption is a text request, first; it is MSG's to compare, so it leaves the comparison here.
         const isCaption = (r) => requestKind(r) === null;
@@ -947,22 +944,21 @@ describe("upload settlement: either listener reaches our wait (upload.js)", () =
     });
     after(() => pair?.close());
 
-    it("L2's order on a file_done (the Map entry, then settle): the URL is used, nothing is left behind", async () => {
+    it("our listener on a file_done: the Map entry and the waiter take it, nothing is left behind", async () => {
         const id = fileIdOf("notes.txt");
         const rec = await runOwn(pair, "sendMessage", [{ msg: "", attachments: [FILES.txt.path] }, USER, 0], {
             replies: replies(),
-            during: playFileDone(reg, ["notes.txt"], "l2"),
+            during: playFileDone(reg, ["notes.txt"], "settle"),
         });
         assert.equal(rec.error, null);
         assert.equal(ofKind(rec.requests, "file")[0].params.fileUrl, fileUrlOf("notes.txt"));
         assert.equal(ofKind(rec.requests, "chunk").length, 1, "no replay");
-        // Red if the Map entry ended the wait at once: L2's settle() that follows would then find nobody waiting
-        // and park the control in the early cache for a minute.
+        // Red if settle() parked the control in the early cache although the Map entry and the waiter took it.
         assert.equal(reg.early.has(id), false, "no stale early settlement");
         assert.equal(reg.has(id), false, "the wait's own entry is gone");
     });
 
-    it("L2's order on a photo_success: the one URL the Map entry gets is ignored, the control fills all three", async () => {
+    it("our listener on a photo_success: the one URL the Map entry gets is ignored, the control fills all three", async () => {
         const id = photoIdOf("image-64x48.jpg");
         const urls = {
             org: "https://photo.zalo.invalid/o.jpg",
@@ -978,13 +974,13 @@ describe("upload settlement: either listener reaches our wait (upload.js)", () =
             replies: replies({ photoWithoutUrls: true }),
             during: async () => {
                 await until(() => typeof reg.get(id) === "function", "the photo's wait");
-                // L2 hands the Map entry the photo's original URL as `fileUrl` (dispatch.js uploadUrl).
-                playControl(reg, id, { url: urls.org, kind: "photo_success", control }, "l2");
+                // The registry hands the Map entry the photo's original URL as `fileUrl` (dispatch.js uploadUrl).
+                playControl(reg, id, { url: urls.org, kind: "photo_success", control }, "settle");
             },
         });
         assert.equal(rec.error, null);
         const send = ofKind(rec.requests, "photo")[0];
-        // Red if the Map entry ended the wait before settle() came: the send would carry no thumbnail or HD URL.
+        // Red if the Map entry's one URL ended the wait: the send would carry no thumbnail or HD URL.
         assert.deepEqual(
             [send.params.rawUrl, send.params.hdUrl, send.params.thumbUrl],
             [urls.org, urls.hd, urls.thumb],
@@ -1051,7 +1047,7 @@ describe("upload settlement: either listener reaches our wait (upload.js)", () =
                     reg,
                     id,
                     { url: fileUrlOf("notes.txt"), kind: "file_done", control: fileDone(id, fileUrlOf("notes.txt")) },
-                    "l2",
+                    "settle",
                 );
             },
         });
@@ -1099,5 +1095,81 @@ describe("upload settlement: zca-js's listener over a real socket", () => {
             fake.uninstall();
             await sock.close();
         }
+    });
+});
+
+describe("upload settlement: our listener over a real socket", () => {
+    /** Log in, build `api` with our listener on a fake socket, and wait for the socket's key. */
+    async function withOurListener(build, body) {
+        const sock = await startFakeSocket();
+        const fake = installFakeZalo({ wsUrls: [sock.url] });
+        let api;
+        try {
+            const { ctx, serviceMap } = await loginOnce(ZALO_OPTIONS);
+            api = await build(ctx, serviceMap, [sock.url]);
+            const connected = once(api.listener, "connected");
+            api.listener.start();
+            await connected;
+            await until(() => api.listener.cipherKey, "the socket's key");
+            installAnswers(fake, replies());
+            await body({ api, ctx, sock, fake });
+        } finally {
+            if (api) {
+                api.listener.on("error", () => {});
+                api.listener.stop();
+            }
+            fake.uninstall();
+            await sock.close();
+        }
+    }
+
+    const push601 = (sock, id, name) =>
+        sock.pushEncrypted({
+            cmd: 601,
+            sub: 0,
+            version: 1,
+            encrypt: 2,
+            body: controlBody([fileDone(id, fileUrlOf(name))]),
+        });
+
+    it("our upload, settled by our listener from a real 601 frame: nothing is left in the early cache", async () => {
+        await withOurListener(
+            (ctx, map, urls) => pairCreateApi(ctx, map, urls, { engine: "own" }),
+            async ({ api, ctx, sock, fake }) => {
+                const id = fileIdOf("notes.txt");
+                const sending = api.sendMessage({ msg: "", attachments: [FILES.txt.path] }, USER, 0);
+                await until(() => ctx.uploadCallbacks.events.listenerCount(id) > 0, "the upload to wait");
+                push601(sock, id, "notes.txt");
+                const result = await sending;
+                const send = fake.requests.find((r) => r.path.endsWith("/asyncfile/msg"));
+                assert.equal(send.params.fileUrl, fileUrlOf("notes.txt"));
+                assert.equal(result.attachment[0].msgId, msgIdOf(id));
+                // Red if settle() parked the control although the upload's entry and waiter took it.
+                assert.equal(ctx.uploadCallbacks.early.has(id), false);
+                assert.equal(ctx.uploadCallbacks.has(id), false);
+            },
+        );
+    });
+
+    it("zca-js's uploader, settled by our listener: its callback gets {fileUrl, fileId}, nothing is left behind", async () => {
+        await withOurListener(
+            (ctx, map, urls) =>
+                createApi(ctx, map, urls, { env: { ZALO_ENGINE_ZCA: "sendMessage", ZALO_ENGINE_OWN: "listener" } }),
+            async ({ api, ctx, sock, fake }) => {
+                const id = fileIdOf("notes.txt");
+                const sending = api.sendMessage({ msg: "", attachments: [FILES.txt.path] }, USER, 0);
+                // zca-js registers a plain function under the id and waits for nothing else.
+                await until(() => typeof ctx.uploadCallbacks.get(id) === "function", "zca-js's upload to wait");
+                assert.equal(ctx.uploadCallbacks.events.listenerCount(id), 0, "zca-js's side, not ours");
+                push601(sock, id, "notes.txt");
+                await sending;
+                const send = fake.requests.find((r) => r.path.endsWith("/asyncfile/msg"));
+                // Red if the registry handed the callback the control instead of zca-js's {fileUrl, fileId}.
+                assert.equal(send.params.fileUrl, fileUrlOf("notes.txt"));
+                // Red if settle() also parked the control: the callback took it.
+                assert.equal(ctx.uploadCallbacks.early.has(id), false);
+                assert.equal(ctx.uploadCallbacks.has(id), false);
+            },
+        );
     });
 });

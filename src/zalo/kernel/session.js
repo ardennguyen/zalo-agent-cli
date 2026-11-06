@@ -69,7 +69,7 @@ export function createSession({
  * @property {string} fileId
  * @property {string|null} url
  * @property {string|null} kind - "file_done", "video_done", "photo_success", ...
- * @property {unknown} data - the control's whole `data`
+ * @property {unknown} data - what the listener hands over: the whole 601 control
  */
 
 /**
@@ -79,8 +79,11 @@ export function createSession({
  * upload and a listener written against zca-js's `ctx.uploadCallbacks` keep working on it. On top of that:
  *
  * - `waitFor(fileId, {timeoutMs, signal})` resolves with the settlement when it comes;
- * - `settle(fileId, data)` hands a settlement to its waiter, or, when nobody waits yet, keeps it for
- *   {@link EARLY_SETTLE_TTL_MS} so a `waitFor` that comes a moment later still gets it (zca-js loses such a 601).
+ * - `settle(fileId, {url, kind, data})` is the one call a listener makes for a finished upload. A function entry
+ *   under the id (zca-js's uploader registers one) is removed and called with `{fileUrl, fileId}`, the shape
+ *   zca-js's own listener hands it; every waiter gets the settlement. Only when neither took it is it kept for
+ *   {@link EARLY_SETTLE_TTL_MS}, so a `waitFor` that comes a moment later still gets it (zca-js loses such a 601),
+ *   and nothing is left behind once someone did.
  *
  * Timers never keep the process alive.
  */
@@ -145,20 +148,21 @@ export class UploadRegistry extends Map {
     }
 
     /**
-     * Hand a settlement to whoever waits for this file. A function entry registered the zca-js way is called with
-     * `data` and removed. With nobody waiting, the settlement is kept for a short while.
+     * Hand a settlement to whoever waits for this file. A function entry registered the zca-js way is removed and
+     * called with `{fileUrl: url, fileId}`; every waiter gets `{fileId, url, kind, data}`. With nobody to take it,
+     * the settlement is kept for a short while.
      *
-     * @param {string} fileId
-     * @param {{url?: string|null, kind?: string|null, data?: unknown}|object} [info]
+     * @param {string|number} fileId - as the control carries it (handed to a function entry unchanged)
+     * @param {{url?: string|null, kind?: string|null, data?: unknown}} [info]
      * @returns {boolean} whether a waiter or a callback took it
      */
     settle(fileId, info = {}) {
         const id = String(fileId);
         const settlement = {
             fileId: id,
-            url: info?.url ?? info?.fileUrl ?? null,
+            url: info?.url ?? null,
             kind: info?.kind ?? null,
-            data: info?.data ?? info,
+            data: info?.data ?? null,
         };
         let taken = false;
         const entry = super.get(id);
@@ -166,7 +170,7 @@ export class UploadRegistry extends Map {
             this.delete(id);
             taken = true;
             try {
-                entry(settlement.data);
+                entry({ fileUrl: settlement.url, fileId });
             } catch {
                 /* a callback's own failure is its own */
             }

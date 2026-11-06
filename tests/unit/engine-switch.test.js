@@ -211,8 +211,25 @@ describe("createApi on one logged-in context", () => {
                 ctx.uploadCallbacks.settle("fake-file-1", { url: "https://f.invalid/1", data: { x: 1 } }),
                 true,
             );
-            assert.deepEqual(got, { x: 1 });
+            // zca-js's own listener hands its callback {fileUrl, fileId}; the registry does the same.
+            assert.deepEqual(got, { fileUrl: "https://f.invalid/1", fileId: "fake-file-1" });
             assert.equal(ctx.uploadCallbacks.has("fake-file-1"), false);
+            // The callback took it: nothing is kept for a later waiter.
+            assert.equal(ctx.uploadCallbacks.early.has("fake-file-1"), false);
+            // A callback and a waiter both get it, and again nothing is kept.
+            let cb = null;
+            ctx.uploadCallbacks.set("fake-file-3", (d) => (cb = d));
+            const waiting = ctx.uploadCallbacks.waitFor("fake-file-3", { timeoutMs: 1000 });
+            const control = { content: { fileId: "fake-file-3" } };
+            ctx.uploadCallbacks.settle("fake-file-3", { url: "https://f.invalid/3", kind: "file_done", data: control });
+            assert.deepEqual(cb, { fileUrl: "https://f.invalid/3", fileId: "fake-file-3" });
+            assert.deepEqual(await waiting, {
+                fileId: "fake-file-3",
+                url: "https://f.invalid/3",
+                kind: "file_done",
+                data: control,
+            });
+            assert.equal(ctx.uploadCallbacks.early.has("fake-file-3"), false);
             // A settlement that arrives first is kept for the waiter that comes after it.
             ctx.uploadCallbacks.settle("fake-file-2", { url: "https://f.invalid/2", kind: "file_done", data: {} });
             const s = await ctx.uploadCallbacks.waitFor("fake-file-2", { timeoutMs: 1000 });

@@ -426,9 +426,10 @@ function fromReplay(route, id, data) {
  * whole control; zca-js's knows only the Map and calls the function it finds under the id with `{fileUrl, fileId}`.
  * So while a file waits, a callback of ours stands under its id (when nothing else is registered there). The
  * callback takes only a `{fileUrl}` that is a non-empty string, and only for a file (a photo needs the whole set of
- * URLs, which only the control has). It acts one macrotask later: a listener that calls the Map entry and then
- * `settle()` (L2's order) is then answered by `settle()`, whose control reaches the waiter directly, and the callback
- * finds the wait over and does nothing, so no settlement is left in the registry's early cache.
+ * URLs, which only the control has). Under our listener the registry's `settle()` calls that callback and then
+ * hands the waiter the control; the callback acts one macrotask later, so the control (which reached the waiter
+ * first) is what the upload uses, and the callback finds the wait over and does nothing. Either way the settlement
+ * was taken, so nothing is left in the registry's early cache.
  *
  * @param {import("../api.js").Session} s
  * @param {object} p

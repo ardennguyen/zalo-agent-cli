@@ -501,6 +501,21 @@ describe("upload settlement (601)", () => {
         assert.deepEqual(s.data, control);
     });
 
+    it("a callback and a waiter both get one 601, and nothing is left in the early cache", async () => {
+        const r = await rig();
+        await startKeyed(r);
+        let got = null;
+        r.ctx.uploadCallbacks.set("9000005", (d) => (got = d));
+        const waiting = r.ctx.uploadCallbacks.waitFor("9000005", { timeoutMs: 1000 });
+        const control = fileDone("9000005", "https://f.invalid/5");
+        r.sock.push(601, 0, ok({ controls: [control] }));
+        const s = await waiting;
+        assert.deepEqual(s.data, control);
+        assert.deepEqual(got, { fileUrl: "https://f.invalid/5", fileId: "9000005" });
+        // Red if the listener settled twice (the callback, then settle()): the second would be parked for 60 s.
+        assert.equal(r.ctx.uploadCallbacks.early.has("9000005"), false);
+    });
+
     it("settles the video and photo forms too, with their URLs", async () => {
         const r = await rig();
         await startKeyed(r);

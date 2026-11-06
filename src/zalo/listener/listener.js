@@ -427,23 +427,26 @@ export class Listener extends EventEmitter {
     }
 
     /**
-     * An upload the server finished: a callback registered the zca-js way gets `{fileUrl, fileId}` and is removed,
-     * then the registry's waiter (or its early cache) gets `{url, kind, data}` with the whole control as `data`.
+     * An upload the server finished: one `settle(fileId, {url, kind, data})` with the whole control as `data`. The
+     * registry (src/zalo/kernel/session.js) calls a callback registered the zca-js way with `{fileUrl, fileId}`
+     * and hands the waiters the settlement. A plain Map (no `settle`) only gets its callback called and removed.
      */
     #settle({ fileId, url, kind, control }) {
         const registry = this.#ctx?.uploadCallbacks;
         if (!registry || fileId === undefined || fileId === null) return;
+        if (typeof registry.settle === "function") {
+            registry.settle(fileId, { url, kind, data: control });
+            return;
+        }
         const id = String(fileId);
         const callback = registry.get?.(id);
-        if (typeof callback === "function") {
-            registry.delete(id);
-            try {
-                callback({ fileUrl: url, fileId });
-            } catch {
-                /* the callback's failure is its own */
-            }
+        if (typeof callback !== "function") return;
+        registry.delete(id);
+        try {
+            callback({ fileUrl: url, fileId });
+        } catch {
+            /* the callback's failure is its own */
         }
-        if (typeof registry.settle === "function") registry.settle(id, { url, kind, data: control });
     }
 
     /** The interval ping for sessions without a supervisor; skipped while one is outstanding. */

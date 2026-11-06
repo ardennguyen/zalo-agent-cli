@@ -36,24 +36,6 @@ function getToPost(method, why) {
     ];
 }
 
-/**
- * Global rows that are untrue here, by row id, per method (`"*"`: every method of the area). The test drops them
- * (a declared row that is absent would fail):
- *
- * - D3 (every method): the global row says our Accept-Language differs from zca-js's, but the kernel on this branch
- *   still sends zca-js's `en-US,en;q=0.9` (src/zalo/kernel/http.js `ACCEPT_LANGUAGE`, kept on purpose by K1 until
- *   it moves into src/zalo/profile.js). If the kernel changes it, the header shows up as an undeclared difference
- *   and this exemption must go.
- * - D2 (getGroupMembersInfo, changeGroupOwner): the global row says "zca-js's GET carries a form content type, ours
- *   none", but we send these requests as a form POST, so ours carries the form content type too and there is no
- *   difference left to see.
- */
-export const GLOBAL_EXEMPT = Object.freeze({
-    "*": Object.freeze(["D3"]),
-    getGroupMembersInfo: Object.freeze(["D2"]),
-    changeGroupOwner: Object.freeze(["D2"]),
-});
-
 /** @type {Array<{method: string, field: string, zca: unknown, own: unknown, why: string, when?: Function}>} */
 export default [
     {

@@ -639,16 +639,8 @@ const ERRORS = {
  */
 function allowFor(caseName) {
     const names = (c) => (c.endsWith("*") ? caseName.startsWith(c.slice(0, -1)) : c === caseName);
-    return ALLOW.messages.filter((r) => (r.method === "*" ? !STALE_GLOBAL.has(r.id) : (r.cases ?? []).some(names)));
+    return ALLOW.messages.filter((r) => (r.method === "*" ? true : (r.cases ?? []).some(names)));
 }
-
-/**
- * Global rows that declare a difference the kernel does not make yet, so they would fail every case: D3 says ours
- * sends the browser's own Accept-Language, but src/zalo/kernel/http.js (K1) still sends zca-js's "en-US,en;q=0.9"
- * on purpose (moving it into profile.js is a separate change). Left out here instead of edited in allow.js, which
- * package WP0 owns; with the row out, any Accept-Language difference fails as undeclared.
- */
-const STALE_GLOBAL = new Set(["D3"]);
 
 /** Answer the hosted host's HEAD (installed again after every `clearRoutes`, since pair.run clears them). */
 function installHosted(fake) {

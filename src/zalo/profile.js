@@ -37,6 +37,13 @@ export const COMPUTER_NAME = "Web";
  */
 export const DEVICE_LABEL = "zalo-agent-cli";
 
+/**
+ * The `Accept-Language` every HTTP call and the socket upgrade send: what Chrome sends for an en-US profile, and the
+ * value this client has sent live since its first login (spec-kernel D3 asks for "the browser's own" without naming
+ * another). Kept here with the rest of the client's identity; the kernel reads it from here.
+ */
+export const ACCEPT_LANGUAGE = "en-US,en;q=0.9";
+
 /** Marks a bad ZALO_API_VERSION, so callers do not mistake it for a revoked session. */
 export const API_VERSION_INVALID = "ZALO_API_VERSION_INVALID";
 

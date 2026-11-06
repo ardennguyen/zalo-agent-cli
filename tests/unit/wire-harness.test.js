@@ -378,13 +378,14 @@ describe("wire-diff harness", () => {
                 assertSameWire(recs.get, [d1]);
             });
 
-            it("D2, D3, D4 and nretry describe zca-js as it is: each applies to a real zca-js request", () => {
+            it("D2, D4 and nretry describe zca-js as it is: each applies to a real zca-js request", () => {
                 const row = (id) => GLOBAL.find((r) => r.id === id);
-                const get = { zca: recs.get.zca.requests[0] };
+                const get = { zca: recs.get.zca.requests[0], own: recs.get.own.requests[0] };
                 const send = { zca: recs.send.zca.requests[0] };
                 // Red if zca-js stops sending what a row claims: the row would then never apply, and go stale.
                 assert.equal(row("D2").when(get), true, "zca-js sends a form content type on a GET");
-                assert.equal(row("D3").when(get), true, "zca-js sends its fixed Accept-Language");
+                // A call we send as a POST keeps its form content type: D2 has nothing to declare there.
+                assert.equal(row("D2").when({ ...get, own: { ...get.own, method: "POST" } }), false);
                 assert.equal(row("D4").when(get), true, "zca-js sends its hand-set Accept-Encoding");
                 assert.equal(row("nretry").when(send), true, "zca-js puts nretry=0 in a send's query");
                 assert.equal(row("D1").when(send), true, "zca-js's send query is not the Web's");
@@ -392,13 +393,13 @@ describe("wire-diff harness", () => {
 
             it("a send made the Web way passes the global rows, and only all of them together", () => {
                 // The own side as the specs describe our engine: the Web's query order without nretry, no
-                // Accept-Encoding set by hand, the browser's Accept-Language.
+                // Accept-Encoding set by hand. Accept-Language is the same on both sides (no D3 row, see allow.js).
                 const rec = clone(recs.send);
                 const own = rec.own.requests[0];
                 own.queryOrder = webQueryOrder(rec.zca.requests[0].queryOrder);
                 delete own.query.nretry;
                 delete own.headers["accept-encoding"];
-                own.headers["accept-language"] = "vi-VN,vi;q=0.9,en;q=0.8";
+                if (rec.zca.requests[0].headers.cookie === "") delete own.headers.cookie;
                 assertSameWire(rec, GLOBAL);
                 // Without the nretry row the missing nretry is an unexplained difference.
                 const failure =
@@ -409,6 +410,35 @@ describe("wire-diff harness", () => {
                         ),
                     ) ?? "";
                 assert.match(failure, /differs: query\.nretry/);
+            });
+
+            it("Accept-Language has no global row: a different value on our side fails as undeclared", () => {
+                assert.equal(
+                    GLOBAL.some((r) => r.field === "headers.accept-language"),
+                    false,
+                );
+                const rec = clone(recs.get);
+                rec.own.requests[0].headers["accept-language"] = "vi-VN,vi;q=0.9";
+                assert.match(failureOf(() => assertSameWire(rec, GLOBAL)) ?? "", /headers\.accept-language/);
+            });
+
+            it("cookie-empty allows a missing Cookie header only where zca-js wrote an empty one", () => {
+                const row = GLOBAL.find((r) => r.id === "cookie-empty");
+                const rec = clone(recs.get);
+                rec.zca.requests[0].headers.cookie = "";
+                delete rec.own.requests[0].headers.cookie;
+                assertSameWire(rec, [row]);
+                // Without the row the missing header is an unexplained difference.
+                assert.match(failureOf(() => assertSameWire(rec, [])) ?? "", /headers\.cookie/);
+                // Where zca-js sent a real cookie, ours must send the same one.
+                const real = clone(recs.get);
+                real.zca.requests[0].headers.cookie = "zpw_sek=a";
+                real.own.requests[0].headers.cookie = "zpw_sek=b";
+                assert.match(failureOf(() => assertSameWire(real, [row])) ?? "", /headers\.cookie/);
+                // Declared but absent: zca-js wrote an empty header and so did we.
+                const both = clone(rec);
+                both.own.requests[0].headers.cookie = "";
+                assert.ok(failureOf(() => assertSameWire(both, [row])));
             });
 
             it("every area's list starts with the global rows, and an area row shadows a global one", () => {

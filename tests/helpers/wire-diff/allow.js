@@ -6,9 +6,13 @@
  * shared file. Every `ALLOW.<area>` starts with the global rows below; a row for one method shadows a global row
  * on the same field.
  *
- * The global rows are the kernel's transport differences (agent/docs/zca-replace/spec-kernel.md D1-D4) plus the
- * `nretry=0` zca-js puts into the query of its sends and the Web does not. Each applies only where its `when` holds, and
- * there it must be present.
+ * The global rows are the kernel's transport differences (agent/docs/zca-replace/spec-kernel.md D1, D2, D4), the
+ * empty `Cookie` header zca-js writes when the jar is empty, and the `nretry=0` zca-js puts into the query of its sends
+ * and the Web does not. Each applies only where its `when` holds, and there it must be present.
+ *
+ * D3 (Accept-Language) has no row: the spec names no concrete Web value beyond "the browser's own", and the value
+ * this client has sent live since its first login, `en-US,en;q=0.9`, is what Chrome sends for an en-US profile. Both
+ * sides send it, so any Accept-Language difference fails as undeclared.
  */
 import { isDeepStrictEqual } from "node:util";
 import actions from "./allow/actions.js";
@@ -23,9 +27,6 @@ import people from "./allow/people.js";
 import profile from "./allow/profile.js";
 import upload from "./allow/upload.js";
 import messages from "./allow/messages.js";
-
-/** zca-js's fixed Accept-Language. */
-export const ZCA_ACCEPT_LANGUAGE = "en-US,en;q=0.9";
 
 /** zca-js's hand-set Accept-Encoding. */
 export const ZCA_ACCEPT_ENCODING = "gzip, deflate, br, zstd";
@@ -67,20 +68,22 @@ export const GLOBAL = Object.freeze([
         id: "D2",
         method: "*",
         field: "headers.content-type",
-        when: ({ zca }) =>
-            zca?.method === "GET" && /^application\/x-www-form-urlencoded/i.test(zca.headers["content-type"] ?? ""),
+        when: ({ zca, own }) =>
+            zca?.method === "GET" &&
+            own?.method === "GET" &&
+            /^application\/x-www-form-urlencoded/i.test(zca.headers["content-type"] ?? ""),
         zca: (v) => /^application\/x-www-form-urlencoded/i.test(v ?? ""),
         own: undefined,
         why: "D2: the Web sends a content type only with a body; zca-js sets the form type on every request, GET included",
     },
     {
-        id: "D3",
+        id: "cookie-empty",
         method: "*",
-        field: "headers.accept-language",
-        when: ({ zca }) => zca?.headers?.["accept-language"] === ZCA_ACCEPT_LANGUAGE,
-        zca: ZCA_ACCEPT_LANGUAGE,
-        own: (v) => typeof v === "string" && v.length > 0 && v !== ZCA_ACCEPT_LANGUAGE,
-        why: "D3: the browser's own Accept-Language from src/zalo/profile.js, not zca-js's fixed en-US",
+        field: "headers.cookie",
+        when: ({ zca }) => zca?.headers?.cookie === "",
+        zca: "",
+        own: undefined,
+        why: "a browser sends no Cookie header when the jar has nothing for the host; zca-js writes an empty one",
     },
     {
         id: "D4",

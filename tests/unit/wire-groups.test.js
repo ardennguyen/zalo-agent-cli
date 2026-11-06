@@ -23,7 +23,6 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { OWN_READY } from "../../src/zalo/api/groups.js";
-import { GLOBAL_EXEMPT } from "../helpers/wire-diff/allow/groups.js";
 import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
 
 const G = "9000000000000000001";
@@ -166,9 +165,8 @@ const ERROR_CALLS = Object.fromEntries(
 );
 
 /**
- * The allow rows of one case: the global rows (less the ones the method makes untrue, GLOBAL_EXEMPT), the method's
- * own rows carried over to the case name (unless `inherit` is false: a call refused before any request has no
- * request to differ in), and the case's own rows.
+ * The allow rows of one case: the global rows, the method's own rows carried over to the case name (unless
+ * `inherit` is false: a call refused before any request has no request to differ in), and the case's own rows.
  *
  * @param {string} name - the case
  * @param {string} method
@@ -176,9 +174,8 @@ const ERROR_CALLS = Object.fromEntries(
  * @returns {object[]}
  */
 function allowFor(name, method, { inherit = true } = {}) {
-    const exempt = new Set([...(GLOBAL_EXEMPT["*"] ?? []), ...(GLOBAL_EXEMPT[method] ?? [])]);
     return ALLOW.groups.flatMap((row) => {
-        if (row.method === "*") return exempt.has(row.id) ? [] : [row];
+        if (row.method === "*") return [row];
         if (row.method === name) return [row];
         if (inherit && row.method === method) return [{ ...row, method: name }];
         return [];

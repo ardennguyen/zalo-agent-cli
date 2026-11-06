@@ -23,15 +23,6 @@ const parsed = (v) => {
     }
 };
 
-/**
- * Global rows a case leaves out because the case has nothing for them to show. `avatar-url`: zca-js GETs with its
- * form content type (D2's shape), and we POST a form, so both send the same content type and D2 is not there.
- */
-export const SKIP_GLOBAL = Object.freeze({
-    "avatar-url": ["D2"],
-    "avatar-url-one": ["D2"],
-});
-
 const AVATAR_URL_WHY = "Web getAvatarUrlProfile (@11701478) posts {friend_ids, avatar_size, srcReq} as a form";
 const SETTINGS_WHY = "Web getSettings (@11579190) GETs authDomain/api/setting/me with the common params only";
 const LOST_FOCUS_WHY = "Web lostFocus (@11699101) is _post(url, null): no params and no body";

@@ -12,11 +12,6 @@
  * that this file tests the upload alone, our side runs with a stand-in text half that records the call and draws the
  * next clientId as MSG's does; zca-js's caption request is checked on its own and then left out of the comparison.
  *
- * Accept-Language: the global row D3 expects our engine to send a different Accept-Language from zca-js's, but the
- * kernel (K1, src/zalo/kernel/http.js) sends the same constant today, so D3 would report "declared but absent" on
- * every request. It is left out here; the header is then compared strictly (any difference fails). Reported to the
- * orchestrator as a WP0/K1 mismatch.
- *
  * Every id here is fake.
  */
 import "../helpers/sandbox.js";
@@ -60,8 +55,8 @@ import { normalizeError, normalizeRequest, normalizeResult } from "../helpers/wi
 import { FILES, IMAGES } from "../fixtures/index.js";
 import { installFakeZalo } from "./fake-zalo-session.js";
 
-/** The rows this file compares with: the upload area's, minus D3 (see the top of the file). */
-const ROWS = ALLOW.upload.filter((r) => r.id !== "D3");
+/** The rows this file compares with: the upload area's. */
+const ROWS = ALLOW.upload;
 
 const USER = "1000000000000000001";
 const GROUP = "2000000000000000002";

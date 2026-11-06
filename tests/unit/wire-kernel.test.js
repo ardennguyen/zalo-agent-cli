@@ -24,15 +24,6 @@ import { serviceHost } from "./fake-zalo-session.js";
 const require = createRequire(import.meta.url);
 const zcaUtils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
 
-/**
- * ALLOW.kernel without the global D3 row. D3 (tests/helpers/wire-diff/allow.js) declares that our Accept-Language
- * differs from zca-js's fixed `en-US,en;q=0.9`, but the kernel still sends that same value on purpose
- * (src/zalo/kernel/http.js `ACCEPT_LANGUAGE`: moving it into src/zalo/profile.js is a separate change). The
- * difference is absent, so the row would fail every case here. The last test of this file asserts the two sides
- * agree on the header, so it goes red the day the kernel takes D3, and this filter must go then.
- */
-const KERNEL_ALLOW = ALLOW.kernel.filter((r) => r.id !== "D3");
-
 /** The fake endpoint the bound-helper cases call. */
 const FAKE_PATH = "/api/group/fake";
 
@@ -85,7 +76,7 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
 
     /** Part 1 and 2 of a case: zca against own (as `name` for the allow rows), then own against its golden entry. */
     async function check(rec, golden, name = rec.name) {
-        assertSameWire({ ...rec, name }, KERNEL_ALLOW);
+        assertSameWire({ ...rec, name }, ALLOW.kernel);
         await expectGolden("kernel", golden, rec.own);
     }
 
@@ -191,14 +182,5 @@ describe("the kernel's calls, zca-js against ours on one context", () => {
     it("the cases above ran against the fake hosts of this login", () => {
         // Guards the fixture, not the kernel: a golden file recorded against another host map would hide nothing.
         assert.equal(pair.own.zpwServiceMap.group[0], `https://${serviceHost("group")}`);
-    });
-
-    it("sends zca-js's Accept-Language still: D3 is not taken yet, which is why KERNEL_ALLOW drops its row", async () => {
-        const rec = await pair.run("keepAlive", [], { replies: { "/keepalive": { plain: {} } } });
-        const [z] = rec.zca.requests;
-        const [o] = rec.own.requests;
-        assert.equal(z.headers["accept-language"], "en-US,en;q=0.9");
-        // Red once the kernel sends the browser's own value (spec-kernel D3): then drop the D3 filter above.
-        assert.equal(o.headers["accept-language"], z.headers["accept-language"]);
     });
 });

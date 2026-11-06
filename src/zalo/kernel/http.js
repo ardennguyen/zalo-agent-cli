@@ -27,6 +27,7 @@ import { Blob } from "node:buffer";
 import { ZaloApiError } from "../errors.js";
 import { openSession, sealSession } from "./cipher.js";
 import { cookieHeader, newJar, storeSetCookies } from "./cookies.js";
+import { ACCEPT_LANGUAGE } from "../profile.js";
 
 /** Zalo Web's default request timeout. */
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -37,12 +38,8 @@ export const MAX_REDIRECTS = 10;
 /** Where Zalo Web's page lives: the origin of every API call it makes. */
 const CHAT_ORIGIN = "https://chat.zalo.me";
 
-/**
- * The `Accept-Language` this client has always sent (zca-js's value, live since the first login). Kept as it is:
- * moving it into `src/zalo/profile.js` beside the rest of the client's identity is a separate change (spec-kernel
- * D3), and fetch would otherwise send `*`.
- */
-export const ACCEPT_LANGUAGE = "en-US,en;q=0.9";
+/** The `Accept-Language` of every call, from the client's identity in `src/zalo/profile.js` (spec-kernel D3). */
+export { ACCEPT_LANGUAGE };
 
 /** Headers of an XHR from the chat page. */
 const XHR_HEADERS = Object.freeze({

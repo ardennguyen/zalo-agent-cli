@@ -27,14 +27,13 @@ const T_AFTER_8AM = T0 + 4 * 3600 * 1000;
 const AFTER_8AM = 82_000;
 
 /**
- * The allowed differences of one case: the area's rows of that case, plus the global rows (D3 left out, see
- * wire-actions.test.js `allowFor`: K1 sends the same Accept-Language zca-js does, so D3 is never present).
+ * The allowed differences of one case: the area's rows of that case, plus the global rows.
  *
  * @param {string} name - the case
  * @returns {object[]}
  */
 function allowFor(name) {
-    return ALLOW[AREA].filter((r) => r.id !== "D3" && (!r.case || [].concat(r.case).includes(name)));
+    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
 }
 
 /** The answers every method is run against for part 3, and whether zca-js has the same message for each. */

@@ -30,15 +30,11 @@ const TWIN = "4123456789012345679";
 /**
  * The allowed differences of one case: the area's rows of that case, plus the global rows.
  *
- * D3 (Accept-Language) is left out: K1's kernel sends the same `en-US,en;q=0.9` zca-js does
- * (src/zalo/kernel/http.js ACCEPT_LANGUAGE), so the difference D3 declares is never there and the row could only
- * fail. Reported to the orchestrator; when the kernel sends the browser's own value, drop this filter.
- *
  * @param {string} name - the case
  * @returns {object[]}
  */
 function allowFor(name) {
-    return ALLOW[AREA].filter((r) => r.id !== "D3" && (!r.case || [].concat(r.case).includes(name)));
+    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
 }
 
 /** The answers every method is run against for part 3, and whether zca-js has the same message for each. */

@@ -12,9 +12,6 @@
  * Offsets are in Zalo Web 26.11.10's `1.c72c0957b455ab70b73c.js` (agent/work/zalo-web-capture-2026-11-06/bundles/).
  */
 
-/** Global rows a case leaves out because the case has nothing for them to show (none in this area). */
-export const SKIP_GLOBAL = Object.freeze({});
-
 const BANK_DIRECTORY_WHY = "Web getListBank (@11705022) GETs /api/transfer/conf with the common params only";
 const AUTO_REPLY_WHY = (m, at) =>
     `Web ${m} (@${at}) seals the params into the query and posts no body (_post(url, null))`;

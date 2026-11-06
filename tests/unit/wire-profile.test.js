@@ -21,7 +21,6 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { openSession } from "../../src/zalo/kernel/cipher.js";
 import { ALLOW, FAKE, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
-import { SKIP_GLOBAL } from "../helpers/wire-diff/allow/profile.js";
 import { OWN_READY } from "../../src/zalo/api/profile.js";
 
 const AREA = "profile";
@@ -35,15 +34,13 @@ const IMAGE_PATH = join(SANDBOX_HOME, "avatar.jpg");
 const IMAGE_META = Object.freeze({ width: 640, height: 480, size: IMAGE_BYTES.length });
 
 /**
- * The allowed differences of one case: the area's rows of that case, plus the global rows the case keeps. D3 is
- * never kept: K1 sends the Accept-Language zca-js sends, so D3 has nothing to show (as in wire-actions.test.js).
+ * The allowed differences of one case: the area's rows of that case, plus the global rows.
  *
  * @param {string} name - the case
  * @returns {object[]}
  */
 function allowFor(name) {
-    const skip = new Set(["D3", ...(SKIP_GLOBAL[name] ?? [])]);
-    return ALLOW[AREA].filter((r) => !skip.has(r.id) && (!r.case || [].concat(r.case).includes(name)));
+    return ALLOW[AREA].filter((r) => !r.case || [].concat(r.case).includes(name));
 }
 
 /** The answers every method is run against for part 3, and whether zca-js has the same message for each. */

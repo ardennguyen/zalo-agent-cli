@@ -196,6 +196,13 @@ export function decodeFrame(parsed, cipherKey, opts = {}) {
 /**
  * Read the handshake (cmd 1) envelope: take its cipher key, and decode its `data` under that same key.
  *
+ * One deliberate leniency against Web: Web's `_processAuthData` requires the decoded payload's `error_code` to be
+ * exactly 0 (else INVALID_AUTH_DATA, 5007). Here a payload that carries no `error_code` at all is accepted, and only
+ * a present, non-zero one refuses the session. zca-js never decoded this payload, so a key frame without the field
+ * has always opened a session for this client, and nothing reads the field but this check; refusing it would end
+ * sessions that work today over a field no consumer uses. An explicit refusal (any non-zero code) is still final.
+ * tests/unit/listener-frames.test.js pins both halves.
+ *
  * @param {{key?: string, encrypt?: number, data?: string}} envelope
  * @returns {{key: string, auth: object|null}} `auth` is the decoded payload's `data` (`{qCmds, ctrl_qCmds,
  *   bk_cmds}`), or null when the envelope carries no data
@@ -207,6 +214,7 @@ export function readAuthFrame(envelope) {
     if (typeof key !== "string" || key.length === 0) throw new Error("handshake frame carries no cipher key");
     if (typeof envelope.data !== "string" || envelope.data.length === 0) return { key, auth: null };
     const payload = decodeFrame(envelope, key);
+    // Absent is accepted on purpose (see above); a present code must be 0, as in Web.
     if (payload?.error_code !== undefined && payload.error_code !== 0) {
         throw new Error(`handshake refused with error_code ${payload.error_code}`);
     }

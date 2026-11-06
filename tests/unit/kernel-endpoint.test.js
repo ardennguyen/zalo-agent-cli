@@ -62,3 +62,21 @@ describe("callEndpoint with bigIdKeys", () => {
         assert.notEqual(String(data.msgId), BIG_ID, "a double cannot hold this id");
     });
 });
+
+describe("callEndpoint with paramsFirst", () => {
+    const keys = (url) => [...new URL(url).searchParams.keys()];
+
+    it("puts params before zpw_ver and zpw_type, then the plain query", async () => {
+        const { api, seen } = apiAnswering('{"error_code":0,"data":{}}');
+        await callEndpoint(api, { ...DEF, paramsFirst: true, query: () => ({ extra: "1" }) }, {});
+        assert.equal(seen[0].method, "GET");
+        assert.deepEqual(keys(seen[0].url), ["params", "zpw_ver", "zpw_type", "extra"]);
+        assert.equal(new URL(seen[0].url).searchParams.get("zpw_ver"), "695");
+    });
+
+    it("the control: without it the version pair goes first", async () => {
+        const { api, seen } = apiAnswering('{"error_code":0,"data":{}}');
+        await callEndpoint(api, DEF, {});
+        assert.deepEqual(keys(seen[0].url), ["zpw_ver", "zpw_type", "params"]);
+    });
+});

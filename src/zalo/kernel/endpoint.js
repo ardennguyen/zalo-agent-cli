@@ -7,6 +7,7 @@
  * ```
  * { host, path, cmd,                       // service-map key (or a list, first present wins), path, Web command id
  *   method: "get"|"post"|"query"|"multipart",
+ *   paramsFirst: true,                      // GET only: `params` before zpw_ver and zpw_type
  *   body(args, ctx) -> object|string|null,  // sealed with the session key into `params`
  *   query(args, ctx) -> object,             // plain query keys after zpw_ver, zpw_type, params (`extraQuery` too)
  *   file(args) -> {field, filename, type, bytes},   // multipart only
@@ -102,6 +103,10 @@ export function buildRequest(ctx, base, def, args = {}) {
         if (!def.file) throw new CallUsageError("a multipart endpoint needs a file");
         const form = multipartBody(def.file(args), def.fields ? def.fields(args) : {});
         return { method: "POST", url: buildUrl(ctx, base, { params, ...extra }), body: form, headers, json: body, def };
+    }
+    if (def.paramsFirst) {
+        const query = { params, zpw_ver: ctx.API_VERSION, zpw_type: ctx.API_TYPE, ...extra };
+        return { method: "GET", url: buildUrl(ctx, base, query, { version: false }), headers, json: body, def };
     }
     return { method: "GET", url: buildUrl(ctx, base, { params, ...extra }), headers, json: body, def };
 }

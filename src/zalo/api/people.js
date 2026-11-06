@@ -25,8 +25,6 @@
  * Ids stay strings throughout: no id is ever converted to a number.
  */
 import { AVATAR_SIZE } from "../profile.js";
-import { sendRequest } from "../kernel/endpoint.js";
-import { buildUrl, sealParams } from "../kernel/http.js";
 import { ZaloApiError } from "../errors.js";
 
 /** The avatar size of the Web's phone and username search. */
@@ -414,28 +412,6 @@ export const BLOCK_FEED = Object.freeze({
     reply: "session",
 });
 
-// ── Running a definition ───────────────────────────────────────────────────────────────────────────────────────
-
-/**
- * Run a GET whose `params` goes before `zpw_ver` and `zpw_type`, the order of the Web's username search.
- *
- * @param {import("../api.js").Session} s
- * @param {object} def - an endpoint definition with `paramsFirst`
- * @param {object} args
- * @returns {Promise<any>}
- */
-async function callParamsFirst(s, def, args) {
-    const ctx = s.ctx;
-    const json = def.body(args, ctx);
-    const url = buildUrl(
-        ctx,
-        `${s.host(def.host)}${def.path}`,
-        { params: sealParams(ctx, json), zpw_ver: ctx.API_VERSION, zpw_type: ctx.API_TYPE },
-        { version: false },
-    );
-    return sendRequest(ctx, { method: "GET", url, headers: {}, json, def }, args);
-}
-
 /**
  * A list argument as an array: one id becomes a list of one.
  *
@@ -500,7 +476,7 @@ export function peopleMethods(s) {
          * @param {string} username
          * @returns {Promise<object>}
          */
-        findUserByUsername: (username) => callParamsFirst(s, FIND_BY_USERNAME, { username }),
+        findUserByUsername: (username) => s.call(FIND_BY_USERNAME, { username }),
 
         /**
          * One page of the account's friend aliases. Past page 1, Zalo's 212 is the end of the list and answers

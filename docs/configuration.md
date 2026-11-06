@@ -76,7 +76,7 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_LOG_FORMAT` |  | `text` (default, timestamped lines) or `json` (one object per line) | | |
 | `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` |  | rotate `daemon.log` at this size (default `50m`, at least `4k`) and keep this many files (default 3) | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | any value: never run the `npm view` update check | | |
-| `ZALO_API_VERSION` |  | protocol version announced to Zalo. Default 694 | | |
+| `ZALO_API_VERSION` |  | protocol version announced to Zalo. Default 695 | | |
 | `ZALO_QR_FLOW` |  | which QR login `login` uses: `official` (default: the sequence Zalo Web makes, no `verify-client`, `continue=https://chat.zalo.me/`, the redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device) or `legacy` (zca-js's own). Any other value is refused before Zalo is contacted | | |
 | `ZALO_NET_PROBE` |  | what a daemon asks to learn whether the network is up while its socket is down (every 10 s): a URL, default a global search engine's lightweight page, or `off` to assume the network is always up and contact nothing but Zalo | | |
 

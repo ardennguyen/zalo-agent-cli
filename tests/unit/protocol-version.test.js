@@ -4,7 +4,7 @@
  * zca-js defaults to zpw_ver=685 (`createContext(apiType = 30, apiVersion =
  * 685)`, zca-js dist/context.js); the live Zalo Web client sent 691 on every
  * URL (agent/work/zalo-web-capture-2026-09-29: FINDINGS.md §7, comparison
- * §3g). `createZalo()` now asks for 694, overridable with ZALO_API_VERSION so
+ * §3g), then 694, and 695 since Zalo Web and PC build 26.11.10. `createZalo()` asks for 695, overridable with ZALO_API_VERSION so
  * a bad bump can be rolled back without a release.
  *
  * Asserted on the wire, through a real login against ./fake-zalo-session.js --
@@ -76,8 +76,8 @@ describe("protocol version (zpw_ver / client_version)", () => {
         else process.env.ZALO_API_VERSION = saved;
     });
 
-    it("announces 694, the live Zalo Web version, by default", async () => {
-        assert.deepEqual(await announced(fake), everywhere("694"));
+    it("announces 695, the live Zalo Web version, by default", async () => {
+        assert.deepEqual(await announced(fake), everywhere("695"));
     });
 
     it("announces ZALO_API_VERSION instead when it is set", async () => {
@@ -92,7 +92,7 @@ describe("protocol version (zpw_ver / client_version)", () => {
 
     it("treats an empty ZALO_API_VERSION as unset", async () => {
         process.env.ZALO_API_VERSION = "  ";
-        assert.deepEqual(await announced(fake), everywhere("694"));
+        assert.deepEqual(await announced(fake), everywhere("695"));
     });
 
     it("refuses anything but a positive whole number, naming the variable, before any request", async () => {

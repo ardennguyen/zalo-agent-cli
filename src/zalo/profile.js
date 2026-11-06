@@ -23,10 +23,10 @@ export const API_TYPE = 30;
 /**
  * The protocol version announced when `ZALO_API_VERSION` is not set:
  * `zpw_ver` on every HTTP and WebSocket URL and `client_version` in the login
- * calls. zca-js defaults to 685; the live Zalo Web client was on 694 when this
- * was last moved.
+ * calls, for our own calls and every call made through zca-js alike. zca-js defaults to 685; the live Zalo Web
+ * and PC clients were on 695 when this was last moved (build 26.11.10, 2026-11-06; it was 694).
  */
-export const DEFAULT_API_VERSION = 694;
+export const DEFAULT_API_VERSION = 695;
 
 /** The `computer_name` Zalo Web sends in its login, server-info and logout calls. */
 export const COMPUTER_NAME = "Web";

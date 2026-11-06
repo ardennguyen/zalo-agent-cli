@@ -802,6 +802,70 @@ export function getMessages(threadId, limit = 50, fromTimestamp = null) {
 }
 
 /**
+ * A thread's cached messages in a time window, oldest first, one page at a time (bug-reports #5: a date range instead
+ * of paging back 200 at a time to reach one day).
+ *
+ * A page never ends inside a run of messages that share one millisecond, so `nextSince` (the last timestamp + 1) starts
+ * the next page without skipping or repeating any. A page whose every row shares one millisecond takes that whole run,
+ * even past `limit`.
+ *
+ * @param {string} threadId
+ * @param {{since?: number|null, until?: number|null, limit?: number}} [o] - epoch-ms bounds, both inclusive
+ * @returns {{rows: object[], nextSince: number|null}} `nextSince` is null when nothing is left in the window
+ */
+export function getMessagesInRange(threadId, { since = null, until = null, limit = 200 } = {}) {
+    if (!db) throw new Error("Database not initialized");
+    const where = ["threadId = ?"];
+    const params = [String(threadId)];
+    if (since !== null && since !== undefined) {
+        where.push("timestamp >= ?");
+        params.push(Number(since));
+    }
+    if (until !== null && until !== undefined) {
+        where.push("timestamp <= ?");
+        params.push(Number(until));
+    }
+    const sql = `SELECT * FROM messages WHERE ${where.join(" AND ")} ORDER BY timestamp ASC, msgId ASC`;
+    const rows = db.prepare(`${sql} LIMIT ?`).all(...params, limit + 1);
+    if (rows.length <= limit) return { rows, nextSince: null };
+
+    let page = rows.slice(0, limit);
+    const lastTs = Number(page[page.length - 1].timestamp);
+    if (Number(rows[limit].timestamp) === lastTs) {
+        const before = page.filter((r) => Number(r.timestamp) !== lastTs);
+        page = before.length
+            ? before
+            : db
+                  .prepare("SELECT * FROM messages WHERE threadId = ? AND timestamp = ? ORDER BY msgId ASC")
+                  .all(String(threadId), lastTs);
+    }
+    const next = Number(page[page.length - 1].timestamp) + 1;
+    const more = until === null || until === undefined || next <= Number(until);
+    return { rows: page, nextSince: more ? next : null };
+}
+
+/**
+ * Every cached message of a thread in a time window, oldest first, read in pages of 1000 (`getMessagesInRange`), up
+ * to `cap` messages.
+ *
+ * @param {string} threadId
+ * @param {{since?: number|null, until?: number|null, cap?: number}} [o]
+ * @returns {{rows: object[], hasMore: boolean}} `hasMore`: the cap left messages of the window out
+ */
+export function getAllMessagesInRange(threadId, { since = null, until = null, cap = Infinity } = {}) {
+    const rows = [];
+    let next = since;
+    for (;;) {
+        const page = getMessagesInRange(threadId, { since: next, until, limit: Math.min(1000, cap - rows.length) });
+        rows.push(...page.rows);
+        if (rows.length >= cap)
+            return { rows: rows.slice(0, cap), hasMore: rows.length > cap || page.nextSince !== null };
+        if (page.nextSince === null) return { rows, hasMore: false };
+        next = page.nextSince;
+    }
+}
+
+/**
  * One message by its global id, or null.
  *
  * Callers that hold a msgId and nothing else (the MCP media tool, a delete

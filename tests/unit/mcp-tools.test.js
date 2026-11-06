@@ -545,6 +545,74 @@ describe("MCP tools read the local cache", () => {
         );
     });
 
+    it("zalo_get_history returns one period oldest first, and pages through it with nextSince (bug-reports #5)", async () => {
+        cache([
+            { msgId: "m1", ts: 100 },
+            { msgId: "m2", ts: 200 },
+            { msgId: "m3", ts: 300 },
+            { msgId: "m4", ts: 400 },
+        ]);
+        const { server } = register({ api: emptyServerApi() });
+        const first = payloadOf(
+            await server.call("zalo_get_history", { threadId: "t1", since: 150, until: 400, limit: 2 }),
+        );
+        assert.deepEqual(
+            first.messages.map((m) => m.msgId),
+            ["m2", "m3"],
+        );
+        assert.deepEqual([first.hasMore, first.nextSince, first.since, first.until], [true, 301, 150, 400]);
+        const rest = payloadOf(
+            await server.call("zalo_get_history", { threadId: "t1", since: first.nextSince, until: 400, limit: 2 }),
+        );
+        assert.deepEqual(
+            rest.messages.map((m) => m.msgId),
+            ["m4"],
+        );
+        assert.equal(rest.hasMore, false);
+    });
+
+    it("zalo_get_history takes `last` as the start of the period, and up to 1000 per page with one", async () => {
+        const now = Date.now();
+        cache([
+            { msgId: "old", ts: now - 10 * 86_400_000 },
+            { msgId: "new", ts: now - 86_400_000 },
+        ]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", last: "7d", limit: 1000 }));
+        assert.deepEqual(
+            out.messages.map((m) => m.msgId),
+            ["new"],
+        );
+    });
+
+    it("zalo_get_history says plainly when a period has nothing cached, and never asks the server for it", async () => {
+        cache([{ msgId: "m1", ts: 100 }]);
+        let asked = false;
+        const api = emptyServerApi();
+        api.listener.requestOldMessages = () => (asked = true);
+        const { server } = register({ api });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", since: 5_000 }));
+        assert.equal(out.count, 0);
+        assert.match(out.note, /Nothing cached for this conversation in this period/);
+        assert.equal(asked, false);
+    });
+
+    it("zalo_get_history refuses a period mixed with `before`, a start after the end, or a bad `last`", async () => {
+        const { server } = register({ api: emptyServerApi() });
+        const call = async (args) =>
+            (await server.call("zalo_get_history", { threadId: "t1", ...args })).content[0].text;
+        assert.match(await call({ since: 100, before: 200 }), /either a period/);
+        assert.match(await call({ since: 300, until: 200 }), /`since` is after `until`/);
+        assert.match(await call({ last: "soon" }), /Expected a period/);
+    });
+
+    it("zalo_get_history keeps a page without a period at 200", async () => {
+        cache(Array.from({ length: 250 }, (_, i) => ({ msgId: `m${i}`, ts: 1_000 + i })));
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 1000 }));
+        assert.equal(out.count, 200);
+    });
+
     it("zalo_get_history surfaces cached delivery state and media paths", async () => {
         cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: "/tmp/a.jpg" }]);
         const { server } = register({ api: emptyServerApi() });

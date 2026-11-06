@@ -13,7 +13,15 @@ import { parseIntOption } from "../utils/parse-options.js";
 import { parseThreadTypeArg, parseReportReason } from "../utils/cli-args.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDir, getAccountDbPath } from "../core/credentials.js";
-import { initDb, getMessages, getMessageById, getDisplayName, getThreadType } from "../core/db.js";
+import {
+    initDb,
+    getMessages,
+    getAllMessagesInRange,
+    getMessageById,
+    getDisplayName,
+    getThreadType,
+} from "../core/db.js";
+import { parseDateBound, parsePeriod } from "../utils/date-range.js";
 import { sendViaDaemon, getDaemonChannel, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
 import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
@@ -543,6 +551,85 @@ function parseStyleSpecs(specs) {
             return { start: Number(start), len: Number(len), st };
         })
         .filter(Boolean);
+}
+
+/**
+ * `msg history --since/--until/--last`: every cached message of one conversation in a period, oldest first, read in
+ * pages of 1000 (bug-reports #5: no more paging back 200 at a time to reach one day). Cache only, as Zalo's server has
+ * nothing older than this login; `-n` caps it only when it is given.
+ *
+ * @param {object} p
+ * @returns {Promise<void>}
+ */
+async function showHistoryRange({ api, activeAcc, threadId, threadType, opts, cmd, jsonMode }) {
+    let since = null;
+    let until = null;
+    try {
+        if (opts.last !== undefined) since = parsePeriod(opts.last);
+        else if (opts.since !== undefined) since = parseDateBound(opts.since, "start");
+        if (opts.until !== undefined) until = parseDateBound(opts.until, "end");
+    } catch (e) {
+        error(e.message);
+        process.exit(1);
+    }
+    if (since !== null && until !== null && since > until) {
+        error("--since is after --until.");
+        process.exit(1);
+    }
+    const cap = cmd?.getOptionValueSource?.("limit") === "cli" ? Number(opts.limit) : Infinity;
+
+    try {
+        initDb(join(getAccountDir(activeAcc.ownId), "zalo.db"));
+    } catch (e) {
+        error(`The local cache could not be opened: ${e.message}`);
+        process.exit(1);
+    }
+    const { rows: kept, hasMore } = getAllMessagesInRange(threadId, { since, until, cap });
+
+    const messages = await withCurrentSenderNames(
+        api,
+        kept.map((m) => ({
+            msgId: m.msgId,
+            threadId: m.threadId,
+            senderId: m.senderId,
+            senderName: m.senderName,
+            text: m.text,
+            timestamp: m.timestamp,
+            type: m.type,
+            localPath: m.localPath,
+        })),
+        threadType === 0 ? [threadId] : [],
+    );
+    const when = (t) => (t === null ? "…" : new Date(t).toLocaleString());
+    output(
+        {
+            threadId,
+            threadType: threadType === 0 ? "dm" : "group",
+            source: "sqlite",
+            since,
+            until,
+            count: messages.length,
+            hasMore,
+            messages,
+        },
+        jsonMode,
+        () => {
+            success(`${messages.length} message(s) from ${threadId}, ${when(since)} to ${when(until)} (local cache)`);
+            for (const m of messages) {
+                const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+                const name = m.senderDisplayName || m.senderId || "?";
+                const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
+                console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
+            }
+            if (hasMore)
+                info(`More messages are in this period: raise -n, or run again with --since after the last one.`);
+            if (messages.length === 0) {
+                info(
+                    "Nothing cached in this period. Zalo's server serves only messages since this login; restore older ones with `zalo-agent sync`.",
+                );
+            }
+        },
+    );
 }
 
 export function registerMsgCommands(program) {
@@ -1534,7 +1621,13 @@ export function registerMsgCommands(program) {
         .option("--from-msg-id <id>", "Anchor message ID to scan older messages from")
         .option("--timeout <ms>", "Timeout in milliseconds waiting for response", "15000")
         .option("--no-cache", "Force live fetch instead of using local cache, and amend db")
-        .action(async (threadId, opts) => {
+        .option(
+            "--since <date>",
+            "Every cached message from this date (YYYY-MM-DD, or a date and time), oldest first; -n caps it only when given",
+        )
+        .option("--until <date>", "Every cached message up to this date (YYYY-MM-DD: through the end of that day)")
+        .option("--last <period>", "Every cached message of the last period: 12h, 7d, 2w, 3m, 1y (replaces --since)")
+        .action(async (threadId, opts, cmd) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
             const limit = Number(opts.limit);
@@ -1558,6 +1651,11 @@ export function registerMsgCommands(program) {
             } catch (e) {
                 error(e.message);
                 process.exit(1);
+            }
+
+            if (opts.since !== undefined || opts.until !== undefined || opts.last !== undefined) {
+                await showHistoryRange({ api, activeAcc, threadId, threadType, opts, cmd, jsonMode });
+                return;
             }
 
             if (!jsonMode) {

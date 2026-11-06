@@ -17,6 +17,7 @@ import { z } from "zod";
 import { openFile } from "../utils/open-file.js";
 import {
     getMessages,
+    getMessagesInRange,
     getMessageById,
     getDisplayName,
     setContactName,
@@ -356,6 +357,65 @@ function err(message) {
 }
 
 /**
+ * One cached message as zalo_get_history returns it.
+ * @param {object} m - a `messages` row
+ * @returns {object}
+ */
+function cachedHistoryRow(m) {
+    return {
+        msgId: m.msgId,
+        cliMsgId: cachedCliMsgId(m) ?? undefined,
+        threadId: m.threadId,
+        senderId: m.senderId || null,
+        senderName: m.senderName || null,
+        text: m.text,
+        timestamp: m.timestamp,
+        type: m.type,
+        localPath: m.localPath || undefined,
+        hasAttachment: m.has_attachment ? true : undefined,
+        msgStatus: m.msgStatus ?? undefined,
+        replyTo: cachedReplyTo(m),
+    };
+}
+
+/** The most one page of zalo_get_history holds: without a date range, and with one. */
+export const HISTORY_PAGE_MAX = 200;
+export const HISTORY_RANGE_PAGE_MAX = 1000;
+
+/**
+ * A thread's cached messages between two times, oldest first, one page of them (bug-reports #5).
+ *
+ * Cache only: Zalo's server serves nothing older than this login, so a date range is the cache's question.
+ *
+ * @param {string} threadId
+ * @param {{since: number|null, until: number|null, limit: number}} range
+ * @param {object} [nameCache]
+ * @returns {object} tool payload
+ */
+function cacheHistoryRange(threadId, { since, until, limit }, nameCache) {
+    const { rows, nextSince } = getMessagesInRange(String(threadId), { since, until, limit });
+    const messages = rows.map(cachedHistoryRow);
+    const info = nameCache?.get(String(threadId));
+    if (info) for (const m of messages) m.threadName = info.name;
+    return {
+        threadId: String(threadId),
+        source: "cache",
+        since,
+        until,
+        count: messages.length,
+        messages,
+        // Pass `nextSince` back as `since` (same `until`) for the next page.
+        hasMore: nextSince !== null,
+        nextSince,
+        ...(messages.length === 0 && {
+            note:
+                "Nothing cached for this conversation in this period. Zalo's server serves only messages since this " +
+                "login; older ones are restored with `zalo-agent sync` (the owner's phone confirms it).",
+        }),
+    };
+}
+
+/**
  * Read a thread's history out of the local cache.
  *
  * Returns null when the cache has nothing for the thread, which is the signal
@@ -376,22 +436,7 @@ function cacheHistory(threadId, limit, before, nameCache) {
     }
     if (!rows || rows.length === 0) return null;
 
-    const messages = rows
-        .map((m) => ({
-            msgId: m.msgId,
-            cliMsgId: cachedCliMsgId(m) ?? undefined,
-            threadId: m.threadId,
-            senderId: m.senderId || null,
-            senderName: m.senderName || null,
-            text: m.text,
-            timestamp: m.timestamp,
-            type: m.type,
-            localPath: m.localPath || undefined,
-            hasAttachment: m.has_attachment ? true : undefined,
-            msgStatus: m.msgStatus ?? undefined,
-            replyTo: cachedReplyTo(m),
-        }))
-        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    const messages = rows.map(cachedHistoryRow).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
     const info = nameCache?.get(String(threadId));
     if (info) for (const m of messages) m.threadName = info.name;
@@ -969,6 +1014,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread. " +
                 "Page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
                 "Each message has `msgId`, `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when first seen), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
+                "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, up to `limit` (here up to 1000) per page, with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
                 "Start with a small `limit` and page; a large one costs memory and time. To find messages by their text, use zalo_search_messages.",
             inputSchema: z.object({
                 threadId: z
@@ -984,9 +1030,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .number()
                     .int()
                     .min(1)
-                    .max(200)
+                    .max(HISTORY_RANGE_PAGE_MAX)
                     .default(50)
-                    .describe("Most messages to return (1 to 200; default 50)."),
+                    .describe(
+                        "Most messages to return (default 50): up to 200, or up to 1000 with `since`, `until` or `last`.",
+                    ),
                 lastMsgId: z
                     .string()
                     .optional()
@@ -1000,10 +1048,55 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .describe(
                         "Cache path: only messages older than this epoch-ms timestamp (the `cursor` of the previous reply), to page back.",
                     ),
+                since: z
+                    .number()
+                    .int()
+                    .nonnegative()
+                    .optional()
+                    .describe(
+                        "Only messages at or after this time (epoch ms), oldest first; or the `nextSince` of the previous reply.",
+                    ),
+                until: z
+                    .number()
+                    .int()
+                    .positive()
+                    .optional()
+                    .describe("Only messages at or before this time (epoch ms)."),
+                last: z
+                    .string()
+                    .optional()
+                    .describe("Only the last period, ending now: 7d, 2w, 3m, 1y or 12h (replaces `since`)."),
             }),
         },
-        async ({ threadId, threadType: threadTypeIn, limit, lastMsgId, before }) => {
+        async ({ threadId, threadType: threadTypeIn, limit, lastMsgId, before, since, until, last }) => {
             const threadType = resolveThreadType(threadId, threadTypeIn);
+            if (since !== undefined || until !== undefined || last !== undefined) {
+                if (before !== undefined || lastMsgId) {
+                    return err("Use either a period (`since`, `until`, `last`) or `before`/`lastMsgId`, not both.");
+                }
+                let from;
+                try {
+                    from = last !== undefined ? parsePeriod(last) : (since ?? null);
+                } catch (e) {
+                    return err(e.message);
+                }
+                const to = until ?? null;
+                if (from !== null && to !== null && from > to) return err("`since` is after `until`.");
+                try {
+                    const page = cacheHistoryRange(threadId, { since: from, until: to, limit }, nameCache);
+                    page.threadType = threadType === THREAD_USER ? "dm" : "group";
+                    page.messages = await withCurrentSenderNames(
+                        api,
+                        page.messages,
+                        threadType === THREAD_USER ? [threadId] : [],
+                    );
+                    return ok(page);
+                } catch (e) {
+                    return err(`The local cache could not be read: ${e.message}`);
+                }
+            }
+            // Without a period a page stays at 200, as it always was.
+            limit = Math.min(limit, HISTORY_PAGE_MAX);
             try {
                 // The cache is the better source and usually the only one that
                 // answers: Zalo returns an empty set for the socket history

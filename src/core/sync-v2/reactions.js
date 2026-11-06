@@ -23,7 +23,7 @@
  *     `storeLiveReaction` absorbs both forms.
  */
 
-import { decodeFrame } from "./index.js";
+import { decodeFrame } from "../../zalo/listener/frames.js";
 import { storeLiveReaction } from "../live-store.js";
 
 /** zca-js ThreadType values. */

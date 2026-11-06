@@ -24,16 +24,18 @@ export const CONTROL_QUEUES = Object.freeze(["603_1", "603_0", "604_0"]);
 
 /**
  * What a control is, by `act_type` and `act`. The values come from the captured frames and from the handlers
- * this client already has (zca-js's `file_done`, `group`, `fr`; ./read-state.js's `mark_unread`; the sync status
+ * this client already has (the listener's `file_done`, `video_done`, `photo_success`, `group`, `fr`; ./read-state.js's `mark_unread`; the sync status
  * frames).
  */
 const KNOWN = new Map([
     ["transfer_sync2", { kind: "sync", handler: "sync-v2" }],
     ["mark_unread", { kind: "read-state", handler: "read-state" }],
     ["pinned_convers", { kind: "pin-state", handler: "read-state" }],
-    ["file_done", { kind: "upload", handler: "zca-js" }],
-    ["group", { kind: "group-event", handler: "zca-js" }],
-    ["fr", { kind: "friend-event", handler: "zca-js" }],
+    ["file_done", { kind: "upload", handler: "listener" }],
+    ["video_done", { kind: "upload", handler: "listener" }],
+    ["photo_success", { kind: "upload", handler: "listener" }],
+    ["group", { kind: "group-event", handler: "listener" }],
+    ["fr", { kind: "friend-event", handler: "listener" }],
     ["voice2text", { kind: "transcript", handler: "voice-text" }],
 ]);
 

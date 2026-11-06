@@ -26,59 +26,19 @@
  * of the phone-backed restore — no confirmation is needed and nothing here
  * touches the WebSocket.
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { ThreadType } from "zca-js";
+import { THREAD_TYPE } from "../../zalo/enums.js";
+import { boardCursor, listOneOneBoard } from "../../zalo/api/boards.js";
 import { upsertBoardItem, upsertReminder } from "../db.js";
 
-const require = createRequire(import.meta.url);
-
-/** zca-js BoardType: what /api/board/list returns per item. */
-export const BOARD_TYPES = { 1: "note", 2: "pinned_message", 3: "poll" };
-
-let _utils = null;
-/** zca-js internals, located the same way ./gid.js does. */
-function zcaUtils() {
-    if (_utils) return _utils;
-    _utils = require(join(dirname(require.resolve("zca-js")), "utils.cjs"));
-    return _utils;
-}
-
 /**
- * List a 1-1 conversation's board (notes, pinned messages, polls).
- *
- * zca-js exposes /api/board/oneone/list only through getListReminder, hardwired
- * to board_type 1, so reminders were the only thing a DM ever returned. This
- * asks the same endpoint for every board type, which is what Zalo Web does.
- *
- * @returns {Promise<{items: Array<object>}>}
+ * List a 1-1 conversation's board (notes, pinned messages, reminders): `/api/board/oneone/list` with board type 0,
+ * every kind, which is what Zalo Web asks. It lives in the protocol layer (src/zalo/api/boards.js); re-exported here
+ * where it used to be.
  */
-async function listOneOneBoard(api, threadId, page, pageSize) {
-    const zu = zcaUtils();
-    const base = `${api.zpwServiceMap.group_board[0]}/api/board/oneone/list`;
-    const call = zu.apiFactory()((_api, ctx, utils) => async () => {
-        const params = {
-            objectData: JSON.stringify({
-                uid: String(threadId),
-                board_type: 0, // 0 = every kind, not just reminders
-                page,
-                count: pageSize,
-                last_id: 0,
-                last_type: 0,
-            }),
-            imei: ctx.imei,
-        };
-        const enc = utils.encodeAES(JSON.stringify(params));
-        if (!enc) throw new Error("failed to encrypt oneone board params");
-        const resp = await utils.request(utils.makeURL(base, { params: enc }), { method: "GET" });
-        return utils.resolve(resp);
-    })(api.getContext(), api);
+export { listOneOneBoard };
 
-    const raw = await call();
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    const items = parsed?.items || parsed?.data?.items || (Array.isArray(parsed) ? parsed : []);
-    return { items };
-}
+/** What /api/board/list returns per item (`boardType`). */
+export const BOARD_TYPES = { 1: "note", 2: "pinned_message", 3: "poll" };
 
 /** Stringify an id Zalo may send as a number, or leave it null. */
 const str = (v) => (v === undefined || v === null ? null : String(v));
@@ -195,7 +155,7 @@ function asList(resp) {
  * covers hundreds of others.
  *
  * @param {object} opts
- * @param {object} opts.api - logged-in zca-js api
+ * @param {object} opts.api - the logged-in api
  * @param {Array<{threadId: string, type: "dm"|"group", name?: string}>} opts.threads
  * @param {boolean} [opts.boards=true] - fetch notes/pinned/polls (groups only)
  * @param {boolean} [opts.reminders=true] - fetch reminders
@@ -212,8 +172,8 @@ function asList(resp) {
 /**
  * A failure reason someone can act on.
  *
- * zca-js builds its error from the server's error_message, which for these
- * endpoints is often null -- so the message arrives as the literal string
+ * The error is built from the server's error_message, which for these
+ * endpoints is often null -- so the message can arrive as the literal string
  * "null" and the only signal is the numeric code. A live board pass reported
  * 165 failures, every one of them printed as "null".
  *
@@ -268,13 +228,17 @@ export async function syncBoards(opts = {}) {
 
             // Notes / pinned messages / polls, for BOTH thread kinds. A group
             // uses /api/board/list; a 1-1 uses /api/board/oneone/list, which
-            // takes the same board_type filter.
+            // takes the same board_type filter. A group's page 2 and later carry
+            // the cursor of the page before (the id and type of its last item),
+            // as Zalo Web pages it, so an item added mid-scan does not shift one
+            // past the page boundary.
             if (boards) {
+                let pageCursor = { lastId: 0, lastType: 0 };
                 for (let page = 1; page <= maxPages; page++) {
                     let resp;
                     try {
                         resp = isGroup
-                            ? await api.getListBoard({ page, count: pageSize }, t.threadId)
+                            ? await api.getListBoard({ page, count: pageSize, ...pageCursor }, t.threadId)
                             : await listOneOneBoard(api, t.threadId, page, pageSize);
                     } catch (e) {
                         noteHere("board", e);
@@ -292,6 +256,7 @@ export async function syncBoards(opts = {}) {
                         }
                     }
                     if (items.length < pageSize) break;
+                    pageCursor = boardCursor(items);
                     if (delayMs) await sleep(delayMs);
                 }
             }
@@ -301,7 +266,7 @@ export async function syncBoards(opts = {}) {
                     const resp = await api.getListReminder(
                         { page: 1, count: pageSize },
                         t.threadId,
-                        isGroup ? ThreadType.Group : ThreadType.User,
+                        isGroup ? THREAD_TYPE.GROUP : THREAD_TYPE.USER,
                     );
                     for (const r of asList(resp)) {
                         const row = normalizeReminder(r, t.threadId, t.type);

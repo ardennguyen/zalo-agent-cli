@@ -30,7 +30,7 @@ const withoutGMsgId = (message) => {
 };
 
 /** The rows the two label-v2 cases share: request 0 is zca-js's full-list update and our read of the current list. */
-const LABEL_V2_CASES = ["labels-v2", "labels-v2-conflict"];
+const LABEL_V2_CASES = ["labels-v2", "labels-v2-conflict", "labels-v2-add-delete"];
 const LABEL_V2_WHY =
     "Web chat_label remote config (default update_label_version 1, @7592252): at 2 the Web edits labels through " +
     "/api/convlabel/manage/* (paths @6485240), never the full-list update; we read the list first to plan those calls";
@@ -185,6 +185,14 @@ export default [
         zca: 1,
         own: 2,
         why: LABEL_V2_WHY,
+    },
+    {
+        method: "updateLabels",
+        case: "labels-v2-add-delete",
+        field: "requests.length",
+        zca: 1,
+        own: 3,
+        why: `${LABEL_V2_WHY}; a removed label is one manage/delete and a new one one manage/add (12165, 12163)`,
     },
     { method: "updateLabels", case: LABEL_V2_CASES, field: "method", zca: "POST", own: "GET", why: LABEL_V2_WHY },
     {

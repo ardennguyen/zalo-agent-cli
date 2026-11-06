@@ -5,7 +5,8 @@
  * Every call is one session request on the ordinary envelope (kernel/endpoint.js), shaped the way Zalo Web 26.11.10
  * shapes it. Where the Web differs from what the engine sent before, the Web wins:
  *
- * - `addUnreadMark`: the inner `param` JSON keeps the Web's fixed order `{convsGroup, convsUser, imei}`.
+ * - `addUnreadMark`: the inner `param` JSON keeps the Web's fixed order `{convsGroup, convsUser, imei}`, and the
+ *   entry names the conversation's newest message (`cliMsgId`, `fromUid`) or `"-1"` for both, as the Web's does.
  * - `setHiddenConversations`: the Web's fixed order `{del_threads, add_threads, imei}`.
  * - `resetHiddenConversPin`: a GET with the common query only, no `params`.
  * - `updateAutoDeleteChat`: a POST whose sealed `params` ride in the query, with no body.
@@ -25,17 +26,18 @@ export const MUTE_FOREVER = -1;
 export const MUTE_UNTIL_8AM = "until8AM";
 
 /**
- * The seconds from `now` to the next 08:00 local time (today's when it is still before 8, else tomorrow's).
+ * The seconds from `now` to the next 08:00 local time: today's when the clock has not reached it yet, else
+ * tomorrow's. Built from the calendar date, so a day that is not 24 hours long (a DST change) still lands on 08:00.
  *
  * @param {number} now - milliseconds since the epoch
  * @returns {number}
  */
 export function secondsUntil8am(now) {
-    const at = new Date(now);
-    const next = new Date(now);
-    next.setHours(8, 0, 0, 0);
-    if (at.getHours() >= 8) next.setDate(next.getDate() + 1);
-    return Math.floor((next.getTime() - at.getTime()) / 1000);
+    const today = new Date(now);
+    const eightOn = (dayOffset) =>
+        new Date(today.getFullYear(), today.getMonth(), today.getDate() + dayOffset, 8).getTime();
+    const target = eightOn(0) > now ? eightOn(0) : eightOn(1);
+    return Math.floor((target - now) / 1000);
 }
 
 /**
@@ -47,10 +49,27 @@ export function secondsUntil8am(now) {
  * @returns {number|string}
  */
 export function muteDurationOf({ duration = MUTE_FOREVER, action = MUTE_ACTION.MUTE } = {}, now) {
-    if (action === MUTE_ACTION.UNMUTE) return MUTE_FOREVER;
-    if (duration === MUTE_FOREVER) return MUTE_FOREVER;
-    if (duration === MUTE_UNTIL_8AM) return secondsUntil8am(now);
-    return duration;
+    const endless = action === MUTE_ACTION.UNMUTE || duration === MUTE_FOREVER;
+    if (endless) return MUTE_FOREVER;
+    return duration === MUTE_UNTIL_8AM ? secondsUntil8am(now) : duration;
+}
+
+/** What the Web's `addMarkAsUnread` caller sends for a message it does not know: `"-1"` (@6622758). */
+export const UNREAD_AT_UNKNOWN = "-1";
+
+/**
+ * The message an unread mark is pinned to, as `addUnreadMark` sends it: both ids as strings when both are known,
+ * else the Web's `"-1"` for both (it never sends one without the other).
+ *
+ * @param {{cliMsgId?: string|number, fromUid?: string|number}|null|undefined} last
+ * @returns {{cliMsgId: string, fromUid: string}}
+ */
+export function unreadMarkAt(last) {
+    const known = (v) => v !== undefined && v !== null && String(v) !== "";
+    if (known(last?.cliMsgId) && known(last?.fromUid)) {
+        return { cliMsgId: String(last.cliMsgId), fromUid: String(last.fromUid) };
+    }
+    return { cliMsgId: UNREAD_AT_UNKNOWN, fromUid: UNREAD_AT_UNKNOWN };
 }
 
 /** The PIN of hidden chats: four digits. */
@@ -207,17 +226,20 @@ export function conversationMethods(s) {
     const getMute = () => s.call(MUTE_GET, {});
 
     /**
-     * Mark a conversation unread.
+     * Mark a conversation unread, at its newest message the way the Web does: that message's client id and sender
+     * (`"0"` for this account's own), or `"-1"` for both when the caller does not know the newest message.
      *
      * @param {string} threadId - the user or group id
      * @param {0|1} [threadType] - 0 user (default), 1 group
+     * @param {{cliMsgId?: string|number, fromUid?: string|number}|null} [last] - the conversation's newest message
      * @returns {Promise<any>} Zalo's answer, `{data, status}` when it holds JSON in a string
      */
-    const addUnreadMark = async (threadId, threadType = THREAD_TYPE.USER) => {
+    const addUnreadMark = async (threadId, threadType = THREAD_TYPE.USER, last = null) => {
         const type = threadTypeOf(threadType);
         const ts = s.now();
         const group = type === THREAD_TYPE.GROUP;
-        const entry = { id: group ? bareGroupId(threadId) : String(threadId), cliMsgId: String(ts), fromUid: "0", ts };
+        const { cliMsgId, fromUid } = unreadMarkAt(last);
+        const entry = { id: group ? bareGroupId(threadId) : String(threadId), cliMsgId, fromUid, ts };
         return s.call(UNREAD_ADD, { convsGroup: group ? [entry] : [], convsUser: group ? [] : [entry] });
     };
 

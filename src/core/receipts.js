@@ -303,6 +303,35 @@ export function pickSeenAnchor(rows, { ownId }) {
 }
 
 /**
+ * The message `conv unread` pins the unread mark to: the newest cached message Zalo can identify, sent by anyone.
+ *
+ * Zalo Web marks a conversation unread at its newest message that has a client id, naming that message's
+ * `cliMsgId` and sender (`fromUid`, `"0"` for this account's own). A tombstone and a system-line placeholder are
+ * passed over, as for the seen anchor. A row restored by sync under a noised sender id names no real sender, so
+ * the search stops there and answers null: an older message would mark the wrong place, and the caller then sends
+ * the Web's "unknown" (`"-1"`) instead.
+ *
+ * @param {object[]} rows - `messages` rows, newest first (db.getMessages)
+ * @param {{ownId: string}} opts
+ * @returns {{cliMsgId: string, fromUid: string}|null}
+ */
+export function unreadMarkAnchor(rows, { ownId }) {
+    for (const row of rows || []) {
+        if (!row || row.type === "deleted") continue;
+        if (!/^\d+$/.test(String(row.msgId ?? ""))) continue;
+        const raw = parseRaw(row.raw_data);
+        if (!isId(raw.cliMsgId)) continue;
+        const sender = String(row.senderId ?? "");
+        if (sender === String(ownId) || String(raw.uidFrom ?? "") === "0") {
+            return { cliMsgId: String(raw.cliMsgId), fromUid: "0" };
+        }
+        if (!/^\d+$/.test(sender)) return null;
+        return { cliMsgId: String(raw.cliMsgId), fromUid: sender };
+    }
+    return null;
+}
+
+/**
  * The seenv2 message for a cached row, and which of its fields are guessed.
  *
  * `st`/`at`/`cmd` come from raw_data, where the listener keeps the frame's

@@ -182,6 +182,23 @@ function resolveThreadType(threadId, explicit) {
     }
 }
 
+/** A group's conversation id in a label: `g` and the group id. */
+const LABEL_GROUP_ID = /^g\d+$/;
+
+/**
+ * A thread as a conversation label names it: `g<groupId>` for a group, the bare id for a user (Zalo Web's
+ * conversation ids). An id already given as `g<digits>` is kept.
+ *
+ * @param {string} threadId
+ * @param {"dm"|"group"} [explicit] - the caller's threadType, if they gave one
+ * @returns {string}
+ */
+function labelConversationId(threadId, explicit) {
+    const id = String(threadId);
+    if (LABEL_GROUP_ID.test(id)) return id;
+    return resolveThreadType(id, explicit) === THREAD_GROUP ? `g${id}` : id;
+}
+
 /** Thread type constants matching zca-js ThreadType enum */
 const THREAD_USER = 0;
 
@@ -2771,6 +2788,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .array(z.string().min(1))
                     .optional()
                     .describe("Multiple thread IDs to assign or unassign in one call"),
+                threadType: z
+                    .enum(["dm", "group"])
+                    .optional()
+                    .describe(
+                        'The type of every threadId/threadIds given: "dm" or "group". Leave it out: the type stored for each thread is used. A label stores a group as "g<groupId>".',
+                    ),
                 labelData: z
                     .array(z.any())
                     .optional()
@@ -2782,7 +2805,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .describe("Label version integer from action='list' (required for raw action='update')"),
             }),
         },
-        async ({ action, labelId, labelText, threadId, threadIds, labelData, version }) => {
+        async ({ action, labelId, labelText, threadId, threadIds, threadType: threadTypeIn, labelData, version }) => {
             try {
                 if (action === "list") {
                     const res = await api.getLabels();
@@ -2849,15 +2872,24 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         );
                     }
 
-                    const targetSet = new Set(targets);
+                    // A label names a group as "g<groupId>" and a user by the bare id (spec-actions 9): a bare
+                    // group id would be stored as a user conversation. Unassign drops both forms, so it also
+                    // clears a bare group id an earlier version stored (a user id is never a group's).
+                    const convIds = targets.map((t) => labelConversationId(t, threadTypeIn));
+                    const dropped = new Set(
+                        convIds.flatMap((c) => {
+                            const bare = LABEL_GROUP_ID.test(c) ? c.slice(1) : c;
+                            return [bare, `g${bare}`];
+                        }),
+                    );
                     let updatedConvList = [];
                     const nextLabelData = list.map((lbl) => {
                         if (Number(lbl.id) !== Number(matched.id)) return lbl;
                         const existing = Array.isArray(lbl.conversations) ? lbl.conversations.map(String) : [];
                         const nextConvs =
                             action === "assign"
-                                ? [...new Set([...existing, ...targets])]
-                                : existing.filter((c) => !targetSet.has(String(c)));
+                                ? [...new Set([...existing, ...convIds])]
+                                : existing.filter((c) => !dropped.has(String(c)));
                         updatedConvList = nextConvs;
                         return { ...lbl, conversations: nextConvs };
                     });

@@ -230,6 +230,27 @@ describe("wire: actions (zca-js against src/zalo/api/actions.js)", () => {
         });
     });
 
+    describe("thread types other than user (0) or group (1) are refused before any request", () => {
+        const msg = { cliMsgId: CLI_MSG_ID, msgId: MSG_ID, uidFrom: PEER };
+        const anchor = { ownerId: PEER, cliMsgId: CLI_MSG_ID, globalMsgId: MSG_ID };
+        const CALLS = {
+            undo: (type) => [{ msgId: MSG_ID, cliMsgId: CLI_MSG_ID }, PEER, type],
+            deleteMessage: (type) => [{ data: msg, threadId: PEER, type }, true],
+            deleteChat: (type) => [anchor, PEER, type],
+            removeUnreadMark: (type) => [PEER, type],
+        };
+        for (const [method, args] of Object.entries(CALLS)) {
+            it(method, async () => {
+                // Red if the method built a request for an unknown thread type (zca-js 2.2.0 sends the DM call).
+                for (const type of [2, -1, "x", ""]) {
+                    const rec = await pair.run(method, args(type), { reply: {} });
+                    assert.equal(rec.own.requests.length, 0, `${method}, type ${JSON.stringify(type)}`);
+                    assert.deepEqual(rec.own.error, { message: "Thread type is invalid", code: null });
+                }
+            });
+        }
+    });
+
     describe("deleteChat", () => {
         const anchor = { ownerId: PEER, cliMsgId: CLI_MSG_ID, globalMsgId: MSG_ID };
 
@@ -501,6 +522,55 @@ describe("wire: labels when the server asks for the per-label calls (update_labe
         await expectGolden(AREA, "labels-v2-conflict", rec.own);
         assert.equal(rec.own.requests.length, 1, "nothing is written after a conflict");
         assert.equal(rec.own.error.code, 230);
+    });
+
+    it("deletes a label and adds one: manage/delete, then manage/add, after the read", async () => {
+        const wanted = [CURRENT[0], { text: "New", color: "#4BC377", emoji: "", conversations: [PEER] }];
+        const added = { id: 3, text: "New", color: "#4BC377", offset: 1, conversations: [PEER], createTime: 7 };
+        const after = { labelData: JSON.stringify([CURRENT[0], added]), version: 7, lastUpdateTime: 12 };
+        const rec = await pair.run("updateLabels", [{ labelData: wanted, version: 5 }], {
+            replies: {
+                "/api/convlabel/get": { data: { labelData: JSON.stringify(CURRENT), version: 5, lastUpdateTime: 10 } },
+                "/api/convlabel/update": { data: after },
+                "/api/convlabel/manage/delete": {
+                    data: { labelData: JSON.stringify([CURRENT[0]]), version: 6, oldVersion: 5, lastUpdateTime: 11 },
+                },
+                "/api/convlabel/manage/add": { data: { ...after, oldVersion: 6 } },
+            },
+        });
+        assertSameWire(rec, allowFor("labels-v2-add-delete"));
+        await expectGolden(AREA, "labels-v2-add-delete", rec.own);
+        const [, del, add] = rec.own.requests;
+        assert.deepEqual(
+            rec.own.requests.map((r) => `${r.method} ${r.path}`),
+            ["GET /api/convlabel/get", "POST /api/convlabel/manage/delete", "POST /api/convlabel/manage/add"],
+        );
+        // Red if a delete carried more than the ids, or the add an id, an offset or the imei the Web leaves out.
+        assert.deepEqual(del.paramsOrder, ["labelIds"]);
+        assert.deepEqual(del.params, { labelIds: [2] });
+        assert.deepEqual(add.paramsOrder, ["labelInfo", "add"]);
+        assert.equal(add.params.labelInfo, JSON.stringify({ text: "New", color: "#4BC377" }));
+        assert.deepEqual(add.params.add, [PEER]);
+        assert.deepEqual(rec.own.result, { labelData: [CURRENT[0], added], version: 7, lastUpdateTime: 12 });
+    });
+
+    it("is not atomic: a call that fails mid-plan leaves the calls before it applied, and throws", async () => {
+        const wanted = [CURRENT[0], { text: "New", color: "#4BC377", conversations: [] }];
+        const rec = await pair.run("updateLabels", [{ labelData: wanted, version: 5 }], {
+            replies: {
+                "/api/convlabel/get": { data: { labelData: JSON.stringify(CURRENT), version: 5, lastUpdateTime: 10 } },
+                "/api/convlabel/update": { data: {} },
+                "/api/convlabel/manage/delete": { data: { labelData: "[]", version: 6, lastUpdateTime: 11 } },
+                "/api/convlabel/manage/add": { inner: { error_code: 230, error_message: "Label version mismatch" } },
+            },
+        });
+        // The delete went out and is not rolled back; the caller learns of the failure and must read the list again.
+        assert.deepEqual(
+            rec.own.requests.map((r) => r.path),
+            ["/api/convlabel/get", "/api/convlabel/manage/delete", "/api/convlabel/manage/add"],
+        );
+        assert.equal(rec.own.error.code, 230);
+        assert.match(rec.own.error.message, /read it again/);
     });
 
     it("plans deletes, then changes, then new labels; an unchanged label sends nothing", () => {

@@ -17,7 +17,8 @@
  * - `updateLabels`: the server's `chat_label.api.update_label_version` picks the flow, as the Web's does. 1 (the
  *   default): the full-array `/api/convlabel/update`. 2: the per-label `/api/convlabel/manage/*` calls, planned from
  *   the difference between the list on the server and the one asked for. Error 230 (the list changed since the
- *   caller read it) is said plainly in both.
+ *   caller read it) is said plainly in both. Flow 2 is not atomic: its calls go out one by one, nothing undoes the
+ *   ones already answered when a later one fails, and the caller reads the list again before retrying.
  *
  * Every id stays a string. Nothing here writes to stdout or logs.
  */
@@ -416,6 +417,9 @@ export function labelApiVersion(ctx) {
  * the label limit), then changes to labels that stay, then new labels. A label that stays is matched by `id`; its
  * conversations are diffed into `add`/`remove`.
  *
+ * The plan is several requests, and Zalo has no call that applies them together: it is NOT atomic. A failure part
+ * way leaves the earlier calls applied (a label deleted, another not yet added); see `updateLabels`.
+ *
  * @param {any[]} current - the list on the server
  * @param {any[]} wanted - the list asked for
  * @returns {Array<{def: object, args: object}>}
@@ -619,10 +623,16 @@ export function actionMethods(s) {
     /**
      * Make the account's labels the given list, in the flow the server asks for.
      *
+     * In the per-label flow (`update_label_version` 2) this is a read and then one request per change, sent one after
+     * the other. It is not atomic: when a call fails, the calls before it stay applied and are not undone, and the
+     * error is thrown as it came (230 said plainly). The list on the server is then part way to the one asked for;
+     * read it again (`getLabels`) before retrying. The legacy flow is a single request and has no such middle state.
+     *
      * @param {{labelData: any[], version: number}} labels - the whole list as it should be, and the version it was
      *   read at
      * @returns {Promise<{labelData: any[], version: number, lastUpdateTime: number}>} the list after the change
-     * @throws {ZaloApiError} code 230 when the list changed since that version
+     * @throws {ZaloApiError} code 230 when the list changed since that version; in the per-label flow, a failed
+     *   call leaves the calls sent before it applied
      */
     const updateLabels = async (labels) => {
         const wanted = Array.isArray(labels?.labelData) ? labels.labelData : [];

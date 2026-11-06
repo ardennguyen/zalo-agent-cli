@@ -22,22 +22,56 @@ const parsed = (v) => {
     }
 };
 
+/** The entry `addUnreadMark` sends when the caller does not know the newest message (Web `_markUnread` @6622758). */
+const UNREAD_AT_UNKNOWN = Object.freeze({ cliMsgId: "-1", fromUid: "-1" });
+
+/** The newest message tests/unit/wire-conversations.test.js passes in its "unread-add-newest" case. */
+const UNREAD_AT_NEWEST = Object.freeze({ cliMsgId: "1699999999999", fromUid: "0" });
+
+/**
+ * The `param` difference of one addUnreadMark case: zca-js's key order and entry, against the Web's order
+ * `{convsGroup, convsUser, imei}` and the entry naming the newest message (`at`), all else the same.
+ *
+ * @param {string} name - the case
+ * @param {string[]} zcaOrder - the keys zca-js writes for that thread type
+ * @param {{cliMsgId: string, fromUid: string}} at - what our entry names
+ * @returns {object} the row
+ */
+function unreadMarkRow(name, zcaOrder, at) {
+    const pinnedTo = (inner, ids) => {
+        const entry = (e) => ({ ...e, ...ids });
+        return { ...inner, convsGroup: inner.convsGroup.map(entry), convsUser: inner.convsUser.map(entry) };
+    };
+    return {
+        method: "addUnreadMark",
+        case: name,
+        field: "params.param",
+        zca: (v) => {
+            const inner = parsed(v);
+            if (!inner || !isDeepStrictEqual(Object.keys(inner), zcaOrder)) return false;
+            const [entry] = [...inner.convsGroup, ...inner.convsUser];
+            return entry?.fromUid === "0" && entry?.cliMsgId === String(entry?.ts);
+        },
+        own: (v, { zca }) =>
+            isDeepStrictEqual(Object.keys(parsed(v) ?? {}), ["convsGroup", "convsUser", "imei"]) &&
+            isDeepStrictEqual(parsed(v), pinnedTo(parsed(zca.params.param), at)),
+        why:
+            "Web addMarkAsUnread (@11602557) always writes {convsGroup, convsUser, imei}, and its caller _markUnread " +
+            '(@6622758) names the newest message (its cliMsgId and fromUid), "-1" for both when it has none',
+    };
+}
+
 const AUTO_DELETE_WHY =
     "Web updateAutoDeleteConvers (@11691440) seals the params into the query and posts no body (_post(url, null))";
 
 /** @type {Array<{method: string, field: string, zca: unknown, own: unknown, why: string, when?: Function, case?: string|string[]}>} */
 export default [
-    // addUnreadMark: the Web's fixed key order inside `param` (addMarkAsUnread @11602557).
-    {
-        method: "addUnreadMark",
-        case: "unread-add-dm",
-        field: "params.param",
-        zca: (v) => isDeepStrictEqual(Object.keys(parsed(v) ?? {}), ["convsUser", "convsGroup", "imei"]),
-        own: (v, { zca }) =>
-            isDeepStrictEqual(Object.keys(parsed(v) ?? {}), ["convsGroup", "convsUser", "imei"]) &&
-            isDeepStrictEqual(parsed(v), parsed(zca.params.param)),
-        why: "Web addMarkAsUnread (@11602557) always writes {convsGroup, convsUser, imei}",
-    },
+    // addUnreadMark: the Web's fixed key order inside `param` (addMarkAsUnread @11602557), and the entry names the
+    // conversation's newest message, or "-1" for both ids when it is not known (_markUnread @6622758); zca-js put
+    // the clock in cliMsgId and "0" in fromUid.
+    unreadMarkRow("unread-add-dm", ["convsUser", "convsGroup", "imei"], UNREAD_AT_UNKNOWN),
+    unreadMarkRow("unread-add-group", ["convsGroup", "convsUser", "imei"], UNREAD_AT_UNKNOWN),
+    unreadMarkRow("unread-add-newest", ["convsUser", "convsGroup", "imei"], UNREAD_AT_NEWEST),
 
     // setHiddenConversations: the Web's fixed key order (updateItemHiddenChat @11686769).
     {

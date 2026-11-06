@@ -47,8 +47,9 @@ const SRC = join(ROOT, "src");
  * hand-maintained list that the whole test exists to avoid.
  */
 const ALLOWLIST = [
-    // Empty, and that is the point: src/ currently calls every zca-js method
-    // with the shape its signature declares.
+    // Empty but for the entry below, and that is the point: src/ calls every
+    // zca-js method with the shape its signature declares, except where our
+    // own engine's method deliberately takes more (named, with the reason).
     //
     // It had one entry when this test was written -- `conv read`, which had
     // never marked anything as read -- and the "still corresponds to a real
@@ -57,6 +58,14 @@ const ALLOWLIST = [
     // the mechanism working, not a formality. An allowlist without it
     // quietly becomes the second hand-maintained list this test exists to
     // avoid.
+    {
+        file: "src/commands/conv.js",
+        method: "addUnreadMark",
+        reason:
+            "our engine's addUnreadMark (src/zalo/api/conversations.js) takes a third argument, the conversation's " +
+            "newest message, which Zalo Web names in the mark; zca-js's two-argument signature ignores it. Goes with " +
+            "zca-js at the cut-over.",
+    },
 ];
 
 const table = buildTypeTable(DIST);

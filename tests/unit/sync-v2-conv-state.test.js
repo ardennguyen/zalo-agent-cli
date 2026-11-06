@@ -141,6 +141,17 @@ describe("syncConvState", () => {
         assert.equal(st.failures[0].what, "pinned");
     });
 
+    it("skips the pinned list's `m1` entry the way Zalo Web does: not a pin, not an unresolved id", async () => {
+        // Red if m1 were parsed like an id: it would count as unresolved (and look like a pin the cache lacks).
+        const st = await syncConvState({ api: api({ pins: ["m1", `g${G1}`] }) });
+        assert.equal(st.pinned, 1);
+        assert.equal(st.unresolved, 0);
+        assert.deepEqual(
+            getConvState().map((r) => r.threadId),
+            [G1],
+        );
+    });
+
     it("counts a conversation the cache has never seen, and writes nothing for it", async () => {
         const st = await syncConvState({ api: api({ pins: ["g1111111111111111111"] }) });
         assert.equal(st.pinned, 0);

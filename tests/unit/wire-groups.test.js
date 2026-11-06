@@ -114,6 +114,13 @@ const CASES = [
         () => [{ data: Buffer.from(AVATAR), metadata: { width: 10, height: 20 } }, G],
         "",
     ],
+    ["changeGroupAvatar/no-size", "changeGroupAvatar", () => [{ data: Buffer.from(AVATAR), metadata: {} }, G], ""],
+    [
+        "changeGroupAvatar/half-size",
+        "changeGroupAvatar",
+        () => [{ data: Buffer.from(AVATAR), metadata: { width: 0, height: 20 } }, G],
+        "",
+    ],
     ["addGroupDeputy", "addGroupDeputy", [[U], G], ""],
     ["removeGroupDeputy", "removeGroupDeputy", [U, G], ""],
     ["changeGroupOwner", "changeGroupOwner", [U, G], { time: T0 }],
@@ -321,6 +328,14 @@ describe("groups: ours against zca-js on one context (wire-groups)", () => {
             });
             const bytes = only("changeGroupAvatar/bytes");
             assert.deepEqual([bytes.params.originWidth, bytes.params.originHeight], [10, 20]);
+        });
+
+        it("changeGroupAvatar: a size that cannot be read goes out as 1080 px, each edge on its own", () => {
+            // Red if the fallback went away (the keys would be absent or 0) or changed size.
+            const none = only("changeGroupAvatar/no-size");
+            assert.deepEqual([none.params.originWidth, none.params.originHeight], [1080, 1080]);
+            const half = only("changeGroupAvatar/half-size");
+            assert.deepEqual([half.params.originWidth, half.params.originHeight], [1080, 20]);
         });
 
         it("disperseGroup: a form POST with {imei, grid} in that order", () => {

@@ -4126,20 +4126,6 @@ export default {
     "sendVoice/dm": {
         requests: [
             {
-                method: "HEAD",
-                service: "media.example.invalid",
-                path: "/v.aac",
-                queryOrder: [],
-                query: {},
-                params: null,
-                paramsOrder: null,
-                headers: {},
-                form: null,
-                formOrder: null,
-                parts: null,
-                body: null,
-            },
-            {
                 method: "POST",
                 service: "file",
                 path: "/api/message/forward",
@@ -4156,7 +4142,7 @@ export default {
                     msgType: 3,
                     clientId: "1700000000000",
                     msgInfo:
-                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac","fileSize":48000}',
+                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac"}',
                 },
                 paramsOrder: ["toId", "imei", "ttl", "zsource", "msgType", "clientId", "msgInfo"],
                 headers: {
@@ -4183,20 +4169,6 @@ export default {
     "sendVoice/error-http500": {
         requests: [
             {
-                method: "HEAD",
-                service: "media.example.invalid",
-                path: "/v.aac",
-                queryOrder: [],
-                query: {},
-                params: null,
-                paramsOrder: null,
-                headers: {},
-                form: null,
-                formOrder: null,
-                parts: null,
-                body: null,
-            },
-            {
                 method: "POST",
                 service: "file",
                 path: "/api/message/forward",
@@ -4213,7 +4185,7 @@ export default {
                     msgType: 3,
                     clientId: "1700000000000",
                     msgInfo:
-                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac","fileSize":48000}',
+                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac"}',
                 },
                 paramsOrder: ["toId", "imei", "ttl", "zsource", "msgType", "clientId", "msgInfo"],
                 headers: {
@@ -4239,20 +4211,6 @@ export default {
     "sendVoice/error-inner": {
         requests: [
             {
-                method: "HEAD",
-                service: "media.example.invalid",
-                path: "/v.aac",
-                queryOrder: [],
-                query: {},
-                params: null,
-                paramsOrder: null,
-                headers: {},
-                form: null,
-                formOrder: null,
-                parts: null,
-                body: null,
-            },
-            {
                 method: "POST",
                 service: "file",
                 path: "/api/message/forward",
@@ -4269,7 +4227,7 @@ export default {
                     msgType: 3,
                     clientId: "1700000000000",
                     msgInfo:
-                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac","fileSize":48000}',
+                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac"}',
                 },
                 paramsOrder: ["toId", "imei", "ttl", "zsource", "msgType", "clientId", "msgInfo"],
                 headers: {
@@ -4295,20 +4253,6 @@ export default {
     "sendVoice/error-outer": {
         requests: [
             {
-                method: "HEAD",
-                service: "media.example.invalid",
-                path: "/v.aac",
-                queryOrder: [],
-                query: {},
-                params: null,
-                paramsOrder: null,
-                headers: {},
-                form: null,
-                formOrder: null,
-                parts: null,
-                body: null,
-            },
-            {
                 method: "POST",
                 service: "file",
                 path: "/api/message/forward",
@@ -4325,7 +4269,7 @@ export default {
                     msgType: 3,
                     clientId: "1700000000000",
                     msgInfo:
-                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac","fileSize":48000}',
+                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac"}',
                 },
                 paramsOrder: ["toId", "imei", "ttl", "zsource", "msgType", "clientId", "msgInfo"],
                 headers: {
@@ -4351,20 +4295,6 @@ export default {
     "sendVoice/error-undecryptable": {
         requests: [
             {
-                method: "HEAD",
-                service: "media.example.invalid",
-                path: "/v.aac",
-                queryOrder: [],
-                query: {},
-                params: null,
-                paramsOrder: null,
-                headers: {},
-                form: null,
-                formOrder: null,
-                parts: null,
-                body: null,
-            },
-            {
                 method: "POST",
                 service: "file",
                 path: "/api/message/forward",
@@ -4381,7 +4311,7 @@ export default {
                     msgType: 3,
                     clientId: "1700000000000",
                     msgInfo:
-                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac","fileSize":48000}',
+                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac"}',
                 },
                 paramsOrder: ["toId", "imei", "ttl", "zsource", "msgType", "clientId", "msgInfo"],
                 headers: {
@@ -4407,20 +4337,6 @@ export default {
     "sendVoice/group": {
         requests: [
             {
-                method: "HEAD",
-                service: "media.example.invalid",
-                path: "/v.aac",
-                queryOrder: [],
-                query: {},
-                params: null,
-                paramsOrder: null,
-                headers: {},
-                form: null,
-                formOrder: null,
-                parts: null,
-                body: null,
-            },
-            {
                 method: "POST",
                 service: "file",
                 path: "/api/group/forward",
@@ -4437,7 +4353,7 @@ export default {
                     msgType: 3,
                     clientId: "1700000000000",
                     msgInfo:
-                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac","fileSize":48000}',
+                        '{"voiceUrl":"https://media.example.invalid/v.aac","m4aUrl":"https://media.example.invalid/v.aac"}',
                 },
                 paramsOrder: ["grid", "visibility", "ttl", "zsource", "msgType", "clientId", "msgInfo"],
                 headers: {

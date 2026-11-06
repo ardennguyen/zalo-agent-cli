@@ -33,8 +33,9 @@
  * A voice or video message is not forwarded this way: it is re-sent by its
  * hosted URL (`sendVoice` / `sendVideo`). `voiceResendOptions` and
  * `videoResendOptions` read what those need out of the cached message, so a
- * re-send does not ask the CDN for a size the cache already knows (the HEAD
- * the engine otherwise makes), and a HEAD that is still needed is bounded.
+ * video re-send does not ask the CDN for a size the cache already knows (the
+ * HEAD the engine otherwise makes), and a HEAD that is still needed is bounded.
+ * A voice re-send makes no HEAD at all, as Web does.
  */
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
@@ -83,21 +84,17 @@ function knownSize(declared, localPath) {
 }
 
 /**
- * The `sendVoice` options that re-send a cached voice message: its URL, the m4a copy Zalo keeps beside it (Zalo Web
- * forwards `m4aUrl: params.m4a`), the size when the cache knows it, and a bound on the HEAD when it does not.
+ * The `sendVoice` options that re-send a cached voice message: its URL and the m4a copy Zalo keeps beside it (Zalo
+ * Web forwards `m4aUrl: params.m4a`). No size: Web sends none for a voice, so the engine asks the host for nothing.
  *
  * @param {object|null} content - the cached message's `content` (`{href, params}`)
- * @param {string|null} [localPath] - the downloaded copy, if any
- * @returns {{voiceUrl: string|undefined, m4aUrl?: string, fileSize?: number, timeoutMs: number}}
+ * @returns {{voiceUrl: string|undefined, m4aUrl?: string}}
  */
-export function voiceResendOptions(content, localPath = null) {
+export function voiceResendOptions(content) {
     const p = paramsOf(content);
-    const fileSize = knownSize(p.fileSize, localPath);
     return {
         voiceUrl: content?.href,
         ...(typeof p.m4a === "string" && p.m4a ? { m4aUrl: p.m4a } : {}),
-        ...(fileSize !== undefined ? { fileSize } : {}),
-        timeoutMs: HEAD_TIMEOUT_MS,
     };
 }
 

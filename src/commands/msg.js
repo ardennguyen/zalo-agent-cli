@@ -1422,7 +1422,7 @@ export function registerMsgCommands(program) {
                 // the cache knows (params, or the downloaded copy) spares the
                 // HEAD to the CDN; one it does not know is bounded.
                 video: async () => api.sendVideo(videoResendOptions(c, row.localPath), threadId, threadType),
-                voice: async () => api.sendVoice(voiceResendOptions(c, row.localPath), threadId, threadType),
+                voice: async () => api.sendVoice(voiceResendOptions(c), threadId, threadType),
                 photo: resendLocal,
                 file: resendLocal,
                 gif: resendLocal,

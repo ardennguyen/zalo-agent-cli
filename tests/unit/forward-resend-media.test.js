@@ -1,9 +1,10 @@
 /**
- * A forwarded voice or video is re-sent by its hosted URL (`sendVoice` / `sendVideo`), and the engine asks the host
- * for the file's size with a HEAD unless it is given one. A cached message often knows it already: its params, or
- * the copy the media downloader saved. `msg forward` and `zalo_forward_message` hand that size over (FX 10), so a
- * forward of a cached voice makes no HEAD; they also hand over the m4a URL Zalo Web forwards (`params.m4a`), a bound
- * on a HEAD that is still needed, and keep the 1280x720 fallback for a video whose params have no geometry.
+ * A forwarded voice or video is re-sent by its hosted URL (`sendVoice` / `sendVideo`). A voice goes out as Zalo Web
+ * forwards one: its URL and the m4a URL from `params.m4a`, no size and no HEAD to the file's host. A video still
+ * needs a size, which the engine asks the host for with a HEAD unless it is given one; a cached message often knows
+ * it already (its params, or the copy the media downloader saved), so `msg forward` and `zalo_forward_message` hand
+ * that size over (FX 10) with a bound on a HEAD that is still needed, and keep the 1280x720 fallback for a video whose
+ * params have no geometry.
  *
  * The CLI cases run the real command against an offline session (./support/offline-cli.js), which logs every
  * request, the HEAD included; the MCP case runs the tool against a recording api. Every id is fake.
@@ -70,18 +71,12 @@ function seedMedia(msgId, type, content, localPath = null) {
 const HEADS = (requests) => requests.filter((q) => q.method === "HEAD");
 
 describe("the re-send options read the cache", () => {
-    it("voice: m4a and size from params; the downloaded copy's size when params have none; a bound always", () => {
+    it("voice: the URL and the m4a from params, nothing else (Web sends no size)", () => {
         assert.deepEqual(voiceResendOptions({ href: VOICE_URL, params: J({ m4a: M4A_URL, fileSize: 1200 }) }), {
             voiceUrl: VOICE_URL,
             m4aUrl: M4A_URL,
-            fileSize: 1200,
-            timeoutMs: HEAD_TIMEOUT_MS,
         });
-        // What a real voice note's params hold (m4a, duration, waveform): the size comes from the local copy.
-        assert.equal(voiceResendOptions({ href: VOICE_URL, params: J({ m4a: M4A_URL }) }, LOCAL_VOICE).fileSize, 4321);
-        // Nothing knows the size: the engine asks the host, bounded.
-        const bare = voiceResendOptions({ href: VOICE_URL, params: "{not json" }, join(DIR, "missing.aac"));
-        assert.deepEqual(bare, { voiceUrl: VOICE_URL, timeoutMs: HEAD_TIMEOUT_MS });
+        assert.deepEqual(voiceResendOptions({ href: VOICE_URL, params: "{not json" }), { voiceUrl: VOICE_URL });
     });
 
     it("video: geometry from params, else 1280x720; size from params or video_file_size", () => {
@@ -122,25 +117,20 @@ describe("msg forward of a cached voice or video", () => {
         });
     });
 
-    for (const [name, msgId, fileSize] of [
-        ["its params' size", VOICE_SIZED, 1200],
-        ["its downloaded copy's size", VOICE_LOCAL, 4321],
+    for (const [name, msgId, m4aUrl] of [
+        ["one whose params give a size", VOICE_SIZED, M4A_URL],
+        ["one with a downloaded copy", VOICE_LOCAL, M4A_URL],
+        ["one nothing knows the size of, and no m4a", VOICE_BARE, VOICE_URL],
     ]) {
-        it(`a voice whose size the cache knows (${name}) makes no HEAD, and sends the m4a URL`, async () => {
+        it(`a voice (${name}) makes no HEAD and sends no size, as Web does`, async () => {
             const r = await runOffline(["msg", "forward", msgId, PEER, "-t", "0"]);
-            // Red when the forward hands sendVoice only the URL (the old call): the engine then HEADs the CDN.
+            // Red when sendVoice asks the host for the size again: the bare voice would show a HEAD.
             assert.deepEqual(HEADS(r.requests), [], r.all);
             const sends = requestsTo(r.requests, "/api/message/forward");
             assert.equal(sends.length, 1, r.all);
-            assert.deepEqual(JSON.parse(sends[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl: M4A_URL, fileSize });
+            assert.deepEqual(JSON.parse(sends[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl });
         });
     }
-
-    it("a voice whose size nothing knows still asks the host (so the cases above can see a HEAD)", async () => {
-        const r = await runOffline(["msg", "forward", VOICE_BARE, PEER, "-t", "0"]);
-        assert.equal(HEADS(r.requests).length, 1, r.all);
-        assert.equal(HEADS(r.requests)[0].url, VOICE_URL);
-    });
 
     it("a video with no geometry goes out as 1280x720, with its cached size and no HEAD", async () => {
         const r = await runOffline(["msg", "forward", VIDEO_NO_GEOMETRY, PEER, "-t", "0"]);
@@ -153,7 +143,7 @@ describe("msg forward of a cached voice or video", () => {
 });
 
 describe("zalo_forward_message of a cached voice", () => {
-    it("hands sendVoice the m4a URL, the known size and the bound", async () => {
+    it("hands sendVoice the URL and the m4a URL only", async () => {
         initDb(join(DIR, "mcp.sqlite"));
         upsertThread({ threadId: PEER, type: "dm", name: "Peer", lastUpdate: 1700000000000 });
         seedMedia(VOICE_LOCAL, "voice", { href: VOICE_URL, params: J({ m4a: M4A_URL, duration: 3000 }) }, LOCAL_VOICE);
@@ -172,10 +162,10 @@ describe("zalo_forward_message of a cached voice", () => {
         registerTools(server, api, buffer, {}, { limits: {} }, { ready: true, get: () => null, search: () => [] });
         const r = await tools.get("zalo_forward_message")({ msgId: VOICE_LOCAL, threadId: PEER, threadType: "dm" });
         assert.equal(r.isError, undefined, r.content[0].text);
-        // Red when the tool passes only {voiceUrl}: the engine would HEAD the CDN for a size the cache has.
+        // Red when the tool drops the m4a URL (Web forwards params.m4a) or passes size/timeout plumbing again.
         assert.deepEqual(calls, [
             {
-                options: { voiceUrl: VOICE_URL, m4aUrl: M4A_URL, fileSize: 4321, timeoutMs: HEAD_TIMEOUT_MS },
+                options: { voiceUrl: VOICE_URL, m4aUrl: M4A_URL },
                 threadId: PEER,
                 type: 0,
             },

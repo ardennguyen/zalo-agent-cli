@@ -10,7 +10,8 @@
  *    against a literal `{message, code}`.
  *
  * Beside those, direct assertions: the reported `cliMsgId` is the `clientId` on the wire for every send, the client ids of 50 sends in one millisecond are all different, the HEAD of a hosted
- * voice/video carries no cookie and times out, and a video without geometry sends nothing.
+ * video carries no cookie and times out, a hosted voice makes no HEAD (Web makes none), and a video without geometry
+ * sends nothing.
  *
  * Every id here is fake.
  */
@@ -468,16 +469,14 @@ const CASES = [
         args: [{ voiceUrl: VOICE_URL }, USER, 0],
         fixture: sent,
         check(own) {
-            const head = own.requests[0];
-            assert.equal(head.method, "HEAD");
-            assert.equal(head.service, HOSTED_HOST);
-            // A third-party host: no Zalo cookie (one is planted for it in the jar), Origin or Referer.
-            assert.equal(head.headers.cookie, undefined);
-            assert.equal(head.headers.origin, undefined);
-            assert.equal(head.headers.referer, undefined);
-            const p = own.requests[1].params;
+            // Web forwards a voice with no HEAD to its host and no fileSize: red if either comes back.
+            assert.deepEqual(
+                own.requests.map((r) => r.method),
+                ["POST"],
+            );
+            const p = own.requests[0].params;
             assert.equal(p.msgType, 3);
-            assert.deepEqual(JSON.parse(p.msgInfo), { voiceUrl: VOICE_URL, m4aUrl: VOICE_URL, fileSize: 48000 });
+            assert.deepEqual(JSON.parse(p.msgInfo), { voiceUrl: VOICE_URL, m4aUrl: VOICE_URL });
             reportsWireId(own, (r) => r.cliMsgId);
         },
     },
@@ -487,7 +486,8 @@ const CASES = [
         args: [{ voiceUrl: VOICE_URL }, GROUP, 1],
         fixture: sent,
         check(own) {
-            assert.equal(own.requests[1].path, "/api/group/forward");
+            assert.equal(own.requests.length, 1, "no HEAD");
+            assert.equal(own.requests[0].path, "/api/group/forward");
             reportsWireId(own, (r) => r.cliMsgId);
         },
     },
@@ -497,7 +497,13 @@ const CASES = [
         args: [VIDEO, USER, 0],
         fixture: sent,
         check(own) {
-            assert.equal(own.requests[0].method, "HEAD");
+            const head = own.requests[0];
+            assert.equal(head.method, "HEAD");
+            assert.equal(head.service, HOSTED_HOST);
+            // A third-party host: no Zalo cookie (one is planted for it in the jar), Origin or Referer.
+            assert.equal(head.headers.cookie, undefined);
+            assert.equal(head.headers.origin, undefined);
+            assert.equal(head.headers.referer, undefined);
             const p = own.requests[1].params;
             assert.equal(p.msgType, 5);
             const info = JSON.parse(p.msgInfo);
@@ -743,7 +749,7 @@ describe("messages: the session's client ids, the hosted HEAD, the URL scan", ()
             () => api.sendSticker({ id: 21000, cateId: 1, type: 7 }, GROUP, 1).then((r) => r.cliMsgId),
             () => api.sendCard({ userId: OTHER }, USER, 0).then((r) => r.cliMsgId),
             () => api.sendLink({ link: "https://example.invalid/page" }, GROUP, 1).then((r) => r.cliMsgId),
-            () => api.sendVoice({ voiceUrl: VOICE_URL, fileSize: 10 }, USER, 0).then((r) => r.cliMsgId),
+            () => api.sendVoice({ voiceUrl: VOICE_URL }, USER, 0).then((r) => r.cliMsgId),
         ];
         const reported = [];
         for (let i = 0; i < 50; i++) reported.push(await kinds[i % kinds.length]());
@@ -761,15 +767,15 @@ describe("messages: the session's client ids, the hosted HEAD, the URL scan", ()
         assert.deepEqual(reported, onWire, "each send reports the client id it put on the wire");
     });
 
-    it("gives up on a hosted voice whose host never answers the HEAD, and sends nothing to Zalo", async () => {
+    it("gives up on a hosted video whose host never answers the HEAD, and sends nothing to Zalo", async () => {
         wire.fake.clearRoutes();
         wire.fake.routeAnswer("", { data: { msgId: MSG_ID } });
         HOSTED.hang = true;
         const from = wire.fake.requests.length;
         try {
             await assert.rejects(
-                api.sendVoice({ voiceUrl: VOICE_URL, timeoutMs: 50 }, USER, 0),
-                (e) => e.code === null && /^Unable to get voice content: no answer within 50 ms$/.test(e.message),
+                api.sendVideo({ ...VIDEO, timeoutMs: 50 }, USER, 0),
+                (e) => e.code === null && /^Unable to get video content: no answer within 50 ms$/.test(e.message),
             );
         } finally {
             HOSTED.hang = false;
@@ -779,20 +785,39 @@ describe("messages: the session's client ids, the hosted HEAD, the URL scan", ()
         assert.equal(made[0].host, HOSTED_HOST);
     });
 
+    it("sends a hosted voice even when its host never answers, since it asks that host nothing", async () => {
+        wire.fake.clearRoutes();
+        wire.fake.routeAnswer("", { data: { msgId: MSG_ID } });
+        HOSTED.hang = true;
+        const from = wire.fake.requests.length;
+        try {
+            // Red with the HEAD back: the send would hang on the host, then fail.
+            const r = await api.sendVoice({ voiceUrl: VOICE_URL }, USER, 0);
+            assert.equal(r.msgId, MSG_ID);
+        } finally {
+            HOSTED.hang = false;
+        }
+        const made = wire.fake.requests.slice(from);
+        assert.deepEqual(
+            made.map((q) => q.host === HOSTED_HOST),
+            [false],
+        );
+    });
+
     it("waits a bounded time for a HEAD by default", () => {
         // Red if the default timeout is removed (the previous engine waits forever).
         assert.ok(HEAD_TIMEOUT_MS > 0 && HEAD_TIMEOUT_MS <= 15000);
     });
 
-    it("skips the HEAD when the size is known, and passes a forward's m4a URL", async () => {
+    it("passes a forward's m4a URL, with no size", async () => {
         wire.fake.clearRoutes();
         wire.fake.routeAnswer("", { data: { msgId: MSG_ID } });
         const from = wire.fake.requests.length;
         const m4a = `https://${HOSTED_HOST}/v.m4a`;
-        await api.sendVoice({ voiceUrl: VOICE_URL, m4aUrl: m4a, fileSize: 321 }, USER, 0);
+        await api.sendVoice({ voiceUrl: VOICE_URL, m4aUrl: m4a }, USER, 0);
         const made = wire.fake.requests.slice(from).map((r) => normalizeRequest(r, wire.fake));
         assert.equal(made.length, 1, "no HEAD");
-        assert.deepEqual(JSON.parse(made[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl: m4a, fileSize: 321 });
+        assert.deepEqual(JSON.parse(made[0].params.msgInfo), { voiceUrl: VOICE_URL, m4aUrl: m4a });
     });
 
     it("gives up on a URL scan Zalo does not answer after 5 s, Web's scanUrl timeout, not the 10 s default", async () => {

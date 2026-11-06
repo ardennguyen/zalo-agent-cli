@@ -24,14 +24,14 @@
  * string), even when Zalo answers with no object (a bank card answers ""); the client ids come from the session's
  * monotonic source (`s.nextClientId()`), so two sends in one millisecond never share one; a video without its
  * width and height is refused before any request (Zalo refuses it with code 114); the HEAD that reads a hosted
- * voice or video's size has a timeout and sends no cookie.
+ * video's size has a timeout and sends no cookie; a voice makes no HEAD and sends no size, as Web does.
  *
  * Nothing here writes to stdout or logs an id.
  */
 import { ZaloApiError } from "../errors.js";
 import { THREAD_TYPE } from "../enums.js";
 
-/** How long the HEAD to a user-given voice or video URL may take. */
+/** How long the HEAD to a user-given video URL may take. */
 export const HEAD_TIMEOUT_MS = 8000;
 
 /** `ttl` when the caller gives none: no self-destruct. */
@@ -226,7 +226,7 @@ function isEncoded(link) {
  *
  * @param {object} ctx
  * @param {string} url
- * @param {string} what - "voice" or "video", for the error
+ * @param {string} what - "video", for the error
  * @param {number} timeoutMs
  * @returns {Promise<number>} the content length, 0 when the host does not say or answers an error
  * @throws {ZaloApiError} "Unable to get <what> content: ..." when the request fails or times out
@@ -519,24 +519,20 @@ export function messageMethods(s) {
     }
 
     /**
-     * Send a voice message from a hosted file.
+     * Send a voice message from a hosted file. As Zalo Web forwards one, the request goes to Zalo only: no HEAD to
+     * the file's host and no `fileSize` in `msgInfo` (spec-send 6.3).
      *
-     * @param {{voiceUrl: string, ttl?: number, m4aUrl?: string, fileSize?: number, timeoutMs?: number}} options -
-     *   `m4aUrl` defaults to `voiceUrl`; a known `fileSize` skips the HEAD; `timeoutMs` bounds the HEAD
+     * @param {{voiceUrl: string, ttl?: number, m4aUrl?: string}} options - `m4aUrl` defaults to `voiceUrl`
      * @param {string} threadId
      * @param {number} [type] - 0 a person, 1 a group
      * @returns {Promise<{msgId: string, cliMsgId: string}>}
-     * @throws {ZaloApiError} for a thread type other than 0/1 or no URL, before any request; "Unable to get voice
-     *   content: ..." when the HEAD fails
+     * @throws {ZaloApiError} for a thread type other than 0/1 or no URL, before any request
      */
     async function sendVoice(options, threadId, type = THREAD_TYPE.USER) {
         const t = Number(type);
         if (t !== THREAD_TYPE.USER && t !== THREAD_TYPE.GROUP) throw new ZaloApiError("Thread type is invalid");
         if (!options?.voiceUrl) throw new ZaloApiError("Missing voiceUrl");
         const clientId = String(s.nextClientId());
-        const fileSize = Number.isFinite(options.fileSize)
-            ? options.fileSize
-            : await hostedSize(s.ctx, options.voiceUrl, "voice", options.timeoutMs ?? HEAD_TIMEOUT_MS);
         return forward({
             threadId,
             group: t === THREAD_TYPE.GROUP,
@@ -544,7 +540,7 @@ export function messageMethods(s) {
             zsource: ZSOURCE.UNTRACKED,
             msgType: FORWARD_TYPE.VOICE,
             clientId,
-            msgInfo: { voiceUrl: options.voiceUrl, m4aUrl: options.m4aUrl ?? options.voiceUrl, fileSize },
+            msgInfo: { voiceUrl: options.voiceUrl, m4aUrl: options.m4aUrl ?? options.voiceUrl },
         });
     }
 

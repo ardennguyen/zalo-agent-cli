@@ -359,6 +359,76 @@ export default {
             code: null,
         },
     },
+    "getStickers/no-data": {
+        requests: [
+            {
+                method: "GET",
+                service: "sticker",
+                path: "/api/message/sticker/suggest/stickers",
+                queryOrder: ["zpw_ver", "zpw_type", "params"],
+                query: {
+                    zpw_ver: "695",
+                    zpw_type: "30",
+                },
+                params: {
+                    keyword: "hello",
+                    gif: 1,
+                    guggy: 0,
+                    imei: "00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef",
+                },
+                paramsOrder: ["keyword", "gif", "guggy", "imei"],
+                headers: {
+                    accept: "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    cookie: "wire=fake-w",
+                    origin: "https://chat.zalo.me",
+                    referer: "https://chat.zalo.me/",
+                    "user-agent": "Mozilla/5.0 (offline test)",
+                },
+                form: null,
+                formOrder: null,
+                parts: null,
+                body: null,
+            },
+        ],
+        error: null,
+        result: [],
+    },
+    "getStickers/no-suggestions": {
+        requests: [
+            {
+                method: "GET",
+                service: "sticker",
+                path: "/api/message/sticker/suggest/stickers",
+                queryOrder: ["zpw_ver", "zpw_type", "params"],
+                query: {
+                    zpw_ver: "695",
+                    zpw_type: "30",
+                },
+                params: {
+                    keyword: "hello",
+                    gif: 1,
+                    guggy: 0,
+                    imei: "00000000-0000-4000-8000-00000000fake-0123456789abcdef0123456789abcdef",
+                },
+                paramsOrder: ["keyword", "gif", "guggy", "imei"],
+                headers: {
+                    accept: "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    cookie: "wire=fake-w",
+                    origin: "https://chat.zalo.me",
+                    referer: "https://chat.zalo.me/",
+                    "user-agent": "Mozilla/5.0 (offline test)",
+                },
+                form: null,
+                formOrder: null,
+                parts: null,
+                body: null,
+            },
+        ],
+        error: null,
+        result: [],
+    },
     getStickersDetail: {
         requests: [
             {

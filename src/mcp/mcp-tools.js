@@ -42,7 +42,14 @@ import {
     cachedReplyTo,
     resolveReplyTo,
 } from "../core/cached-message.js";
-import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
+import {
+    buildForwardReference,
+    sendForward,
+    LOG_SRC_TYPE,
+    videoResendOptions,
+    voiceResendOptions,
+} from "../core/forward.js";
+import { undoPayload } from "../core/group-visibility.js";
 import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
 import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
@@ -1395,7 +1402,17 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     console.error("[mcp-tools] zalo_undo refused:", target.error);
                     return err(target.error);
                 }
-                await api.undo({ msgId, cliMsgId: target.cliMsgId }, threadId, Number(threadType));
+                // A group recall carries the group's own visibility, from the thread cache or Zalo, as `msg undo`.
+                const payload = await undoPayload(
+                    api,
+                    { msgId, cliMsgId: target.cliMsgId },
+                    threadId,
+                    Number(threadType),
+                    {
+                        cache: nameCache,
+                    },
+                );
+                await api.undo(payload, threadId, Number(threadType));
                 return ok({
                     success: true,
                     msgId,
@@ -1979,26 +1996,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             Number(threadType),
                         ),
                     link: async () => api.sendLink({ link: c?.href }, threadId, Number(threadType)),
-                    video: async () => {
-                        let p = {};
-                        try {
-                            p = typeof c?.params === "string" ? JSON.parse(c.params) : (c?.params ?? {});
-                        } catch {
-                            /* default geometry */
-                        }
-                        return api.sendVideo(
-                            {
-                                videoUrl: c?.href,
-                                thumbnailUrl: c?.thumb || "",
-                                duration: Number(p.duration) || 0,
-                                width: Number(p.video_width || p.video_original_width) || 1280,
-                                height: Number(p.video_height || p.video_original_height) || 720,
-                            },
-                            threadId,
-                            Number(threadType),
-                        );
-                    },
-                    voice: async () => api.sendVoice({ voiceUrl: c?.href }, threadId, Number(threadType)),
+                    // As `msg forward`: a size the cache knows spares the HEAD, and one still needed is bounded.
+                    video: async () =>
+                        api.sendVideo(videoResendOptions(c, row.localPath), threadId, Number(threadType)),
+                    voice: async () =>
+                        api.sendVoice(voiceResendOptions(c, row.localPath), threadId, Number(threadType)),
                     photo: resendLocal,
                     file: resendLocal,
                     gif: resendLocal,

@@ -326,6 +326,19 @@ describe("ping", () => {
         await until(() => r.sock.framesOf(2, 1).length >= 4, "pings to resume once echoes come");
     });
 
+    it("a pong that is only the 4-byte header clears the guard too", async () => {
+        // A frozen clock again, so only an echo can let the next ping go. Red if a bare header is dropped before the
+        // ping check: the guard would then hold for good, and only one ping would ever go out.
+        const r = await rig({ socket: { autoPong: false }, ctx: { pingInterval: 20 }, now: () => 1_700_000_000_000 });
+        await startKeyed(r);
+        await r.sock.waitFor((f) => f.cmd === 2);
+        await sleep(100);
+        assert.equal(r.sock.framesOf(2, 1).length, 1, "the guard holds while the ping is outstanding");
+        r.sock.pushRaw(Buffer.from([1, 2, 0, 1])); // version 1, cmd 2 (uint16 LE), subCmd 1, no body
+        await until(() => r.sock.framesOf(2, 1).length >= 2, "the next ping after a header-only echo");
+        assert.deepEqual(r.errors, [], "a bare header is not an error");
+    });
+
     it("has no interval of its own when the server names none, so the keepalive pings instead", async () => {
         const r = await rig({ ctx: { pingInterval: 0 } });
         await startKeyed(r);

@@ -27,6 +27,7 @@ import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.j
 import { setUserInfoLogger } from "../core/user-info.js";
 import { createSocketTap } from "../core/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
+import { createUndecryptableNotice } from "../core/e2ee-notice.js";
 import { createCloudVerifier } from "../core/cloud-verify.js";
 import { attachUnknownActs } from "../core/unknown-acts.js";
 import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
@@ -635,6 +636,8 @@ export function registerListenCommand(program) {
                 file: voiceTextFile(accountDir),
                 log: (line) => console.error(`[listen] ${line}`),
             });
+            // End-to-end encrypted messages this client cannot read: the first is named in the log, the rest counted.
+            const undecryptable = createUndecryptableNotice({ log: (line) => console.error(`[listen] ${line}`) });
             const selfHeal = createSelfHeal({
                 getApi,
                 tap: socketTap,
@@ -667,6 +670,13 @@ export function registerListenCommand(program) {
                 // connected for.
                 {
                     api.listener.on("message", async (msg) => {
+                        // A message Zalo re-sent (534) that is already stored was announced when it was stored;
+                        // self-heal owns re-pushes, so it is not printed or posted twice.
+                        if (selfHeal.isRepeatedRepush(msg)) {
+                            heartbeat();
+                            return;
+                        }
+                        undecryptable.note(msg);
                         const mute = isMuted(msg);
 
                         // A "delete for me" frame rides the message channel but

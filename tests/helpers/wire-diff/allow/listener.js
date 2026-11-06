@@ -69,8 +69,16 @@ export default [
         method: "mixed-pushes",
         field: "event",
         zca: undefined,
-        own: (e) => isEvent("message")(e) && ["hello 2", "hello 3", "hello 4", "hello 5"].includes(contentOf(e)),
-        why: "Web's chat handler reads msgs, groupMsgs and pageMsgs from every chat push, 504 included (`onOnlineData`/`preParseData` @~11751500, spec-listener 3 Push messages); zca-js read msgs from 501 only and ignored 504",
+        own: (e) =>
+            isEvent("message")(e) && ["hello 2", "hello 3", "hello 4", "hello 5", "hello 6"].includes(contentOf(e)),
+        why: "Web's chat handler reads msgs, groupMsgs and pageMsgs from every chat push, 504 and 524 included (`onOnlineData`/`preParseData` @~11751500, spec-listener 3 Push messages); zca-js read msgs from 501 only and ignored 504 and 524",
+    },
+    {
+        method: "repush",
+        field: "event",
+        zca: undefined,
+        own: (e) => isEvent("message")(e) && ["hello 1", "hello 2"].includes(contentOf(e)),
+        why: "Web's chat handler reads 534 (the server's re-push of a message it never saw confirmed) like 501/521 (`onOnlineData` @~11751500, spec-listener 3 Push messages); zca-js ignored 534. The daemons let self-heal own it: a re-push of a stored message is not announced twice (src/core/self-heal.js isRepeatedRepush)",
     },
 
     // ---- spec-listener 6: Undo carries its thread type ----------------------------------------------------------
@@ -89,8 +97,9 @@ export default [
         zca: undefined,
         own: (e) =>
             isEvent("message")(e) &&
-            (contentOf(e) === "hello 1" || (e.args[0].data.undecryptable === true && contentOf(e) === "")),
-        why: "Web routes 551 through `processOnlineE2ee` then the normal push path (@~11760000); without a Signal stack a chat.e2ee.* message is announced marked undecryptable with no ciphertext as text, others as a 501 would be (spec-listener 7; design 6.1 item 7). zca-js 2.2.0 ignored 551",
+            (["hello 1", "hello 3"].includes(contentOf(e)) ||
+                (e.args[0].data.undecryptable === true && contentOf(e) === "")),
+        why: "Web routes 551, 552 and 535 through `processOnlineE2ee` then the normal push path (@~11760000); without a Signal stack a chat.e2ee.* message is announced marked undecryptable with no ciphertext as text, others as a 501/521 would be (spec-listener 7; design 6.1 item 7). zca-js 2.2.0 ignored all three",
     },
 
     // ---- spec-listener 8: reactions item by item, and in 601 -----------------------------------------------------

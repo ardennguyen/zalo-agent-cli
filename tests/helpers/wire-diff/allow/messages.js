@@ -246,6 +246,22 @@ export default [
         why: "Web searchSticker @11652412 defaults the limit to 10; the engine reads only the first hit",
     },
     {
+        method: "getStickers",
+        cases: ["getStickers/no-data"],
+        field: "result",
+        zca: undefined,
+        own: [],
+        why: "the suggest endpoint (Web getStickerSuggestion @11598031, spec-send 4.3) answered with no data object: ours reads that as no suggestion, an empty list; zca-js threw reading it (next row)",
+    },
+    {
+        method: "getStickers",
+        cases: ["getStickers/no-data"],
+        field: "error",
+        zca: (v) => !!v && v.code === null && /sugg_sticker/.test(v.message),
+        own: null,
+        why: "zca-js reads `data.sugg_sticker` without a guard and throws a TypeError on an answer with no data; ours returns []",
+    },
+    {
         method: "getStickerCategoryDetail",
         cases: ["getStickerCategoryDetail", "getStickerCategoryDetail/error-*"],
         field: "params.cid",

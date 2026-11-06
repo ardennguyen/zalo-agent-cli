@@ -35,7 +35,14 @@ import {
     reactionCliMsgId,
     recallCliMsgId,
 } from "../core/cached-message.js";
-import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
+import {
+    buildForwardReference,
+    sendForward,
+    LOG_SRC_TYPE,
+    videoResendOptions,
+    voiceResendOptions,
+} from "../core/forward.js";
+import { undoPayload } from "../core/group-visibility.js";
 import { fetchMemberNames } from "../core/group-members.js";
 import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
 import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
@@ -1305,8 +1312,15 @@ export function registerMsgCommands(program) {
                     error(target.error);
                     return;
                 }
-                const payload = { msgId, cliMsgId: target.cliMsgId };
-                const result = await getApi().undo(payload, threadId, Number(opts.type));
+                // A group recall carries the group's own visibility, as Zalo Web's does (src/core/group-visibility.js).
+                const api = getApi();
+                const payload = await undoPayload(
+                    api,
+                    { msgId, cliMsgId: target.cliMsgId },
+                    threadId,
+                    Number(opts.type),
+                );
+                const result = await api.undo(payload, threadId, Number(opts.type));
                 output(result, program.opts().json, () => success("Message recalled (undone)"));
             } catch (e) {
                 error(`Undo failed: ${e.message}`);
@@ -1409,27 +1423,11 @@ export function registerMsgCommands(program) {
                 link: async () => api.sendLink({ link: c?.href }, threadId, threadType),
                 // sendVideo wants the geometry too; Zalo rejects the call with
                 // code 114 when duration/width/height are missing. They live in
-                // the payload's `params` blob, not as top-level fields.
-                video: async () => {
-                    let p = {};
-                    try {
-                        p = typeof c?.params === "string" ? JSON.parse(c.params) : (c?.params ?? {});
-                    } catch {
-                        /* geometry falls back to the defaults below */
-                    }
-                    return api.sendVideo(
-                        {
-                            videoUrl: c?.href,
-                            thumbnailUrl: c?.thumb || "",
-                            duration: Number(p.duration) || 0,
-                            width: Number(p.video_width || p.video_original_width) || 1280,
-                            height: Number(p.video_height || p.video_original_height) || 720,
-                        },
-                        threadId,
-                        threadType,
-                    );
-                },
-                voice: async () => api.sendVoice({ voiceUrl: c?.href }, threadId, threadType),
+                // the payload's `params` blob, not as top-level fields. A size
+                // the cache knows (params, or the downloaded copy) spares the
+                // HEAD to the CDN; one it does not know is bounded.
+                video: async () => api.sendVideo(videoResendOptions(c, row.localPath), threadId, threadType),
+                voice: async () => api.sendVoice(voiceResendOptions(c, row.localPath), threadId, threadType),
                 photo: resendLocal,
                 file: resendLocal,
                 gif: resendLocal,

@@ -29,9 +29,101 @@
  * itself). Forwarding something that was itself a forward makes the web carry
  * the original root and raise fwLvl; the local cache does not keep a message's
  * own reference, so that cannot be reproduced.
+ *
+ * A voice or video message is not forwarded this way: it is re-sent by its
+ * hosted URL (`sendVoice` / `sendVideo`). `voiceResendOptions` and
+ * `videoResendOptions` read what those need out of the cached message, so a
+ * re-send does not ask the CDN for a size the cache already knows (the HEAD
+ * the engine otherwise makes), and a HEAD that is still needed is bounded.
  */
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
 import { customCall, postWithParams } from "./zca-custom.js";
+import { HEAD_TIMEOUT_MS } from "../zalo/api/messages.js";
+
+/** A forwarded video with no geometry in its cached params goes out as this (Zalo refuses one without any). */
+export const FORWARD_VIDEO_FALLBACK = Object.freeze({ width: 1280, height: 720 });
+
+/**
+ * A cached attachment's `params`: JSON text on the wire, sometimes already an object.
+ *
+ * @param {object|null} content
+ * @returns {object}
+ */
+function paramsOf(content) {
+    const p = content?.params;
+    if (p && typeof p === "object") return p;
+    if (typeof p !== "string" || !p) return {};
+    try {
+        const parsed = JSON.parse(p);
+        return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+/**
+ * The size of a cached attachment, when something already knows it: the size its params give, else the size of the
+ * copy downloaded locally. Undefined leaves the engine to ask the host.
+ *
+ * @param {unknown} declared
+ * @param {string|null|undefined} localPath
+ * @returns {number|undefined}
+ */
+function knownSize(declared, localPath) {
+    const n = Number(declared);
+    if (Number.isFinite(n) && n > 0) return n;
+    if (!localPath) return undefined;
+    try {
+        const size = statSync(localPath).size;
+        return size > 0 ? size : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * The `sendVoice` options that re-send a cached voice message: its URL, the m4a copy Zalo keeps beside it (Zalo Web
+ * forwards `m4aUrl: params.m4a`), the size when the cache knows it, and a bound on the HEAD when it does not.
+ *
+ * @param {object|null} content - the cached message's `content` (`{href, params}`)
+ * @param {string|null} [localPath] - the downloaded copy, if any
+ * @returns {{voiceUrl: string|undefined, m4aUrl?: string, fileSize?: number, timeoutMs: number}}
+ */
+export function voiceResendOptions(content, localPath = null) {
+    const p = paramsOf(content);
+    const fileSize = knownSize(p.fileSize, localPath);
+    return {
+        voiceUrl: content?.href,
+        ...(typeof p.m4a === "string" && p.m4a ? { m4aUrl: p.m4a } : {}),
+        ...(fileSize !== undefined ? { fileSize } : {}),
+        timeoutMs: HEAD_TIMEOUT_MS,
+    };
+}
+
+/**
+ * The `sendVideo` options that re-send a cached video: URL, thumbnail, duration and geometry from its params (a
+ * missing width or height falls back to {@link FORWARD_VIDEO_FALLBACK}), the size when the cache knows it, and a
+ * bound on the HEAD when it does not.
+ *
+ * @param {object|null} content - the cached message's `content` (`{href, thumb, params}`)
+ * @param {string|null} [localPath] - the downloaded copy, if any
+ * @returns {{videoUrl: string|undefined, thumbnailUrl: string, duration: number, width: number, height: number,
+ *   fileSize?: number, timeoutMs: number}}
+ */
+export function videoResendOptions(content, localPath = null) {
+    const p = paramsOf(content);
+    const fileSize = knownSize(p.fileSize ?? p.video_file_size, localPath);
+    return {
+        videoUrl: content?.href,
+        thumbnailUrl: content?.thumb || "",
+        duration: Number(p.duration) || 0,
+        width: Number(p.video_width || p.video_original_width) || FORWARD_VIDEO_FALLBACK.width,
+        height: Number(p.video_height || p.video_original_height) || FORWARD_VIDEO_FALLBACK.height,
+        ...(fileSize !== undefined ? { fileSize } : {}),
+        timeoutMs: HEAD_TIMEOUT_MS,
+    };
+}
 
 /** Zalo Web's source-conversation kinds for a forward (its `logSrcType` enum). */
 export const LOG_SRC_TYPE = Object.freeze({ UNKNOWN: 0, ONE_ONE: 1, GROUP: 2, COMMUNITY: 3, OA: 4, MY_CLOUD: 5 });

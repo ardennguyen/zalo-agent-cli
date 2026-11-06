@@ -5,7 +5,7 @@
  * the Web behavior it follows) and must be present, and our side of every script is also pinned by a golden entry
  * (tests/helpers/wire-diff/golden/listener.js), which keeps guarding the wire after zca-js leaves (design 3.3).
  *
- * One script per spec-listener item (5-11). Every id is fake.
+ * One script per spec-listener item (5-11), plus the 534 re-push. Every id is fake.
  */
 import "../helpers/sandbox.js";
 import { after, before, describe, it } from "node:test";
@@ -120,7 +120,12 @@ const SCRIPTS = {
             body: ok({ msgs: [dm(1)], groupMsgs: [gm(2)], pageMsgs: [dm(3, { uidFrom: PEER2 })] }),
         },
         { cmd: 504, encrypt: 2, body: ok({ msgs: [dm(4)], groupMsgs: [gm(5)], delivereds: [], seens: [] }) },
+        // 524: the group form of the mixed offline push, read the same way.
+        { cmd: 524, encrypt: 2, body: ok({ msgs: [], groupMsgs: [gm(6)], delivereds: [], groupSeens: [] }) },
     ],
+    // spec-listener 3 (Push messages): 534, the server's re-push of a message it never saw confirmed, in the
+    // envelope of 501/521. The engine's self-heal stores it from the raw tap; the listener announces it as well.
+    repush: [{ cmd: 534, encrypt: 2, body: ok({ msgs: [dm(1)], groupMsgs: [gm(2)] }) }],
     // spec-listener 6: recalls, 1-1 and group.
     undo: [
         {
@@ -155,6 +160,17 @@ const SCRIPTS = {
             cmd: 551,
             encrypt: 2,
             body: ok({ msgs: [dm(1), dm(2, { msgType: "chat.e2ee.text", content: "fake-ciphertext" })] }),
+        },
+        // 552: the group form; 535: the Signal queue's missed-message push. Both take the same path as 551.
+        {
+            cmd: 552,
+            encrypt: 2,
+            body: ok({ groupMsgs: [gm(3), gm(4, { msgType: "chat.e2ee.text", content: "fake-ciphertext" })] }),
+        },
+        {
+            cmd: 535,
+            encrypt: 2,
+            body: ok({ msgs: [dm(5, { msgType: "chat.e2ee.text", content: "fake-ciphertext" })] }),
         },
     ],
     // spec-listener 8: live reactions (one malformed, then the rest), the two backlog pages, reactions in a 601.

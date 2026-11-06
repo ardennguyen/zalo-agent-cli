@@ -5,8 +5,8 @@
  *
  * What is pinned is the logoutV2 the Web sends (cmd 12743): `POST stg-wpa.chat.zalo.me/api/v2/login/logOut`, the
  * common params in the query, and a form whose only field is `params`, sealed with the session key, holding
- * `{time, imei, computer_name}` with `time` in unix SECONDS. The patched zca-js call this replaces sent
- * milliseconds. Also: a refused logoutV2 does not stop the probe, and a probe that fails to parse prints nothing
+ * exactly `{time, imei, computer_name, language}` in that order, with `time` in unix SECONDS. The patched zca-js
+ * call this replaces sent milliseconds and no `language`. Also: a refused logoutV2 does not stop the probe, and a probe that fails to parse prints nothing
  * (the protocol layer never writes to stdout, so no logging switch is needed around it any more).
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
@@ -93,8 +93,11 @@ describe("logout --keep-session sends Zalo Web's logoutV2", () => {
         const opened = openSession(FAKE.sessionKey, req.form.params);
         assert.notEqual(opened, null, "sealed with the session key");
         const sent = JSON.parse(opened);
+        // The Web form exactly (logoutV2 @11580968): red on a key added, dropped or moved, `language` included.
+        assert.deepEqual(Object.keys(sent), ["time", "imei", "computer_name", "language"]);
         assert.equal(sent.imei, FAKE_CREDENTIALS.imei);
         assert.equal(sent.computer_name, "Web");
+        assert.equal(sent.language, FAKE_CREDENTIALS.language);
         // Red if `time` goes back to milliseconds, which the patched zca-js logoutV2 sent.
         assert.ok(
             Number.isInteger(sent.time) && sent.time >= before && sent.time <= after,
@@ -105,6 +108,14 @@ describe("logout --keep-session sends Zalo Web's logoutV2", () => {
         assert.deepEqual(result.v2, { ok: true });
         assert.equal(result.mode, "key-only");
         assert.equal(result.verdict, "ended", "the probe was refused with 600");
+    });
+
+    it("sends the session's own language, not a fixed one", async () => {
+        serve();
+        api.getContext().language = "en";
+        await serverLogout(api, KEEP);
+        const req = fake.requests.find((r) => r.host === V2_HOST && r.path === V2_PATH);
+        assert.equal(JSON.parse(openSession(FAKE.sessionKey, req.form.params)).language, "en");
     });
 
     it("records a refused logoutV2 with Zalo's words, and still probes the key", async () => {

@@ -166,17 +166,21 @@ export const EXIT_CODE = Object.freeze({
  * An error Zalo answered (or the transport hit on the way), with Zalo's own `error_code` on `.code`.
  *
  * `code` is null when there is none (an HTTP failure, an undecryptable reply); a number is kept as given, 0
- * included. An HTTP failure also carries `.status`. The message never holds the session context.
+ * included. An HTTP failure also carries `.status`. An error envelope's own `data` is kept on `.data` when it had
+ * one: Zalo Web reads some answers by it (a list's end is an error whose `data` is the string `"[]"`). The message
+ * never holds the session context.
  */
 export class ZaloApiError extends Error {
     /**
      * @param {string} message
      * @param {number|null} [code]
+     * @param {unknown} [data] - the error envelope's `data`; left off the error when undefined
      */
-    constructor(message, code = null) {
+    constructor(message, code = null, data = undefined) {
         super(message);
         this.name = "ZaloApiError";
         this.code = typeof code === "number" || typeof code === "string" ? code : null;
+        if (data !== undefined) this.data = data;
     }
 }
 

@@ -23,7 +23,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { getBoardItems, initDb } from "../../src/core/db.js";
 import { listOneOneBoard as reExported, syncBoards } from "../../src/core/sync-v2/board.js";
 import { ALLOW, FAKE, T0, assertSameWire, expectGolden, openPair } from "../helpers/wire-diff/index.js";
-import { OWN_READY, boardCursor, listOneOneBoard } from "../../src/zalo/api/boards.js";
+import { OWN_READY, boardCursor, boardPage, groupReminderPage, listOneOneBoard } from "../../src/zalo/api/boards.js";
 
 const AREA = "boards";
 const GROUP = "2000000000000000003";
@@ -825,6 +825,156 @@ describe("wire: boards (zca-js against src/zalo/api/boards.js)", () => {
                 const want = answer.error.outer?.error_code ?? answer.error.inner?.error_code ?? null;
                 assert.equal(rec.own.error.code, want, answer.label);
             }
+        });
+    });
+
+    describe("the Web's end of a list, single-choice votes, DM creators, page cursors", () => {
+        /** Zalo's "no more": an error whose data is the string "[]" (the code is not one the Web reads). */
+        const END = { inner: { error_code: 1, error_message: "no more items", data: "[]" } };
+        /** A group's reminder page of two topics: a reminder, then a note the reader filters out. */
+        const GROUP_LIST_TWO = {
+            items: [
+                { boardType: 1, data: { id: 7, startTime: T0 + 1000, params: '{"title":"Reminder"}' } },
+                { boardType: 1, data: { id: 8, startTime: -1, params: '{"title":"A note"}' } },
+            ],
+        };
+
+        it('an error whose data is "[]" is an empty page for every list call (zca-js threw it)', async () => {
+            const cases = [
+                ["getListBoard", [{ page: 2, count: 20 }, GROUP], { items: [] }],
+                ["getListReminder", [{ page: 2, count: 20 }, GROUP, 1], []],
+                ["getListReminder", [{ page: 2, count: 20 }, PEER, 0], []],
+                ["listOneOneBoard", [PEER, 2, 20], { items: [] }],
+            ];
+            for (const [method, args, empty] of cases) {
+                const rec = await pair.run(method, args, { error: END });
+                assert.equal(rec.own.error, null, `${method}: ${JSON.stringify(rec.own.error)}`);
+                assert.deepEqual(rec.own.result, empty, method);
+            }
+            // The same code with any other data is still an error.
+            const other = await pair.run("getListBoard", [{}, GROUP], {
+                error: { inner: { error_code: 1, error_message: "no more items", data: "x" } },
+            });
+            assert.equal(other.own.error?.code, 1);
+        });
+
+        it("editReminder DM: an edit that finds the end of the list says it was not found, and writes nothing", async () => {
+            const rec = await pair.run("editReminder", [{ title: "x", topicId: 77 }, PEER, 0], { error: END });
+            assert.match(rec.own.error.message, /not found/);
+            assert.equal(rec.own.requests.length, 1);
+        });
+
+        it("addPollOptions: voting a new option on a single-choice poll drops the old vote, as the Web's dialog does", async () => {
+            // The fixture poll is single-choice with option 1 voted by this account: red if [1] went out beside the
+            // new vote, which would hold two votes on a one-vote poll.
+            const rec = await pair.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun", voted: true }] }], {
+                replies: { "/api/poll/detail": { data: pollReply() } },
+                reply: pollReply(),
+            });
+            assert.equal(rec.own.error, null);
+            const add = rec.own.requests.at(-1);
+            assert.equal(add.path, "/api/poll/option/add");
+            assert.deepEqual(add.params.voted_option_ids, []);
+            assert.equal(add.params.new_options, '[{"content":"Bun","voted":true}]');
+        });
+
+        it("addPollOptions: a multi-choice poll keeps the old vote beside the new one", async () => {
+            const poll = pollReply();
+            poll.allow_multi_choices = true;
+            const rec = await pair.run("addPollOptions", [{ pollId: 5, options: [{ content: "Bun", voted: true }] }], {
+                replies: { "/api/poll/detail": { data: poll } },
+                reply: poll,
+            });
+            assert.deepEqual(rec.own.requests.at(-1).params.voted_option_ids, [1]);
+        });
+
+        it("editReminder DM: a bare 19-digit creatorUid goes back whole; none at all is this account", async () => {
+            const list = [{ reminderId: 9, creatorUid: BIG_RAW, toUid: JSON.rawJSON(PEER), startTime: T0 }];
+            let rec = await pair.run("editReminder", [{ title: "t", topicId: 9 }, PEER, 0], {
+                replies: { "/api/board/oneone/list": { data: JSON.stringify(list) } },
+                reply: { reminderId: 9 },
+            });
+            assert.equal(rec.own.error, null);
+            // Red if the list is parsed without creatorUid in its id keys: 1111111111111111200 rounds.
+            assert.equal(JSON.parse(rec.own.requests.at(-1).params.objectData).creatorUid, BIG_UID);
+
+            rec = await pair.run("editReminder", [{ title: "t", topicId: 9 }, PEER, 0], {
+                replies: { "/api/board/oneone/list": { data: JSON.stringify([{ reminderId: 9, startTime: T0 }]) } },
+                reply: { reminderId: 9 },
+            });
+            // Red if "" goes out as the creator.
+            assert.equal(JSON.parse(rec.own.requests.at(-1).params.objectData).creatorUid, OWN);
+        });
+
+        it("getListReminder DM: creatorUid and toUid come back whole", async () => {
+            const list = [{ reminderId: 9, creatorUid: BIG_RAW, toUid: BIG_RAW, startTime: T0 }];
+            const rec = await pair.run("getListReminder", [{}, PEER, 0], { reply: JSON.stringify(list) });
+            assert.equal(rec.own.result[0].creatorUid, BIG_UID);
+            assert.equal(rec.own.result[0].toUid, BIG_UID);
+        });
+
+        it("listOneOneBoard files a bare reminder under its reminderId, as the Web does, even beside an id", async () => {
+            const rec = await pair.run("listOneOneBoard", [PEER], {
+                reply: JSON.stringify([{ reminderId: 9, id: 3, startTime: T0 }]),
+            });
+            assert.deepEqual(rec.own.result.items, [
+                { boardType: 1, data: { reminderId: "9", id: "9", startTime: T0 } },
+            ]);
+        });
+
+        it("boardPage: page 2 goes out with the cursor of page 1's last item, on the wire", async () => {
+            pair.fake.clearRoutes();
+            pair.fake.routeAnswer("/api/board/list", (req) =>
+                req.params.page === 1
+                    ? {
+                          data: {
+                              items: [
+                                  { boardType: 1, data: { id: 41 } },
+                                  { boardType: 3, data: { poll_id: 5 } },
+                              ],
+                          },
+                      }
+                    : { data: { items: [{ boardType: 1, data: { id: 40 } }] } },
+            );
+            const from = pair.fake.requests.length;
+            let got;
+            try {
+                got = await boardPage(pair.own, GROUP, 2, 2);
+            } finally {
+                pair.fake.clearRoutes();
+            }
+            const sent = pair.fake.requests
+                .slice(from)
+                .map((r) => [r.params.page, r.params.last_id, r.params.last_type]);
+            assert.deepEqual(sent, [
+                [1, 0, 0],
+                [2, 5, 3],
+            ]);
+            assert.deepEqual(got.items, [{ boardType: 1, data: { id: 40 } }]);
+        });
+
+        it("groupReminderPage: page 2 carries the id of page 1's last topic, a filtered-out note included", async () => {
+            pair.fake.clearRoutes();
+            pair.fake.routeAnswer("/api/board/listReminder", (req) =>
+                JSON.parse(req.params.objectData).page === 1
+                    ? { data: JSON.stringify(GROUP_LIST_TWO) }
+                    : { data: JSON.stringify({ items: [] }) },
+            );
+            const from = pair.fake.requests.length;
+            try {
+                assert.deepEqual(await groupReminderPage(pair.own, GROUP, 2, 2), []);
+            } finally {
+                pair.fake.clearRoutes();
+            }
+            const sent = pair.fake.requests.slice(from).map((r) => JSON.parse(r.params.objectData));
+            // The Web's cursor is the last topic of the page (listByConversation), not the last reminder kept.
+            assert.deepEqual(
+                sent.map((o) => [o.page, o.last_id]),
+                [
+                    [1, 0],
+                    [2, "8"],
+                ],
+            );
         });
     });
 

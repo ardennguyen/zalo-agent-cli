@@ -9,7 +9,8 @@
  *
  *  1. `POST id.zalo.me/jr/logout-token`, form `continue`: answers a one-time token.
  *  2. `GET {profile}/api/social/profile/deactive`, AES `params` `{imei}`: the device stops being active.
- *  3. `POST stg-wpa.chat.zalo.me/api/v2/login/logOut`, AES `params` `{time (seconds), imei, computer_name}`.
+ *  3. `POST stg-wpa.chat.zalo.me/api/v2/login/logOut`, AES `params` `{time (seconds), imei, computer_name,
+ *     language}`.
  *  4. `POST id.zalo.me/account/logout`, form `token`: answers a page that lists the `setsid` URLs.
  *  5. `GET` each of those URLs (`jr.zaloapp.com`, `jr.chat.zalo.me`): they clear the session cookies on
  *     their domains.
@@ -66,8 +67,10 @@ async function send(ctx, url, init) {
 }
 
 /**
- * The request that ends the session key (`POST stg-wpa.chat.zalo.me/api/v2/login/logOut`), as Zalo Web sends it:
- * `params` sealed with the session key, `{time (unix seconds), imei, computer_name}`.
+ * The request that ends the session key (`POST stg-wpa.chat.zalo.me/api/v2/login/logOut`), as Zalo Web sends it
+ * (`logoutV2`, `1.c72c0957b455ab70b73c.js` @11580968): `params` sealed with the session key, `{time (unix seconds),
+ * imei, computer_name, language}`, `language` being the session's ("vi" when it has none, the Web's default). The
+ * Web's optional `compId` is never sent: it names a company account this client does not have.
  *
  * @param {object} ctx
  * @returns {{url: string, init: object}}
@@ -77,6 +80,7 @@ function logoutV2Request(ctx) {
         time: Math.floor(Date.now() / 1000),
         imei: ctx.imei,
         computer_name: COMPUTER_NAME,
+        language: ctx.language || "vi",
     });
     return {
         url: buildUrl(ctx, V2_LOGOUT_URL, {}),

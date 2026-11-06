@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
 
-const options = { home: SANDBOX_HOME, timeout: 60_000 };
+// Per-spawn timeout: ZALO_TEST_CLI_TIMEOUT_MS when set (a loaded box), 60 s otherwise.
+const options = { home: SANDBOX_HOME, timeout: Number(process.env.ZALO_TEST_CLI_TIMEOUT_MS) || 60_000 };
 const IDS = ["501", "502", "503", "504", "505"];
 
 const fleet = (...args) => runCli(["fleet", ...args], options);

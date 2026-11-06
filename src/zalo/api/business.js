@@ -14,8 +14,9 @@
  *   (createAutoReply, updateAutoReply, deleteAutoReply).
  *
  * `uploadProductPhoto` keeps the one-chunk upload the engine has always sent: Web's quick-message path (featureId
- * 1, `toid` = the account's own "my documents" thread). Every id stays a string. Nothing here writes to stdout or
- * logs.
+ * 1, `toid` = the account's own "my documents" thread). The Web has no method body for it beside the path (its
+ * catalog editor uploads with featureId 2 and no `toid`), so its definition is `verified: false` until a live run.
+ * Every id stays a string. Nothing here writes to stdout or logs.
  */
 import { readFile } from "node:fs/promises";
 import { ZaloApiError } from "../errors.js";
@@ -186,12 +187,17 @@ export const PRODUCT_DELETE = catalogCall("/product/mdelete", 12127, (a) => ({
 /** registerCatalog, 12031. */
 export const CATALOG_REGISTER = catalogCall("/catalog/register", 12031, (a) => ({ enable: a.enable ? 1 : 0 }));
 
-/** `POST {file}/api/product/upload/photo`: one chunk, multipart, sealed params in the query (12036). */
+/**
+ * `POST {file}/api/product/upload/photo`: one chunk, multipart, sealed params in the query (12036). Not verified: the
+ * Web's command table names the path (@2511568) but no Web method shows the fields, which are the quick-message
+ * upload's (spec-sweep 1.3).
+ */
 export const PRODUCT_PHOTO = Object.freeze({
     host: "file",
     path: "/api/product/upload/photo",
     cmd: 12036,
     method: "multipart",
+    verified: false,
     body: (a, ctx) => ({
         totalChunk: 1,
         fileName: `Base64_Img_Picker_${a.at}.jpg`,
@@ -325,15 +331,16 @@ export const AUTO_REPLY_UPDATE = autoReplyWrite("/update", 12050, (a, ctx) => ({
 export const AUTO_REPLY_DELETE = autoReplyWrite("/delete", 12051, (a, ctx) => ({ cliLang: ctx.language, id: a.id }));
 
 /**
- * The user ids an auto-reply rule names: only a rule scoped to chosen people (scope 2 or 3) carries them.
+ * The user ids an auto-reply rule names: only a rule scoped to chosen people (scope 2 or 3) carries them. None given
+ * is an empty list, as the Web's createAutoReply/updateAutoReply default it, never a list holding a null.
  *
  * @param {number} scope
  * @param {string|string[]|undefined} uids
  * @returns {string[]}
  */
-function ruleUids(scope, uids) {
+export function ruleUids(scope, uids) {
     if (scope !== 2 && scope !== 3) return [];
-    return [].concat(uids);
+    return [].concat(uids ?? []).filter((u) => u !== undefined && u !== null && u !== "");
 }
 
 /**
@@ -392,15 +399,16 @@ export function businessMethods(s) {
         };
     };
 
-    /** A product's photo URLs: the ones given, then one per uploaded file; at most 5. */
+    /** A product's photo URLs: the ones given, then one per uploaded file; at most 5, counted before any upload. */
     const productPhotos = async (payload) => {
         const photos = [...(payload.product_photos ?? [])];
-        for (const file of payload.files ?? []) {
+        const files = payload.files ?? [];
+        if (photos.length + files.length > MAX_PRODUCT_PHOTOS) {
+            throw new ZaloApiError(`Maximum ${MAX_PRODUCT_PHOTOS} media files are allowed`);
+        }
+        for (const file of files) {
             const up = await uploadProductPhoto({ file });
             photos.push(up.normalUrl || up.hdUrl);
-        }
-        if (photos.length > MAX_PRODUCT_PHOTOS) {
-            throw new ZaloApiError(`Maximum ${MAX_PRODUCT_PHOTOS} media files are allowed`);
         }
         return photos;
     };

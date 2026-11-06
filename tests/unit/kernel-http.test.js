@@ -341,6 +341,27 @@ describe("decodeReply", () => {
         });
     });
 
+    it("keeps the error envelope's data on .data, outer and inner, and leaves .data off when there is none", async () => {
+        const caught = async (p) => {
+            try {
+                await p;
+            } catch (e) {
+                return e;
+            }
+            assert.fail("expected a rejection");
+        };
+        // Red if the error drops the envelope's data: the boards read a list's end from an error whose data is "[]".
+        const inner = await caught(decodeReply(ctx, sealed({ error_code: 7, error_message: "end", data: "[]" })));
+        assert.ok(inner instanceof ZaloApiError);
+        assert.equal(inner.code, 7);
+        assert.equal(inner.data, "[]");
+        const outer = await caught(decodeReply(ctx, json({ error_code: 8, error_message: "x", data: { why: 1 } })));
+        assert.deepEqual(outer.data, { why: 1 });
+        const none = await caught(decodeReply(ctx, sealed({ error_code: 9, error_message: "no data" })));
+        assert.equal(Object.hasOwn(none, "data"), false);
+        assert.equal(Object.hasOwn(new ZaloApiError("plain", 1), "data"), false);
+    });
+
     it("throws HTTP <status> with no code for a non-2xx, so the status is never read as a Zalo code", async () => {
         assert.deepEqual(await thrown(decodeReply(ctx, json({}, 500))), {
             message: "HTTP 500",

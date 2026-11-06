@@ -17,7 +17,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { runCli, errorLineOf } from "../helpers/cli.js";
 
-const opts = { home: SANDBOX_HOME, timeout: 30_000 };
+// Per-spawn timeout: ZALO_TEST_CLI_TIMEOUT_MS when set (a loaded box), 30 s otherwise, as tests/cli/cli.test.js.
+const opts = { home: SANDBOX_HOME, timeout: Number(process.env.ZALO_TEST_CLI_TIMEOUT_MS) || 30_000 };
 const TID = "1234567890123456789";
 
 describe("bank resolution guards", () => {

@@ -20,8 +20,11 @@
  * - A photo's reply carries its URLs. A file's does not: Zalo pushes them later in a 601 control (`file_done`,
  *   `video_done`; `photo_success` for a photo whose reply had none), which the listener hands to
  *   `ctx.uploadCallbacks.settle(fileId, {url, kind, data})` (kernel/session.js). A settlement that came before the
- *   wait is kept for it. When none comes, the last chunk is sent again after the Web's size-bucketed delay (a valid
- *   reply carries the URL), and once more at the overall wait (120 s), after which the upload fails.
+ *   wait is kept for it. While a file waits, a callback stands under its id in `ctx.uploadCallbacks` too, so zca-js's
+ *   listener, which only calls the entry it finds with `{fileUrl, fileId}`, settles it as well. When nothing comes,
+ *   the last chunk is sent again after the Web's size-bucketed delay (a valid reply carries the URL), and once more
+ *   at the overall wait (120 s); the upload fails when that replay gives nothing, or at the latest
+ *   {@link FINAL_REPLAY_GRACE_MS} later. No chunk request waits longer than {@link CHUNK_TIMEOUT_MS}.
  * - Send: `photo_original/send` with `{photoId, clientId, desc, width, height, rawUrl, thumbUrl, hdUrl,
  *   normalUrl|oriUrl, (layout), toid|grid, language, (extMsgProp), zsource, ttl, imei}`; `asyncfile/msg` with
  *   `{fileId, checksum, checksumSha, extension, totalSize, fileName, clientId, fType, fileCount, fdata, toid|grid,
@@ -62,6 +65,18 @@ export const DEFAULT_REPLAY_SECONDS = Object.freeze([30, 35, 40, 45, 50, 60]);
 
 /** The size step of {@link DEFAULT_REPLAY_SECONDS}. */
 export const REPLAY_SIZE_STEP = 31457280;
+
+/**
+ * How long one chunk request may take before it fails. A multipart call has no timeout of its own (kernel
+ * endpoint.js), so without this a chunk the server never answers would hold the upload forever.
+ */
+export const CHUNK_TIMEOUT_MS = 60000;
+
+/**
+ * How long past the overall wait the last replay may still answer before the upload fails whatever the replay is
+ * doing (the replay's own request timeout is {@link CHUNK_TIMEOUT_MS}, so this is the same length).
+ */
+export const FINAL_REPLAY_GRACE_MS = CHUNK_TIMEOUT_MS;
 
 /** How often a wait looks at the clock, in real milliseconds. */
 export const TICK_MS = 100;
@@ -281,6 +296,7 @@ function chunkEndpoint(route, group) {
         }),
         reply: "session",
         okCodes: [1],
+        timeoutMs: CHUNK_TIMEOUT_MS,
         transform: (data, _args, { code }) => ({ data: data && typeof data === "object" ? data : {}, code }),
     };
 }
@@ -356,8 +372,8 @@ function photoUrls(u) {
 }
 
 /**
- * The control's own `data` inside a settlement (our listener passes the control; zca-js's listener passes
- * `{fileUrl, fileId}`), parsed when it came as a JSON string.
+ * The control's own `data` inside a settlement (our listener passes the whole control as the settlement's `data`;
+ * zca-js's listener never makes a settlement, see {@link awaitUrls}), parsed when it came as a JSON string.
  *
  * @param {import("../kernel/session.js").UploadSettlement} settlement
  * @returns {object}
@@ -406,6 +422,14 @@ function fromReplay(route, id, data) {
 /**
  * Wait for the server's word on an uploaded file: the listener's settlement, or a replayed last chunk.
  *
+ * Two listeners can deliver the settlement. Ours calls `ctx.uploadCallbacks.settle(id, {url, kind, data})` with the
+ * whole control; zca-js's knows only the Map and calls the function it finds under the id with `{fileUrl, fileId}`.
+ * So while a file waits, a callback of ours stands under its id (when nothing else is registered there). The
+ * callback takes only a `{fileUrl}` that is a non-empty string, and only for a file (a photo needs the whole set of
+ * URLs, which only the control has). It acts one macrotask later: a listener that calls the Map entry and then
+ * `settle()` (L2's order) is then answered by `settle()`, whose control reaches the waiter directly, and the callback
+ * finds the wait over and does nothing, so no settlement is left in the registry's early cache.
+ *
  * @param {import("../api.js").Session} s
  * @param {object} p
  * @param {"photo"|"file"} p.route
@@ -416,7 +440,8 @@ function fromReplay(route, id, data) {
  * @param {string} p.fileName - for the error
  * @param {AbortSignal} [p.signal] - gives up waiting (the send failed elsewhere)
  * @returns {Promise<{fileUrl: string}|{normalUrl: string, hdUrl: string, thumbUrl: string}>}
- * @throws {ZaloApiError} code "UPLOAD_TIMEOUT" when nothing came within the wait and the last replay gave nothing
+ * @throws {ZaloApiError} code "UPLOAD_TIMEOUT" when nothing came within the wait and the last replay gave nothing,
+ *   or {@link FINAL_REPLAY_GRACE_MS} after the wait whatever the last replay is doing
  */
 function awaitUrls(s, { route, id, size, replay, cfg, fileName, signal }) {
     return new Promise((resolve, reject) => {
@@ -424,15 +449,27 @@ function awaitUrls(s, { route, id, size, replay, cfg, fileName, signal }) {
         const start = s.now();
         const replayAt = cfg.replay ? start + replayDelayMs(size, cfg.replaySeconds) : Infinity;
         const deadline = start + cfg.waitMs;
+        const lastChance = deadline + (cfg.replay ? FINAL_REPLAY_GRACE_MS : 0);
         let finished = false;
         let replayed = false;
+        let replayedLast = false;
         let timer = null;
+        const bridge = (d) => {
+            const url = d?.fileUrl;
+            if (route !== "file" || typeof url !== "string" || !url) return;
+            setImmediate(() => finish(resolve, { fileUrl: url }));
+        };
+        /** Stand under the id for zca-js's listener, unless something else is registered there. */
+        const plant = () => {
+            if (!finished && !s.uploads.has(id)) s.uploads.set(id, bridge);
+        };
         const finish = (fn, value) => {
             if (finished) return;
             finished = true;
             clearTimeout(timer);
             stop.abort();
             signal?.removeEventListener("abort", onAbort);
+            if (s.uploads.get(id) === bridge) s.uploads.delete(id);
             fn(value);
         };
         const onAbort = () => finish(reject, signal.reason ?? new Error("aborted"));
@@ -460,6 +497,7 @@ function awaitUrls(s, { route, id, size, replay, cfg, fileName, signal }) {
         };
 
         const wait = () => {
+            plant();
             s.uploads
                 .waitFor(id, { signal: stop.signal })
                 .then((settlement) => {
@@ -474,15 +512,21 @@ function awaitUrls(s, { route, id, size, replay, cfg, fileName, signal }) {
         const check = () => {
             if (finished) return;
             const now = s.now();
-            if (now >= deadline) {
-                if (cfg.replay) tryReplay(true);
-                else finish(reject, timeout(null));
+            if (now >= lastChance) {
+                // The last replay never answered (or there is none): give up whatever it is doing.
+                finish(reject, timeout(null));
                 return;
+            }
+            if (now >= deadline && !replayedLast) {
+                replayedLast = true;
+                replayed = true; // the early replay, if it was still due, is this one
+                tryReplay(true);
             }
             if (!replayed && now >= replayAt) {
                 replayed = true;
                 tryReplay(false);
             }
+            plant(); // back in place should it have expired (a server wait longer than the registry's entry life)
             timer = setTimeout(check, TICK_MS);
         };
         check();

@@ -1,10 +1,10 @@
 /**
  * The Web login, as the official Zalo Web client does it (plan items L2a-e, L5, L6, L7).
  *
- * zca-js's own `Zalo.login()` asks `getLoginInfo` first, `getServerInfo` second, probes the npm registry
- * on the way, announces `zpw_ver`/`zpw_type` where the official client does not, always encrypts, and has
+ * zca-js's own `Zalo.login()` asked `getLoginInfo` first, `getServerInfo` second, probed the npm registry
+ * on the way, announced `zpw_ver`/`zpw_type` where the official client does not, always encrypted, and had
  * no timeout and no retry. This module does the login the verified way and hands the finished session to
- * zca-js's own `API` class, so every API call, the listener and all the factories stay exactly as they are:
+ * `createApi` (./api.js), which builds the session object every command uses:
  *
  *  1. `getServerInfo`, carrying the stored disaster-recovery values (`sp_mtn`, `bkt`; -1 and -1 when nothing
  *     is stored) and, when one is stored, the `viewerKey`; its `signkey` covers every field.
@@ -17,21 +17,18 @@
  *
  * Nothing here knows about files except through the `store` the caller passes (see {@link createDrStore}).
  */
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { API, Zalo, ZaloApiError } from "zca-js";
 import { readFileSync } from "node:fs";
 import { writeFileAtomic } from "../utils/atomic-file.js";
-import { errorCodeOf } from "./errors.js";
-import { AVATAR_SIZE, COMPUTER_NAME, browserCodeOf, osCodeOf } from "./profile.js";
+import { ZaloApiError, errorCodeOf } from "./errors.js";
+import { COMPUTER_NAME } from "./profile.js";
 import { withBrowserHeaders } from "./headers.js";
 import { startUpkeep } from "./upkeep.js";
 import { installOfficialPulls } from "./pulls.js";
-
-const require = createRequire(import.meta.url);
-const zcaDir = dirname(require.resolve("zca-js"));
-const zu = require(join(zcaDir, "utils.cjs"));
-const { createContext } = require(join(zcaDir, "context.cjs"));
+import { createApi } from "./api.js";
+import { createSession } from "./kernel/session.js";
+import { loadJar } from "./kernel/cookies.js";
+import { httpRequest } from "./kernel/http.js";
+import { createLoginEncryptor, openLogin, signKey } from "./kernel/login-cipher.js";
 
 /** The upkeep (hourly settings refresh, keepalive) of each live session, so a session can end it. */
 const upkeeps = new WeakMap();
@@ -119,7 +116,7 @@ export function buildServerInfoQuery({ imei, apiType, apiVersion, dr = null, vie
     };
     if (viewerKey) q.viewerKey = viewerKey;
     if (floatMenuPos) q.floatMenuPos = null;
-    q.signkey = zu.getSignKey("getserverinfo", q);
+    q.signkey = signKey("getserverinfo", q);
     return q;
 }
 
@@ -131,24 +128,16 @@ function urlOf(base, query) {
 }
 
 /**
- * One HTTP call with a timeout, raised as a plain error that says what timed out.
+ * One HTTP call with a timeout; a call that does not answer in time is raised as an error that says what timed out
+ * ("Zalo did not answer within N s: <path>").
  *
  * @param {object} ctx
  * @param {string} url
  * @param {number} timeoutMs
  * @returns {Promise<Response>}
  */
-async function timedRequest(ctx, url, timeoutMs) {
-    try {
-        return await zu.request(ctx, url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) });
-    } catch (e) {
-        if (e?.name === "TimeoutError" || e?.name === "AbortError") {
-            throw new ZaloApiError(
-                `Zalo did not answer within ${Math.round(timeoutMs / 1000)} s: ${new URL(url).pathname}`,
-            );
-        }
-        throw e;
-    }
+function timedRequest(ctx, url, timeoutMs) {
+    return httpRequest(ctx, url, { method: "GET", timeoutMs });
 }
 
 /**
@@ -195,17 +184,14 @@ function buildLoginQuery(ctx, encrypt) {
     const params = {};
     let enk = null;
     if (encrypt) {
-        const encryptor = new zu.ParamsEncryptor({ type: ctx.API_TYPE, imei: data.imei, firstLaunchTime: Date.now() });
-        enk = encryptor.getEncryptKey();
-        const sealed = zu.ParamsEncryptor.encodeAES(enk, JSON.stringify(data), "base64", false);
-        const extra = encryptor.getParams();
-        if (!extra) enk = null;
-        else Object.assign(params, extra, { params: sealed });
+        const encryptor = createLoginEncryptor({ type: ctx.API_TYPE, imei: data.imei, firstLaunchTime: Date.now() });
+        enk = encryptor.enk;
+        Object.assign(params, encryptor.params(), { params: encryptor.seal(JSON.stringify(data)) });
     }
     if (enk === null) Object.assign(params, data);
     params.type = ctx.API_TYPE;
     params.client_version = ctx.API_VERSION;
-    params.signkey = zu.getSignKey("getlogininfo", params);
+    params.signkey = signKey("getlogininfo", params);
     params.nretry = 0;
     return { query: params, enk };
 }
@@ -274,7 +260,7 @@ function unseal(body, enk) {
     let opened = body?.data;
     if (opened === undefined || opened === null) return none;
     if (enk) {
-        opened = zu.decryptResp(enk, opened);
+        opened = openLogin(enk, opened);
         if (opened === undefined || opened === null || typeof opened === "string") return none;
     } else if (typeof opened === "string") {
         try {
@@ -291,13 +277,14 @@ function unseal(body, enk) {
 }
 
 /**
- * Log in with a saved session and return the zca-js API object.
+ * Log in with a saved session and return the session object (./api.js).
  *
  * @param {{imei: string, cookie: unknown, userAgent: string, language?: string}} creds
  * @param {object} opts
  * @param {number} opts.apiType
  * @param {number} opts.apiVersion
- * @param {object} [opts.zaloOptions] - the zca-js options (`selfListen`, `polyfill`, `agent`, `logging`, ...)
+ * @param {object} [opts.zaloOptions] - the session options (`selfListen`, `polyfill`, `agent`, `imageMetadataGetter`,
+ *   ...); `logging` is ignored: the protocol layer writes nothing
  * @param {(ownId: string|null) => ({load: Function, save: Function}|null)} [opts.drStoreFor] - where the
  *   disaster-recovery values of an account live; asked with `opts.ownId` before the login (the first call
  *   carries what was stored) and with the id the server returns once it is known (the values are saved there)
@@ -308,7 +295,7 @@ function unseal(body, enk) {
  * @param {number} [opts.retryEveryMs]
  * @param {number} [opts.retryForMs]
  * @param {boolean} [opts.upkeep] - start the timers of {@link startUpkeep} (default true)
- * @returns {Promise<InstanceType<typeof API>>}
+ * @returns {Promise<object>} the session object `createApi` builds
  * @throws {Error} `Missing required params` for an incomplete session; `Đăng nhập thất bại` when the server
  *   refuses it (with the server's code on `.code`)
  */
@@ -330,12 +317,14 @@ export async function loginWithSession(
 ) {
     if (!creds?.imei || !creds.cookie || !creds.userAgent) throw new ZaloApiError("Missing required params");
 
-    const ctx = createContext(apiType, apiVersion);
+    const ctx = createSession({ apiType, apiVersion });
     Object.assign(ctx.options, zaloOptions);
-    ctx.options.checkUpdate = false;
+    // Nothing in the protocol layer writes to stdout; zca-js, while it still answers some calls on this context
+    // (the build-week switch of ./api.js), must not either.
+    ctx.options.logging = false;
     ctx.options.polyfill = withBrowserHeaders(ctx.options.polyfill, creds.userAgent);
     ctx.imei = creds.imei;
-    ctx.cookie = new Zalo(zaloOptions).parseCookies(structuredClone(creds.cookie));
+    ctx.cookie = loadJar(creds.cookie);
     ctx.userAgent = creds.userAgent;
     ctx.language = creds.language || "vi";
 
@@ -361,8 +350,7 @@ export async function loginWithSession(
     ctx.loginInfo = loginInfo;
     if (!ctx.secretKey) throw new ZaloApiError("Khởi tạo ngữ cảnh thất bại.");
 
-    const api = new API(ctx, loginInfo.zpw_service_map_v3, loginInfo.zpw_ws);
-    installOfficialProfileCall(api, ctx);
+    const api = await createApi(ctx, loginInfo.zpw_service_map_v3, loginInfo.zpw_ws);
     installOfficialPulls(api.listener);
     if (upkeep) {
         const uid = String(loginInfo.uid ?? ownId ?? "");
@@ -397,26 +385,4 @@ export function stopUpkeep(api) {
     if (!api) return;
     upkeeps.get(api)?.stop();
     upkeeps.delete(api);
-}
-
-/**
- * Replace zca-js's `fetchAccountInfo` with the profile call the Web client makes: `me-v2` with its AES
- * `params` ({avatar_size, imei}) and the `os` and `browser` numbers of the saved User-Agent (plan item L6).
- *
- * @param {object} api
- * @param {object} ctx
- */
-function installOfficialProfileCall(api, ctx) {
-    const base = `${api.zpwServiceMap.profile[0]}/api/social/profile/me-v2`;
-    api.fetchAccountInfo = async function fetchAccountInfo() {
-        const params = zu.encodeAES(ctx.secretKey, JSON.stringify({ avatar_size: AVATAR_SIZE, imei: ctx.imei }));
-        if (!params) throw new ZaloApiError("Failed to encrypt params");
-        const url = zu.makeURL(ctx, base, {
-            params,
-            os: osCodeOf(ctx.userAgent),
-            browser: browserCodeOf(ctx.userAgent),
-        });
-        const response = await zu.request(ctx, url, { method: "GET" });
-        return zu.resolveResponse(ctx, response);
-    };
 }

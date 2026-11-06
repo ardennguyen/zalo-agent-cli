@@ -64,7 +64,9 @@
         "https-proxy-agent": "^9.1.0",
         "image-size": "^2.0.4",
         "qrcode-generator": "^2.0.4",
+        "tough-cookie": "^5.1.2",
         "undici": "^8.5.0",
+        "ws": "^8.21.3",
         "zca-js": "2.2.0",
         "zod": "^4.4.3"
     },

@@ -12,8 +12,9 @@ import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { LoginQRCallbackEventType, Zalo, ZaloApiLoginQRAborted, ZaloApiLoginQRDeclined } from "zca-js";
+import { LoginQRCallbackEventType, Zalo } from "zca-js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { QrLoginAborted, QrLoginDeclined } from "../../src/zalo/errors.js";
 import { clearSession, loginWithQR } from "../../src/core/zalo-client.js";
 import { QR_FLOW_INVALID, resolveQrFlow } from "../../src/zalo/profile.js";
 import { buildOf, loadTrustFromPage, qrLogin, scriptUrlOf, wantsSecondQr } from "../../src/zalo/qr-login.js";
@@ -220,7 +221,7 @@ describe("the QR login", () => {
     it("a decline is announced and then rejects the login", async () => {
         serveQrLogin(fake, { confirm: [-13] });
         const { seen, onEvent } = events();
-        await assert.rejects(qrLogin({ ...BASE, onEvent }), (e) => e instanceof ZaloApiLoginQRDeclined);
+        await assert.rejects(qrLogin({ ...BASE, onEvent }), (e) => e instanceof QrLoginDeclined);
         assert.ok(seen.some((e) => e.type === LoginQRCallbackEventType.QRCodeDeclined));
         assert.ok(
             !fake.requests.some((r) => r.path === "/account/checksession"),
@@ -299,7 +300,7 @@ describe("the QR login", () => {
                     if (e.type === LoginQRCallbackEventType.QRCodeGenerated) e.actions.abort();
                 },
             }),
-            (e) => e instanceof ZaloApiLoginQRAborted,
+            (e) => e instanceof QrLoginAborted,
         );
     });
 
@@ -429,7 +430,7 @@ describe("the QR login", () => {
             const store = fakeStore();
             await assert.rejects(
                 qrLogin({ ...BASE, loadTrust: fakeTrust().load, trustStore: store }),
-                (e) => e instanceof ZaloApiLoginQRDeclined,
+                (e) => e instanceof QrLoginDeclined,
             );
             assert.deepEqual(store.log.saved, []);
             assert.ok(!fake.requests.some((r) => r.path === "/account/checksession"));
@@ -520,7 +521,7 @@ describe("the QR login", () => {
                         if (e.type === LoginQRCallbackEventType.QRCodeExpired) e.actions.abort();
                     },
                 }),
-                (e) => e instanceof ZaloApiLoginQRAborted,
+                (e) => e instanceof QrLoginAborted,
             );
             const kinds = seen.map((e) => `${e.type}${e.data?.layer ?? ""}`);
             assert.ok(kinds.includes(`${LoginQRCallbackEventType.QRCodeGenerated}2`), "the second QR was shown");

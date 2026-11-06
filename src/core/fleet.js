@@ -126,6 +126,7 @@ const HELD = new Set(["maintenance", "relogin", "kicked"]);
  * One word for an account.
  *
  *  - `stopped`: no daemon runs for it
+ *  - `kicked` with no daemon: it ended because another session took the account (its kick marker is there)
  *  - `unresponsive`: a daemon runs (its lock is held) but does not answer on its loopback channel
  *  - `down`: it answers, and its Zalo socket has been down at least `downForSec`
  *  - `maintenance`: it answers, and it is waiting for Zalo to come back from maintenance (nothing to do)
@@ -136,12 +137,13 @@ const HELD = new Set(["maintenance", "relogin", "kicked"]);
  *  - `degraded`: the socket is up but it has warnings (a webhook backlog, dead letters, open gaps)
  *  - `ok`
  *
- * @param {{ running: boolean, health: object|null }} a - `health` is null when the daemon did not answer
+ * @param {{ running: boolean, health: object|null, kicked?: object|null }} a - `health` is null when the daemon did
+ *   not answer; `kicked` is the account's kick marker, if any
  * @param {{ downForSec?: number }} [o]
  * @returns {"ok"|"degraded"|"starting"|"maintenance"|"relogin"|"kicked"|"down"|"unresponsive"|"stopped"}
  */
-export function classifyAccount({ running, health }, { downForSec = 180 } = {}) {
-    if (!running) return "stopped";
+export function classifyAccount({ running, health, kicked = null }, { downForSec = 180 } = {}) {
+    if (!running) return kicked ? "kicked" : "stopped";
     if (!health) return "unresponsive";
     const socket = health.socket ?? {};
     if (HELD.has(socket.state)) return socket.state;

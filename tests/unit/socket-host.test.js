@@ -10,7 +10,7 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
@@ -214,6 +214,49 @@ describe("socket host", () => {
                 ),
                 "an answer with the server's words is shown in them",
             );
+        });
+
+        it("waits for Zalo's reason before it ends the daemon, so the reason reaches the log (L12b)", async () => {
+            const h = host();
+            const sup = h.start({});
+            let answer;
+            const reason = new Promise((r) => (answer = r)).then((info) => {
+                sup.emit("kickout-info", { info });
+                return info;
+            });
+            sup.emit("kicked", { via: "frame-3000", reason });
+            assert.equal(ended, null, "it ended before Zalo said why");
+            answer({ title: "Device changed", text: "You logged in on another browser." });
+            await reason;
+            await new Promise((r) => setImmediate(r));
+            assert.ok(logged(/info: Zalo says why: Device changed/));
+            assert.equal(ended, "kicked");
+            const reasonAt = logs.findIndex((l) => /Zalo says why/.test(l));
+            assert.ok(reasonAt > 0, "the reason was logged");
+        });
+
+        it("ends the daemon anyway when Zalo does not answer in time", async () => {
+            const h = host([], { kickReasonWaitMs: 20 });
+            h.start({}).emit("kicked", { via: "frame-3000", reason: new Promise(() => {}) });
+            assert.equal(ended, null);
+            await new Promise((r) => setTimeout(r, 60));
+            assert.equal(ended, "kicked");
+        });
+
+        it("leaves a marker that says a kick ended it, with the reason, and the next connect clears it", async () => {
+            const file = join(dir, "kicked.json");
+            const h = host([], { kickFile: file });
+            const sup = h.start({});
+            sup.emit("kicked", { via: "frame-3000", reason: Promise.resolve({ title: "Device changed" }) });
+            await until(() => ended === "kicked");
+            const marker = JSON.parse(readFileSync(file, "utf8"));
+            assert.equal(marker.via, "frame-3000");
+            assert.deepEqual(marker.reason, { title: "Device changed" });
+            assert.ok(Number.isFinite(marker.at));
+
+            const next = host([], { kickFile: file }).start({});
+            next.emit("connected", {});
+            assert.equal(existsSync(file), false, "a connected account still looked kicked");
         });
 
         it("a login that Zalo answers with a kick ends the daemon too, without asking again", async () => {

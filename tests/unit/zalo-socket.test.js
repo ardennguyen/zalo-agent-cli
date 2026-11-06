@@ -391,7 +391,7 @@ describe("socket supervisor", () => {
             await until(() => sup.state === "connected", "connected");
             zalo.sock.kick();
             await until(() => sup.state === "kicked", "kicked");
-            assert.deepEqual(named("kicked"), [{ name: "kicked", via: "frame-3000" }]);
+            assert.deepEqual(named("kicked"), [{ name: "kicked", via: "frame-3000", reason: null }]);
             await quiet(400);
             assert.equal(
                 zalo.sock.connections.length,
@@ -401,6 +401,38 @@ describe("socket supervisor", () => {
             assert.equal(named("retrying").length, 0);
             assert.equal(sup.status().kickedVia, "frame-3000");
             await until(() => zalo.sock.connections[0].closed, "the socket to close");
+        });
+
+        it("the kick carries the reason lookup, so a host can wait for it before it exits (L12b)", async () => {
+            const info = { kickoutSrc: 2, title: "Device changed" };
+            await rig({ extra: { kickoutInfo: async () => info } });
+            sup.start();
+            await until(() => sup.state === "connected", "connected");
+            zalo.sock.kick();
+            await until(() => sup.state === "kicked", "kicked");
+            const [kick] = named("kicked");
+            assert.ok(kick.reason instanceof Promise, "the kick carried no reason to wait for");
+            assert.deepEqual(await kick.reason, info);
+            assert.deepEqual(
+                named("kickout-info").map((e) => e.info),
+                [info],
+            );
+        });
+
+        it("a failed reason lookup resolves to null instead of rejecting", async () => {
+            await rig({
+                extra: {
+                    kickoutInfo: async () => {
+                        throw new Error("network down");
+                    },
+                },
+            });
+            sup.start();
+            await until(() => sup.state === "connected", "connected");
+            zalo.sock.kick();
+            await until(() => sup.state === "kicked", "kicked");
+            assert.equal(await named("kicked")[0].reason, null);
+            assert.equal(named("kickout-info").length, 0);
         });
 
         it("a frame carrying error_code 600 ends it the same way", async () => {

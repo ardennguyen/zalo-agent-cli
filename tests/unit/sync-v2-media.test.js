@@ -30,6 +30,7 @@ import {
     DEFAULT_REQUEST_TIMEOUT_MS,
     THROTTLE_GIVE_UP,
     pruneDownloadedMedia,
+    jpegUrl,
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/core/sync-v2/renewlink.js";
 
@@ -57,6 +58,14 @@ before(async () => {
         const path = req.url.split("?")[0];
         hits[path] = (hits[path] || 0) + 1;
         heads.push(req.headers);
+        if (path === "/jpg/9/abc.jpg") {
+            res.writeHead(200, { "content-type": "image/jpeg" });
+            return res.end(PHOTO_BYTES);
+        }
+        if (path.endsWith(".jxl")) {
+            res.writeHead(200, { "content-type": "image/jxl" });
+            return res.end(Buffer.from("pretend-jxl"));
+        }
         if (path === "/ok.jpg" || path === "/renewed.jpg") {
             res.writeHead(200, { "content-type": "image/jpeg" });
             return res.end(PHOTO_BYTES);
@@ -213,6 +222,27 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.ok(saved.localPath, "localPath was not recorded");
         assert.ok(existsSync(saved.localPath));
         assert.deepEqual(readFileSync(saved.localPath), PHOTO_BYTES);
+    });
+
+    it("fetches a JPEG XL photo as its JPEG twin, the way Zalo Web does without JPEG XL (bug-reports #8)", async () => {
+        const id = row({}, [photo("/jxl/9/abc.jxl?jxlstatus=1")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 10 });
+        assert.equal(stats.downloaded, 1);
+        const saved = getMessages("t1").find((m) => m.msgId === id);
+        assert.match(saved.localPath, /\.jpg$/, "saved as .jxl, which most viewers and models cannot open");
+        assert.deepEqual(readFileSync(saved.localPath), PHOTO_BYTES);
+    });
+
+    it("a photo that has only an HD or only a thumbnail link is still fetched, not skipped forever", async () => {
+        const hd = row({}, [{ kind: "photo", hdUrl: `${base}/ok.jpg`, thumbUrl: `${base}/thumb.jpg` }]);
+        const thumbOnly = row({}, [{ kind: "photo", thumbUrl: `${base}/thumb.jpg` }]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, limit: 10 });
+        assert.equal(stats.downloaded, 2, JSON.stringify(stats));
+        const rows = getMessages("t1");
+        const hdPath = rows.find((m) => m.msgId === hd).localPath;
+        assert.ok(hdPath, "the HD-only photo was never downloaded");
+        assert.deepEqual(readFileSync(hdPath), PHOTO_BYTES, "the thumbnail was taken over the HD photo");
+        assert.ok(rows.find((m) => m.msgId === thumbOnly).localPath, "the thumbnail-only photo was never downloaded");
     });
 
     it("files media under the thread ID, not its display name", async () => {
@@ -1250,5 +1280,28 @@ describe("pruneDownloadedMedia — all mode", () => {
         await pruneDownloadedMedia({ all: true, now: NOW });
         const again = await downloadSyncedMedia({ accountDir: dir, limit: 100 });
         assert.equal(again.considered, 0);
+    });
+});
+
+describe("jpegUrl", () => {
+    it("turns a JPEG XL photo URL into its JPEG twin and drops the marker", () => {
+        assert.equal(
+            jpegUrl("https://f20-zpc.zdn.vn/jxl/123/abcdef.jxl?jxlstatus=1"),
+            "https://f20-zpc.zdn.vn/jpg/123/abcdef.jpg",
+        );
+        assert.equal(
+            jpegUrl("https://f20-zpc.zdn.vn/jxl/123/abcdef.jxl?jxlstatus=1&x=2"),
+            "https://f20-zpc.zdn.vn/jpg/123/abcdef.jpg?x=2",
+        );
+    });
+
+    it("leaves every other URL alone, and an encrypted session's URL in its own form", () => {
+        for (const u of ["https://f20-zpc.zdn.vn/jpg/1/a.jpg", "https://example.invalid/f.pdf", null, undefined]) {
+            assert.equal(jpegUrl(u), u);
+        }
+        assert.equal(
+            jpegUrl("https://f20-zpc.zdn.vn/jxl/1/a.jxl?e2esession=1&jxlstatus=1"),
+            "https://f20-zpc.zdn.vn/jxl/1/a.jxl?e2esession=1",
+        );
     });
 });

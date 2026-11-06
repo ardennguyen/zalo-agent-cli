@@ -7,6 +7,11 @@
  * cursor. It used to delete the messages, so one bot's zalo_mark_read emptied
  * every other bot's inbox (triage M7). Messages now leave only by eviction
  * (maxSize per thread, maxAge), which bounds memory as before.
+ *
+ * Cursors live only as long as the process, but a long-poller keeps its cursor across a daemon restart
+ * (bug-reports #10). So the daemon's buffer starts counting at the clock (`forSession`), above anything
+ * an earlier run handed out, and a cursor beyond the newest message is read as stale (from the start of
+ * this buffer) rather than as "nothing yet": skipping is silent, a repeat is not.
  */
 
 import { batchParams } from "./wait-result.js";
@@ -58,17 +63,39 @@ export class MessageBuffer {
     /**
      * @param {number} maxSize - Max messages per thread before eviction
      * @param {number} maxAge - Max message age in ms before eviction (default 2h)
+     * @param {{ startCursor?: number }} [opts] - The cursor the first message follows
      */
-    constructor(maxSize = 500, maxAge = 2 * 60 * 60 * 1000) {
+    constructor(maxSize = 500, maxAge = 2 * 60 * 60 * 1000, { startCursor = 0 } = {}) {
         /** @type {Map<string, { messages: Array, lastActivity: number }>} */
         this._threads = new Map();
         this._maxSize = maxSize;
         this._maxAge = maxAge;
-        this._globalCursor = 0;
+        this._globalCursor = startCursor;
         /** @type {Map<string, { cursor: number, at: number }>} */
         this._readCursors = new Map();
         /** @type {Set<{ threadId: string|null, resolve: Function, timer: NodeJS.Timeout }>} */
         this._waiters = new Set();
+    }
+
+    /**
+     * The buffer a daemon serves from: cursors start at the clock (epoch ms), so a cursor saved before a
+     * restart is below every cursor this run hands out, as long as the earlier run buffered fewer messages
+     * than it lived milliseconds.
+     * @param {number} [maxSize]
+     * @param {number} [maxAge]
+     * @returns {MessageBuffer}
+     */
+    static forSession(maxSize, maxAge) {
+        return new MessageBuffer(maxSize, maxAge, { startCursor: Date.now() });
+    }
+
+    /**
+     * A caller's cursor, with one from beyond the newest message (an earlier run's) read as 0.
+     * @param {number} since
+     * @returns {number}
+     */
+    _fresh(since) {
+        return since > this._globalCursor ? 0 : since;
     }
 
     /**
@@ -147,7 +174,7 @@ export class MessageBuffer {
         settleMs = 0,
     } = {}) {
         const { limit: max, settleMs: settle } = batchParams({ limit, settleMs });
-        const from = (cursor) => this.read(threadId || undefined, cursor, max);
+        const from = (cursor) => this.read(threadId || undefined, this._fresh(cursor), max);
 
         if (since !== undefined && since !== null && Number.isFinite(Number(since))) {
             let r = from(Number(since));
@@ -215,6 +242,7 @@ export class MessageBuffer {
      * @returns {{ messages: Array, cursor: number, hasMore: boolean }}
      */
     read(threadId, since = 0, maxCount = 20) {
+        since = this._fresh(since);
         const sources = threadId ? [this._threads.get(threadId)].filter(Boolean) : Array.from(this._threads.values());
 
         // Collect all messages after cursor, sorted by cursor
@@ -235,14 +263,15 @@ export class MessageBuffer {
 
     /**
      * Advance one consumer's read cursor to `cursor`. Nothing is deleted, and no
-     * other consumer's cursor moves; a cursor never moves backwards.
+     * other consumer's cursor moves; a cursor never moves backwards, and a stale one (beyond the newest
+     * message) does not move it at all.
      * @param {number} cursor
      * @param {string} [consumer="default"]
      * @returns {number} how many buffered messages this newly marked read for that consumer
      */
     markRead(cursor, consumer = DEFAULT_CONSUMER) {
         const from = this.readCursor(consumer);
-        const to = Math.max(from, Number(cursor) || 0);
+        const to = Math.max(from, this._fresh(Number(cursor) || 0));
         let marked = 0;
         for (const [, thread] of this._threads) {
             for (const m of thread.messages) if (m._cursor > from && m._cursor <= to) marked++;

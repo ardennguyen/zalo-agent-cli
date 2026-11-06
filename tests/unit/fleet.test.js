@@ -123,6 +123,20 @@ describe("classifyAccount", () => {
     const up = (extra = {}) => ({ socket: { state: "up", forSec: 3600 }, warnings: [], ...extra });
     it("stopped, unresponsive, down, starting, degraded, ok", () => {
         assert.equal(classifyAccount({ running: false, health: null }), "stopped");
+        assert.equal(
+            classifyAccount({ running: false, health: null, kicked: { via: "frame-3000", at: 1 } }),
+            "kicked",
+            "a daemon that a kick ended is not merely stopped",
+        );
+        assert.equal(
+            classifyAccount({
+                running: true,
+                health: { socket: { state: "up" } },
+                kicked: { via: "frame-3000", at: 1 },
+            }),
+            "ok",
+            "a stale marker never overrides a running daemon",
+        );
         assert.equal(classifyAccount({ running: true, health: null }), "unresponsive");
         assert.equal(
             classifyAccount({ running: true, health: { socket: { state: "down", forSec: 400 }, warnings: [] } }),

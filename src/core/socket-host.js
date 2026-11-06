@@ -26,6 +26,7 @@ import { EXIT_CODE, classifyServerError, errorCodeOf } from "../zalo/errors.js";
 import { checkMaintenance, maintenanceKeysOf, waitOutMaintenance } from "../zalo/maintenance.js";
 import { lookupKickout } from "../zalo/kickout.js";
 import { loadAnomalyState, saveAnomalyState } from "../zalo/anomaly-store.js";
+import { clearKickMarker, writeKickMarker } from "./kick-marker.js";
 import { createAnomalyHistory, createRetryEngine, resolveSocketSettings } from "../zalo/retry.js";
 import { superviseListener } from "../zalo/socket.js";
 
@@ -71,6 +72,9 @@ export function classifyLoginFailure(err) {
     return REVOKED_LOGIN.test(String(err?.message ?? "")) ? "refused" : "other";
 }
 
+/** The longest a kicked daemon waits for Zalo to say why before it exits. */
+export const KICK_REASON_WAIT_MS = 5000;
+
 const sleepFor = (ms, signal) =>
     new Promise((resolve) => {
         const timer = setTimeout(resolve, ms);
@@ -94,11 +98,13 @@ const sleepFor = (ms, signal) =>
  * @param {() => boolean} opts.isStopping
  * @param {{noteSocketState: (state: string) => void}} [opts.health]
  * @param {string} [opts.anomalyFile] - where the retry history is kept between runs
+ * @param {string} [opts.kickFile] - where a kick that ends the daemon is recorded (cleared on the next connect)
  * @param {object} [opts.supervisorOptions] - extra options for every supervisor (timing, probe, clock)
  * @param {Function} [opts.supervise] - `(api, options) => supervisor`; replaceable for tests
  * @param {(ms: number, signal?: AbortSignal) => Promise<void>} [opts.sleep]
  * @param {(keys: {bkt?: number, sptMtn?: number}) => Promise<{state: string, code: number|null}>} [opts.checkGate] -
  *   the maintenance question, given the disaster-recovery numbers the last session's login learned
+ * @param {number} [opts.kickReasonWaitMs] - how long a kick waits for its reason before `onKicked`
  * @returns {{start: (api: object) => object, stop: () => Promise<void>, current: () => object|null,
  *   reloginNow: (why: string) => Promise<void>}}
  */
@@ -110,10 +116,12 @@ export function createSocketHost({
     isStopping,
     health,
     anomalyFile,
+    kickFile,
     supervisorOptions = {},
     supervise = superviseListener,
     sleep = sleepFor,
     checkGate = (keys, fetchFn) => checkMaintenance({ ...keys, fetchFn }),
+    kickReasonWaitMs = KICK_REASON_WAIT_MS,
 }) {
     let supervisor = null;
     // What the last session's login learned about maintenance; the question carries it, as the official client's does.
@@ -146,14 +154,31 @@ export function createSocketHost({
                 `Reconnecting in ${seconds(delayMs)} (reason ${key}, attempt ${attempt}${round === 2 ? ", round 2" : ""}${rotate ? ", next endpoint" : ""})`,
             );
         });
-        sup.on("kicked", ({ via }) => {
+        sup.on("kicked", ({ via, reason }) => {
             if (isStopping()) return;
             log(
                 "error",
                 `Another Zalo session took this account (${via}). Not reconnecting: that would evict it in turn.`,
             );
-            onKicked();
+            const end = (info) => {
+                if (kickFile) writeKickMarker(kickFile, { via, reason: info ?? null });
+                onKicked();
+            };
+            if (!reason) return end(null);
+            // Let Zalo's answer to "why" reach the log before the process ends, but never wait long for it.
+            let timer;
+            const waited = new Promise((resolve) => {
+                timer = setTimeout(resolve, kickReasonWaitMs, null);
+                timer.unref?.();
+            });
+            Promise.race([reason, waited])
+                .catch(() => null)
+                .then((info) => {
+                    clearTimeout(timer);
+                    end(info);
+                });
         });
+        if (kickFile) sup.on("connected", () => clearKickMarker(kickFile));
         sup.on("kickout-info", ({ info }) => {
             const words = [info?.title, info?.text].filter(Boolean).join(": ");
             log(

@@ -25,6 +25,7 @@ import {
     planBatches,
     renderStatusTable,
 } from "../core/fleet.js";
+import { kickFile, readKickMarker } from "../core/kick-marker.js";
 import { envForAccount } from "../mcp/mcp-config.js";
 import { error, info, output, success, warning } from "../utils/output.js";
 
@@ -127,13 +128,15 @@ async function collect(accounts, ports, downForSec) {
         const daemon = getDaemonStatus(accountDir);
         const reply = daemon.running ? await statusViaDaemon(accountDir) : null;
         const health = reply?.ok ? reply.health : null;
+        const kicked = daemon.running ? null : readKickMarker(kickFile(accountDir));
         return {
             accountId: acc.ownId,
             name: acc.name,
             port: ports[acc.ownId] ?? null,
-            state: classifyAccount({ running: daemon.running, health }, { downForSec }),
+            state: classifyAccount({ running: daemon.running, health, kicked }, { downForSec }),
             daemon: { running: daemon.running, pid: daemon.pid },
             health,
+            ...(kicked && { kicked }),
         };
     });
 }

@@ -58,6 +58,47 @@ export function cachedText(row) {
     return typeof content === "string" && content.length > 0 ? content : row?.text || "";
 }
 
+/** A Zalo user id is all digits; a synced row's author can be an opaque noised id, which no tool takes. */
+const USER_ID = /^\d+$/;
+
+/**
+ * What a reply quotes, in the reply shape every MCP message carries as `replyTo`, from the quote Zalo puts on
+ * the message (zca-js `TQuote` on a live event; the same object a restore keeps). Null when there is no quote or
+ * it names no message.
+ *
+ * @param {object|null|undefined} quote
+ * @returns {{msgId: string|null, cliMsgId: string|null, senderId: string|null, senderName: string|null,
+ *   text: string, timestamp: number|null, hasAttachment: boolean}|null}
+ */
+export function quotedReply(quote) {
+    if (!quote || typeof quote !== "object") return null;
+    const id = (v) => (v === undefined || v === null || v === "" || Number(v) === 0 ? null : String(v));
+    const msgId = id(quote.globalMsgId);
+    const cliMsgId = id(quote.cliMsgId);
+    if (!msgId && !cliMsgId) return null;
+    const owner = id(quote.ownerId);
+    const attach = typeof quote.attach === "string" ? quote.attach.trim() : quote.attach;
+    return {
+        msgId,
+        cliMsgId,
+        senderId: owner && USER_ID.test(owner) ? owner : null,
+        senderName: typeof quote.fromD === "string" && quote.fromD ? quote.fromD : null,
+        text: typeof quote.msg === "string" ? quote.msg : "",
+        timestamp: Number(quote.ts) || null,
+        hasAttachment: Boolean(attach) && attach !== "{}",
+    };
+}
+
+/**
+ * What a cached row replies to (see `quotedReply`), read from the payload the listener or a restore stored.
+ *
+ * @param {object} row - a `messages` row
+ * @returns {ReturnType<typeof quotedReply>}
+ */
+export function cachedReplyTo(row) {
+    return quotedReply(parseRawData(row?.raw_data).quote);
+}
+
 /**
  * Look one message up in the local SQLite cache by its global msgId.
  *

@@ -358,3 +358,60 @@ describe("MessageBuffer edge cases", () => {
         assert.equal(buf._globalCursor, 2);
     });
 });
+
+// bug-reports #10: the daemon restarted, its buffer counted again from a low number, and a long-poller
+// that came back with its saved cursor skipped every message buffered before the counter passed it.
+describe("MessageBuffer across a daemon restart", () => {
+    it("a session buffer starts above every cursor an earlier run could have handed out", (t) => {
+        let now = 1_000_000_000;
+        t.mock.method(Date, "now", () => now);
+        const before = MessageBuffer.forSession();
+        for (let i = 0; i < 50; i++) before.push("t1", msg(`old ${i}`, now));
+        const saved = before.read("t1", 0, 100).cursor;
+        assert.equal(saved, 1_000_000_050);
+
+        // A minute later: more messages arrive than the old cursor's distance from the start, so a
+        // counter starting at 0 would have passed `saved` and the stale-cursor rule could not help.
+        now += 60_000;
+        const after = MessageBuffer.forSession(500, Number.MAX_SAFE_INTEGER);
+        for (let i = 0; i < 60; i++) after.push("t1", msg(`new ${i}`, now));
+        const { messages } = after.read("t1", saved, 100);
+        assert.equal(messages.length, 60);
+        assert.equal(messages[0].text, "new 0");
+    });
+
+    it("a cursor beyond the newest message is a stale one: read returns what is buffered", () => {
+        const buf = new MessageBuffer();
+        buf.push("t1", msg("a"));
+        buf.push("t1", msg("b"));
+        const { messages } = buf.read(undefined, 107, 20);
+        assert.deepEqual(
+            messages.map((m) => m.text),
+            ["a", "b"],
+        );
+    });
+
+    it("waitForMessages with a stale cursor returns the buffered messages at once", async () => {
+        const buf = new MessageBuffer();
+        buf.push("t1", msg("a"));
+        buf.push("t2", msg("b"));
+        const { messages } = await buf.waitForMessages({ since: 107, timeoutMs: 50, limit: 10 });
+        assert.deepEqual(
+            messages.map((m) => m.text),
+            ["a", "b"],
+        );
+    });
+
+    it("marking a stale cursor read hides nothing this run buffered", () => {
+        const buf = new MessageBuffer();
+        buf.push("t1", msg("a"));
+        assert.equal(buf.markRead(107), 0);
+        buf.push("t1", msg("b"));
+        assert.equal(buf.readCursor(), 0);
+        const { messages } = buf.read(undefined, buf.readCursor(), 20);
+        assert.deepEqual(
+            messages.map((m) => m.text),
+            ["a", "b"],
+        );
+    });
+});

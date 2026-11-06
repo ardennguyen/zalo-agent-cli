@@ -37,6 +37,8 @@ import {
     cachedMessageById,
     reactionCliMsgId,
     recallCliMsgId,
+    quotedReply,
+    cachedReplyTo,
 } from "../core/cached-message.js";
 import { buildForwardReference, sendForward, LOG_SRC_TYPE } from "../core/forward.js";
 import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
@@ -385,6 +387,7 @@ function cacheHistory(threadId, limit, before, nameCache) {
             localPath: m.localPath || undefined,
             hasAttachment: m.has_attachment ? true : undefined,
             msgStatus: m.msgStatus ?? undefined,
+            replyTo: cachedReplyTo(m),
         }))
         .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
@@ -1052,6 +1055,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         text: isText ? rawContent : extractMessageText(rawContent, d.msgType),
                         timestamp: d.ts ? Number(d.ts) : null,
                         type: isText ? "text" : d.msgType || "attachment",
+                        replyTo: quotedReply(d.quote),
                     };
                 });
 
@@ -1694,6 +1698,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         type: r.type,
                         hasAttachment: Boolean(r.has_attachment),
                         localPath: r.localPath || null,
+                        replyTo: cachedReplyTo(r),
                         ...(around && { context: { before: around.before.map(lite), after: around.after.map(lite) } }),
                     };
                 });

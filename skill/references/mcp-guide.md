@@ -96,7 +96,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3847/metrics
 
 # Chờ tin nhắn tiếp theo (tối đa 300s) hoặc trả về ngay nếu đã có tin sau cursor `since`
 curl -s "http://localhost:3847/events/wait?timeout=300&since=0"
-# → {"status":"message","message":{...},"cursor":1}
+# → {"status":"message","message":{...},"cursor":1762400000001}
 ```
 
 ### Qua wrapper `zalo-mcp`
@@ -198,7 +198,7 @@ Mọi tool dùng chung một bộ tên cho id và loại hội thoại, ở cả
 | Một tin nhắn | `msgId` | Có ở mọi tham số và mọi kết quả |
 | Id phía client của tin | `cliMsgId` | `zalo_send_message` trả về; `zalo_react` và `zalo_undo` cần (tra từ cache nếu bỏ trống) |
 | Người dùng | `userId` | Tác giả của một tin là `senderId` (cũng là một `userId`); thành viên nhóm có `userId`. Tag ai đó bằng `@[userId]` |
-| Con trỏ đọc | `cursor` | `zalo_get_messages` / `zalo_wait_for_message` trả về, `zalo_mark_read` nhận lại; truyền vào `since` để đọc tiếp |
+| Con trỏ đọc | `cursor` | `zalo_get_messages` / `zalo_wait_for_message` trả về, `zalo_mark_read` nhận lại; truyền vào `since` để đọc tiếp. Từ 3.0 cursor bắt đầu theo đồng hồ (một số cỡ epoch-ms), nên cursor lưu trước khi daemon khởi động lại vẫn nhỏ hơn mọi cursor mới — xem bên dưới |
 
 **Đổi tên ở 3.0** (so với 2.5.x): các tên cũ trong kết quả đã bị bỏ — tin nhắn live không còn `id` (dùng `msgId`), kết quả của `zalo_send_message` không còn `messageId` (dùng `msgId`), thành viên nhóm không còn `uid` (dùng `userId`), và `zalo_list_conversations` không còn trường `type` riêng. `threadType` là chữ `"dm"` / `"group"` ở mọi nơi (trước đây tham số là số `0`/`1`). Hai tham số đã đổi tên từ 2.5.8: `zalo_view_media` nhận `msgId` và `zalo_delete_message` nhận `senderId`.
 
@@ -219,13 +219,17 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 ```json
 {
   "messages": [
-    { "msgId": "msg123", "threadId": "uid456", "threadType": "dm", "senderId": "uid789", "senderName": "Phúc", "text": "Xin chào", "timestamp": 1710000000000, "type": "text", "threadName": "Phúc", "readOnZalo": false }
+    { "msgId": "msg123", "threadId": "uid456", "threadType": "dm", "senderId": "uid789", "senderName": "Phúc", "text": "Xin chào", "timestamp": 1710000000000, "type": "text", "replyTo": null, "threadName": "Phúc", "readOnZalo": false }
   ],
-  "cursor": 42,
+  "cursor": 1762400000042,
   "hasMore": false
 }
 ```
 `cursor` trong kết quả là cursor của tin cuối cùng trả về — dùng lại cho lần gọi `since` tiếp theo, hoặc cho `zalo_mark_read`.
+
+**Cursor qua một lần khởi động lại daemon (3.0):** buffer chỉ nằm trong bộ nhớ, nhưng bot thường lưu cursor của mình. Trước 3.0 bộ đếm chạy lại từ 1 sau mỗi lần daemon khởi động lại, nên một bot quay lại với `since=107` bỏ qua im lặng mọi tin đến trước khi bộ đếm vượt 107. Giờ cursor của daemon bắt đầu từ đồng hồ (epoch-ms lúc khởi động), luôn lớn hơn cursor cũ; và một `since` lớn hơn tin mới nhất trong buffer được coi là cursor cũ: đọc lại từ đầu buffer (có thể lặp vài tin, không bao giờ mất tin). `zalo_mark_read` với cursor cũ như vậy không đánh dấu gì. Đừng giả định cursor là số nhỏ hay liên tục từ 1.
+
+**`replyTo` (3.0):** một tin trả lời (trích dẫn) tin khác mang `replyTo` = `{ msgId, cliMsgId, senderId, senderName, text, timestamp, hasAttachment }` của tin được trích; tin không trích dẫn có `replyTo: null`. Có ở `zalo_get_messages`, `zalo_wait_for_message`, `zalo_get_history` (cả cache lẫn server) và `zalo_search_messages`, và trong webhook. `senderId` là `null` khi Zalo chỉ cho một id đã mã hóa (tin khôi phục từ điện thoại); `text` rỗng và `hasAttachment: true` khi tin được trích là ảnh hay file.
 
 Một tin bị thu hồi cũng xuất hiện trong danh sách này (và đánh thức `zalo_wait_for_message`) dưới dạng một mục có `type` là `"undo"`: `msgId` là tin đã bị thu hồi (`null` nếu Zalo chỉ cho biết `cliMsgId`), `text` rỗng, và tin cũ không còn trong cache. Thu hồi do chính tài khoản làm (qua `zalo_undo`) không được đưa vào.
 

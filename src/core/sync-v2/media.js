@@ -37,6 +37,9 @@ import { createDownloadFetch } from "../../zalo/download-fetch.js";
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
 
+/** Kinds whose thumbnail is still the picture, when no full-size link exists. */
+const THUMB_IS_THE_PICTURE = new Set(["photo", "doodle", "gif"]);
+
 /**
  * Characters a filename must not contain on Windows or POSIX. Kept as a set
  * and checked per character rather than as a regex character class: the
@@ -78,6 +81,29 @@ const CONTENT_TYPE_EXT = {
     "audio/mp4": "m4a",
     "application/pdf": "pdf",
 };
+
+/**
+ * The JPEG twin of a JPEG XL photo URL, as Zalo Web asks for it when it cannot decode JPEG XL (the sync worker's own
+ * normalizer): `…/jxl/…/x.jxl?jxlstatus=1` becomes `…/jpg/…/x.jpg`. A JPEG XL file opens in almost no viewer and no
+ * model, so the CLI always takes the JPEG. An end-to-end encrypted session's URL keeps its form, as on the Web; any
+ * other URL is returned unchanged.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+export function jpegUrl(url) {
+    if (typeof url !== "string" || !/^https?:\/\/.*\/jxl\/.*\.jxl/.test(url)) return url;
+    let u;
+    try {
+        u = new URL(url);
+    } catch {
+        return url;
+    }
+    u.searchParams.delete("jxlstatus");
+    u.search = decodeURIComponent(u.search);
+    if (url.includes("?e2esession")) return u.href;
+    return u.href.replace("/jxl/", "/jpg/").replace(".jxl", ".jpg");
+}
 
 /** Extension from the filename, then the URL, then content-type, then the kind. */
 function guessExt(att, url, contentType) {
@@ -450,7 +476,11 @@ export async function downloadSyncedMedia(opts = {}) {
     for (const row of rows) {
         let index = 0;
         for (const att of attachmentsOf(row)) {
-            const url = att.url || (thumbs ? att.thumbUrl : null);
+            // The full file, else the HD one, else (for a picture with nothing better) the thumbnail: a row counts as
+            // having an attachment when any of these is there, so taking only `url` left such rows pending forever.
+            const url = jpegUrl(
+                att.url || att.hdUrl || (thumbs || THUMB_IS_THE_PICTURE.has(att.kind) ? att.thumbUrl : null),
+            );
             if (!url || !kinds.has(att.kind)) continue;
             if (maxBytes && att.size && att.size > maxBytes) continue;
             jobs.push({ row, att, url, index: index++ });
@@ -582,7 +612,7 @@ export async function downloadSyncedMedia(opts = {}) {
                         clientId: JSON.parse(row.raw_data || "{}").cliMsgId,
                     });
                     const fresh = extractRenewedUrls(resp);
-                    const next = fresh?.normalUrl || fresh?.hdUrl || fresh?.thumbUrl;
+                    const next = jpegUrl(fresh?.normalUrl || fresh?.hdUrl || fresh?.thumbUrl);
                     if (next) {
                         got = await fetchBytes(next, timeoutMs, download);
                         if (got.ok) stats.renewed++;

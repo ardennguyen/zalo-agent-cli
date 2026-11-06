@@ -10,6 +10,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
 import { liveApi } from "../core/live-api.js";
+import { quotedReply } from "../core/cached-message.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
 import { updateAccountName } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir, MEDIA_DIR } from "../core/credentials.js";
@@ -68,6 +69,7 @@ import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-r
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
+import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
@@ -121,7 +123,8 @@ export function normalizeMessage(msg, info = null) {
                   localPath: null,
               }
             : null,
-        replyTo: null,
+        // What this message replies to, so an agent can tell what "look at this" points at (bug-reports #8).
+        replyTo: quotedReply(data.quote),
     };
 }
 
@@ -543,7 +546,7 @@ export function registerMCPCommands(program) {
             // Build buffer + filter from config
             const maxAge = parseDuration(config.limits?.bufferMaxAge ?? "2h");
             const maxSize = config.limits?.bufferMaxSize ?? 500;
-            const buffer = new MessageBuffer(maxSize, maxAge);
+            const buffer = MessageBuffer.forSession(maxSize, maxAge);
             const filter = new ThreadFilter(config);
 
             // Build thread name cache (groups + friends → in-memory index)
@@ -1040,6 +1043,7 @@ export function registerMCPCommands(program) {
                 health,
                 isStopping: () => lifecycle.isStopping(),
                 anomalyFile: join(accountDir, "sock-anomaly.json"),
+                kickFile: kickFile(accountDir),
                 relogin: async () => {
                     clearSession();
                     await loginDaemonAccount(activeAcc);

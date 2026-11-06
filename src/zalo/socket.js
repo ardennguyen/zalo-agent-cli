@@ -127,7 +127,8 @@ const globalClock = Object.freeze({
  * Events: `state` `{state, previous}`; `connected` (the key frame arrived: the socket is usable);
  * `disconnected` `{code, reason, wasConnected, requested}`; `retrying` `{key, delayMs, round, rotate, attempt}`;
  * `stuck` `{attempts}` (no usable socket after that many retries in a row);
- * `kicked` `{via}`; `kickout-info` `{info}` (the reason, when it could be fetched); `session-invalid` `{kind, code}`;
+ * `kicked` `{via, reason}` (`reason`: a promise of the reason or null, never rejecting; null when there is no
+ * lookup); `kickout-info` `{info}` (the reason, when it could be fetched); `session-invalid` `{kind, code}`;
  * `maintenance` `{state}`; `resume`; `fault` `{message}` (a problem inside the supervisor that did not stop it).
  */
 export class SocketSupervisor extends EventEmitter {
@@ -639,16 +640,24 @@ export class SocketSupervisor extends EventEmitter {
         this._maintenanceAbort?.abort();
         this._watchAbort?.abort();
         this._setState("kicked");
-        this.emit("kicked", { via });
+        // The reason is asked for at once, and `kicked` carries the question so a host that ends the process on a
+        // kick can wait for the answer first: it used to exit before the answer came, so the reason never showed.
+        const reason =
+            typeof this.kickoutInfo === "function"
+                ? Promise.resolve()
+                      .then(() => this.kickoutInfo())
+                      .then((info) => {
+                          if (info === undefined || info === null) return null;
+                          this.emit("kickout-info", { info });
+                          return info;
+                      })
+                      .catch((e) => {
+                          this.log("debug", `kickout reason unavailable: ${e.message}`);
+                          return null;
+                      })
+                : null;
+        this.emit("kicked", { via, reason });
         this._closeSocket();
-        if (typeof this.kickoutInfo === "function") {
-            Promise.resolve()
-                .then(() => this.kickoutInfo())
-                .then((info) => {
-                    if (info !== undefined && info !== null) this.emit("kickout-info", { info });
-                })
-                .catch((e) => this.log("debug", `kickout reason unavailable: ${e.message}`));
-        }
     }
 
     _sessionInvalid(c) {

@@ -518,6 +518,19 @@ describe("MCP tools read the local cache", () => {
         assert.equal(out.cursor, 100, "the oldest timestamp, to page further back");
     });
 
+    it("zalo_get_history says what a cached reply quotes (bug-reports #8)", async () => {
+        const quote = { ownerId: "1000000000000000002", globalMsgId: 7300000000001, cliMsgId: 5, msg: "original" };
+        cache([
+            { msgId: "m1", ts: 100, text: "original" },
+            { msgId: "m2", ts: 200, text: "look at this", raw: JSON.stringify({ content: "look at this", quote }) },
+        ]);
+        const { server } = register({ api: emptyServerApi() });
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 50 }));
+        assert.equal(out.messages[0].replyTo, null);
+        assert.equal(out.messages[1].replyTo?.msgId, "7300000000001");
+        assert.equal(out.messages[1].replyTo?.text, "original");
+    });
+
     it("zalo_get_history pages backwards with `before`", async () => {
         cache([
             { msgId: "m1", ts: 100 },

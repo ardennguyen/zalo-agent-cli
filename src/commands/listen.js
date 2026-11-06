@@ -53,6 +53,7 @@ import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
+import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
@@ -964,6 +965,7 @@ export function registerListenCommand(program) {
                 health,
                 isStopping: () => stopping,
                 anomalyFile: join(accountDir, "sock-anomaly.json"),
+                kickFile: kickFile(accountDir),
                 relogin: async () => {
                     clearSession();
                     await loginDaemonAccount(activeAcc);

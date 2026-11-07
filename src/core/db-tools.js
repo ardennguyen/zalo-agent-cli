@@ -236,6 +236,42 @@ export function stripHiddenThreads(db, threadIds) {
     return { threads: new Set(ids.map((id) => (/^[gu]\d+$/i.test(id) ? id.slice(1) : id))).size };
 }
 
+/** A thread id without Zalo's `g`/`u` list prefix. */
+const bareId = (id) => {
+    const t = String(id ?? "").trim();
+    return /^[gu]\d+$/i.test(t) ? t.slice(1) : t;
+};
+
+/** The tables an export carries besides the account's own (an import reads them; a backup has none). */
+export const EXPORT_TABLES = Object.freeze(["export_info", "export_hidden_threads"]);
+
+/**
+ * Mark a copy as an export: `export_info` (format, version, when, whether hidden chats are in it) and
+ * `export_hidden_threads` (one row per hidden thread the file holds, `hidden = 1`, so an import can hide them again).
+ * When hidden chats were left out, the second table is empty: the file does not even say which ids were hidden. The
+ * PIN and its hash are never in an export.
+ *
+ * @param {import("better-sqlite3-multiple-ciphers").Database} db - the copy, writable
+ * @param {{hiddenIds?: string[], excluded?: boolean, now?: number}} info
+ */
+export function markExport(db, { hiddenIds = [], excluded = false, now = Date.now() } = {}) {
+    const ids = excluded ? [] : [...new Set(hiddenIds.map(bareId).filter(Boolean))];
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS export_info (key TEXT PRIMARY KEY, value TEXT);" +
+            "CREATE TABLE IF NOT EXISTS export_hidden_threads (threadId TEXT PRIMARY KEY, " +
+            "hidden INTEGER NOT NULL DEFAULT 1 CHECK (hidden IN (0, 1)))",
+    );
+    const info = db.prepare("INSERT OR REPLACE INTO export_info (key, value) VALUES (?, ?)");
+    const mark = db.prepare("INSERT OR REPLACE INTO export_hidden_threads (threadId, hidden) VALUES (?, 1)");
+    db.transaction(() => {
+        info.run("format", "zalo-agent-cli/db-export");
+        info.run("version", "1");
+        info.run("createdAt", new Date(now).toISOString());
+        info.run("hiddenChats", excluded ? "excluded" : ids.length ? "included" : "none");
+        for (const id of ids) mark.run(id);
+    })();
+}
+
 /** The name prefix of the filtered copies `db query` reads (next to the account's database, encrypted like it). */
 const FILTERED_PREFIX = ".db-query-";
 
@@ -355,12 +391,14 @@ export function runReadOnlyQuery(file, sql, { limit = QUERY_ROW_LIMIT, params = 
  *
  * @param {string} file - `accounts/<ownId>/zalo.db`
  * @param {string} out
- * @param {{plaintext?: boolean, excludeThreadIds?: string[]}} [opts] - `excludeThreadIds`: the hidden threads, left out
- *   of the copy (removed from it, then the copy is rebuilt with `VACUUM`, so no freed page keeps them)
+ * @param {{plaintext?: boolean, excludeThreadIds?: string[], exportInfo?: {hiddenIds?: string[]}|null}} [opts] -
+ *   `excludeThreadIds`: the hidden threads, left out of the copy (removed from it, then the copy is rebuilt with
+ *   `VACUUM`, so no freed page keeps them); `exportInfo`: an export (not a backup) gets the `export_info` and
+ *   `export_hidden_threads` tables ({@link markExport}), `hiddenIds` being the hidden threads it holds
  * @returns {{file: string, bytes: number, encrypted: boolean, keyId: string|null, messages: number, quickCheck: string,
- *   hiddenChats: "excluded"|null, ms: number}}
+ *   hiddenChats: "excluded"|"included"|null, hiddenThreads: number, ms: number}}
  */
-export function copyDatabase(file, out, { plaintext = false, excludeThreadIds = [] } = {}) {
+export function copyDatabase(file, out, { plaintext = false, excludeThreadIds = [], exportInfo = null } = {}) {
     const target = resolve(out);
     if (!existsSync(file)) throw new Error(`There is no message database for this account yet (${file}).`);
     if (existsSync(target)) throw new Error(`${target} exists: name a new file (nothing was written).`);
@@ -383,12 +421,13 @@ export function copyDatabase(file, out, { plaintext = false, excludeThreadIds = 
             src.close();
         }
         chmodSync(tmp, 0o600);
-        if (excludeThreadIds?.length) {
+        if (excludeThreadIds?.length || exportInfo) {
             const w = openDatabase(tmp, { accountDir });
             try {
                 w.pragma("journal_mode = DELETE");
-                stripHiddenThreads(w, excludeThreadIds);
-                w.exec("VACUUM");
+                if (excludeThreadIds?.length) stripHiddenThreads(w, excludeThreadIds);
+                if (exportInfo) markExport(w, { ...exportInfo, excluded: Boolean(excludeThreadIds?.length) });
+                if (excludeThreadIds?.length) w.exec("VACUUM");
             } finally {
                 w.close();
             }
@@ -425,7 +464,8 @@ export function copyDatabase(file, out, { plaintext = false, excludeThreadIds = 
             keyId: plaintext ? null : keyId,
             messages,
             quickCheck,
-            hiddenChats: excludeThreadIds?.length ? "excluded" : null,
+            hiddenChats: excludeThreadIds?.length ? "excluded" : exportInfo?.hiddenIds?.length ? "included" : null,
+            hiddenThreads: excludeThreadIds?.length ? 0 : new Set((exportInfo?.hiddenIds ?? []).map(bareId)).size,
             ms: Date.now() - started,
         };
     } catch (e) {

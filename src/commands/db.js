@@ -8,8 +8,10 @@
  *   its lockout). `backup` keeps them: it is the account's restore image, encrypted under its key, and opens only
  *   through these commands, which leave them out again.
  * - `db backup --out <file>`: an encrypted, verified copy; it opens only with this account's keyring and provider.
- * - `db export --out <file>`: the same copy; with `--plaintext` decrypted, for other SQLite tools: guarded like
- *   `account export` (`--yes` to write it, `--dry-run` to preview, exit 2 without either).
+ * - `db export --out <file>`: the same copy; with `--password` (a prompt) or `--password-stdin` encrypted under a
+ *   password the person chooses (src/core/export-crypt.js: it opens anywhere with that password, no keyring); with
+ *   `--plaintext` decrypted, for other SQLite tools: guarded like `account export` (`--yes` to write it, `--dry-run`
+ *   to preview, exit 2 without either). An export marks the hidden chats it holds (`export_hidden_threads`).
  * - `db verify`: every cached message checked against its row MAC (src/core/row-mac.js); exit 1 on any finding.
  *
  * - `db usage`: the account's storage (database, media, outbox), its quota and retention rules, and the quota state.
@@ -24,7 +26,7 @@
  */
 import { getActive } from "../core/accounts.js";
 import { autoLogin, getApi } from "../core/zalo-client.js";
-import { guardSubcommand } from "../core/confirm-guard.js";
+import { CONFIRM_EXIT_CODE, guardSubcommand } from "../core/confirm-guard.js";
 import { getAccountDbPath, getAccountDir } from "../core/credentials.js";
 import { callViaDaemon } from "../core/daemon-channel.js";
 import { closeDb, dbUsedBytes, initDb, verifyMessageRows } from "../core/db.js";
@@ -32,6 +34,9 @@ import { acquireLock, releaseLock } from "../core/lock.js";
 import { describeQuotaEvent, describeStorage, runStoragePass } from "../core/storage-quota.js";
 import { purgeDeadDeliveries } from "../core/webhook-outbox.js";
 import { QUERY_ROW_LIMIT, QUERY_ROW_LIMIT_MAX, copyDatabase, runReadOnlyQuery } from "../core/db-tools.js";
+import { buildExport } from "../core/data-export.js";
+import { passwordProblem } from "../core/export-crypt.js";
+import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
 import { parseDateBound, parsePeriod } from "../utils/date-range.js";
 import { error, info, output, success, warning } from "../utils/output.js";
 import { parseIntAtLeast } from "../utils/parse-options.js";
@@ -72,7 +77,8 @@ async function sessionOrNull(json) {
  * @param {object} opts
  * @param {string} ownId
  * @param {boolean} json
- * @returns {Promise<{mode: "include"|"exclude"|"none", ids: string[]}>}
+ * @returns {Promise<{mode: "include"|"exclude"|"none", ids: string[], hiddenIds: string[]}>} `hiddenIds`: with the
+ *   PIN, the hidden threads (an export marks them)
  */
 async function hiddenScope(opts, ownId, json) {
     if (opts.includeHidden) {
@@ -80,8 +86,8 @@ async function hiddenScope(opts, ownId, json) {
         if (!api) {
             fail(new Error("--include-hidden checks the PIN against Zalo's answer: log in first (zalo-agent login)."));
         }
-        await hiddenAccess(opts, { ownId, api, json });
-        return { mode: "include", ids: [] };
+        const { set } = await hiddenAccess(opts, { ownId, api, json });
+        return { mode: "include", ids: [], hiddenIds: [...set.ids] };
     }
     let set;
     try {
@@ -102,7 +108,41 @@ async function hiddenScope(opts, ownId, json) {
         );
     }
     const ids = [...set.ids];
-    return { mode: ids.length ? "exclude" : "none", ids };
+    return { mode: ids.length ? "exclude" : "none", ids, hiddenIds: [] };
+}
+
+/**
+ * The password of a password-encrypted export: the first line of standard input (`--password-stdin`), or typed twice
+ * at a prompt that does not echo. Never an argument. Exits 2 when there is no way to ask, 1 when it is refused.
+ *
+ * @param {{passwordStdin?: boolean}} opts
+ * @param {boolean} json
+ * @returns {Promise<string>}
+ */
+async function exportPassword(opts, json) {
+    let password;
+    try {
+        if (opts.passwordStdin) {
+            password = (await readSecretFromStream()).split(/\r?\n/)[0];
+        } else {
+            if (!process.stdin.isTTY) {
+                const why =
+                    "Not done: --password asks for the password at a terminal, and there is none. Pipe it to " +
+                    "standard input with --password-stdin (never pass it as an argument).";
+                if (json) console.log(JSON.stringify({ error: why, passwordRequired: true }, null, 2));
+                else error(why);
+                process.exit(CONFIRM_EXIT_CODE);
+            }
+            password = await promptSecret("Export password: ");
+            const again = await promptSecret("The same password again: ");
+            if (again !== password) throw new Error("the two passwords differ: nothing was written");
+        }
+    } catch (e) {
+        fail(new Error(`Could not read the password: ${e.message}`));
+    }
+    const problem = passwordProblem(password);
+    if (problem) fail(new Error(`${problem[0].toUpperCase()}${problem.slice(1)}: nothing was written.`));
+    return password;
 }
 
 const mib = (n) => `${(Number(n || 0) / 1024 / 1024).toFixed(1)} MiB`;
@@ -195,18 +235,51 @@ export function registerDbCommands(program) {
             "--plaintext",
             "Decrypt the copy, so any SQLite tool opens it (every cached message outside hidden chats, readable by anyone)",
         )
+        .option(
+            "--password",
+            "Encrypt the copy with a password you type (asked twice; it opens anywhere with it, no keyring needed)",
+        )
+        .option("--password-stdin", "Like --password, reading the password from the first line of standard input")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
             const { ownId, file } = accountDb();
+            const withPassword = Boolean(opts.password || opts.passwordStdin);
+            if (withPassword && opts.plaintext) fail(new Error("Choose --password or --plaintext, not both."));
+            if (opts.passwordStdin && opts.pinStdin) {
+                fail(
+                    new Error(
+                        "--password-stdin and --pin-stdin both read standard input: type one of them at its prompt.",
+                    ),
+                );
+            }
             const hidden = await hiddenScope(opts, ownId, jsonMode);
+            const password = withPassword ? await exportPassword(opts, jsonMode) : null;
             let r;
             try {
-                r = copyDatabase(file, opts.out, { plaintext: Boolean(opts.plaintext), excludeThreadIds: hidden.ids });
+                if (withPassword) {
+                    r = await buildExport({
+                        dbFile: file,
+                        out: opts.out,
+                        encryption: "password",
+                        password,
+                        excludeThreadIds: hidden.ids,
+                        hiddenIds: hidden.hiddenIds,
+                    });
+                } else {
+                    r = copyDatabase(file, opts.out, {
+                        plaintext: Boolean(opts.plaintext),
+                        excludeThreadIds: hidden.ids,
+                        exportInfo: { hiddenIds: hidden.hiddenIds },
+                    });
+                }
             } catch (e) {
                 fail(e);
             }
             output(r, jsonMode, () => {
-                if (r.encrypted) {
+                if (r.encryption === "password") {
+                    success(`Wrote a password-encrypted export (${r.messages} messages) to ${r.file}`);
+                    info("It opens with that password only (docs/security.md: the export file format).");
+                } else if (r.encrypted) {
                     success(`Wrote an encrypted copy (${r.messages} messages) to ${r.file}`);
                     info("For a copy other SQLite tools can open: --plaintext --yes.");
                 } else {
@@ -215,6 +288,8 @@ export function registerDbCommands(program) {
                 }
                 if (r.hiddenChats === "excluded")
                     info("Hidden chats are left out (--include-hidden and the PIN add them).");
+                else if (r.hiddenChats === "included")
+                    info(`${r.hiddenThreads} hidden chat(s) are in it, marked in the table export_hidden_threads.`);
             });
         });
     addHiddenOptions(exporter);

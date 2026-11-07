@@ -6,6 +6,8 @@
  *     GET|PUT|PATCH /zalo/admin/policy/<ownId>          another account on this host
  *     GET|PUT|PATCH /zalo/admin/policy/tenants/<id>     a tenant (a group of accounts)
  *     GET           /zalo/admin/usage                   storage usage of this server's account (and its tenants)
+ *     POST|GET|DELETE /zalo/admin/export/<ownId>[/...]    "export my data" jobs and their download links
+ *                                                         (src/core/data-export.js)
  *
  * - **Its own credential**, never the agent's: an admin token (`Authorization: Bearer <admin token>`) or a client
  *   certificate (mTLS, `admin.clientCa`). The MCP bearer token, the OAuth client secrets and the access tokens the
@@ -178,6 +180,8 @@ const STATUS = { INVALID: 400, NOT_FOUND: 404, CONFLICT: 412, RESTART_REQUIRED: 
  * @param {() => object} [args.usage] - GET /usage
  * @param {(ownId: string) => object} [args.effectiveExtra] - more effective settings (quota, retention)
  * @param {string|null} [args.publicUrl]
+ * @param {{handle: (req: object, res: object, ctx: object) => Promise<void>}|null} [args.exportApi] - the export
+ *   routes (src/core/data-export.js createExportApi)
  * @param {(line: string) => void} [args.log]
  * @returns {{enabled: () => boolean, handle: (req: object, res: object) => void}}
  */
@@ -190,6 +194,7 @@ export function createAdminApi({
     usage = null,
     effectiveExtra,
     publicUrl = null,
+    exportApi = null,
     log = (l) => console.error(l),
 }) {
     const enabled = () => mtls || hashes.length > 0 || Boolean(sealedHash());
@@ -263,6 +268,14 @@ export function createAdminApi({
             } catch (e) {
                 return send(res, 500, { error: e.message });
             }
+        }
+        if (path === "/export" || path.startsWith("/export/")) {
+            if (!exportApi) return send(res, 501, { error: "this server does not make exports" });
+            exportApi.handle(req, res, { who, ip, path }).catch((e) => {
+                log(`[admin] ${req.method} ${path} failed: ${e.message}`);
+                if (!res.headersSent) send(res, 500, { error: e.message });
+            });
+            return;
         }
         const m = /^\/policy(?:\/tenants\/([^/]+)|\/([^/]+))?$/.exec(path);
         if (!m) return send(res, 404, { error: "not found" });

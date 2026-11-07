@@ -117,6 +117,24 @@ Trừ `status`, các lệnh đều từ chối khi một daemon `listen` / `mcp 
 - **Mã hóa ổ đĩa** (BitLocker, LUKS, mã hóa volume của nhà cung cấp cloud) bên dưới tất cả: việc hủy bản cơ sở dữ liệu thuần cũ chỉ là cố gắng tốt nhất (SSD hay hệ thống file copy-on-write có thể giữ khối cũ, bản sao lưu và snapshot trước đó cũng vậy), và log ở mức `debug` có nội dung tin nhắn.
 - **Sao lưu:** giữ `accounts/<ownId>/keyring.json` trong cùng bản sao lưu với `credentials/` và `zalo.db`. `zalo-agent db backup --out <file>` ghi ra một bản sao đã mã hóa và đã kiểm tra của cơ sở dữ liệu tin nhắn ngay khi daemon đang chạy (`sqlite3 .backup` không mở được nó); `db export --out <file> --plaintext --yes` ghi ra một bản đã giải mã, tức là toàn bộ lịch sử tin nhắn ở dạng đọc được, trừ chat ẩn: `db query` và `db export` loại chúng ra, trừ khi có `--include-hidden` và mã PIN chat ẩn. Bản sao lưu vẫn giữ chúng (đó là bản để khôi phục, mã hóa dưới khóa của tài khoản). Thiếu keyring thì không mở được cả thông tin đăng nhập lẫn cơ sở dữ liệu tin nhắn; thiếu bộ cung cấp khóa (cùng máy với DPAPI/systemd-creds, cùng khóa KMS, cùng passphrase) cũng vậy. Hãy coi phương án khôi phục sau thảm họa là một lần đăng nhập QR mới, hoặc dùng khóa KMS mà nơi khôi phục truy cập được.
 - `account remove` / `logout --purge` xóa keyring cùng tài khoản, kèm mục tương ứng trong keychain / Secret Service.
+- **Bản xuất cho chủ tài khoản (`db export --password`, chức năng xuất của admin API).** Bản xuất dùng mật khẩu là một bản sao đã giải mã của cơ sở dữ liệu (trò chuyện ẩn bị loại ra trừ khi đã nhập PIN; những trò chuyện ẩn có trong tệp được liệt kê trong `export_hidden_threads`, không bao giờ có PIN hay mã băm của nó) rồi được mã hóa bằng mật khẩu của chủ tài khoản. Mật khẩu chỉ đi trong thân JSON qua https (hoặc từ chính máy này) hoặc qua lời nhắc không hiển thị / đầu vào chuẩn, và không bao giờ được lưu hay ghi log. Bản sao giải mã dùng để tạo nó nằm trong thư mục tài khoản trong lúc mã hóa, rồi bị ghi đè bằng số 0 và xóa (bản của một lần chạy bị dừng giữa chừng sẽ bị lần xuất kế tiếp xóa). Bản xuất plaintext cần `confirm: true` (`--yes` ở CLI). Bản của engine cho một bản xuất đã xong nằm trong `accounts/<ownId>/exports/` cho tới khi được tải về, hết hạn hoặc bị thu hồi.
+- **Định dạng tệp xuất mã hóa bằng mật khẩu** (`ZAEXPORT`, phiên bản 1; `src/core/export-crypt.js`):
+
+  | Byte | Trường |
+  |---|---|
+  | 8 | magic `ZAEXPORT` (ASCII) |
+  | 4 | độ dài header `L` (uint32, big-endian) |
+  | L | header, JSON UTF-8: `{"format": "zalo-agent-cli/export", "version": 1, "content": "sqlite3", "cipher": "aes-256-gcm", "kdf": {"name": "scrypt", "N": 131072, "r": 8, "p": 1, "keyLength": 32, "salt": "<base64, 16 byte>"}, "chunkSize": 1048576, "nonce": "<base64, 8 byte>", "plaintextBytes": <n>, "createdAt": "<thời gian ISO>"}` |
+  | phần còn lại | các khối: mỗi khối `chunkSize` byte của tệp SQLite (khối cuối ngắn hơn, có thể rỗng) mã hóa AES-256-GCM, theo sau là tag 16 byte |
+
+  Khóa = scrypt(mật khẩu dạng UTF-8, salt, N, r, p, 32 byte). Khối `i` (từ 0): nonce = `nonce` của header (8 byte) nối với `i` dạng uint32 big-endian; dữ liệu bổ sung = SHA-256 của `12 + L` byte đầu, rồi `i` (uint32 big-endian), rồi một byte, `1` cho khối cuối và `0` cho các khối khác. Header bị sửa, khối bị đổi chỗ hoặc thiếu, hay tệp bị cắt đúng ranh giới khối đều không giải mã được. Bản rõ là cơ sở dữ liệu SQLite 3 với các bảng của tài khoản cùng `export_info` và `export_hidden_threads`. Đọc bằng Node.js (lệnh import là việc làm tiếp theo):
+
+  ```js
+  import { decryptExportFile } from "@ardennguyen/zalo-agent-cli/src/core/export-crypt.js";
+  await decryptExportFile("mine.zaexport", "mine.db", password); // rồi mở mine.db bằng công cụ SQLite bất kỳ
+  ```
+
+  Ngôn ngữ nào có scrypt và AES-GCM cũng làm được tương tự theo bảng trên.
 
 ## 8. Khi bị lộ
 

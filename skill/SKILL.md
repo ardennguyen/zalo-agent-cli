@@ -161,6 +161,7 @@ zalo-agent --json db query "SELECT msgId, text FROM messages WHERE threadId = '<
 zalo-agent --json db query "<SQL>" --include-hidden --pin-stdin   # Hidden chats too: the PIN on stdin (or a prompt), never an argument
 zalo-agent db backup --out backup.db                  # Encrypted, verified copy (opens only with this account's keyring.json + provider)
 zalo-agent db export --out plain.db --plaintext --yes # Decrypted copy for other SQLite tools (asks first: exit 2 without --yes); hidden chats only with --include-hidden + PIN
+zalo-agent db export --out mine.zaexport --password   # Encrypted under a password you type (asked twice; or --password-stdin); opens anywhere with it
 zalo-agent db verify                                  # Row MAC check of every cached message (tamper evidence); exit 1 on a finding
 zalo-agent db usage                                   # Storage on this machine, quota state (ok/warn/over, purge date), retention rules (MCP: zalo_profile usage)
 zalo-agent db purge --dry-run | --yes                 # Quota/retention purge now (delete-only; through the daemon when one runs)

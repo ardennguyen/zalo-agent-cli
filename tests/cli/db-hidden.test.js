@@ -13,13 +13,15 @@ import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CONFIG_DIR, getAccountDbPath, getAccountDir, saveCredentials } from "../../src/core/credentials.js";
 import { addAccount } from "../../src/core/accounts.js";
 import { closeDb, ensureSearchIndex, initDb, insertMessage } from "../../src/core/db.js";
 import { HiddenChats } from "../../src/core/hidden-chats.js";
+import { Database } from "../../src/core/sqlite.js";
+import { decryptExportFile } from "../../src/core/export-crypt.js";
 import { FAKE_OWN_ID } from "../helpers/fake-api.js";
 
 const ROOT = resolve(import.meta.dirname, "..", "..");
@@ -28,6 +30,7 @@ const FAKE_API = join(ROOT, "tests", "helpers", "fake-api.js");
 const NO_NETWORK = join(ROOT, "tests", "helpers", "no-network.mjs");
 
 const PIN = "4826";
+const PASSWORD = "an export password";
 const HIDDEN = "1000000000000000016";
 const VISIBLE = "1000000000000000017";
 const SECRET = "words-only-in-the-hidden-chat";
@@ -192,9 +195,77 @@ describe("db export --plaintext: hidden chats only with the PIN", () => {
             stdin: `${PIN}\n`,
         });
         assert.equal(r.code, 0, r.all);
-        assert.equal(r.out.hiddenChats, null);
+        assert.equal(r.out.hiddenChats, "included");
+        assert.equal(r.out.hiddenThreads, 1);
         assert.equal(r.out.messages, 2);
         assert.ok(readFileSync(out).includes(SECRET));
         assert.equal(lockout()?.failures, 0, "the right PIN clears the count");
+        const db = new Database(out, { readonly: true, fileMustExist: true });
+        try {
+            assert.deepEqual(
+                db
+                    .prepare("SELECT threadId, hidden FROM export_hidden_threads")
+                    .all()
+                    .map((x) => ({ ...x })),
+                [{ threadId: HIDDEN, hidden: 1 }],
+                "the hidden chat is marked, so an import can hide it again",
+            );
+        } finally {
+            db.close();
+        }
+        assert.ok(!readFileSync(out).includes(md5(PIN)), "never the PIN hash");
+    });
+});
+
+describe("db export --password: a file that opens with the owner's password only", () => {
+    it("--password-stdin writes a password export without hidden chats; it decrypts with that password only", async () => {
+        writeMirror();
+        const out = join(SANDBOX_HOME, "password.zaexport");
+        const r = await run(["db", "export", "--out", out, "--password-stdin"], {
+            fake: false,
+            stdin: `${PASSWORD}\n`,
+        });
+        assert.equal(r.code, 0, r.all);
+        assert.equal(r.out.encryption, "password");
+        assert.equal(r.out.hiddenChats, "excluded");
+        assert.doesNotMatch(r.all, new RegExp(PASSWORD), "the password is never printed");
+        const bytes = readFileSync(out);
+        assert.equal(bytes.subarray(0, 8).toString("latin1"), "ZAEXPORT");
+        assert.ok(!bytes.includes("visible words"), "encrypted");
+        await assert.rejects(decryptExportFile(out, join(SANDBOX_HOME, "password-wrong.db"), "not the password"));
+        const plain = join(SANDBOX_HOME, "password-plain.db");
+        await decryptExportFile(out, plain, PASSWORD);
+        const db = new Database(plain, { readonly: true, fileMustExist: true });
+        try {
+            assert.deepEqual(
+                db
+                    .prepare("SELECT msgId FROM messages")
+                    .all()
+                    .map((x) => x.msgId),
+                ["v1"],
+            );
+            assert.equal(db.prepare("SELECT value FROM export_info WHERE key = 'hiddenChats'").get().value, "excluded");
+            assert.equal(db.prepare("SELECT count(*) AS n FROM export_hidden_threads").get().n, 0);
+        } finally {
+            db.close();
+        }
+        const leftovers = readdirSync(dir()).filter((f) => f.startsWith(".export-"));
+        assert.deepEqual(leftovers, [], "no decrypted temporary copy is left in the account folder");
+    });
+
+    it("never takes the password as an argument; asks for it (exit 2), refuses a short one or --plaintext with it", async () => {
+        const out = join(SANDBOX_HOME, "password-refused.zaexport");
+        const noTty = await run(["db", "export", "--out", out, "--password"], { fake: false });
+        assert.equal(noTty.code, 2, noTty.all);
+        assert.equal(noTty.out?.passwordRequired, true);
+        const short = await run(["db", "export", "--out", out, "--password-stdin"], { fake: false, stdin: "short\n" });
+        assert.equal(short.code, 1, short.all);
+        assert.match(short.all, /at least 8/);
+        const both = await run(["db", "export", "--out", out, "--password-stdin", "--plaintext", "--yes"], {
+            fake: false,
+            stdin: `${PASSWORD}\n`,
+        });
+        assert.equal(both.code, 1, both.all);
+        assert.ok(!existsSync(out), "nothing was written");
     });
 });

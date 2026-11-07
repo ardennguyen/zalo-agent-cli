@@ -71,7 +71,9 @@ Ba nơi ghi, cùng một cách kiểm tra:
    bao giờ tự đổi giới hạn của chính nó. `PATCH` là JSON merge patch (`null` xóa một khóa); `PUT` thay cả chính sách.
    `If-Match: "<rev>"` làm lệnh ghi có điều kiện: rev khác thì trả `412` và không đổi gì; phản hồi có `ETag: "<rev>"` và
    các cài đặt đang có hiệu lực. `400` nêu từng khóa sai; `422` liệt kê `restartRequired`. Khi chưa đặt thông tin xác thực
-   admin nào thì API không tồn tại (`404`).
+   admin nào thì API không tồn tại (`404`). Cùng thông tin xác thực đó khởi chạy việc xuất dữ liệu của tài khoản máy chủ
+   này (`POST /zalo/admin/export/<ownId>`, [deployment.vi.md](deployment.vi.md) "Xuất dữ liệu của tôi"); link tải về theo
+   các cài đặt link `media.*`.
 2. **`zalo-agent policy set|unset <key> [<value>] [--tenant <id>] [--if-match <rev>]`**: đi qua daemon đang chạy của tài
    khoản (áp dụng ngay), nếu không thì ghi vào tệp cho lần khởi động sau.
 3. **Thả tệp** bằng công cụ quản lý cấu hình: ghi tệp dạng JSON thường (`{"policy": {...}}`), ghi nguyên tử. Daemon đang

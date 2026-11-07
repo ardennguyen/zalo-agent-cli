@@ -395,11 +395,39 @@ export class MediaLinks {
     #bury(token, reason) {
         const link = this.links.get(token);
         this.links.delete(token);
-        if (link) {
+        this.tombstones.set(token, { reason, until: this.now() + TOMBSTONE_MS });
+        if (!link) return;
+        // An export that expires lets a download already under way finish; any other end cuts it.
+        const graceful = link.kind === "export" && reason === "expired" && link.streams.size > 0;
+        if (!graceful) {
             for (const stream of link.streams) stream.destroy();
             link.streams.clear();
         }
-        this.tombstones.set(token, { reason, until: this.now() + TOMBSTONE_MS });
+        const end = link.onEnd;
+        link.onEnd = null;
+        if (typeof end !== "function") return;
+        const run = () => {
+            try {
+                end(reason);
+            } catch (e) {
+                this.log(`[media] a link's end hook failed: ${e?.message ?? e}`);
+            }
+        };
+        if (graceful) link.whenIdle = run;
+        else run();
+    }
+
+    /**
+     * Why no link can be issued here now (no address, or http to another machine), or null when one can.
+     *
+     * @returns {string|null}
+     */
+    issueProblem() {
+        const base = this.base();
+        if (!base) return "links are not served by this process";
+        return validatePublicUrl(base).error
+            ? `a link needs https off this machine, and links here would be ${base}: set publicUrl to an https address`
+            : null;
     }
 
     /**
@@ -415,10 +443,29 @@ export class MediaLinks {
      * @param {string} spec.name - the download name
      * @param {number|null} [spec.size]
      * @param {number} [spec.ttlMs]
+     * @param {"media"|"export"} [spec.kind] - an `export` link serves a plain file (`plain`), downloads as an
+     *   attachment, and ends (`onEnd`) once the whole file was served, when it expires or is revoked
+     * @param {boolean} [spec.plain] - the file is served as it is on disk (not a sealed media container)
+     * @param {(reason: string) => void} [spec.onEnd] - called once when the link ends, with why
+     * @param {object} [spec.extra] - kept on the link for revocation rules (an export's hidden-chat snapshot)
      * @returns {{token: string, url: string, expiresAt: number, auth: "bearer"|"capability"}}
      * @throws {Error} when there is no address a link can use (http to another host)
      */
-    issue({ accountId, msgId, threadId = null, file, scope, mime, name, size = null, ttlMs }) {
+    issue({
+        accountId,
+        msgId,
+        threadId = null,
+        file,
+        scope,
+        mime,
+        name,
+        size = null,
+        ttlMs,
+        kind = "media",
+        plain = false,
+        onEnd = null,
+        extra = {},
+    }) {
         const base = this.base();
         if (!base) throw new Error("media links are not served by this process");
         const { url: checked, error } = validatePublicUrl(base);
@@ -459,6 +506,13 @@ export class MediaLinks {
             streams: new Set(),
             createdAt: t,
             expiresAt: t + (ttlMs || this.ttlMs),
+            kind,
+            plain: Boolean(plain),
+            onEnd,
+            whenIdle: null,
+            /** Byte ranges of the file served to the end, merged (an export ends once they cover it). */
+            served: [],
+            ...extra,
         };
         this.links.set(token, link);
         return { token, url: `${checked}${MEDIA_PATH_PREFIX}${token}`, expiresAt: link.expiresAt, auth };
@@ -506,6 +560,8 @@ export class MediaLinks {
      * @returns {number} links revoked
      */
     revokeAll(reason = "revoked") {
+        // An export still being built when everything is revoked is dropped when it finishes (src/core/data-export.js).
+        this.revokeEpoch = (this.revokeEpoch ?? 0) + 1;
         return this.revokeWhere(() => true, reason);
     }
 

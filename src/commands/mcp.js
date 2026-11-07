@@ -100,6 +100,7 @@ import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
 import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
+import { createExportApi } from "../core/data-export.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
 import { describeQuotaEvent, describeStorage, quotaSystemEvent, startStorageJobs } from "../core/storage-quota.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
@@ -700,6 +701,12 @@ export function registerMCPCommands(program) {
             });
             // A chat hidden while its links are out: they stop working at once (unless the policy shows hidden chats).
             hidden.onChange((set) => {
+                // An export made before a chat was hidden holds it unmarked: its download stops (data-export.js).
+                const exports = mediaLinks.revokeWhere(
+                    (l) => l.kind === "export" && [...set.ids].some((id) => !l.hiddenAtExport?.has(id)),
+                    "a chat was hidden after the export was made",
+                );
+                if (exports) console.error(`[mcp] ${exports} export link(s) revoked: a chat was hidden since`);
                 if (hiddenPolicy.mode === "include") return;
                 const n = mediaLinks.revokeWhere(
                     (l) => l.threadId !== null && set.isHidden(l.threadId),
@@ -806,8 +813,21 @@ export function registerMCPCommands(program) {
                             }
                         }
                     }
+                    // "Export my data" (src/core/data-export.js): jobs, the hidden-chat grant, the download links.
+                    const exportApi = createExportApi({
+                        ownId: activeAcc.ownId,
+                        accountDir,
+                        dbFile: join(accountDir, "zalo.db"),
+                        hidden,
+                        getApi: () => getApi(),
+                        securePage,
+                        links: mediaLinks,
+                        trustedProxies,
+                        log: (l) => console.error(`[mcp] ${l}`),
+                    });
                     const admin = createAdminApi({
                         ownId: activeAcc.ownId,
+                        exportApi,
                         config,
                         hashes: adminCreds.hashes,
                         mtls: Boolean(adminCa),

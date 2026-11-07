@@ -117,6 +117,24 @@ All but `status` refuse while a `listen` / `mcp start` daemon holds the account 
 - **Disk encryption** (BitLocker, LUKS, the cloud provider's volume encryption) under all of it: the shredding of the old plaintext database is best effort (an SSD or a copy-on-write filesystem can keep the old blocks, and so can earlier backups and snapshots), and logs at `debug` hold message text.
 - **Backups:** keep `accounts/<ownId>/keyring.json` in the same backup as `credentials/` and `zalo.db`. `zalo-agent db backup --out <file>` writes an encrypted, verified copy of the message database while the daemon runs (`sqlite3 .backup` cannot open it); `db export --out <file> --plaintext --yes` writes a decrypted one, which is the whole message history in the clear, but for the hidden chats: `db query` and `db export` leave those out unless `--include-hidden` and the hidden-chat PIN. A backup keeps them (it is the restore image, encrypted under the account's key). Without the keyring neither the credentials nor the message database can be opened; without the provider (the same machine for DPAPI/systemd-creds, the same KMS key, the same passphrase) neither can. Plan disaster recovery as a new QR login, or use a KMS key the recovery site can reach.
 - Each `account remove` / `logout --purge` deletes the keyring with the account, and a keychain / Secret Service item with it.
+- **Exports for the owner (`db export --password`, the admin API's export).** A password export is a decrypted copy of the database (hidden chats left out unless the PIN was given; those included are listed in `export_hidden_threads`, never the PIN or its hash) encrypted under the owner's password. The password travels only in a JSON body over https (or from this machine) or at a no-echo prompt / standard input, and is never stored or logged. The decrypted copy it is made from sits in the account's folder for the time it takes to encrypt it, then is zeroed and removed (a killed run's is removed by the next export). A plaintext export needs `confirm: true` (`--yes` on the CLI). The engine's copy of a finished export lives in `accounts/<ownId>/exports/` until it is downloaded, expires or is revoked.
+- **Password-encrypted export file format** (`ZAEXPORT`, version 1; `src/core/export-crypt.js`):
+
+  | Bytes | Field |
+  |---|---|
+  | 8 | magic `ZAEXPORT` (ASCII) |
+  | 4 | header length `L` (uint32, big-endian) |
+  | L | header, UTF-8 JSON: `{"format": "zalo-agent-cli/export", "version": 1, "content": "sqlite3", "cipher": "aes-256-gcm", "kdf": {"name": "scrypt", "N": 131072, "r": 8, "p": 1, "keyLength": 32, "salt": "<base64, 16 bytes>"}, "chunkSize": 1048576, "nonce": "<base64, 8 bytes>", "plaintextBytes": <n>, "createdAt": "<ISO time>"}` |
+  | rest | chunks: each `chunkSize` bytes of the SQLite file (the last one shorter, possibly empty) encrypted with AES-256-GCM, followed by its 16-byte tag |
+
+  Key = scrypt(password as UTF-8, salt, N, r, p, 32 bytes). Chunk `i` (from 0): nonce = header `nonce` (8 bytes) followed by `i` as uint32 big-endian; additional data = SHA-256 of the first `12 + L` bytes, then `i` (uint32 big-endian), then one byte, `1` for the last chunk and `0` otherwise. A changed header, a moved or missing chunk, or a file cut at a chunk boundary fails to decrypt. The plaintext is a SQLite 3 database with the account's tables plus `export_info` and `export_hidden_threads`. Reading one in Node.js (an import command is a follow-up):
+
+  ```js
+  import { decryptExportFile } from "@ardennguyen/zalo-agent-cli/src/core/export-crypt.js";
+  await decryptExportFile("mine.zaexport", "mine.db", password); // then open mine.db with any SQLite tool
+  ```
+
+  Any language with scrypt and AES-GCM can do the same from the table above.
 
 ## 8. After a leak
 

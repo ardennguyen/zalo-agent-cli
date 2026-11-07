@@ -71,7 +71,9 @@ Three writers, all checked the same way:
    never change its own limits. `PATCH` is a JSON merge patch (`null` removes a key); `PUT` replaces the policy.
    `If-Match: "<rev>"` makes a write conditional: another rev is `412` and nothing changes; the reply carries
    `ETag: "<rev>"` and the effective settings. `400` names each bad key; `422` lists `restartRequired`. With no admin
-   credential set the API does not exist (`404`).
+   credential set the API does not exist (`404`). The same credential starts a data export of this server's account
+   (`POST /zalo/admin/export/<ownId>`, [deployment.md](deployment.md) "Export my data"); its download link follows the
+   `media.*` link settings.
 2. **`zalo-agent policy set|unset <key> [<value>] [--tenant <id>] [--if-match <rev>]`**: through the account's running
    daemon (which applies the change at once), else into the file for the next start.
 3. **A file drop** by a config-management tool: write the file as plain JSON (`{"policy": {...}}`), atomically. A

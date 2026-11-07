@@ -16,6 +16,7 @@
  * - The client address is the connection's peer; `X-Forwarded-For` only when the peer is a trusted proxy
  *   (`trustedProxies`, src/core/deploy-policy.js).
  */
+import { createReadStream, statSync } from "node:fs";
 import http from "node:http";
 import { openMedia } from "./keystore/media-seal.js";
 import {
@@ -225,7 +226,7 @@ export async function handleMediaRequest(req, res, { links = getMediaLinks(), au
 
     let media;
     try {
-        media = openMedia(link.file, link.scope, { msgId: link.msgId });
+        media = link.plain ? plainFile(link.file) : openMedia(link.file, link.scope, { msgId: link.msgId });
     } catch (e) {
         links.log(`[media] a linked file could not be read: ${e?.code || e?.message || e}`);
         return fail(500, "This media cannot be read.\n");
@@ -236,7 +237,7 @@ export async function handleMediaRequest(req, res, { links = getMediaLinks(), au
         media.close();
         return fail(416, "Range not satisfiable\n", { "Content-Range": `bytes */${size}` });
     }
-    const safe = SAFE_MEDIA_MIME.has(link.mime);
+    const safe = link.kind !== "export" && SAFE_MEDIA_MIME.has(link.mime);
     const start = range ? range.start : 0;
     const end = range ? range.end : size - 1;
     const length = size === 0 ? 0 : end - start + 1;
@@ -251,6 +252,7 @@ export async function handleMediaRequest(req, res, { links = getMediaLinks(), au
     if (req.method === "HEAD" || length === 0) {
         media.close();
         res.end();
+        if (req.method === "GET" && size === 0) servedThrough(links, link, 0, -1, size);
         return true;
     }
     const stream = media.stream({ start, end });
@@ -260,12 +262,45 @@ export async function handleMediaRequest(req, res, { links = getMediaLinks(), au
         links.log(`[media] a linked file failed mid-stream: ${e?.code || e?.message || e}`);
         res.destroy();
     });
+    res.on("finish", () => {
+        if (bytes === length) servedThrough(links, link, start, end, size);
+    });
     res.on("close", () => {
         link.streams.delete(stream);
         stream.destroy();
+        if (!link.streams.size && link.whenIdle) {
+            const idle = link.whenIdle;
+            link.whenIdle = null;
+            idle();
+        }
     });
     stream.pipe(res);
     return true;
+}
+
+/** A plain file on disk in openMedia's shape: its size, a byte-range stream, close. */
+function plainFile(file) {
+    const size = statSync(file).size;
+    return { size, stream: ({ start, end }) => createReadStream(file, { start, end }), close() {} };
+}
+
+/**
+ * Record a range served to its end; an export link whose ranges now cover the whole file has been downloaded and ends
+ * (its end hook deletes the file).
+ */
+function servedThrough(links, link, start, end, size) {
+    if (link.kind !== "export") return;
+    const ranges = [...link.served, [start, end]].sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const r of ranges) {
+        const last = merged[merged.length - 1];
+        if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]);
+        else merged.push([r[0], r[1]]);
+    }
+    link.served = merged;
+    if (size === 0 || (merged.length === 1 && merged[0][0] === 0 && merged[0][1] >= size - 1)) {
+        links.revokeWhere((l) => l === link, "downloaded");
+    }
 }
 
 /**

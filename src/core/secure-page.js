@@ -14,6 +14,11 @@
  *   into any page, and request logs show the path with the token masked (maskSecurePath).
  * - When the person submits, the ticket becomes "approved" (or "done", for an action the page carried out itself,
  *   like changing the PIN). It holds no PIN. The agent repeats its call with `ticket`, which consumes it.
+ * - An approve page can also ask for an approver secret (the hidden-chat PIN or the approver password,
+ *   src/core/approval.js), so an agent that can open the link it relays cannot approve its own action.
+ * - Where the link goes (`approval.deliver`): the tool result, the MCP webhook as an `approval_requested` event, or
+ *   both. When the link does not go to the agent, the ticket the agent repeats its call with is a separate claim token,
+ *   so the agent cannot rebuild the page's link from it.
  */
 
 import { randomBytes } from "node:crypto";
@@ -61,15 +66,23 @@ export class TicketStore {
         this.ttlMs = ttlMs;
         /** @type {Map<string, object>} */
         this.tickets = new Map();
+        /** A separate claim token (the agent's) -> the page token, for a link the agent never sees. */
+        this.claims = new Map();
         this.waiters = new Map();
     }
 
     #prune() {
         const t = this.now();
         for (const [token, ticket] of this.tickets) {
-            if (ticket.expiresAt + TOMBSTONE_MS < t) this.tickets.delete(token);
+            if (ticket.expiresAt + TOMBSTONE_MS < t) this.#drop(token);
         }
-        while (this.tickets.size >= MAX_TICKETS) this.tickets.delete(this.tickets.keys().next().value);
+        while (this.tickets.size >= MAX_TICKETS) this.#drop(this.tickets.keys().next().value);
+    }
+
+    #drop(token) {
+        const ticket = this.tickets.get(token);
+        if (ticket && ticket.claim !== token) this.claims.delete(ticket.claim);
+        this.tickets.delete(token);
     }
 
     /**
@@ -83,15 +96,32 @@ export class TicketStore {
      * @param {string} spec.title - the page's heading
      * @param {string} spec.description - what approving does, in a sentence
      * @param {boolean} [spec.hasPin] - for pin-change: ask the current PIN first
+     * @param {"pin"|"password"|null} [spec.secretKind] - for confirm: the approver secret the page asks for, which
+     *   `onSubmit` checks (`{secret}`)
+     * @param {boolean} [spec.separateClaim] - the agent repeats its call with a claim token of its own instead of the
+     *   page's token (a link the agent must not be able to rebuild)
      * @param {(fields: object) => Promise<object>|object} [spec.onSubmit] - checks what was typed; returns
      *   `{status: "approved"|"done"|"retry"|"failed", message?, outcome?}`; the fields are dropped afterwards
-     * @returns {{token: string, expiresAt: number}}
+     * @returns {{token: string, claim: string, expiresAt: number}}
      */
-    issue({ accountId, action, target = {}, kind, title, description, hasPin = false, onSubmit }) {
+    issue({
+        accountId,
+        action,
+        target = {},
+        kind,
+        title,
+        description,
+        hasPin = false,
+        secretKind = null,
+        separateClaim = false,
+        onSubmit,
+    }) {
         this.#prune();
         const token = randomBytes(16).toString("base64url");
+        const claim = separateClaim ? randomBytes(16).toString("base64url") : token;
         const ticket = {
             token,
+            claim,
             accountId: String(accountId ?? ""),
             action: String(action),
             target: canonical(target),
@@ -99,6 +129,7 @@ export class TicketStore {
             title,
             description,
             hasPin,
+            secretKind,
             onSubmit,
             status: "pending",
             message: null,
@@ -107,10 +138,11 @@ export class TicketStore {
             expiresAt: this.now() + this.ttlMs,
         };
         this.tickets.set(token, ticket);
-        return { token, expiresAt: ticket.expiresAt };
+        if (claim !== token) this.claims.set(claim, token);
+        return { token, claim, expiresAt: ticket.expiresAt };
     }
 
-    /** The live ticket of a token, or why there is none. */
+    /** The live ticket of a page token (never a separate claim token), or why there is none. */
     lookup(token) {
         if (typeof token !== "string" || !TOKEN_SHAPE.test(token)) return { error: "unknown" };
         const ticket = this.tickets.get(token);
@@ -168,14 +200,17 @@ export class TicketStore {
      * Use a ticket: it must exist, be alive, be for this account, action and target, and be approved (or done).
      * It is used up whatever the outcome, except while it is still pending.
      *
-     * @param {string} token
+     * @param {string} token - the claim token (the page token, unless the ticket has a separate claim)
      * @param {{accountId: string, action: string, target?: object}} expect
      * @returns {{ok: true, ticket: object} | {ok: false, reason: string, message: string}}
      */
     consume(token, { accountId, action, target = {} }) {
-        const found = this.lookup(token);
+        // The agent holds the claim token: the page token itself, unless the ticket was issued with a separate one.
+        const pageToken = typeof token === "string" && this.claims.has(token) ? this.claims.get(token) : token;
+        const found = this.lookup(pageToken);
         if (found.error) return { ok: false, reason: found.error, message: refusalMessage(found.error) };
         const { ticket } = found;
+        if (ticket.claim !== token) return { ok: false, reason: "unknown", message: refusalMessage("unknown") };
         const mismatch =
             ticket.accountId !== String(accountId ?? "")
                 ? "account"
@@ -217,7 +252,7 @@ function refusalMessage(reason) {
 const STYLE =
     "body{font:16px/1.5 system-ui,sans-serif;max-width:28rem;margin:2rem auto;padding:0 1rem;color:#1b1b1f;" +
     "background:#fff}h1{font-size:1.25rem}label{display:block;margin:.75rem 0 .25rem}input{font:inherit;" +
-    "padding:.5rem;width:8rem;letter-spacing:.3em}button{font:inherit;padding:.5rem 1rem;margin:1rem .5rem 0 0}" +
+    "padding:.5rem;width:8rem;letter-spacing:.3em}input.wide{width:16rem;letter-spacing:normal}button{font:inherit;padding:.5rem 1rem;margin:1rem .5rem 0 0}" +
     ".msg{padding:.5rem .75rem;border-radius:.25rem;background:#fdecea}.ok{background:#e7f5ea}" +
     "@media (prefers-color-scheme:dark){body{background:#151518;color:#eee}.msg{background:#4a1f1c}" +
     ".ok{background:#1d3b25}}";
@@ -248,9 +283,17 @@ function formPage(ticket, notice) {
     const intro = `<p>${esc(ticket.description)}</p>${notice ? `<p class="msg">${esc(notice)}</p>` : ""}`;
     let fields;
     if (ticket.kind === "confirm") {
+        const secret =
+            ticket.secretKind === "pin"
+                ? pinInput("secret", "Hidden-chat PIN (to approve)")
+                : ticket.secretKind === "password"
+                  ? `<label for="secret">Approver password</label><input id="secret" name="secret" type="password" ` +
+                    `class="wide" autocomplete="off" maxlength="256" required>`
+                  : "";
         fields =
+            secret +
             `<button type="submit" name="decision" value="approve">Approve</button>` +
-            `<button type="submit" name="decision" value="decline">Decline</button>`;
+            `<button type="submit" name="decision" value="decline"${secret ? " formnovalidate" : ""}>Decline</button>`;
     } else if (ticket.kind === "pin-change") {
         fields =
             (ticket.hasPin ? pinInput("pin", "Current PIN") : "") +
@@ -403,12 +446,14 @@ export async function handleSecureRequest(req, res, { store, accountId, publicBa
             send(res, 400, formPage(ticket, "Choose Approve or Decline."));
             return true;
         }
-        store.settle(ticket, "approved");
-        send(res, 200, statusPage("Approved", "Approved. The agent can go on now.", true));
-        return true;
+        if (!ticket.secretKind) {
+            store.settle(ticket, "approved");
+            send(res, 200, statusPage("Approved", "Approved. The agent can go on now.", true));
+            return true;
+        }
     }
     // Only the named fields are passed on, and nothing typed is written back into a page.
-    const typed = { pin: fields.pin, newPin: fields.newPin, newPin2: fields.newPin2 };
+    const typed = { pin: fields.pin, newPin: fields.newPin, newPin2: fields.newPin2, secret: fields.secret };
     fields = null;
     let result;
     try {
@@ -416,7 +461,7 @@ export async function handleSecureRequest(req, res, { store, accountId, publicBa
     } catch (e) {
         result = { status: "failed", message: `It could not be completed: ${e.message}` };
     }
-    typed.pin = typed.newPin = typed.newPin2 = undefined;
+    typed.pin = typed.newPin = typed.newPin2 = typed.secret = undefined;
     if (result.status === "retry") {
         send(res, 400, formPage(ticket, result.message));
         return true;
@@ -448,11 +493,17 @@ export class SecurePage {
         this.localBaseUrl = null;
         this.listener = null;
         this.mounted = false;
+        /** Where `approval.deliver: "webhook"` sends a link (the MCP webhook outbox), or null when none is set. */
+        this.notify = null;
     }
 
-    /** Settings from `mcp start`: the account served, the public base URL, the HTTP server's own address. */
-    configure({ accountId, publicBaseUrl, localBaseUrl } = {}) {
+    /**
+     * Settings from `mcp start`: the account served, the public base URL, the HTTP server's own address, and the
+     * function that queues an `approval_requested` event for the webhook (`(payload) => void`).
+     */
+    configure({ accountId, publicBaseUrl, localBaseUrl, notify } = {}) {
         if (accountId !== undefined) this.accountId = String(accountId ?? "");
+        if (notify !== undefined) this.notify = notify;
         if (publicBaseUrl !== undefined) this.publicBaseUrl = publicBaseUrl;
         if (localBaseUrl !== undefined) {
             this.localBaseUrl = localBaseUrl;
@@ -502,15 +553,15 @@ export class SecurePage {
      * Issue a ticket and the link to its page.
      *
      * @param {object} spec - as for TicketStore#issue (accountId defaults to the page's)
-     * @returns {Promise<{token: string, expiresAt: number, url: string}>}
+     * @returns {Promise<{token: string, claim: string, expiresAt: number, url: string}>}
      */
     async open(spec) {
         await this.ensureServed();
         // A process serves one account; the first ticket names it when `mcp start` did not.
         if (!this.accountId && spec.accountId) this.accountId = String(spec.accountId);
-        const { token, expiresAt } = this.store.issue({ ...spec, accountId: spec.accountId ?? this.accountId });
+        const { token, claim, expiresAt } = this.store.issue({ ...spec, accountId: spec.accountId ?? this.accountId });
         const base = this.publicBaseUrl || this.localBaseUrl;
-        return { token, expiresAt, url: `${base}${SECURE_PATH_PREFIX}${token}` };
+        return { token, claim, expiresAt, url: `${base}${SECURE_PATH_PREFIX}${token}` };
     }
 }
 
@@ -530,13 +581,48 @@ export function setSecurePage(page) {
 /** How long a person may take on the page while a live call waits (URL-mode elicitation). */
 export const PAGE_WAIT_MS = TICKET_TTL_MS;
 
+/** The flag a page's kind sets in a "needs X" reply. */
+const NEEDS = { confirm: "confirmationRequired", pin: "pinRequired", "pin-change": "pinRequired" };
+
 /**
- * Ask a person on the secure page, delivering the link the best way the transport allows:
- * - a live connection (stdio) whose client declares URL-mode elicitation: the client is asked to open the link, and
- *   the call waits for the page to be completed (then `notifications/elicitation/complete` is sent);
- * - otherwise (stateless HTTP, or a client without URL elicitation): the reply carries the link, for the agent to
- *   show the person and repeat its call with `ticket`.
+ * The `approval_requested` event a webhook receiver (a CRM's approval UI) gets for one page: what it is for, its link
+ * and its expiry. Signed and queued like every other webhook event (src/core/webhook-outbox.js).
+ *
+ * @param {object} opts
+ * @param {{url: string, expiresAt: number}} opts.opened
+ * @param {object} opts.spec - the ticket
+ * @param {{action?: string, wouldDo?: string, target?: object}} [opts.about]
+ * @param {"pin"|"password"|null} [opts.secretKind]
+ * @returns {object}
+ */
+export function approvalEvent({ opened, spec, about = {}, secretKind = null }) {
+    return {
+        event: "approval_requested",
+        accountId: spec.accountId ?? null,
+        kind: spec.kind,
+        action: about.action ?? spec.action,
+        wouldDo: about.wouldDo ?? spec.description,
+        target: about.target ?? spec.target ?? {},
+        secureUrl: opened.url,
+        expiresAt: new Date(opened.expiresAt).toISOString(),
+        approverSecret: secretKind,
+    };
+}
+
+/**
+ * Ask a person on the secure page, delivering the link the best way the deployment and the transport allow:
+ * - a live connection (stdio) whose client declares URL-mode elicitation: the client is asked to open the link, the call
+ *   waits for the page to be completed (then `notifications/elicitation/complete` is sent), and the reply never
+ *   carries the link;
+ * - `deliver: "webhook"`: the link goes to the MCP webhook as an `approval_requested` event, and the reply carries
+ *   only `approvalPending`, `deliveredTo: "webhook"` and a claim `ticket` from which the link cannot be rebuilt;
+ * - otherwise (`result`, or `both`, which also posts the event): the reply carries the link, for the agent to show the
+ *   person and repeat its call with `ticket`.
  * The PIN never travels through the client: form elicitation is not used for it.
+ *
+ * For an approve page (`spec.kind` "confirm"), `approver(throughAgent)` says what the page asks besides a click
+ * (src/core/approval.js approverFor): it is asked once the delivery is known, as the link reaching the agent is what
+ * calls for a secret.
  *
  * @param {object} opts
  * @param {SecurePage} opts.page
@@ -546,12 +632,40 @@ export const PAGE_WAIT_MS = TICKET_TTL_MS;
  * @param {object} opts.spec - the ticket (see TicketStore#issue)
  * @param {"confirmationRequired"|"pinRequired"} opts.needs - the flag the reply carries
  * @param {object} [opts.retryWith] - what the repeat call adds besides `ticket`
- * @returns {Promise<{token: string} | {declined: string} | {reply: object}>}
+ * @param {"result"|"webhook"|"both"} [opts.deliver] - approval.deliver
+ * @param {(throughAgent: boolean) => object} [opts.approver] - for an approve page: approverFor's answer
+ * @param {{action?: string, wouldDo?: string, target?: object}} [opts.about] - for the webhook event
+ * @returns {Promise<{token: string} | {declined: string} | {reply: object} | {error: string}>}
  */
-export async function askOnSecurePage({ page, server, extra, stateless = false, spec, needs, retryWith = {} }) {
-    const opened = await page.open(spec);
+export async function askOnSecurePage({
+    page,
+    server,
+    extra,
+    stateless = false,
+    spec,
+    needs,
+    retryWith = {},
+    deliver = "result",
+    approver = null,
+    about = {},
+}) {
+    const flag = needs ?? NEEDS[spec.kind] ?? "confirmationRequired";
+    /** The ticket's spec once the delivery is known, or {error} when the page cannot ask what it must. */
+    const specFor = (throughAgent) => {
+        if (!approver) return { spec };
+        const a = approver(throughAgent);
+        if (a.error) return { error: a.error };
+        return {
+            spec: { ...spec, secretKind: a.kind, ...(a.check && { onSubmit: ({ secret }) => a.check(secret) }) },
+            approverSecret: a.approverSecret,
+        };
+    };
+
     const asker = stateless ? null : server?.server;
     if (asker?.getClientCapabilities?.()?.elicitation?.url) {
+        const built = specFor(false);
+        if (built.error) return { error: built.error };
+        const opened = await page.open(built.spec);
         const elicitationId = randomBytes(12).toString("hex");
         let answer = null;
         try {
@@ -563,9 +677,13 @@ export async function askOnSecurePage({ page, server, extra, stateless = false, 
                 },
             );
         } catch (e) {
-            console.error(`[secure-page] URL elicitation failed (${e.message}); handing out the link instead`);
+            console.error(`[secure-page] URL elicitation failed (${e.message}); delivering the link another way`);
         }
-        if (answer && answer.action !== "accept") return { declined: answer.action ?? "cancel" };
+        const ticket = page.store.lookup(opened.token).ticket;
+        if (answer && answer.action !== "accept") {
+            if (ticket?.status === "pending") page.store.settle(ticket, "declined");
+            return { declined: answer.action ?? "cancel" };
+        }
         if (answer) {
             const status = await page.store.waitForDecision(
                 opened.token,
@@ -579,21 +697,71 @@ export async function askOnSecurePage({ page, server, extra, stateless = false, 
             } catch {
                 /* the completion notice is a courtesy */
             }
-            if (status === "approved" || status === "done") return { token: opened.token };
-            if (status === "declined" || status === "failed") return { token: opened.token };
+            if (["approved", "done", "declined", "failed"].includes(status)) return { token: opened.token };
+            // Not completed in time: the link went through the client only, and it stays out of the reply.
+            const left = page.store.lookup(opened.token).ticket;
+            if (left?.status === "pending") page.store.settle(left, "declined");
+            return { declined: status === "cancelled" ? "cancel" : "timeout" };
         }
+        // The client could not be asked: this ticket is dropped, and the link goes the configured way instead.
+        if (ticket?.status === "pending") page.store.settle(ticket, "declined");
     }
-    const what = needs === "pinRequired" ? "the hidden-chat PIN" : "approval";
+
+    const toWebhook = deliver === "webhook" || deliver === "both";
+    if (toWebhook && typeof page.notify !== "function") {
+        if (deliver === "webhook") {
+            return {
+                error:
+                    'approval.deliver is "webhook" but this server has no webhook (-w, ZALO_WEBHOOK_URL or webhook in ' +
+                    "mcp-config.json), so the link could not reach anyone; nothing was done.",
+            };
+        }
+        console.error('[secure-page] approval.deliver is "both" but no webhook is set; the link is in the reply only');
+    }
+    const onlyWebhook = deliver === "webhook";
+    const built = specFor(!onlyWebhook);
+    if (built.error) return { error: built.error };
+    const opened = await page.open({ ...built.spec, separateClaim: onlyWebhook });
+    let deliveredTo = "result";
+    if (toWebhook && typeof page.notify === "function") {
+        page.notify(approvalEvent({ opened, spec: built.spec, about, secretKind: built.spec.secretKind ?? null }));
+        deliveredTo = onlyWebhook ? "webhook" : "both";
+    }
+    const expiresAt = new Date(opened.expiresAt).toISOString();
+    const what = flag === "pinRequired" ? "the hidden-chat PIN" : "approval";
+    const approverField = spec.kind === "confirm" ? { approverSecret: built.approverSecret === true } : {};
+    if (onlyWebhook) {
+        return {
+            reply: {
+                error:
+                    `Not done yet: this needs ${what} from the account owner, who was sent a one-time page through ` +
+                    "the deployment's approval channel.",
+                [flag]: true,
+                approvalPending: true,
+                ticket: opened.claim,
+                ticketExpiresAt: expiresAt,
+                deliveredTo,
+                retryWith: { ...retryWith, ticket: opened.claim },
+                how:
+                    "The account owner completes the page in the app that receives this server's webhook. Once they " +
+                    "have, repeat this call unchanged plus `ticket` (before ticketExpiresAt). Never ask them for the " +
+                    "PIN or a password in chat.",
+            },
+        };
+    }
     return {
         reply: {
             error: `Not done yet: this needs ${what} from the account owner on a one-time page.`,
-            [needs]: true,
+            [flag]: true,
             secureUrl: opened.url,
-            ticketExpiresAt: new Date(opened.expiresAt).toISOString(),
-            retryWith: { ...retryWith, ticket: opened.token },
+            ticketExpiresAt: expiresAt,
+            ...approverField,
+            ...(deliveredTo !== "result" && { deliveredTo }),
+            retryWith: { ...retryWith, ticket: opened.claim },
             how:
                 "Give the person secureUrl to open in a browser (it works once and expires at ticketExpiresAt). " +
-                "Once they complete it, repeat this call unchanged plus `ticket`. Never ask them for the PIN in chat.",
+                "Once they complete it, repeat this call unchanged plus `ticket`. Never ask them for the PIN in chat." +
+                (approverField.approverSecret ? " The page asks them for a secret only they know." : ""),
         },
     };
 }

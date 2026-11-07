@@ -6,6 +6,8 @@
  * died with close 1006 left no trace of what it had been doing. These drive
  * the loggers with a fake clock and fake timers, so no test waits.
  */
+// Before any src/ import: daemon-sync.js reaches credentials.js through the key layer (src/core/keystore/).
+import "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {

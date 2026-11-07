@@ -21,10 +21,10 @@ import {
     setConversationPinned,
 } from "../core/conversation-actions.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
-import { pinFailureLine } from "../core/hidden-chats.js";
+import { pinFailureLine, withoutHidden } from "../core/hidden-chats.js";
 import { changeHiddenPin, readHidden, resetHiddenPinAndDelete } from "../core/hidden-chat-actions.js";
 import { askOnSecurePage } from "../core/secure-page.js";
-import { resolveAllowPinArgument } from "../core/deploy-policy.js";
+import { resolveAllowPinArgument, resolveApproval } from "../core/deploy-policy.js";
 
 /** Cached rows of a thread, or none when this process has no cache open. */
 function cachedRows(threadId, depth) {
@@ -91,6 +91,7 @@ async function pinGate(a, ctx, extra, { action, target, description }) {
         extra,
         stateless: ctx.stateless,
         needs: "pinRequired",
+        deliver: resolveApproval({ config: ctx.config, accountId: ctx.ownId() }).deliver,
         spec: {
             ...expect,
             kind: "pin",
@@ -107,8 +108,25 @@ async function pinGate(a, ctx, extra, { action, target, description }) {
         const used = page.store.consume(asked.token, expect);
         return used.ok ? { ok: true } : { error: used.message };
     }
-    if (asked.declined) return { error: `The account owner did not open the PIN page (${asked.declined}).` };
+    if (asked.error) return { error: asked.error };
+    if (asked.declined) return { error: `The account owner did not complete the PIN page (${asked.declined}).` };
     return needs(asked.reply);
+}
+
+/**
+ * A list of conversations with the hidden ones left out, as the deployment's hiddenChats policy says (every policy but
+ * `include`: a list never shows a contentless row).
+ *
+ * @param {object} ctx
+ * @param {object[]} list
+ * @param {(item: object) => unknown} idOf
+ * @returns {Promise<object[]>}
+ */
+async function visible(ctx, list, idOf) {
+    if (!Array.isArray(list) || !ctx.hidden || ctx.hiddenMode?.() === "include") return list;
+    const set = ctx.hidden();
+    await set.ensure(ctx.api);
+    return withoutHidden(list, set, ctx.hiddenMode?.() ?? "exclude", idOf);
 }
 
 /** The action table; see src/mcp/action-tool.js for what a row holds. */
@@ -138,8 +156,11 @@ export const CONVERSATION_ACTIONS = {
         },
     },
     archived: {
-        async run(_a, { api }) {
-            return { data: (await api.getArchivedChatList()) ?? null };
+        async run(_a, ctx) {
+            const data = (await ctx.api.getArchivedChatList()) ?? null;
+            // Zalo's answer is `{items: [{id, type}], version}`; a hidden chat is left out as `conv archived` does.
+            if (!Array.isArray(data?.items)) return { data };
+            return { data: { ...data, items: await visible(ctx, data.items, (i) => i?.id) } };
         },
     },
     archive: {
@@ -171,8 +192,8 @@ export const CONVERSATION_ACTIONS = {
         },
     },
     muted: {
-        async run(_a, { api }) {
-            const res = await api.getMute();
+        async run(_a, ctx) {
+            const res = await ctx.api.getMute();
             const entries = (list, threadType) =>
                 (Array.isArray(list) ? list : []).map((m) => ({
                     threadId: String(m.id),
@@ -180,9 +201,8 @@ export const CONVERSATION_ACTIONS = {
                     muteMode: m.muteMode ?? null,
                     duration: m.duration ?? null,
                 }));
-            return {
-                conversations: [...entries(res?.chatEntries, "dm"), ...entries(res?.groupChatEntries, "group")],
-            };
+            const all = [...entries(res?.chatEntries, "dm"), ...entries(res?.groupChatEntries, "group")];
+            return { conversations: await visible(ctx, all, (m) => m.threadId) };
         },
     },
     mute: {
@@ -258,8 +278,9 @@ export const CONVERSATION_ACTIONS = {
         async run(a, ctx, extra) {
             const set = ctx.hidden();
             const listed = await readHidden(ctx.api, set);
-            if (!listed.hasPin || listed.count === 0)
-                return { count: listed.count, hasPin: listed.hasPin, threads: [] };
+            // With a PIN set, the PIN is checked even when nothing is hidden: a wrong one is refused (and counted)
+            // whatever the list holds, as Web asks it before showing the (possibly empty) list.
+            if (!listed.hasPin) return { count: listed.count, hasPin: false, threads: [] };
             const held = await pinGate(a, ctx, extra, {
                 action: "conv.hidden",
                 target: {},
@@ -340,6 +361,7 @@ export const CONVERSATION_ACTIONS = {
                 extra,
                 stateless: ctx.stateless,
                 needs: "pinRequired",
+                deliver: resolveApproval({ config: ctx.config, accountId: ctx.ownId() }).deliver,
                 spec: {
                     ...expect,
                     kind: "pin-change",
@@ -361,7 +383,8 @@ export const CONVERSATION_ACTIONS = {
                 if (!used.ok) throw new Error(used.message);
                 return { success: true, changed: true, hadPin: Boolean(used.ticket.outcome?.hadPin) };
             }
-            if (asked.declined) throw new Error(`The account owner did not open the PIN page (${asked.declined}).`);
+            if (asked.error) throw new Error(asked.error);
+            if (asked.declined) throw new Error(`The account owner did not complete the PIN page (${asked.declined}).`);
             return needs(asked.reply);
         },
     },

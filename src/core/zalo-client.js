@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { getActive } from "./accounts.js";
 import { CONFIG_DIR, getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
 import { loadTestFakeSession, resolveTestFakeApi } from "./test-fake-session.js";
+import { attachLoginSession } from "./keystore/index.js";
 import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../zalo/device-fingerprint.js";
 import { secChUaFor } from "../zalo/headers.js";
@@ -118,6 +119,8 @@ export async function loginWithCredentials(creds, proxyUrl = null, { ownId: know
     const api = await openSession(creds, { zaloOptions, ownId: knownId, drStoreFor });
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
+    // The key layer gets the live login: the data key opens (dkey layer), and what is still plaintext is sealed.
+    attachLoginSession(ownId, api);
     persistCookies(knownId, creds, api);
     return { api, ownId };
 }
@@ -170,6 +173,7 @@ export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
     });
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
+    attachLoginSession(ownId, api);
     return { api, ownId };
 }
 

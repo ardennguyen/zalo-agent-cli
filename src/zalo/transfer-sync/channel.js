@@ -20,8 +20,7 @@
  * Nothing here knows about decryption or the database: it only moves frames. The socket is reached through
  * `getListener()` so a reconnect that replaces the listener is followed.
  */
-import { readFileSync } from "node:fs";
-import { writeFileAtomic } from "../kernel/atomic-file.js";
+import { plainCodec } from "../kernel/secret-file.js";
 import { nextReqId as sharedNextReqId } from "../req-id.js";
 import { DISPOSE_REASON } from "./transfer.js";
 
@@ -94,16 +93,19 @@ export function readAck(buf, decode) {
 }
 
 /**
- * A small file of the sessions this client has open on the phone.
+ * A small file of the sessions this client has open on the phone. A session id is what the phone answers to, so the
+ * file goes through a secret-file codec (./kernel/secret-file.js) when the caller hands one, with `meta` for it.
  *
  * @param {string} file
+ * @param {{codec?: {read: Function, write: Function}, meta?: object}} [opts]
  * @returns {{load: () => Array<{syncId: string, toDevice: number}>, save: (sessions: Array<object>) => boolean}}
  */
-export function createSessionStore(file) {
+export function createSessionStore(file, { codec = plainCodec, meta = {} } = {}) {
+    const fileMeta = { kind: "transfer-sync-sessions", use: "data", ...meta };
     return {
         load() {
             try {
-                const list = JSON.parse(readFileSync(file, "utf8"));
+                const list = JSON.parse(codec.read(file, fileMeta) ?? "[]");
                 return (Array.isArray(list) ? list : []).filter((s) => typeof s?.syncId === "string" && s.syncId);
             } catch {
                 return [];
@@ -111,7 +113,7 @@ export function createSessionStore(file) {
         },
         save(sessions) {
             try {
-                writeFileAtomic(file, JSON.stringify(sessions), { mode: 0o600 });
+                codec.write(file, JSON.stringify(sessions), fileMeta);
                 return true;
             } catch {
                 return false;

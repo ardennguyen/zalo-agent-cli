@@ -31,6 +31,11 @@ def events_of(body: dict) -> list:
 
 
 def handle(event: dict) -> None:
+    if event.get("event") == "approval_requested":
+        # approval.deliver "webhook": show event["wouldDo"] and a button opening event["secureUrl"] to a signed-in
+        # person before event["expiresAt"]; the agent then repeats its call with the ticket its tool result carried.
+        print("approval", event.get("kind"), event.get("action"), event.get("expiresAt"))
+        return
     print("message", event.get("msgId"), event.get("threadId"))
 
 

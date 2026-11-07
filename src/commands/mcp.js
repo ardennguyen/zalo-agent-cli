@@ -44,7 +44,9 @@ import { createReadStateSync } from "../core/read-state.js";
 import { attachLastOnline } from "../core/last-online.js";
 import { attachControlEvents } from "../core/control-events.js";
 import { attachHiddenChatControls, hiddenChatsFor, hiddenEventView } from "../core/hidden-chats.js";
-import { resolveHiddenChats, resolvePinPage } from "../core/deploy-policy.js";
+import { resolveApproval, resolveHiddenChats, resolvePinPage } from "../core/deploy-policy.js";
+import { approverStatus } from "../core/approval.js";
+import { resolveConfirmMode } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
 import { readControls } from "../zalo/queues/control-queue.js";
 import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
@@ -80,6 +82,7 @@ import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
 import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 import { registerMCPWebhookCommands } from "./mcp-webhook.js";
+import { registerMCPApproverCommand } from "./mcp-approver.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
@@ -215,6 +218,45 @@ export async function postMCPWebhook(webhookUrl, message, extra = {}, fetchFn = 
         console.error(`[mcp] Webhook failed: ${e.message}`);
         return false;
     }
+}
+
+/**
+ * The start-up warnings about how one-time pages reach a person (src/core/approval.js): a webhook delivery with no
+ * webhook, and, under confirmMode "human", an approve link that reaches the agent and asks only for a click (an agent
+ * that can open a link could approve its own action). Printed once, at start-up.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - the MCP config
+ * @param {string} opts.accountId
+ * @param {string|null} opts.accountDir
+ * @param {boolean} opts.hasWebhook
+ * @param {NodeJS.ProcessEnv} [opts.env]
+ * @param {(line: string) => void} [opts.log]
+ * @returns {string[]} the lines printed
+ */
+export function warnApprovalPolicy({ config, accountId, accountDir, hasWebhook, env = process.env, log }) {
+    const approval = resolveApproval({ config, env, accountId });
+    const lines = [];
+    if (approval.deliver !== "result" && !hasWebhook) {
+        lines.push(
+            `approval.deliver is "${approval.deliver}" (${approval.deliverSource}) but no webhook is set: ` +
+                (approval.deliver === "webhook"
+                    ? "every approve and PIN page will be refused until one is."
+                    : "links go in the tool result only."),
+        );
+    }
+    const { mode } = resolveConfirmMode({ config, env, accountId });
+    const linkReachesAgent = approval.deliver !== "webhook";
+    const clickOnly = approval.secret === "none" || (approval.secret === "auto" && !approverStatus(accountDir).set);
+    if (mode === "human" && linkReachesAgent && clickOnly) {
+        lines.push(
+            'confirmMode is "human" and approve links reach the agent with no approver secret: an agent that can ' +
+                "open a link could approve its own action. Set an approver password (`zalo-agent mcp approver set`), " +
+                'or approval.secret "pin", or approval.deliver "webhook".',
+        );
+    }
+    for (const line of lines) (log ?? ((l) => console.error(`[mcp] WARNING: ${l}`)))(line);
+    return lines;
 }
 
 /**
@@ -783,6 +825,18 @@ export function registerMCPCommands(program) {
                 );
             }
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
+            // approval.deliver "webhook"/"both": a one-time page's link goes to the webhook as an `approval_requested`
+            // event, signed and queued like the others, for a CRM's approval UI to show a person
+            // (src/core/secure-page.js). No dedupe key: each request is its own event.
+            securePage.configure({
+                notify: webhookDelivery ? (payload) => webhookDelivery.enqueue(null, payload) : null,
+            });
+            warnApprovalPolicy({
+                config,
+                accountId: activeAcc.ownId,
+                accountDir,
+                hasWebhook: Boolean(webhookDelivery),
+            });
             /**
              * Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent; a message in a
              * hidden chat goes as the policy says: not at all, or as `{event, hidden: true}` with no ids or content.
@@ -1439,4 +1493,5 @@ export function registerMCPCommands(program) {
         });
 
     registerMCPWebhookCommands(mcp, program);
+    registerMCPApproverCommand(mcp, program);
 }

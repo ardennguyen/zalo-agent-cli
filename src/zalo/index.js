@@ -69,3 +69,4 @@ export * as queueVerify from "./queues/queue-verify.js";
 
 // ── files several processes share ──────────────────────────────────────────
 export { withFileLock, writeFileAtomic } from "./kernel/atomic-file.js";
+export { plainCodec, secretFileCodec, setSecretFileCodec } from "./kernel/secret-file.js";

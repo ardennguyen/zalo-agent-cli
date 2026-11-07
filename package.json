@@ -74,6 +74,26 @@
         "eslint": "^10.0.3",
         "prettier": "^3.8.1"
     },
+    "peerDependencies": {
+        "@aws-sdk/client-kms": "^3.0.0",
+        "@azure/identity": ">=4.0.0",
+        "@azure/keyvault-keys": ">=4.0.0",
+        "@google-cloud/kms": ">=4.0.0"
+    },
+    "peerDependenciesMeta": {
+        "@aws-sdk/client-kms": {
+            "optional": true
+        },
+        "@azure/identity": {
+            "optional": true
+        },
+        "@azure/keyvault-keys": {
+            "optional": true
+        },
+        "@google-cloud/kms": {
+            "optional": true
+        }
+    },
     "allowScripts": {
         "better-sqlite3@13.0.3": true
     }

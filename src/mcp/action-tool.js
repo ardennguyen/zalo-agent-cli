@@ -57,9 +57,9 @@ export const ticketInput = () =>
         .max(64)
         .optional()
         .describe(
-            "Only when a reply asked for it (confirmationRequired or pinRequired with a secureUrl): the ticket " +
-                "from that reply, once the account owner completed the page. Repeat the same call with it; it " +
-                "works once",
+            "Only when a reply asked for it (confirmationRequired or pinRequired, with a secureUrl or " +
+                "approvalPending): the ticket from that reply, once the account owner completed the page. Repeat " +
+                "the same call with it; it works once",
         );
 
 /**

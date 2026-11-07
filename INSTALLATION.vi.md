@@ -209,7 +209,7 @@ curl http://localhost:3847/health
 
 > Việc bind ra `0.0.0.0` mà không đặt `--auth` sẽ phơi bày toàn bộ phiên Zalo của bạn cho bất kỳ ai kết nối được tới cổng đó. Luôn đặt `--auth` khi triển khai từ xa.
 
-Hướng dẫn vận hành máy chủ thực tế (systemd unit, khởi động lại, giám sát, sao lưu, bảo mật) xem tại [docs/deployment.vi.md](docs/deployment.vi.md) / [English](docs/deployment.md).
+Hướng dẫn vận hành máy chủ thực tế (systemd unit, khởi động lại, giám sát, sao lưu, bảo mật) xem tại [docs/deployment.vi.md](docs/deployment.vi.md) / [English](docs/deployment.md). Từ 3.0.0, phiên đăng nhập đã lưu được mã hóa trên đĩa; trên server Linux không có desktop keyring, hãy chọn bộ cung cấp khóa trước (systemd-creds, KMS hoặc file passphrase): xem [docs/security.vi.md](docs/security.vi.md).
 
 ### Chạy nhiều tài khoản live đồng thời (MCP & CLI)
 
@@ -353,7 +353,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 237 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 242 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |

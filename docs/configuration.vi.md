@@ -26,6 +26,7 @@ Bí mật đặt trong `.env` (quyền `0600`), không đặt trong `mcp-config.
 | `mcp start --config <path>` | máy chủ đó | cấu hình thứ hai cho một dịch vụ. Phải tồn tại và là JSON hợp lệ, nếu không máy chủ **từ chối khởi động** (thiếu tệp sẽ có nghĩa "theo dõi mọi thread"). Nó thay thế tệp nền và tệp theo tài khoản bên dưới |
 | khối `accounts.<ownId>` trong `mcp-config.json` | máy chủ của tài khoản đó | ghi đè theo tài khoản trong một tệp: [`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json) |
 | `<accountDir>/mcp-config.json` — `~/.zalo-agent-cli/accounts/<ownId>/` | máy chủ của tài khoản đó | tệp theo tài khoản; bị từ chối khi khởi động nếu có mà không đọc được |
+| `<CONFIG_DIR>/storage.json` | mọi lệnh đọc hay ghi phiên đăng nhập đã lưu | bộ cung cấp khóa và lớp dkey bảo vệ các file đã lưu ([security.vi.md](security.vi.md)); không chứa bí mật |
 
 ### Thứ tự ưu tiên
 
@@ -72,6 +73,8 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_HIDDEN_CHATS` | có | MCP server cho thấy gì về các cuộc trò chuyện ẩn: `exclude` (mặc định: bỏ khỏi mọi danh sách, tìm kiếm, lịch sử và sự kiện), `contentless` (bỏ khỏi danh sách; sự kiện trong đó chỉ đến dưới dạng `{event, hidden: true}`, không có thread id hay nội dung) hoặc `include` (hiện như mọi cuộc khác: giao chúng cho agent) | | `hiddenChats` |
 | `ZALO_MCP_ALLOW_PIN_ARGUMENT` | có | `true` cho phép các tool trò chuyện ẩn nhận mã PIN qua input `pin`. Mặc định `false`: input bị ghi vào log của MCP client và ngữ cảnh của mô hình. Chỉ dành cho client không phải AI | | `allowPinArgument` |
 | `ZALO_MCP_PIN_PAGE_URL` | có | địa chỉ công khai của trang nhập bảo mật dùng một lần (`https://zalo.example.com`) khi server đứng sau reverse proxy hoặc TLS; không đặt thì link là địa chỉ của chính server | | `pinPage.publicBaseUrl` |
+| `ZALO_MCP_APPROVAL_SECRET` | có | trang duyệt (`confirmMode: "human"`) hỏi thêm gì ngoài một cú bấm, để một agent mở được link cũng không tự duyệt được hành động của chính nó: `pin` (mã PIN trò chuyện ẩn, có khóa tạm khi sai), `password` (mật khẩu người duyệt đặt bằng `zalo-agent mcp approver set`, chỉ lưu dạng băm scrypt có salt), `none` (bấm là duyệt: yếu hơn) hoặc `auto` (mặc định: mật khẩu người duyệt khi đã đặt và link đi qua agent, nếu không thì không hỏi gì và kết quả ghi `approverSecret: false`) | | `approval.secret` |
+| `ZALO_MCP_APPROVAL_DELIVER` | có | link của trang duyệt hoặc trang PIN được gửi đi đâu: `result` (mặc định: trong kết quả của tool), `webhook` (chỉ gửi tới webhook MCP, dạng sự kiện `approval_requested`; kết quả của tool không có link) hoặc `both` | | `approval.deliver` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | đã lỗi thời: `0` nghĩa là chế độ `off`, `1` là `agent`; chế độ xác nhận đặt rõ được ưu tiên | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | số tên DM không phải bạn bè mà một lần restore được tra. Mặc định 500 | | |
 | `ZALO_START_JITTER` | có | chờ một khoảng ngẫu nhiên tối đa chừng này giây (0–600, mặc định 0) trước khi đăng nhập, để một đội daemon khởi động lại cùng lúc không đăng nhập cùng lúc | | |
@@ -83,6 +86,9 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_API_VERSION` |  | phiên bản giao thức báo cho Zalo. Mặc định 695 | | |
 | `ZALO_QR_FLOW` |  | cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự Zalo Web, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng qua `jr.zaloapp.com` và `jr.chat.zalo.me`, kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm), là cách đăng nhập QR duy nhất. `legacy` đã bị bỏ ở 3.0.0; nó và mọi giá trị khác bị từ chối trước khi liên hệ Zalo | | |
 | `ZALO_NET_PROBE` |  | thứ daemon hỏi để biết mạng còn hoạt động hay không khi socket đang đứt (mỗi 10 giây): một URL, mặc định là một trang nhẹ của công cụ tìm kiếm toàn cầu, hoặc `off` để coi như mạng luôn hoạt động và không liên hệ nơi nào ngoài Zalo | | |
+| `ZALO_STORAGE_PROVIDER` |  | bộ cung cấp khóa bảo vệ các file đã lưu trên đĩa: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Mặc định theo nền tảng; server Linux không có desktop keyring phải đặt. Xem [security.vi.md](security.vi.md) | | |
+| `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: khóa thêm mọi thứ không cần cho việc đăng nhập bằng `dkey` của lần đăng nhập. Mặc định tắt | | |
+| `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | tùy chọn của bộ cung cấp khóa đã chọn (`ZALO_STORAGE_KEY`: khóa của bộ `env`, yếu theo thiết kế) | | |
 
 `oa listen` lấy port từ `--port` (mặc định 3000). Engine không đọc `ZALO_OA_WEBHOOK_PORT`, dù các bản cũ của `.env.example` trong wrapper có ghi biến này.
 
@@ -109,6 +115,8 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `hiddenChats` | chưa đặt (= `exclude`) | `exclude`, `contentless` hoặc `include`: agent thấy gì về trò chuyện ẩn (xem biến ở trên) |
 | `allowPinArgument` | chưa đặt (= `false`) | `true` cho các tool trò chuyện ẩn nhận PIN qua input; khi đó PIN nằm trong log của client |
 | `pinPage.publicBaseUrl` | `null` | địa chỉ trình duyệt dùng để mở trang nhập bảo mật của server (`/zalo/secure/<token>`) qua proxy |
+| `approval.secret` | không đặt (= `auto`) | `auto`, `pin`, `password` hoặc `none`: trang duyệt hỏi thêm gì ngoài một cú bấm (xem biến ở trên) |
+| `approval.deliver` | không đặt (= `result`) | `result`, `webhook` hoặc `both`: link của trang dùng một lần được gửi đi đâu |
 | `groupConfirm` | | đã lỗi thời: `false` nghĩa là `confirmMode: "off"` khi chưa đặt chế độ xác nhận |
 | `accounts.<ownId>` | | bất kỳ khóa nào ở trên, cho một tài khoản |
 
@@ -182,6 +190,8 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 **Bắt kịp.** Sau thời gian ngừng, hỏi những gì đã lỡ: `zalo_get_history` theo từng thread, hoặc `zalo-agent sync --from <date>` (có thể yêu cầu chủ tài khoản xác nhận trên điện thoại).
 
 **Trò chuyện ẩn và trang nhập bảo mật.** Các cuộc trò chuyện ẩn của tài khoản bị bỏ khỏi mọi thứ CRM đọc (`hiddenChats: "exclude"`); `contentless` gửi sự kiện webhook `{event: "message", hidden: true, accountId}` không có thread id hay nội dung, như chấm chưa đọc mà Zalo Web hiện. Mọi thứ một người phải gõ hoặc duyệt (mã PIN trò chuyện ẩn, một lần duyệt của `confirmMode: "human"`) là một trang dùng một lần trên chính port của server, `/zalo/secure/<token>`: kết quả của tool có `secureUrl`, `ticketExpiresAt` (5 phút) và `retryWith.ticket`; CRM hiện link cho chủ tài khoản và gọi lại với `ticket` khi họ làm xong. Cho `/zalo/secure/` đi qua cùng proxy với `/mcp` và đặt `pinPage.publicBaseUrl` là địa chỉ công khai của nó. Trang không cần bearer token (token của nó là chìa khóa), gửi `Cache-Control: no-store`, không tải gì từ nơi khác, và token bị che trong log request. Xem [`docs/deployment.vi.md`](deployment.vi.md) §5.5.
+
+**Duyệt ngay trong giao diện của CRM.** Với `approval.deliver: "webhook"` link không bao giờ đi qua agent: server POST `{event: "approval_requested", accountId, kind, action, wouldDo, target, secureUrl, expiresAt, approverSecret}` tới webhook (xếp hàng và ký như sự kiện tin nhắn), CRM hiện `wouldDo` và link cho một người, còn kết quả của tool chỉ có `{confirmationRequired hoặc pinRequired: true, approvalPending: true, ticket, ticketExpiresAt, deliveredTo: "webhook"}`. CRM gọi lại với `ticket` đó khi người kia làm xong; ticket không phải token của trang, nên không gì trong kết quả mở được trang. Khi link buộc phải đi qua agent, hãy đặt mật khẩu người duyệt (`zalo-agent mcp approver set`) hoặc `approval.secret: "pin"`, để trang hỏi điều chỉ người đó biết.
 
 ### 3.6 Nhiều tài khoản
 

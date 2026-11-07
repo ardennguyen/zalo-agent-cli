@@ -75,6 +75,7 @@ import {
     STALL_IDLE_MS,
 } from "../../zalo/transfer-sync/transfer.js";
 import { attachLiveStore } from "../live-store.js";
+import { codecForDir } from "../keystore/index.js";
 
 /**
  * Lower bound of a "full history" sync: the beginning of time.
@@ -692,7 +693,10 @@ export class SyncV2 {
         const channel = createSyncChannel({
             getListener: () => L,
             decode: (parsed) => decodeFrame(parsed, L.cipherKey),
-            store: createSessionStore(resolve(this.accountDir, "sync", "open-sessions.json")),
+            // The phone's session ids, sealed under the account's data key (src/core/keystore/).
+            store: createSessionStore(resolve(this.accountDir, "sync", "open-sessions.json"), {
+                codec: codecForDir(this.accountDir),
+            }),
             log,
         });
         // A batch is fetched the moment the phone announces it, two at a time (Y3), not when its turn to be

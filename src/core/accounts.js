@@ -18,6 +18,7 @@ import { readFileSync, existsSync, mkdirSync, rmSync, renameSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR, getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
+import { prepareAccountForget } from "./keystore/index.js";
 import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 function accountsFile() {
@@ -278,10 +279,13 @@ export function removeAccount(ownId) {
     const accounts = load();
     if (!accounts.some((a) => a.ownId === ownId)) return { removed: false };
 
+    // A provider's item outside the folder (a keychain entry) goes with the account; read the keyring before the wipe.
+    const forgetKeys = prepareAccountForget(ownId);
     const { wiped, skippedLocked } = wipeAccountDir(ownId);
     if (skippedLocked) {
         return { removed: false, skippedLocked };
     }
+    if (wiped) forgetKeys();
 
     mutate((current) => {
         const filtered = current.filter((a) => a.ownId !== ownId);

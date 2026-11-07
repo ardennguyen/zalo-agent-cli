@@ -9,11 +9,11 @@
  *
  * A long message can arrive in pieces: `has_more` says another piece follows, and the pieces are joined in the order
  * they come. The file holds the text of voice messages, like the message cache does, at 0600 and in the account
- * folder; it keeps the last {@link MAX_ITEMS} requests and nothing else (not the voice file's address).
+ * folder, sealed under the account's data key (src/core/keystore/); it keeps the last {@link MAX_ITEMS} requests and
+ * nothing else (not the voice file's address).
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import { dirname, join } from "node:path";
+import { openFile, scopeOfDir, sealFile } from "./keystore/index.js";
 import { readControls } from "../zalo/queues/control-queue.js";
 
 /** The control push that carries it. */
@@ -34,17 +34,23 @@ export function voiceTextFile(accountDir) {
     return join(accountDir, "voice-text.json");
 }
 
+const SPEC = { kind: "voice-text", use: "data" };
+
 /**
  * The saved transcripts: `{reqId: {at, err, text, done}}`, empty when there is no usable file.
  *
  * @param {string} file
  * @returns {Record<string, {at: number, err: number, text: string, done: boolean}>}
+ * @throws {Error} a KeystoreError when the file is there but its key is not (locked, no provider): "no transcript"
+ *   would be the wrong answer
  */
 export function loadTranscripts(file) {
     try {
-        const items = JSON.parse(readFileSync(file, "utf8"))?.items;
+        const bytes = openFile(file, scopeOfDir(dirname(file)), SPEC);
+        const items = bytes === null ? null : JSON.parse(bytes.toString("utf8"))?.items;
         return items && typeof items === "object" && !Array.isArray(items) ? { ...items } : {};
-    } catch {
+    } catch (e) {
+        if (e?.name === "KeystoreError") throw e;
         return {};
     }
 }
@@ -76,11 +82,21 @@ export function readTranscript(file, reqId) {
  *   frame it recorded
  */
 export function createVoiceText({ file, now = Date.now, log = () => {} }) {
-    const items = loadTranscripts(file);
+    let items = {};
+    // A file this process cannot open (its key is locked) is never overwritten: the recorder then keeps its answers in
+    // memory only.
+    let writable = true;
+    try {
+        items = loadTranscripts(file);
+    } catch (e) {
+        writable = false;
+        log(`voice transcripts are not kept on disk: ${e.message}`);
+    }
 
     function save() {
+        if (!writable) return;
         try {
-            writeFileAtomic(file, JSON.stringify({ items }), { mode: 0o600 });
+            sealFile(file, scopeOfDir(dirname(file)), SPEC, JSON.stringify({ items }));
         } catch {
             /* the file is a convenience: failing to write it must not disturb the socket */
         }

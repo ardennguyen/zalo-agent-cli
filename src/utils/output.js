@@ -23,6 +23,7 @@
  */
 
 import chalk from "chalk";
+import { commandPath, emptyListReply } from "./list-replies.js";
 
 /**
  * True when stdout is reserved for machine-readable output.
@@ -37,6 +38,8 @@ function machineMode() {
  * ({@link setReplyContext}): what a reply that Zalo left empty says was done.
  */
 let replyContext = {};
+/** The running command's empty list value when it is a list command (src/utils/list-replies.js), else undefined. */
+let emptyList;
 
 /**
  * Record the running command's arguments, for {@link output} to name when Zalo's answer is empty.
@@ -46,6 +49,7 @@ let replyContext = {};
  */
 export function setReplyContext(command) {
     replyContext = {};
+    emptyList = command ? emptyListReply(commandPath(command)) : undefined;
     const names = command?.registeredArguments ?? [];
     names.forEach((arg, i) => {
         const value = command.processedArgs?.[i];
@@ -65,10 +69,22 @@ export function setReplyContext(command) {
  * `{"success": true, ...the command's arguments}` (the shape the MCP actions reply with), and any other bare
  * value is kept under `result`. An object or an array is printed unchanged.
  *
+ * A list command (`conv archived`, `friend list`, ...; src/utils/list-replies.js) prints its natural empty value
+ * instead -- `[]`, or its documented object with empty lists -- for an empty answer, `{}` included: a caller reading a
+ * list cannot use `{"success": true}`.
+ *
  * @param {unknown} data
  * @returns {object|Array}
  */
 export function jsonReply(data) {
+    if (emptyList !== undefined) {
+        const blank =
+            data === undefined ||
+            data === null ||
+            data === "" ||
+            (typeof data === "object" && !Array.isArray(data) && Object.keys(data).length === 0);
+        if (blank) return structuredClone(emptyList);
+    }
     if (data !== null && typeof data === "object") return data;
     if (data === undefined || data === null || data === "") return { success: true, ...replyContext };
     return { success: true, ...replyContext, result: data };

@@ -10,6 +10,9 @@ import { getApi } from "../core/zalo-client.js";
 import { callRead, describeReads, READS, ReadUsageError } from "../zalo/reads.js";
 import "../core/local-reads.js";
 import { error, info, output } from "../utils/output.js";
+import { getActive } from "../core/accounts.js";
+import { readThreadIds } from "../core/hidden-chats.js";
+import { addHiddenOptions, hiddenAccess, PIN_REQUIRED_EXIT_CODE } from "../utils/hidden-access.js";
 
 /**
  * Turn what a person typed into the arguments of a read or a write: `--args` as JSON, then each `--arg key=value`
@@ -124,20 +127,43 @@ export function registerReadCommands(program) {
     // The table is local: listing it needs no session.
     list.zaloLocalOnly = true;
 
-    read.command("run <name>")
-        .description('Ask Zalo one read and print the answer (arguments: --args \'{"id":"123"}\' or --arg id=123)')
-        .option("--args <json>", "Arguments as a JSON object")
-        .option("-a, --arg <key=value>", "One argument; repeatable. Typed by what the read declares", collect, [])
-        .action(async (name, opts) => {
-            try {
-                const args = argsFromOptions(name, opts);
-                const result = await callRead(getApi(), name, args);
-                output(result ?? null, program.opts().json);
-            } catch (e) {
-                error(e instanceof ReadUsageError ? e.message : `${name} failed: ${e.message}`);
-                process.exit(1);
+    addHiddenOptions(
+        read
+            .command("run <name>")
+            .description(
+                'Ask Zalo one read and print the answer (arguments: --args \'{"id":"123"}\' or --arg id=123); a read ' +
+                    "naming a hidden chat is refused unless --include-hidden",
+            )
+            .option("--args <json>", "Arguments as a JSON object")
+            .option("-a, --arg <key=value>", "One argument; repeatable. Typed by what the read declares", collect, []),
+    ).action(async (name, opts) => {
+        const json = program.opts().json;
+        try {
+            const args = argsFromOptions(name, opts);
+            // A read about one conversation names it in its args; a hidden one is refused as `msg history` does,
+            // unless --include-hidden and the PIN (zalo_read refuses it the same way).
+            const named = readThreadIds(args);
+            const active = getActive();
+            if (named.length && active) {
+                const hidden = await hiddenAccess(opts, { ownId: active.ownId, api: getApi(), json });
+                const hit = hidden.mode === "include" ? undefined : named.find((id) => hidden.set.isHidden(id));
+                if (hit !== undefined) {
+                    const why =
+                        `Not read: ${hit} is one of the account's hidden chats. Run again with --include-hidden ` +
+                        "and type the PIN at the prompt (or --pin-stdin).";
+                    if (json) {
+                        console.log(JSON.stringify({ error: why, hidden: true, pinRequired: true }, null, 2));
+                    } else error(why);
+                    process.exit(PIN_REQUIRED_EXIT_CODE);
+                }
             }
-        });
+            const result = await callRead(getApi(), name, args);
+            output(result ?? null, program.opts().json);
+        } catch (e) {
+            error(e instanceof ReadUsageError ? e.message : `${name} failed: ${e.message}`);
+            process.exit(1);
+        }
+    });
 }
 
 /** commander: gather a repeatable option into an array. */

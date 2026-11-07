@@ -209,7 +209,7 @@ curl http://localhost:3847/health
 
 > Binding to `0.0.0.0` without `--auth` exposes your Zalo session to anyone who can reach the port. Always set `--auth` for remote deployments.
 
-Running it unattended on a production host (systemd unit, restarts, monitoring, backup, security) is covered in [docs/deployment.md](docs/deployment.md).
+Running it unattended on a production host (systemd unit, restarts, monitoring, backup, security) is covered in [docs/deployment.md](docs/deployment.md). Since 3.0.0 the saved login is encrypted at rest; on a Linux server without a desktop keyring, choose a key provider first (systemd-creds, a KMS or a passphrase file): see [docs/security.md](docs/security.md).
 
 ### Running multiple live accounts simultaneously (MCP & CLI)
 
@@ -354,7 +354,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 237 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 242 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |

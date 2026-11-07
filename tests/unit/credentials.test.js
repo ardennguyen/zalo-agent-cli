@@ -46,10 +46,12 @@ describe("saveCredentials / loadCredentials / deleteCredentials", () => {
         assert.deepEqual(loadCredentials(OWN_ID), CREDS);
     });
 
-    it("writes pretty-printed JSON (readable for `account export` diffing)", () => {
+    it("writes the login sealed: the file carries no imei and no cookie (src/core/keystore/)", () => {
         saveCredentials(OWN_ID, CREDS);
-        const text = readFileSync(join(CREDENTIALS_DIR, `cred_${OWN_ID}.json`), "utf-8");
-        assert.match(text, /\n {2}"imei"/);
+        const bytes = readFileSync(join(CREDENTIALS_DIR, `cred_${OWN_ID}.json`));
+        assert.ok(bytes.subarray(0, 7).equals(Buffer.from("ZACSEAL")));
+        assert.ok(!bytes.includes(Buffer.from(CREDS.imei)));
+        assert.deepEqual(loadCredentials(OWN_ID), CREDS);
     });
 
     it("overwrites an existing credential rather than appending", () => {

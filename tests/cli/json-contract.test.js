@@ -18,7 +18,10 @@
  *   3. success exits 0 with no top-level "error" key; a failure prints {"error": ...} with "error" as the FIRST
  *      key and exits non-zero (1, or 2 for a confirmation refusal);
  *   4. with plausible replies (normal mode) every command succeeds, except the FAILS_OFFLINE few, which fail
- *      in rule 3's shape.
+ *      in rule 3's shape;
+ *   5. in the empty modes a list command (named list, ls, recent, pinned, archived, muted, hidden, members, blocked,
+ *      pending, sent-requests, ...) never answers `{"success": true}`: it prints its natural empty value, and a
+ *      command in src/utils/list-replies.js prints exactly the value listed there.
  * In the empty modes a command may fail (it found nothing to act on), but only in the shape rule 3 gives.
  *
  * Speed: one spawned CLI costs ~1.4 s of module loading on Windows, so each walk runs in one worker process that
@@ -40,6 +43,7 @@ import { initDb, insertMessage, upsertThread } from "../../src/core/db.js";
 import { PINNED_MESSAGE_TOPIC } from "../../src/zalo/custom/pin.js";
 import { runCli } from "../helpers/cli.js";
 import { EMPTY_MODES, FAKE_GROUP_ID, FAKE_OWN_ID, FAKE_PEER_ID } from "../helpers/fake-api.js";
+import { LIST_COMMANDS, emptyListReply } from "../../src/utils/list-replies.js";
 
 const ROOT = resolve(import.meta.dirname, "..", "..");
 const FAKE_API = join(ROOT, "tests", "helpers", "fake-api.js");
@@ -162,6 +166,8 @@ const argvTable = () => ({
     "conv forget": [FORGET_THREAD],
     "account remove": [SPARE_ACCOUNT],
     "account export": ["--output", join(files.dir, "exported-creds.json")],
+    // The sandbox's own provider: re-wraps the fake account's keyring offline, and every later case still opens it.
+    "account security provider": ["test"],
     "profile bio": ["fake bio"],
     "profile update": ["--name", "Fake Name"],
     "profile set": ["online-status", "1"],
@@ -190,6 +196,7 @@ const argvTable = () => ({
     "sync-reactions": ["--wait", "1", "--pages", "1"],
     "cloud get": [],
     "cloud plan": [],
+    "mcp approver": ["status"],
 });
 
 /**
@@ -197,6 +204,8 @@ const argvTable = () => ({
  * that reads a particular answer before it acts. Applied in every mode: the empty modes empty the rest.
  */
 const repliesTable = () => ({
+    // No hidden-chat PIN set: with one, `conv hidden` asks for it even when nothing is hidden (exit 2 here).
+    "conv hidden": { getHiddenConversations: { threads: [], pin: "" } },
     // The conversation's pin list holds the message, so there is a pin to take off.
     "msg unpin": {
         getFriendBoardList: {
@@ -314,6 +323,42 @@ export function violations(r, mode, expectFailure = false) {
     return out;
 }
 
+/** A command whose reply is a list, by its name (the last word of its path). */
+const LIST_NAME =
+    /^(list|ls|recent|pinned|archived|muted|hidden|members|members-info|blocked|pending|sent-requests|[\w-]+-list|recommendations|common-groups|avatars|products|accounts|responses|invite-boxes|online|close|find-phones|devices)$/;
+
+/**
+ * Rule 5: what a list command printed for an empty answer, or [] when it holds.
+ *
+ * @param {string} id - the command path
+ * @param {{code:number|null, stdout:string}} r
+ * @param {string} mode
+ * @returns {string[]}
+ */
+export function listViolations(id, r, mode) {
+    if (mode === "normal") return [];
+    const listed = LIST_COMMANDS.includes(id);
+    if (!listed && !LIST_NAME.test(id.split(" ").pop())) return [];
+    let value;
+    try {
+        value = JSON.parse(r.stdout.trim());
+    } catch {
+        return []; // rule 1 reports it
+    }
+    if (value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "error")) return [];
+    if (value && typeof value === "object" && !Array.isArray(value) && value.success === true) {
+        return ['a list command answered {"success": true} instead of an empty list'];
+    }
+    if (listed) {
+        try {
+            assert.deepEqual(value, emptyListReply(id));
+        } catch {
+            return [`empty reply ${JSON.stringify(value).slice(0, 120)} is not ${JSON.stringify(emptyListReply(id))}`];
+        }
+    }
+    return [];
+}
+
 /**
  * The registry and saved login every case starts from: the fake account active with credentials (`account
  * export` reads them), and a spare account for `account remove`. Re-run after each walk, whose `logout` and
@@ -388,6 +433,16 @@ describe("--json contract: every personal command against a fake session", { tim
         for (const x of Object.keys(EXCLUDED)) assert.ok(names.includes(x), `excluded command ${x} does not exist`);
         assert.ok(names.length >= 200, `only ${names.length} personal commands found`);
         assert.ok(Object.keys(EXCLUDED).length <= 12, "the exclusion list keeps growing: run them instead");
+        for (const x of LIST_COMMANDS) assert.ok(names.includes(x), `list-replies.js names ${x}, which does not exist`);
+    });
+
+    it("a list command's empty reply is never {success: true} (rule 5 itself)", () => {
+        const out = (v) => ({ code: 0, stdout: JSON.stringify(v) });
+        assert.equal(listViolations("conv archived", out({ success: true }), "null").length, 1);
+        assert.equal(listViolations("group pending", out(emptyListReply("group pending")), "null").length, 0);
+        assert.equal(listViolations("conv archived", out({}), "empty-object").length, 1, "{} is not {items: []}");
+        assert.equal(listViolations("friend online", out({ success: true }), "normal").length, 0, "normal mode");
+        assert.equal(listViolations("conv pin", out({ success: true }), "null").length, 0, "not a list command");
     });
 
     for (const [walk, mode] of ["normal", ...EMPTY_MODES].entries()) {
@@ -408,12 +463,13 @@ describe("--json contract: every personal command against a fake session", { tim
             const failures = [];
             for (const r of results) {
                 const expectFailure = Object.hasOwn(FAILS_OFFLINE, r.id);
-                if (!violations(r, mode, expectFailure).length) continue;
+                const check = (x) => [...violations(x, mode, expectFailure), ...listViolations(r.id, x, mode)];
+                if (!check(r).length) continue;
                 // Confirm in a real process before blaming the command.
                 const { argv, env } = cases.find((c) => c.id === r.id);
                 const real = await runReal(argv, mode, env);
                 seedAccounts();
-                const v = violations(real, mode, expectFailure);
+                const v = check(real);
                 if (v.length) failures.push(`${r.id} (exit ${real.code}): ${v.join("; ")}`);
             }
             assert.equal(

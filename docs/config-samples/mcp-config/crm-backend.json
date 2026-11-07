@@ -24,5 +24,9 @@
     "allowPinArgument": false,
     "pinPage": {
         "publicBaseUrl": "https://zalo.crm.example.com"
+    },
+    "approval": {
+        "secret": "auto",
+        "deliver": "webhook"
     }
 }

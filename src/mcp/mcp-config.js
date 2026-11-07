@@ -62,6 +62,14 @@ export function getDefaultConfig() {
         pinPage: {
             publicBaseUrl: null,
         },
+        // The one-time pages' delivery and the approve page's secret (src/core/approval.js). `secret`: "auto" (unset:
+        // the approver password when one is set and the link reaches the agent), "pin", "password" or "none";
+        // `deliver`: "result" (unset: the link is in the tool result), "webhook" (only to the webhook) or "both".
+        // Unset (null) means ZALO_MCP_APPROVAL_SECRET / ZALO_MCP_APPROVAL_DELIVER, else the defaults above.
+        approval: {
+            secret: null,
+            deliver: null,
+        },
         httpPort: null,
         host: null,
     };
@@ -83,6 +91,7 @@ export function mergeMCPConfigLayer(base, layer) {
         media: { ...base.media, ...(layer.media || {}) },
         tls: { ...base.tls, ...(layer.tls || {}) },
         pinPage: { ...base.pinPage, ...(layer.pinPage || {}) },
+        approval: { ...base.approval, ...(layer.approval || {}) },
         oauth: {
             ...base.oauth,
             ...(layer.oauth || {}),

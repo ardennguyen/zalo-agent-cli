@@ -92,7 +92,10 @@ import {
 } from "../core/group-admin.js";
 import { gateMcp, removedLabels } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
-import { hiddenChatsFor, hiddenEventView, withoutHidden } from "../core/hidden-chats.js";
+import { hiddenChatsFor, hiddenEventView, readThreadIds, withoutHidden } from "../core/hidden-chats.js";
+
+/** The conversation ids a raw read names (moved to src/core/hidden-chats.js; `read run` uses it too). */
+export { readThreadIds } from "../core/hidden-chats.js";
 import { resolveHiddenChats } from "../core/deploy-policy.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
@@ -427,31 +430,6 @@ function ok(result) {
 }
 
 /**
- * The conversation ids a `zalo_read` call names in its args (`uid`, `groupId`, `threadId`, `tId`, and the id lists
- * `group`/`oneone`/`items`/`data`), so a hidden conversation can be refused before Zalo is asked.
- *
- * @param {object|undefined} args
- * @returns {string[]}
- */
-export function readThreadIds(args) {
-    const out = [];
-    const take = (v) => {
-        if (v === undefined || v === null) return;
-        if (Array.isArray(v)) {
-            v.forEach(take);
-            return;
-        }
-        if (typeof v === "object") {
-            for (const k of ["tId", "threadId", "id", "uid", "groupId", "toid"]) take(v[k]);
-            return;
-        }
-        out.push(String(v));
-    };
-    for (const k of ["uid", "groupId", "threadId", "tId", "group", "oneone", "items", "data", "toid"]) take(args?.[k]);
-    return out;
-}
-
-/**
  * Wrap an error message into MCP tool error content format.
  * @param {string} message
  * @returns {{ content: Array, isError: true }}
@@ -596,12 +574,14 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             confirm,
             dryRun,
             ticket,
-            ticket,
             config,
             accountId: ownIdOf(api),
             server,
             extra,
             stateless: server?.statelessHttp === true,
+            // approval.secret: the approver password lives in the account folder, the PIN's hash in the hidden set.
+            accountDir: accountDir ?? null,
+            hidden: () => hiddenSet(),
             ...more,
         });
 
@@ -640,6 +620,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         server,
         stateless: server?.statelessHttp === true,
         hidden: () => hiddenSet(),
+        hiddenMode: () => hiddenMode(),
         securePage: () => getSecurePage(),
         threadName: (id) => nameCache?.get?.(String(id))?.name ?? null,
     };

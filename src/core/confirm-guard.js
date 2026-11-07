@@ -13,10 +13,14 @@
  *   depends on the deployment's confirm mode (resolveConfirmMode): `agent` (the caller's confirm: true is
  *   enough), `human` (the server asks the person through MCP form elicitation, or else on a one-time approve page,
  *   src/core/secure-page.js, whose `ticket` the repeated call carries; the caller cannot answer for them), or `off`
- *   (no question). `zalo_write` runs raw endpoints and is guarded even when the mode is `off`.
+ *   (no question). `zalo_write` runs raw endpoints and is guarded even when the mode is `off`. Where the approve page's
+ *   link goes and what it asks besides a click are the deployment's `approval.deliver` and `approval.secret`
+ *   (src/core/approval.js).
  */
 import { error, info } from "../utils/output.js";
 import { askOnSecurePage, getSecurePage } from "./secure-page.js";
+import { approverFor } from "./approval.js";
+import { resolveApproval } from "./deploy-policy.js";
 
 /** What an unconfirmed guarded CLI command exits with: distinct from a failure (1). */
 export const CONFIRM_EXIT_CODE = 2;
@@ -545,6 +549,8 @@ export const ELICIT_TIMEOUT_MS = 5 * 60_000;
  *   be answered in the call: the approve page is used (see STATELESS_HUMAN_NOTE)
  * @param {string} [call.ticket] - the caller's `ticket` from an approve page (human mode)
  * @param {import("./secure-page.js").SecurePage} [call.securePage] - the process's page (getSecurePage())
+ * @param {string|null} [call.accountDir] - the account folder, for the approver password (approval.secret)
+ * @param {() => import("./hidden-chats.js").HiddenChats} [call.hidden] - the hidden set, for approval.secret "pin"
  * @returns {Promise<object|null>}
  */
 export async function gateMcp(
@@ -563,6 +569,8 @@ export async function gateMcp(
         stateless = false,
         ticket,
         securePage,
+        accountDir = null,
+        hidden = null,
     } = {},
 ) {
     if (dryRun === true) {
@@ -592,6 +600,7 @@ export async function gateMcp(
     const elicitation = asker?.getClientCapabilities?.()?.elicitation;
     if (!elicitation?.form) {
         // No form question possible here (stateless HTTP, or a client without form elicitation): the approve page.
+        const approval = resolveApproval({ config, env, accountId });
         let asked;
         try {
             asked = await askOnSecurePage({
@@ -609,6 +618,9 @@ export async function gateMcp(
                     description: `${d.action} would ${sentence(d)}.`,
                 },
                 retryWith: {},
+                deliver: approval.deliver,
+                approver: (throughAgent) => approverFor({ mode: approval.secret, throughAgent, accountDir, hidden }),
+                about: { action: d.action, wouldDo: d.wouldDo, target },
             });
         } catch (e) {
             const why = `Not done: the approve page could not be opened (${e.message}), so nothing was sent: ${d.wouldDo}.`;
@@ -620,9 +632,13 @@ export async function gateMcp(
             const why = `Not done: ${used.message} Nothing was sent: ${d.wouldDo}.`;
             return mcpError({ error: why, declined: true, confirmMode: "human", ...d }, why);
         }
+        if (asked.error) {
+            const why = `Not done: ${asked.error} Nothing was sent: ${d.wouldDo}.`;
+            return mcpError({ error: why, confirmMode: "human", ...d }, why);
+        }
         if (asked.declined) {
             const why =
-                `Not done: the user did not open the approve page (${asked.declined}), so nothing was sent: ` +
+                `Not done: the user did not complete the approve page (${asked.declined}), so nothing was sent: ` +
                 `${d.wouldDo}. Do not repeat the call unless the user asks for it again.`;
             return mcpError({ error: why, declined: true, confirmMode: "human", ...d }, why);
         }
@@ -632,10 +648,14 @@ export async function gateMcp(
             ...(stateless && { statelessTransport: true }),
             ...d,
         };
-        const line =
+        const asks =
             `Not done yet: confirmMode "human" asks the account owner before it would ${sentence(d)}` +
-            `${stateless ? `; ${STATELESS_HUMAN_NOTE}` : ""}. Give them this one-time link to approve: ` +
-            `${payload.secureUrl} (expires ${payload.ticketExpiresAt}), then repeat the call with ticket.`;
+            `${stateless ? `; ${STATELESS_HUMAN_NOTE}` : ""}.`;
+        const line = payload.secureUrl
+            ? `${asks} Give them this one-time link to approve: ${payload.secureUrl} (expires ` +
+              `${payload.ticketExpiresAt}), then repeat the call with ticket.`
+            : `${asks} The approve page went to the deployment's approval channel (webhook); once the owner ` +
+              `approves (before ${payload.ticketExpiresAt}), repeat the call with ticket.`;
         return mcpError(payload, line);
     }
     let answer;

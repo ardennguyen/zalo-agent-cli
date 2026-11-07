@@ -129,7 +129,9 @@ describe("the device identity store", () => {
         const store = createTrustStore(dirOf);
         store.save(record({ uid: "fake-uid-2" }));
         const file = join(dirOf("fake-uid-2"), TRUST_FILE);
-        assert.ok(readFileSync(file, "utf8").includes('"version":1'));
+        // Sealed by the key layer the CLI installs (src/core/keystore/), so the private key is not in the file's bytes.
+        assert.ok(readFileSync(file).subarray(0, 7).equals(Buffer.from("ZACSEAL")), "sealed at rest");
+        assert.equal(store.load("fake-uid-2").version, 1);
         if (process.platform !== "win32") assert.equal(statSync(file).mode & 0o077, 0, "no group or other access");
     });
 

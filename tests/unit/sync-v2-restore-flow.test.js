@@ -21,6 +21,7 @@ import {
     setSyncRangeStatus,
 } from "../../src/core/db.js";
 import { SyncV2 } from "../../src/core/sync-v2/index.js";
+import { isSealed, readSealedJson, scopeOfDir } from "../../src/core/keystore/index.js";
 import { FAKE, installQueuePulls, startFakeZalo } from "../helpers/fake-zalo/index.js";
 import { fakeCodecs, installFakePhone } from "../helpers/fake-zalo/phone.js";
 
@@ -154,7 +155,12 @@ describe("a restore against the fake phone", () => {
             new Set(phone.requests.map((r) => r.syncId)),
             "every session that was requested was released, once",
         );
-        assert.equal(JSON.parse(readFileSync(sessionsFile, "utf8")).length, 0, "no session is left written down");
+        // The file is sealed under the account's data key (src/core/keystore/): read it back through the key layer.
+        assert.ok(isSealed(readFileSync(sessionsFile)), "the phone's session ids are never written in the clear");
+        const left = readSealedJson(sessionsFile, scopeOfDir(dirname(dirname(sessionsFile))), {
+            kind: "transfer-sync-sessions",
+        });
+        assert.equal(left.length, 0, "no session is left written down");
     });
 
     it("a row that cannot be written is counted and named, its conversation is not settled, and the run is not complete", async () => {
@@ -423,7 +429,12 @@ describe("a restore against the fake phone", () => {
     it("writes no session file entries when the run needs none (an empty list)", async () => {
         const { result, sessionsFile } = await run({ conversations: [] });
         assert.equal(result.reason, "empty-window");
-        assert.ok(!existsSync(sessionsFile) || JSON.parse(readFileSync(sessionsFile, "utf8")).length === 0);
+        assert.ok(
+            !existsSync(sessionsFile) ||
+                readSealedJson(sessionsFile, scopeOfDir(dirname(dirname(sessionsFile))), {
+                    kind: "transfer-sync-sessions",
+                }).length === 0,
+        );
     });
 
     describe("what earlier runs settled (Y5)", () => {

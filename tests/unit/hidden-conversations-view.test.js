@@ -7,6 +7,7 @@
  * hash, or any other field of Zalo's answer, comes back out.
  */
 
+import "../helpers/sandbox.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { hiddenConversationsView } from "../../src/core/conversation-actions.js";

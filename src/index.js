@@ -176,9 +176,15 @@ registerCloudCommands(program);
 
 // parseAsync, so a registry that exists but cannot be read (src/core/accounts.js) reaches the user as a
 // message, not as a stack trace from inside a command; so does a refused test-only fake session
-// (src/core/test-fake-session.js). Anything else is rethrown exactly as before.
+// (src/core/test-fake-session.js), and so does a saved file the key layer cannot open (src/core/keystore/: no
+// provider, wrong key, the dkey layer locked). Anything else is rethrown exactly as before.
 program.parseAsync().catch((e) => {
-    if (e?.name === "RegistryError" || e?.code === TEST_FAKE_API_REFUSED) {
+    if (
+        e?.name === "RegistryError" ||
+        e?.code === TEST_FAKE_API_REFUSED ||
+        e?.name === "KeystoreError" ||
+        e?.name === "SealError"
+    ) {
         error(e.message);
         process.exit(1);
     }

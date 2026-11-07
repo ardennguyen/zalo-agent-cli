@@ -141,7 +141,7 @@ const COMMAND_SURFACE = {
         "delete",
         "muted",
     ],
-    account: ["list", "login", "switch", "remove", "info", "export", "devices"],
+    account: ["list", "login", "switch", "remove", "info", "export", "devices", "security"],
     profile: [
         "me",
         "avatar",
@@ -178,7 +178,7 @@ const COMMAND_SURFACE = {
         "upload-photo",
         "register",
     ],
-    mcp: ["start", "wait", "mark-read", "webhook"],
+    mcp: ["start", "wait", "mark-read", "webhook", "approver"],
     fleet: ["ports", "status", "start", "stop", "restart", "generate"],
     oa: [
         "login",
@@ -212,6 +212,11 @@ const OA_SUBGROUPS = {
 /** Nested subgroups of `mcp`: "mcp webhook" → its subcommands. */
 const MCP_SUBGROUPS = {
     "mcp webhook": ["status", "list", "retry", "purge"],
+};
+
+/** Nested subgroups of `account`: the at-rest protection of the account's files (docs/security.md). */
+const ACCOUNT_SUBGROUPS = {
+    "account security": ["status", "migrate", "rekey", "provider"],
 };
 
 /** Commands registered directly on the program, not inside a group. */
@@ -352,6 +357,9 @@ const FLAG_CONTRACT = {
     "group delete-invite": ["--block"],
     "account login": ["--proxy", "--name", "--qr-url"],
     "account export": ["--output"],
+    "account security status": ["--all"],
+    "account security migrate": ["--all"],
+    "account security provider": ["--scope", "--backend", "--key", "--with-key", "--passphrase-file"],
     "poll create": ["--multi", "--add-options", "--anonymous", "--hide-preview", "--expire"],
     "reminder create": ["--type", "--time", "--emoji", "--repeat"],
     "reminder list": ["--type", "--count", "--page"],
@@ -397,6 +405,7 @@ const FLAG_CONTRACT = {
     ],
     "mcp wait": ["--account", "--since", "--thread", "--timeout", "--consumer"],
     "mcp mark-read": ["--account", "--consumer"],
+    "mcp approver": ["--account", "--stdin"],
     "catalog add-product": ["--photos"],
     "cloud apply": ["--yes", "--dry-run", "--conv", "--type", "--older-than", "--larger-than", "--limit"],
     "cloud get": ["--out", "--key-stdin", "--key-prompt", "--raw"],
@@ -476,7 +485,7 @@ describe("command groups", () => {
 
 describe("nested subgroups", () => {
     const helps = {};
-    const NESTED = { ...OA_SUBGROUPS, ...MCP_SUBGROUPS };
+    const NESTED = { ...OA_SUBGROUPS, ...MCP_SUBGROUPS, ...ACCOUNT_SUBGROUPS };
 
     before(async () => {
         const keys = Object.keys(NESTED);

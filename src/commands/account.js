@@ -25,6 +25,9 @@ import { runQrLogin } from "../core/qr-login-flow.js";
 import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
+import { changeProvider, hasKeyring, migrateAccount, rekeyAccount, securityStatus } from "../core/keystore/index.js";
+import { PROVIDER_NAMES, readStorageFile, writeStorageFile } from "../core/keystore/config.js";
+import { inTestSandbox } from "../core/keystore/providers.js";
 
 export function registerAccountCommands(program) {
     const account = program.command("account").description("Manage multiple Zalo accounts with proxy");
@@ -310,6 +313,232 @@ export function registerAccountCommands(program) {
                 error(`Failed to list devices: ${e.message}`);
             }
         });
+    registerSecurityCommands(account, program);
+
     // It ends the session and deletes the account's data: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(account, "remove", "account.remove", { target: (ownerId) => ({ ownerId }) });
+}
+
+/**
+ * The account(s) a security command acts on: the one named, else the active one, else (with `all`) every registered
+ * account.
+ *
+ * @param {string|undefined} ownerId
+ * @param {{all?: boolean}} [opts]
+ * @returns {string[]}
+ */
+function targetAccounts(ownerId, { all = false } = {}) {
+    if (ownerId) {
+        if (!getAccount(ownerId)) throw new Error(`Account not found: ${ownerId}`);
+        return [ownerId];
+    }
+    if (all) return listAccounts().map((a) => a.ownId);
+    const active = getActive();
+    if (!active) throw new Error("No active account: name one, or log in first");
+    return [active.ownId];
+}
+
+/** Refuse while a daemon holds the account: it keeps the account's keys in memory and would write under old ones. */
+function refuseWhileDaemon(ownId) {
+    const holder = lockHolder(ownId);
+    if (holder !== null) {
+        throw new Error(
+            `a "listen"/"mcp" daemon (pid ${holder}) is running for ${ownId}: stop it first, then re-run (nothing was changed)`,
+        );
+    }
+}
+
+/**
+ * Log in to one account for the key layer (the dkey layer needs a live login), then let the session go.
+ *
+ * @param {string} ownId
+ */
+async function loginForKeys(ownId) {
+    const creds = loadCredentials(ownId);
+    if (!creds) throw new Error(`no saved login for ${ownId}: log in first`);
+    const acc = getAccount(ownId);
+    clearSession();
+    try {
+        // loginWithCredentials hands the live login to the key layer (src/core/zalo-client.js).
+        await loginWithCredentials(creds, acc?.proxy || null, { ownId });
+    } catch (e) {
+        throw new Error(
+            `the dkey layer needs a live login and Zalo could not be reached or refused it (${e.message}); the account's data stays locked until it can`,
+        );
+    } finally {
+        clearSession();
+    }
+}
+
+/** Whether a step for this account needs the dkey of a live login. */
+function needsLogin(ownId) {
+    const s = securityStatus(ownId);
+    return Boolean(s.dkeyLayer.configured || s.dkeyLayer.active) && !s.dkeyLayer.unlockedInThisProcess;
+}
+
+/**
+ * `account security …`: the at-rest protection of the account's files (src/core/keystore/, docs/security.md).
+ *
+ * @param {import("commander").Command} account
+ * @param {import("commander").Command} program
+ */
+function registerSecurityCommands(account, program) {
+    const security = account
+        .command("security")
+        .description("At-rest protection of the account's saved files: status, migrate, rekey, provider");
+    const json = () => program.opts().json;
+    const fail = (e) => {
+        error(e.message);
+        process.exitCode = 1;
+    };
+
+    security
+        .command("status [ownerId]")
+        .description(
+            "Show how the account's files are protected: key provider, dkey layer, keyring version, which files are sealed (never key material)",
+        )
+        .option("--all", "Every registered account")
+        .action((ownerId, opts) => {
+            try {
+                const reports = targetAccounts(ownerId, opts).map((id) => securityStatus(id));
+                output(opts.all ? { accounts: reports } : reports[0], json(), () => {
+                    for (const r of reports) describeSecurity(r);
+                });
+            } catch (e) {
+                fail(e);
+            }
+        });
+
+    security
+        .command("migrate [ownerId]")
+        .description(
+            "Seal every file still in plaintext (verified before the plaintext is removed) and apply the dkey layer setting; idempotent",
+        )
+        .option("--all", "Every registered account")
+        .action(async (ownerId, opts) => {
+            try {
+                const results = [];
+                for (const id of targetAccounts(ownerId, opts)) {
+                    refuseWhileDaemon(id);
+                    let files = migrateAccount(id);
+                    let login = null;
+                    if (hasKeyring(id) && needsLogin(id)) {
+                        try {
+                            await loginForKeys(id);
+                            login = "done";
+                            files = migrateAccount(id);
+                        } catch (e) {
+                            login = e.message;
+                        }
+                    }
+                    if (files.some((f) => f.result === "failed" || f.result === "locked")) process.exitCode = 1;
+                    results.push({ ownId: id, files, login, dkeyLayer: securityStatus(id).dkeyLayer });
+                }
+                output(opts.all ? { accounts: results } : results[0], json(), () => {
+                    for (const r of results) {
+                        info(`Account ${r.ownId}`);
+                        for (const f of r.files) {
+                            const line = `  ${f.kind.padEnd(24)} ${f.result}${f.error ? `: ${f.error}` : ""}`;
+                            if (f.result === "failed" || f.result === "locked") warning(line);
+                            else console.log(line);
+                        }
+                        if (r.login && r.login !== "done") warning(`  ${r.login}`);
+                    }
+                });
+            } catch (e) {
+                fail(e);
+            }
+        });
+
+    security
+        .command("rekey [ownerId]")
+        .description(
+            "Make new keys for the account and re-seal every file under them (the old keys are kept until it is done)",
+        )
+        .action(async (ownerId) => {
+            try {
+                const [id] = targetAccounts(ownerId);
+                refuseWhileDaemon(id);
+                if (needsLogin(id)) await loginForKeys(id);
+                const res = rekeyAccount(id);
+                output({ ownId: id, rekeyed: true, resealed: res.resealed, keys: res.keys }, json(), () =>
+                    success(`Account ${id}: new keys, ${res.resealed} file(s) re-sealed`),
+                );
+            } catch (e) {
+                fail(e);
+            }
+        });
+
+    security
+        .command("provider <name> [ownerId]")
+        .description(
+            `Protect the keyring with another key provider (${PROVIDER_NAMES.filter((p) => p !== "test").join(", ")}): re-wraps the keys of the account (default: every account with a keyring) and makes it the default for new ones`,
+        )
+        .option("--scope <scope>", "dpapi: CurrentUser (default) or LocalMachine")
+        .option("--backend <backend>", "kms: aws, gcp, azure or vault")
+        .option("--key <key>", "kms: the key ARN/id, key name, key URL or transit key name")
+        .option("--with-key <mode>", "systemd-creds: auto, host, tpm2 or host+tpm2")
+        .option("--passphrase-file <path>", "passphrase: read it from this file instead of asking")
+        .action((name, ownerId, opts) => {
+            try {
+                // `test` is the offline sandbox's own provider, refused anywhere else (src/core/keystore/providers.js).
+                if (!PROVIDER_NAMES.includes(name) || (name === "test" && !inTestSandbox())) {
+                    throw new Error(`unknown key provider "${name}"`);
+                }
+                const extra = {
+                    ...(opts.scope ? { scope: opts.scope } : {}),
+                    ...(opts.backend ? { backend: opts.backend } : {}),
+                    ...(opts.key ? { key: opts.key } : {}),
+                    ...(opts.withKey ? { withKey: opts.withKey } : {}),
+                    ...(opts.passphraseFile ? { file: resolve(opts.passphraseFile) } : {}),
+                };
+                const ids = ownerId
+                    ? targetAccounts(ownerId)
+                    : listAccounts()
+                          .map((a) => a.ownId)
+                          .filter((id) => hasKeyring(id));
+                ids.forEach(refuseWhileDaemon);
+                const changed = ids.map((id) => ({ ownId: id, ...changeProvider(id, name, extra) }));
+                // New keyrings follow: the provider and its (non-secret) options go into storage.json.
+                const settings = readStorageFile();
+                const section = {
+                    dpapi: "dpapi",
+                    "systemd-creds": "systemdCreds",
+                    kms: "kms",
+                    passphrase: "passphrase",
+                }[name];
+                const next = { ...settings, provider: name };
+                if (section && Object.keys(extra).length) next[section] = { ...(settings[section] ?? {}), ...extra };
+                writeStorageFile(next);
+                output({ provider: name, accounts: changed }, json(), () => {
+                    for (const c of changed) success(`Account ${c.ownId}: keyring moved from ${c.from} to ${c.to}`);
+                    info(`New accounts use "${name}" (storage.json)`);
+                });
+            } catch (e) {
+                fail(e);
+            }
+        });
+}
+
+/** The human form of `account security status`. */
+function describeSecurity(r) {
+    info(`Account ${r.ownId}`);
+    if (r.keyringError) warning(`  Keyring: ${r.keyringError}`);
+    if (r.configError) warning(`  storage.json: ${r.configError}`);
+    console.log(
+        `  Keyring:    ${r.keyring ? `version ${r.keyring.version}, created ${r.keyring.createdAt}` : "none yet (made on the first seal)"}`,
+    );
+    if (r.keyring?.rekeyInProgress) warning("  A rekey did not finish: run `account security rekey` again");
+    const configured =
+        r.configuredProvider && r.provider && r.configuredProvider !== r.provider.name
+            ? ` (configured: ${r.configuredProvider})`
+            : "";
+    console.log(`  Provider:   ${r.provider ? JSON.stringify(r.provider) : "-"}${configured}`);
+    const pending =
+        r.dkeyLayer.configured !== r.dkeyLayer.active
+            ? ` (configured ${r.dkeyLayer.configured ? "on" : "off"}: applied at the next login)`
+            : "";
+    console.log(`  dkey layer: ${r.dkeyLayer.active ? "on" : "off"}${pending}`);
+    for (const f of r.files) console.log(`  ${f.kind.padEnd(24)} ${f.state.padEnd(10)} ${f.key} key`);
+    if (r.plaintextFiles) warning(`  ${r.plaintextFiles} file(s) still plaintext: run "account security migrate"`);
 }

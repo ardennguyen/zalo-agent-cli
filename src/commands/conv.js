@@ -317,16 +317,36 @@ export function registerConvCommands(program, deps = {}) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action((threadId, opts) => pinAction(threadId, opts, false));
 
-    conv.command("archived")
-        .description("List archived conversations")
-        .action(async () => {
-            try {
-                const result = await getApi().getArchivedChatList();
-                output(result, program.opts().json);
-            } catch (e) {
-                error(e.message);
-            }
-        });
+    /**
+     * What `conv archived` / `conv muted` show of hidden chats: left out, unless --include-hidden and the PIN.
+     *
+     * @param {object} opts - the command's options
+     * @returns {Promise<(list: object[], idOf: (item: object) => unknown) => object[]>}
+     */
+    async function hiddenFilter(opts) {
+        const active = getActive();
+        if (!active) return (list) => list;
+        const hidden = await hiddenAccess(opts, { ownId: active.ownId, api: zaloApi(), json: program.opts().json });
+        return (list, idOf) => withoutHidden(list, hidden.set, hidden.mode, idOf);
+    }
+
+    addHiddenOptions(
+        conv
+            .command("archived")
+            .description("List archived conversations (hidden chats are left out unless --include-hidden)"),
+    ).action(async (opts) => {
+        try {
+            const result = await zaloApi().getArchivedChatList();
+            // Zalo's answer: `{items: [{id, type}], version}`.
+            const shown = await hiddenFilter(opts);
+            output(
+                Array.isArray(result?.items) ? { ...result, items: shown(result.items, (i) => i?.id) } : result,
+                program.opts().json,
+            );
+        } catch (e) {
+            error(e.message);
+        }
+    });
 
     /** `conv archive` / `conv unarchive`. */
     async function archiveAction(threadId, opts, archived) {
@@ -540,12 +560,14 @@ export function registerConvCommands(program, deps = {}) {
             error(`Get hidden conversations failed: ${e.message}`);
             return;
         }
-        if (!listed.hasPin || listed.count === 0) {
-            output({ count: listed.count, hasPin: listed.hasPin, threads: [] }, json, () =>
-                info(listed.hasPin ? "No hidden conversations." : "No hidden-chat PIN is set; nothing is hidden."),
+        if (!listed.hasPin) {
+            output({ count: listed.count, hasPin: false, threads: [] }, json, () =>
+                info("No hidden-chat PIN is set; nothing is hidden."),
             );
             return;
         }
+        // With a PIN set it is checked even when nothing is hidden: a wrong PIN is refused (exit 1, counted toward
+        // the lockout) whatever the list holds, as Web asks it before showing the list.
         await unlockOrExit(set, {
             pinStdin: Boolean(opts.pinStdin),
             json,
@@ -564,6 +586,10 @@ export function registerConvCommands(program, deps = {}) {
             name: names.get(String(t.threadId))?.name ?? null,
         }));
         output({ count: threads.length, hasPin: true, threads }, json, () => {
+            if (!threads.length) {
+                info("No hidden conversations.");
+                return;
+            }
             info(`${threads.length} hidden conversation(s):`);
             for (const t of threads)
                 console.log(`  ${t.threadId.padEnd(22)}  ${(t.threadType ?? "?").padEnd(6)}  ${t.name ?? ""}`);
@@ -928,24 +954,42 @@ export function registerConvCommands(program, deps = {}) {
             process.exit();
         });
 
-    conv.command("muted")
-        .description("List the conversations and groups you have muted")
-        .action(async () => {
-            try {
-                const result = await getApi().getMute();
-                output(result, program.opts().json, () => {
-                    for (const [label, entries] of [
-                        ["chat", result?.chatEntries ?? []],
-                        ["group", result?.groupChatEntries ?? []],
-                    ]) {
-                        info(`${entries.length} muted ${label}(s)`);
-                        for (const m of entries) console.log(`  ${m.id}  mode=${m.muteMode}  duration=${m.duration}`);
-                    }
-                });
-            } catch (e) {
-                error(`Get muted conversations failed: ${e.message}`);
-            }
-        });
+    addHiddenOptions(
+        conv
+            .command("muted")
+            .description(
+                "List the conversations and groups you have muted (hidden chats are left out unless --include-hidden)",
+            ),
+    ).action(async (opts) => {
+        try {
+            const raw = await zaloApi().getMute();
+            // Zalo's answer: `{chatEntries: [{id, ...}], groupChatEntries: [{id, ...}]}`.
+            const shown = await hiddenFilter(opts);
+            const result =
+                raw && typeof raw === "object"
+                    ? {
+                          ...raw,
+                          ...(Array.isArray(raw.chatEntries) && {
+                              chatEntries: shown(raw.chatEntries, (m) => m?.id),
+                          }),
+                          ...(Array.isArray(raw.groupChatEntries) && {
+                              groupChatEntries: shown(raw.groupChatEntries, (m) => m?.id),
+                          }),
+                      }
+                    : raw;
+            output(result, program.opts().json, () => {
+                for (const [label, entries] of [
+                    ["chat", result?.chatEntries ?? []],
+                    ["group", result?.groupChatEntries ?? []],
+                ]) {
+                    info(`${entries.length} muted ${label}(s)`);
+                    for (const m of entries) console.log(`  ${m.id}  mode=${m.muteMode}  duration=${m.duration}`);
+                }
+            });
+        } catch (e) {
+            error(`Get muted conversations failed: ${e.message}`);
+        }
+    });
     // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(conv, "delete", "conv.delete", { target: (threadId) => ({ threadId }) });
     guardSubcommand(conv, "hidden-pin-reset", "conv.hiddenPinReset", { target: () => ({}) });

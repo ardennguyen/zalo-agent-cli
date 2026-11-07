@@ -15,7 +15,8 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readSealedJson, scopeOfDir, writeSealedJson } from "./keystore/index.js";
+import { dirname, join } from "node:path";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 /** Failures before the back-off starts (Zalo Web's count). */
@@ -34,7 +35,22 @@ export function hiddenKey(id) {
     return /^[a-z]\d+$/i.test(text) ? text.slice(1) : text;
 }
 
+/**
+ * The mirror says which chats are hidden, so it is sealed like the other account secrets (src/core/keystore), under
+ * the boot key: a command that filters hidden chats offline must open it before any login brings the dkey. A key
+ * error is not swallowed: reading the mirror as empty would show hidden chats.
+ */
+const MIRROR_SPEC = Object.freeze({ kind: "hidden-threads", use: "boot" });
+
 function readJson(file) {
+    if (file.endsWith(MIRROR_FILE)) {
+        try {
+            return readSealedJson(file, scopeOfDir(dirname(file)), MIRROR_SPEC);
+        } catch (e) {
+            if (e?.code === "ENOENT" || e instanceof SyntaxError) return null;
+            throw e;
+        }
+    }
     try {
         return JSON.parse(readFileSync(file, "utf8"));
     } catch {
@@ -46,7 +62,8 @@ function writeJson(dir, name, value) {
     if (!dir) return;
     try {
         mkdirSync(dir, { recursive: true });
-        writeFileAtomic(join(dir, name), JSON.stringify(value), { mode: 0o600 });
+        if (name === MIRROR_FILE) writeSealedJson(join(dir, name), scopeOfDir(dir), MIRROR_SPEC, value);
+        else writeFileAtomic(join(dir, name), JSON.stringify(value), { mode: 0o600 });
     } catch (e) {
         console.error(`[hidden-chats] could not write ${name}: ${e.message}`);
     }
@@ -249,6 +266,31 @@ export function pinFailureLine(r) {
                 (r.retryAfterMs ? ` Wait ${Math.ceil(r.retryAfterMs / 1000)} s before the next try.` : "")
             );
     }
+}
+
+/**
+ * The conversation ids a raw read (`zalo_read`, `read run`) names in its args (`uid`, `groupId`, `threadId`, `tId`, and the id lists
+ * `group`/`oneone`/`items`/`data`), so a hidden conversation can be refused before Zalo is asked.
+ *
+ * @param {object|undefined} args
+ * @returns {string[]}
+ */
+export function readThreadIds(args) {
+    const out = [];
+    const take = (v) => {
+        if (v === undefined || v === null) return;
+        if (Array.isArray(v)) {
+            v.forEach(take);
+            return;
+        }
+        if (typeof v === "object") {
+            for (const k of ["tId", "threadId", "id", "uid", "groupId", "toid"]) take(v[k]);
+            return;
+        }
+        out.push(String(v));
+    };
+    for (const k of ["uid", "groupId", "threadId", "tId", "group", "oneone", "items", "data", "toid"]) take(args?.[k]);
+    return out;
 }
 
 const registry = new Map();

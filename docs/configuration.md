@@ -26,6 +26,7 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `mcp start --config <path>` | that server | a second config for one service. It must exist and be valid JSON, or the server **refuses to start** (a missing file would otherwise mean "watch every thread"). It replaces the base file and the per-account file below |
 | `accounts.<ownId>` block inside `mcp-config.json` | the server for that account | per-account overrides in one file: [`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json) |
 | `<accountDir>/mcp-config.json` — `~/.zalo-agent-cli/accounts/<ownId>/` | the server for that account | a per-account file; refused at start if present but unreadable |
+| `<CONFIG_DIR>/storage.json` | every command that reads or writes a saved login | the key provider and the dkey layer that protect the saved files ([security.md](security.md)); no secret in it |
 
 ### Precedence
 
@@ -72,6 +73,8 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_MCP_HIDDEN_CHATS` | yes | what the MCP server shows of the account's hidden chats: `exclude` (default: left out of every list, search, history and event), `contentless` (left out of lists; an event in one arrives as `{event, hidden: true}` with no thread id or content) or `include` (shown like any other: hands them to the agent) | | `hiddenChats` |
 | `ZALO_MCP_ALLOW_PIN_ARGUMENT` | yes | `true` lets the hidden-chat tools take the PIN as a `pin` input. Default `false`: an input is written to the MCP client's logs and the model's context. Only for a non-AI client | | `allowPinArgument` |
 | `ZALO_MCP_PIN_PAGE_URL` | yes | the public base URL of the one-time secure input page (`https://zalo.example.com`), when the server sits behind a reverse proxy or TLS terminator; without it the link is the server's own address | | `pinPage.publicBaseUrl` |
+| `ZALO_MCP_APPROVAL_SECRET` | yes | what an approve page (`confirmMode: "human"`) asks besides a click, so an agent that can open the link cannot approve its own action: `pin` (the hidden-chat PIN, with its lockout), `password` (the approver password set with `zalo-agent mcp approver set`, stored only as a salted scrypt hash), `none` (a click approves: weaker) or `auto` (default: the approver password when one is set and the link reaches the agent, else nothing, and the reply says `approverSecret: false`) | | `approval.secret` |
+| `ZALO_MCP_APPROVAL_DELIVER` | yes | where the link of an approve or PIN page goes: `result` (default: in the tool result), `webhook` (only to the MCP webhook, as an `approval_requested` event; the tool result carries no link) or `both` | | `approval.deliver` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | deprecated: `0` means confirm mode `off`, `1` means `agent`; an explicit confirm mode wins | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | non-friend DM names one sync restore may look up. Default 500 | | |
 | `ZALO_START_JITTER` | yes | wait a random time up to this many seconds (0–600, default 0) before logging in, so a fleet restarting together does not log in together | | |
@@ -83,6 +86,9 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_API_VERSION` |  | protocol version announced to Zalo. Default 695 | | |
 | `ZALO_QR_FLOW` |  | which QR login `login` uses: `official` (default: the sequence Zalo Web makes, no `verify-client`, `continue=https://chat.zalo.me/`, the redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device), the only QR login. `legacy` was removed in 3.0.0; it and any other value are refused before Zalo is contacted | | |
 | `ZALO_NET_PROBE` |  | what a daemon asks to learn whether the network is up while its socket is down (every 10 s): a URL, default a global search engine's lightweight page, or `off` to assume the network is always up and contact nothing but Zalo | | |
+| `ZALO_STORAGE_PROVIDER` |  | key provider that protects the saved files at rest: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Default by platform; a Linux server without a desktop keyring must set one. See [security.md](security.md) | | |
+| `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: lock everything a login does not need under the account's login `dkey` as well. Default off | | |
+| `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | the chosen provider's options (`ZALO_STORAGE_KEY`: the `env` provider's key, weak by design) | | |
 
 `oa listen` takes its port from `--port` (default 3000). The engine does not read `ZALO_OA_WEBHOOK_PORT`, although older copies of the wrapper's `.env.example` listed it.
 
@@ -110,6 +116,8 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `hiddenChats` | unset (= `exclude`) | `exclude`, `contentless` or `include`: what agents see of hidden chats (see the variable above) |
 | `allowPinArgument` | unset (= `false`) | `true` lets the hidden-chat tools take the PIN as an input; it then sits in the client's logs |
 | `pinPage.publicBaseUrl` | `null` | the address a browser reaches this server's secure input page at (`/zalo/secure/<token>`) through a proxy |
+| `approval.secret` | unset (= `auto`) | `auto`, `pin`, `password` or `none`: what an approve page asks besides a click (see the variable above) |
+| `approval.deliver` | unset (= `result`) | `result`, `webhook` or `both`: where a one-time page's link goes |
 | `accounts.<ownId>` | | any of the above, for one account |
 
 A key that is not in this table is ignored without a message. (The `mode` key in older files is accepted and never read.)
@@ -182,6 +190,8 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 **Catch up.** After downtime, ask for what was missed: `zalo_get_history` per thread, or `zalo-agent sync --from <date>` (which can ask the owner's phone to confirm).
 
 **Hidden chats and the secure input page.** The account's hidden chats are left out of everything a CRM reads (`hiddenChats: "exclude"`); `contentless` sends a webhook event `{event: "message", hidden: true, accountId}` with no thread id or content, the unread dot Zalo Web shows. Anything a person must type or approve (the hidden-chat PIN, a `confirmMode: "human"` approval) is a one-time page on the server's own port, `/zalo/secure/<token>`: the tool reply carries `secureUrl`, `ticketExpiresAt` (5 minutes) and `retryWith.ticket`; the CRM shows the link to the account owner and repeats the call with `ticket` once they are done. Route `/zalo/secure/` through the same proxy as `/mcp` and set `pinPage.publicBaseUrl` to its public address. The page needs no bearer token (its token is the key), sends `Cache-Control: no-store`, loads nothing from elsewhere, and its token is masked in the request log. See [`docs/deployment.md`](deployment.md) §5.6.
+
+**Approvals in the CRM's own UI.** With `approval.deliver: "webhook"` the link never goes through the agent: the server POSTs `{event: "approval_requested", accountId, kind, action, wouldDo, target, secureUrl, expiresAt, approverSecret}` to the webhook (queued and signed like a message event), the CRM shows `wouldDo` and the link to a person, and the tool result carries only `{confirmationRequired or pinRequired: true, approvalPending: true, ticket, ticketExpiresAt, deliveredTo: "webhook"}`. The CRM repeats the call with that `ticket` once the person is done; the ticket is not the page's token, so nothing in the result opens the page. Where the link must go through the agent, set an approver password (`zalo-agent mcp approver set`) or `approval.secret: "pin"`, so the page asks for something only the person knows.
 
 ### 3.6 Many accounts
 

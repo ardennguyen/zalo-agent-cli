@@ -41,7 +41,14 @@ export function eventsOf(body) {
 
 const seen = new Set(); // use your database in production
 
-export function startReceiver({ secret, port = 8080, onMessage = (m) => console.log("message", m.msgId, m.threadId) } = {}) {
+export function startReceiver({
+    secret,
+    port = 8080,
+    onMessage = (m) => console.log("message", m.msgId, m.threadId),
+    // approval.deliver "webhook": show `wouldDo` and a button opening `secureUrl` to a signed-in person before
+    // `expiresAt`; the agent then repeats its call with the `ticket` its tool result carried.
+    onApproval = (a) => console.log("approval", a.kind, a.action, a.wouldDo, a.expiresAt),
+} = {}) {
     return http
         .createServer((req, res) => {
             const chunks = [];
@@ -57,6 +64,11 @@ export function startReceiver({ secret, port = 8080, onMessage = (m) => console.
                 // `mcp start` sends {event:"message", accountId, msgId, threadId, threadType, senderId, senderName, text, timestamp, type, attachment}
                 // `listen` sends   {accountId, event:"message"|..., msgId, threadId, type, isSelf, uidFrom, dName, msgType, content}
                 for (const event of eventsOf(body)) {
+                    // {event:"approval_requested", accountId, kind, action, wouldDo, target, secureUrl, expiresAt, approverSecret}
+                    if (event.event === "approval_requested") {
+                        queueMicrotask(() => onApproval(event));
+                        continue;
+                    }
                     const id = event.msgId;
                     if (id && seen.has(`${event.accountId}:${id}`)) continue;
                     if (id) seen.add(`${event.accountId}:${id}`);

@@ -12,6 +12,8 @@
  *   default: an input is written to the MCP client's logs and the model's context. For non-AI clients only.
  * - `pinPage.publicBaseUrl` (`ZALO_MCP_PIN_PAGE_URL`): the address a person's browser reaches this server's secure
  *   input page at, behind a reverse proxy or TLS terminator (src/core/secure-page.js).
+ * - `approval.secret` (`ZALO_MCP_APPROVAL_SECRET`) and `approval.deliver` (`ZALO_MCP_APPROVAL_DELIVER`): what the approve
+ *   page asks besides a click, and where a page's link goes (resolveApproval, src/core/approval.js).
  *
  * The CLI does not read these: it follows its own flags (`--include-hidden`, `--pin-stdin`).
  */
@@ -125,4 +127,55 @@ export function resolvePinPage({ config, env = process.env, accountId } = {}) {
         warnOnce(source, value, "an http(s) URL without a query");
     }
     return { publicBaseUrl: null, source: "default" };
+}
+
+/** What a person must type on an approve page (confirmMode "human") besides pressing Approve. */
+export const APPROVAL_SECRETS = Object.freeze(["auto", "pin", "password", "none"]);
+/** Where the link of a one-time page goes. */
+export const APPROVAL_DELIVERIES = Object.freeze(["result", "webhook", "both"]);
+
+/**
+ * How the one-time pages reach a person, and what the approve page asks of them (`approval.secret`,
+ * `approval.deliver`), and where each came from.
+ *
+ * - `secret` (`ZALO_MCP_APPROVAL_SECRET`): `pin` (the hidden-chat PIN, checked as the PIN page checks it, with its
+ *   lockout), `password` (the approver password set with `mcp approver set`, kept only as a salted scrypt hash), `none`
+ *   (a click approves: an agent that can open the link can approve its own action), or `auto` (the default: the
+ *   approver password when one is set and the link travels through the agent, else nothing).
+ * - `deliver` (`ZALO_MCP_APPROVAL_DELIVER`): `result` (the default: the link is in the tool result), `webhook` (the link
+ *   is POSTed to the MCP webhook as an `approval_requested` event and the tool result carries none), or `both`.
+ *
+ * @param {object} [sources]
+ * @param {{approval?: {secret?: unknown, deliver?: unknown}}|null} [sources.config]
+ * @param {NodeJS.ProcessEnv} [sources.env]
+ * @param {string} [sources.accountId]
+ * @returns {{secret: "auto"|"pin"|"password"|"none", secretSource: string, deliver: "result"|"webhook"|"both", deliverSource: string}}
+ */
+export function resolveApproval({ config, env = process.env, accountId } = {}) {
+    const pick = (envName, configValue, configName, allowed, fallback) => {
+        for (const [value, source] of layers(envName, configValue, configName, env, accountId)) {
+            const v = String(value ?? "")
+                .trim()
+                .toLowerCase();
+            if (!v) continue;
+            if (allowed.includes(v)) return [v, source];
+            warnOnce(source, value, allowed.join(", "));
+        }
+        return [fallback, "default"];
+    };
+    const [secret, secretSource] = pick(
+        "ZALO_MCP_APPROVAL_SECRET",
+        config?.approval?.secret,
+        "approval.secret",
+        APPROVAL_SECRETS,
+        "auto",
+    );
+    const [deliver, deliverSource] = pick(
+        "ZALO_MCP_APPROVAL_DELIVER",
+        config?.approval?.deliver,
+        "approval.deliver",
+        APPROVAL_DELIVERIES,
+        "result",
+    );
+    return { secret, secretSource, deliver, deliverSource };
 }

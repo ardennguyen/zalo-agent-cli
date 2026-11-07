@@ -255,8 +255,11 @@ describe("removeAccount", () => {
     it("succeeds with wiped:false when the account has no local data directory", () => {
         addAccount(A, "Alpha");
         saveCredentials(A, CREDS);
+        // A saved login has a keyring in the account's folder (src/core/keystore/): take the folder away to get an
+        // account with no local data.
+        rmSync(accountDir(A), { recursive: true, force: true });
         assert.deepEqual(removeAccount(A), { removed: true, wiped: false });
-        assert.equal(loadCredentials(A), null);
+        assert.equal(existsSync(join(CONFIG_DIR, "credentials", `cred_${A}.json`)), false);
     });
 
     it("leaves other accounts' credentials untouched", () => {

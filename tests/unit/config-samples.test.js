@@ -62,7 +62,7 @@ describe("mcp-config samples", () => {
         it(`${file}: valid JSON that uses only keys the loader merges`, () => {
             const cfg = JSON.parse(read("mcp-config", file));
             for (const key of Object.keys(cfg)) assert.ok(known.has(key), `unknown top-level key "${key}"`);
-            for (const section of ["notify", "limits", "media", "tls", "oauth"]) {
+            for (const section of ["notify", "limits", "media", "tls", "oauth", "pinPage", "approval"]) {
                 for (const key of Object.keys(cfg[section] ?? {})) {
                     assert.ok(key in defaults[section], `unknown key "${key}" in "${section}"`);
                 }

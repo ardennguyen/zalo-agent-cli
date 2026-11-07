@@ -7,14 +7,15 @@
  *   DATA_DIR        = <CONFIG_DIR>/accounts         (env: ZALO_DATA_DIR,        flag: --data-dir)
  *   MEDIA_DIR       = null (<DATA_DIR>/<id>/media)  (env: ZALO_MEDIA_DIR,       flag: --media-dir)
  *
- * All credential files use 0600 permissions (owner read/write only).
+ * All credential files use 0600 permissions (owner read/write only), and since 3.0.0 they are sealed under the
+ * account's boot key (src/core/keystore/): a copied file is unreadable without the key provider of this machine.
  */
 
 import { readFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import { parseEnv } from "node:util";
-import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import { openFile, sealFile } from "./keystore/index.js";
 
 const defaultConfigDir = join(homedir(), ".zalo-agent-cli");
 
@@ -168,31 +169,38 @@ function credPath(ownId) {
     return join(CREDENTIALS_DIR, `cred_${ownId}.json`);
 }
 
+/** What the key layer calls the saved login: sealed under the boot key, which opens without a login. */
+const CRED_SPEC = { kind: "credentials", use: "boot" };
+
 /**
- * Save credentials for a specific account.
+ * Save credentials for a specific account, sealed.
  * @param {string} ownId
  * @param {object} creds - {imei, cookie, userAgent, language?}
  * @returns {string} File path
+ * @throws {Error} a KeystoreError when no key can be had: the login is then not saved at all, never in the clear
  */
 export function saveCredentials(ownId, creds) {
     ensureDirs();
     const target = credPath(ownId);
-    // Atomic and created at 0600: a login is never left half written, and the file is never readable
-    // by others, even for the moment between a write and a chmod.
-    writeFileAtomic(target, JSON.stringify(creds, null, 2));
+    // Sealed, atomic and created at 0600: a login is never left half written, and never readable by others.
+    sealFile(target, String(ownId), CRED_SPEC, JSON.stringify(creds, null, 2));
     return target;
 }
 
 /**
- * Load credentials for a specific account.
+ * Load credentials for a specific account. A plaintext file from before 3.0.0 is sealed on the way.
  * @param {string} ownId
- * @returns {object|null}
+ * @returns {object|null} null when there are none (or the file is not JSON)
+ * @throws {Error} a KeystoreError / SealError when the file exists but cannot be opened (no provider, wrong key,
+ *   edited): saying "not logged in" then would send people to a QR login that would not fix it
  */
 export function loadCredentials(ownId) {
     const target = credPath(ownId);
     if (!existsSync(target)) return null;
+    const bytes = openFile(target, String(ownId), CRED_SPEC);
+    if (bytes === null) return null;
     try {
-        return JSON.parse(readFileSync(target, "utf-8"));
+        return JSON.parse(bytes.toString("utf8"));
     } catch {
         return null;
     }

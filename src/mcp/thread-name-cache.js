@@ -55,7 +55,7 @@ export class ThreadNameCache {
                             name: g.name || "?",
                             type: "group",
                             memberCount: g.totalMember || 0,
-                            // A group recall sends it, as Zalo Web's does (src/core/group-visibility.js).
+                            // A group recall sends it, as Zalo Web's does (src/zalo/custom/group-visibility.js).
                             ...(g.visibility !== undefined && g.visibility !== null && { visibility: g.visibility }),
                         });
                         groupCount++;

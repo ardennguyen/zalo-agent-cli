@@ -23,7 +23,7 @@ import { GroupMessage, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getMessages } from "../../src/core/db.js";
 import { storeLiveMessage } from "../../src/core/live-store.js";
-import { classifyLiveMessage } from "../../src/core/sync-v2/message-types.js";
+import { classifyLiveMessage } from "../../src/zalo/transfer-sync/message-types.js";
 
 // Fake ids. Real ones never appear in tests (AGENTS.md §12).
 const OWN = "9100000000000000001";

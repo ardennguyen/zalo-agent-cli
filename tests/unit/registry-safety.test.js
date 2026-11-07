@@ -34,7 +34,7 @@ import {
     setActive,
     updateAccountName,
 } from "../../src/core/accounts.js";
-import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../../src/utils/atomic-file.js";
+import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../../src/zalo/kernel/atomic-file.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -125,7 +125,7 @@ describe("writeFileAtomic", () => {
             [
                 "--input-type=module",
                 "-e",
-                `import { writeFileAtomic } from ${JSON.stringify(new URL("../../src/utils/atomic-file.js", import.meta.url).href)};
+                `import { writeFileAtomic } from ${JSON.stringify(new URL("../../src/zalo/kernel/atomic-file.js", import.meta.url).href)};
                  for (let n = 1; n <= 200; n++) writeFileAtomic(${JSON.stringify(f)}, JSON.stringify({ n, pad: "p".repeat(200000) }));`,
             ],
             { stdio: "ignore" },

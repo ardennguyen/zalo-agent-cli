@@ -39,8 +39,8 @@
  */
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
-import { customCall, postWithParams } from "../zalo/session-call.js";
-import { HEAD_TIMEOUT_MS } from "../zalo/api/messages.js";
+import { customCall, postWithParams } from "../session-call.js";
+import { HEAD_TIMEOUT_MS } from "../api/messages.js";
 
 /** A forwarded video with no geometry in its cached params goes out as this (Zalo refuses one without any). */
 export const FORWARD_VIDEO_FALLBACK = Object.freeze({ width: 1280, height: 720 });

@@ -707,7 +707,7 @@ describe("MCP tools read the local cache", () => {
  * The CLI's `msg send` gained both while the MCP tool could still only put a
  * bare string on the wire, so an agent — which is the primary way this tool
  * is driven — could not tag anyone or reply to a specific message. Both are
- * built from `src/utils/mentions.js` and `src/utils/quote.js`, the same pure
+ * built from `src/zalo/format/mentions.js` and `src/utils/quote.js`, the same pure
  * helpers the CLI uses and which have their own unit tests; what is covered
  * here is the *wiring*: what reaches `api.sendMessage`, and what a failure
  * reports back instead of throwing.

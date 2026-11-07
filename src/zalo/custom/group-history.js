@@ -37,12 +37,12 @@
  * clear error rather than a request to "undefined".
  *
  * Read-only: this module fetches and writes nothing. `msg history` caches what
- * it returns through storeHistoryMessage (./live-store.js). The listener, sync
+ * it returns through storeHistoryMessage (src/core/live-store.js). The listener, sync
  * and msg history's fetch write Zalo-reported rows; history writes
  * insert-if-absent; msg send writes nothing (AGENTS.md §13).
  */
-import { boundUtils } from "../zalo/kernel/bound.js";
-import { GroupMessage } from "../zalo/listener/models.js";
+import { boundUtils } from "../kernel/bound.js";
+import { GroupMessage } from "../listener/models.js";
 
 /** Zalo Web's MessageConstants.MAX_MSG_ID, `(BigInt(2) ** BigInt(63)).toString()`: start from the newest. */
 export const NEWEST_MSG_ID = "9223372036854775808";
@@ -57,7 +57,7 @@ export const CM_PAGE_SIZE = 50;
 const SRC_OPEN = 1;
 const SRC_LOAD_MORE = 3;
 
-/** Pause between pages. Zalo rate-limits hard (see ./sync-v2/board.js). */
+/** Pause between pages. Zalo rate-limits hard (see src/core/sync-v2/board.js). */
 const PAGE_DELAY_MS = 150;
 
 /**

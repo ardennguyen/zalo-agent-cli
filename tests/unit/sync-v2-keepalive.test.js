@@ -23,7 +23,7 @@ import {
     pingPayload,
     resolveKeepAliveInterval,
     startKeepAlive,
-} from "../../src/core/sync-v2/keepalive.js";
+} from "../../src/zalo/listener/keepalive.js";
 
 /** A scheduler whose pending timer only fires when the test says so. */
 function fakeTimers() {

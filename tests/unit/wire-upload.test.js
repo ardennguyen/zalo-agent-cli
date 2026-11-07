@@ -20,7 +20,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { readImageMetadata } from "../../src/core/zalo-client.js";
+import { readImageMetadata } from "../../src/zalo/client.js";
 import { createApi } from "../../src/zalo/api.js";
 import {
     CHUNK_TIMEOUT_MS,

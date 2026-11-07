@@ -32,7 +32,7 @@ import {
     pruneDownloadedMedia,
     jpegUrl,
 } from "../../src/core/sync-v2/media.js";
-import { extractRenewedUrls } from "../../src/core/sync-v2/renewlink.js";
+import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-media-test-"));
 const opened = [];

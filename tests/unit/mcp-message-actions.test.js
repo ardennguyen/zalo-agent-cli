@@ -5,7 +5,7 @@
  * Each mirrors a `msg` subcommand and calls the code that command calls:
  * `reactionCliMsgId` / `recallCliMsgId` / `cachedMessageById`
  * (src/core/cached-message.js), `resolveSelfThread` (src/utils/my-documents.js)
- * and `urgencyLevel` (src/utils/urgency.js). The CLI side of each is pinned on
+ * and `urgencyLevel` (src/zalo/format/urgency.js). The CLI side of each is pinned on
  * the wire by msg-react-cache, msg-my-documents and msg-urgency; what is
  * asserted here is what the tool hands the session — the call a live
  * session would encrypt and post — and that a refusal hands it nothing.

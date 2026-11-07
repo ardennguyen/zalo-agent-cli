@@ -16,7 +16,7 @@ process.env.ZALO_CONFIG_DIR = dir;
 process.env.ZALO_SANDBOX_ACTIVE = "1";
 
 const accounts = await import("../../src/core/accounts.js");
-const { withFileLock, sleepSync } = await import("../../src/utils/atomic-file.js");
+const { withFileLock, sleepSync } = await import("../../src/zalo/kernel/atomic-file.js");
 
 if (role === "writer") {
     const [first, count, ms, min = 0] = rest.map(Number);

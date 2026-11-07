@@ -1,11 +1,11 @@
 /**
- * The 601 control frames and their queues (src/core/control-queue.js, plan item X4): which controls this client has
+ * The 601 control frames and their queues (src/zalo/queues/control-queue.js, plan item X4): which controls this client has
  * a handler for, which it does not, and the cursors of the control queues. The daemon's use of both is tested with
  * the self-heal in self-heal.test.js.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CONTROL_QUEUES, controlCursorsOf, readControls } from "../../src/core/control-queue.js";
+import { CONTROL_QUEUES, controlCursorsOf, readControls } from "../../src/zalo/queues/control-queue.js";
 
 const control = (actionId, act_type, act, data = {}) => ({
     actionId,

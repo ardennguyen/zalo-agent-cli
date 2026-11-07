@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { withFileLock, writeFileAtomic } from "../utils/atomic-file.js";
+import { withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 const V3_BASE = "https://openapi.zalo.me/v3.0/oa";
 const V2_BASE = "https://openapi.zalo.me/v2.0/oa";

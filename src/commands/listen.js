@@ -24,8 +24,8 @@ import {
 } from "../core/daemon-channel.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.js";
-import { setUserInfoLogger } from "../core/user-info.js";
-import { createSocketTap } from "../core/socket-tap.js";
+import { setUserInfoLogger } from "../zalo/custom/user-info.js";
+import { createSocketTap } from "../zalo/listener/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createUndecryptableNotice } from "../core/e2ee-notice.js";
 import { createCloudVerifier } from "../core/cloud-verify.js";
@@ -48,7 +48,7 @@ import {
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
 import { describeGap } from "../core/sync-v2/gap-advice.js";
-import { createDeliveredReceipts } from "../core/receipts.js";
+import { createDeliveredReceipts } from "../zalo/receipts.js";
 import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
@@ -433,7 +433,7 @@ export function registerListenCommand(program) {
 
             // Delivered receipts (deliveredv2): what every Zalo client sends when a
             // message arrives -- Zalo Web included, for our own echoes too. Built
-            // once and shared with `mcp start` through src/core/receipts.js, so the
+            // once and shared with `mcp start` through src/zalo/receipts.js, so the
             // two listeners cannot drift apart (AGENTS.md §13). `getApi`, not an
             // api: a re-login replaces it. Seen receipts are never sent from here.
             const deliveredReceipts = createDeliveredReceipts({

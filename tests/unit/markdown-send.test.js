@@ -14,7 +14,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import Database from "better-sqlite3";
 import { initDb } from "../../src/core/db.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
-import { resolveSendFormat } from "../../src/utils/markdown.js";
+import { resolveSendFormat } from "../../src/zalo/format/markdown.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
 
 before(() => {

@@ -15,10 +15,43 @@
  * request shape from the bundle (or, for the emoji-status pair, only its path and the presence of `params` from a
  * capture), so a failure of it says "not accepted", not "broken".
  */
-import { getAccountDir } from "../core/credentials.js";
-import { readTranscript, voiceTextFile } from "../core/voice-text.js";
-import { readAccountStatus } from "../core/account-status.js";
 import { CallError, CallUsageError, arg, buildCall, list, num, runCall } from "./web-call.js";
+
+/**
+ * The answers of the local reads, registered by the application ({@link registerLocalRead}): what they read lives
+ * on the caller's machine (the listener's records, the account's folder), which this layer knows nothing about.
+ *
+ * @type {Map<string, (a: object, api: object) => any>}
+ */
+const LOCAL_HANDLERS = new Map();
+
+/**
+ * Give a local read (an entry whose `host` is "local") its answer.
+ *
+ * @param {string} name - a key of {@link READS} whose `host` is "local"
+ * @param {(a: object, api: object) => any} handler - the arguments and the session; returns (or resolves to) the answer
+ * @throws {Error} for a name that is not a local read
+ */
+export function registerLocalRead(name, handler) {
+    if (READS[name]?.host !== "local") throw new Error(`"${name}" is not a local read`);
+    if (typeof handler !== "function") throw new Error(`the handler for "${name}" must be a function`);
+    LOCAL_HANDLERS.set(name, handler);
+}
+
+/**
+ * The `local` of a local read entry: the registered handler, called when the read is made.
+ *
+ * @param {string} name
+ * @returns {(a: object, api: object) => any}
+ */
+function localRead(name) {
+    return (a, api) => {
+        const handler = LOCAL_HANDLERS.get(name);
+        if (!handler)
+            throw new CallUsageError(`"${name}" is a local read and this application registered no answer for it`);
+        return handler(a, api);
+    };
+}
 
 /** The avatar size the web client asks profile endpoints for. */
 const AVATAR_SIZE = 160;
@@ -41,7 +74,8 @@ const NEWEST_PAGE_ID = String(2n ** 63n - 1n);
  * @property {(a: object) => Record<string,string>} [extraQuery]
  * @property {(a: object, api: object) => any} [local] - a read answered here, with no request of its own: what the
  *   listener recorded on this machine (`voice-transcript`), or an answer composed from several reads (`account-status`,
- *   which makes its own calls). `host` and `path` are "local" and "-"
+ *   which makes its own calls). `host` and `path` are "local" and "-"; the application registers the answer
+ *   ({@link registerLocalRead})
  * @property {boolean} verified - whether a live account has answered it
  */
 
@@ -55,7 +89,7 @@ export const READS = {
         cmd: null,
         what: "The text of a voice message Zalo transcribed (ask with `write run voice-to-text`); the listener records it when it arrives",
         args: [arg("reqId", "string", "the request id `voice-to-text` returned (leave out for the recent ones)")],
-        local: (a, api) => readTranscript(voiceTextFile(getAccountDir(String(api.getOwnId()))), a.reqId),
+        local: localRead("voice-transcript"),
         verified: true,
     },
     "account-status": {
@@ -64,7 +98,7 @@ export const READS = {
         cmd: null,
         what: "The account's plans in one answer: the zBusiness package and its limits, the zCloud plan, usage, limits and subscription expiry (composed from several reads; `zalo-agent account status` prints the same)",
         args: [],
-        local: (_a, api) => readAccountStatus(api, { ownId: String(api.getOwnId()) }),
+        local: localRead("account-status"),
         verified: true,
     },
     "check-update": {

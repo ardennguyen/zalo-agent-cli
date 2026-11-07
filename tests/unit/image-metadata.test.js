@@ -1,5 +1,5 @@
 /**
- * src/core/zalo-client.js → readImageMetadata()
+ * src/zalo/client.js → readImageMetadata()
  *
  * The session calls this as its `imageMetadataGetter`. The width/height go
  * straight into the upload params the recipient's client uses to lay the
@@ -34,7 +34,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readImageMetadata } from "../../src/core/zalo-client.js";
+import { readImageMetadata } from "../../src/zalo/client.js";
 import { IMAGES, FILES, ALL, verifyFixtures } from "../fixtures/index.js";
 
 const TMP = mkdtempSync(join(tmpdir(), "zalo-imgmeta-"));

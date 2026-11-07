@@ -13,8 +13,8 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeFileAtomic } from "../utils/atomic-file.js";
-import { readControls } from "./control-queue.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import { readControls } from "../zalo/queues/control-queue.js";
 
 /** The control push that carries it. */
 export const CMD_PUSH_CONTROLS = 601;

@@ -1,5 +1,5 @@
 /**
- * src/core/group-history.js -- group history from Zalo's cloud-message store.
+ * src/zalo/custom/group-history.js -- group history from Zalo's cloud-message store.
  *
  * Driven through a real session whose transport is
  * ./fake-zalo-session.js, so every assertion is about the request that
@@ -18,7 +18,7 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { getGroupHistory, quoteUids } from "../../src/core/group-history.js";
+import { getGroupHistory, quoteUids } from "../../src/zalo/custom/group-history.js";
 import { FAKE, installFakeZalo, loginFake, serviceHost } from "./fake-zalo-session.js";
 
 const GID = "7000000000000000001";

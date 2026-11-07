@@ -17,8 +17,8 @@ import {
     generateQrTransferImage,
 } from "../../src/utils/bank-helpers.js";
 import { maskProxy } from "../../src/utils/proxy-helpers.js";
-import { extractMessageText } from "../../src/utils/extract-message-text.js";
-import { generateDeviceFingerprint } from "../../src/utils/device-fingerprint.js";
+import { extractMessageText } from "../../src/zalo/format/extract-message-text.js";
+import { generateDeviceFingerprint } from "../../src/zalo/device-fingerprint.js";
 import { secChUaFor } from "../../src/zalo/headers.js";
 import { isNewerVersion } from "../../src/utils/update-check.js";
 

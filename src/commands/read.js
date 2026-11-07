@@ -8,6 +8,7 @@
 import chalk from "chalk";
 import { getApi } from "../core/zalo-client.js";
 import { callRead, describeReads, READS, ReadUsageError } from "../zalo/reads.js";
+import "../core/local-reads.js";
 import { error, info, output } from "../utils/output.js";
 
 /**

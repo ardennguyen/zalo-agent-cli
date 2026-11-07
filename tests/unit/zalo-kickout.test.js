@@ -7,7 +7,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { describeKickout, fetchKickoutInfo, kickoutKeysOf, lookupKickout } from "../../src/zalo/kickout.js";
-import { encryptZCloud } from "../../src/core/sync-v2/zcloud-cipher.js";
+import { encryptZCloud } from "../../src/zalo/kernel/zcloud-cipher.js";
 import { sealSession } from "../../src/zalo/kernel/cipher.js";
 import { FAKE, installFakeZalo, loginFake, serviceHost } from "./fake-zalo-session.js";
 

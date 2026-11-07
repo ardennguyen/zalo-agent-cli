@@ -14,7 +14,7 @@ import { readFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import { parseEnv } from "node:util";
-import { writeFileAtomic } from "../utils/atomic-file.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 const defaultConfigDir = join(homedir(), ".zalo-agent-cli");
 

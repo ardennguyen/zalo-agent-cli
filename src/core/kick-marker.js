@@ -8,7 +8,7 @@
 
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { writeFileAtomic } from "../utils/atomic-file.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 /**
  * The marker's path for one account.

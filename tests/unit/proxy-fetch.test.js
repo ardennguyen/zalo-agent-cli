@@ -1,5 +1,5 @@
 /**
- * The proxy-aware fetch (src/core/zalo-client.js `createProxyFetch`) and the maintenance question's route.
+ * The proxy-aware fetch (src/zalo/client.js `createProxyFetch`) and the maintenance question's route.
  *
  * Node bundles its own undici and the package here is a different major version; a dispatcher built by one and handed
  * to the fetch of the other fails every request with "invalid onRequestStart method". Every call of a proxied account
@@ -11,7 +11,7 @@ import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { createProxyFetch } from "../../src/core/zalo-client.js";
+import { createProxyFetch } from "../../src/zalo/client.js";
 
 const servers = [];
 after(() => {

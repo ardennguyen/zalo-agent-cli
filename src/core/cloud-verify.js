@@ -70,7 +70,7 @@ export function readCloudNotice(frame) {
  * Answer cmd 621 notices with a bounded, read-only walk of the cloud queue.
  *
  * @param {object} args
- * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap
+ * @param {ReturnType<import("../zalo/listener/socket-tap.js").createSocketTap>} args.tap
  * @param {() => object} args.getApi - the logged-in api, or throws
  * @param {ReturnType<import("./daemon-channel.js").createStageLock>} args.lock
  * @param {(line: string) => void} [args.log]

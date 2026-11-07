@@ -1,10 +1,10 @@
 /**
- * The retry of a failed `gid/decrypt` batch (src/core/sync-v2/gid.js, plan item Y9): twice more, after 0.5 s and
+ * The retry of a failed `gid/decrypt` batch (src/zalo/custom/gid.js, plan item Y9): twice more, after 0.5 s and
  * 1.5 s, except for a rate limit, which the paced batches already back off for.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { GID_RETRY_DELAYS_MS, retrying } from "../../src/core/sync-v2/gid.js";
+import { GID_RETRY_DELAYS_MS, retrying } from "../../src/zalo/custom/gid.js";
 
 const quick = () => {
     const pauses = [];

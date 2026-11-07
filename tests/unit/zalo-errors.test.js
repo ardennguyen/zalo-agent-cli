@@ -6,7 +6,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     CLOSE_CODE,
-    EXIT_CODE,
     QrLoginAborted,
     QrLoginDeclined,
     RETRY_KEY,
@@ -16,6 +15,7 @@ import {
     classifyServerError,
     errorCodeOf,
 } from "../../src/zalo/errors.js";
+import { EXIT_CODE } from "../../src/core/exit-codes.js";
 
 describe("classifyServerError", () => {
     it("names every code the official clients act on, with what to do about it", () => {

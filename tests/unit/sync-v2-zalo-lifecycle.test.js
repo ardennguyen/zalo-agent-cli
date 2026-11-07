@@ -17,7 +17,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { getMessageById } from "../../src/core/db.js";
 import { RECONNECT_DELAY_MS, connectListener, reconnectListener } from "../../src/commands/sync.js";
 import { SyncV2 } from "../../src/core/sync-v2/index.js";
-import { startKeepAlive } from "../../src/core/sync-v2/keepalive.js";
+import { startKeepAlive } from "../../src/zalo/listener/keepalive.js";
 import { FAKE, installQueuePulls, startFakeZalo } from "../helpers/fake-zalo/index.js";
 import { fakeCodecs, installFakePhone } from "../helpers/fake-zalo/phone.js";
 

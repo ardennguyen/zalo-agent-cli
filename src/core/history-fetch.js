@@ -22,7 +22,7 @@
  *
  * The fetch, in Zalo Web's order:
  *
- *   1. a group: Zalo's cloud-message store (getrecentv2, ./group-history.js),
+ *   1. a group: Zalo's cloud-message store (getrecentv2, ../zalo/custom/group-history.js),
  *      what Zalo Web reads when a group is opened;
  *   2. a DM, or a group whose store failed or came back empty: the socket's
  *      old-message stream, paged account-wide and filtered to this thread.
@@ -137,7 +137,7 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
     if (type === THREAD_GROUP) {
         try {
             // Loaded on demand: only a group needs it.
-            const { getGroupHistory } = await import("./group-history.js");
+            const { getGroupHistory } = await import("../zalo/custom/group-history.js");
             const history = await getGroupHistory(api, thread, limit);
             frames = history.groupMsgs.map((m) => ({ threadId: thread, type, data: m.data }));
             filtered = history.filtered === true;

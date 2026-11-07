@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createStartupGate } from "../../src/core/startup-gate.js";
-import { sleepSync, withFileLock } from "../../src/utils/atomic-file.js";
+import { sleepSync, withFileLock } from "../../src/zalo/kernel/atomic-file.js";
 
 const [mode, configDir, slotsArg, ...rest] = process.argv.slice(2);
 const slots = Number(slotsArg);

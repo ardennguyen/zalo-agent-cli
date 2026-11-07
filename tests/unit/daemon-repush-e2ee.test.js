@@ -23,7 +23,7 @@ import * as acorn from "acorn";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { getMessageById, initDb } from "../../src/core/db.js";
 import { storeLiveMessage } from "../../src/core/live-store.js";
-import { createSocketTap } from "../../src/core/socket-tap.js";
+import { createSocketTap } from "../../src/zalo/listener/socket-tap.js";
 import { createSelfHeal } from "../../src/core/self-heal.js";
 import { createUndecryptableNotice } from "../../src/core/e2ee-notice.js";
 import { createSession } from "../../src/zalo/kernel/session.js";

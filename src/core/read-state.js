@@ -297,7 +297,7 @@ export function readStateEvent(change) {
  * and every re-login, so nothing needs re-attaching.
  *
  * @param {object} args
- * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap
+ * @param {ReturnType<import("../zalo/listener/socket-tap.js").createSocketTap>} args.tap
  * @param {(change: {kind: "read", threadId: string, isGroup: boolean, lastReadMsgId: string, ts: number|null,
  *   cmd: number} | {kind: "unread_mark", threadId: string, isGroup: boolean, marked: boolean, cmd: number}) => void}
  *   [args.onChange] - each change that altered what is stored, for a listener to print; `cmd` is the socket

@@ -1,4 +1,4 @@
-import { resolveNonFriendDms } from "./gid.js";
+import { resolveNonFriendDms } from "../../zalo/custom/gid.js";
 
 const NOISED_ID = /^[0-9A-V]{32}$/;
 

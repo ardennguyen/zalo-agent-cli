@@ -177,7 +177,7 @@ export async function resolveQuoteSender(quote, api) {
 
     let resolveNonFriendDms;
     try {
-        ({ resolveNonFriendDms } = await import("../core/sync-v2/gid.js"));
+        ({ resolveNonFriendDms } = await import("../zalo/custom/gid.js"));
     } catch (e) {
         return { error: `Cannot resolve the quoted message's sender (${e.message}).` };
     }

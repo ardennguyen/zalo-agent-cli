@@ -11,7 +11,7 @@
  * something to ask for, never to start on its own (AGENTS.md section 13). The key is short-lived, so it is read from
  * the control queue the moment the socket is up.
  */
-import { createSocketTap } from "../socket-tap.js";
+import { createSocketTap } from "../../zalo/listener/socket-tap.js";
 import { buildPull } from "../../zalo/pulls.js";
 import { SyncV2 } from "./index.js";
 

@@ -9,7 +9,7 @@
  */
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { writeFileAtomic } from "../utils/atomic-file.js";
+import { writeFileAtomic } from "./kernel/atomic-file.js";
 
 /** The file inside an account directory. */
 export const TRUST_FILE = "trusted-device.json";

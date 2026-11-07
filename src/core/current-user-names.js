@@ -1,4 +1,4 @@
-import { runPacedBatches, userInfoLog } from "./user-info.js";
+import { runPacedBatches, userInfoLog } from "../zalo/custom/user-info.js";
 import { readAllAliases } from "../zalo/api/people.js";
 
 /** Aliases asked per page. */

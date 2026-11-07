@@ -11,7 +11,7 @@
  * `msg.st || 0 === msg.st ? 0 : -1`, which parses as
  * `(msg.st || (0 === msg.st)) ? 0 : -1` and can only ever yield 0 or -1; a DM
  * seen omits `imei`; and the listener rewrites an own message's `uidFrom` "0" to the
- * account uid, where the web sends "0". Hence src/core/receipts.js.
+ * account uid, where the web sends "0". Hence src/zalo/receipts.js.
  *
  * Everything runs through the session's HTTP seam (`ctx.options.polyfill`):
  * the real apiFactory, the real AES, a fake transport that decrypts each
@@ -28,7 +28,7 @@ import {
     sendDeliveredReceipt,
     liveReceiptTarget,
     createDeliveredReceipts,
-} from "../../src/core/receipts.js";
+} from "../../src/zalo/receipts.js";
 import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 
 /** Obviously-fake 16-byte AES key and imei. Never a real session secret (AGENTS.md §12). */

@@ -19,7 +19,7 @@
  * cannot learn the reason, for any cause. A kick has already been handled by the time it runs, so failing here is
  * never an error worth raising.
  */
-import { decryptZCloud } from "../core/sync-v2/zcloud-cipher.js";
+import { decryptZCloud } from "./kernel/zcloud-cipher.js";
 import { openSession } from "./kernel/cipher.js";
 import { buildUrl, httpRequest } from "./kernel/http.js";
 

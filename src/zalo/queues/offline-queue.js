@@ -30,10 +30,10 @@
  * only ever with `first:true`, and its `old_messages` event drops `more`,
  * `lastActionId` and `queueStatus` -- so a queue longer than one page could
  * never be finished. This module sends through `listener.sendWs` and reads
- * the answers off the raw socket (./socket-tap.js).
+ * the answers off the raw socket (../listener/socket-tap.js).
  */
 
-import { nextReqId } from "../zalo/req-id.js";
+import { nextReqId } from "../req-id.js";
 import { idsOf } from "./queue-verify.js";
 
 /** Thread type values. */
@@ -159,7 +159,7 @@ function request({ listener, tap, queue, data, timeoutMs, onFrame }) {
  *
  * @param {object} args
  * @param {object} args.listener - a listener whose socket is open and authenticated
- * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap - attached to that listener
+ * @param {ReturnType<import("../listener/socket-tap.js").createSocketTap>} args.tap - attached to that listener
  * @param {{cmd: number, subCmd: number, queueName: string}} args.queue
  * @param {string} args.lastId - the cursor: the last queue id this session holds
  * @param {number} [args.timeoutMs]

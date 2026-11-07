@@ -24,7 +24,7 @@ import {
 import { parseDateBound, parsePeriod } from "../utils/date-range.js";
 import { sendViaDaemon, getDaemonChannel, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
-import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
+import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import {
@@ -41,17 +41,17 @@ import {
     LOG_SRC_TYPE,
     videoResendOptions,
     voiceResendOptions,
-} from "../core/forward.js";
-import { undoPayload } from "../core/group-visibility.js";
+} from "../zalo/custom/forward.js";
+import { undoPayload } from "../zalo/custom/group-visibility.js";
 import { fetchMemberNames } from "../core/group-members.js";
-import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
-import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
+import { pinMessage, unpinMessage, textPinParams } from "../zalo/custom/pin.js";
+import { expandMentions, parseMentionSpecs, shiftStyles, ALL_MENTION_UID } from "../zalo/format/mentions.js";
 import { applySelfThreadAlias } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
-import { urgencyLevel } from "../utils/urgency.js";
+import { urgencyLevel } from "../zalo/format/urgency.js";
 import { registerMsgSearch } from "./msg-search.js";
-import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
-import { splitMessage, sendParts } from "../utils/split-message.js";
+import { markdownToZalo, resolveSendFormat } from "../zalo/format/markdown.js";
+import { splitMessage, sendParts } from "../zalo/format/split-message.js";
 
 /**
  * Open the active account's SQLite cache.
@@ -225,7 +225,7 @@ async function forwardSource(api, row) {
 
 /**
  * Commander parser for `--urgency`: `important` → 1, `urgent` → 2. The
- * mapping is src/utils/urgency.js, which `zalo_send_message` shares.
+ * mapping is src/zalo/format/urgency.js, which `zalo_send_message` shares.
  *
  * @param {string} value
  * @returns {number}
@@ -1307,7 +1307,7 @@ export function registerMsgCommands(program) {
                     error(target.error);
                     return;
                 }
-                // A group recall carries the group's own visibility, as Zalo Web's does (src/core/group-visibility.js).
+                // A group recall carries the group's own visibility, as Zalo Web's does (src/zalo/custom/group-visibility.js).
                 const api = getApi();
                 const payload = await undoPayload(
                     api,
@@ -1458,7 +1458,7 @@ export function registerMsgCommands(program) {
             // message. Without it the copy arrives as plain text with no
             // "forwarded" badge, which is all this command used to send. The
             // reference id is md5(cliMsgId + senderUid + conversationKey),
-            // derived the way Zalo Web derives it -- src/core/forward.js has
+            // derived the way Zalo Web derives it -- src/zalo/custom/forward.js has
             // the derivation and the capture it reproduces. Refuse rather than
             // send a reference built from a guess.
             const source = await forwardSource(api, row);

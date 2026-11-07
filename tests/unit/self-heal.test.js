@@ -33,7 +33,7 @@ import {
 } from "../../src/core/db.js";
 import { storeLiveMessage, storeLiveUndo } from "../../src/core/live-store.js";
 import { createStageLock, startDaemonChannel, syncViaDaemon } from "../../src/core/daemon-channel.js";
-import { createSocketTap } from "../../src/core/socket-tap.js";
+import { createSocketTap } from "../../src/zalo/listener/socket-tap.js";
 import { createSelfHeal } from "../../src/core/self-heal.js";
 import { fakeListener } from "./support/fake-socket.js";
 

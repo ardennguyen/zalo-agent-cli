@@ -22,7 +22,7 @@
  * Only text messages: text is the kind the capture covers, and every other
  * kind carries its own params blob.
  */
-import { customCall, getWithParams, postWithParams } from "../zalo/session-call.js";
+import { customCall, getWithParams, postWithParams } from "../session-call.js";
 
 /** A pinned message's board topic type (the web's MSG_TOPIC). */
 export const PINNED_MESSAGE_TOPIC = 2;

@@ -8,7 +8,7 @@
  * and times.
  */
 import { readFileSync } from "node:fs";
-import { writeFileAtomic } from "../utils/atomic-file.js";
+import { writeFileAtomic } from "./kernel/atomic-file.js";
 
 /**
  * Read the saved history.

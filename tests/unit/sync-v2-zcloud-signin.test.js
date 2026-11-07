@@ -32,9 +32,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getCloudItems, getCloudItemByMsgId } from "../../src/core/db.js";
-import * as zcloud from "../../src/core/sync-v2/zcloud.js";
-import { decryptZCloud, encryptZCloud } from "../../src/core/sync-v2/zcloud-cipher.js";
+import * as zcloudClient from "../../src/zalo/zcloud.js";
+import * as zcloudIndex from "../../src/core/sync-v2/zcloud.js";
+import { decryptZCloud, encryptZCloud } from "../../src/zalo/kernel/zcloud-cipher.js";
 import { sealSession } from "../../src/zalo/kernel/cipher.js";
+
+/** The REST client (src/zalo/zcloud.js) and the local index walked from it (src/core/sync-v2/zcloud.js). */
+const zcloud = { ...zcloudClient, ...zcloudIndex };
 
 // ── throwaway material ──────────────────────────────────────────────────────
 const SESSION_KEY = Buffer.alloc(16, 0x11).toString("base64");

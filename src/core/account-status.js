@@ -18,7 +18,7 @@
  * What it never prints: the cloud viewer key and its cipher key, the key-backup details (only the provider names), the
  * transaction and product ids of the subscription, the price. Read-only: no write, no socket, no state.
  */
-import { getCloudSettings, getCloudSubscription, getCloudUsage, summarizeCloudQuota } from "./sync-v2/zcloud.js";
+import { getCloudSettings, getCloudSubscription, getCloudUsage, summarizeCloudQuota } from "../zalo/zcloud.js";
 
 const DAY_MS = 86_400_000;
 const GIB = 1024 ** 3;

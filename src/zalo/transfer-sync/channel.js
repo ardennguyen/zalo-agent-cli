@@ -21,8 +21,8 @@
  * `getListener()` so a reconnect that replaces the listener is followed.
  */
 import { readFileSync } from "node:fs";
-import { writeFileAtomic } from "../../utils/atomic-file.js";
-import { nextReqId as sharedNextReqId } from "../../zalo/req-id.js";
+import { writeFileAtomic } from "../kernel/atomic-file.js";
+import { nextReqId as sharedNextReqId } from "../req-id.js";
 import { DISPOSE_REASON } from "./transfer.js";
 
 /** How long a request waits for its ack. */

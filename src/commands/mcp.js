@@ -31,9 +31,9 @@ import { success, error, info, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
 import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.js";
-import { setUserInfoLogger } from "../core/user-info.js";
+import { setUserInfoLogger } from "../zalo/custom/user-info.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
-import { createSocketTap } from "../core/socket-tap.js";
+import { createSocketTap } from "../zalo/listener/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createUndecryptableNotice } from "../core/e2ee-notice.js";
 import { createCloudVerifier } from "../core/cloud-verify.js";
@@ -54,8 +54,8 @@ import {
     storeReceipts,
 } from "../core/live-store.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
-import { classifyLiveMessage } from "../core/sync-v2/message-types.js";
-import { createDeliveredReceipts } from "../core/receipts.js";
+import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
+import { createDeliveredReceipts } from "../zalo/receipts.js";
 import { MessageBuffer } from "../mcp/message-buffer.js";
 import { ThreadFilter } from "../mcp/thread-filter.js";
 import {

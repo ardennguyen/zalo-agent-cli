@@ -5,8 +5,8 @@
 
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
-import { getInviteBoxInfo } from "../core/group-invite.js";
-import { getGroupHistory } from "../core/group-history.js";
+import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
+import { getGroupHistory } from "../zalo/custom/group-history.js";
 import { groupMemberUids } from "../core/group-members.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
@@ -406,11 +406,12 @@ export function registerGroupCommands(program) {
         .action(async (groupId, opts) => {
             // Zalo stores the whole setting object on every update, so this
             // reads the current one and sends back everything the user did not
-            // name, unchanged. See src/core/group-settings.js for why, and for
-            // what Zalo Web sends.
+            // name, unchanged. See src/zalo/custom/group-settings.js for why, and
+            // for what Zalo Web sends.
             try {
-                const { NOTHING_TO_CHANGE, settingChangesFromOptions, applyGroupSettingChanges } =
-                    await import("../core/group-settings.js");
+                const { settingChangesFromOptions } = await import("../core/group-settings.js");
+                const { NOTHING_TO_CHANGE, applyGroupSettingChanges } =
+                    await import("../zalo/custom/group-settings.js");
                 const changes = settingChangesFromOptions(opts);
                 // Refused before the session is touched: there is nothing to send.
                 if (Object.keys(changes).length === 0) throw new Error(NOTHING_TO_CHANGE);
@@ -680,7 +681,7 @@ export function registerGroupCommands(program) {
         .option("--member-count <n>", "Members per page", parseIntAtLeast(1), 10)
         .action(async (groupId, opts) => {
             try {
-                // The previous engine's call threw when the group has no topic; see core/group-invite.js.
+                // The previous engine's call threw when the group has no topic; see zalo/custom/group-invite.js.
                 const result = await getInviteBoxInfo(getApi(), {
                     groupId,
                     mpage: opts.memberPage,

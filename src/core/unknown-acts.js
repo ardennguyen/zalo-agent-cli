@@ -13,8 +13,8 @@
  * unexpected shape is skipped, and nothing here can throw into the socket.
  */
 import { readFileSync } from "node:fs";
-import { writeFileAtomic } from "../utils/atomic-file.js";
-import { readControls } from "./control-queue.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import { readControls } from "../zalo/queues/control-queue.js";
 
 /** The chat push that carries `actions[]`. */
 export const CMD_PUSH_ACTIONS = 602;

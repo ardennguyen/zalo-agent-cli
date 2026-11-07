@@ -40,16 +40,21 @@ import {
     markSyncRangesPending,
     setSyncRangeStatus,
 } from "../db.js";
-import { ensureAssets, loadCodecs } from "./assets.js";
-import { classifySyncMessage } from "./message-types.js";
-import { resolveNonFriendDms } from "./gid.js";
+import { ensureAssets, loadCodecs } from "../../zalo/transfer-sync/assets.js";
+import { classifySyncMessage } from "../../zalo/transfer-sync/message-types.js";
+import { resolveNonFriendDms } from "../../zalo/custom/gid.js";
 import { createSenderResolver } from "./senders.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
-import { startKeepAlive } from "./keepalive.js";
+import { startKeepAlive } from "../../zalo/listener/keepalive.js";
 import { DEVICE_LABEL } from "../../zalo/profile.js";
 import { decodeFrame } from "../../zalo/listener/frames.js";
-import { REQUEST_FAILURE, SyncRequestError, createSessionStore, createSyncChannel } from "./channel.js";
-import { createBatchDownloader } from "./download.js";
+import {
+    REQUEST_FAILURE,
+    SyncRequestError,
+    createSessionStore,
+    createSyncChannel,
+} from "../../zalo/transfer-sync/channel.js";
+import { createBatchDownloader } from "../../zalo/transfer-sync/download.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
 import { coveredAfter, planRanges, rangeStatusAfter } from "./ranges.js";
 import {
@@ -68,7 +73,7 @@ import {
     readTransferControls,
     shouldAbortOnFailures,
     STALL_IDLE_MS,
-} from "./transfer.js";
+} from "../../zalo/transfer-sync/transfer.js";
 import { attachLiveStore } from "../live-store.js";
 
 /**
@@ -844,7 +849,7 @@ export class SyncV2 {
         const newSession = (kind, wantPartitions = []) => {
             const id = randId();
             // Completion is measured by coverage: every partition asked for has to come back in some
-            // batch's `scopes`, or be reported as failed (see ./transfer.js).
+            // batch's `scopes`, or be reported as failed (see ../../zalo/transfer-sync/transfer.js).
             sessions.set(id, createTransferSession({ kind, want: wantPartitions }));
             return id;
         };

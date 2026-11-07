@@ -12,7 +12,7 @@
  *      a lifetime tied to the message's age; while the server still holds the
  *      file, renewlink hands back fresh URLs. That is this module.
  *   2. zCloud (personal cloud) — a per-message E2EE backup, looked up by msgId.
- *      See ./zcloud.js.
+ *      See ../zcloud.js.
  *   3. The sending device itself. No server path exists; the phone's own
  *      re-upload hints (`fileUrlToRenew`, `video_url_to_renew`) ride along in
  *      the sync payload and are preserved on the attachment record, but only
@@ -22,7 +22,7 @@
  * matches what the file service expects, the same way ./gid.js reaches
  * /api/gid/decrypt.
  */
-import { boundUtils } from "../../zalo/kernel/bound.js";
+import { boundUtils } from "../kernel/bound.js";
 
 /**
  * Zalo Web strips its internal `jxl` marker before sending a URL back for

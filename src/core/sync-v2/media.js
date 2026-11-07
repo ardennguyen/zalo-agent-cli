@@ -30,7 +30,7 @@ import {
     clearMessageLocalPath,
     getThreadNames,
 } from "../db.js";
-import { extractRenewedUrls, makeRenewLink } from "./renewlink.js";
+import { extractRenewedUrls, makeRenewLink } from "../../zalo/custom/renewlink.js";
 import { lookupCloudBackup, messageZKey } from "./zcloud.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
 

@@ -16,7 +16,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, insertMessage, upsertThread } from "../../src/core/db.js";
-import { groupVisibility, undoPayload } from "../../src/core/group-visibility.js";
+import { groupVisibility, undoPayload } from "../../src/zalo/custom/group-visibility.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { seedAccount, seedThread, runOffline, requestsTo } from "./support/offline-cli.js";
 

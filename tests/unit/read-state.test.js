@@ -34,7 +34,7 @@ import {
     readStateEvent,
     unreadMarksFrom,
 } from "../../src/core/read-state.js";
-import { createSocketTap } from "../../src/core/socket-tap.js";
+import { createSocketTap } from "../../src/zalo/listener/socket-tap.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { fakeListener } from "./support/fake-socket.js";
 import { walkAst } from "../helpers/api-call-sites.js";

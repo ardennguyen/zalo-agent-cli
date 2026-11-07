@@ -49,21 +49,41 @@ function surface() {
     return new Set(Object.keys(api).filter((k) => typeof api[k] === "function"));
 }
 
-/** Every `api.<name>(` and `getApi().<name>(` in src/commands, src/core, src/mcp and src/utils, with where it is. */
+/**
+ * The parts of src/zalo that call the session object from outside it: the custom calls, the queues, transfer sync,
+ * message text, receipts, zCloud and logout (they lived in src/core and src/utils before the layer took them).
+ */
+const ZALO_CALLERS = ["zalo/custom", "zalo/queues", "zalo/transfer-sync", "zalo/format"];
+const ZALO_CALLER_FILES = [
+    "zalo/receipts.js",
+    "zalo/zcloud.js",
+    "zalo/logout.js",
+    "zalo/client.js",
+    "zalo/listener/keepalive.js",
+    "zalo/listener/socket-tap.js",
+    "zalo/listener/reactions.js",
+];
+
+/**
+ * Every `api.<name>(` and `getApi().<name>(` in src/commands, src/core, src/mcp, src/utils and the callers in
+ * src/zalo, with where it is.
+ */
 function callSites() {
     const found = [];
-    for (const dir of ["commands", "core", "mcp", "utils"]) {
-        for (const file of jsFiles(join(ROOT, "src", dir))) {
-            const rel = relative(ROOT, file).replace(/\\/g, "/");
-            if (NOT_THE_SESSION[rel]) continue;
-            readFileSync(file, "utf8")
-                .split("\n")
-                .forEach((line, i) => {
-                    for (const m of line.matchAll(/(?:\bapi|\bgetApi\(\))\s*\.\s*(\w+)\s*\(/g)) {
-                        found.push({ name: m[1], where: `${rel}:${i + 1}` });
-                    }
-                });
-        }
+    const files = [
+        ...["commands", "core", "mcp", "utils", ...ZALO_CALLERS].flatMap((dir) => jsFiles(join(ROOT, "src", dir))),
+        ...ZALO_CALLER_FILES.map((f) => join(ROOT, "src", f)),
+    ];
+    for (const file of files) {
+        const rel = relative(ROOT, file).replace(/\\/g, "/");
+        if (NOT_THE_SESSION[rel]) continue;
+        readFileSync(file, "utf8")
+            .split("\n")
+            .forEach((line, i) => {
+                for (const m of line.matchAll(/(?:\bapi|\bgetApi\(\))\s*\.\s*(\w+)\s*\(/g)) {
+                    found.push({ name: m[1], where: `${rel}:${i + 1}` });
+                }
+            });
     }
     return found;
 }

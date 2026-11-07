@@ -16,8 +16,8 @@
  * Built on the kernel's bound session helpers (src/zalo/kernel/bound.js), so the
  * authenticated envelope is the one every session call sends.
  */
-import { boundUtils } from "../../zalo/kernel/bound.js";
-import { isRateLimitError, runPacedBatches } from "../user-info.js";
+import { boundUtils } from "../kernel/bound.js";
+import { isRateLimitError, runPacedBatches } from "./user-info.js";
 
 /** A failed `gid/decrypt` batch is asked for twice more, after these pauses, before it counts as failed (Y9). */
 export const GID_RETRY_DELAYS_MS = Object.freeze([500, 1500]);

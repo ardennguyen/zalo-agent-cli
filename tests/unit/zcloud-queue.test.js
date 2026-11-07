@@ -23,14 +23,8 @@ import {
     setSyncState,
     upsertCloudItem,
 } from "../../src/core/db.js";
-import {
-    applyQueuePage,
-    cloudKeyOf,
-    normalizeCloudItem,
-    removalKeysOf,
-    syncCloudIndex,
-    threadClearOf,
-} from "../../src/core/sync-v2/zcloud.js";
+import { cloudKeyOf, normalizeCloudItem, removalKeysOf, threadClearOf } from "../../src/zalo/zcloud.js";
+import { applyQueuePage, syncCloudIndex } from "../../src/core/sync-v2/zcloud.js";
 
 const OWN = "1001";
 const PEER = "1002";

@@ -14,7 +14,7 @@
  * user occasionally updating their browser would.
  */
 
-import { CHROME_VERSIONS, UA_PLATFORMS, buildUserAgent } from "../zalo/profile.js";
+import { CHROME_VERSIONS, UA_PLATFORMS, buildUserAgent } from "./profile.js";
 
 /**
  * Chrome-only presets, built from the protocol profile (src/zalo/profile.js), which owns the Chrome builds and

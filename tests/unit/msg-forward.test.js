@@ -12,7 +12,7 @@
  * Text no longer goes through the previous engine's forwardMessage at all: it now carries
  * the reference Zalo Web sends, which forwardMessage cannot serialize
  * correctly (it hardcodes the decorLog's `st`), so it is a custom call in
- * src/core/forward.js. The guards that pinned forwardMessage's call shape --
+ * src/zalo/custom/forward.js. The guards that pinned forwardMessage's call shape --
  * and the one that insisted the reference be omitted -- are replaced by
  * tests/unit/msg-forward-reference.test.js, which asserts the decrypted
  * request itself: the message, the target list, the reference and decorLog.

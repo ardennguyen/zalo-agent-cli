@@ -21,7 +21,7 @@ import { once } from "node:events";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { serverLogout } from "../../src/core/logout.js";
 import { decodeFrame } from "../../src/core/sync-v2/index.js";
-import { createSyncChannel } from "../../src/core/sync-v2/channel.js";
+import { createSyncChannel } from "../../src/zalo/transfer-sync/channel.js";
 import { assertConforms, diffBody, diffSequence } from "../helpers/replay/replay.js";
 import {
     WEB_BOOT,

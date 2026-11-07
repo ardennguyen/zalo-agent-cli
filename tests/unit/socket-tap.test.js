@@ -1,5 +1,5 @@
 /**
- * src/core/socket-tap.js -- the raw reader on the listener's WebSocket.
+ * src/zalo/listener/socket-tap.js -- the raw reader on the listener's WebSocket.
  *
  * The listener decodes each frame and emits typed events, throwing away everything
  * else in the envelope: `queueStatus`, `lastActionId`, `more`, `evict`,
@@ -12,7 +12,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createSocketTap, readFrame } from "../../src/core/socket-tap.js";
+import { createSocketTap, readFrame } from "../../src/zalo/listener/socket-tap.js";
 import { fakeListener, serverFrame } from "./support/fake-socket.js";
 
 describe("socket tap", () => {

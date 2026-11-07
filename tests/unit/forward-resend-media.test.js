@@ -16,7 +16,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { insertMessage, initDb, upsertThread } from "../../src/core/db.js";
-import { FORWARD_VIDEO_FALLBACK, videoResendOptions, voiceResendOptions } from "../../src/core/forward.js";
+import { FORWARD_VIDEO_FALLBACK, videoResendOptions, voiceResendOptions } from "../../src/zalo/custom/forward.js";
 import { HEAD_TIMEOUT_MS } from "../../src/zalo/api/messages.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { seedAccount, seedThread, runOffline, requestsTo } from "./support/offline-cli.js";

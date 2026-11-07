@@ -29,7 +29,7 @@ import {
     hasSyncedGroupEventNear,
     LIVE_GROUP_EVENT_PREFIX,
 } from "./db.js";
-import { classifyLiveMessage } from "./sync-v2/message-types.js";
+import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { resolveCurrentUserNames } from "./current-user-names.js";
 
 /** THREAD_TYPE.User */

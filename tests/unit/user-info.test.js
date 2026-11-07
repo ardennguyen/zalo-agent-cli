@@ -1,5 +1,5 @@
 /**
- * src/core/user-info.js -- profile lookups that notice a rate limit.
+ * src/zalo/custom/user-info.js -- profile lookups that notice a rate limit.
  *
  * A restore of a busy account asks Zalo for thousands of profiles in batches
  * of 100. The old loops swallowed every error with a fixed sentence and went
@@ -17,7 +17,7 @@ import {
     isRateLimitError,
     runPacedBatches,
     setUserInfoLogger,
-} from "../../src/core/user-info.js";
+} from "../../src/zalo/custom/user-info.js";
 import { resolveCurrentUserNames } from "../../src/core/current-user-names.js";
 
 const ids = (n) => Array.from({ length: n }, (_, i) => String(1000 + i));

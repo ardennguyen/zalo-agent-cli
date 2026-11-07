@@ -18,7 +18,7 @@
  * Nothing here knows about files except through the `store` the caller passes (see {@link createDrStore}).
  */
 import { readFileSync } from "node:fs";
-import { writeFileAtomic } from "../utils/atomic-file.js";
+import { writeFileAtomic } from "./kernel/atomic-file.js";
 import { ZaloApiError, errorCodeOf } from "./errors.js";
 import { COMPUTER_NAME } from "./profile.js";
 import { withBrowserHeaders } from "./headers.js";

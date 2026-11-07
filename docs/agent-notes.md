@@ -21,19 +21,25 @@ src/
 │   ├── poll.js   reminder.js  auto-reply.js  quick-msg.js  label.js  catalog.js
 │   ├── listen.js sync.js  mcp.js
 │   └── oa.js     oa-init.js   oa-listen.js
-├── zalo/                 # The protocol layer: kernel/, api/, listener/, login, socket (see below)
+├── zalo/                 # The protocol layer, a library the app uses: imports nothing from core/utils/commands/mcp
+│   ├── index.js          # Its public entry (src/zalo/README.md says what the caller must inject)
+│   ├── kernel/ api/ listener/  login, client (session making), socket (see below)
+│   ├── custom/           # Hand-built calls: pin, forward, group history/invite/settings/visibility, gid, renewlink
+│   ├── transfer-sync/    # cmd 590/591 transfer sync: transfer rules, channel, downloads, assets, message types
+│   ├── queues/           # Offline queue, 601 control queue, 532 queue acks
+│   └── format/           # Message text: markdown, mentions, urgency, Web-style split, text extraction
 ├── core/                 # Session, storage, and sync primitives
-│   ├── zalo-client.js    # API singleton + autoLogin/clearSession
+│   ├── zalo-client.js    # API singleton + autoLogin/clearSession (sessions are made by src/zalo/client.js)
 │   ├── credentials.js    # CONFIG_DIR (~/.zalo-agent-cli), 0600 credential files
 │   ├── accounts.js       # Multi-account registry + per-account data dir wipe
 │   ├── oa-client.js      # Official OA REST client
 │   ├── db.js             # SQLite (better-sqlite3, WAL) message/thread cache
 │   ├── sync.js           # SyncManager — socket backfill, gap tracking, freshness debounce
-│   ├── sync-v2/          # transfer-sync-v2 — the REAL phone-backed history restore
+│   ├── sync-v2/          # transfer-sync-v2 — the REAL phone-backed history restore, over src/zalo/transfer-sync
 │   │   ├── index.js      # SyncV2.restore() — socket cmd 590/591 conversation + message rounds
-│   │   ├── assets.js     # libzproto WASM fetch + cache from Zalo's CDN
 │   │   ├── media.js      # the ONLY media downloader
-│   │   └── gid.js        # opaque convId → real threadId mapping for non-friend DMs
+│   │   ├── zcloud.js     # the local zCloud index (the REST client is src/zalo/zcloud.js)
+│   │   └── reactions.js  # the reaction backlog stored (the request is src/zalo/listener/reactions.js)
 │   ├── daemon-channel.js # loopback HTTP transport to a running daemon (transport only)
 │   ├── daemon-sync.js    # the sync stage bodies daemon-channel injects as runners
 │   ├── lock.js           # daemon.lock — one listen/db writer per account
@@ -109,7 +115,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **4565** as of 2026-11-07 (4556 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **4569** as of 2026-11-07 (4560 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -242,7 +248,7 @@ v3 first and re-applied to 2.5 by hand (the duplicate pairs `04ba225`/`2c0b3a1`,
 `4138a48`/`c4e558b`, `5f938d0`/`5736fb9`). An `ours` merge tells git that `main` is fully
 incorporated while taking nothing, so the first time a change is made on 2.5 *first* and the next
 merge is again `ours`, that change is gone from v3 and `git log --merges` will insist it arrived.
-`src/utils/split-message.js` was checked identical on both branches on 2026-11-03, so nothing had
+`src/zalo/format/split-message.js` was checked identical on both branches on 2026-11-03, so nothing had
 been lost by then. The rule now: write a shared fix where it is found, `git cherry-pick -x` it to
 the other branch, and merge `main` into v3 only as a real merge.
 
@@ -283,10 +289,23 @@ written from Zalo Web's wire format: captures and the Web bundles are read as an
 - `src/zalo/listener/` — the chat socket: frame header and payload decoding (`frames.js`), routing to typed
   events (`dispatch.js`), the event objects (`models.js`, `group-events.js`, `friend-events.js`), and the socket
   itself (`listener.js`).
-- `src/zalo/{login,qr-login,official-logout,kickout,socket,retry,maintenance}.js` — logins, logout, the kick
-  reason, the socket supervisor and its retry table. The identity this client announces (API version, type 30,
-  device label, headers) lives only in `src/zalo/profile.js` (D3, D4).
-- `src/zalo/{reads,writes,web-call}.js` — the `read` / `write` tables of the web client's other endpoints.
+- `src/zalo/{login,qr-login,client,logout,official-logout,kickout,socket,retry,maintenance}.js` — logins, making a
+  session (`client.js`: options, proxy fetch, saved and QR login), logout, the kick reason, the socket supervisor
+  and its retry table. The identity this client announces (API version, type 30, device label, headers) lives
+  only in `src/zalo/profile.js` (D3, D4).
+- `src/zalo/{reads,writes,web-call}.js` — the `read` / `write` tables of the web client's other endpoints. The
+  answers of the two local reads are registered by the app (`src/core/local-reads.js`).
+- `src/zalo/custom/`, `receipts.js`, `zcloud.js` — calls the session object does not make or makes wrong (pin,
+  forward, group history, settings, invite, visibility, gid decrypt, media renewal, paced profile lookups), the
+  seen/delivered receipts, and the zCloud REST client.
+- `src/zalo/transfer-sync/`, `queues/`, `listener/{keepalive,socket-tap,reactions}.js` — the protocol half of
+  transfer sync, the offline/control queues and their acks, and the raw socket readers. What they store is the
+  app's: `src/core/sync-v2/`, `live-store.js`, `self-heal.js`.
+- `src/zalo/format/` — message text (markdown, mentions, urgency, the Web-style split).
+- **The boundary.** Nothing under `src/zalo/` imports `src/core`, `src/utils`, `src/commands`, `src/mcp` or
+  `src/index.js`; the caller injects paths, the proxy, loggers and the local reads. ESLint
+  (`no-restricted-imports` on `src/zalo/**`) and `tests/unit/zalo-boundary.test.js` enforce it. Public entry:
+  `src/zalo/index.js`; `src/zalo/README.md`.
 
 ### The wire-diff golden files
 
@@ -448,7 +467,7 @@ The same change made the daemon log say what a stage is doing. `src/core/daemon-
 each stage's parameters, phases (with elapsed time), a once-a-minute "still running" line, and its
 result or failure; an event-loop stall monitor (the restore decodes and stores on the thread that
 answers the socket's pings); and the socket's age plus the running stage on every drop. Profile
-lookups (`src/core/user-info.js`) are paced, retried on a rate limit, stopped when it persists, and
+lookups (`src/zalo/custom/user-info.js`) are paced, retried on a rate limit, stopped when it persists, and
 log Zalo's own code and message, which had never been captured: the pattern that recognizes a rate
 limit (`isRateLimitError`) is a guess until a log shows the real text.
 
@@ -747,7 +766,7 @@ later (webhook outbox, message buffer, pending gaps, stage lock).
 refreshes names concurrently. It was read, edited in memory and written back with a plain
 `writeFileSync`. Measured with six processes: writers lost each other's changes, a reader could catch
 the file truncated and not yet refilled and take it for "no accounts", and a damaged file read as an
-empty list, so the next `login` replaced it with a registry of one. `src/utils/atomic-file.js` now
+empty list, so the next `login` replaced it with a registry of one. `src/zalo/kernel/atomic-file.js` now
 holds the two guarantees, used by the registry (`src/core/accounts.js`), credentials, `mcp-config.json`
 and the OA credentials:
 
@@ -979,7 +998,7 @@ block costs `bytes(text) + bytes(JSON.stringify(its styles))` and a new message 
 threshold (1500 characters), which for Chinese would exceed the byte budget; it only works there because the
 plain limit is in units.
 
-**What `src/utils/split-message.js` does:** the same budget (3000 UTF-8 bytes of text plus styles JSON, counted
+**What `src/zalo/format/split-message.js` does:** the same budget (3000 UTF-8 bytes of text plus styles JSON, counted
 for both plain and styled, so a long text in any script is cut where Web cuts it), the same preference
 order with the sentence marks of CJK, Indic, Arabic, Armenian, Ethiopic, Burmese and Khmer added (`MARKS`), a hard cut inside the budget when there is no break, never inside
 a surrogate pair or an `@[uid]` mention, ranges clipped and re-based per part, whitespace at a cut dropped. A
@@ -1003,7 +1022,7 @@ bullets or headings, and the tool had no pass at all.
   its newline), a heading as a bold line, and bold inside an item as a second overlapping range. The cached
   `raw_data` of such a message is `action: "rtf"` with `params.styles`; a message we send with `styles`
   comes back from Zalo in exactly that shape (checked live, both senders).
-- **`src/utils/markdown.js` is conservative where Markdown is ambiguous**, because most text is not
+- **`src/zalo/format/markdown.js` is conservative where Markdown is ambiguous**, because most text is not
   Markdown: `snake_case` (an underscore inside a word never opens emphasis), `2 * 3 * 4`, a lone `*`, an
   unclosed `**` and `5 > 3` stay as written; an emphasis marker must hug its text. Ordered lists keep their
   numbers as typed, as Zalo's clients do, instead of relying on `lst_2` numbering; links become
@@ -1070,7 +1089,7 @@ repair. Only 4 and 5 confirm now; 6 to 10 end the run with the phone's reason, r
 (0 for a cancel) and record nothing. Batches that fail are failed per partition, not per shard, a batch the phone
 sends twice is one batch, a session with an `isLast` batch is finished only when every earlier index has arrived,
 and a run stops after ten failed batches or when more than half of ten or more have failed. The wait for a
-confirmation is ten minutes. The rules are in `src/core/sync-v2/transfer.js` as pure functions, so they are tested
+confirmation is ten minutes. The rules are in `src/zalo/transfer-sync/transfer.js` as pure functions, so they are tested
 without a phone or the decryption assets.
 
 **Why a kick happened (L12b).** After a kick the Web client asks `POST {aext}/api/session/kickout-info` (form
@@ -1226,7 +1245,7 @@ joins the same way, so the tests assert the exact value. The fake also follows a
 
 ## The sync request channel, and what a restore now waits for (v3.0, 2026-10-25)
 
-**Where it lives.** `src/core/sync-v2/channel.js` sends the `590` request and the `591` release and reads their
+**Where it lives.** `src/zalo/transfer-sync/channel.js` sends the `590` request and the `591` release and reads their
 acknowledgements; `download.js` fetches the batches. `SyncV2.restore()` no longer builds frames itself.
 
 **Every request is acknowledged, and the restore waits for it.** The ack is `{reqId, err, ts}` on the same command.
@@ -1263,7 +1282,7 @@ tests pin it.
 ## Queue items are acknowledged after the write, and the Web-shaped pulls (v3.0, 2026-10-25)
 
 **The acks (Y10, D7).** Zalo wants to be told which queue items a client holds, and repairs what it was not told
-about. `src/core/queue-verify.js` sends the `532` frame `{queueName, ids: [{actionId}], nretry, reqId}` once
+about. `src/zalo/queues/queue-verify.js` sends the `532` frame `{queueName, ids: [{actionId}], nretry, reqId}` once
 `max_msg_verify + 2` ids are pending or `interval_verify` (30 s in a capture) has passed, and reads the answer
 (`error` 0 done, 1 some items never reached us and follow as `534` pushes, -1 stop verifying on this connection). The
 rule is the order: **an id is acknowledged only after the row it names is committed to zalo.db.** A live push is

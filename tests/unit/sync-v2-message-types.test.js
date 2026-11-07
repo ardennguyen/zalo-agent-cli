@@ -19,7 +19,7 @@ import {
     MEDIA_TYPES,
     classifyLiveMessage,
     LIVE_MSG_TYPES,
-} from "../../src/core/sync-v2/message-types.js";
+} from "../../src/zalo/transfer-sync/message-types.js";
 
 /** Build a decoded sync message with one attachment. */
 const msg = (msgType, content, attach = null, meta = {}) => ({

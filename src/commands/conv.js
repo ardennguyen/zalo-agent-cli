@@ -13,7 +13,8 @@ import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readStateLabel } from "../core/read-state.js";
 import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
 import { pinnedConversations } from "../core/sync-v2/conv-state.js";
-import { markConversationRead, unreadMarkAnchor, zaloPost } from "../core/receipts.js";
+import { markConversationRead, unreadMarkAnchor } from "../core/receipts.js";
+import { zaloPost } from "../zalo/receipts.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
 
 /**
@@ -50,13 +51,13 @@ async function newestMessageAnchor(api, threadId, type) {
     }
 
     // Source 1: Zalo's cloud-message store, the group history Zalo Web reads
-    // (src/core/group-history.js). The previous engine's getGroupChatHistory asked
+    // (src/zalo/custom/group-history.js). The previous engine's getGroupChatHistory asked
     // /api/group/history, which Zalo answers with 404 -- and this used to read
     // its answer as an array, a shape it never had.
     if (type === 1) {
         try {
             // Loaded on demand: only the group path needs it.
-            const { getGroupHistory } = await import("../core/group-history.js");
+            const { getGroupHistory } = await import("../zalo/custom/group-history.js");
             const history = await getGroupHistory(api, threadId, 1);
             const last = history.groupMsgs[0]?.data;
             const anchor = toAnchor(last?.uidFrom ?? last?.ownerId, last?.cliMsgId, last?.msgId ?? last?.globalMsgId);
@@ -532,6 +533,7 @@ export function registerConvCommands(program, deps = {}) {
             // st/at/cmd/ts all -1 (that call could not send real values), no imei on a
             // DM, and no removeUnreadMark at all, so it could not undo
             // `conv unread`. Both requests are now built in src/core/receipts.js
+            // (the seen receipt itself in src/zalo/receipts.js)
             // to match a capture of the real Zalo Web client.
             //
             // process.exit stays outside the try blocks: inside one, a throwing

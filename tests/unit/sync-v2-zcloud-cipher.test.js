@@ -1,5 +1,5 @@
 /**
- * src/core/sync-v2/zcloud-cipher.js — the zCloud params/response cipher.
+ * src/zalo/kernel/zcloud-cipher.js — the zCloud params/response cipher.
  *
  * zCloud (`zcld.chat.zalo.me`) does not use the session cipher every other
  * Zalo endpoint uses (session key, all-zero IV). Zalo Web's module `98yS`
@@ -33,7 +33,7 @@ const ENK_128 = Buffer.alloc(16, 0x33).toString("base64");
 const OTHER_ENK = Buffer.alloc(32, 0x21).toString("base64");
 
 /** Loaded per test so a missing module fails each test on its own. */
-const cipher = () => import("../../src/core/sync-v2/zcloud-cipher.js");
+const cipher = () => import("../../src/zalo/kernel/zcloud-cipher.js");
 
 const bytes = (b64) => Uint8Array.from(Buffer.from(b64, "base64"));
 

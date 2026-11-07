@@ -8,7 +8,7 @@ import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { whileInterruptible } from "../utils/interrupt.js";
 import { SyncManager } from "../core/sync.js";
 import { SyncV2, resolveSyncWindow, FULL_HISTORY_FROM } from "../core/sync-v2/index.js";
-import { CONFIRM_WAIT_MS } from "../core/sync-v2/transfer.js";
+import { CONFIRM_WAIT_MS } from "../zalo/transfer-sync/transfer.js";
 import {
     downloadSyncedMedia,
     pruneDownloadedMedia,
@@ -17,16 +17,11 @@ import {
 } from "../core/sync-v2/media.js";
 import { syncBoards } from "../core/sync-v2/board.js";
 import { drainReactions, placeUnresolvedReactions } from "../core/sync-v2/reactions.js";
-import {
-    getCloudSettings,
-    getCloudUsage,
-    getMyCloudUsage,
-    summarizeCloudQuota,
-    syncCloudIndex,
-} from "../core/sync-v2/zcloud.js";
+import { getCloudSettings, getCloudUsage, getMyCloudUsage, summarizeCloudQuota } from "../zalo/zcloud.js";
+import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
 import { syncConvState } from "../core/sync-v2/conv-state.js";
 import { planSyncRun } from "../core/sync-v2/plan.js";
-import { pingPayload, startKeepAlive } from "../core/sync-v2/keepalive.js";
+import { pingPayload, startKeepAlive } from "../zalo/listener/keepalive.js";
 import { cancelViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-channel.js";
 import { attachLiveStore } from "../core/live-store.js";
 import {

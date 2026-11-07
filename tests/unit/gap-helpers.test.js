@@ -12,7 +12,7 @@ import {
     parseThreadTypeArg,
 } from "../../src/utils/cli-args.js";
 import { filterBanks, findBankAccount } from "../../src/core/bank-accounts.js";
-import { unpackTopic } from "../../src/core/group-invite.js";
+import { unpackTopic } from "../../src/zalo/custom/group-invite.js";
 
 describe("parseThreadTypeArg", () => {
     it("accepts 0 and 1 only", () => {

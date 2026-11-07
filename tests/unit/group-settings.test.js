@@ -31,7 +31,8 @@ import { Command } from "commander";
 
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { registerGroupCommands } from "../../src/commands/group.js";
-import { settingChangesFromOptions, applyGroupSettingChanges } from "../../src/core/group-settings.js";
+import { settingChangesFromOptions } from "../../src/core/group-settings.js";
+import { applyGroupSettingChanges } from "../../src/zalo/custom/group-settings.js";
 import { createApi } from "../../src/zalo/api.js";
 import { openSession as decodeAES, sealSession as encodeAES } from "../../src/zalo/kernel/cipher.js";
 
@@ -269,7 +270,7 @@ describe("group settings changes only what was named", () => {
     });
 
     it("sends no blocked_members at all", async () => {
-        // Decision pinned here, evidence in src/core/group-settings.js: the
+        // Decision pinned here, evidence in src/zalo/custom/group-settings.js: the
         // web's member-list toggle omits the key, its settings panel sends
         // `[]`, and nothing in the web ever sends a populated list. Omitting
         // it is safe under every server reading that `[]` is safe under, and

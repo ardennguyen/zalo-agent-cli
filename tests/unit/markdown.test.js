@@ -1,5 +1,5 @@
 /**
- * Markdown to Zalo rich text (src/utils/markdown.js).
+ * Markdown to Zalo rich text (src/zalo/format/markdown.js).
  *
  * Zalo draws bold and bullets only from style ranges; typed `**bold**` and `- item` show as typed. The shapes
  * asserted here (a bullet is the line's text covered by `lst_1`, a heading is a bold line) are those of real
@@ -9,8 +9,8 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { ALL_MENTION_UID, expandMentions, shiftStyles } from "../../src/utils/mentions.js";
-import { STYLE, convertInline, looksLikeMarkdown, markdownToZalo } from "../../src/utils/markdown.js";
+import { ALL_MENTION_UID, expandMentions, shiftStyles } from "../../src/zalo/format/mentions.js";
+import { STYLE, convertInline, looksLikeMarkdown, markdownToZalo } from "../../src/zalo/format/markdown.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);

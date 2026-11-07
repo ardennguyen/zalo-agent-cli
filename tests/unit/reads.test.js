@@ -33,6 +33,8 @@ import {
     callRead,
     describeReads,
 } from "../../src/zalo/reads.js";
+// The local reads' answers are the application's; the CLI registers them the same way.
+import "../../src/core/local-reads.js";
 
 // [name, args, host key, path, method, what the web client encrypts (null: no params)]
 const CASES = [

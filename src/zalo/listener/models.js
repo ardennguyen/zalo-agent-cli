@@ -1,6 +1,6 @@
 /**
  * The objects the listener emits for chat socket events, and that the engine also builds itself from stored rows
- * (src/core/self-heal.js, src/core/group-history.js).
+ * (src/core/self-heal.js, src/zalo/custom/group-history.js).
  *
  * Every object is `{type, data, threadId, isSelf}`, where `type` is the thread type, 0 for a 1-1 conversation and 1
  * for a group. Undo adds `isGroup`; Reaction has `isGroup` instead of `type`. `data` is the wire object itself, not

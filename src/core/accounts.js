@@ -3,7 +3,7 @@
  * Maps each account to its own proxy (1:1) and tracks active account.
  *
  * A fleet of daemons and the `account` / `login` commands share this one file, so it is written the
- * way a shared file must be (src/utils/atomic-file.js):
+ * way a shared file must be (src/zalo/kernel/atomic-file.js):
  *  - every change is read-modify-write under a lock file (`accounts.json.lock`), so two writers no
  *    longer lose each other's change;
  *  - every write is a temp file renamed over the target, so a reader never sees a half-written
@@ -18,7 +18,7 @@ import { readFileSync, existsSync, mkdirSync, rmSync, renameSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR, getAccountDir, deleteCredentials } from "./credentials.js";
 import { checkLock } from "./lock.js";
-import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../utils/atomic-file.js";
+import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 function accountsFile() {
     return join(CONFIG_DIR, "accounts.json");

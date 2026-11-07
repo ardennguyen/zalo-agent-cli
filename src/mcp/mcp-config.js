@@ -5,7 +5,7 @@
 import { readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR } from "../core/credentials.js";
-import { writeFileAtomic } from "../utils/atomic-file.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 function mcpConfigFile() {
     return join(CONFIG_DIR, "mcp-config.json");

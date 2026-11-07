@@ -49,7 +49,7 @@ const QUOTE = Object.freeze({
     ttl: 0,
 });
 
-/** Bold, an indent of 2 (the engine's `ind_$`), a bullet list: what src/utils/markdown.js produces. */
+/** Bold, an indent of 2 (the engine's `ind_$`), a bullet list: what src/zalo/format/markdown.js produces. */
 const STYLES = [
     { start: 0, len: 5, st: "b" },
     { start: 6, len: 5, st: "ind_$", indentSize: 2 },

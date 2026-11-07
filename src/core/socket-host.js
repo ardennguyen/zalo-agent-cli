@@ -22,7 +22,8 @@
  *    the maintenance gate instead of retrying.
  *  - everything else (drops, silence, sleep) is the supervisor's.
  */
-import { EXIT_CODE, classifyServerError, errorCodeOf } from "../zalo/errors.js";
+import { classifyServerError, errorCodeOf } from "../zalo/errors.js";
+import { EXIT_CODE } from "./exit-codes.js";
 import { checkMaintenance, maintenanceKeysOf, waitOutMaintenance } from "../zalo/maintenance.js";
 import { lookupKickout } from "../zalo/kickout.js";
 import { loadAnomalyState, saveAnomalyState } from "../zalo/anomaly-store.js";

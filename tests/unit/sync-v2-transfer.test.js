@@ -1,5 +1,5 @@
 /**
- * What the phone's frames mean for a transfer sync (src/core/sync-v2/transfer.js): the status table, how
+ * What the phone's frames mean for a transfer sync (src/zalo/transfer-sync/transfer.js): the status table, how
  * one session reads its controls, when it is finished, and when a run has failed too much to go on.
  *
  * The first bug here was a comparison, `status >= 4`: a phone that REJECTED the request (status 6) read as
@@ -31,7 +31,7 @@ import {
     readTransferControls,
     shouldAbortOnFailures,
     recordDownloadFailure,
-} from "../../src/core/sync-v2/transfer.js";
+} from "../../src/zalo/transfer-sync/transfer.js";
 import { installTransferSync, startFakeZalo } from "../helpers/fake-zalo/index.js";
 
 const status = (s, extra = {}) => ({

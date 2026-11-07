@@ -97,7 +97,10 @@ const isFakeNoised = (token) => token.includes("NOISED");
  * where the value has a definition, so the reason can be checked by reading.
  */
 const ALLOWED = new Map([
-    [String(2n ** 63n), "2^63, Zalo Web's MAX_MSG_ID: NEWEST_MSG_ID in src/core/group-history.js, and its tests"],
+    [
+        String(2n ** 63n),
+        "2^63, Zalo Web's MAX_MSG_ID: NEWEST_MSG_ID in src/zalo/custom/group-history.js, and its tests",
+    ],
     [
         String(Number.MAX_SAFE_INTEGER),
         "Number.MAX_SAFE_INTEGER: MAX_TS in src/core/sync-v2/index.js, a window's open end",

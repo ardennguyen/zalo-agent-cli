@@ -49,23 +49,24 @@ import {
     LOG_SRC_TYPE,
     videoResendOptions,
     voiceResendOptions,
-} from "../core/forward.js";
-import { undoPayload } from "../core/group-visibility.js";
-import { pinMessage, unpinMessage, textPinParams } from "../core/pin.js";
+} from "../zalo/custom/forward.js";
+import { undoPayload } from "../zalo/custom/group-visibility.js";
+import { pinMessage, unpinMessage, textPinParams } from "../zalo/custom/pin.js";
 import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { callRead, describeReads, READ_NAMES, ReadUsageError } from "../zalo/reads.js";
+import "../core/local-reads.js";
 import { callWrite, describeWrites, WRITE_NAMES } from "../zalo/writes.js";
 import { describeReadState, readOnZalo } from "../core/read-state.js";
-import { extractMessageText } from "../utils/extract-message-text.js";
-import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../utils/mentions.js";
+import { extractMessageText } from "../zalo/format/extract-message-text.js";
+import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../zalo/format/mentions.js";
 import { resolveSelfThread } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
-import { urgencyLevel } from "../utils/urgency.js";
-import { splitMessage, sendParts } from "../utils/split-message.js";
+import { urgencyLevel } from "../zalo/format/urgency.js";
+import { splitMessage, sendParts } from "../zalo/format/split-message.js";
 import { hasLiteralNewline, LITERAL_NEWLINE_WARNING } from "../utils/literal-newline.js";
-import { markdownToZalo, resolveSendFormat } from "../utils/markdown.js";
+import { markdownToZalo, resolveSendFormat } from "../zalo/format/markdown.js";
 import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
 import {
     describeFriendAddError,

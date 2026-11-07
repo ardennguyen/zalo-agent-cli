@@ -18,7 +18,7 @@
  * both are read from `settings.features.socket` when present, and a captured session shows the first ack 30 s after
  * a message.
  */
-import { nextReqId as sharedNextReqId } from "../zalo/req-id.js";
+import { nextReqId as sharedNextReqId } from "../req-id.js";
 
 /** The command of the ack, in both directions. */
 export const CMD_VERIFY = 532;

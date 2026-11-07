@@ -9,7 +9,7 @@
  * - `friend undo-request` explains Zalo's 301 (too many requests taken back), in Zalo Web's sense;
  * - `group info` asks for its one group as a list;
  * - `conv mute` / `conv unmute` send the mute action Zalo expects (1 and 3);
- * - the media renewal of a restore (src/core/sync-v2/renewlink.js) seals its request on the session.
+ * - the media renewal of a restore (src/zalo/custom/renewlink.js) seals its request on the session.
  *
  * Every id is made up.
  */
@@ -21,7 +21,7 @@ import { getApi } from "../../src/core/zalo-client.js";
 import { registerFriendCommands } from "../../src/commands/friend.js";
 import { registerGroupCommands } from "../../src/commands/group.js";
 import { registerConvCommands } from "../../src/commands/conv.js";
-import { makeRenewLink } from "../../src/core/sync-v2/renewlink.js";
+import { makeRenewLink } from "../../src/zalo/custom/renewlink.js";
 import { FAKE, installFakeZalo, loginFake, runCommand, serviceHost } from "./fake-zalo-session.js";
 
 const U = "9100000000000000071";

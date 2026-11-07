@@ -1,5 +1,5 @@
 /**
- * The request side of a transfer sync (src/core/sync-v2/channel.js, plan items Y4a, Y6a, Y6b, Y7), against the
+ * The request side of a transfer sync (src/zalo/transfer-sync/channel.js, plan items Y4a, Y6a, Y6b, Y7), against the
  * fake Zalo's real WebSocket: the `590` request with its acknowledgement, the retry rules, the counters, the
  * release with its reason, the late release, and the sessions written down for the next run to clean.
  */
@@ -18,8 +18,8 @@ import {
     createSessionStore,
     createSyncChannel,
     readAck,
-} from "../../src/core/sync-v2/channel.js";
-import { DISPOSE_REASON } from "../../src/core/sync-v2/transfer.js";
+} from "../../src/zalo/transfer-sync/channel.js";
+import { DISPOSE_REASON } from "../../src/zalo/transfer-sync/transfer.js";
 import { assertConforms, diffBody } from "../helpers/replay/replay.js";
 import { WEB_FRAMES } from "../helpers/replay/shapes.js";
 import { ok, startFakeZalo } from "../helpers/fake-zalo/index.js";

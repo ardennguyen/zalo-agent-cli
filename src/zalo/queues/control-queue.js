@@ -7,7 +7,7 @@
  * event, an unread mark, a sync status) are fetched when it comes back.
  *
  * A daemon pulls `603` on every connect, from the cursors kept here, and replays each page as a `601` push
- * (./control-replay.js, called by ./self-heal.js). This module is what reads those frames:
+ * (src/core/control-replay.js, called by src/core/self-heal.js). This module is what reads those frames:
  *
  *  - {@link readControls} sorts the controls of a frame by what they are, so a control nobody handles is named
  *    instead of vanishing;
@@ -24,7 +24,7 @@ export const CONTROL_QUEUES = Object.freeze(["603_1", "603_0", "604_0"]);
 
 /**
  * What a control is, by `act_type` and `act`. The values come from the captured frames and from the handlers
- * this client already has (the listener's `file_done`, `video_done`, `photo_success`, `group`, `fr`; ./read-state.js's `mark_unread`; the sync status
+ * this client already has (the listener's `file_done`, `video_done`, `photo_success`, `group`, `fr`; src/core/read-state.js's `mark_unread`; the sync status
  * frames).
  */
 const KNOWN = new Map([

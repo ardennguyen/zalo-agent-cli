@@ -1,5 +1,5 @@
 /**
- * The batch downloads (src/core/sync-v2/download.js, plan item Y3): two at a time, 60 s each, three retries one
+ * The batch downloads (src/zalo/transfer-sync/download.js, plan item Y3): two at a time, 60 s each, three retries one
  * second apart, typed failures, and a download that starts when it is announced, not when it is needed.
  */
 import { describe, it } from "node:test";
@@ -9,7 +9,7 @@ import {
     DOWNLOAD_DEFAULTS,
     DOWNLOAD_FAILURE,
     createBatchDownloader,
-} from "../../src/core/sync-v2/download.js";
+} from "../../src/zalo/transfer-sync/download.js";
 
 const res = (status, body = "x") => ({
     status,

@@ -250,7 +250,7 @@ export async function resolveSenderUid(api, senderId, ownId) {
     if (!id) return { error: "its sender is not in the cache" };
 
     try {
-        const { resolveNonFriendDms } = await import("./sync-v2/gid.js");
+        const { resolveNonFriendDms } = await import("../zalo/custom/gid.js");
         const hit = (await resolveNonFriendDms(api, [id])).get(id);
         if (hit?.id && isNumericUid(hit.id)) return { uid: String(hit.id) };
     } catch {

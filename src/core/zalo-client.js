@@ -1,86 +1,18 @@
 /**
- * Zalo client wrapper: the session's API calls with proxy support.
- * Manages a single Zalo instance per process. Swap on account switch.
+ * The CLI's session holder: one logged-in session per process, swapped on account switch, made from the active
+ * account's saved login (src/zalo/client.js makes it; this module supplies the account's paths and keeps it).
  */
 
-import fs from "fs";
-import { basename, join } from "node:path";
-import { imageSizeFromFile } from "image-size/fromFile";
-import { HttpsProxyAgent } from "https-proxy-agent";
-import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { join } from "node:path";
 import { getActive } from "./accounts.js";
 import { getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
 import { info } from "../utils/output.js";
-import { generateDeviceFingerprint } from "../utils/device-fingerprint.js";
+import { generateDeviceFingerprint } from "../zalo/device-fingerprint.js";
 import { secChUaFor } from "../zalo/headers.js";
-import { API_TYPE, API_VERSION_INVALID, resolveApiVersion, resolveQrFlow } from "../zalo/profile.js";
-import { qrLogin } from "../zalo/qr-login.js";
+import { API_VERSION_INVALID, resolveQrFlow } from "../zalo/profile.js";
 import { createTrustStore } from "../zalo/trust-store.js";
-import { createDrStore, loginWithSession, stopUpkeep } from "../zalo/login.js";
-
-/**
- * Read image dimensions for the session's `imageMetadataGetter`.
- *
- * The engine has no image library of its own and asks the caller for this. It
- * is consumed for the inline-image upload paths —
- * jpg/jpeg/png/webp via getImageMetaData(), gif via getGifMetaData() — and
- * the width/height go straight into the upload params the recipient's
- * client uses to lay the message out.
- *
- * Two deliberate choices here:
- *
- * 1. **Dimensions come from `image-size`, not hand-rolled header parsing.**
- *    Zalo restricts only executables (`restricted_ext_file` is exe, cmd,
- *    bat, …), so a user can hand `send-image` a bmp, tiff, heic or avif.
- *    Parsing four formats by hand and returning null for the rest turned an
- *    unusual input into an opaque "Failed to get image metadata". image-size
- *    is pure JS with zero dependencies and covers ~20 formats.
- *
- * 2. **EXIF orientation is applied.** image-size *reports* `orientation` but
- *    does not act on it. Orientations 5–8 are the 90° rotations, where the
- *    stored dimensions are transposed relative to how the image displays —
- *    the common case being a phone photo. Sending stored dimensions there
- *    makes the recipient's layout box the wrong way round, so they are
- *    swapped.
- *
- * Throws rather than returning null: a falsy return would become a
- * generic ZaloApiError, which tells the user nothing about which file was
- * the problem or why.
- *
- * Exported for testing; not part of the CLI's public surface.
- *
- * @param {string} filePath
- * @returns {Promise<{width: number, height: number, size: number}>}
- * @throws {Error} when the file is unreadable or is not a recognized image
- */
-export async function readImageMetadata(filePath) {
-    const stat = await fs.promises.stat(filePath);
-
-    let dims;
-    try {
-        // Reads incrementally rather than slurping the file, which matters
-        // because Zalo permits attachments up to 1 GB.
-        dims = await imageSizeFromFile(filePath);
-    } catch (e) {
-        throw new Error(
-            `Could not read image dimensions from "${basename(filePath)}": ${e.message}. ` +
-                `Zalo renders jpg/jpeg/png/webp/gif inline; other formats are sent as file attachments.`,
-        );
-    }
-
-    if (!dims || !dims.width || !dims.height) {
-        throw new Error(`Could not read image dimensions from "${basename(filePath)}": no usable size in the header.`);
-    }
-
-    // EXIF orientations 5-8 rotate by 90°, transposing width and height.
-    const transposed = dims.orientation >= 5 && dims.orientation <= 8;
-
-    return {
-        width: transposed ? dims.height : dims.width,
-        height: transposed ? dims.width : dims.height,
-        size: stat.size,
-    };
-}
+import { createDrStore, stopUpkeep } from "../zalo/login.js";
+import { buildSessionOptions, openQrSession, openSession } from "../zalo/client.js";
 
 let _api = null;
 let _ownId = null;
@@ -102,56 +34,19 @@ export function isLoggedIn() {
 }
 
 /**
- * Create a proxy-aware fetch that uses undici ProxyAgent dispatcher.
- * Native Node.js fetch ignores the `agent` option — must use `dispatcher`.
- *
- * The fetch is undici's own, not the global one: Node bundles its own undici (7.30 in Node 24.22), the package
- * here is another (8.x), and a dispatcher from one handed to the fetch of the other fails every request with
- * "invalid onRequestStart method". A proxied account could not log in at all.
- *
- * @param {string} proxyUrl
- * @returns {typeof fetch}
- */
-export function createProxyFetch(proxyUrl) {
-    const dispatcher = new ProxyAgent(proxyUrl);
-    return (url, init = {}) => undiciFetch(url, { ...init, dispatcher });
-}
-
-/**
- * The session options every session of this process is built with: what Zalo Web announces, how we log, what
- * we deliver, and the proxy when there is one. Suppresses logs in JSON mode.
+ * The session options every session of this process is built with ({@link buildSessionOptions}). Suppresses the
+ * session's logs in JSON mode.
  *
  * @param {string|null} proxyUrl
  * @returns {object}
  * @throws {Error} when ZALO_API_VERSION is invalid -- before any request is made
  */
 function buildOptions(proxyUrl) {
-    const opts = {
-        // What Zalo Web announces, from the protocol profile (src/zalo/profile.js).
-        // The login builds every URL's zpw_ver and the login calls'
-        // client_version from these.
-        apiType: API_TYPE,
-        apiVersion: resolveApiVersion(),
-        // Logging, off in JSON mode (the protocol layer writes nothing either way)
-        logging: !process.env.ZALO_JSON_MODE,
-        imageMetadataGetter: readImageMetadata,
-        // Deliver our own traffic too. Off would be
-        // right for a bot that would otherwise answer itself, and wrong for a
-        // local cache: without it, everything the owner sends -- from their
-        // phone, from Zalo Web, from this CLI -- is dropped before any handler
-        // sees it, so every conversation in zalo.db holds one side of itself.
-        // It also made the new delivery receipts inert, since a receipt updates
-        // the row of a message WE sent and that row was never written.
-        // `listen --no-self` still hides self messages from stdout/webhook/JSONL.
-        selfListen: true,
-    };
-    if (proxyUrl) {
-        // HttpsProxyAgent for WebSocket (ws lib), ProxyAgent dispatcher for HTTP fetch
-        opts.agent = new HttpsProxyAgent(proxyUrl);
-        opts.polyfill = createProxyFetch(proxyUrl);
-    }
-    return opts;
+    return buildSessionOptions(proxyUrl, { logging: !process.env.ZALO_JSON_MODE });
 }
+
+/** Where an account's server settings are kept: `accounts/<ownId>/dr-config.json`. */
+const drStoreFor = (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null);
 
 /**
  * Whether two serialized cookie jars hold the same cookies: name, value, domain, path and expiry. Access
@@ -219,13 +114,7 @@ export function clearSession() {
  */
 export async function loginWithCredentials(creds, proxyUrl = null, { ownId: knownId = null } = {}) {
     const zaloOptions = buildOptions(proxyUrl);
-    const api = await loginWithSession(creds, {
-        apiType: zaloOptions.apiType,
-        apiVersion: zaloOptions.apiVersion,
-        zaloOptions,
-        ownId: knownId,
-        drStoreFor: (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null),
-    });
+    const api = await openSession(creds, { zaloOptions, ownId: knownId, drStoreFor });
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
     persistCookies(knownId, creds, api);
@@ -244,14 +133,7 @@ export async function loginWithCredentials(creds, proxyUrl = null, { ownId: know
  */
 export async function probeSavedLogin(creds, proxyUrl = null, { ownId = null } = {}) {
     const zaloOptions = buildOptions(proxyUrl);
-    const api = await loginWithSession(creds, {
-        apiType: zaloOptions.apiType,
-        apiVersion: zaloOptions.apiVersion,
-        zaloOptions,
-        ownId,
-        drStoreFor: (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null),
-        upkeep: false,
-    });
+    const api = await openSession(creds, { zaloOptions, ownId, drStoreFor, upkeep: false });
     return { ownId: api.getOwnId?.() || null };
 }
 
@@ -278,23 +160,13 @@ export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
     const platform = secChUaFor(fingerprint.userAgent)?.secChUaPlatform ?? "unknown";
     info(`Using device fingerprint: Chrome (${platform.replace(/"/g, "")})`);
 
-    const session = await qrLogin({
-        userAgent: fingerprint.userAgent,
+    const api = await openQrSession({
         zaloOptions,
-        apiType: zaloOptions.apiType,
-        apiVersion: zaloOptions.apiVersion,
+        userAgent: fingerprint.userAgent,
         onEvent: onQrEvent,
         trustStore: createTrustStore(getAccountDir),
+        drStoreFor,
     });
-    const api = await loginWithSession(
-        { imei: session.imei, cookie: session.cookies, userAgent: session.userAgent, language: session.language },
-        {
-            apiType: zaloOptions.apiType,
-            apiVersion: zaloOptions.apiVersion,
-            zaloOptions,
-            drStoreFor: (id) => (id ? createDrStore(join(getAccountDir(id), "dr-config.json")) : null),
-        },
-    );
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);
     return { api, ownId };

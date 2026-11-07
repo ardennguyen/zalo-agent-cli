@@ -3,7 +3,7 @@
  * missed from Zalo's offline queue -- on its own socket, with no phone -- and
  * resolves a coverage gap only for the window that pull actually covered.
  *
- * This is what Zalo Web does on every authenticated connect (./offline-queue.js
+ * This is what Zalo Web does on every authenticated connect (../zalo/queues/offline-queue.js
  * has the bundle offsets and the capture): each message queue is asked for
  * everything after its saved cursor, page by page until the server says there
  * is no more. It never involves the phone. The phone-backed restore
@@ -14,7 +14,7 @@
  * The rules, and why:
  *
  * - **Runs on every handshake.** The trigger is the cmd 1 handshake frame, read
- *   by ./socket-tap.js, not the listener's `connected`: the handshake is what makes a
+ *   by ../zalo/listener/socket-tap.js, not the listener's `connected`: the handshake is what makes a
  *   socket usable, it carries the queue list (`qCmds`), and the listener sets the
  *   cipher key from it synchronously just before. A daemon start is simply the
  *   first handshake.
@@ -48,7 +48,7 @@
  *   as a pending gap, named with the `zalo-agent sync` command that closes it.
  *
  * - **Items are acknowledged after the write, never before** (Y10, D7). Zalo wants to be told which queue
- *   items a client holds (a `532`, see ./queue-verify.js), and repairs what it was not told about. A live push
+ *   items a client holds (a `532`, see ../zalo/queues/queue-verify.js), and repairs what it was not told about. A live push
  *   is acknowledged once every message in it is committed; an offline page once its rows were written without a
  *   failure; a message the server re-sends as a `534` is stored first and acknowledged after. An item whose row
  *   did not commit is not acknowledged, so the server delivers it again.
@@ -82,11 +82,11 @@ import {
     controlQueuesFrom,
     drainOfflineQueue,
     messageQueuesFrom,
-} from "./offline-queue.js";
+} from "../zalo/queues/offline-queue.js";
 import { replayControlQueues } from "./control-replay.js";
-import { CMD_AUTHEN } from "./socket-tap.js";
-import { CMD_VERIFY, createQueueVerifier, idsOf } from "./queue-verify.js";
-import { controlCursorsOf, readControls } from "./control-queue.js";
+import { CMD_AUTHEN } from "../zalo/listener/socket-tap.js";
+import { CMD_VERIFY, createQueueVerifier, idsOf } from "../zalo/queues/queue-verify.js";
+import { controlCursorsOf, readControls } from "../zalo/queues/control-queue.js";
 import { describeGap } from "./sync-v2/gap-advice.js";
 
 /** THREAD_TYPE.Group; anything else is a 1-1. */
@@ -143,7 +143,7 @@ const baseReason = (reason) => String(reason || "gap").replace(/^(uncovered:)+/,
  *
  * @param {object} args
  * @param {() => object} args.getApi - the daemon's CURRENT api; re-login replaces it
- * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap - the daemon's socket tap
+ * @param {ReturnType<import("../zalo/listener/socket-tap.js").createSocketTap>} args.tap - the daemon's socket tap
  * @param {ReturnType<import("./daemon-channel.js").createStageLock>} [args.lock] - the
  *   stage lock the daemon channel holds; without one the catch-up runs unguarded
  * @param {boolean} [args.enabled=true] - false (`--no-self-heal`): send nothing,

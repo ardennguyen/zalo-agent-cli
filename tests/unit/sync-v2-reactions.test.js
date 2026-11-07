@@ -1,5 +1,5 @@
 /**
- * `src/core/sync-v2/reactions.js` — retrieving the reaction backlog.
+ * `src/core/sync-v2/reactions.js` (over `src/zalo/listener/reactions.js`) — retrieving the reaction backlog.
  *
  * Reactions were documented in this repo as unrecoverable, which conflated two
  * different things: the Sync2 transfer payload genuinely has no reaction field,

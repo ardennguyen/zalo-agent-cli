@@ -27,7 +27,7 @@ import {
     getProfile,
     resolveApiVersion,
 } from "../../src/zalo/profile.js";
-import { generateDeviceFingerprint } from "../../src/utils/device-fingerprint.js";
+import { generateDeviceFingerprint } from "../../src/zalo/device-fingerprint.js";
 import { secChUaFor } from "../../src/zalo/headers.js";
 import { installFakeZalo, loginFake } from "./fake-zalo-session.js";
 

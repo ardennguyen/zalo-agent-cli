@@ -19,13 +19,13 @@
  * the same raw `ws`, decodes each frame with the listener's own decoder
  * (src/zalo/listener/frames.js), and hands `{cmd, subCmd, body, data}` to whoever subscribed to that
  * cmd. The reaction backlog drain has done this privately since 2026-09-28
- * (./sync-v2/reactions.js); this is the same technique, shared, for everything
+ * (./reactions.js); this is the same technique, shared, for everything
  * that needs a field the typed events drop -- the offline-queue catch-up first
- * (./self-heal.js), read-state sync and pageMsgs after it.
+ * (src/core/self-heal.js), read-state sync and pageMsgs after it.
  *
  * It reads and routes; it never writes and never sends. `listen` and `mcp start` both attach it (AGENTS.md §13).
  */
-import { decodeFrame } from "../zalo/listener/frames.js";
+import { decodeFrame } from "./frames.js";
 
 /** The handshake: its answer carries the cipher key and the queue lists. */
 export const CMD_AUTHEN = 1;

@@ -23,7 +23,7 @@
  *    unreadable without a Signal stack, and `518` is deleted by an acknowledgement, so asking for them without
  *    handling them would only lose them (see docs/agent-notes.md, "connect-time pulls").
  */
-import { drainOfflineQueue } from "./offline-queue.js";
+import { drainOfflineQueue } from "../zalo/queues/offline-queue.js";
 
 /** The command a replayed page is presented as: the control push. */
 export const CMD_CONTROL_PUSH = 601;
@@ -52,7 +52,7 @@ export function replayAsPush(listener, raw) {
  *
  * @param {object} args
  * @param {object} args.listener - a listener whose socket is open and authenticated
- * @param {ReturnType<import("./socket-tap.js").createSocketTap>} args.tap
+ * @param {ReturnType<import("../zalo/listener/socket-tap.js").createSocketTap>} args.tap
  * @param {Array<{cmd: number, subCmd: number, queueName: string}>} args.queues - see `controlQueuesFrom`
  * @param {(queueName: string) => ({id: string}|null)} args.cursorOf - the saved cursor of a queue
  * @param {number} [args.timeoutMs]

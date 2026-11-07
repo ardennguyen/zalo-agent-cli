@@ -21,7 +21,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
-import { withFileLock, writeFileAtomic } from "../utils/atomic-file.js";
+import { withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import { COMMON_ENV_TEMPLATE, renderAccountEnv, renderCaddyfile, renderUnit } from "./fleet-templates.js";
 
 export const DEFAULT_BASE_PORT = 3900;

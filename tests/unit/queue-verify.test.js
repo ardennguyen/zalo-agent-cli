@@ -1,11 +1,11 @@
 /**
- * The 532 queue acks (src/core/queue-verify.js, plan item Y10, decision D7), on a hand-driven clock and a recording
+ * The 532 queue acks (src/zalo/queues/queue-verify.js, plan item Y10, decision D7), on a hand-driven clock and a recording
  * listener: when an ack goes out, what it carries, what the server's answers mean, and that nothing is acknowledged
  * that was not handed over as stored.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CMD_VERIFY, VERIFY_DEFAULTS, createQueueVerifier, idsOf } from "../../src/core/queue-verify.js";
+import { CMD_VERIFY, VERIFY_DEFAULTS, createQueueVerifier, idsOf } from "../../src/zalo/queues/queue-verify.js";
 
 /** A scheduler that fires only when told. */
 function fakeTimers() {

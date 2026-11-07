@@ -24,7 +24,7 @@ import {
     shiftStyles,
     ALL_MENTION_UID,
     ALL_MENTION_LABEL,
-} from "../../src/utils/mentions.js";
+} from "../../src/zalo/format/mentions.js";
 import { buildQuote } from "../../src/utils/quote.js";
 
 const UID_A = "1000000000000000001";

@@ -1,5 +1,5 @@
 /**
- * src/core/sync-v2/zcloud.js — the cloud index and the media store.
+ * src/core/sync-v2/zcloud.js and src/zalo/zcloud.js — the cloud index and the media store.
  *
  * Network callers are injected, so what is under test is the part that can be
  * verified offline: pagination and its termination conditions, normalization
@@ -15,7 +15,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb, getCloudItems, getCloudItemByMsgId } from "../../src/core/db.js";
-import { syncCloudIndex, normalizeCloudItem } from "../../src/core/sync-v2/zcloud.js";
+import { normalizeCloudItem } from "../../src/zalo/zcloud.js";
+import { syncCloudIndex } from "../../src/core/sync-v2/zcloud.js";
 
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-zcloud-test-"));
 const opened = [];

@@ -1,5 +1,5 @@
 /**
- * Splitting a long message the way Zalo Web does (src/utils/split-message.js).
+ * Splitting a long message the way Zalo Web does (src/zalo/format/split-message.js).
  *
  * Zalo refuses an oversized message instead of cutting it (measured live: plain text past 3000 UTF-16 units is a
  * 114, a styled message past roughly 3.1 KB of text plus style JSON is a 112), and Chinese or long bulleted answers
@@ -9,8 +9,8 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { markdownToZalo } from "../../src/utils/markdown.js";
-import { MESSAGE_BYTE_LIMIT, sendParts, splitMessage } from "../../src/utils/split-message.js";
+import { markdownToZalo } from "../../src/zalo/format/markdown.js";
+import { MESSAGE_BYTE_LIMIT, sendParts, splitMessage } from "../../src/zalo/format/split-message.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);

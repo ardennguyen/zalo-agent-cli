@@ -272,6 +272,15 @@ export const GUARDS = Object.freeze({
             `write the message database of account ${t.ownerId ?? "(active)"} decrypted to ${t.output ?? "a file"}: ` +
             "anyone who reads that file reads every cached message, hidden chats included",
     },
+    "db.purge": {
+        cli: "db purge",
+        mcp: null,
+        irreversible: true,
+        what: (t) =>
+            `delete what the quota and retention rules of account ${t.ownerId ?? "(active)"} make due: the oldest ` +
+            "downloaded media, then the oldest messages (with their search entries), and dead webhook deliveries past " +
+            "retention.outboxDead; purged messages are never restored by a later sync or history fetch",
+    },
     "webhook.purge": {
         cli: "mcp webhook purge",
         mcp: null,

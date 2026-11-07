@@ -2,5 +2,7 @@
     "provider": "dpapi",
     "dkeyLayer": false,
     "dpapi": { "scope": "CurrentUser" },
-    "rowMac": { "verifyOnRead": "actions" }
+    "rowMac": { "verifyOnRead": "actions" },
+    "retention": { "messages": "keep", "media": "keep", "outboxDead": "30d", "purgeEvery": "6h" },
+    "quota": { "account": { "limit": null }, "graceDays": 45, "warnAt": 0.8, "purgeOrder": "media-first" }
 }

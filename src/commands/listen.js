@@ -61,7 +61,8 @@ import { describeGap } from "../core/sync-v2/gap-advice.js";
 import { createDeliveredReceipts } from "../zalo/receipts.js";
 import { envForAccount, resolveWebhookDelivery, resolveWebhookUrl } from "../mcp/mcp-config.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
-import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { describeQuotaEvent, startStorageJobs } from "../core/storage-quota.js";
+import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
@@ -570,6 +571,7 @@ export function registerListenCommand(program) {
                     });
                     startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs });
                 }
+                if (touches(changed, ["quota", "retention"])) storageJobs.reschedule();
                 if (touches(changed, ["webhook", "webhookBatchSize", "webhookMaxAge"]))
                     applyWebhook(resolveWebhookUrl({ accountId: activeAcc.ownId, flag: opts.webhook }));
             };
@@ -624,6 +626,15 @@ export function registerListenCommand(program) {
                 saveEvent(data);
                 postWebhook(data);
             }
+
+            // Quotas and retention (src/core/storage-quota.js): this daemon holds daemon.lock, so it purges, on its
+            // timer and for `db purge` over its channel. A storage_quota event is reported like any other event.
+            const storageJobs = startStorageJobs({
+                ownId: activeAcc.ownId,
+                emit: (event) => emitEvent(event, describeQuotaEvent(event)),
+                log: (l) => console.error(`[listen] ${l}`),
+                purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
+            });
 
             /** Whether --events, --filter or --no-self keep a message off stdout, the webhook and the JSONL. */
             function isMuted(msg) {
@@ -1206,6 +1217,7 @@ export function registerListenCommand(program) {
                 health.noteStopping();
                 channel?.stop();
                 policyRuntime.stop();
+                storageJobs.stop();
                 webhookDelivery?.stop();
                 mediaLinks.revokeAll("the daemon stopped");
                 deliveredReceipts.stop();
@@ -1258,6 +1270,8 @@ export function registerListenCommand(program) {
                     onStatus: () => health.snapshot(),
                     // `policy set|unset`: applied here, so it counts at once (src/core/policy-store.js).
                     onPolicy: servePolicyRequest,
+                    // `db purge`: this daemon is the account's one writer, so the purge runs here.
+                    onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
                     // `msg media --deliver link`: a link this daemon serves on 127.0.0.1 while it runs.
                     onMediaLink: ({ msgId }) =>
                         linkForCachedMessage({

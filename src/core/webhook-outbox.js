@@ -28,7 +28,7 @@
  */
 
 import { createHmac } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { KeystoreError } from "./keystore/container.js";
 import { checkLock } from "./lock.js";
@@ -264,6 +264,17 @@ export function openOutbox(accountDir, { now = Date.now, readonly = false, log }
                 ? db.prepare("DELETE FROM outbox WHERE status = 'dead' AND seq = ?").run(seq)
                 : db.prepare("DELETE FROM outbox WHERE status = 'dead'").run();
             return r.changes;
+        },
+
+        /**
+         * Delete the dead rows that died before `cutoff` (`retention.outboxDead`, src/core/storage-quota.js).
+         * @param {number} cutoff - Epoch ms
+         * @returns {number} Rows removed
+         */
+        purgeDeadBefore(cutoff) {
+            return db
+                .prepare("DELETE FROM outbox WHERE status = 'dead' AND COALESCE(dead_at, created_at) < ?")
+                .run(Number(cutoff)).changes;
         },
 
         /**
@@ -640,4 +651,22 @@ export function startWebhookDelivery({
             dispatcher.stop({ graceMs: 0 }).finally(() => outbox.close());
         },
     };
+}
+
+/**
+ * Delete an account's dead webhook deliveries older than `cutoff` (the retention purge). An account with no outbox
+ * file has none, and none is created.
+ *
+ * @param {string} accountDir
+ * @param {number} cutoff - Epoch ms
+ * @returns {number} Rows removed
+ */
+export function purgeDeadDeliveries(accountDir, cutoff) {
+    if (!existsSync(outboxPath(accountDir))) return 0;
+    const outbox = openOutbox(accountDir);
+    try {
+        return outbox.purgeDeadBefore(cutoff);
+    } finally {
+        outbox.close();
+    }
 }

@@ -19,6 +19,7 @@
  * transaction and product ids of the subscription, the price. Read-only: no write, no socket, no state.
  */
 import { getCloudSettings, getCloudSubscription, getCloudUsage, summarizeCloudQuota } from "../zalo/zcloud.js";
+import { describeStorage } from "./storage-quota.js";
 
 const DAY_MS = 86_400_000;
 const GIB = 1024 ** 3;
@@ -138,7 +139,7 @@ const reasonOf = (e) =>
  */
 export async function readAccountStatus(
     api,
-    { ownId = null, now = Date.now(), localIndex = () => null, read = {} } = {},
+    { ownId = null, now = Date.now(), localIndex = () => null, read = {}, storage = null } = {},
 ) {
     const rd = {
         profile: () => api.fetchAccountInfo(),
@@ -249,7 +250,20 @@ export async function readAccountStatus(
                 ? null
                 : { isEnterprise: Boolean(Number(profile.isEnterpriseAccount)) },
         zcloud,
+        // This machine's own storage of the account (src/core/storage-quota.js): usage, quota and retention.
+        storage: localStorage(ownId, storage),
     };
+}
+
+/** The account's local storage, or null when it has no folder here or it cannot be read. */
+function localStorage(ownId, given) {
+    if (given) return given;
+    if (!ownId) return null;
+    try {
+        return describeStorage(String(ownId));
+    } catch {
+        return null;
+    }
 }
 
 const fmtBytes = (n) => {
@@ -323,6 +337,18 @@ export function describeAccountStatus(s) {
                     `${z.localIndex.deltaVsServerBytes === null ? "" : ` (the server counts ${fmtBytes(Math.abs(z.localIndex.deltaVsServerBytes))} ${z.localIndex.deltaVsServerBytes >= 0 ? "more" : "less"} in media)`}.`,
             );
         }
+    }
+    const st = s.storage;
+    if (st) {
+        const q = st.quota;
+        out.push(
+            `This machine: ${fmtBytes(st.usage.total)} (database ${fmtBytes(st.usage.db)}, media ${fmtBytes(st.usage.media)}, ` +
+                `outbox ${fmtBytes(st.usage.outbox)})` +
+                (q.accountLimit
+                    ? ` of ${fmtBytes(q.accountLimit)}${q.level ? `, ${q.level}` : ""}${q.purgeAt ? `, purge at ${fmtDay(q.purgeAt)}` : ""}`
+                    : ", no limit") +
+                `; retention: messages ${st.retention.messages}, media ${st.retention.media}.`,
+        );
     }
     for (const p of s.problems) out.push(`Could not read ${p.source}: ${p.reason}`);
     return out;

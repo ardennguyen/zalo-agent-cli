@@ -5,5 +5,7 @@
         "backend": "aws",
         "key": "arn:aws:kms:ap-southeast-1:111122223333:key/00000000-0000-0000-0000-000000000000"
     },
-    "rowMac": { "verifyOnRead": "actions" }
+    "rowMac": { "verifyOnRead": "actions" },
+    "retention": { "messages": "90d", "media": "30d", "outboxDead": "7d", "purgeEvery": "1h" },
+    "quota": { "account": { "limit": null }, "graceDays": 45, "warnAt": 0.8, "purgeOrder": "media-first" }
 }

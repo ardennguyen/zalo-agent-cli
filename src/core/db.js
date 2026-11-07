@@ -19,6 +19,12 @@ let db;
 let rowMacKeys = null;
 /** Is the search index of the open database complete? Reset by {@link initDb}. */
 let searchReady = false;
+/**
+ * The retention floor (`sync_state.retentionFloor`, epoch ms): the quota/retention purge (./storage-quota.js) deleted
+ * every message at or before it, and no writer may store one there again: a re-sync or a history fetch would
+ * otherwise bring back what was purged.
+ */
+let retentionFloor = 0;
 /** How long one search may spend building the index before it answers by scanning. */
 let searchBudgetMs = 2000;
 /** Told how the first search's preparation is going (a command shows it; nothing else needs to). */
@@ -457,8 +463,111 @@ export function initDb(dbPath) {
     // Last, after the repairs above: the MAC table and triggers, and (once per database) the MACs of the rows written
     // before they existed.
     installRowMac(db, rowMacKeys.current, { log: (l) => console.error(l) });
+    retentionFloor = Number(db.prepare("SELECT value FROM sync_state WHERE key = 'retentionFloor'").get()?.value) || 0;
 
     return db;
+}
+
+/** True when a message at this time is at or before the retention floor: a purge removed it and it stays removed. */
+function belowFloor(msg) {
+    const ts = Number(msg?.timestamp);
+    return retentionFloor > 0 && Number.isFinite(ts) && ts > 0 && ts <= retentionFloor;
+}
+
+/**
+ * The retention floor (epoch ms), 0 when nothing was ever purged.
+ *
+ * @returns {number}
+ */
+export function getRetentionFloor() {
+    return retentionFloor;
+}
+
+/**
+ * The bytes the database's pages in use take (page count less the free pages, times the page size). A purge lowers it
+ * at once; the file keeps its size until a VACUUM, and SQLite reuses the free pages first.
+ *
+ * @returns {number}
+ */
+export function dbUsedBytes() {
+    if (!db) throw new Error("Database not initialized");
+    const pages = Number(db.pragma("page_count", { simple: true })) || 0;
+    const free = Number(db.pragma("freelist_count", { simple: true })) || 0;
+    const size = Number(db.pragma("page_size", { simple: true })) || 0;
+    return Math.max(0, pages - free) * size;
+}
+
+/**
+ * The timestamp of the n-th oldest cached message (1-based), or null when there are fewer.
+ *
+ * @param {number} n
+ * @returns {number|null}
+ */
+export function nthOldestMessageTimestamp(n) {
+    if (!db) throw new Error("Database not initialized");
+    const row = db
+        .prepare("SELECT timestamp FROM messages WHERE timestamp > 0 ORDER BY timestamp ASC LIMIT 1 OFFSET ?")
+        .get(Math.max(0, Math.floor(n) - 1));
+    return row ? Number(row.timestamp) : null;
+}
+
+/**
+ * Count what a purge through `cutoff` would remove: the messages at or before it and the media files they hold.
+ *
+ * @param {number} cutoff - epoch ms
+ * @returns {{rows: number, files: number}}
+ */
+export function countMessagesThrough(cutoff) {
+    if (!db) throw new Error("Database not initialized");
+    const r = db
+        .prepare(
+            "SELECT count(*) AS rows, count(localPath) AS files FROM messages WHERE timestamp > 0 AND timestamp <= ?",
+        )
+        .get(Number(cutoff));
+    return { rows: Number(r.rows) || 0, files: Number(r.files) || 0 };
+}
+
+/**
+ * Delete every message at or before `cutoff` (and its reactions; its row MAC and search entry go with it through
+ * their triggers), and raise the retention floor to `cutoff` so no writer stores one there again. Delete-only: the
+ * quota/retention purge, run by the daemon holding daemon.lock (./storage-quota.js). With `secure_delete` on, the
+ * freed pages are zeroed.
+ *
+ * @param {number} cutoff - epoch ms
+ * @returns {{rows: number, reactions: number, files: string[], floor: number}} `files`: the media files those
+ *   messages held, for the caller to delete
+ */
+export function purgeMessagesThrough(cutoff) {
+    if (!db) throw new Error("Database not initialized");
+    const at = Number(cutoff);
+    if (!Number.isFinite(at) || at <= 0) throw new Error("a purge needs a cutoff time");
+    return db.transaction(() => {
+        const files = db
+            .prepare("SELECT localPath FROM messages WHERE timestamp > 0 AND timestamp <= ? AND localPath IS NOT NULL")
+            .all(at)
+            .map((r) => r.localPath);
+        const reactions = db
+            .prepare(
+                "DELETE FROM reactions WHERE msgId IN (SELECT msgId FROM messages WHERE timestamp > 0 AND timestamp <= ?)",
+            )
+            .run(at).changes;
+        const rows = db.prepare("DELETE FROM messages WHERE timestamp > 0 AND timestamp <= ?").run(at).changes;
+        if (at > retentionFloor) {
+            retentionFloor = at;
+            db.prepare(
+                "INSERT INTO sync_state (key, value) VALUES ('retentionFloor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            ).run(String(at));
+        }
+        return { rows, reactions, files, floor: retentionFloor };
+    })();
+}
+
+/**
+ * Write the WAL back into the database file and truncate it, after a purge (the deleted rows' old pages leave the WAL).
+ */
+export function checkpointDb() {
+    if (!db) throw new Error("Database not initialized");
+    db.pragma("wal_checkpoint(TRUNCATE)");
 }
 
 /**
@@ -494,6 +603,7 @@ export function closeDb() {
     db = undefined;
     rowMacKeys = null;
     searchReady = false;
+    retentionFloor = 0;
 }
 
 /**
@@ -715,6 +825,8 @@ export function runInTransaction(fn) {
 
 export function insertMessage(msg) {
     if (!db) throw new Error("Database not initialized");
+    // Purged by quota or retention: never stored again (the listener, sync and history alike).
+    if (belowFloor(msg)) return { changes: 0, belowRetentionFloor: true };
 
     // A replay may resolve an opaque sender from an older sync. Never let an
     // unresolved replay replace a canonical live UID, or a different numeric
@@ -839,6 +951,7 @@ export function insertMessage(msg) {
  */
 export function insertMessageIfAbsent(msg) {
     if (!db) throw new Error("Database not initialized");
+    if (belowFloor(msg)) return { changes: 0, belowRetentionFloor: true };
 
     const stmt = db.prepare(`
     INSERT INTO messages (msgId, threadId, senderId, senderName, text, text_norm, timestamp, type, raw_data, localPath, has_attachment, msgStatus)

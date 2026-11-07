@@ -110,6 +110,7 @@ Trừ `status`, các lệnh đều từ chối khi một daemon `listen` / `mcp 
 
 ## 7. Vận hành server
 
+- **Việc xóa theo hạn mức và thời gian lưu giữ** xóa các dòng khi `secure_delete` đang bật (các trang được giải phóng bị ghi đè số 0) rồi checkpoint WAL; file media bị xóa thì bị xóa hẳn (nó đã được niêm phong: không có khóa của tài khoản thì các byte đó cũng vô nghĩa). Lưu ý thường lệ vẫn đúng: SSD, hệ thống file copy-on-write, bản sao lưu và snapshot có thể còn giữ các khối cũ.
 - **Chính sách chạy và admin API.** `policy.json` (theo tài khoản) và `tenants/<tenantId>.json` được niêm phong bằng khóa boot như các tệp nhỏ khác; tệp thả vào dạng JSON thường được daemon đang chạy kiểm tra và niêm phong tại chỗ. Admin API (`/zalo/admin/`) dùng thông tin xác thực riêng, không bao giờ là của agent: token admin chỉ giữ SHA-256 (`policy token --rotate`, niêm phong trong `admin/admin-token.json`, có keyring riêng), tệp token do bộ cung cấp điền (`ZALO_MCP_ADMIN_TOKEN_FILE`), hoặc chứng chỉ client (`ZALO_MCP_ADMIN_CLIENT_CA`). Bí mật không bao giờ là khóa chính sách, và `policy-audit.log` chỉ chứa khóa và rev.
 
 - **Tài khoản dịch vụ riêng**, không bao giờ là root hay Administrator, sở hữu một mình thư mục cấu hình (`UMask=0077`). Đăng nhập, chuyển đổi và chạy đều bằng tài khoản đó.

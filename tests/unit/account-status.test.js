@@ -4,8 +4,11 @@
  * secrets of the real answers (the key backup's emails, the subscription's ids and price) are in the fixtures so that
  * the report can be shown not to carry them.
  */
-import { describe, it } from "node:test";
+// The report includes this machine's storage (src/core/storage-quota.js), which reads the config dir: the sandbox first.
+import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
+import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     daysUntil,
     describeAccountStatus,
@@ -116,6 +119,8 @@ const readers = ({ profile, usage, settings, subscription = SUBSCRIPTION }) => {
         },
     };
 };
+
+before(() => assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR));
 
 describe("the plan numbers", () => {
     it("names the zCloud states the client knows, and calls any other number unknown", () => {

@@ -110,6 +110,7 @@ All but `status` refuse while a `listen` / `mcp start` daemon holds the account 
 
 ## 7. Operating a server
 
+- **Quota and retention purges** delete rows with `secure_delete` on (the freed pages are zeroed) and then checkpoint the WAL; a purged media file is deleted (it was sealed: without the account's key its bytes are noise anyway). The usual caveat holds: an SSD, a copy-on-write filesystem, backups and snapshots can keep older blocks.
 - **The runtime policy and the admin API.** `policy.json` (per account) and `tenants/<tenantId>.json` are sealed under the boot key like the other small files; a file dropped as plain JSON is checked and sealed in place by the running daemon. The admin API (`/zalo/admin/`) takes its own credential, never the agent's: an admin token of which only the SHA-256 is kept (`policy token --rotate`, sealed in `admin/admin-token.json`, its own keyring), a token file a provider fills (`ZALO_MCP_ADMIN_TOKEN_FILE`), or a client certificate (`ZALO_MCP_ADMIN_CLIENT_CA`). Secrets are never policy keys, and `policy-audit.log` holds keys and revs only.
 
 - **A dedicated service account**, never root or Administrator, owning the config directory alone (`UMask=0077`). Log in, migrate and run as that account.

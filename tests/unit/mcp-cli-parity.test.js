@@ -168,6 +168,10 @@ const CLI_ONLY = {
         "changes the runtime policy (limits, confirm mode, links): never an agent's, so it cannot raise its own",
     "policy unset": "changes the runtime policy: never an agent's, so it cannot lift its own limits",
     "policy token": "makes the admin API's own credential: an operator's step, never handed to an agent",
+    "db usage":
+        "this machine's storage report for an operator; an agent sees the same numbers in zalo_profile status (storage)",
+    "db purge":
+        "deletes cached data for good under the quota and retention rules: an operator's step, never an agent's",
     "profile lost-focus": "a client-presence signal, meaningless for a server",
     listen: "the MCP server is itself the listener (zalo_get_messages, zalo_wait_for_message)",
     "mcp start": "starts the MCP server",

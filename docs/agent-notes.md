@@ -112,11 +112,11 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **251** invokable leaves (219 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **253** invokable leaves (221 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **30** containers — 21 top-level + 7 OA subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5423** as of 2026-11-08 (5414 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5439** as of 2026-11-08 (5430 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -670,6 +670,25 @@ table, so the scan pages on the daemon's own socket.
 The shared bookkeeping now lives in `src/core/listener-lifecycle.js`: down-ness is observed rather
 than inferred from a counter, the first drop of a flap wins, the heartbeat may not claim coverage
 while down, and a deliberate stop is not a drop.
+
+---
+
+## The quota/retention purge: a fourth, delete-only writer (2026-11-08)
+
+The owner approved (at-rest phase 2, WP9) a fourth writer next to the listener, sync and `msg history`'s fetch: the
+quota/retention purge in `src/core/storage-quota.js`. It only deletes (plus the `mediaPrunedAt` marker that keeps a
+purged media file from being fetched again), and only the process holding `daemon.lock` runs it: the daemon's timer
+(`retention.purgeEvery`, 6h), or `db purge`, which goes through the daemon's channel (`POST /purge`) when one runs and
+takes the lock itself otherwise. A purge raises `sync_state.retentionFloor`; `insertMessage` and
+`insertMessageIfAbsent` refuse any row at or before it, so a later sync or history fetch cannot restore what was
+purged. The row MACs and search entries go with each row through their delete triggers, so `db verify` stays clean.
+Over a quota, caching goes on (zCloud's model): the purge runs only after `quota.graceDays` (45), oldest media first,
+then oldest messages, until usage (the database's pages in use, media files, the outbox) is at or under the limit.
+A tenant spread over several hosts is summed per host only: the console reads `/zalo/admin/usage` and pushes
+per-account caps.
+
+Also moved here from AGENTS.md §1 to keep that file under its size budget: the unofficial-API disclaimer is
+deliberately suppressed for `oa` commands.
 
 ---
 

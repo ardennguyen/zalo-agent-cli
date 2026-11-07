@@ -8,16 +8,24 @@
  *   `account export` (`--yes` to write it, `--dry-run` to preview, exit 2 without either).
  * - `db verify`: every cached message checked against its row MAC (src/core/row-mac.js); exit 1 on any finding.
  *
- * All read the local database only: no login (unless the dkey layer needs one to open the key), and none goes through
- * a daemon: a reader beside the daemon's writer is what the database's WAL is for. `db purge` (retention) joins this
- * group with its own guard.
+ * - `db usage`: the account's storage (database, media, outbox), its quota and retention rules, and the quota state.
+ * - `db purge`: the quota/retention purge (src/core/storage-quota.js), delete-only: `--dry-run` counts, `--yes` runs
+ *   it, exit 2 without either. Run by the daemon that holds the account (over its channel) when one runs, else here
+ *   under daemon.lock: one writer.
+ *
+ * The others read the local database only: no login (unless the dkey layer needs one to open the key), and none goes
+ * through a daemon: a reader beside the daemon's writer is what the database's WAL is for.
  *
  * CLI-only: raw SQL and a decrypted copy are an operator's tools, never an agent's (tests/unit/mcp-cli-parity.test.js).
  */
 import { getActive } from "../core/accounts.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
-import { getAccountDbPath } from "../core/credentials.js";
-import { closeDb, initDb, verifyMessageRows } from "../core/db.js";
+import { getAccountDbPath, getAccountDir } from "../core/credentials.js";
+import { callViaDaemon } from "../core/daemon-channel.js";
+import { closeDb, dbUsedBytes, initDb, verifyMessageRows } from "../core/db.js";
+import { acquireLock, releaseLock } from "../core/lock.js";
+import { describeQuotaEvent, describeStorage, runStoragePass } from "../core/storage-quota.js";
+import { purgeDeadDeliveries } from "../core/webhook-outbox.js";
 import { QUERY_ROW_LIMIT, QUERY_ROW_LIMIT_MAX, copyDatabase, runReadOnlyQuery } from "../core/db-tools.js";
 import { parseDateBound, parsePeriod } from "../utils/date-range.js";
 import { error, info, output, success, warning } from "../utils/output.js";
@@ -39,6 +47,8 @@ function fail(e) {
     process.exit(1);
 }
 
+const mib = (n) => `${(Number(n || 0) / 1024 / 1024).toFixed(1)} MiB`;
+
 /** A cell for the human table. */
 function cell(v) {
     if (v === null || v === undefined) return "NULL";
@@ -56,7 +66,7 @@ export function registerDbCommands(program) {
     const db = program
         .command("db")
         .description(
-            "The account's encrypted message database: read-only SQL, encrypted backup, export, integrity check",
+            "The account's encrypted message database: read-only SQL, backup, export, integrity check, usage, purge",
         );
 
     const query = db
@@ -183,8 +193,101 @@ export function registerDbCommands(program) {
             if (findings) process.exitCode = 1;
         });
 
+    const usage = db
+        .command("usage")
+        .description(
+            "Show the account's storage (database, media, outbox), its quota and retention rules, and its state",
+        )
+        .action(() => {
+            const jsonMode = program.opts().json;
+            const { ownId, file } = accountDb();
+            let r;
+            try {
+                initDb(file);
+                r = { accountId: ownId, ...describeStorage(ownId, { dbBytes: dbUsedBytes() }) };
+            } catch (e) {
+                fail(e);
+            } finally {
+                closeDb();
+            }
+            output(r, jsonMode, () => {
+                const u = r.usage;
+                info(`Used: ${mib(u.total)} (database ${mib(u.db)}, media ${mib(u.media)}, outbox ${mib(u.outbox)})`);
+                const q = r.quota;
+                info(
+                    q.accountLimit
+                        ? `Limit: ${mib(q.accountLimit)} (${q.percent}%), ${q.level ?? "not checked yet"}` +
+                              (q.purgeAt ? `; over since ${q.overSince}, purge at ${q.purgeAt}` : "")
+                        : "Limit: none for this account",
+                );
+                for (const t of q.tenants)
+                    info(`Tenant ${t.id}: limit ${mib(t.limit)}, ${t.level ?? "not checked yet"}`);
+                info(
+                    `Retention: messages ${r.retention.messages}, media ${r.retention.media}, ` +
+                        `dead webhook deliveries ${r.retention.outboxDead}; checked every ${r.retention.purgeEvery}`,
+                );
+                if (r.lastPurge) info(`Last purge: ${r.lastPurge.at}, ${mib(r.lastPurge.freedBytes)} freed`);
+            });
+        });
+
+    const purge = db
+        .command("purge")
+        .description(
+            "Purge what the quota and retention rules make due (oldest media, then oldest messages); asks first: --yes",
+        )
+        .option("--dry-run", "Count what would be purged, and purge nothing")
+        .action(async (opts) => {
+            const jsonMode = program.opts().json;
+            const { ownId, file } = accountDb();
+            const accountDir = getAccountDir(ownId);
+            const dryRun = Boolean(opts.dryRun);
+            let report;
+            // The daemon holding the account is its one writer: it purges.
+            const via = await callViaDaemon(accountDir, "/purge", { dryRun }, { timeoutMs: 600_000 });
+            if (via) {
+                if (!via.ok) fail(new Error(via.error));
+                report = via.report;
+            } else {
+                if (!dryRun && !acquireLock(accountDir)) {
+                    fail(new Error("A daemon holds this account but does not answer on its channel; stop it first."));
+                }
+                try {
+                    initDb(file);
+                    report = runStoragePass({
+                        ownId,
+                        dryRun,
+                        purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
+                    });
+                } catch (e) {
+                    fail(e);
+                } finally {
+                    closeDb();
+                    if (!dryRun) releaseLock(accountDir);
+                }
+            }
+            output({ ...report, via: via ? "daemon" : "local" }, jsonMode, () => {
+                const r = report;
+                const media = r.retention.media.files + r.quota.media.files;
+                const msgs = r.retention.messages.rows + r.quota.messages.rows;
+                const verb = dryRun ? "Would purge" : "Purged";
+                (dryRun ? info : success)(
+                    `${verb} ${media} media file(s) and ${msgs} message(s)` +
+                        (dryRun ? "" : `, ${r.retention.outboxDead} dead webhook deliver(ies)`) +
+                        `; used ${mib(r.usageBefore.total)}${dryRun ? "" : ` -> ${mib(r.usageAfter.total)}`}`,
+                );
+                for (const e of r.events ?? []) info(describeQuotaEvent({ accountId: ownId, ...e }));
+                if (!media && !msgs)
+                    info("Nothing is due: no age rule removes anything and no grace period has ended.");
+            });
+        });
+
     // They read the local database only: no session needed (src/index.js preAction).
-    for (const cmd of [query, backup, exporter, verify]) cmd.zaloLocalOnly = true;
+    for (const cmd of [query, backup, exporter, verify, usage, purge]) cmd.zaloLocalOnly = true;
+    // A purge deletes for good: --yes to run it, --dry-run (its own: it counts) to preview, exit 2 without either.
+    guardSubcommand(db, "purge", "db.purge", {
+        target: () => ({ ownerId: getActive()?.ownId ?? null }),
+        ownDryRun: true,
+    });
     // A decrypted copy is the whole message history in the clear: --yes to write it, --dry-run to preview.
     guardSubcommand(db, "export", "db.exportPlaintext", {
         target: (opts) => ({ ownerId: getActive()?.ownId ?? null, output: opts.out }),

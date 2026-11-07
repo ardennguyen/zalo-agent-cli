@@ -34,6 +34,7 @@ import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "./credentials.js";
 import { isSealed, openBuffer, scopeOfDir, writeSealedJson } from "./keystore/index.js";
 import { setPolicyProvider } from "./policy-layer.js";
+import { setTenantLookup } from "./storage-quota.js";
 import { changedKeys, flattenPolicy, mergePolicy, policyGet, validatePolicy } from "./policy-schema.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
@@ -250,6 +251,9 @@ export function effectivePolicy(ownId) {
     if (own) merged = mergePolicy(merged, own.policy);
     return merged;
 }
+
+// The quota resolver (./storage-quota.js) reads the tenants an account is in from here.
+setTenantLookup((ownId) => tenantsOf(ownId));
 
 setPolicyProvider((ownId) => {
     const p = effectivePolicy(ownId);

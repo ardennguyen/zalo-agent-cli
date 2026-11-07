@@ -61,7 +61,7 @@ import { resolveConfirmMode } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
 import { getQrPage } from "../utils/qr-http-server.js";
 import { readControls } from "../zalo/queues/control-queue.js";
-import { initDb, getMessageById, getPendingSyncGaps, getThreadNames } from "../core/db.js";
+import { dbUsedBytes, initDb, getMessageById, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
 import {
@@ -87,7 +87,7 @@ import {
     resolveWebhookDelivery,
     resolveWebhookUrl,
 } from "../mcp/mcp-config.js";
-import { startWebhookDelivery } from "../core/webhook-outbox.js";
+import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbox.js";
 import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
@@ -101,7 +101,7 @@ import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
 import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
-import { measureUsage } from "../core/storage-quota.js";
+import { describeQuotaEvent, describeStorage, startStorageJobs } from "../core/storage-quota.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
 
@@ -814,9 +814,19 @@ export function registerMCPCommands(program) {
                         publicUrl: publicUrl.publicUrl,
                         usage: () => ({
                             accounts: [
-                                measureUsage(activeAcc.ownId, { mediaRoot: MEDIA_DIR || config.media?.downloadDir }),
+                                {
+                                    accountId: activeAcc.ownId,
+                                    ...describeStorage(activeAcc.ownId, {
+                                        mediaRoot: MEDIA_DIR || config.media?.downloadDir,
+                                        dbBytes: dbUsedBytes(),
+                                    }),
+                                },
                             ],
                         }),
+                        effectiveExtra: (id) => {
+                            const st = describeStorage(id);
+                            return { quota: st.quota, retention: st.retention };
+                        },
                         log: (l) => console.error(`[mcp] ${l}`),
                     });
                     if (admin.enabled())
@@ -981,6 +991,19 @@ export function registerMCPCommands(program) {
                 accountDir,
                 hasWebhook: Boolean(webhookDelivery),
             });
+            // Quotas and retention (src/core/storage-quota.js): this daemon holds daemon.lock, so it is the one process
+            // that purges, on its timer (retention.purgeEvery) and for `db purge` over its channel. Over a limit,
+            // caching goes on; the storage_quota events go to the webhook.
+            const storageJobs = startStorageJobs({
+                ownId: activeAcc.ownId,
+                mediaRoot: MEDIA_DIR || config.media?.downloadDir || null,
+                emit: (event) => {
+                    console.error(`[mcp] ${describeQuotaEvent(event)}`);
+                    webhookDelivery?.enqueue(null, event);
+                },
+                log: (l) => console.error(`[mcp] ${l}`),
+                purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
+            });
             // A policy change (admin API, `policy set`, a file drop) counts from the next tool call: the per-call readers
             // (confirm mode, approval, delivery modes) read the live policy themselves; what was set up at start is set
             // up again here.
@@ -1017,6 +1040,8 @@ export function registerMCPCommands(program) {
                         if (n) console.error(`[mcp] ${n} media link(s) revoked: the link policy changed`);
                     }
                 }
+                // A lower limit or a new rule is checked at once; a new interval counts from now.
+                if (touches(changed, ["quota", "retention"])) storageJobs.reschedule();
                 if (touches(changed, ["webhook", "webhookBatchSize", "webhookMaxAge"])) {
                     applyWebhook(resolveWebhookUrl({ accountId: id, flag: opts.webhook, config }));
                     securePage.configure({
@@ -1371,6 +1396,7 @@ export function registerMCPCommands(program) {
                 }
                 notifier?.destroy();
                 policyRuntime.stop();
+                storageJobs.stop();
                 webhookDelivery?.stop();
                 mediaLinks.revokeAll("the server stopped");
                 httpServer?.close();
@@ -1434,6 +1460,8 @@ export function registerMCPCommands(program) {
                         onStatus: () => health.snapshot(),
                         // `policy set|unset`: applied here, so it counts at once (src/core/policy-store.js).
                         onPolicy: servePolicyRequest,
+                        // `db purge`: this daemon is the account's one writer, so the purge runs here.
+                        onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
                         // `msg media --deliver link`: a link this daemon serves (on its HTTP port, or 127.0.0.1).
                         onMediaLink: ({ msgId }) =>
                             linkForCachedMessage({

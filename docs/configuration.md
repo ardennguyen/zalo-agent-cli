@@ -26,7 +26,7 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `mcp start --config <path>` | that server | a second config for one service. It must exist and be valid JSON, or the server **refuses to start** (a missing file would otherwise mean "watch every thread"). It replaces the base file and the per-account file below |
 | `accounts.<ownId>` block inside `mcp-config.json` | the server for that account | per-account overrides in one file: [`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json) |
 | `<accountDir>/mcp-config.json` — `~/.zalo-agent-cli/accounts/<ownId>/` | the server for that account | a per-account file; refused at start if present but unreadable |
-| `<CONFIG_DIR>/storage.json` | every command that reads or writes a saved login | the key provider and the dkey layer that protect the saved files, and `rowMac.verifyOnRead` (`actions` (default) or `off`: whether an action checks the cached message it acts on against its row MAC) ([security.md](security.md)); no secret in it |
+| `<CONFIG_DIR>/storage.json` | every command that reads or writes a saved login | the key provider and the dkey layer that protect the saved files, and `rowMac.verifyOnRead` (`actions` (default) or `off`: whether an action checks the cached message it acts on against its row MAC) ([security.md](security.md)); the local cache's `retention.*` and `quota.*` (see [Storage quotas and retention](#storage-quotas-and-retention)); no secret in it |
 
 ### Precedence
 
@@ -86,6 +86,36 @@ What a change does at once: `media.linkAuth` / `media.capability` revoke every o
 revokes the links into newly hidden chats; `webhook*` moves the delivery to the new receiver or settings (queued events
 stay queued); a lower `quota.*` is checked at once.
 
+### Storage quotas and retention
+
+The daemon holding an account (`listen` or `mcp start`) measures its storage (the message database's pages in use,
+the media files, the webhook outbox) every `retention.purgeEvery` and applies these rules. Lowest first: the defaults,
+`storage.json` (top level, then `accounts.<ownId>`), `ZALO_RETENTION_MESSAGES[_<ownId>]` /
+`ZALO_RETENTION_MEDIA[_<ownId>]`, then the runtime policy.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `quota.account.limit` | `null` (no limit) | bytes, or `"2GB"` (1 GB = 1024³ bytes), or `"unlimited"` (beats a lower layer's limit) |
+| `quota.tenant.limit`, `quota.tenant.accounts` | none | in a tenant's policy only: one limit shared by the listed accounts. On one host the engine sums only the accounts it runs; for a tenant spread over several hosts the console is the source of truth (it reads `/zalo/admin/usage` and the events, and pushes per-account caps) |
+| `quota.graceDays` | `45` | days kept after going over before the purge |
+| `quota.warnAt` | `0.8` | the fraction of the limit that sends `warn` |
+| `quota.purgeOrder` | `media-first` | the oldest media files first, then the oldest messages |
+| `retention.messages` | `keep` | `keep`, or `<N>d`: messages N days old or older are deleted |
+| `retention.media` | `keep` | `keep`, or `<N>d`: media files of messages N days old or older are deleted (the messages stay) |
+| `retention.outboxDead` | `30d` | dead webhook deliveries are deleted after this |
+| `retention.purgeEvery` | `6h` | how often the daemon checks (at least `1m`) |
+
+**Over a limit, caching goes on.** The daemon sends `storage_quota` events to the webhook (and `listen` prints them):
+`{event: "storage_quota", accountId, scope: "account"|"tenant", tenantId?, level, usedBytes, limitBytes, overSince,
+purgeAt}` with `level` `warn`, `over`, `grace_ending` (`daysLeft` 7 and 1), `purged` (`freedBytes`, `media`,
+`messages`) and `ok` (back under: a raised limit or a renewal clears the grace clock). After `quota.graceDays` it
+purges the oldest media, then the oldest messages (their search entries, reactions and row MACs with them; the pages
+are zeroed by `secure_delete` and the WAL checkpointed) until usage is at or under the limit; a tenant's accounts each
+give up their share of the excess. A purge raises the database's retention floor: no sync or history fetch stores a
+message at or before it again. The database file keeps its size (SQLite reuses the freed pages); usage counts the
+pages in use. `zalo-agent db usage` shows all of it, `db purge --dry-run` counts what is due, and `db purge --yes` runs
+it now (through the daemon when one runs).
+
 The admin token: `zalo-agent policy token --rotate` makes one and shows it once; only its SHA-256 is kept, sealed in
 `<CONFIG_DIR>/admin/admin-token.json`, and a rotation retires the old one at once. Or point
 `ZALO_MCP_ADMIN_TOKEN_FILE` (`admin.tokenFile`) at a file your provider fills (a systemd credential, a KMS-decrypted
@@ -142,6 +172,7 @@ mount). `ZALO_MCP_ADMIN_TOKEN` is for development.
 | `ZALO_QR_FLOW` |  | which QR login `login` uses: `official` (default: the sequence Zalo Web makes, no `verify-client`, `continue=https://chat.zalo.me/`, the redirects through `jr.zaloapp.com` and `jr.chat.zalo.me`, and the second QR an account with a trusted device is asked to scan, which makes this client a trusted companion device), the only QR login. `legacy` was removed in 3.0.0; it and any other value are refused before Zalo is contacted | | |
 | `ZALO_NET_PROBE` |  | what a daemon asks to learn whether the network is up while its socket is down (every 10 s): a URL, default a global search engine's lightweight page, or `off` to assume the network is always up and contact nothing but Zalo | | |
 | `ZALO_STORAGE_PROVIDER` |  | key provider that protects the saved files at rest: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Default by platform; a Linux server without a desktop keyring must set one. See [security.md](security.md) | | |
+| `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | yes | `keep` or `<N>d`: the age rules of the local cache, over `storage.json`'s `retention.messages` / `retention.media` (see [Storage quotas and retention](#storage-quotas-and-retention)) | | |
 | `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: lock everything a login does not need under the account's login `dkey` as well. Default off | | |
 | `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | the chosen provider's options (`ZALO_STORAGE_KEY`: the `env` provider's key, weak by design) | | |
 

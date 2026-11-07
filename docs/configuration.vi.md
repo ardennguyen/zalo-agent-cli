@@ -26,7 +26,7 @@ Bí mật đặt trong `.env` (quyền `0600`), không đặt trong `mcp-config.
 | `mcp start --config <path>` | máy chủ đó | cấu hình thứ hai cho một dịch vụ. Phải tồn tại và là JSON hợp lệ, nếu không máy chủ **từ chối khởi động** (thiếu tệp sẽ có nghĩa "theo dõi mọi thread"). Nó thay thế tệp nền và tệp theo tài khoản bên dưới |
 | khối `accounts.<ownId>` trong `mcp-config.json` | máy chủ của tài khoản đó | ghi đè theo tài khoản trong một tệp: [`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json) |
 | `<accountDir>/mcp-config.json` — `~/.zalo-agent-cli/accounts/<ownId>/` | máy chủ của tài khoản đó | tệp theo tài khoản; bị từ chối khi khởi động nếu có mà không đọc được |
-| `<CONFIG_DIR>/storage.json` | mọi lệnh đọc hay ghi phiên đăng nhập đã lưu | bộ cung cấp khóa và lớp dkey bảo vệ các file đã lưu, và `rowMac.verifyOnRead` (`actions` (mặc định) hoặc `off`: thao tác có kiểm tra tin nhắn trong bộ nhớ đệm mà nó tác động với row MAC của tin đó hay không) ([security.vi.md](security.vi.md)); không chứa bí mật |
+| `<CONFIG_DIR>/storage.json` | mọi lệnh đọc hay ghi phiên đăng nhập đã lưu | bộ cung cấp khóa và lớp dkey bảo vệ các file đã lưu, và `rowMac.verifyOnRead` (`actions` (mặc định) hoặc `off`: thao tác có kiểm tra tin nhắn trong bộ nhớ đệm mà nó tác động với row MAC của tin đó hay không) ([security.vi.md](security.vi.md)); `retention.*` và `quota.*` của bộ nhớ đệm (xem mục Hạn mức dung lượng và thời gian lưu giữ); không chứa bí mật |
 
 ### Thứ tự ưu tiên
 
@@ -86,6 +86,36 @@ Tác dụng ngay của một thay đổi: `media.linkAuth` / `media.capability` 
 hồi link vào các chat vừa bị ẩn; `webhook*` chuyển việc gửi sang nơi nhận hoặc cài đặt mới (sự kiện đang xếp hàng vẫn
 còn); `quota.*` thấp hơn được kiểm tra ngay.
 
+### Hạn mức dung lượng và thời gian lưu giữ
+
+Daemon đang giữ một tài khoản (`listen` hoặc `mcp start`) đo dung lượng của nó (các trang đang dùng của cơ sở dữ liệu
+tin nhắn, các file media, outbox webhook) sau mỗi `retention.purgeEvery` và áp dụng các quy tắc dưới đây. Thấp nhất
+trước: mặc định, `storage.json` (cấp trên cùng, rồi `accounts.<ownId>`), `ZALO_RETENTION_MESSAGES[_<ownId>]` /
+`ZALO_RETENTION_MEDIA[_<ownId>]`, rồi chính sách chạy.
+
+| Khóa | Mặc định | Ý nghĩa |
+|---|---|---|
+| `quota.account.limit` | `null` (không giới hạn) | số byte, hoặc `"2GB"` (1 GB = 1024³ byte), hoặc `"unlimited"` (thắng giới hạn của lớp thấp hơn) |
+| `quota.tenant.limit`, `quota.tenant.accounts` | không có | chỉ trong chính sách của tenant: một giới hạn chung cho các tài khoản được liệt kê. Trên một host, engine chỉ cộng các tài khoản nó chạy; với tenant trải trên nhiều host thì console là nguồn sự thật (nó đọc `/zalo/admin/usage` và các sự kiện, rồi đẩy giới hạn cho từng tài khoản) |
+| `quota.graceDays` | `45` | số ngày giữ lại sau khi vượt trước khi xóa |
+| `quota.warnAt` | `0.8` | tỉ lệ của giới hạn thì gửi `warn` |
+| `quota.purgeOrder` | `media-first` | file media cũ nhất trước, rồi tin nhắn cũ nhất |
+| `retention.messages` | `keep` | `keep`, hoặc `<N>d`: tin nhắn từ N ngày tuổi trở lên bị xóa |
+| `retention.media` | `keep` | `keep`, hoặc `<N>d`: file media của tin nhắn từ N ngày tuổi trở lên bị xóa (tin nhắn vẫn giữ) |
+| `retention.outboxDead` | `30d` | lượt gửi webhook đã chết bị xóa sau thời gian này |
+| `retention.purgeEvery` | `6h` | daemon kiểm tra bao lâu một lần (ít nhất `1m`) |
+
+**Vượt giới hạn thì vẫn tiếp tục lưu đệm.** Daemon gửi sự kiện `storage_quota` tới webhook (và `listen` in ra):
+`{event: "storage_quota", accountId, scope: "account"|"tenant", tenantId?, level, usedBytes, limitBytes, overSince,
+purgeAt}` với `level` là `warn`, `over`, `grace_ending` (`daysLeft` 7 và 1), `purged` (`freedBytes`, `media`,
+`messages`) và `ok` (đã về dưới giới hạn: nâng giới hạn hoặc gia hạn sẽ xóa đồng hồ ân hạn). Sau `quota.graceDays` nó
+xóa media cũ nhất, rồi tin nhắn cũ nhất (kèm mục tìm kiếm, reaction và row MAC; các trang được `secure_delete` ghi
+đè số 0 và WAL được checkpoint) cho tới khi dung lượng bằng hoặc dưới giới hạn; mỗi tài khoản của tenant nhường phần
+vượt tương ứng với dung lượng của nó. Một lần xóa nâng mốc lưu giữ (retention floor) của cơ sở dữ liệu: không lần sync
+hay lấy lịch sử nào lưu lại tin nhắn ở hoặc trước mốc đó. File cơ sở dữ liệu giữ nguyên kích thước (SQLite dùng lại
+các trang đã giải phóng); dung lượng tính theo các trang đang dùng. `zalo-agent db usage` cho xem tất cả,
+`db purge --dry-run` đếm những gì đến hạn, và `db purge --yes` chạy ngay (qua daemon nếu có daemon đang chạy).
+
 Token admin: `zalo-agent policy token --rotate` tạo một token và hiện nó đúng một lần; chỉ SHA-256 của nó được giữ, niêm
 phong trong `<CONFIG_DIR>/admin/admin-token.json`, và lần xoay mới làm token cũ hết hiệu lực ngay. Hoặc trỏ
 `ZALO_MCP_ADMIN_TOKEN_FILE` (`admin.tokenFile`) tới tệp do bộ cung cấp của bạn điền (credential của systemd, mount giải
@@ -142,6 +172,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_QR_FLOW` |  | cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự Zalo Web, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng qua `jr.zaloapp.com` và `jr.chat.zalo.me`, kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm), là cách đăng nhập QR duy nhất. `legacy` đã bị bỏ ở 3.0.0; nó và mọi giá trị khác bị từ chối trước khi liên hệ Zalo | | |
 | `ZALO_NET_PROBE` |  | thứ daemon hỏi để biết mạng còn hoạt động hay không khi socket đang đứt (mỗi 10 giây): một URL, mặc định là một trang nhẹ của công cụ tìm kiếm toàn cầu, hoặc `off` để coi như mạng luôn hoạt động và không liên hệ nơi nào ngoài Zalo | | |
 | `ZALO_STORAGE_PROVIDER` |  | bộ cung cấp khóa bảo vệ các file đã lưu trên đĩa: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Mặc định theo nền tảng; server Linux không có desktop keyring phải đặt. Xem [security.vi.md](security.vi.md) | | |
+| `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | có | `keep` hoặc `<N>d`: quy tắc theo tuổi của bộ nhớ đệm, đè lên `retention.messages` / `retention.media` của `storage.json` (xem mục Hạn mức dung lượng và thời gian lưu giữ) | | |
 | `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: khóa thêm mọi thứ không cần cho việc đăng nhập bằng `dkey` của lần đăng nhập. Mặc định tắt | | |
 | `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | tùy chọn của bộ cung cấp khóa đã chọn (`ZALO_STORAGE_KEY`: khóa của bộ `env`, yếu theo thiết kế) | | |
 

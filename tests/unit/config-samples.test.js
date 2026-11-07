@@ -14,6 +14,7 @@ import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { PROVIDER_NAMES } from "../../src/core/keystore/config.js";
 import { verifyOnReadMode } from "../../src/core/row-mac.js";
+import { validatePolicy } from "../../src/core/policy-schema.js";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -424,6 +425,14 @@ describe("storage samples", () => {
             // Every key set explicitly, even at its default (the owner's rule), and to a value the layer takes.
             assert.equal(verifyOnReadMode(cfg), cfg.rowMac?.verifyOnRead, "rowMac.verifyOnRead is set and valid");
             assert.doesNotMatch(read("storage", file), /"(key|secret|passphrase)"\s*:\s*"[A-Za-z0-9+/=]{40,}"/);
+            // Retention and quota: every key set, each to a value the policy schema takes (no "none" mode).
+            for (const key of ["messages", "media", "outboxDead", "purgeEvery"])
+                assert.ok(cfg.retention?.[key], `retention.${key} is set`);
+            for (const key of ["graceDays", "warnAt", "purgeOrder"])
+                assert.ok(key in (cfg.quota ?? {}), `quota.${key} is set`);
+            assert.ok("limit" in (cfg.quota?.account ?? {}), "quota.account.limit is set (null: no limit)");
+            const v = validatePolicy({ retention: cfg.retention, quota: cfg.quota }, { allowNull: true });
+            assert.deepEqual(v.errors, [], JSON.stringify(v.errors));
         });
     }
 });

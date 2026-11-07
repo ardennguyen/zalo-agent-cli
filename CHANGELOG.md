@@ -9,6 +9,13 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+### Storage quotas and retention
+
+- feat: **storage quotas, the zCloud way.** `quota.account.limit`, a tenant's `quota.tenant.limit` shared by its `quota.tenant.accounts`, `quota.graceDays` (45) and `quota.warnAt` (0.8), set in the runtime policy (or `storage.json`). Over a limit, **caching goes on**: the daemon sends `storage_quota` events (`warn`, `over`, `grace_ending` 7 days and 1 day before, `purged`, `ok`) to the webhook, and `listen` prints them. Only after the grace period does it purge, oldest media first, then the oldest messages with their search entries, reactions and row MACs (`secure_delete`, WAL checkpoint), until usage is at or under the limit. Back under the limit (a raise, a renewal) clears the clock. A tenant on several hosts: each host sums only the accounts it runs; the console reads `/zalo/admin/usage` and pushes per-account caps.
+- feat: **retention rules**: `retention.messages` / `retention.media` = `keep` (default) or `<N>d`, `retention.outboxDead` (30d) for dead webhook deliveries, checked every `retention.purgeEvery` (6h); `ZALO_RETENTION_MESSAGES` / `ZALO_RETENTION_MEDIA` (per account too). A purge raises the database's retention floor, so a later `sync` or `msg history` fetch never restores a purged message.
+- feat: **`db usage`** (storage, quota state, rules) and **`db purge [--dry-run] [--yes]`** (guarded: exit 2 without either; run by the daemon holding the account when one runs). `account status` and `zalo_profile` `status` show this machine's storage as `storage`.
+- The purge is a fourth writer to `zalo.db`, **delete-only**, run only by the process holding `daemon.lock`.
+
 ### Runtime policy and the admin API
 
 - feat: **change policy while the server runs.** `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, media delivery and links (`media.*` but `downloadDir`), `webhook`, `webhookBatchSize`, `webhookMaxAge`, and the coming `quota.*` / `retention.*` can be set in a **runtime policy**: a sealed, revisioned file per account (`<accountDir>/policy.json`) and per tenant (`<configDir>/tenants/<tenantId>.json`, for the accounts it lists), above the files and the environment, read on every tool call. A change counts on the next call: a link-auth change revokes the outstanding media links, a webhook change moves the delivery. Keys read only at start (port, bind address, `publicUrl`, TLS, OAuth, the key provider) and secrets are refused as `restartRequired`. `.env` stays for start-up settings.

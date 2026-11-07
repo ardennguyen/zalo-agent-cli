@@ -24,7 +24,7 @@
 import { createHmac } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "./sqlite.js";
 
 export const OUTBOX_FILE = "webhook-outbox.db";
 const DAY_MS = 24 * 60 * 60 * 1000;

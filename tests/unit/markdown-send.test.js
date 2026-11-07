@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import Database from "better-sqlite3";
+import { Database } from "../../src/core/sqlite.js";
 import { initDb } from "../../src/core/db.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { resolveSendFormat } from "../../src/zalo/format/markdown.js";

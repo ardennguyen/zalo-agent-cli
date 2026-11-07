@@ -29,6 +29,22 @@ jobs:
       - run: npm install -g npm@^12.2.0
 
       - run: npm ci
+      # The SQLite driver ships prebuilt binaries and runs no install script: prove the Linux one loads, opens an
+      # encrypted database and has the trigram index the search uses, before anything else depends on it.
+      - name: SQLite driver prebuild smoke (linux-x64)
+        run: |
+          node -e '
+            const D = require("better-sqlite3-multiple-ciphers");
+            const f = require("path").join(require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "smoke-")), "smoke.db");
+            const db = new D(f);
+            db.pragma("cipher = \"sqlcipher\""); db.pragma("legacy = 4"); db.key(Buffer.from("ci-smoke-passphrase"));
+            db.exec("CREATE VIRTUAL TABLE f USING fts5(t, tokenize=\"trigram\")");
+            db.prepare("INSERT INTO f VALUES (?)").run("xin chao");
+            if (db.prepare("SELECT count(*) AS c FROM f WHERE f MATCH ?").get("chao").c !== 1) process.exit(1);
+            db.close();
+            if (require("fs").readFileSync(f).subarray(0, 15).toString() === "SQLite format 3") process.exit(1);
+            console.log("sqlite driver ok");
+          '
       - run: npm run lint
       - run: npm run format:check
       - run: npm test

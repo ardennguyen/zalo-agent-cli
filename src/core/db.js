@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "./sqlite.js";
 import { stripVietnamese } from "../utils/vn-text.js";
 
 let db;

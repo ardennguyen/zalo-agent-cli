@@ -26,7 +26,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "../../src/core/sqlite.js";
 import * as acorn from "acorn";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {

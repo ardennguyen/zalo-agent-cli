@@ -516,7 +516,7 @@ describe("tier 3 · message history and local cache", { skip }, () => {
             const dbPath = join(T.home, ".zalo-agent-cli", "accounts", T.accountOwnId, "zalo.db");
             if (!existsSync(dbPath)) return;
 
-            const { default: Database } = await import("better-sqlite3");
+            const { default: Database } = await import("../../src/core/sqlite.js");
             const db = new Database(dbPath, { readonly: true });
             let withCli = 0;
             try {

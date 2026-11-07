@@ -7,7 +7,7 @@ import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "../../src/core/sqlite.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     backfillTextNorm,

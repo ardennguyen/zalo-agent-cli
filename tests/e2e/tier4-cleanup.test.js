@@ -418,7 +418,7 @@ describe("tier 4 · history fetch and the cache", { skip }, () => {
         const dbPath = join(T.home, ".zalo-agent-cli", "accounts", T.accountOwnId, "zalo.db");
         if (!existsSync(dbPath)) return;
 
-        const { default: Database } = await import("better-sqlite3");
+        const { default: Database } = await import("../../src/core/sqlite.js");
         const countThreads = () => {
             const db = new Database(dbPath, { readonly: true });
             try {

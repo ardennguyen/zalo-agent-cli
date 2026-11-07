@@ -33,7 +33,8 @@ src/
 │   ├── credentials.js    # CONFIG_DIR (~/.zalo-agent-cli), 0600 credential files
 │   ├── accounts.js       # Multi-account registry + per-account data dir wipe
 │   ├── oa-client.js      # Official OA REST client
-│   ├── db.js             # SQLite (better-sqlite3, WAL) message/thread cache
+│   ├── db.js             # SQLite (better-sqlite3-multiple-ciphers, WAL) message/thread cache
+│   ├── sqlite.js         # the one SQLite driver import (better-sqlite3-multiple-ciphers) and the keyed opener
 │   ├── sync.js           # SyncManager — socket backfill, gap tracking, freshness debounce
 │   ├── sync-v2/          # transfer-sync-v2 — the REAL phone-backed history restore, over src/zalo/transfer-sync
 │   │   ├── index.js      # SyncV2.restore() — socket cmd 590/591 conversation + message rounds
@@ -115,7 +116,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5200** as of 2026-11-07 (5191 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5206** as of 2026-11-07 (5197 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -269,7 +270,7 @@ npmjs.com (repository, workflow filename, environment left empty) before suspect
 ## The protocol layer is ours (§13)
 
 From 3.0.0 the engine speaks Zalo's protocol with its own code. No third-party Zalo client is installed,
-patched or bundled, and nothing runs at install time except `better-sqlite3`'s native build. Every request is
+patched or bundled, and nothing runs at install time (the SQLite driver, `better-sqlite3-multiple-ciphers`, ships prebuilt binaries). Every request is
 written from Zalo Web's wire format: captures and the Web bundles are read as an oracle, never copied or run
 (D11), and a difference from Zalo Web is either fixed or recorded with its reason.
 

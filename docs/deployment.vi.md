@@ -185,7 +185,7 @@ flowchart TB
 
 - **Node.js 22.19 trở lên.**
 - **Linux (x64 hoặc arm64) hoặc Windows/macOS.** Trên Linux, `systemd` giúp quản lý khởi động lại, nhật ký và tín hiệu dừng; ngoài ra bạn cũng có thể dùng trực tiếp cờ chạy nền `-d, --daemon`, `--status`, `--stop` tích hợp sẵn trên mọi hệ điều hành.
-- Lớp giao thức của engine là mã của chính dự án (`src/zalo/`), nên khi cài từ npm không có bước vá hay `prepare` nào; chỉ `better-sqlite3` biên dịch/tải binary gốc khi cài đặt.
+- Lớp giao thức của engine là mã của chính dự án (`src/zalo/`), nên khi cài từ npm không có bước vá hay `prepare` nào; từ 3.0.0 cũng không phụ thuộc nào chạy script cài đặt: driver SQLite `better-sqlite3-multiple-ciphers` 13.0.3 (bản fork của `better-sqlite3` có mã hóa khi lưu) mang sẵn binary dựng sẵn cho Linux (glibc và musl), macOS và Windows trên x64 và arm64, và `allowScripts` trong `package.json` ghi nó là `false`. Máy chủ không phải biên dịch gì, nên không cần công cụ build.
 
 ### 3.2 CPU và RAM
 

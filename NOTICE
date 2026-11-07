@@ -77,6 +77,10 @@ Early versions of this project began from zalo-agent-cli; the current
 engine is an independent implementation. Versions before 3.0.0 depended on
 zca-js (MIT); 3.0.0 and later contain no zca-js code.
 
+From 3.0.0 the SQLite driver is better-sqlite3-multiple-ciphers (MIT,
+https://github.com/m4heshd/better-sqlite3-multiple-ciphers), installed by npm
+with its own license; nothing from it is copied into this project.
+
 zalo-agent-cli, the earlier MIT-licensed project
 https://github.com/PhucMPham/zalo-agent-cli
 

@@ -712,11 +712,13 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
 
         it("a DM's board is one GET of oneone/list, board type 0, on the logged-in api; the items are stored", async () => {
             wire.fake.clearRoutes();
-            wire.fake.routeAnswer("/api/board/oneone/list", (req) =>
-                JSON.parse(req.params.objectData).board_type === 0
+            wire.fake.routeAnswer("/api/board/oneone/list", (req) => {
+                const o = JSON.parse(req.params.objectData);
+                // One page of board: a DM's board ends at an empty page, as the Web's does.
+                return o.board_type === 0 && o.page === 1
                     ? { data: JSON.stringify([{ boardType: 2, data: { id: 50, params: '{"title":"pinned"}' } }]) }
-                    : { data: "[]" },
-            );
+                    : { data: "[]" };
+            });
             const from = wire.fake.requests.length;
             const stats = await syncBoards({ api: wire.own, threads: [{ threadId: PEER, type: "dm" }], delayMs: 0 });
             wire.fake.clearRoutes();
@@ -727,9 +729,13 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
                 .map((r) => JSON.parse(r.params.objectData));
             // Red if the DM board went back to asking for reminders only (board_type 1), the bug board.js documents.
             assert.deepEqual(
-                boards.map((o) => o.board_type),
-                [0, 1],
-                "the board (type 0), then the reminders (type 1)",
+                boards.map((o) => [o.board_type, o.page]),
+                [
+                    [0, 1],
+                    [0, 2],
+                    [1, 1],
+                ],
+                "the board (type 0) to its empty page, then the reminders (type 1)",
             );
             assert.equal(getBoardItems(PEER).length, 1);
             assert.equal(getBoardItems(PEER)[0].title, "pinned");
@@ -939,13 +945,59 @@ describe("wire: boards (src/zalo/api/boards.js)", () => {
             }
             const sent = wire.fake.requests.slice(from).map((r) => JSON.parse(r.params.objectData));
             // The Web's cursor is the last topic of the page (listByConversation), not the last reminder kept.
+            // It is a JSON number, as the Web's parsed id is (live, 2026-11-07: the exact id brings page 1 back).
             assert.deepEqual(
                 sent.map((o) => [o.page, o.last_id]),
                 [
                     [1, 0],
-                    [2, "8"],
+                    [2, 8],
                 ],
             );
+        });
+
+        it("groupReminderPage: a big cursor goes out as the Web's rounded Number, and a short page is not the end", async () => {
+            const big = "500000000000000071"; // past 2^53: the Web's Number rounds it
+            wire.fake.clearRoutes();
+            wire.fake.routeAnswer("/api/board/listReminder", (req) => {
+                const page = JSON.parse(req.params.objectData).page;
+                if (page === 1) return { data: JSON.stringify([{ id: big, startTime: 1800000000000 }]) };
+                return { data: JSON.stringify([{ id: "500000000000000072", startTime: 1800000000001 }]) };
+            });
+            const from = wire.fake.requests.length;
+            let got;
+            try {
+                got = await groupReminderPage(wire.own, GROUP, 2, 2);
+            } finally {
+                wire.fake.clearRoutes();
+            }
+            const raw = wire.fake.requests.slice(from).map((r) => r.params.objectData);
+            // Red if page 1's single topic (short of 2) ended the walk, or the cursor went out quoted or exact: live,
+            // the exact id of page 1's last reminder brings page 1 back, and the Web never sends it exactly.
+            assert.equal(raw.length, 2);
+            const rounded = JSON.stringify(Number(big));
+            assert.notEqual(rounded, big);
+            assert.ok(raw[1].includes(`"page":2,"count":2,"last_id":${rounded},"last_type":0`), raw[1]);
+            assert.deepEqual(
+                got.map((r) => r.id),
+                ["500000000000000072"],
+            );
+        });
+
+        it("boardPage: a short page with the cursor is not the end; an empty one is", async () => {
+            wire.fake.clearRoutes();
+            wire.fake.routeAnswer("/api/board/list", (req) =>
+                req.params.page === 1
+                    ? { data: { items: [{ boardType: 1, data: { id: 41 } }] } }
+                    : { data: { items: [{ boardType: 1, data: { id: 40 } }] } },
+            );
+            let got;
+            try {
+                got = await boardPage(wire.own, GROUP, 2, 2);
+            } finally {
+                wire.fake.clearRoutes();
+            }
+            // Red if page 1 (one item of two asked) was read as the end: the live board answers short pages mid-list.
+            assert.deepEqual(got.items, [{ boardType: 1, data: { id: 40 } }]);
         });
     });
 

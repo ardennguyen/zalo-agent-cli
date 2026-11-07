@@ -45,7 +45,7 @@ describe("reminder list --page", () => {
             asks.map((o) => [o.page, o.count, o.last_id]),
             [
                 [1, 2, 0],
-                [2, 2, "72"], // ids are kept as strings (past 2^53), as zalo_reminder sends it
+                [2, 2, 72], // a JSON number, as the Web's parsed id is: the exact id quoted brings page 1 back
             ],
         );
         assert.deepEqual(

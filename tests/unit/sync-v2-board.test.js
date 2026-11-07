@@ -278,7 +278,7 @@ describe("syncBoards", () => {
         assert.match(stats.failures[0].reason, /403/);
     });
 
-    it("stops paging once a short page arrives", async () => {
+    it("pages past a short page and stops at the first empty one", async () => {
         const api = stubApi({ board: [NOTE] });
         await syncBoards({
             api,
@@ -287,7 +287,8 @@ describe("syncBoards", () => {
             pageSize: 50,
             delayMs: 0,
         });
-        assert.equal(api.calls.board.length, 1, "a page shorter than pageSize means the end");
+        // Red if a short page ended the scan: with the cursor, Zalo answers short pages mid-list (live, 2026-11-07).
+        assert.equal(api.calls.board.length, 2, "page 1 was short, page 2 empty: the end");
     });
 
     it("respects maxPages when every page is full", async () => {

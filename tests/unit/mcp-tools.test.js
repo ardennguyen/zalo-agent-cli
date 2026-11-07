@@ -1442,18 +1442,19 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(listed.items[0].data.id, 40);
     });
 
-    it("zalo_note list past the end does not ask for the page after a short one", async () => {
+    it("zalo_note list past the end stops at the first empty page, not at a short one", async () => {
         const calls = [];
         const { server } = register({
             api: {
                 getListBoard: async (opts) => {
                     calls.push(opts.page);
-                    return { items: [{ boardType: 1, data: { id: 41 } }] };
+                    // A short page 1 (Zalo answers short pages mid-list with the cursor), then the end.
+                    return { items: opts.page === 1 ? [{ boardType: 1, data: { id: 41 } }] : [] };
                 },
             },
         });
         const listed = payloadOf(await server.call("zalo_note", { action: "list", groupId: "g1", page: 3, count: 2 }));
-        assert.deepEqual(calls, [1], "page 1 was short: nothing after it");
+        assert.deepEqual(calls, [1, 2], "page 2 was empty: nothing after it");
         assert.equal(listed.count, 0);
     });
 

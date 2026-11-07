@@ -255,7 +255,9 @@ export async function syncBoards(opts = {}) {
                             noteHere("board-write", e);
                         }
                     }
-                    if (items.length < pageSize) break;
+                    // Only an empty page ends the board: with the cursor, Zalo can answer
+                    // a short page while more items follow, and the Web stops only when empty.
+                    if (items.length === 0) break;
                     pageCursor = boardCursor(items);
                     if (delayMs) await sleep(delayMs);
                 }

@@ -11,7 +11,9 @@
  * - `getPollDetail` is a GET (the Web's `getPollDetail`, @11653790).
  * - `getListBoard` and the group `getListReminder` take a cursor (`lastId`, `lastType`) for page 2 and later, as the
  *   Web's board manager sends it (@1578806); `boardCursor()` reads it off a page. A reply that is a JSON string of a
- *   bare array is read as a list of notes (@1577470).
+ *   bare array is read as a list of notes (@1577470). The group reminder list's `last_id` goes out as the Web's
+ *   parsed Number, rounded past 2^53 as the Web's is: the exact id brings page 1 back again (live, 2026-11-07). A page with the
+ *   cursor can come back short while more follow, so the pagers stop at an empty page, as the Web's does.
  * - A group id loses the Web's conversation prefix `g` before it goes out.
  * - Reminders are created and edited in the colour the Web uses (-16777216, opaque black) and in the key order of
  *   the Web's reminder builder (@3292729). The caller's emoji is kept (design 6.1 item 12; the Web always sends "⏰").
@@ -595,6 +597,19 @@ export const REMINDER_GET = Object.freeze({
     transform: topicReply,
 });
 
+/**
+ * The group reminder list's `last_id` as the Web sends it: a JSON number. The Web's id is a parsed Number (its board
+ * reply has no big-id pass), so past 2^53 it goes out rounded. Live (2026-11-07), that is what pages correctly: Zalo
+ * answers a value that is no reminder's id by page number, while the exact id of the page's last reminder, quoted or
+ * bare, brings page 1 back again.
+ *
+ * @param {number|string} id - the cursor, 0 on page 1
+ * @returns {number}
+ */
+function webLastId(id) {
+    return typeof id === "string" && /^\d+$/.test(id) ? Number(id) : id;
+}
+
 /** `GET {group_board}/api/board/listReminder` (the Web's `getListBoardGroup`, @11671895). */
 export const REMINDER_LIST_GROUP = Object.freeze({
     host: BOARD_HOST,
@@ -607,7 +622,7 @@ export const REMINDER_LIST_GROUP = Object.freeze({
             board_type: BOARD_TYPE.TOPIC,
             page: a.page,
             count: a.count,
-            last_id: a.lastId,
+            last_id: webLastId(a.lastId),
             last_type: 0,
         }),
         imei: ctx.imei,
@@ -727,8 +742,9 @@ export function votedOptionIds(poll, ownId) {
 
 /**
  * One page of a group's board, reached the way Zalo Web pages it: page 2 and later carry the cursor of the page
- * before (`boardCursor`), so the pages before the one asked are read first. A short page on the way means there is
- * nothing after it, and `{items: []}` is the answer without asking further.
+ * before (`boardCursor`), so the pages before the one asked are read first. An empty page on the way means there is
+ * nothing after it, and `{items: []}` is the answer without asking further. A short page does not: with the cursor,
+ * Zalo can answer fewer items than asked while more follow (live, 2026-11-07), and the Web stops only when empty.
  *
  * @param {{getListBoard: Function}} api - a logged-in api
  * @param {string} groupId
@@ -741,7 +757,7 @@ export async function boardPage(api, groupId, page = 1, count = PAGE_SIZE) {
     let cursor = { lastId: 0, lastType: 0 };
     for (let p = 1; p < page; p++) {
         const items = (await api.getListBoard({ page: p, count, ...cursor }, groupId))?.items ?? [];
-        if (items.length < count) return { items: [] };
+        if (items.length === 0) return { items: [] };
         cursor = boardCursor(items);
     }
     return api.getListBoard({ page, count, ...cursor }, groupId);
@@ -750,7 +766,8 @@ export async function boardPage(api, groupId, page = 1, count = PAGE_SIZE) {
 /**
  * One page of a group's reminders, reached the way Zalo Web pages them: page 2 and later carry `lastId`, the id of
  * the last topic of the page before (read off the reply, {@link groupReminderListReply}), so the pages before the one
- * asked are read first. A page that held fewer topics than asked means there is nothing after it. A DM's reminders
+ * asked are read first. An empty page means there is nothing after it; a short one does not, since a page asked
+ * with the cursor can hold fewer than asked while more follow (the Web stops only at an empty page). A DM's reminders
  * have no cursor (the Web always sends `last_id` 0 there) and are asked for by page number alone.
  *
  * @param {{getListReminder: Function}} api - a logged-in api
@@ -766,7 +783,7 @@ export async function groupReminderPage(api, groupId, page = 1, count = PAGE_SIZ
         const list = await api.getListReminder({ page: p, count, lastId }, groupId, THREAD_TYPE.GROUP);
         const got = Array.isArray(list) ? list : [];
         const size = got.page?.size ?? got.length;
-        if (size < count) return [];
+        if (size === 0) return [];
         const last = got.at(-1);
         lastId = got.page?.lastId ?? last?.reminderId ?? last?.id ?? 0;
     }

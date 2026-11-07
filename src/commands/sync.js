@@ -347,6 +347,16 @@ export function registerSyncCommands(program) {
         });
 }
 
+/**
+ * Whether stdout is reserved for one JSON value (`--json`; set by src/index.js). The single-stage commands below
+ * print their human lines either way -- in JSON mode those go to stderr -- and then their result through
+ * `output()`, which prints only in JSON mode when given no human formatter of its own.
+ */
+const jsonMode = () => Boolean(process.env.ZALO_JSON_MODE);
+
+/** Print `data` as the command's JSON result; a no-op in human mode, whose lines are already out. */
+const jsonResult = (data) => output(data, jsonMode(), () => {});
+
 /** The active account, or exit with the same message every command uses. */
 function requireAccount() {
     const acc = getActive();
@@ -398,6 +408,7 @@ async function runMediaDownload(activeAcc, opts) {
     if (!pending) {
         success("No attachments waiting to be downloaded.");
         info("Run `zalo-agent sync-mobile --transfer` first if you have not synced yet.");
+        jsonResult({ pending: 0, considered: 0, downloaded: 0, ...(opts.dryRun && { dryRun: true }) });
         process.exit(0);
     }
     info(`${pending} attachment(s) not yet downloaded.`);
@@ -440,6 +451,7 @@ async function runMediaDownload(activeAcc, opts) {
 
     if (opts.dryRun) {
         success(`Dry run: ${stats.considered} attachment(s) would be fetched.`);
+        jsonResult({ dryRun: true, pending, ...stats });
         process.exit(0);
     }
     success(`Downloaded ${stats.downloaded}/${stats.considered} attachment(s) (${formatBytes(stats.bytes)}).`);
@@ -488,6 +500,7 @@ async function runMediaDownload(activeAcc, opts) {
         warning(`${other} attachment(s) failed for other reasons.`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
+    jsonResult({ pending, ...stats });
     process.exit(0);
 }
 
@@ -504,6 +517,7 @@ async function runPruneOrphans(activeAcc, opts) {
         info(
             "Orphans come from leave/removal events, `conv delete`, and the conversation list a full-history sync returns.",
         );
+        jsonResult({ orphans: [], deleted: 0, bytes: 0, ...(opts.dryRun && { dryRun: true }) });
         process.exit(0);
     }
 
@@ -533,6 +547,7 @@ async function runPruneOrphans(activeAcc, opts) {
         if (total.missing)
             info(`${total.missing} row(s) point at files already gone; a real run clears those pointers.`);
         info("Message text is kept. Use `conv forget --orphans` to remove that too.");
+        jsonResult({ dryRun: true, orphans: orphanList(orphans), ...total });
         process.exit(0);
     }
 
@@ -545,8 +560,12 @@ async function runPruneOrphans(activeAcc, opts) {
         for (const f of total.failures.slice(0, 5)) info(`  ${f.msgId}: ${f.reason}`);
     }
     info("Their message text is still here — `conv forget --orphans` removes that too.");
+    jsonResult({ orphans: orphanList(orphans), ...total });
     process.exit(0);
 }
+
+/** The orphaned conversations a prune covered, as its JSON result lists them. */
+const orphanList = (orphans) => orphans.map((t) => ({ threadId: t.threadId, name: t.name || "", files: t.files }));
 
 /** Delete downloaded media older than N days. Never removes message rows. */
 async function runMediaPrune(activeAcc, opts) {
@@ -572,14 +591,17 @@ async function runMediaPrune(activeAcc, opts) {
     });
 
     const cutoff = stats.all ? "any date" : new Date(stats.cutoff).toISOString().slice(0, 10);
+    const result = { scope, cutoff, ...(opts.dryRun && { dryRun: true }), ...stats };
     if (!stats.considered) {
         success(`Nothing to prune — no downloaded media matched ${scope}.`);
+        jsonResult(result);
         process.exit(0);
     }
     if (opts.dryRun) {
         success(`Dry run: ${stats.considered} file(s), ${formatBytes(stats.bytes)} — ${scope}.`);
         info("Message text is untouched; pruned files can be re-downloaded while their links live.");
         info("Re-run without --dry-run to delete them.");
+        jsonResult(result);
         process.exit(0);
     }
     success(`Deleted ${stats.deleted} file(s), reclaiming ${formatBytes(stats.bytes)} (${scope}, before ${cutoff}).`);
@@ -594,6 +616,7 @@ async function runMediaPrune(activeAcc, opts) {
         "Message history is unchanged. These attachments are not fetched again on their own; " +
             "`zalo-agent sync-media --include-pruned` re-downloads them while their links still work.",
     );
+    jsonResult(result);
     process.exit(0);
 }
 
@@ -615,6 +638,7 @@ async function runBoardSync(activeAcc, opts) {
         warning(opts.thread ? `Thread ${opts.thread} is not in the local cache.` : "No threads in the local cache.");
         info("Run `zalo-agent sync-mobile --transfer` first.");
     }
+    jsonResult(r);
     process.exit(0);
 }
 
@@ -721,7 +745,7 @@ async function runReactionSync(activeAcc, opts) {
             error(`Failed: ${daemonStageError(r)}`);
             process.exit(1);
         }
-        reportReactionStage(r.result, r.result.placed || 0, r.result.unresolvedLeft || 0, opts.pages);
+        jsonResult(reportReactionStage(r.result, r.result.placed || 0, r.result.unresolvedLeft || 0, opts.pages));
         process.exit(0);
     }
 
@@ -752,6 +776,12 @@ async function runReactionSync(activeAcc, opts) {
         } else {
             const stats = await drainPass(api, { waitMs, pages: opts.pages, removals: opts.removals });
             reportReactionDrain(stats, opts);
+            // The shape the daemon path prints (reportReactionStage), without its retry pass.
+            jsonResult({
+                status: stats.truncated ? "partial" : "ok",
+                reason: `${stats.stored} stored`,
+                stats: { received: stats.received, stored: stats.stored },
+            });
             exitCode = 0;
         }
     } catch (err) {
@@ -917,6 +947,7 @@ async function runCloudSync(activeAcc, opts) {
     }
     if (r.status === "skipped") {
         info("Pass --full to walk the queue anyway.");
+        jsonResult(r);
         process.exit(0);
     }
     if (r.status === "unavailable") {
@@ -927,6 +958,7 @@ async function runCloudSync(activeAcc, opts) {
     }
     if (r.stats.lastNoiseId && !r.stats.complete) info(`Resume cursor: ${r.stats.lastNoiseId}`);
     info("Cloud blobs are stored encrypted; this pass records where they live, it does not download them.");
+    jsonResult(r);
     process.exit(0);
 }
 

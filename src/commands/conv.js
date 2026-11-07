@@ -406,11 +406,21 @@ export function registerConvCommands(program, deps = {}) {
                 return;
             }
 
-            output(result, program.opts().json, () => {
+            // Either half failing fails the command, in both modes (human mode's error() lines below set the exit
+            // code), so the JSON leads with the error, as every failure's does.
+            const seen = result.seen;
+            const failure = !seen.ok
+                ? seen.refused
+                    ? seen.error
+                    : `Seen receipt for message ${seen.msgId} failed: ${seen.error}`
+                : !result.unreadMark.ok
+                  ? `Could not clear the manual unread mark: ${result.unreadMark.error}`
+                  : null;
+            if (failure && program.opts().json) process.exitCode = 1;
+            output({ ...(failure && { error: failure }), ...result }, program.opts().json, () => {
                 if (result.unreadMark.ok) success("Cleared the manual unread mark");
                 else error(`Could not clear the manual unread mark: ${result.unreadMark.error}`);
 
-                const seen = result.seen;
                 if (seen.ok) {
                     success(`Sent a seen receipt for message ${seen.msgId}`);
                     if (seen.guessed.length) {
@@ -633,12 +643,21 @@ export function registerConvCommands(program, deps = {}) {
                 ? getOrphanThreads().map((t) => ({ threadId: String(t.threadId), name: t.name, ...t }))
                 : [{ threadId: String(threadId), name: "" }];
 
+            const jsonMode = program.opts().json;
+            const note = "Nothing was sent to Zalo; only this machine's copy was removed.";
             if (!targets.length) {
-                success("No orphaned conversations — nothing to forget.");
+                output({ success: true, forgotten: 0, messages: 0, files: 0, note }, jsonMode, () =>
+                    success("No orphaned conversations — nothing to forget."),
+                );
                 process.exit(0);
             }
 
             if (opts.dryRun) {
+                // The same preview `zalo_conversation forget` gives with dryRun.
+                if (jsonMode) {
+                    output({ dryRun: true, conversations: targets }, jsonMode);
+                    process.exit(0);
+                }
                 info(`Would forget ${targets.length} conversation(s):`);
                 // Every one of them: a preview that stops at a page does not
                 // show what the real run is about to remove.
@@ -653,21 +672,43 @@ export function registerConvCommands(program, deps = {}) {
 
             let removed = 0;
             let files = 0;
+            const errors = [];
             for (const t of targets) {
                 // Media first, then rows (src/core/conversation-actions.js); each failure is reported, not fatal.
                 const gone = await forgetConversation(t.threadId);
                 files += gone.files;
                 removed += gone.messages;
-                for (const e of gone.errors) {
-                    if (e.what === "media") warning(`Media cleanup failed for ${t.threadId}: ${e.message}`);
-                    else error(`Failed to forget ${t.threadId}: ${e.message}`);
-                }
+                for (const e of gone.errors) errors.push({ threadId: t.threadId, ...e });
+            }
+            // The reply `zalo_conversation forget` gives (src/mcp/actions-conversation.js).
+            const result = {
+                success: errors.length === 0,
+                forgotten: targets.length,
+                messages: removed,
+                files,
+                ...(errors.length > 0 && { errors }),
+                note,
+            };
+            // A media cleanup failure is a warning; a conversation whose rows stayed is a failure.
+            const failed = errors.find((e) => e.what !== "media");
+            if (jsonMode) {
+                if (failed) process.exitCode = 1;
+                output(
+                    failed ? { error: `Failed to forget ${failed.threadId}: ${failed.message}`, ...result } : result,
+                    jsonMode,
+                );
+                process.exit();
+            }
+            for (const e of errors) {
+                if (e.what === "media") warning(`Media cleanup failed for ${e.threadId}: ${e.message}`);
+                else error(`Failed to forget ${e.threadId}: ${e.message}`);
             }
             success(
                 `Forgot ${targets.length} conversation(s): ${removed} message(s) and ${files} file(s) removed locally.`,
             );
             info("Nothing was sent to Zalo; this only cleared the local cache.");
-            process.exit(0);
+            // 1 when any conversation failed to forget (error() set it), else 0.
+            process.exit();
         });
 
     conv.command("muted")

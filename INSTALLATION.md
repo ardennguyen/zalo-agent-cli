@@ -32,6 +32,7 @@ Engine 3.0.0 replaces zca-js with the project's own implementation of the Zalo W
 - **Guarded MCP actions need `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` in `mcp-config.json` (or `ZALO_MCP_CONFIRM_MODE`) decides who confirms: `agent` (default), `human` (the server asks the user through MCP elicitation; stdio only) or `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` still work as deprecated aliases for `off`.
 - **MCP names:** `msgId` (not `id`/`messageId`), `userId` (not `uid`), `threadType` `"dm"` or `"group"` (a number is refused), and every id is a string.
 - **`ZALO_QR_FLOW=legacy` is removed**; delete it from `.env`.
+- **A CLI command that fails exits 1** (before, most exited 0). Exit codes: 0 done, 1 failed, 2 confirmation needed, 3 a daemon was kicked (another session took the account), 4 Zalo keeps refusing the saved login. With `--json` a failure is `{"error": …}`, and stdout is always one JSON object or array.
 
 The full list is in the [CHANGELOG](CHANGELOG.md).
 

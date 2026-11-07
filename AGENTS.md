@@ -203,7 +203,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 
 ### Numbers quoted across many docs
 
-CLI commands (**233**), command groups (**27** containers), MCP tools (**36**), OA commands (**32**), offline tests (**4991** as of 2026-11-07). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
+CLI commands (**233**), command groups (**27** containers), MCP tools (**36**), OA commands (**32**), offline tests (**5011** as of 2026-11-07). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`, `zalo_conversation`, `zalo_profile`, `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link`.
 
@@ -250,7 +250,7 @@ The term list is `.agents/confidential-terms.txt` and is **gitignored on purpose
 - **Never** use real credentials, user IDs, or phone numbers. Offline tests import `tests/helpers/sandbox.js` **first** and assert `assertSandboxed(CONFIG_DIR)`. Real thread ids live only in gitignored `tests/targets.json`.
 - **Identity protection is enforced, not trusted.** `tests/unit/no-real-ids.test.js` fails `npm test` on any 15+-digit run, or 32-character noised id not spelling `NOISED`, in a tracked or unignored file, zip entry or path that is not a fake by its convention. Never copy a value from a live capture, log, `zalo.db` or `targets.json` into a commit; choose a fake that keeps what the test needs (length, past `MAX_SAFE_INTEGER`, a colliding twin, a fixture's byte size). Names have no automatic check — review them.
 - The live suite writes only to ids blessed disposable in `targets.json`; every write helper calls `assertDisposable()`. Gated behind `ZALO_TEST_LIVE=1`, unreachable from `npm test`, destructive tiers behind additive env gates.
-- **An assertion that only checks "did not crash" is not a test.** This CLI reports API failures as a printed `✗` and exits 0, so crash-only assertions cannot tell a working command from one that fails on every invocation. Assert the success the command claims.
+- **An assertion that only checks "did not crash" is not a test.** Until 3.0 a failing command printed `✗` and exited 0; even with exit 1 now, a no-crash check cannot tell a working command from a wrong reply. Assert the success the command claims.
 - **Before trusting a new assertion, say what would have to change for it to go red — and check that is the thing you care about.** **An assertion that matches a string the fix itself introduces** proves the fix is present, not that it works. If an assertion greps for its own patch, it is testing the wrong thing. Worked example: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 ---

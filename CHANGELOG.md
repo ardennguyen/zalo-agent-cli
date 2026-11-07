@@ -131,11 +131,19 @@ The MCP tools also speak one vocabulary now, and every id a program reads is a s
 - `write run blocksharing-update` is marked unverified (`write list`): it needs zBusiness Max, and a personal account gets 829
 - Surface: 233 CLI commands in 27 command groups, 36 MCP tools.
 
+#### Exit codes and `--json` output
+
+- **Breaking:** **a command that fails now exits 1; before, most exited 0.** Exit codes: 0 done, 1 failed, 2 confirmation needed, 3 a daemon was kicked, 4 Zalo keeps refusing the saved login. `logout` and `account remove` refused while a daemon holds the account now fail (they warned and exited 0).
+- fix: **`--json` always prints one JSON object or array.** Zalo answers many calls with an empty body, and 132 commands printed it as it came: `""`, `null` or `undefined`. They now print `{"success": true, …the command's arguments}` (for example `{"success": true, "userId": "…"}` for `friend block`), and keep any other bare answer under `result`; an answer that is an object or array is printed unchanged, as before. `msg send` no longer fails on an empty answer to a send that went out.
+- fix: **commands that printed nothing with `--json` print their result**: `logout` and `account remove` (what was ended and deleted), `account export` (`{exported, ownId, file}`, never the credentials), `conv forget` (the `zalo_conversation` `forget` reply, or the preview with `--dry-run`), `sync-media` (including `--prune` and `--prune-orphans`), `sync-boards`, `sync-reactions` and `sync-cloud` (their stats), and `group list` with no groups (`[]`). `account info` with no active account prints `{"active": null}` (it printed `null`).
+- fix: **a partial failure leads with `error`.** `conv read` when the unread mark or the seen receipt fails, and `group settings` when Zalo did not apply a setting, print `{"error": …, …the result}` and exit 1 (with `--json`, `conv read` exited 0 when only the unread mark failed).
+
 ### Usage notices
 
 - **Breaking, MCP clients and webhook receivers:** read `msgId` (not `id` or `messageId`) and `userId` (not `uid`); send `threadType` as `"dm"` or `"group"` (a number is refused); call `zalo_view_media` with `msgId` and `zalo_delete_message` with `senderId`. The CLI is unchanged (`-t 0|1`).
 - **Breaking, programs reading ids:** every id in `--json` output, `listen` events and MCP replies is a string, small ones too (a `reminderId` of 9 is `"9"`). Compare and store ids as strings.
 - **MCP cursors are large numbers now** (they start at the clock). A client that stores a cursor needs no change; one that assumed a small counter from 1 should not.
+- **Breaking, scripts:** a failed command exits 1 (most exited 0), so a script that ran on after a failure now stops where `set -e` or `&&` is used. With `--json`, test the exit code or `.error`; stdout is always one object or array.
 - **The engine is new.** Nothing to change in how you run the CLI, the MCP server or the wrapper. If something Zalo used to accept is now refused, report it with the command and the error.
 - **`ZALO_QR_FLOW=legacy` is refused.** Remove it from your environment or `.env`; the official QR login is the only one.
 - **MCP labels:** `zalo_label` `assign` / `unassign` take an optional `threadType`. A label an earlier version put on a group did not show in Zalo; assign it again to make it show.

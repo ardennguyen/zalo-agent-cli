@@ -657,6 +657,8 @@ export async function runCommand(register, argv) {
         if (exitCode === null) exitCode = code;
         throw new ExitSignal(`process.exit(${code})`);
     };
+    const savedExitCode = process.exitCode;
+    process.exitCode = undefined;
     try {
         await program.parseAsync(["node", "zalo-agent", ...argv]);
     } catch (e) {
@@ -665,6 +667,10 @@ export async function runCommand(register, argv) {
         console.log = saved.log;
         console.error = saved.error;
         process.exit = saved.exit;
+        // What the process would have exited with without an explicit exit (error() sets 1), taken back so it
+        // does not become the test process's own exit code.
+        if (exitCode === null && process.exitCode) exitCode = process.exitCode;
+        process.exitCode = savedExitCode;
     }
     return { stdout: out.join("\n"), stderr: err.join("\n"), exitCode };
 }

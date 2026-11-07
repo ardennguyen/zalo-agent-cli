@@ -42,8 +42,9 @@ import { logoutNeedsSession } from "./core/logout.js";
 import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
 import { applyCachedThreadType } from "./utils/thread-type.js";
 import { attachDaemonLogIfChild } from "./core/daemon-channel.js";
-import { success, error, warning } from "./utils/output.js";
+import { success, error, warning, setReplyContext } from "./utils/output.js";
 import { enforceCliGuard } from "./core/confirm-guard.js";
+import { TEST_FAKE_API_REFUSED } from "./core/test-fake-session.js";
 
 attachDaemonLogIfChild();
 
@@ -85,6 +86,8 @@ program
             oaDir: globalOpts.oaDir,
         });
         const cmdName = thisCommand.args?.[0] || thisCommand.name();
+        // What a --json reply names when Zalo's answer is empty (src/utils/output.js jsonReply).
+        setReplyContext(actionCommand);
         // JSON mode keeps stdout clean for piping, and MCP uses stdout as its transport
         if (globalOpts.json || cmdName === "mcp") {
             // Every human-facing line goes elsewhere (src/utils/output.js reads this)
@@ -169,9 +172,10 @@ registerSyncCommands(program);
 registerCloudCommands(program);
 
 // parseAsync, so a registry that exists but cannot be read (src/core/accounts.js) reaches the user as a
-// message, not as a stack trace from inside a command. Anything else is rethrown exactly as before.
+// message, not as a stack trace from inside a command; so does a refused test-only fake session
+// (src/core/test-fake-session.js). Anything else is rethrown exactly as before.
 program.parseAsync().catch((e) => {
-    if (e?.name === "RegistryError") {
+    if (e?.name === "RegistryError" || e?.code === TEST_FAKE_API_REFUSED) {
         error(e.message);
         process.exit(1);
     }

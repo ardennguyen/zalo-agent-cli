@@ -79,6 +79,7 @@ Muốn cài kèm MCP server dạng sandbox (khuyến nghị cho AI client) → x
 - **`ZALO_QR_FLOW=legacy` đã bị bỏ** — xóa khỏi môi trường hoặc `.env`.
 - **`logout` đăng xuất thiết bị** ở phía Zalo; `--keep-session` giữ cách cũ.
 - Daemon bị kick hoặc bị từ chối đăng nhập thoát với mã 3 hoặc 4 và không được unit systemd đi kèm khởi động lại.
+- **Lệnh thất bại thoát với mã 1** (trước đây phần lớn thoát với mã 0). Mã thoát: 0 thành công, 1 thất bại, 2 cần xác nhận (`--yes`), 3 daemon bị kick (phiên khác chiếm tài khoản), 4 Zalo liên tục từ chối phiên đăng nhập đã lưu. Với `--json`, lỗi là `{"error": …}`, và stdout luôn là một object hoặc mảng JSON (không còn `""` hay `null`).
 - Wrapper `@ardennguyen/zalo-mcp` 2.1.0 cần engine 3.0.0.
 
 Chi tiết: [CHANGELOG.md](CHANGELOG.md).
@@ -269,6 +270,7 @@ For the sandboxed MCP-server install (recommended for AI clients), see [INSTALLA
 - **`ZALO_QR_FLOW=legacy` is removed** — take it out of your environment or `.env`.
 - **`logout` signs the device out** at Zalo; `--keep-session` keeps the old behavior.
 - A kicked or refused daemon exits with code 3 or 4 and is not restarted by the shipped systemd unit.
+- **A command that fails exits 1** (before, most exited 0). Exit codes: 0 done, 1 failed, 2 confirmation needed (`--yes`), 3 a daemon was kicked (another session took the account), 4 Zalo keeps refusing the saved login. With `--json` a failure is `{"error": …}`, and stdout is always one JSON object or array (never `""` or `null`).
 - Wrapper `@ardennguyen/zalo-mcp` 2.1.0 requires engine 3.0.0.
 
 Details: [CHANGELOG.md](CHANGELOG.md).

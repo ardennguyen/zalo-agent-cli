@@ -26,7 +26,7 @@ export function registerGroupCommands(program) {
                 const groupIds = Object.keys(groupsResult?.gridVerMap || {});
 
                 if (groupIds.length === 0) {
-                    info("No groups found.");
+                    output([], program.opts().json, () => info("No groups found."));
                     return;
                 }
 
@@ -417,7 +417,12 @@ export function registerGroupCommands(program) {
                 // Refused before the session is touched: there is nothing to send.
                 if (Object.keys(changes).length === 0) throw new Error(NOTHING_TO_CHANGE);
                 const outcome = await applyGroupSettingChanges(getApi(), groupId, changes);
-                output(outcome, program.opts().json, () => {
+                // A setting Zalo did not apply fails the command (below), so its JSON leads with the error.
+                const notApplied = Object.keys(outcome.notApplied ?? {});
+                const failed = notApplied.length
+                    ? { error: `Zalo did not apply ${notApplied.join(", ")} to group ${groupId}` }
+                    : {};
+                output({ ...failed, ...outcome }, program.opts().json, () => {
                     const onOff = (v) => (Number(v) ? "on" : "off");
                     if (!outcome.sent) {
                         const already = Object.entries(outcome.unchanged).map(
@@ -444,7 +449,7 @@ export function registerGroupCommands(program) {
                         info("Could not read the group back to confirm the result.");
                     }
                 });
-                if (Object.keys(outcome.notApplied ?? {}).length) process.exitCode = 1;
+                if (notApplied.length) process.exitCode = 1;
             } catch (e) {
                 error(`Update settings failed: ${e.message}`);
                 process.exitCode = 1;

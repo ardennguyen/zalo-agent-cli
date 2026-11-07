@@ -5,7 +5,8 @@
 
 import { join } from "node:path";
 import { getActive } from "./accounts.js";
-import { getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
+import { CONFIG_DIR, getAccountDir, loadCredentials, saveCredentials } from "./credentials.js";
+import { loadTestFakeSession, resolveTestFakeApi } from "./test-fake-session.js";
 import { info } from "../utils/output.js";
 import { generateDeviceFingerprint } from "../zalo/device-fingerprint.js";
 import { secChUaFor } from "../zalo/headers.js";
@@ -194,6 +195,15 @@ export function extractCredentials() {
  */
 export async function autoLogin(jsonMode = false) {
     if (_api) return; // Already logged in
+
+    // Offline tests only: a fake session instead of a login. Refused (throws) outside the test sandbox --
+    // the guard and why it cannot be reached in normal use are in src/core/test-fake-session.js.
+    const fakeModule = resolveTestFakeApi({ configDir: CONFIG_DIR });
+    if (fakeModule) {
+        const fake = await loadTestFakeSession(fakeModule);
+        setSession(fake.api, fake.ownId ?? null);
+        return;
+    }
 
     const active = getActive();
     if (!active) return;

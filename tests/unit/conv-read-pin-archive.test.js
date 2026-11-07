@@ -124,12 +124,17 @@ async function conv(args, api, { json = false } = {}) {
     const prevJsonMode = process.env.ZALO_JSON_MODE;
     if (json) process.env.ZALO_JSON_MODE = "1";
     let exitCode = null;
+    const savedExitCode = process.exitCode;
+    process.exitCode = undefined;
     try {
         await program.parseAsync(["node", "zalo-agent", ...(json ? ["--json"] : []), "conv", ...args]);
     } catch (e) {
         if (!(e instanceof ExitCalled)) throw e;
         exitCode = e.code;
     } finally {
+        // error() sets 1 without exiting; count it, and keep it off the test process.
+        if (exitCode === null && process.exitCode) exitCode = process.exitCode;
+        process.exitCode = savedExitCode;
         log.mock.restore();
         error.mock.restore();
         exit.mock.restore();

@@ -59,9 +59,12 @@ async function unread(args) {
     registerConvCommands(program, { getApi: () => api });
     const log = mock.method(console, "log", () => {});
     const err = mock.method(console, "error", () => {});
+    const savedExitCode = process.exitCode;
     try {
         await program.parseAsync(["node", "zalo-agent", "conv", "unread", ...args]);
     } finally {
+        // error() sets 1; it must not become the test process's exit code.
+        process.exitCode = savedExitCode;
         log.mock.restore();
         err.mock.restore();
     }

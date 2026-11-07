@@ -32,6 +32,7 @@ Engine 3.0.0 thay zca-js bằng phần cài đặt giao thức Zalo Web của ch
 - **Thao tác MCP được bảo vệ cần `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` trong `mcp-config.json` (hoặc `ZALO_MCP_CONFIRM_MODE`) quyết định ai xác nhận: `agent` (mặc định), `human` (máy chủ hỏi người dùng qua MCP elicitation; chỉ stdio) hoặc `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` vẫn dùng được như bí danh cũ của `off`.
 - **Tên trong MCP:** `msgId` (không còn `id`/`messageId`), `userId` (không còn `uid`), `threadType` là `"dm"` hoặc `"group"` (số bị từ chối), và mọi id là chuỗi.
 - **`ZALO_QR_FLOW=legacy` đã bị bỏ**; xóa khỏi `.env`.
+- **Lệnh CLI thất bại thoát với mã 1** (trước đây phần lớn thoát với mã 0). Mã thoát: 0 thành công, 1 thất bại, 2 cần xác nhận, 3 daemon bị kick (phiên khác chiếm tài khoản), 4 Zalo liên tục từ chối phiên đăng nhập đã lưu. Với `--json`, lỗi là `{"error": …}`, và stdout luôn là một object hoặc mảng JSON.
 
 Danh sách đầy đủ trong [CHANGELOG](CHANGELOG.md).
 

@@ -180,11 +180,14 @@ export function registerLoginCommands(program) {
             // credential delete would leave it unable to re-auth.
             const holder = active ? lockHolder(active.ownId) : null;
             if (holder !== null) {
-                warning(
+                error(
                     `A "listen"/"mcp" daemon (pid ${holder}) is running for this account. Stop it, then re-run logout — nothing was changed.`,
                 );
                 return;
             }
+            const jsonMode = program.opts().json;
+            // What --json prints: what was ended and deleted, in place of the lines below.
+            const done = { loggedOut: true, account: active?.ownId ?? null, remote: null };
 
             // Sign this device out at Zalo the way Zalo Web does (the six steps in
             // src/zalo/official-logout.js), then check that the saved login is
@@ -194,19 +197,17 @@ export function registerLoginCommands(program) {
             // The saved credentials are deleted below either way.
             if (opts.remote !== false && isLoggedIn()) {
                 const creds = active ? loadCredentials(active.ownId) : null;
-                reportLogout(
-                    await serverLogout(getApi(), {
-                        keepSession: Boolean(opts.keepSession),
-                        savedLogin: creds ? { creds, proxy: active.proxy || null, ownId: active.ownId } : null,
-                    }),
-                    { success, warning, info },
-                );
+                done.remote = await serverLogout(getApi(), {
+                    keepSession: Boolean(opts.keepSession),
+                    savedLogin: creds ? { creds, proxy: active.proxy || null, ownId: active.ownId } : null,
+                });
+                reportLogout(done.remote, { success, warning, info });
             }
 
             clearSession();
 
             if (!active) {
-                success("Logged out.");
+                output(done, jsonMode, () => success("Logged out."));
                 return;
             }
 
@@ -219,7 +220,7 @@ export function registerLoginCommands(program) {
                     const trustNote = describeTrustedDevice(active.ownId, "deleted");
                     const { wiped, skippedLocked } = removeAccount(active.ownId);
                     if (skippedLocked) {
-                        warning(
+                        error(
                             `Purge aborted: a "listen"/"mcp" daemon (pid ${skippedLocked.pid}) is still running for this account. Stop it, then re-run --purge.`,
                         );
                         info("Credentials and account registration were left untouched.");
@@ -228,10 +229,12 @@ export function registerLoginCommands(program) {
                     try {
                         unlinkSync(getQRPath());
                     } catch {}
-                    success(
-                        `Logged out and purged ${active.name || active.ownId} — ${wiped ? "local account data deleted" : "no local account data found to delete"}.`,
-                    );
-                    if (trustNote && wiped) info(trustNote);
+                    output({ ...done, purged: true, localDataDeleted: wiped }, jsonMode, () => {
+                        success(
+                            `Logged out and purged ${active.name || active.ownId} — ${wiped ? "local account data deleted" : "no local account data found to delete"}.`,
+                        );
+                        if (trustNote && wiped) info(trustNote);
+                    });
                 } catch (e) {
                     // A filesystem-level failure (locked file, permissions, AV
                     // scanner) must not crash the process with a raw stack trace.
@@ -246,7 +249,7 @@ export function registerLoginCommands(program) {
             // unless --delete-history asks otherwise. Guarded by the daemon lock.
             const outcome = finishLocalLogout(active.ownId, { deleteHistory: Boolean(opts.deleteHistory) });
             if (outcome.blockedPid !== undefined) {
-                warning(
+                error(
                     `A "listen"/"mcp" daemon (pid ${outcome.blockedPid}) is still running for this account, so the credentials were kept — the next command would auto-login.`,
                 );
                 info("Stop the daemon and re-run logout to delete the saved credentials.");
@@ -257,23 +260,28 @@ export function registerLoginCommands(program) {
                 unlinkSync(getQRPath());
             } catch {}
             const who = active.name || active.ownId;
-            const historyGone = opts.deleteHistory && (outcome.history.dbDeleted || outcome.history.mediaDeleted);
-            if (outcome.credentialsDeleted) {
-                success(
-                    `Logged out ${who} — saved credentials${historyGone ? " and local chat history" : ""} deleted; the next command needs a new QR login.`,
-                );
-            } else {
-                success(
-                    `Logged out ${who} — ${historyGone ? "local chat history deleted; " : ""}no saved credentials were found to delete.`,
-                );
-            }
-            const trustNote = describeTrustedDevice(active.ownId, "kept");
-            if (trustNote) info(trustNote);
-            if (opts.keepSession || opts.remote === false) {
-                info(
-                    "This ended the session on this device only. To sign it out at Zalo, remove it from your phone's list of logged-in devices.",
-                );
-            }
+            const historyGone = Boolean(
+                opts.deleteHistory && (outcome.history.dbDeleted || outcome.history.mediaDeleted),
+            );
+            const result = { ...done, credentialsDeleted: outcome.credentialsDeleted, historyDeleted: historyGone };
+            output(result, jsonMode, () => {
+                if (outcome.credentialsDeleted) {
+                    success(
+                        `Logged out ${who} — saved credentials${historyGone ? " and local chat history" : ""} deleted; the next command needs a new QR login.`,
+                    );
+                } else {
+                    success(
+                        `Logged out ${who} — ${historyGone ? "local chat history deleted; " : ""}no saved credentials were found to delete.`,
+                    );
+                }
+                const trustNote = describeTrustedDevice(active.ownId, "kept");
+                if (trustNote) info(trustNote);
+                if (opts.keepSession || opts.remote === false) {
+                    info(
+                        "This ended the session on this device only. To sign it out at Zalo, remove it from your phone's list of logged-in devices.",
+                    );
+                }
+            });
         });
 
     program

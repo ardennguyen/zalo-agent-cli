@@ -13,7 +13,7 @@ contacts Zalo or reads your real `~/.zalo-agent-cli/`. Some tests use disposable
 loopback servers and subprocess transports.
 
 ```bash
-npm test                      # 4991 offline tests — no Zalo session needed
+npm test                      # 5011 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -55,6 +55,9 @@ tests/
 ├── helpers/
 │   ├── sandbox.js               # throwaway HOME for offline tests
 │   ├── cli.js                   # subprocess harness (runCli / runJson)
+│   ├── cli-batch-worker.mjs     # runs many CLI invocations in one process (the --json contract walk)
+│   ├── fake-api.js              # a fake logged-in session: any method answers a canned or empty reply
+│   ├── no-network.mjs           # `--import` preload: fetch fails instead of reaching the network
 │   ├── targets.js               # disposable-target registry + blast-radius guard
 │   ├── live.js                  # session probe, tier gates, write helpers
 │   ├── fake-zalo/               # an offline Zalo: HTTP via fetch, plus a real local WebSocket server
@@ -76,6 +79,7 @@ tests/
 │   └── sync-v2-zcloud.test.js        thread-type.test.js           api-surface.test.js
 ├── cli/                         # offline, drives the real binary
 │   ├── surface.test.js          # every command/subcommand/flag is registered
+│   ├── json-contract.test.js    # every personal command, run with --json against a fake session
 │   ├── validation.test.js       # every guard that fires before a network call
 │   ├── sandbox-discipline.test.js  # no offline test may touch the real ~/.zalo-agent-cli/
 │   └── run-e2e-args.test.js     # the live runner refuses unknown flags before any tier
@@ -121,21 +125,47 @@ isolated home for free.
 
 ### Two CLI behaviors every assertion has to account for
 
-**1. API failures exit 0.** Nearly every action handler is
-`try { … } catch (e) { error(e.message) }`, and `error()` writes `  ✗ <msg>`
-to _stdout_. "Did it work?" is a question about output text, not `$?`. Only
-commander parse errors and `msg history` / `conv recent` set a non-zero code.
+**1. A failure exits 1 (since 3.0.0).** Nearly every action handler is
+`try { … } catch (e) { error(e.message) }`; `error()` sets exit code 1 and
+writes `  ✗ <msg>` to _stdout_ in human mode, `{"error": …}` with `--json`.
+A confirmation refusal exits 2, a kicked daemon 3, a refused login 4. Until
+3.0.0 most failures exited 0, so older tests assert on output text, not `$?`.
 
-**2. `--json` mode is not reliably JSON.** Success paths emit JSON, but the
-`✗` line prints to the same stream, and `msg send --react` appends a human
-`✓ Auto-reacted…` line _after_ the JSON. `runJson()` handles both: it reports
-a `✗` line as `{ok: false, error}`, and extracts the first complete JSON value
-while exposing any leftover as `trailing`.
+**2. `--json` stdout is one JSON object or array.** Human lines go to stderr,
+and a command whose Zalo answer is empty prints `{"success": true, …its
+arguments}` (`jsonReply()` in `src/utils/output.js`). `cli/json-contract.test.js`
+holds every personal command to this. `runJson()` still reports a failure as
+`{ok: false, error}` and extracts the first complete JSON value, exposing any
+leftover as `trailing`.
 
-Both are pinned down by **characterization tests** in
-`tests/cli/validation.test.js`, labeled `CHARACTERIZATION:`. They assert
-current, arguably-wrong behavior on purpose, so that changing it is a
-deliberate test update rather than a silent break for anyone piping to `jq`.
+### The `--json` contract test and the fake session
+
+`cli/json-contract.test.js` runs **every personal CLI command** (OA excluded)
+with `--json`, five times: once with plausible replies and once in each "empty
+reply" mode, where every Zalo call answers `""`, `null`, `{}` or `undefined`.
+Per command and mode it asserts that stdout is exactly one JSON object or array
+(never `""`, `null` or a bare value), that no `✓ ● ⚠ ✗` line is on stdout, that
+a success exits 0 without an `error` key, and that a failure prints `error` as
+the first key and exits non-zero. With plausible replies every command must
+succeed, except the few listed in `FAILS_OFFLINE` (each needs something no fake
+provides, such as a running MCP server), which must fail in that shape. The few
+commands it does not run (`EXCLUDED`: QR logins, daemons, phone-backed restores,
+`update`) are listed with their reasons.
+
+The commands run against a fake session instead of a login:
+`ZALO_TEST_FAKE_API=<module>` makes `autoLogin()` use the session the module
+returns (`tests/helpers/fake-api.js`). It is refused (exit 1) unless
+`ZALO_SANDBOX_ACTIVE=1`, the home is a `zalo-agent-test-*` folder in the OS
+temp folder, the config directory is inside it, and the module is under this
+package's `tests/` folder, which the npm package does not ship
+(`src/core/test-fake-session.js`, `unit/test-fake-session.test.js`). To answer
+one command's call in a particular way, pass `ZALO_TEST_FAKE_API_REPLIES` (JSON,
+by method name).
+
+The cases run in a worker that loads the CLI once (`helpers/cli-batch-worker.mjs`,
+about 20 ms a command instead of 1.4 s a spawn; the five walks take about 20 s),
+and every violation it reports is re-run as a real child process before it
+fails the suite.
 
 ### Spawn timeouts are a load symptom, not a regression
 
@@ -202,6 +232,8 @@ bare `ETIMEDOUT`, and keeps the original error as its `cause`.
 | `unit/sync-freshness.test.js`                                                                                                                         | `checkSyncFreshness()` — the one-hour debounce, the `--force` override, and the pending-gap escape hatch that defeats the debounce                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `unit/sync-v2-decode.test.js`                                                                                                                         | transfer-sync-v2 pure decode path: `splitChunks()` length-framing (including a declared length that overruns the buffer), `decodeFrame()` across `encrypt` 0/1/2/3                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `unit/mentions.test.js`                                                                                                                               | `@[uid]` expansion — UTF-16 (not byte) offsets on accented Vietnamese and emoji, `@[-1]` → `@All`, style shifting across an expansion — and the `--quote` payload rebuild, including the refusals for a photo/sticker/file and a cross-thread msgId                                                                                                                                                                                                                                                                                                                    |
+| `cli/json-contract.test.js`                                                                                                                           | **every personal command with `--json`** against a fake session, with plausible and with empty replies: one JSON object or array on stdout, no human lines on it, failures as `{"error"}` with a non-zero exit (see above). Mutation-checked: without `jsonReply()` 132 commands fail it                                                                                                                                                                                                                                                                               |
+| `unit/test-fake-session.test.js`                                                                                                                      | `ZALO_TEST_FAKE_API` is refused outside the test sandbox, condition by condition, and the real binary fails (not logs in) when one does not hold                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `cli/surface.test.js`                                                                                                                                 | **the full command manifest** — every group, subcommand and behavior-changing flag                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `cli/validation.test.js`                                                                                                                              | every guard that fires before a network call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `unit/parse-options.test.js`                                                                                                                          | `parseIntOption` — Commander passes an option's DEFAULT as `parseInt`'s radix, so `-l 20` silently paged by 40 and `-c 100` came back `NaN`. Nine command files import this to avoid that; it had no test at all                                                                                                                                                                                                                                                                                                                                                       |

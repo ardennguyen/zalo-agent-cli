@@ -34,6 +34,7 @@ describe("output.js — the once-only JSON error latch", () => {
         console.log = (...a) => outLines.push(a.join(" "));
         console.error = (...a) => errLines.push(a.join(" "));
         process.env.ZALO_JSON_MODE = "1";
+        process.exitCode = undefined;
     });
 
     afterEach(() => {
@@ -41,6 +42,23 @@ describe("output.js — the once-only JSON error latch", () => {
         console.error = realErr;
         delete process.env.ZALO_JSON_MODE;
         _resetErrorLatch();
+        // error() sets the exit code; it must not become this test process's.
+        process.exitCode = undefined;
+    });
+
+    it("sets exit code 1, and keeps a more specific code already set", () => {
+        error("failed");
+        assert.equal(process.exitCode, 1);
+        process.exitCode = 2;
+        error("refused");
+        assert.equal(process.exitCode, 2, "a confirmation refusal's 2 (or a kick's 3) is not overwritten");
+    });
+
+    it("success, info and warning leave the exit code alone", () => {
+        success("done");
+        info("note");
+        warning("careful");
+        assert.equal(process.exitCode, undefined);
     });
 
     it("emits the first error as JSON on stdout", () => {

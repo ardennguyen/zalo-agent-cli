@@ -52,6 +52,7 @@ async function captured(fn) {
     };
     console.log = (...a) => out.push(a.join(" "));
     let returned;
+    const savedExitCode = process.exitCode;
     try {
         returned = await fn();
     } catch (e) {
@@ -59,6 +60,8 @@ async function captured(fn) {
     } finally {
         process.exit = realExit;
         console.log = realLog;
+        // error() sets 1; it must not become the test process's exit code.
+        process.exitCode = savedExitCode;
     }
     return { code, out: out.join("\n"), returned };
 }

@@ -3,16 +3,14 @@
  *
  * Two important facts about this CLI that shape every assertion here:
  *
- *  1. **API failures do not set a non-zero exit code.** Almost every action
- *     handler is `try { ... } catch (e) { error(e.message) }`, and `error()`
- *     writes `  ✗ <message>` to *stdout* via console.log. So "did it work?"
- *     is a question about output text, not about `code`. Commander's own
- *     parse errors (unknown option, missing required option) *do* exit 1.
+ *  1. **A failure exits 1 (since 3.0.0; before, most exited 0).** Almost every
+ *     action handler is `try { ... } catch (e) { error(e.message) }`, and
+ *     `error()` sets exit code 1 and writes `  ✗ <message>` to *stdout* in
+ *     human mode, `{"error": ...}` with --json. A confirmation refusal exits 2.
  *
- *  2. **`--json` mode is not reliably JSON.** Success paths emit JSON, but
- *     the `✗` error line is printed on the same stream. `runJson()` below
- *     therefore reports failures explicitly rather than throwing a bare
- *     JSON.parse SyntaxError.
+ *  2. **`--json` stdout is one JSON object or array** (tests/cli/json-contract.test.js
+ *     holds every personal command to it). `runJson()` below still reports a
+ *     failure explicitly rather than throwing a bare JSON.parse SyntaxError.
  */
 
 import { execFile } from "node:child_process";

@@ -276,13 +276,14 @@ describe("--json stdout contract", () => {
         assert.throws(() => JSON.parse(r.stdout.trim()));
     });
 
-    // Still open — see agent/work/transfer-sync-v2/NOTES.md § Known issues #2. Exit codes are a
-    // separate contract from output shape, and changing them would break
-    // scripts that check `$?` today. A --json consumer detects failure via
-    // the `.error` key instead.
-    it("CHARACTERIZATION: a validation failure still exits 0", async () => {
-        const r = await runCli(["msg", "send-bank", TID, "1", "-b", "notabank"], opts);
-        assert.equal(r.code, 0, "exit codes remain issue #2; use .error in --json mode");
+    // Until 3.0.0 this exited 0 (pinned here as a characterization test): a script could not tell from `$?`
+    // that nothing was sent. error() now sets exit code 1 (src/utils/output.js), in both modes.
+    it("a validation failure exits 1, in both modes", async () => {
+        const human = await runCli(["msg", "send-bank", TID, "1", "-b", "notabank"], opts);
+        assert.equal(human.code, 1, human.all);
+        const json = await runCli(["--json", "msg", "send-bank", TID, "1", "-b", "notabank"], opts);
+        assert.equal(json.code, 1, json.all);
+        assert.equal(JSON.parse(json.stdout).error, "Unknown bank: 'notabank'");
     });
 });
 

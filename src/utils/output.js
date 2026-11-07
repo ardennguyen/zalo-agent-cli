@@ -32,14 +32,56 @@ function machineMode() {
     return Boolean(process.env.ZALO_JSON_MODE);
 }
 
+/**
+ * The running command's arguments by name, set by the preAction hook in src/index.js
+ * ({@link setReplyContext}): what a reply that Zalo left empty says was done.
+ */
+let replyContext = {};
+
+/**
+ * Record the running command's arguments, for {@link output} to name when Zalo's answer is empty.
+ *
+ * @param {{registeredArguments?: Array<{name: () => string}>, processedArgs?: unknown[]}|null} command - the
+ *   Commander command about to run
+ */
+export function setReplyContext(command) {
+    replyContext = {};
+    const names = command?.registeredArguments ?? [];
+    names.forEach((arg, i) => {
+        const value = command.processedArgs?.[i];
+        if (value === undefined) return;
+        // `<on|off>` and the like are not names a reader can use.
+        const name = /^\w+$/.test(arg.name()) ? arg.name() : "value";
+        replyContext[name] = value;
+    });
+}
+
+/**
+ * What `--json` prints for `data`: one object or array, always (the stdout contract above).
+ *
+ * Many commands print Zalo's answer as it came, and Zalo answers many writes -- and some reads -- with an
+ * empty body: "", null, nothing. Printed as is, that was `""` or `null` or the word `undefined`, which a caller
+ * cannot tell from a failure. A call that did not throw was accepted, so an empty answer becomes
+ * `{"success": true, ...the command's arguments}` (the shape the MCP actions reply with), and any other bare
+ * value is kept under `result`. An object or an array is printed unchanged.
+ *
+ * @param {unknown} data
+ * @returns {object|Array}
+ */
+export function jsonReply(data) {
+    if (data !== null && typeof data === "object") return data;
+    if (data === undefined || data === null || data === "") return { success: true, ...replyContext };
+    return { success: true, ...replyContext, result: data };
+}
+
 /** Emit JSON or call human formatter based on --json flag. */
 export function output(data, jsonMode, humanFormatter) {
     if (jsonMode) {
-        console.log(JSON.stringify(data, null, 2));
+        console.log(JSON.stringify(jsonReply(data), null, 2));
     } else if (humanFormatter) {
         humanFormatter(data);
     } else {
-        console.log(JSON.stringify(data, null, 2));
+        console.log(JSON.stringify(data ?? null, null, 2));
     }
 }
 
@@ -53,9 +95,15 @@ export function output(data, jsonMode, humanFormatter) {
  * Only the FIRST error is emitted as JSON. A command that reports several
  * failures would otherwise put several JSON values on stdout, which is just
  * as unparseable as the old ✗ line; subsequent ones go to stderr.
+ *
+ * Either way the process exits 1 (3.0.0; before, most failures exited 0), unless
+ * a more specific non-zero code is already set: 2 for a confirmation refusal
+ * (src/core/confirm-guard.js), 3/4 for a kicked or revoked session
+ * (src/core/exit-codes.js). A line that is not a failure belongs in warning().
  */
 let jsonErrorEmitted = false;
 export const error = (msg) => {
+    if (!process.exitCode) process.exitCode = 1;
     if (!machineMode()) {
         console.log(chalk.red("  ✗ " + msg));
         return;

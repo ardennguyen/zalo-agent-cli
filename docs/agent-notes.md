@@ -115,7 +115,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **4991** as of 2026-11-07 (4982 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5011** as of 2026-11-07 (5002 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -221,9 +221,9 @@ written because the byte budget on AGENTS.md could not afford the exact wording.
 
 The crash-only-assertion rule in AGENTS.md section 12 comes from this: four
 commands were found in a single day to have never worked at all, each hidden
-the same way. This CLI reports an API failure as a printed `✗` and exits 0, so
-an assertion that only checks the process did not crash cannot tell a working
-command from one that fails on every invocation. Assert the success the command
+the same way. Until 3.0 this CLI reported an API failure as a printed `✗` and
+exited 0 (it exits 1 since), and an assertion that only checks the process did
+not crash still cannot tell a working command from one answering wrongly. Assert the success the command
 claims, not the absence of a stack trace.
 
 ---
@@ -612,7 +612,7 @@ broken command — worth keeping distinct when describing it.
 
 ### Why the suite could not see any of them
 
-This CLI catches API failures and prints a clean `✗ <message>` line, then exits 0. An assertion
+Until 3.0 this CLI caught API failures, printed a clean `✗ <message>` line and exited 0. An assertion
 shaped like
 
 ```js

@@ -809,7 +809,9 @@ export function registerMsgCommands(program) {
                 const answers = await sendParts(parts, (part, index) =>
                     getApi().sendMessage(contentOf(part, index), threadId, Number(opts.type)),
                 );
-                const result = answers[0];
+                // Zalo answers a send with the message's ids; an empty answer must not crash the report of a send
+                // that went out (src/utils/output.js jsonReply).
+                const result = answers[0] || { success: true, threadId };
                 if (parts.length > 1) {
                     result.splitInto = parts.length;
                     result.parts = answers.map((r) => ({

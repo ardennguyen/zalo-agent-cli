@@ -148,7 +148,7 @@ export function registerAccountCommands(program) {
             // leaving a half-logged-out account behind.
             const holder = lockHolder(ownerId);
             if (holder !== null) {
-                warning(
+                error(
                     `Removal aborted: a "listen"/"mcp" daemon (pid ${holder}) is still running for ${ownerId}. Stop it, then re-run — nothing was changed.`,
                 );
                 return;
@@ -160,16 +160,15 @@ export function registerAccountCommands(program) {
             // case where autoLogin() can give us a live API session to end;
             // a non-active account's server-side session (if any) is left
             // alone, same as this command always did.
+            let remote = null;
             if (getActive()?.ownId === ownerId) {
                 await autoLogin(program.opts().json);
                 if (isLoggedIn()) {
                     const saved = loadCredentials(ownerId);
-                    reportLogout(
-                        await serverLogout(getApi(), {
-                            savedLogin: saved ? { creds: saved, proxy: acc.proxy || null, ownId: ownerId } : null,
-                        }),
-                        { success, warning, info },
-                    );
+                    remote = await serverLogout(getApi(), {
+                        savedLogin: saved ? { creds: saved, proxy: acc.proxy || null, ownId: ownerId } : null,
+                    });
+                    reportLogout(remote, { success, warning, info });
                 } else {
                     warning(
                         `Could not establish a session to invalidate remotely for ${ownerId} (continuing with local removal)`,
@@ -181,15 +180,17 @@ export function registerAccountCommands(program) {
             const trustNote = describeTrustedDevice(ownerId, "deleted");
             const { removed, wiped, skippedLocked } = removeAccount(ownerId);
             if (skippedLocked) {
-                warning(
+                error(
                     `Removal aborted: a "listen" daemon (pid ${skippedLocked.pid}) is still running for ${ownerId}. Stop it, then re-run.`,
                 );
                 info("Credentials and account registration were left untouched.");
                 return;
             }
             if (removed) {
-                success(`Account ${ownerId} removed${wiped ? " — local data deleted" : ""}`);
-                if (trustNote && wiped) info(trustNote);
+                output({ removed: true, ownId: ownerId, localDataDeleted: wiped, remote }, program.opts().json, () => {
+                    success(`Account ${ownerId} removed${wiped ? " — local data deleted" : ""}`);
+                    if (trustNote && wiped) info(trustNote);
+                });
             } else {
                 error(`Account not found: ${ownerId}`);
             }
@@ -200,7 +201,8 @@ export function registerAccountCommands(program) {
         .description("Show currently active account")
         .action(() => {
             const active = getActive();
-            const safe = active ? { ...active, proxy: maskProxy(active.proxy) } : null;
+            // No active account is an answer, not a failure; --json says so with an object, never a bare null.
+            const safe = active ? { ...active, proxy: maskProxy(active.proxy) } : { active: null };
             output(safe, program.opts().json, () => {
                 if (!active) {
                     info("No active account.");
@@ -241,9 +243,12 @@ export function registerAccountCommands(program) {
             writeFileSync(outPath, JSON.stringify(exportData, null, 2), "utf-8");
             chmodSync(outPath, 0o600);
 
-            success(`Exported to ${outPath}`);
-            warning("This file contains login credentials. Keep it secure and do not commit to git.");
-            info(`Import on another machine: zalo-agent login --credentials ${opts.output}`);
+            // Never the credentials themselves on stdout: the file holds them.
+            output({ exported: true, ownId: acc.ownId, file: outPath }, program.opts().json, () => {
+                success(`Exported to ${outPath}`);
+                warning("This file contains login credentials. Keep it secure and do not commit to git.");
+                info(`Import on another machine: zalo-agent login --credentials ${opts.output}`);
+            });
         });
 
     account

@@ -9,6 +9,8 @@
  * exercised against a live account, so a green run here means "the client
  * behaves as specified", not "Zalo accepts it".
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -17,7 +19,9 @@ import { tmpdir } from "node:os";
 import { initDb, getCloudItems, getCloudItemByMsgId } from "../../src/core/db.js";
 import { normalizeCloudItem } from "../../src/zalo/zcloud.js";
 import { syncCloudIndex } from "../../src/core/sync-v2/zcloud.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-zcloud-test-"));
 const opened = [];
 let n = 0;

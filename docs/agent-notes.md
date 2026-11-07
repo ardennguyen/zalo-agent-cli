@@ -73,7 +73,7 @@ tests/                    # Test suite — see tests/README.md
 ├── credentials/cred_<ownId>.json # Session credentials (0600)
 ├── mcp-config.json               # Optional MCP config
 ├── accounts/<ownId>/
-│   ├── zalo.db                   # SQLite cache (messages, threads, contacts, sync_state, sync_gaps)
+│   ├── zalo.db                   # SQLite cache (messages, threads, contacts, sync_state, sync_gaps); SQLCipher since 3.0
 │   ├── trusted-device.json       # The device identity of the official QR login: private key + linking secret (0600)
 │   ├── dr-config.json            # Disaster-recovery numbers the last login learned (0600)
 │   ├── sock-anomaly.json         # The week's socket error history for the retry table (0600)
@@ -116,7 +116,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5206** as of 2026-11-07 (5197 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5226** as of 2026-11-07 (5217 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that

@@ -10,6 +10,8 @@
  * than a conversation's delete marker (threads.leftAt, which conv delete sets)
  * comes back.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -28,7 +30,9 @@ import {
     getThreadType,
 } from "../../src/core/db.js";
 import { storeLiveMessage, storeHistoryMessage } from "../../src/core/live-store.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-history-write-"));
 const opened = [];
 let n = 0;

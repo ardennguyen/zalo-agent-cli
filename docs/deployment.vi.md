@@ -100,7 +100,7 @@ Vì vậy, quyết định triển khai đầu tiên là bắt buộc: **bạn c
 | Polling `zalo_get_messages` qua `POST /mcp`, mỗi bot một tên `consumer` | N | **có** | Hoạt động tốt: mỗi consumer có con trỏ đọc riêng (§1.4a). Buffer nằm trong RAM và giới hạn bởi `limits.bufferMaxSize` / `limits.bufferMaxAge` |
 | `listen` hoặc `mcp start` `-w, --webhook <url> [--webhook-secret <secret>]` | **1** URL | **có** | Hộp thư đi bền vững (`webhook-outbox.db` trong thư mục tài khoản): ghi xuống đĩa trước, giao theo thứ tự và ít nhất một lần, 10 giây mỗi POST, thử lại với thời gian chờ tăng dần (1 giây nhân đôi đến 5 phút) khi bên nhận hỏng, chuyển vào dead-letter khi bên nhận trả 400 / 413 / 422 hoặc sau 24 giờ (`ZALO_WEBHOOK_MAX_AGE`), có thể gộp nhiều sự kiện mỗi POST (`ZALO_WEBHOOK_BATCH_SIZE`). Hỗ trợ ký `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>`. Các tin nhắn do self-heal khôi phục cũng được đẩy kèm `catchUp: true`. Xem tồn đọng: `zalo-agent mcp webhook status` |
 | `listen --save <dir>` JSONL | N trình đọc | **không** | Ghi nối tiếp từng sự kiện vào một file cho mỗi `threadId`. Rất tốt để lưu trữ kiểm toán (audit) |
-| Đọc trực tiếp `zalo.db` ở chế độ chỉ đọc (`readonly`) | N | **có** | SQLite WAL cho phép nhiều trình đọc đồng thời cùng với một trình ghi duy nhất, chứa toàn bộ lịch sử kể cả những tin đã rời khỏi buffer trong RAM |
+| Đọc trực tiếp `zalo.db` ở chế độ chỉ đọc (`readonly`) | N | **không, từ 3.0.0** | File đã được mã hóa (SQLCipher, [security.vi.md](security.vi.md)): `sqlite3`, `better-sqlite3` và DB Browser gặp `file is not a database`. Đọc cùng lịch sử đó qua `zalo_get_history` / `zalo_search_messages` hoặc `msg history` / `msg search --json`; lệnh SQL chỉ đọc `zalo-agent db query` sẽ có cùng nhóm lệnh `db` ở một thay đổi sau của 3.0 |
 
 ### 1.4 Nhiều bot trên một server: những gì đã có và những gì cần lưu ý
 
@@ -118,11 +118,14 @@ Những điểm cần lưu ý:
 
 ### 1.5 Chuyện gì xảy ra nếu có hai tiến trình cùng ghi vào cơ sở dữ liệu?
 
+> [!NOTE]
+> **Từ 3.0.0 `zalo.db` được mã hóa** (SQLCipher v4 dưới khóa data của tài khoản, [security.vi.md](security.vi.md)). Phần dưới về trình đọc và trình ghi vẫn đúng cho các tiến trình của chính CLI, vốn mở file bằng khóa. Tiến trình bên ngoài CLI không mở được file nữa: đọc trực tiếp như hướng dẫn của 2.x giờ sẽ gặp `file is not a database`.
+
 1. **`daemon.lock` bảo vệ chống mở WebSocket thứ hai**, trong khi các lệnh đồng bộ qua socket và `msg history` tự động định tuyến qua daemon đang chạy.
-2. **SQLite WAL điều phối truy cập đĩa.** Nhiều tiến trình **đọc (`readonly`)** cùng lúc hoàn toàn an toàn. Nhưng nếu một tiến trình bên ngoài giữ khóa ghi quá 5 giây (`busy_timeout` mặc định của `better-sqlite3`), tiến trình daemon có thể gặp lỗi `SQLITE_BUSY` hoặc bị nghẽn vòng lặp sự kiện (event loop), dẫn đến trễ nhịp keepalive của WebSocket Zalo.
+2. **SQLite WAL điều phối truy cập đĩa.** Nhiều tiến trình **đọc** của CLI cùng lúc hoàn toàn an toàn. Nhưng nếu một tiến trình khác giữ khóa ghi quá 5 giây (`busy_timeout` 5000 ms mà `openDatabase()` trong `src/core/sqlite.js` đặt), tiến trình daemon có thể gặp lỗi `SQLITE_BUSY` hoặc bị nghẽn vòng lặp sự kiện (event loop), dẫn đến trễ nhịp keepalive của WebSocket Zalo.
 
 > [!CAUTION]
-> **Quy tắc cho mọi tiến trình ngoài daemon giữ socket:** luôn mở `zalo.db` với `new Database(path, { readonly: true })` (hoặc `sqlite3 -readonly`). Nếu bot của bạn cần ghi trạng thái riêng, hãy ghi vào một file cơ sở dữ liệu riêng của bot.
+> **Quy tắc cho mọi tiến trình ngoài daemon giữ socket:** đừng tự mở `zalo.db`: từ 3.0.0 file được mã hóa, trình đọc không có khóa sẽ gặp `file is not a database`. Hãy đọc qua các công cụ MCP hoặc đầu ra `--json` của CLI (lệnh SQL chỉ đọc `zalo-agent db query` sẽ có cùng nhóm lệnh `db` ở một thay đổi sau của 3.0). Nếu bot của bạn cần ghi trạng thái riêng, hãy ghi vào một file cơ sở dữ liệu riêng của bot.
 
 ---
 
@@ -145,7 +148,7 @@ flowchart TB
       end
       lock["daemon.lock — pid<br/>src/core/lock.js"]
       cj["daemon-channel.json — 0600<br/>pid · port · token · stages"]
-      db[("zalo.db — SQLite WAL<br/>chỉ daemon ghi dòng tin nhắn<br/>N trình đọc readonly")]
+      db[("zalo.db — SQLite WAL, đã mã hóa<br/>chỉ daemon ghi dòng tin nhắn")]
       med[("media/ — tăng dần theo thời gian<br/>xem 3.3")]
       cred["credentials/cred_OWNID.json — 0600"]
     end
@@ -153,7 +156,7 @@ flowchart TB
     subgraph bots["Các tác vụ Bot"]
       b1["Bot A — trả lời khách hàng<br/>MCP client, consumer: sales"]
       b2["Bot B — phân loại ticket<br/>MCP client, consumer: triage"]
-      b3["Bot C — báo cáo hàng đêm<br/>đọc readonly zalo.db"]
+      b3["Bot C — báo cáo hàng đêm<br/>zalo_get_history"]
       b4["Vận hành — zalo-agent sync --from DATE"]
     end
 
@@ -172,7 +175,7 @@ flowchart TB
 
     b1 -->|"POST /mcp + Bearer/OAuth TOKEN"| http
     b2 -->|"POST /mcp + Bearer/OAuth TOKEN"| http
-    b3 -->|"mở readonly"| db
+    b3 -->|"POST /mcp + Bearer/OAuth TOKEN"| http
     b4 -->|"POST /sync/messages<br/>loopback + channel token"| chan
     b4 -.->|"HTTPS: đăng nhập, các stage REST"| zalo
 ```
@@ -386,7 +389,7 @@ WantedBy=timers.target
 Sao lưu toàn bộ thư mục `~/.zalo-agent-cli/` và giữ nguyên phân quyền file (`0600` cho `accounts.json` và `credentials/cred_<ownId>.json`). `accounts.json` được ghi nguyên tử dưới khóa `accounts.json.lock` (bỏ qua file khóa này khi sao lưu) và bản trước đó được giữ ở `accounts.json.bak`; `accounts/<ownId>/webhook-outbox.db` chứa các sự kiện đang chờ gửi tới webhook nên cần sao lưu cùng tài khoản:
 
 - Loại trừ `qr.png`, `daemon.lock` và `daemon-channel.json` (các file trạng thái runtime tạm thời).
-- Để sao lưu `zalo.db` an toàn khi daemon đang chạy, hãy dùng `sqlite3 zalo.db ".backup /path/out.db"` thay vì copy trực tiếp file đang ghi.
+- Đừng copy `zalo.db` khi daemon đang ghi (file sẽ bị rách): hãy dừng dịch vụ, hoặc chụp snapshot hệ thống file của cả thư mục. Từ 3.0.0 `sqlite3 zalo.db ".backup …"` không mở được file đã mã hóa và API backup của driver từ chối nó; bản sao trực tuyến, đã mã hóa (`zalo-agent db backup`) sẽ có cùng nhóm lệnh `db` ở một thay đổi sau của 3.0. **Bản sao `zalo.db` chỉ mở được cùng `keyring.json` của nó và đúng bộ cung cấp khóa** ([security.vi.md](security.vi.md) §7).
 - Luôn mã hóa bản sao lưu vì bên trong chứa thông tin phiên đăng nhập và toàn bộ lịch sử tin nhắn.
 
 ### 4.7 Giám sát (Monitoring)
@@ -426,6 +429,8 @@ Cấu hình scrape Prometheus và luật cảnh báo có trong [`config-samples/
 >      "select (strftime('%s','now')*1000 - max(timestamp))/60000 from messages;"
 >    ```
 > 4. Số khoảng hở đang chờ xử lý (`zalo_coverage` hoặc `select count(*) from sync_gaps where status='pending';`).
+>
+> **Từ 3.0.0** `zalo.db` được mã hóa nên `sqlite3` không chạy được các truy vấn ở mục 3 và 4; cho tới khi có `zalo-agent db query` (nhóm lệnh `db`, ở một thay đổi sau của 3.0), hãy hỏi server đang chạy (`zalo_coverage`, `zalo_sync_status`).
 
 ---
 
@@ -458,7 +463,7 @@ Dưới systemd, unit đã rải thời điểm khởi động (`sleep $((RANDOM
 
 ### 5.2 Bảo vệ dữ liệu lưu trữ trên đĩa
 
-Từ 3.0.0, phiên đăng nhập đã lưu, danh tính thiết bị tin cậy, các phiên điện thoại của một lần khôi phục và văn bản chuyển từ tin nhắn thoại được **niêm phong** (AES-256-GCM) bằng khóa riêng của từng tài khoản, và chỉ bộ cung cấp khóa của máy (DPAPI, systemd-creds, KMS, …) mở được các khóa đó; có thể bật thêm một lớp khóa thứ hai cần một lần đăng nhập Zalo còn hiệu lực. Chọn bộ cung cấp khóa cho server, phạm vi bảo vệ và các bước khi bị lộ: **[security.vi.md](security.vi.md)**. Khi sao lưu, giữ `accounts/<ownId>/keyring.json` cùng bản sao với `credentials/`: thiếu nó, thông tin đăng nhập không mở được.
+Từ 3.0.0, cơ sở dữ liệu tin nhắn `zalo.db` được **mã hóa** (SQLCipher v4), còn phiên đăng nhập đã lưu, danh tính thiết bị tin cậy, các phiên điện thoại của một lần khôi phục và văn bản chuyển từ tin nhắn thoại được **niêm phong** (AES-256-GCM) bằng khóa riêng của từng tài khoản, và chỉ bộ cung cấp khóa của máy (DPAPI, systemd-creds, KMS, …) mở được các khóa đó; có thể bật thêm một lớp khóa thứ hai cần một lần đăng nhập Zalo còn hiệu lực. Chọn bộ cung cấp khóa cho server, phạm vi bảo vệ và các bước khi bị lộ: **[security.vi.md](security.vi.md)**. Khi sao lưu, giữ `accounts/<ownId>/keyring.json` cùng bản sao với `credentials/` và `zalo.db`: thiếu nó, cả thông tin đăng nhập lẫn cơ sở dữ liệu tin nhắn đều không mở được.
 
 - Giữ quyền `0600` cho `accounts.json`, `credentials/cred_<ownId>.json` và `daemon-channel.json`; đặt `UMask=0077` cho tiến trình dịch vụ.
 - Bật mã hóa toàn bộ ổ đĩa (Full-Disk Encryption) trên máy chủ và mã hóa các bản sao lưu.
@@ -514,7 +519,7 @@ Bảng dưới đây là đánh giá thực tế cho bài toán hội thoại c�
 
 `zalo-agent-cli` là tầng truyền dẫn và bộ nhớ đệm tin nhắn Zalo. Tầng tri thức nằm ở phía bot (consumer) với 3 lớp:
 
-1. **Bộ nhớ hội thoại (`zalo.db`):** tra cứu qua `zalo_search_messages`, `zalo_get_history`, `zalo_list_conversations`, hoặc truy vấn SQL chỉ đọc.
+1. **Bộ nhớ hội thoại (`zalo.db`):** tra cứu qua `zalo_search_messages`, `zalo_get_history`, `zalo_list_conversations`, hoặc (với 2.x) truy vấn SQL chỉ đọc; từ 3.0.0 file đã mã hóa, lệnh SQL chỉ đọc `zalo-agent db query` sẽ có cùng nhóm lệnh `db` ở một thay đổi sau của 3.0.
 2. **Tài liệu nghiệp vụ / SOP / bảng giá:** lưu ở thư mục riêng của bot (tuyệt đối **không** đặt bên trong `~/.zalo-agent-cli/` để tránh bị xóa khi chạy `logout --purge`).
 3. **Quy tắc cố định trong System Prompt:** thông tin công ty, người phụ trách chuyển tiếp (escalation), giờ làm việc, quy tắc từ chối trả lời khi không chắc chắn.
 
@@ -543,7 +548,9 @@ du -sh ~/.zalo-agent-cli/accounts/<ownId>/media
 find ~/.zalo-agent-cli/accounts/<ownId>/media -type f | wc -l
 ls -l  ~/.zalo-agent-cli/accounts/<ownId>/zalo.db*
 
-# Thống kê nội dung cache và khoảng hở (chế độ chỉ đọc)
+# Thống kê nội dung cache và khoảng hở (chế độ chỉ đọc).
+# Chỉ với 2.x: từ 3.0.0 zalo.db được mã hóa và sqlite3 không mở được. Cho tới khi có `zalo-agent db query`
+# (nhóm lệnh db, ở một thay đổi sau của 3.0), hãy hỏi server đang chạy: zalo_coverage, zalo_sync_status.
 sqlite3 -readonly ~/.zalo-agent-cli/accounts/<ownId>/zalo.db "
   select (select count(*) from messages)                                  as messages,
          (select count(*) from threads)                                   as threads,

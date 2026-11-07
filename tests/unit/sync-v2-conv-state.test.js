@@ -10,6 +10,8 @@
  *    Number.MAX_SAFE_INTEGER, so it arrives rounded (4123456789012345678 ->
  *    4123456789012346000). It can only be matched, never read back exactly.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -17,7 +19,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb, upsertThread, getConvState } from "../../src/core/db.js";
 import { parsePinnedId, resolveLossyThreadId, syncConvState } from "../../src/core/sync-v2/conv-state.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-convstate-"));
 const opened = [];
 let n = 0;

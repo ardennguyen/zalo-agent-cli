@@ -6,6 +6,8 @@
  * and keep being stored. A sync that ignored them left a hole exactly where it
  * promised completeness.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
@@ -43,7 +45,9 @@ import {
     storeReceipts,
     storeGroupEventRow,
 } from "../../src/core/live-store.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-live-test-"));
 const opened = [];
 let n = 0;

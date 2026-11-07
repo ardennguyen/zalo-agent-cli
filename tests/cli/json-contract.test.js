@@ -39,7 +39,7 @@ import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import { CONFIG_DIR, getAccountDbPath, saveCredentials } from "../../src/core/credentials.js";
 import { addAccount } from "../../src/core/accounts.js";
-import { initDb, insertMessage, upsertThread } from "../../src/core/db.js";
+import { closeDb, initDb, insertMessage, upsertThread } from "../../src/core/db.js";
 import { PINNED_MESSAGE_TOPIC } from "../../src/zalo/custom/pin.js";
 import { runCli } from "../helpers/cli.js";
 import { EMPTY_MODES, FAKE_GROUP_ID, FAKE_OWN_ID, FAKE_PEER_ID } from "../helpers/fake-api.js";
@@ -377,6 +377,9 @@ function seedAccounts() {
  * @param {number} walk - 0 for the first walk, 1 for the next, ...
  */
 function seedMessages(walk) {
+    // Opened afresh: the walk before ran `account security rekey`, which re-encrypted the cache under a new key.
+    closeDb();
+    initDb(getAccountDbPath(FAKE_OWN_ID));
     const id = (k) => String(1000000000000000100n + BigInt(walk * 10 + k));
     msgs = { main: id(0), del: id(1), undo: id(2) };
     const ts = Date.now() - 60_000;

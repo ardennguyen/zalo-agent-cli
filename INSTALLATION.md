@@ -31,6 +31,7 @@ Engine 3.0.0 replaces zca-js with the project's own implementation of the Zalo W
 - **Destructive CLI commands need `--yes`** (`msg undo`, `group leave`, `logout`, …): without it they send nothing and exit 2; `--dry-run` previews.
 - **Guarded MCP actions need `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` in `mcp-config.json` (or `ZALO_MCP_CONFIRM_MODE`) decides who confirms: `agent` (default), `human` (the server asks the user through MCP elicitation; stdio only) or `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` still work as deprecated aliases for `off`.
 - **MCP names:** `msgId` (not `id`/`messageId`), `userId` (not `uid`), `threadType` `"dm"` or `"group"` (a number is refused), and every id is a string.
+- **Saved files and the message database are encrypted at rest.** Before the first 3.0.0 command, stop every 2.x process that uses the same `~/.zalo-agent-cli` and back that folder up: the first command encrypts each account's `zalo.db` (about 1 s per 20 MB) and 2.x cannot read it afterwards. A bot that opened `zalo.db` directly gets `file is not a database`; move it to the MCP tools. See [docs/security.md](docs/security.md).
 - **`ZALO_QR_FLOW=legacy` is removed**; delete it from `.env`.
 - **A CLI command that fails exits 1** (before, most exited 0). Exit codes: 0 done, 1 failed, 2 confirmation needed, 3 a daemon was kicked (another session took the account), 4 Zalo keeps refusing the saved login. With `--json` a failure is `{"error": …}`, and stdout is always one JSON object or array.
 

@@ -7,7 +7,7 @@ import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { Database } from "../../src/core/sqlite.js";
+import { openDatabase } from "../../src/core/sqlite.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     backfillTextNorm,
@@ -51,9 +51,9 @@ const msg = (msgId, text, over = {}) => ({
     ...over,
 });
 
-/** A second connection, to write rows the way an older version did. */
+/** A second connection (keyed like the first), to write rows the way an older version did. */
 function rawDb() {
-    return new Database(file);
+    return openDatabase(file);
 }
 
 describe("search", () => {

@@ -13,11 +13,14 @@ Since 3.0.0 the files that hold a secret are encrypted on disk. This page says w
 | `accounts/<ownId>/sync/open-sessions.json` | the phone's session ids of a history restore | data |
 | `accounts/<ownId>/voice-text.json` | the text of transcribed voice messages | data |
 
-Each is a small container: a magic `ZACSEAL`, a version, a JSON header (account, kind of file, key id, nonce) and AES-256-GCM ciphertext. The header is authenticated with the ciphertext, so an edited byte, a file copied over another account's or put in place of another kind of file does not open.
+**The message database** `accounts/<ownId>/zalo.db` (messages, conversations, contacts, the search index) is encrypted as a whole with SQLCipher v4 (AES-256-CBC with an HMAC-SHA512 per page, `cipher=sqlcipher, legacy=4`), keyed with a raw 256-bit subkey of the account's **data** key (`sqlcipher`), with `secure_delete` on so a deleted row is overwritten. Its write-ahead log (`zalo.db-wal`) is encrypted page by page as well. Opened without the key, by `sqlite3`, `better-sqlite3`, DB Browser for SQLite or a bot, it is `file is not a database`.
+
+Each small file is a container: a magic `ZACSEAL`, a version, a JSON header (account, kind of file, key id, nonce) and AES-256-GCM ciphertext. The header is authenticated with the ciphertext, so an edited byte, a file copied over another account's or put in place of another kind of file does not open.
 
 **Not sealed yet**, and why:
 
-- `zalo.db` (messages), `media/`, `webhook-outbox.db`: phase 2 moves them to SQLCipher and encrypted media on the same keys. Until then they are protected by file modes (§4.2 of deployment.md, `UMask=0077`) and by disk encryption, which is not optional for company conversations.
+- `media/` and `webhook-outbox.db`: the rest of phase 2 moves them to encrypted media and SQLCipher on the same keys. Until then they are protected by file modes (§4.2 of deployment.md, `UMask=0077`) and by disk encryption, which is not optional for company conversations.
+- `daemon.log` at `debug` level holds one line per message, with its text. Keep the log level at `info` where that matters, and the log on an encrypted disk.
 - `mcp-config.json`, the fleet's `accounts/<ownId>.env`: configuration an operator writes and systemd reads. Keep secrets out of them where you can: environment variables from systemd `LoadCredential=` / a secret manager, not values in a file.
 - `daemon-channel.json`: a loopback token regenerated on every daemon start (0600); a copy is useless once the daemon stops.
 - `dr-config.json`, `sock-anomaly.json`, `kicked.json`, `unknown-acts.json`, `hidden-pin-lockout.json`: numbers, times and codes, no secret. `hidden-threads.json` holds the ids of hidden conversations (no PIN): phase 2.
@@ -85,8 +88,9 @@ Zalo's login reply carries `dkey`, a 32-character constant per account that Zalo
 ## 6. Migration and the commands
 
 - **First run of 3.0.0:** a command that reads a plaintext file seals it in place; every login seals the rest of its account. Sealing writes the sealed copy beside the file, reads it back and opens it, compares, and only then renames it over the plaintext, so a crash at any point leaves one readable copy. It is idempotent.
-- `account security status [ownerId] [--all]`: provider, dkey layer (configured / active), keyring version and dates, which files are sealed. Never key material.
-- `account security migrate [ownerId] [--all]`: seal what is still plaintext and apply the dkey setting now.
+- **The message database** is encrypted by the first 3.0.0 command that opens it to write (any command that reads the cache does). It is checkpointed and held against other writers, copied to `zalo.db.encrypting`, the copy is encrypted in place and verified (`quick_check`, the row count of every table, no plaintext header), renamed to `zalo.db.encrypted`, swapped in, and only then is the plaintext overwritten with zeros and removed, with its `-wal` and `-shm`. **No plaintext copy is kept.** A crash at any step is finished or undone by the next open, so there is always one readable database. It takes about 1 s per 20 MB (a 190 MB cache took 10 s, measured on Windows 11), needs free disk of about 1.1× the database, and is told on stderr. It refuses while another process holds the account's `daemon.lock` (stop an older daemon first), and on Windows the swap fails while any other process has `zalo.db` open, which it says. A read-only opener never migrates: it stops with `PLAINTEXT` and names `account security migrate`.
+- `account security status [ownerId] [--all]`: provider, dkey layer (configured / active), keyring version and dates, which files are sealed, and the message database as `encrypted` (with the key id that opens it), `plaintext`, `locked` or `absent`. Never key material.
+- `account security migrate [ownerId] [--all]`: seal what is still plaintext, encrypt the message database, and apply the dkey setting now.
 - `account security rekey [ownerId]`: new keys, every file re-sealed; the old keys stay until it is done, so an interrupted rekey is finished by running it again.
 - `account security provider <name> [ownerId]`: re-wrap the keys for another provider (the files are not touched) and make it the default.
 - There is **no way back to plaintext**. `account export --yes` still writes the saved login to a JSON file exactly as before (without `--yes` it writes nothing and exits 2): it is the deliberate way to move a login to another machine; treat that file as the login itself.
@@ -96,8 +100,8 @@ All but `status` refuse while a `listen` / `mcp start` daemon holds the account 
 ## 7. Operating a server
 
 - **A dedicated service account**, never root or Administrator, owning the config directory alone (`UMask=0077`). Log in, migrate and run as that account.
-- **Disk encryption** (BitLocker, LUKS, the cloud provider's volume encryption) under all of it: the message database is not sealed until phase 2.
-- **Backups:** keep `accounts/<ownId>/keyring.json` in the same backup as `credentials/`. Without the keyring the credentials cannot be opened; without the provider (the same machine for DPAPI/systemd-creds, the same KMS key, the same passphrase) neither can. Plan disaster recovery as a new QR login, or use a KMS key the recovery site can reach.
+- **Disk encryption** (BitLocker, LUKS, the cloud provider's volume encryption) under all of it: media and the webhook outbox are not encrypted yet, the shredding of the old plaintext database is best effort (an SSD or a copy-on-write filesystem can keep the old blocks, and so can earlier backups and snapshots), and logs at `debug` hold message text.
+- **Backups:** keep `accounts/<ownId>/keyring.json` in the same backup as `credentials/` and `zalo.db`. Without the keyring neither the credentials nor the message database can be opened; without the provider (the same machine for DPAPI/systemd-creds, the same KMS key, the same passphrase) neither can. Plan disaster recovery as a new QR login, or use a KMS key the recovery site can reach.
 - Each `account remove` / `logout --purge` deletes the keyring with the account, and a keychain / Secret Service item with it.
 
 ## 8. After a leak

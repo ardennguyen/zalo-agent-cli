@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { Database } from "./sqlite.js";
+import { openDatabase } from "./sqlite.js";
 import { stripVietnamese } from "../utils/vn-text.js";
 
 let db;
@@ -35,16 +35,23 @@ function foldedText(text) {
     return text === undefined || text === null ? null : stripVietnamese(text);
 }
 
+/**
+ * Open (creating if needed) the account's message cache and bring its schema up to date. The account is the folder
+ * the file is in (`accounts/<ownId>/zalo.db`): its key comes from that account's keyring.
+ *
+ * @param {string} dbPath
+ * @returns {import("better-sqlite3-multiple-ciphers").Database}
+ * @throws {import("./keystore/container.js").KeystoreError} when the database's key cannot be had (fail closed)
+ */
 export function initDb(dbPath) {
     // A fresh login has no accounts/<ownId>/ yet: only a daemon taking its
     // lock (lock.js) used to create it, so every command that opened the
     // cache before a listener had ever run crashed (sync-cloud, live
     // 2026-09-30: "Cannot open database because the directory does not exist").
     mkdirSync(dirname(dbPath), { recursive: true });
-    db = new Database(dbPath);
-
-    // Enable WAL mode for better performance
-    db.pragma("journal_mode = WAL");
+    // Encrypted at rest (SQLCipher, keyed from the account's data key; src/core/sqlite.js). A plaintext database from
+    // 2.x is encrypted here, once, before anything reads it. WAL and secure_delete are set by the opener.
+    db = openDatabase(dbPath);
 
     // Create tables
     db.exec(`
@@ -232,6 +239,10 @@ export function initDb(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_cloud_msg ON cloud_items(msgId);
     CREATE INDEX IF NOT EXISTS idx_messages_thread_ts ON messages(threadId, timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_attach ON messages(has_attachment) WHERE has_attachment = 1;
+    -- The repairs below run on every open. With the cache encrypted (SQLCipher) a full scan of messages decrypts every
+    -- page, about 0.7 s per 100,000 messages, and there were four of them: these two indexes answer all four.
+    CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
+    CREATE INDEX IF NOT EXISTS idx_messages_sender_thread ON messages(senderId, threadId);
     -- Without this, every lookup by client id read and parsed the JSON of every row of the thread: 190 ms per
     -- message on a 42,000-row thread, which stalled the event loop for minutes during a restore and got the
     -- socket closed (1006).
@@ -375,9 +386,10 @@ export function initDb(dbPath) {
     // lines are excluded: their sender is whoever acted.
     try {
         db.prepare(
-            "UPDATE threads SET type = 'dm' WHERE type = 'group' AND threadId IN " +
-                "(SELECT threadId FROM messages WHERE senderId = threadId AND msgId NOT LIKE 'ge:%' " +
-                "AND COALESCE(type, '') NOT IN ('group_event', 'event', 'poll_event', 'deleted'))",
+            // EXISTS per group thread (by idx_messages_sender_thread), not IN over a scan of every message.
+            "UPDATE threads SET type = 'dm' WHERE type = 'group' AND EXISTS " +
+                "(SELECT 1 FROM messages m WHERE m.senderId = threads.threadId AND m.threadId = threads.threadId " +
+                "AND m.msgId NOT LIKE 'ge:%' AND COALESCE(m.type, '') NOT IN ('group_event', 'event', 'poll_event', 'deleted'))",
         ).run();
     } catch {
         /* no messages table yet, or nothing to heal */
@@ -427,6 +439,13 @@ export function initDb(dbPath) {
     );
 
     return db;
+}
+
+/** Close the open cache, if any (tests; a process that is done with the account). */
+export function closeDb() {
+    if (db?.open) db.close();
+    db = undefined;
+    searchReady = false;
 }
 
 /** Get a bookkeeping value (e.g. "lastConnectedAt"). Returns null if unset. */

@@ -6,6 +6,8 @@
  * normalization of Zalo's several payload shapes and the guarantee that one
  * failing thread cannot abort a run spanning hundreds.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -19,7 +21,9 @@ import {
     BOARD_TYPES,
     describeZaloError,
 } from "../../src/core/sync-v2/board.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-board-test-"));
 const opened = [];
 let n = 0;

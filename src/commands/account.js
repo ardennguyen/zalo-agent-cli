@@ -26,6 +26,8 @@ import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { changeProvider, hasKeyring, migrateAccount, rekeyAccount, securityStatus } from "../core/keystore/index.js";
+// Registers the encrypted stores' rekey handlers: a rekey without them would drop the key zalo.db is under.
+import { fullSecurityStatus, migrateStores } from "../core/keystore/stores.js";
 import { PROVIDER_NAMES, readStorageFile, writeStorageFile } from "../core/keystore/config.js";
 import { inTestSandbox } from "../core/keystore/providers.js";
 
@@ -409,12 +411,12 @@ function registerSecurityCommands(account, program) {
     security
         .command("status [ownerId]")
         .description(
-            "Show how the account's files are protected: key provider, dkey layer, keyring version, which files are sealed (never key material)",
+            "Show how the account's files are protected: key provider, dkey layer, keyring version, which files are sealed and whether the message database is encrypted (never key material)",
         )
         .option("--all", "Every registered account")
         .action((ownerId, opts) => {
             try {
-                const reports = targetAccounts(ownerId, opts).map((id) => securityStatus(id));
+                const reports = targetAccounts(ownerId, opts).map((id) => fullSecurityStatus(id));
                 output(opts.all ? { accounts: reports } : reports[0], json(), () => {
                     for (const r of reports) describeSecurity(r);
                 });
@@ -426,7 +428,7 @@ function registerSecurityCommands(account, program) {
     security
         .command("migrate [ownerId]")
         .description(
-            "Seal every file still in plaintext (verified before the plaintext is removed) and apply the dkey layer setting; idempotent",
+            "Seal every file still in plaintext and encrypt the message database (each verified before the plaintext is removed), and apply the dkey layer setting; idempotent",
         )
         .option("--all", "Every registered account")
         .action(async (ownerId, opts) => {
@@ -445,6 +447,8 @@ function registerSecurityCommands(account, program) {
                             login = e.message;
                         }
                     }
+                    // The databases after the login: with the dkey layer on, their key opens only then.
+                    files = [...files, ...migrateStores(id)];
                     if (files.some((f) => f.result === "failed" || f.result === "locked")) process.exitCode = 1;
                     results.push({ ownId: id, files, login, dkeyLayer: securityStatus(id).dkeyLayer });
                 }
@@ -467,7 +471,7 @@ function registerSecurityCommands(account, program) {
     security
         .command("rekey [ownerId]")
         .description(
-            "Make new keys for the account and re-seal every file under them (the old keys are kept until it is done)",
+            "Make new keys for the account, re-seal every file and re-encrypt the message database under them (the old keys are kept until it is done)",
         )
         .action(async (ownerId) => {
             try {

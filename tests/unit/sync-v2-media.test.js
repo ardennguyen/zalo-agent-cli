@@ -6,6 +6,8 @@
  * expiry: a lapsed Zalo URL answers **HTTP 200** with a small JSON error body,
  * so a downloader that trusts the status code silently writes garbage files.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -33,7 +35,9 @@ import {
     jpegUrl,
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-media-test-"));
 const opened = [];
 let server;

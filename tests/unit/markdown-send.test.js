@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { Database } from "../../src/core/sqlite.js";
+import { openDatabase } from "../../src/core/sqlite.js";
 import { initDb } from "../../src/core/db.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { resolveSendFormat } from "../../src/zalo/format/markdown.js";
@@ -22,7 +22,7 @@ before(() => {
     // A cache with one contact, so an @[uid] token expands to a name LONGER than the token.
     const dbPath = join(SANDBOX_CONFIG_DIR, "markdown-send.db");
     initDb(dbPath);
-    const direct = new Database(dbPath);
+    const direct = openDatabase(dbPath);
     direct.prepare("INSERT INTO contacts (userId, name, phone) VALUES ('123', 'Trần Bích Ngọc', '')").run();
     direct.close();
 });

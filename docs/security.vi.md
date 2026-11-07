@@ -13,11 +13,14 @@ Từ 3.0.0, các file chứa bí mật được mã hóa trên đĩa. Trang này
 | `accounts/<ownId>/sync/open-sessions.json` | mã phiên trên điện thoại của một lần khôi phục lịch sử | data |
 | `accounts/<ownId>/voice-text.json` | văn bản chuyển từ tin nhắn thoại | data |
 
-Mỗi file là một hộp nhỏ: chuỗi nhận dạng `ZACSEAL`, phiên bản, phần đầu JSON (tài khoản, loại file, mã khóa, nonce) và bản mã AES-256-GCM. Phần đầu được xác thực cùng bản mã, nên một byte bị sửa, một file bị chép đè sang tài khoản khác hay đặt thay cho loại file khác đều không mở được.
+**Cơ sở dữ liệu tin nhắn** `accounts/<ownId>/zalo.db` (tin nhắn, hội thoại, danh bạ, chỉ mục tìm kiếm) được mã hóa toàn bộ bằng SQLCipher v4 (AES-256-CBC kèm HMAC-SHA512 cho từng trang, `cipher=sqlcipher, legacy=4`), với khóa là một khóa con 256 bit thô của khóa **data** của tài khoản (`sqlcipher`), và bật `secure_delete` để dòng bị xóa được ghi đè. Nhật ký ghi trước (`zalo.db-wal`) cũng được mã hóa theo từng trang. Mở không có khóa, bằng `sqlite3`, `better-sqlite3`, DB Browser for SQLite hay một bot, sẽ gặp `file is not a database`.
+
+Mỗi file nhỏ là một hộp: chuỗi nhận dạng `ZACSEAL`, phiên bản, phần đầu JSON (tài khoản, loại file, mã khóa, nonce) và bản mã AES-256-GCM. Phần đầu được xác thực cùng bản mã, nên một byte bị sửa, một file bị chép đè sang tài khoản khác hay đặt thay cho loại file khác đều không mở được.
 
 **Chưa được niêm phong**, và lý do:
 
-- `zalo.db` (tin nhắn), `media/`, `webhook-outbox.db`: giai đoạn 2 chuyển chúng sang SQLCipher và media mã hóa trên cùng các khóa này. Trong lúc chờ, chúng được bảo vệ bằng quyền file (§4.2 của deployment, `UMask=0077`) và mã hóa ổ đĩa — điều bắt buộc với hội thoại của công ty.
+- `media/` và `webhook-outbox.db`: phần còn lại của giai đoạn 2 chuyển chúng sang media mã hóa và SQLCipher trên cùng các khóa này. Trong lúc chờ, chúng được bảo vệ bằng quyền file (§4.2 của deployment, `UMask=0077`) và mã hóa ổ đĩa — điều bắt buộc với hội thoại của công ty.
+- `daemon.log` ở mức `debug` ghi mỗi tin nhắn một dòng, kèm nội dung. Giữ mức log `info` khi điều đó quan trọng, và để log trên ổ đã mã hóa.
 - `mcp-config.json`, file `accounts/<ownId>.env` của fleet: cấu hình do người vận hành viết và systemd đọc. Hạn chế để bí mật trong đó: dùng biến môi trường từ `LoadCredential=` của systemd hoặc trình quản lý bí mật.
 - `daemon-channel.json`: token loopback tạo lại mỗi lần daemon khởi động (0600); bản chép vô dụng khi daemon dừng.
 - `dr-config.json`, `sock-anomaly.json`, `kicked.json`, `unknown-acts.json`, `hidden-pin-lockout.json`: số, thời điểm, mã lỗi, không có bí mật. `hidden-threads.json` chứa mã các hội thoại ẩn (không có PIN): giai đoạn 2.
@@ -85,8 +88,9 @@ Phản hồi đăng nhập của Zalo có `dkey`, một hằng số 32 ký tự 
 ## 6. Chuyển đổi và các lệnh
 
 - **Lần chạy đầu của 3.0.0:** lệnh nào đọc một file còn ở dạng văn bản thuần sẽ niêm phong nó tại chỗ; mỗi lần đăng nhập niêm phong phần còn lại của tài khoản. Quy trình: ghi bản niêm phong bên cạnh, đọc lại và mở thử, so sánh, rồi mới đổi tên đè lên bản thuần — tiến trình chết ở bước nào cũng còn một bản đọc được. Chạy lại bao nhiêu lần cũng vậy.
-- `account security status [ownerId] [--all]`: bộ cung cấp khóa, lớp dkey (cấu hình / đang áp dụng), phiên bản và ngày của keyring, file nào đã niêm phong. Không bao giờ in khóa.
-- `account security migrate [ownerId] [--all]`: niêm phong những gì còn thuần và áp dụng cấu hình dkey ngay.
+- **Cơ sở dữ liệu tin nhắn** được mã hóa bởi lệnh 3.0.0 đầu tiên mở nó để ghi (mọi lệnh đọc bộ nhớ đệm đều vậy). Quy trình: đẩy hết nhật ký vào file chính và giữ khóa ghi, chép sang `zalo.db.encrypting`, mã hóa bản chép tại chỗ rồi kiểm tra (`quick_check`, số dòng của từng bảng, không còn phần đầu dạng thuần), đổi tên thành `zalo.db.encrypted`, hoán đổi vào chỗ, và chỉ khi đó mới ghi đè bản thuần bằng số 0 rồi xóa, cùng `-wal` và `-shm` của nó. **Không giữ lại bản thuần nào.** Tiến trình chết ở bước nào thì lần mở sau sẽ hoàn tất hoặc hoàn tác, nên luôn còn đúng một cơ sở dữ liệu đọc được. Mất khoảng 1 giây cho mỗi 20 MB (bộ nhớ đệm 190 MB mất 10 giây, đo trên Windows 11), cần dung lượng trống khoảng 1,1 lần cơ sở dữ liệu, và có thông báo trên stderr. Lệnh từ chối khi một tiến trình khác đang giữ `daemon.lock` của tài khoản (hãy dừng daemon phiên bản cũ trước), và trên Windows việc hoán đổi thất bại khi có tiến trình khác đang mở `zalo.db`, lệnh sẽ nói rõ. Lệnh chỉ đọc không bao giờ chuyển đổi: nó dừng với `PLAINTEXT` và chỉ tới `account security migrate`.
+- `account security status [ownerId] [--all]`: bộ cung cấp khóa, lớp dkey (cấu hình / đang áp dụng), phiên bản và ngày của keyring, file nào đã niêm phong, và cơ sở dữ liệu tin nhắn ở trạng thái `encrypted` (kèm mã khóa mở được nó), `plaintext`, `locked` hay `absent`. Không bao giờ in khóa.
+- `account security migrate [ownerId] [--all]`: niêm phong những gì còn thuần, mã hóa cơ sở dữ liệu tin nhắn, và áp dụng cấu hình dkey ngay.
 - `account security rekey [ownerId]`: khóa mới, niêm phong lại mọi file; khóa cũ được giữ tới khi xong, nên một lần rekey bị ngắt chỉ cần chạy lại.
 - `account security provider <tên> [ownerId]`: bọc lại khóa cho bộ cung cấp khác (không chạm vào file) và đặt nó làm mặc định.
 - **Không có đường quay về văn bản thuần.** `account export --yes` vẫn ghi phiên đăng nhập ra file JSON y như trước (thiếu `--yes` thì không ghi gì và thoát mã 2): đó là cách có chủ đích để chuyển phiên sang máy khác; hãy coi file đó như chính phiên đăng nhập.
@@ -96,8 +100,8 @@ Trừ `status`, các lệnh đều từ chối khi một daemon `listen` / `mcp 
 ## 7. Vận hành server
 
 - **Tài khoản dịch vụ riêng**, không bao giờ là root hay Administrator, sở hữu một mình thư mục cấu hình (`UMask=0077`). Đăng nhập, chuyển đổi và chạy đều bằng tài khoản đó.
-- **Mã hóa ổ đĩa** (BitLocker, LUKS, mã hóa volume của nhà cung cấp cloud) bên dưới tất cả: cơ sở dữ liệu tin nhắn chưa được niêm phong cho tới giai đoạn 2.
-- **Sao lưu:** giữ `accounts/<ownId>/keyring.json` trong cùng bản sao lưu với `credentials/`. Thiếu keyring thì không mở được thông tin đăng nhập; thiếu bộ cung cấp khóa (cùng máy với DPAPI/systemd-creds, cùng khóa KMS, cùng passphrase) cũng vậy. Hãy coi phương án khôi phục sau thảm họa là một lần đăng nhập QR mới, hoặc dùng khóa KMS mà nơi khôi phục truy cập được.
+- **Mã hóa ổ đĩa** (BitLocker, LUKS, mã hóa volume của nhà cung cấp cloud) bên dưới tất cả: media và hàng đợi webhook chưa được mã hóa, việc hủy bản cơ sở dữ liệu thuần cũ chỉ là cố gắng tốt nhất (SSD hay hệ thống file copy-on-write có thể giữ khối cũ, bản sao lưu và snapshot trước đó cũng vậy), và log ở mức `debug` có nội dung tin nhắn.
+- **Sao lưu:** giữ `accounts/<ownId>/keyring.json` trong cùng bản sao lưu với `credentials/` và `zalo.db`. Thiếu keyring thì không mở được cả thông tin đăng nhập lẫn cơ sở dữ liệu tin nhắn; thiếu bộ cung cấp khóa (cùng máy với DPAPI/systemd-creds, cùng khóa KMS, cùng passphrase) cũng vậy. Hãy coi phương án khôi phục sau thảm họa là một lần đăng nhập QR mới, hoặc dùng khóa KMS mà nơi khôi phục truy cập được.
 - `account remove` / `logout --purge` xóa keyring cùng tài khoản, kèm mục tương ứng trong keychain / Secret Service.
 
 ## 8. Khi bị lộ

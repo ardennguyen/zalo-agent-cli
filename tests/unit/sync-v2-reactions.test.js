@@ -11,6 +11,8 @@
  * with `requestOldReactions`, `ws` and `cipherKey` — so the paging, the ordering
  * and the removal semantics are all reachable offline.
  */
+// The cache is encrypted under a keyring the key layer makes: the sandbox gives it its offline test provider.
+import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -19,7 +21,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb, getReactions, insertMessage, upsertThread } from "../../src/core/db.js";
 import { drainReactions, placeUnresolvedReactions } from "../../src/core/sync-v2/reactions.js";
+import { CONFIG_DIR } from "../../src/core/credentials.js";
 
+assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-react-drain-"));
 const opened = [];
 let n = 0;

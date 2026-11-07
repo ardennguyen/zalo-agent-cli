@@ -27,7 +27,7 @@ import { success, error, info, warning, output } from "../utils/output.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { changeProvider, hasKeyring, migrateAccount, rekeyAccount, securityStatus } from "../core/keystore/index.js";
 // Registers the encrypted stores' rekey handlers: a rekey without them would drop the key zalo.db is under.
-import { fullSecurityStatus, migrateStores } from "../core/keystore/stores.js";
+import { fullSecurityStatus, migrateStores, storesStatus } from "../core/keystore/stores.js";
 import { PROVIDER_NAMES, readStorageFile, writeStorageFile } from "../core/keystore/config.js";
 import { inTestSandbox } from "../core/keystore/providers.js";
 
@@ -478,10 +478,20 @@ function registerSecurityCommands(account, program) {
                 const [id] = targetAccounts(ownerId);
                 refuseWhileDaemon(id);
                 if (needsLogin(id)) await loginForKeys(id);
+                // The encrypted stores re-encrypt themselves in rekeyAccount (their handlers, registered by
+                // keystore/stores.js); this reports where each one ended up.
                 const res = rekeyAccount(id);
-                output({ ownId: id, rekeyed: true, resealed: res.resealed, keys: res.keys }, json(), () =>
-                    success(`Account ${id}: new keys, ${res.resealed} file(s) re-sealed`),
-                );
+                const databases = storesStatus(id).map((d) => ({
+                    kind: d.kind,
+                    state: d.state,
+                    ...(d.state === "encrypted" ? { currentKey: d.currentKey } : {}),
+                }));
+                output({ ownId: id, rekeyed: true, resealed: res.resealed, keys: res.keys, databases }, json(), () => {
+                    success(`Account ${id}: new keys, ${res.resealed} file(s) re-sealed`);
+                    for (const d of databases) {
+                        info(`  ${d.kind}: ${d.state}${d.currentKey ? ", under the new key" : ""}`);
+                    }
+                });
             } catch (e) {
                 fail(e);
             }

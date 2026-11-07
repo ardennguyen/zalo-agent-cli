@@ -1,6 +1,7 @@
 /**
  * `account security …` against a 2.x-style config dir: a plaintext saved login is reported, migrated (sealed, verified,
- * the plaintext gone), rekeyed and re-wrapped, and `account export` still writes the login out exactly as before. Also:
+ * the plaintext gone), rekeyed and re-wrapped, and `account export` still writes the login out exactly as before. A
+ * plaintext zalo.db is reported, encrypted by `migrate` and re-encrypted by `rekey` the same way. Also:
  * a file the key layer cannot open is a message, never a stack trace or a silent "not logged in".
  */
 import { SANDBOX_HOME, assertSandboxed } from "../helpers/sandbox.js";
@@ -9,6 +10,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { Database, dbFileState } from "../../src/core/sqlite.js";
 import { runCli } from "../helpers/cli.js";
 
 const options = { home: SANDBOX_HOME, timeout: 60_000 };
@@ -20,6 +22,8 @@ const CREDS = {
     language: "vi",
 };
 const CRED_FILE = join(CONFIG_DIR, "credentials", `cred_${OWN}.json`);
+const DB_FILE = join(CONFIG_DIR, "accounts", OWN, "zalo.db");
+const MARKER = "plaintext-row-cli-q4";
 
 const json = async (args, env = {}) => {
     const r = await runCli(["--json", ...args], { ...options, env });
@@ -42,6 +46,11 @@ before(() => {
     );
     // What 2.x left behind: the login in plaintext.
     writeFileSync(CRED_FILE, JSON.stringify(CREDS, null, 2));
+    // ...and its message cache in plaintext.
+    const db = new Database(DB_FILE);
+    db.exec("CREATE TABLE messages (msgId TEXT PRIMARY KEY, text TEXT)");
+    db.prepare("INSERT INTO messages VALUES ('m1', ?)").run(MARKER);
+    db.close();
 });
 
 describe("account security", () => {
@@ -51,7 +60,8 @@ describe("account security", () => {
         assert.equal(r.value.ownId, OWN);
         assert.equal(r.value.keyring, null);
         assert.equal(r.value.files.find((f) => f.kind === "credentials").state, "plaintext");
-        assert.equal(r.value.plaintextFiles, 1);
+        assert.equal(r.value.files.find((f) => f.kind === "message-database").state, "plaintext");
+        assert.equal(r.value.plaintextFiles, 2);
         assert.equal(readFileSync(CRED_FILE, "utf8"), JSON.stringify(CREDS, null, 2), "status changes nothing");
     });
 
@@ -62,8 +72,12 @@ describe("account security", () => {
         const bytes = readFileSync(CRED_FILE);
         assert.equal(bytes.subarray(0, 7).toString(), "ZACSEAL");
         assert.ok(!bytes.includes(Buffer.from("fake-cookie-cli")));
+        assert.equal(r.value.files.find((f) => f.kind === "message-database").result, "encrypted");
+        assert.equal(dbFileState(DB_FILE), "encrypted");
+        assert.ok(!readFileSync(DB_FILE).includes(Buffer.from(MARKER)));
         const again = await json(["account", "security", "migrate"]);
         assert.equal(again.value.files.find((f) => f.kind === "credentials").result, "already-sealed");
+        assert.equal(again.value.files.find((f) => f.kind === "message-database").result, "already-encrypted");
         const s = await json(["account", "security", "status"]);
         assert.equal(s.value.provider.name, "test");
         assert.equal(s.value.keyring.version, 1);
@@ -76,7 +90,11 @@ describe("account security", () => {
         const r = await json(["account", "security", "rekey"]);
         assert.equal(r.code, 0, r.all);
         assert.equal(r.value.resealed, 1);
+        assert.deepEqual(r.value.databases, [{ kind: "message-database", state: "encrypted", currentKey: true }]);
         const after = (await json(["account", "security", "status"])).value;
+        const db = after.files.find((f) => f.kind === "message-database");
+        assert.equal(db.currentKey, true);
+        assert.equal(db.keyId, after.keyring.keys.find((k) => k.use === "data").id);
         assert.ok(after.keyring.keys.every((k) => !before.includes(k.id)));
         assert.ok(after.files.find((f) => f.kind === "credentials").currentKey);
         const p = await json(["account", "security", "provider", "test"]);

@@ -36,6 +36,17 @@ import {
 } from "../../src/core/sync-v2/media.js";
 import { extractRenewedUrls } from "../../src/zalo/custom/renewlink.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { readSealedJson } from "../../src/core/keystore/index.js";
+import { scopeOfDir } from "../../src/core/keystore/keyring.js";
+import { mediaFileState, readMediaFile } from "../../src/core/keystore/media-seal.js";
+
+/** The plaintext of a downloaded file, which is sealed on disk (no byte of it in the clear). */
+function plainOf(file, accountDir, msgId) {
+    assert.equal(mediaFileState(file), "sealed", `${file} is not sealed`);
+    const bytes = readMediaFile(file, scopeOfDir(accountDir), { msgId });
+    assert.equal(readFileSync(file).includes(bytes.subarray(0, 64)), false, `${file} holds plaintext`);
+    return bytes;
+}
 
 assertSandboxed(CONFIG_DIR);
 const ROOT = mkdtempSync(join(tmpdir(), "zalo-media-test-"));
@@ -225,7 +236,7 @@ describe("downloadSyncedMedia — happy path", () => {
         const saved = getMessages("t1").find((m) => m.msgId === id);
         assert.ok(saved.localPath, "localPath was not recorded");
         assert.ok(existsSync(saved.localPath));
-        assert.deepEqual(readFileSync(saved.localPath), PHOTO_BYTES);
+        assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), PHOTO_BYTES);
     });
 
     it("fetches a JPEG XL photo as its JPEG twin, the way Zalo Web does without JPEG XL (bug-reports #8)", async () => {
@@ -234,7 +245,7 @@ describe("downloadSyncedMedia — happy path", () => {
         assert.equal(stats.downloaded, 1);
         const saved = getMessages("t1").find((m) => m.msgId === id);
         assert.match(saved.localPath, /\.jpg$/, "saved as .jxl, which most viewers and models cannot open");
-        assert.deepEqual(readFileSync(saved.localPath), PHOTO_BYTES);
+        assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), PHOTO_BYTES);
     });
 
     it("a photo that has only an HD or only a thumbnail link is still fetched, not skipped forever", async () => {
@@ -245,7 +256,7 @@ describe("downloadSyncedMedia — happy path", () => {
         const rows = getMessages("t1");
         const hdPath = rows.find((m) => m.msgId === hd).localPath;
         assert.ok(hdPath, "the HD-only photo was never downloaded");
-        assert.deepEqual(readFileSync(hdPath), PHOTO_BYTES, "the thumbnail was taken over the HD photo");
+        assert.deepEqual(plainOf(hdPath, dir), PHOTO_BYTES, "the thumbnail was taken over the HD photo");
         assert.ok(rows.find((m) => m.msgId === thumbOnly).localPath, "the thumbnail-only photo was never downloaded");
     });
 
@@ -285,7 +296,9 @@ describe("downloadSyncedMedia — happy path", () => {
             accountDir: dir,
             threadNames: new Map([["t1", { name: "Team Chat", type: "group" }]]),
         });
-        const index = JSON.parse(readFileSync(join(dir, "media", "_conversations.json"), "utf8"));
+        const indexFile = join(dir, "media", "_conversations.json");
+        assert.equal(readFileSync(indexFile).includes("Team Chat"), false, "the index is sealed");
+        const index = readSealedJson(indexFile, scopeOfDir(dir), { kind: "media-index" });
         assert.equal(index.t1.name, "Team Chat");
         assert.equal(index.t1.type, "group");
     });
@@ -941,7 +954,7 @@ describe("a text attachment is a file, not an error", () => {
 
         const saved = getMessages("t1").find((m) => m.msgId === id);
         assert.ok(saved.localPath, "localPath was not recorded");
-        assert.deepEqual(readFileSync(saved.localPath), CSV_BYTES, "the bytes on disk must be the CSV");
+        assert.deepEqual(plainOf(saved.localPath, dir, saved.msgId), CSV_BYTES, "the bytes on disk must be the CSV");
     });
 
     it("saves it even with no content-disposition to lean on", async () => {

@@ -385,7 +385,7 @@ Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức
 ---
 
 ### `zalo_view_media`
-Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định của hệ thống. Media được tự động tải về khi nhận (auto-download) vào `accounts/<ownId>/media/<threadId>/`. Đường dẫn lấy từ `localPath` trong cache, nên mở được cả tin nhắn đến **trước khi** tiến trình này khởi động — không còn phụ thuộc vào buffer trong bộ nhớ. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng rồi mở.
+Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định của hệ thống. Media được tự động tải về khi nhận (auto-download) vào `accounts/<ownId>/media/<threadId>/`. Đường dẫn lấy từ `localPath` trong cache, nên mở được cả tin nhắn đến **trước khi** tiến trình này khởi động — không còn phụ thuộc vào buffer trong bộ nhớ. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng rồi mở. File trong cache được mã hóa: `path` trả về là một bản giải mã riêng trong `<config-dir>/tmp/media/`, bị xóa lúc `expiresAt` (sau 10 phút).
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
@@ -396,7 +396,7 @@ Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định 
 
 **Kết quả mẫu:**
 ```json
-{ "success": true, "path": "/home/user/.zalo-agent-cli/accounts/1234/media/<threadId>/2026-09-19-14-05_8286035781_photo.jpg", "mediaType": "photo" }
+{ "success": true, "path": "/home/user/.zalo-agent-cli/tmp/media/m-Ab12Cd/2026-09-19-14-05_8286035781_photo.jpg", "expiresAt": "2026-09-19T14:15:00.000Z", "mediaType": "photo" }
 ```
 
 ---

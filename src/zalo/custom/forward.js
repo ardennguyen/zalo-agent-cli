@@ -65,15 +65,17 @@ function paramsOf(content) {
 
 /**
  * The size of a cached attachment, when something already knows it: the size its params give, else the size of the
- * copy downloaded locally. Undefined leaves the engine to ask the host.
+ * copy downloaded locally (given as a number by a caller whose copy is encrypted, as a path by one whose copy is
+ * plaintext). Undefined leaves the engine to ask the host.
  *
  * @param {unknown} declared
- * @param {string|null|undefined} localPath
+ * @param {string|number|null|undefined} localPath - a plaintext file's path, or the plaintext size itself
  * @returns {number|undefined}
  */
 function knownSize(declared, localPath) {
     const n = Number(declared);
     if (Number.isFinite(n) && n > 0) return n;
+    if (typeof localPath === "number") return Number.isFinite(localPath) && localPath > 0 ? localPath : undefined;
     if (!localPath) return undefined;
     try {
         const size = statSync(localPath).size;
@@ -104,7 +106,7 @@ export function voiceResendOptions(content) {
  * bound on the HEAD when it does not.
  *
  * @param {object|null} content - the cached message's `content` (`{href, thumb, params}`)
- * @param {string|null} [localPath] - the downloaded copy, if any
+ * @param {string|number|null} [localPath] - the downloaded copy's path (plaintext), or its plaintext size
  * @returns {{videoUrl: string|undefined, thumbnailUrl: string, duration: number, width: number, height: number,
  *   fileSize?: number, timeoutMs: number}}
  */

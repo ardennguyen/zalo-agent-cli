@@ -12,9 +12,12 @@
 import { SANDBOX_HOME, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
+import { scopeOfDir } from "../../src/core/keystore/keyring.js";
+import { writeSealedMedia } from "../../src/core/keystore/media-seal.js";
+import { mediaTempRoot } from "../../src/core/media-tempfile.js";
 import { insertMessage, initDb, upsertThread } from "../../src/core/db.js";
 import { FORWARD_VIDEO_FALLBACK, videoResendOptions, voiceResendOptions } from "../../src/zalo/custom/forward.js";
 import { HEAD_TIMEOUT_MS } from "../../src/zalo/api/messages.js";
@@ -99,6 +102,12 @@ describe("the re-send options read the cache", () => {
         assert.deepEqual(FORWARD_VIDEO_FALLBACK, { width: 1280, height: 720 });
         assert.equal("fileSize" in bare, false);
     });
+
+    it("video: a caller whose copy is sealed hands the plaintext size itself", () => {
+        assert.equal(videoResendOptions({ href: VIDEO_URL }, 5555).fileSize, 5555);
+        assert.equal("fileSize" in videoResendOptions({ href: VIDEO_URL }, null), false);
+        assert.equal(videoResendOptions({ href: VIDEO_URL, params: { fileSize: 7 } }, 5555).fileSize, 7);
+    });
 });
 
 describe("msg forward of a cached voice or video", () => {
@@ -170,5 +179,70 @@ describe("zalo_forward_message of a cached voice", () => {
                 type: 0,
             },
         ]);
+    });
+});
+
+describe("zalo_forward_message of a cached file sealed at rest", () => {
+    const OWN = "100000000000000083";
+    const PHOTO = "7100000000085";
+    const VIDEO_SEALED = "7100000000086";
+    const scope = () => scopeOfDir(getAccountDir(OWN));
+
+    function harness(api) {
+        const tools = new Map();
+        const server = { registerTool: (name, _meta, handler) => tools.set(name, handler) };
+        const buffer = { read: () => ({ messages: [] }), getStats: () => [], getThreadType: () => "dm" };
+        registerTools(server, api, buffer, {}, { limits: {} }, { ready: true, get: () => null, search: () => [] });
+        return tools;
+    }
+
+    it("uploads a decrypted private copy, never the sealed file, and removes the copy afterwards", async () => {
+        initDb(join(DIR, "mcp-sealed.sqlite"));
+        upsertThread({ threadId: PEER, type: "dm", name: "Peer", lastUpdate: 1700000000000 });
+        const plain = Buffer.from("PHOTO-PLAINTEXT-".repeat(5000));
+        const sealed = join(getAccountDir(OWN), "media", SOURCE, "photo.jpg");
+        writeSealedMedia(sealed, scope(), { msgId: PHOTO }, plain);
+        seedMedia(PHOTO, "photo", { href: "https://file.offline.invalid/p.jpg" }, sealed);
+        const seen = [];
+        const tools = harness({
+            getOwnId: () => OWN,
+            getContext: () => ({ loginInfo: {} }),
+            sendMessage: async (msg) => {
+                const [path] = msg.attachments;
+                seen.push({ path, bytes: readFileSync(path) });
+                return { attachment: [{ msgId: "7100000000901" }] };
+            },
+        });
+        const r = await tools.get("zalo_forward_message")({ msgId: PHOTO, threadId: PEER, threadType: "dm" });
+        assert.equal(r.isError, undefined, r.content[0].text);
+        assert.equal(seen.length, 1);
+        // Red when the sealed file itself is uploaded (the receiver would get ciphertext).
+        assert.deepEqual(seen[0].bytes, plain);
+        assert.ok(seen[0].path.startsWith(mediaTempRoot()), seen[0].path);
+        assert.match(seen[0].path, /photo\.jpg$/, "the upload keeps the file's name");
+        assert.equal(existsSync(seen[0].path), false, "the decrypted copy is removed after the send");
+    });
+
+    it("a video's size comes from the sealed header (the plaintext size), with no HEAD", async () => {
+        initDb(join(DIR, "mcp-sealed-video.sqlite"));
+        upsertThread({ threadId: PEER, type: "dm", name: "Peer", lastUpdate: 1700000000000 });
+        const plain = Buffer.alloc(70_000, 3);
+        const sealed = join(getAccountDir(OWN), "media", SOURCE, "clip.mp4");
+        writeSealedMedia(sealed, scope(), { msgId: VIDEO_SEALED }, plain);
+        seedMedia(VIDEO_SEALED, "video", { href: VIDEO_URL, thumb: THUMB_URL, params: J({ duration: 1000 }) }, sealed);
+        const calls = [];
+        const tools = harness({
+            getOwnId: () => OWN,
+            getContext: () => ({ loginInfo: {} }),
+            sendVideo: async (options) => {
+                calls.push(options);
+                return { msgId: "7100000000902" };
+            },
+        });
+        const r = await tools.get("zalo_forward_message")({ msgId: VIDEO_SEALED, threadId: PEER, threadType: "dm" });
+        assert.equal(r.isError, undefined, r.content[0].text);
+        // Red when the size is read off the sealed file (ciphertext: header and tags make it larger).
+        assert.equal(calls[0].fileSize, plain.length);
+        assert.notEqual(readFileSync(sealed).length, plain.length);
     });
 });

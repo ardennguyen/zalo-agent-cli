@@ -27,6 +27,9 @@ import { sendViaDaemon, getDaemonChannel, getSyncChannel, syncViaDaemon } from "
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
 import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { mediaPlainSize } from "../core/keystore/media-seal.js";
+import { scopeOf } from "../core/keystore/index.js";
+import { decryptToTempfile, removeMediaTemp } from "../core/media-tempfile.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import {
     cachedCliMsgId,
@@ -1464,12 +1467,22 @@ export function registerMsgCommands(program) {
                     info("Fetch it first:  zalo-agent sync-media -T <threadId>");
                     process.exit(1);
                 }
-                const out = await sendAttachments(api, [resolve(row.localPath)], threadId, threadType, {
-                    caption: "",
-                    uploadTimeout: 120000,
+                // The cached copy is sealed: the upload takes a path, so it gets a private decrypted copy for the
+                // length of the send (0600, its own folder, deleted in finally). Stopgap until WP6 delivery.
+                const copy = decryptToTempfile(resolve(row.localPath), scopeOf(activeAcc.ownId), {
+                    msgId: row.msgId,
+                    ttlMs: 0,
                 });
-                if (out.error) throw new Error(out.error);
-                return out.result;
+                try {
+                    const out = await sendAttachments(api, [copy.path], threadId, threadType, {
+                        caption: "",
+                        uploadTimeout: 120000,
+                    });
+                    if (out.error) throw new Error(out.error);
+                    return out.result;
+                } finally {
+                    removeMediaTemp(copy);
+                }
             };
 
             const forwarders = {
@@ -1484,7 +1497,8 @@ export function registerMsgCommands(program) {
                 // the payload's `params` blob, not as top-level fields. A size
                 // the cache knows (params, or the downloaded copy) spares the
                 // HEAD to the CDN; one it does not know is bounded.
-                video: async () => api.sendVideo(videoResendOptions(c, row.localPath), threadId, threadType),
+                video: async () =>
+                    api.sendVideo(videoResendOptions(c, mediaPlainSize(row.localPath)), threadId, threadType),
                 voice: async () => api.sendVoice(voiceResendOptions(c), threadId, threadType),
                 photo: resendLocal,
                 file: resendLocal,

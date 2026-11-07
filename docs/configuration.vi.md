@@ -102,7 +102,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `limits.autoDigestThreshold` | 50 | số tin chưa đọc vượt mức này thì tool trả bản tóm tắt |
 | `limits.bufferMaxAge` | `"2h"` | tin nằm trong bộ đệm live bao lâu |
 | `limits.bufferMaxSize` | 500 | số tin giữ trong bộ đệm live **cho mỗi thread** |
-| `media.downloadDir` | `null` | thư mục gốc media của máy chủ này |
+| `media.downloadDir` | `null` | thư mục gốc media của máy chủ này (file trong đó được niêm phong bằng khóa media của tài khoản, như thư mục mặc định) |
 | `media.autoOpen` | `true` | tự mở media đã tải trên máy này; đặt `false` trên máy chủ |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | tắt | báo vào một nhóm Zalo khi agent vắng mặt |
 | `webhook`, `webhookSecret` | `null` | đẩy mỗi tin tới một URL, có ký (nên dùng `ZALO_WEBHOOK_SECRET`) |

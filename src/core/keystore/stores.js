@@ -8,13 +8,14 @@
  * encrypted under.
  *
  * The message database (`zalo.db`, SQLCipher, purpose `sqlcipher`) and the webhook outbox (`webhook-outbox.db`,
- * purpose `outbox`, the same database handler). The media container (purpose `media`: a rekey re-wraps each file's
- * key, see {@link rekeyStores}).
+ * purpose `outbox`, the same database handler), and the downloaded media (purpose `media`, ../media-store.js: a
+ * rekey re-wraps each file's key in its header, it never re-encrypts the files).
  */
 import { join } from "node:path";
 import { getAccountDbPath, getAccountDir } from "../credentials.js";
 import { databaseState, migratePlaintextDatabase, rekeyDatabase } from "../sqlite.js";
 import { OUTBOX_FILE, OUTBOX_PURPOSE, migratePlaintextOutbox } from "../webhook-outbox.js";
+import { mediaStatus, migrateMedia, rekeyMedia } from "../media-store.js";
 import { onRekey, securityStatus } from "./index.js";
 
 /**
@@ -51,7 +52,9 @@ export function rekeyStores(ownId) {
         const file = s.path(ownId);
         return { kind: s.kind, file, result: rekeyDatabase(file, { purpose: s.purpose }) };
     });
-    // Hook point, media container: re-wrap each sealed file's key slot under the new "media" key.
+    // Media: each sealed file's key slot re-wrapped under the new "media" key (about 80 bytes per file).
+    const media = rekeyMedia(ownId);
+    results.push({ kind: "media", file: null, result: media.rewrapped ? "rekeyed" : "current", ...media });
     return results;
 }
 
@@ -60,7 +63,7 @@ onRekey((ownId) => {
 });
 
 /**
- * The stores' lines for `account security status`, in the shape of its `files` entries (never key material).
+ * The databases' lines for `account security status`, in the shape of its `files` entries (never key material).
  *
  * @param {string} ownId
  * @returns {Array<{kind: string, key: string, file: string, state: string, keyId?: string, currentKey?: boolean,
@@ -81,20 +84,45 @@ export function storesStatus(ownId) {
  */
 export function fullSecurityStatus(ownId) {
     const base = securityStatus(ownId);
-    const files = [...base.files, ...storesStatus(ownId)];
+    const files = [...base.files, ...storesStatus(ownId), mediaStatus(ownId)];
     return { ...base, files, plaintextFiles: files.filter((f) => f.state === "plaintext").length };
 }
 
 /**
- * Encrypt every store still in plaintext (`account security migrate`). Idempotent. A store that cannot be done now
- * (the key is locked, another process holds it, no disk space) is reported and left as it is.
+ * Encrypt every store still in plaintext (`account security migrate`): the databases, then the media (every file
+ * sealed in place, resumable). Idempotent. A store that cannot be done now (the key is locked, another process holds
+ * it, no disk space) is reported and left as it is.
  *
  * @param {string} ownId
  * @param {{log?: (line: string) => void}} [opts]
  * @returns {Array<{kind: string, file: string, result: "encrypted"|"already-encrypted"|"absent"|"locked"|"failed",
- *   error?: string}>}
+ *   error?: string, sealed?: number}>}
  */
 export function migrateStores(ownId, { log } = {}) {
+    return [...migrateDatabases(ownId, { log }), migrateMediaStore(ownId, { log })];
+}
+
+/** The media part of {@link migrateStores}. */
+function migrateMediaStore(ownId, { log } = {}) {
+    const file = mediaStatus(ownId).file;
+    try {
+        const r = migrateMedia(ownId, log ? { log } : {});
+        const result = r.failed ? "failed" : r.sealed ? "encrypted" : "already-encrypted";
+        return {
+            kind: "media",
+            file,
+            result,
+            sealed: r.sealed,
+            failed: r.failed,
+            ...(r.failed ? { error: `${r.failed} file(s) could not be sealed (first: ${r.errors[0]?.error})` } : {}),
+        };
+    } catch (e) {
+        if (e?.code === "LOCKED") return { kind: "media", file, result: "locked", error: e.message };
+        return { kind: "media", file, result: "failed", error: e.message };
+    }
+}
+
+function migrateDatabases(ownId, { log } = {}) {
     return DATABASE_STORES.map((s) => {
         const file = s.path(ownId);
         const state = databaseState(file, { purpose: s.purpose }).state;

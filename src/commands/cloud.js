@@ -12,9 +12,11 @@
  * opens only with the account's cloud key, which a person gives at run time (`--key-stdin`, `--key-prompt`) and which
  * is never stored (decision D8).
  */
-import { copyFileSync, writeFileSync, chmodSync } from "node:fs";
+import { writeFileSync, chmodSync } from "node:fs";
 import { resolve } from "node:path";
 import { getAccountDbPath } from "../core/credentials.js";
+import { scopeOf } from "../core/keystore/index.js";
+import { decryptMediaToFile } from "../core/keystore/media-seal.js";
 import { getActive } from "../core/accounts.js";
 import { findMessageByClientId, getCloudItems, getThreadNames, initDb } from "../core/db.js";
 import {
@@ -370,8 +372,9 @@ export function registerCloudCommands(program) {
             // My Cloud (the chat with oneself): the Web opens the item through its chat message first.
             const selfChat = String(row.threadId) === String(index.ownId);
             if (selfChat && index.savedLocally({ cliMsgId: raw.msgInfo?.cliMsgId, threadId: row.threadId })) {
-                const local = findMessageByClientId(String(raw.msgInfo.cliMsgId), row.threadId).localPath;
-                copyFileSync(local, out);
+                const msg = findMessageByClientId(String(raw.msgInfo.cliMsgId), row.threadId);
+                // The cached copy is sealed (keystore/media-seal.js): written out decrypted, 0600.
+                decryptMediaToFile(msg.localPath, out, scopeOf(String(index.ownId)), { msgId: msg.msgId });
                 output({ noiseId, file: out, source: "message", encrypted: false, verified: true }, jsonMode, () =>
                     success(`Written from its chat message's downloaded file: ${out}`),
                 );

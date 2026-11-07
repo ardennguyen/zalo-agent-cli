@@ -15,12 +15,15 @@
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
+import { scopeOfDir } from "../../src/core/keystore/keyring.js";
+import { writeSealedMedia } from "../../src/core/keystore/media-seal.js";
+import { mediaTempRoot } from "../../src/core/media-tempfile.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
@@ -685,13 +688,23 @@ describe("MCP tools read the local cache", () => {
         assert.equal(s.parse({ threadId: "t1", before: 1_750_000_000_000 }).before, 1_750_000_000_000);
     });
 
-    it("zalo_view_media returns the path the cache recorded, without refetching", async () => {
-        cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: "/tmp/a.jpg" }]);
-        const { server } = register({ api: emptyServerApi() });
+    it("zalo_view_media decrypts the cached file to a private copy, without refetching", async () => {
+        // The cached file is sealed for the account; the reply's path is a decrypted copy (stopgap until WP6).
+        const accountDir = join(CONFIG_DIR, "accounts", "100000000000000977");
+        const sealed = join(accountDir, "media", "t1", "a.jpg");
+        mkdirSync(dirname(sealed), { recursive: true });
+        const plain = Buffer.from("JPEG-PLAINTEXT-BYTES");
+        writeSealedMedia(sealed, scopeOfDir(accountDir), { msgId: "m1" }, plain);
+        cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: sealed }]);
+        const { server } = register({ api: emptyServerApi(), accountDir });
         const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", open: false }));
         assert.equal(out.success, true);
-        assert.equal(out.path, "/tmp/a.jpg");
         assert.equal(out.mediaType, "photo");
+        assert.notEqual(out.path, sealed);
+        assert.ok(out.path.startsWith(mediaTempRoot()), out.path);
+        assert.deepEqual(readFileSync(out.path), plain);
+        assert.ok(Date.parse(out.expiresAt) > Date.now());
+        assert.equal(readFileSync(sealed).includes(plain), false, "the cached file stays sealed");
     });
 
     it("zalo_view_media says so when the message carries no media", async () => {

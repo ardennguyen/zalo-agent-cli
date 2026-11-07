@@ -16,6 +16,7 @@ import { updateAccountName } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir, MEDIA_DIR } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { startMediaMigration } from "../core/media-store.js";
 import {
     createStageLock,
     startDaemonChannel,
@@ -601,6 +602,8 @@ export function registerMCPCommands(program) {
             try {
                 initDb(join(accountDir, "zalo.db"));
                 console.error(`[mcp] Local cache: ${join(accountDir, "zalo.db")}`);
+                // Media a 2.x install downloaded is sealed in the background, a batch at a time (media-store.js).
+                startMediaMigration(activeAcc.ownId, { log: (l) => console.error(`[mcp] ${l}`) });
             } catch (e) {
                 gate.leave();
                 dropLock();

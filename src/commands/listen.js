@@ -16,6 +16,7 @@ import { updateAccountName } from "../core/accounts.js";
 import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
+import { startMediaMigration } from "../core/media-store.js";
 import {
     createStageLock,
     statusViaDaemon,
@@ -296,6 +297,8 @@ export function registerListenCommand(program) {
             try {
                 initDb(join(accountDir, "zalo.db"));
                 info(`Local database initialized at ${accountDir}/zalo.db`);
+                // Media a 2.x install downloaded is sealed in the background, a batch at a time (media-store.js).
+                startMediaMigration(activeAcc.ownId, { log: (l) => console.error(`[listen] ${l}`) });
                 // Logged in and the cache open: the heavy part of start-up is over.
                 gate.leave();
             } catch (err) {

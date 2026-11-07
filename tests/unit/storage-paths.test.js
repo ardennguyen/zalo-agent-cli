@@ -7,7 +7,7 @@
 import { SANDBOX_HOME, SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import http from "node:http";
 import {
@@ -25,6 +25,8 @@ import { addAccount, listAccounts, wipeAccountDir } from "../../src/core/account
 import { saveOACreds, loadOACreds, getOADataDir } from "../../src/core/oa-client.js";
 import { initDb, insertMessage, getMessageById } from "../../src/core/db.js";
 import { downloadSyncedMedia } from "../../src/core/sync-v2/media.js";
+import { readSealedJson, scopeOf } from "../../src/core/keystore/index.js";
+import { mediaFileState } from "../../src/core/keystore/media-seal.js";
 import { SyncV2 } from "../../src/core/sync-v2/index.js";
 import { runJson } from "../helpers/cli.js";
 
@@ -177,10 +179,12 @@ describe("separated storage paths (unit + CLI)", () => {
             );
             assert.equal(existsSync(row.localPath), true);
             assert.equal(existsSync(join(customMedia, "_conversations.json")), true);
-            assert.deepEqual(JSON.parse(readFileSync(join(customMedia, "_conversations.json"), "utf8"))[TEST_THREAD], {
-                name: "Media Thread",
-                type: "dm",
+            // Sealed for the account (at rest phase 2), like the file beside it.
+            const index = readSealedJson(join(customMedia, "_conversations.json"), scopeOf(TEST_UID), {
+                kind: "media-index",
             });
+            assert.deepEqual(index[TEST_THREAD], { name: "Media Thread", type: "dm" });
+            assert.equal(mediaFileState(row.localPath), "sealed");
             assert.equal(existsSync(join(customData, TEST_UID, "media")), false);
         } finally {
             closeOpenDb();

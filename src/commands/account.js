@@ -28,6 +28,7 @@ import { guardSubcommand } from "../core/confirm-guard.js";
 import { changeProvider, hasKeyring, migrateAccount, rekeyAccount, securityStatus } from "../core/keystore/index.js";
 // Registers the encrypted stores' rekey handlers: a rekey without them would drop the key zalo.db is under.
 import { fullSecurityStatus, migrateStores, storesStatus } from "../core/keystore/stores.js";
+import { mediaStatus } from "../core/media-store.js";
 import { PROVIDER_NAMES, readStorageFile, writeStorageFile } from "../core/keystore/config.js";
 import { inTestSandbox } from "../core/keystore/providers.js";
 
@@ -456,7 +457,8 @@ function registerSecurityCommands(account, program) {
                     for (const r of results) {
                         info(`Account ${r.ownId}`);
                         for (const f of r.files) {
-                            const line = `  ${f.kind.padEnd(24)} ${f.result}${f.error ? `: ${f.error}` : ""}`;
+                            const n = f.sealed ? ` (${f.sealed} file(s))` : "";
+                            const line = `  ${f.kind.padEnd(24)} ${f.result}${n}${f.error ? `: ${f.error}` : ""}`;
                             if (f.result === "failed" || f.result === "locked") warning(line);
                             else console.log(line);
                         }
@@ -486,12 +488,24 @@ function registerSecurityCommands(account, program) {
                     state: d.state,
                     ...(d.state === "encrypted" ? { currentKey: d.currentKey } : {}),
                 }));
-                output({ ownId: id, rekeyed: true, resealed: res.resealed, keys: res.keys, databases }, json(), () => {
-                    success(`Account ${id}: new keys, ${res.resealed} file(s) re-sealed`);
-                    for (const d of databases) {
-                        info(`  ${d.kind}: ${d.state}${d.currentKey ? ", under the new key" : ""}`);
-                    }
-                });
+                const m = mediaStatus(id);
+                const media = {
+                    sealed: m.sealed,
+                    staleKey: m.staleKey,
+                    plaintext: m.plaintext,
+                    unreadable: m.unreadable,
+                };
+                output(
+                    { ownId: id, rekeyed: true, resealed: res.resealed, keys: res.keys, databases, media },
+                    json(),
+                    () => {
+                        success(`Account ${id}: new keys, ${res.resealed} file(s) re-sealed`);
+                        for (const d of databases) {
+                            info(`  ${d.kind}: ${d.state}${d.currentKey ? ", under the new key" : ""}`);
+                        }
+                        info(`  media: ${media.sealed} file(s) sealed, ${media.staleKey} not under the new key`);
+                    },
+                );
             } catch (e) {
                 fail(e);
             }
@@ -567,6 +581,13 @@ function describeSecurity(r) {
             ? ` (configured ${r.dkeyLayer.configured ? "on" : "off"}: applied at the next login)`
             : "";
     console.log(`  dkey layer: ${r.dkeyLayer.active ? "on" : "off"}${pending}`);
-    for (const f of r.files) console.log(`  ${f.kind.padEnd(24)} ${f.state.padEnd(10)} ${f.key} key`);
+    for (const f of r.files) {
+        const counts =
+            f.kind === "media"
+                ? `  (${f.sealed} sealed, ${f.plaintext} plaintext${f.unreadable ? `, ${f.unreadable} unreadable` : ""}` +
+                  `${f.staleKey ? `, ${f.staleKey} under an old key` : ""}${f.capped ? ", counted up to 50,000" : ""})`
+                : "";
+        console.log(`  ${f.kind.padEnd(24)} ${f.state.padEnd(10)} ${f.key} key${counts}`);
+    }
     if (r.plaintextFiles) warning(`  ${r.plaintextFiles} file(s) still plaintext: run "account security migrate"`);
 }

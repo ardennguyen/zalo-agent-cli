@@ -24,6 +24,8 @@ const CREDS = {
 const CRED_FILE = join(CONFIG_DIR, "credentials", `cred_${OWN}.json`);
 const DB_FILE = join(CONFIG_DIR, "accounts", OWN, "zalo.db");
 const MARKER = "plaintext-row-cli-q4";
+const MEDIA_FILE = join(CONFIG_DIR, "accounts", OWN, "media", "200000000000000901", "photo.jpg");
+const MEDIA_MARKER = "plaintext-media-cli-q4";
 
 const json = async (args, env = {}) => {
     const r = await runCli(["--json", ...args], { ...options, env });
@@ -51,6 +53,9 @@ before(() => {
     db.exec("CREATE TABLE messages (msgId TEXT PRIMARY KEY, text TEXT)");
     db.prepare("INSERT INTO messages VALUES ('m1', ?)").run(MARKER);
     db.close();
+    // ...and a downloaded photo in plaintext.
+    mkdirSync(join(MEDIA_FILE, ".."), { recursive: true });
+    writeFileSync(MEDIA_FILE, `${MEDIA_MARKER}${"x".repeat(5000)}`);
 });
 
 describe("account security", () => {
@@ -61,7 +66,9 @@ describe("account security", () => {
         assert.equal(r.value.keyring, null);
         assert.equal(r.value.files.find((f) => f.kind === "credentials").state, "plaintext");
         assert.equal(r.value.files.find((f) => f.kind === "message-database").state, "plaintext");
-        assert.equal(r.value.plaintextFiles, 2);
+        const media = r.value.files.find((f) => f.kind === "media");
+        assert.deepEqual([media.state, media.plaintext, media.sealed], ["plaintext", 1, 0]);
+        assert.equal(r.value.plaintextFiles, 3);
         assert.equal(readFileSync(CRED_FILE, "utf8"), JSON.stringify(CREDS, null, 2), "status changes nothing");
     });
 
@@ -75,9 +82,14 @@ describe("account security", () => {
         assert.equal(r.value.files.find((f) => f.kind === "message-database").result, "encrypted");
         assert.equal(dbFileState(DB_FILE), "encrypted");
         assert.ok(!readFileSync(DB_FILE).includes(Buffer.from(MARKER)));
+        const media = r.value.files.find((f) => f.kind === "media");
+        assert.deepEqual([media.result, media.sealed], ["encrypted", 1]);
+        assert.equal(readFileSync(MEDIA_FILE).subarray(0, 8).toString(), "ZACMEDIA");
+        assert.ok(!readFileSync(MEDIA_FILE).includes(Buffer.from(MEDIA_MARKER)));
         const again = await json(["account", "security", "migrate"]);
         assert.equal(again.value.files.find((f) => f.kind === "credentials").result, "already-sealed");
         assert.equal(again.value.files.find((f) => f.kind === "message-database").result, "already-encrypted");
+        assert.equal(again.value.files.find((f) => f.kind === "media").result, "already-encrypted");
         const s = await json(["account", "security", "status"]);
         assert.equal(s.value.provider.name, "test");
         assert.equal(s.value.keyring.version, 1);
@@ -94,6 +106,8 @@ describe("account security", () => {
             { kind: "message-database", state: "encrypted", currentKey: true },
             { kind: "webhook-outbox", state: "absent" },
         ]);
+        // The photo's key slot was re-wrapped: sealed, none left under the old key.
+        assert.deepEqual(r.value.media, { sealed: 1, staleKey: 0, plaintext: 0, unreadable: 0 });
         const after = (await json(["account", "security", "status"])).value;
         const db = after.files.find((f) => f.kind === "message-database");
         assert.equal(db.currentKey, true);

@@ -32,6 +32,10 @@ import {
 import { searchPage } from "../core/search.js";
 import { parsePeriod } from "../utils/date-range.js";
 import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
+import { mediaPlainSize } from "../core/keystore/media-seal.js";
+import { scopeOfDir } from "../core/keystore/keyring.js";
+import { getAccountDir } from "../core/credentials.js";
+import { decryptToTempfile, removeMediaTemp } from "../core/media-tempfile.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import { boardPage, groupReminderPage } from "../zalo/api/boards.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
@@ -1530,13 +1534,15 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
     // --- zalo_view_media ---
     const mediaConfig = config.media || {};
+    /** The account the cached media is sealed for (its folder holds the keyring). */
+    const mediaScope = () => scopeOfDir(accountDir || getAccountDir(String(ownIdOf(api) ?? "")));
     server.registerTool(
         "zalo_view_media",
         {
             title: "View Zalo Media",
             description:
                 "Get a received photo, voice message, video or file as a local file, and by default open it with the viewer of the machine this server runs on. Media is downloaded when a message arrives; if the file is not on disk yet it is downloaded first. " +
-                "Give the message's `msgId`. Returns `{ success, path, mediaType }`: `path` is where the file is on the server's machine. Pass `open: false` when you only need the path (for example on a remote or headless server).",
+                "Give the message's `msgId`. Returns `{ success, path, expiresAt, mediaType }`: the cached file is encrypted, so `path` is a private decrypted copy on the server's machine, deleted at `expiresAt` (10 minutes). Pass `open: false` when you only need the path (for example on a remote or headless server).",
             inputSchema: z.object({
                 msgId: z
                     .string()
@@ -1594,9 +1600,19 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     }
                 }
 
-                if (open) openFile(localPath);
+                // The cached file is sealed (keystore/media-seal.js). STOPGAP until WP6/WP8 delivery modes: the reply's
+                // `path` is a private decrypted copy (0600, its own folder) that is deleted after 10 minutes.
+                const copy = decryptToTempfile(localPath, mediaScope(), {
+                    msgId: row?.msgId ?? msgId,
+                });
+                if (open) openFile(copy.path);
 
-                return ok({ success: true, path: localPath, mediaType: row?.type || buffered?.type || null });
+                return ok({
+                    success: true,
+                    path: copy.path,
+                    expiresAt: new Date(copy.expiresAt).toISOString(),
+                    mediaType: row?.type || buffered?.type || null,
+                });
             } catch (e) {
                 console.error("[mcp-tools] zalo_view_media error:", e.message);
                 return err(e.message);
@@ -2345,11 +2361,20 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             `Message ${msgId} is "${row.type}" but its media is not downloaded locally. Call zalo_view_media with msgId="${msgId}" first.`,
                         );
                     }
-                    return api.sendMessage(
-                        { msg: "", attachments: [resolve(row.localPath)] },
-                        threadId,
-                        Number(threadType),
-                    );
+                    // Sealed on disk: the upload gets a private decrypted copy for the send only (stopgap, WP6).
+                    const copy = decryptToTempfile(resolve(row.localPath), mediaScope(), {
+                        msgId: row.msgId,
+                        ttlMs: 0,
+                    });
+                    try {
+                        return await api.sendMessage(
+                            { msg: "", attachments: [copy.path] },
+                            threadId,
+                            Number(threadType),
+                        );
+                    } finally {
+                        removeMediaTemp(copy);
+                    }
                 };
 
                 const forwarders = {
@@ -2364,7 +2389,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     link: async () => api.sendLink({ link: c?.href }, threadId, Number(threadType)),
                     // As `msg forward`: a size the cache knows spares the HEAD, and one still needed is bounded.
                     video: async () =>
-                        api.sendVideo(videoResendOptions(c, row.localPath), threadId, Number(threadType)),
+                        api.sendVideo(
+                            videoResendOptions(c, mediaPlainSize(row.localPath)),
+                            threadId,
+                            Number(threadType),
+                        ),
                     voice: async () => api.sendVoice(voiceResendOptions(c), threadId, Number(threadType)),
                     photo: resendLocal,
                     file: resendLocal,

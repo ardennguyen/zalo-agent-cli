@@ -33,6 +33,9 @@ import {
 import { extractRenewedUrls, makeRenewLink } from "../../zalo/custom/renewlink.js";
 import { lookupCloudBackup, messageZKey } from "./zcloud.js";
 import { createDownloadFetch } from "../../zalo/download-fetch.js";
+import { readSealedJson, writeSealedJson } from "../keystore/index.js";
+import { scopeOfDir } from "../keystore/keyring.js";
+import { mediaPlainSize, writeSealedMedia } from "../keystore/media-seal.js";
 
 /** Kinds that point at a byte stream worth saving. */
 export const DOWNLOADABLE_KINDS = new Set(["photo", "video", "file", "gif", "voice", "audio", "doodle"]);
@@ -372,31 +375,36 @@ async function fetchBytes(url, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl
     return { ok: true, buf, contentType: ct };
 }
 
+/** The sealed-file spec of the conversation index. */
+const MEDIA_INDEX_SPEC = Object.freeze({ kind: "media-index", use: "data" });
+
 /**
  * Write `<mediaRoot>/_conversations.json`: the id -> name map for the folders
- * beside it. Best-effort by design -- a media run must never fail because an
+ * beside it, sealed (kind `media-index`, the account's data key): names are
+ * content. Best-effort by design -- a media run must never fail because an
  * index could not be written.
  *
  * @param {string} mediaRoot
  * @param {Map<string,{name:string,type:string}>} names
+ * @param {{id: string, dir: string}} scope - the account
  */
-function writeConversationIndex(mediaRoot, names) {
+function writeConversationIndex(mediaRoot, names, scope) {
     try {
         fs.mkdirSync(mediaRoot, { recursive: true });
+        const file = join(mediaRoot, "_conversations.json");
         let existing = {};
         try {
-            existing = JSON.parse(fs.readFileSync(join(mediaRoot, "_conversations.json"), "utf8"));
+            // A plaintext index (2.x) is sealed in place on the way.
+            existing = readSealedJson(file, scope, MEDIA_INDEX_SPEC) || {};
         } catch {
-            /* first run, or an unreadable index we are about to replace */
+            /* first run, or an unreadable index (another account's, in a shared root) we are about to replace */
         }
         // Merge rather than replace: a run scoped to one thread must not drop
         // the names of conversations it did not look at.
         for (const [id, meta] of names) {
             if (meta?.name) existing[String(id)] = { name: meta.name, type: meta.type || null };
         }
-        const tmp = join(mediaRoot, "_conversations.json.tmp");
-        fs.writeFileSync(tmp, JSON.stringify(existing, null, 2));
-        fs.renameSync(tmp, join(mediaRoot, "_conversations.json"));
+        writeSealedJson(file, scope, MEDIA_INDEX_SPEC, existing);
     } catch {
         /* an index is a convenience, never a reason to fail a download run */
     }
@@ -547,7 +555,9 @@ export async function downloadSyncedMedia(opts = {}) {
 
     // Folders are ids, so without this the media tree is unreadable by a human.
     // Written before any download, so an interrupted run still leaves an index.
-    writeConversationIndex(mediaRoot, names);
+    // Every file is sealed for the account the folder names (keystore/media-seal.js).
+    const scope = scopeOfDir(resolve(accountDir));
+    writeConversationIndex(mediaRoot, names, scope);
     let cursor = 0;
     // Consecutive throttled responses across all workers. Zalo starts dropping
     // connections under sustained load, and charging on through nine thousand
@@ -664,7 +674,20 @@ export async function downloadSyncedMedia(opts = {}) {
             const path = destPath(dir, row, att, ext, job.index);
             try {
                 fs.mkdirSync(dirname(path), { recursive: true });
-                fs.writeFileSync(path, got.buf);
+                // Sealed and atomic: never a plaintext byte on disk, never half a file. A key that cannot be had
+                // fails the write (fail closed).
+                writeSealedMedia(
+                    path,
+                    scope,
+                    {
+                        msgId: row.msgId,
+                        att: job.index,
+                        thumb: Boolean(att.isThumb),
+                        mime: got.contentType ? String(got.contentType).split(";")[0].trim() : null,
+                        ext,
+                    },
+                    got.buf,
+                );
             } catch (e) {
                 stats.failed++;
                 onProgress({ phase: "fail", msgId: row.msgId, detail: `write: ${e.message}` });
@@ -735,7 +758,9 @@ export async function pruneDownloadedMedia(opts = {}) {
     for (const row of rows) {
         let size = 0;
         try {
-            size = fs.statSync(row.localPath).size;
+            fs.statSync(row.localPath);
+            // The plaintext size, from the sealed header (no key needed).
+            size = mediaPlainSize(row.localPath) ?? 0;
         } catch {
             // Already gone from disk -- still worth clearing the stale pointer.
             stats.missing++;

@@ -224,7 +224,7 @@ zalo-agent sync-media --prune-orphans        # xóa media của các hội tho�
 ```
 
 > [!WARNING]
-> **Media mặc định nằm tại `accounts/<ownId>/media/<threadId>/` (hoặc `--media-dir` / `ZALO_MEDIA_DIR`, hoặc `media.downloadDir` trong `mcp-config.json`).** Một thư mục media tùy chỉnh nằm ngoài `accounts/<ownId>/` sẽ **không** bị xóa khi chạy `logout --purge`, `account remove` hay `logout --delete-history`. Nếu bạn cấu hình thư mục media riêng, hãy chủ động xóa thư mục đó khi gỡ bỏ tài khoản.
+> **Media mặc định nằm tại `accounts/<ownId>/media/<threadId>/` (hoặc `--media-dir` / `ZALO_MEDIA_DIR`, hoặc `media.downloadDir` trong `mcp-config.json`).** Một thư mục media tùy chỉnh nằm ngoài `accounts/<ownId>/` sẽ **không** bị xóa khi chạy `logout --purge`, `account remove` hay `logout --delete-history`. Nếu bạn cấu hình thư mục media riêng, hãy chủ động xóa thư mục đó khi gỡ bỏ tài khoản. Từ 3.0.0 mọi file trong đó được niêm phong bằng khóa media của tài khoản ([security.vi.md](security.vi.md)), nên khi tài khoản (cùng keyring của nó) đã bị gỡ thì phần còn lại không đọc được nữa; thư mục dùng chung cho nhiều tài khoản giữ file của mỗi tài khoản dưới khóa riêng của tài khoản đó.
 
 ### 3.4 Disk I/O cho SQLite WAL
 

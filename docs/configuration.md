@@ -102,7 +102,7 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `limits.autoDigestThreshold` | 50 | unread count above which tools return a digest |
 | `limits.bufferMaxAge` | `"2h"` | how long a message stays in the live buffer |
 | `limits.bufferMaxSize` | 500 | messages kept **per thread** in the live buffer |
-| `media.downloadDir` | `null` | media root for this server |
+| `media.downloadDir` | `null` | media root for this server (files there are sealed under the account's media key, like the default root) |
 | `media.autoOpen` | `true` | open downloaded media on this machine; set `false` on a server |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | off | notify a Zalo group when the agent is away |
 | `webhook`, `webhookSecret` | `null` | push each message to a URL, signed (prefer `ZALO_WEBHOOK_SECRET`) |

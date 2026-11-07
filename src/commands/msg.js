@@ -18,7 +18,7 @@ import {
     initDb,
     getMessages,
     getAllMessagesInRange,
-    getMessageById,
+    getMessageForAction,
     getDisplayName,
     getThreadType,
 } from "../core/db.js";
@@ -767,7 +767,7 @@ export function registerMsgCommands(program) {
 
                 let quote;
                 if (opts.quote) {
-                    const built = buildQuote(cached ? getMessageById(opts.quote) : null, {
+                    const built = buildQuote(cached ? getMessageForAction(opts.quote) : null, {
                         msgId: opts.quote,
                         threadId,
                     });
@@ -1416,10 +1416,12 @@ export function registerMsgCommands(program) {
             let row;
             try {
                 initDb(getAccountDbPath(activeAcc.ownId));
-                row = getMessageById(msgId);
+                row = getMessageForAction(msgId);
             } catch (e) {
                 error(
-                    `Local cache unavailable (${e.message}). Run \`zalo-agent listen\` or \`zalo-agent sync\` first.`,
+                    e?.code === "ROW_MAC"
+                        ? e.message
+                        : `Local cache unavailable (${e.message}). Run \`zalo-agent listen\` or \`zalo-agent sync\` first.`,
                 );
                 process.exit(1);
             }
@@ -1601,7 +1603,7 @@ export function registerMsgCommands(program) {
                 // Everything the pin carries -- cliMsgId, sender, text -- comes
                 // from the cached row, so every refusal below happens before
                 // any request.
-                const row = openAccountDb() ? getMessageById(msgId) : null;
+                const row = openAccountDb() ? getMessageForAction(msgId) : null;
                 if (!row) {
                     refuse(
                         `Message ${msgId} is not in the local cache, so it cannot be pinned: a pin carries the ` +
@@ -1660,7 +1662,7 @@ export function registerMsgCommands(program) {
                 // Unpinning takes the pin's topic id, which comes from the
                 // conversation's live pin list -- so only the conversation has
                 // to be known, not the message.
-                const row = openAccountDb() ? getMessageById(msgId) : null;
+                const row = openAccountDb() ? getMessageForAction(msgId) : null;
                 if (threadId && row?.threadId && String(row.threadId) !== String(threadId)) {
                     refuse(`Message ${msgId} belongs to thread ${row.threadId}, not ${threadId}.`);
                     return;

@@ -12,7 +12,7 @@
  * the active account's first, and `mcp start` opened it at start-up.
  */
 
-import { findMessageByClientId, getMessageById } from "./db.js";
+import { findMessageByClientId, getMessageForAction } from "./db.js";
 
 /**
  * `raw_data` as an object, whatever shape its writer used.
@@ -137,7 +137,8 @@ export function resolveReplyTo(replyTo, threadId = null, { find = findMessageByC
  * A direct lookup by msgId, checked against the thread. This used to scan the
  * thread's newest 200 rows, so anything older was reported as uncached.
  *
- * Never throws.
+ * Throws only when the cached row fails its integrity check (`RowIntegrityError`, code ROW_MAC; src/core/row-mac.js):
+ * an action must not take its ids from a row someone changed. Otherwise never throws.
  *
  * @param {string} threadId
  * @param {string} msgId
@@ -145,7 +146,7 @@ export function resolveReplyTo(replyTo, threadId = null, { find = findMessageByC
  */
 export function cachedMessageById(threadId, msgId) {
     try {
-        const row = getMessageById(msgId);
+        const row = getMessageForAction(msgId);
         // msgIds are account-wide: a row from another conversation must not
         // lend its ids to an action aimed at this one.
         if (!row || (row.threadId && String(row.threadId) !== String(threadId))) return null;
@@ -154,7 +155,8 @@ export function cachedMessageById(threadId, msgId) {
         const cliMsgId = cachedCliMsgId(row);
         const uidFrom = row.senderId ?? data.uidFrom;
         return cliMsgId ? { cliMsgId, uidFrom: uidFrom ? String(uidFrom) : null } : null;
-    } catch {
+    } catch (e) {
+        if (e?.code === "ROW_MAC") throw e;
         return null; // no db open in this process
     }
 }

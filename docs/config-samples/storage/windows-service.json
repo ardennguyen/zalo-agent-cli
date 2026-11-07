@@ -1,5 +1,6 @@
 {
     "provider": "dpapi",
     "dkeyLayer": true,
-    "dpapi": { "scope": "LocalMachine" }
+    "dpapi": { "scope": "LocalMachine" },
+    "rowMac": { "verifyOnRead": "actions" }
 }

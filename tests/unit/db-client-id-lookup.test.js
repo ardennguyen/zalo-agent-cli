@@ -10,7 +10,7 @@ import { describe, it, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { openDatabase } from "../../src/core/sqlite.js";
+import { openRawWriter } from "./support/raw-db.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { findMessageByClientId, initDb, insertMessage } from "../../src/core/db.js";
 
@@ -65,7 +65,7 @@ describe("findMessageByClientId", () => {
     });
 
     it("is not thrown by a row whose raw_data is not JSON (an older writer stored the bare text)", () => {
-        const other = openDatabase(file);
+        const other = openRawWriter(file);
         other
             .prepare(
                 "INSERT INTO messages (msgId, threadId, senderId, text, timestamp, type, raw_data) VALUES (?,?,?,?,?,?,?)",
@@ -78,7 +78,7 @@ describe("findMessageByClientId", () => {
     });
 
     it("stays fast on a big thread: thousands of lookups over tens of thousands of rows take well under a second each way", () => {
-        const other = openDatabase(file);
+        const other = openRawWriter(file);
         const add = other.prepare(
             "INSERT INTO messages (msgId, threadId, senderId, text, timestamp, type, raw_data) VALUES (?,?,?,?,?,?,?)",
         );

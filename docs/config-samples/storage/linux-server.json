@@ -1,5 +1,6 @@
 {
     "provider": "systemd-creds",
     "dkeyLayer": true,
-    "systemdCreds": { "withKey": "auto" }
+    "systemdCreds": { "withKey": "auto" },
+    "rowMac": { "verifyOnRead": "actions" }
 }

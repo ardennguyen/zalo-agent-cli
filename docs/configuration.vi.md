@@ -26,7 +26,7 @@ Bí mật đặt trong `.env` (quyền `0600`), không đặt trong `mcp-config.
 | `mcp start --config <path>` | máy chủ đó | cấu hình thứ hai cho một dịch vụ. Phải tồn tại và là JSON hợp lệ, nếu không máy chủ **từ chối khởi động** (thiếu tệp sẽ có nghĩa "theo dõi mọi thread"). Nó thay thế tệp nền và tệp theo tài khoản bên dưới |
 | khối `accounts.<ownId>` trong `mcp-config.json` | máy chủ của tài khoản đó | ghi đè theo tài khoản trong một tệp: [`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json) |
 | `<accountDir>/mcp-config.json` — `~/.zalo-agent-cli/accounts/<ownId>/` | máy chủ của tài khoản đó | tệp theo tài khoản; bị từ chối khi khởi động nếu có mà không đọc được |
-| `<CONFIG_DIR>/storage.json` | mọi lệnh đọc hay ghi phiên đăng nhập đã lưu | bộ cung cấp khóa và lớp dkey bảo vệ các file đã lưu ([security.vi.md](security.vi.md)); không chứa bí mật |
+| `<CONFIG_DIR>/storage.json` | mọi lệnh đọc hay ghi phiên đăng nhập đã lưu | bộ cung cấp khóa và lớp dkey bảo vệ các file đã lưu, và `rowMac.verifyOnRead` (`actions` (mặc định) hoặc `off`: thao tác có kiểm tra tin nhắn trong bộ nhớ đệm mà nó tác động với row MAC của tin đó hay không) ([security.vi.md](security.vi.md)); không chứa bí mật |
 
 ### Thứ tự ưu tiên
 

@@ -170,15 +170,17 @@ function guard(db, file) {
  * @param {boolean} [opts.readonly] - never creates, never migrates: a plaintext file is `KeystoreError` `PLAINTEXT`
  * @param {(line: string) => void} [opts.log] - progress of a migration (stderr by default)
  * @param {object} [opts.hooks] - tests: called between the migration's steps (see {@link migratePlaintextDatabase})
+ * @param {string} [opts.accountDir] - the account whose key opens it, when the file is not in its folder (a copy
+ *   made by `db backup` / `db export`); read-only use, it never creates a keyring there
  * @returns {import("better-sqlite3-multiple-ciphers").Database} with `keyId`: the data key it opened with
  * @throws {KeystoreError} `PLAINTEXT` (read-only on a plaintext file), `WRONG_KEY` (no key of the account opens it, or
  *   it is not a database), `IN_USE` (a migration that another process blocks), `NO_KEYRING`, and the key layer's own
  *   (`LOCKED`, `UNAVAILABLE`, …)
  */
-export function openDatabase(file, { purpose = "sqlcipher", readonly = false, log, hooks } = {}) {
+export function openDatabase(file, { purpose = "sqlcipher", readonly = false, log, hooks, accountDir } = {}) {
     if (inMemory(file)) return new Database(file || ":memory:");
     const path = resolve(file);
-    const scope = scopeOfDir(dirname(path));
+    const scope = scopeOfDir(accountDir ?? dirname(path));
     if (!readonly) {
         mkdirSync(dirname(path), { recursive: true });
         if (hasLeftovers(path)) withMigrationLock(path, () => recoverMigration(path, { log }));
@@ -195,10 +197,14 @@ export function openDatabase(file, { purpose = "sqlcipher", readonly = false, lo
         migratePlaintextDatabase(path, { purpose, log, hooks });
         state = dbFileState(path);
     }
-    const keys = candidateKeys(scope, purpose, { create: !readonly && state !== "encrypted" });
+    const keys = candidateKeys(scope, purpose, { create: !readonly && !accountDir && state !== "encrypted" });
     for (const { key, keyId } of keys) {
         const db = tryKey(path, key, { readonly });
         if (!db) continue;
+        // Temporary tables, sorts and statement journals stay in memory: a temp file would hold decrypted pages, and
+        // every insert into messages (it has triggers: the row MAC, the search index) writes a statement journal,
+        // which as a file cost about 45 µs per row on Windows.
+        db.pragma("temp_store = MEMORY");
         if (!readonly) {
             db.pragma("journal_mode = WAL");
             db.pragma("secure_delete = ON");

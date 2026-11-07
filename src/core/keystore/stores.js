@@ -9,14 +9,17 @@
  *
  * The message database (`zalo.db`, SQLCipher, purpose `sqlcipher`) and the webhook outbox (`webhook-outbox.db`,
  * purpose `outbox`, the same database handler), and the downloaded media (purpose `media`, ../media-store.js: a
- * rekey re-wraps each file's key in its header, it never re-encrypts the files).
+ * rekey re-wraps each file's key in its header, it never re-encrypts the files). The message rows' MACs (purpose
+ * `row-mac`, ../row-mac.js) are re-computed under the new key after the database itself is rekeyed.
  */
 import { join } from "node:path";
 import { getAccountDbPath, getAccountDir } from "../credentials.js";
-import { databaseState, migratePlaintextDatabase, rekeyDatabase } from "../sqlite.js";
+import { databaseState, dbFileState, migratePlaintextDatabase, openDatabase, rekeyDatabase } from "../sqlite.js";
+import { registerRowMacFunction, rekeyRowMacs } from "../row-mac.js";
+import { deriveDataKey, readKeyring } from "./keyring.js";
 import { OUTBOX_FILE, OUTBOX_PURPOSE, migratePlaintextOutbox } from "../webhook-outbox.js";
 import { mediaStatus, migrateMedia, rekeyMedia } from "../media-store.js";
-import { onRekey, securityStatus } from "./index.js";
+import { onRekey, scopeOf, securityStatus } from "./index.js";
 
 /**
  * Every encrypted database of an account. `key` is the keyring key it derives from (always the data key); `migrate`
@@ -52,6 +55,8 @@ export function rekeyStores(ownId) {
         const file = s.path(ownId);
         return { kind: s.kind, file, result: rekeyDatabase(file, { purpose: s.purpose }) };
     });
+    // The row MACs, once the database opens under the new key: each row whose MAC an older key made is re-MACed.
+    results.push({ kind: "row-mac", file: getAccountDbPath(ownId), ...rekeyMessageMacs(ownId) });
     // Media: each sealed file's key slot re-wrapped under the new "media" key (about 80 bytes per file).
     const media = rekeyMedia(ownId);
     results.push({ kind: "media", file: null, result: media.rewrapped ? "rekeyed" : "current", ...media });
@@ -61,6 +66,39 @@ export function rekeyStores(ownId) {
 onRekey((ownId) => {
     rekeyStores(ownId);
 });
+
+/**
+ * Re-MAC the message rows under the current `row-mac` key (../row-mac.js `rekeyRowMacs`). Every retired data key is
+ * tried, not only the one this rekey replaced, so a rekey that stopped part way and was run again still finishes.
+ * A row that verifies under no key is left as it is: it stays a finding of `db verify`.
+ *
+ * @param {string} ownId
+ * @returns {{result: "absent"|"rekeyed"|"current", rewritten?: number, current?: number, failed?: number}}
+ */
+export function rekeyMessageMacs(ownId) {
+    const file = getAccountDbPath(ownId);
+    const state = dbFileState(file);
+    if (state === "absent" || state === "empty" || state === "plaintext") return { result: "absent" };
+    const scope = scopeOf(ownId);
+    const { key, keyId } = deriveDataKey(scope, "row-mac");
+    const older = (readKeyring(scope.dir)?.retired ?? [])
+        .filter((k) => k.use === "data" && k.id !== keyId)
+        .flatMap((k) => {
+            try {
+                return [deriveDataKey(scope, "row-mac", { keyId: k.id }).key];
+            } catch {
+                return [];
+            }
+        });
+    const db = openDatabase(file);
+    try {
+        registerRowMacFunction(db, key);
+        const r = rekeyRowMacs(db, key, older);
+        return { result: r.rewritten ? "rekeyed" : "current", ...r };
+    } finally {
+        db.close();
+    }
+}
 
 /**
  * The databases' lines for `account security status`, in the shape of its `files` entries (never key material).

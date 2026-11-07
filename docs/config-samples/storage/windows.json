@@ -1,5 +1,6 @@
 {
     "provider": "dpapi",
     "dkeyLayer": false,
-    "dpapi": { "scope": "CurrentUser" }
+    "dpapi": { "scope": "CurrentUser" },
+    "rowMac": { "verifyOnRead": "actions" }
 }

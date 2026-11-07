@@ -1,4 +1,5 @@
 {
     "provider": "keychain",
-    "dkeyLayer": false
+    "dkeyLayer": false,
+    "rowMac": { "verifyOnRead": "actions" }
 }

@@ -2,8 +2,21 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { openDatabase } from "./sqlite.js";
 import { stripVietnamese } from "../utils/vn-text.js";
+import { deriveDataKey, readKeyring, scopeOfDir } from "./keystore/keyring.js";
+import { readStorageFile } from "./keystore/config.js";
+import {
+    RowIntegrityError,
+    checkRow,
+    ephemeralRowMacKey,
+    installRowMac,
+    registerRowMacFunction,
+    verifyOnReadMode,
+    verifyRows,
+} from "./row-mac.js";
 
 let db;
+/** The open database's row-MAC keys (./row-mac.js): the current one, and how to get retired ones. */
+let rowMacKeys = null;
 /** Is the search index of the open database complete? Reset by {@link initDb}. */
 let searchReady = false;
 /** How long one search may spend building the index before it answers by scanning. */
@@ -52,6 +65,10 @@ export function initDb(dbPath) {
     // Encrypted at rest (SQLCipher, keyed from the account's data key; src/core/sqlite.js). A plaintext database from
     // 2.x is encrypted here, once, before anything reads it. WAL and secure_delete are set by the opener.
     db = openDatabase(dbPath);
+    // Row MACs (./row-mac.js): the triggers that keep them call this function, so it is registered before any
+    // statement below that could fire one.
+    rowMacKeys = rowMacKeysFor(dbPath);
+    registerRowMacFunction(db, rowMacKeys.current);
 
     // Create tables
     db.exec(`
@@ -437,16 +454,90 @@ export function initDb(dbPath) {
     db.exec(
         "CREATE TABLE IF NOT EXISTS last_online (userId TEXT PRIMARY KEY, lastOnline INTEGER, updatedAt INTEGER, source TEXT)",
     );
+    // Last, after the repairs above: the MAC table and triggers, and (once per database) the MACs of the rows written
+    // before they existed.
+    installRowMac(db, rowMacKeys.current, { log: (l) => console.error(l) });
 
     return db;
+}
+
+/**
+ * The row-MAC keys of the database at `dbPath`: the account's `row-mac` data key, and its retired ones on demand (a
+ * rekey that has not finished). A database that belongs to no account (`:memory:`) gets a key for this process only.
+ */
+function rowMacKeysFor(dbPath) {
+    if (!dbPath || dbPath === ":memory:" || String(dbPath).startsWith("file::memory:")) {
+        return { current: ephemeralRowMacKey().key, retired: () => [] };
+    }
+    const scope = scopeOfDir(dirname(dbPath));
+    const { key, keyId } = deriveDataKey(scope, "row-mac");
+    let retired;
+    return {
+        current: key,
+        keyId,
+        retired: () =>
+            (retired ??= (readKeyring(scope.dir)?.retired ?? [])
+                .filter((k) => k.use === "data" && k.id !== keyId)
+                .flatMap((k) => {
+                    try {
+                        return [deriveDataKey(scope, "row-mac", { keyId: k.id }).key];
+                    } catch {
+                        return [];
+                    }
+                })),
+    };
 }
 
 /** Close the open cache, if any (tests; a process that is done with the account). */
 export function closeDb() {
     if (db?.open) db.close();
     db = undefined;
+    rowMacKeys = null;
     searchReady = false;
 }
+
+/**
+ * Check one cached message row against its row MAC (./row-mac.js).
+ *
+ * @param {object} row - a `SELECT *` row of messages
+ * @returns {"ok"|"bad"|"missing"}
+ */
+export function checkMessageRow(row) {
+    if (!db) throw new Error("Database not initialized");
+    const state = checkRow(db, [rowMacKeys.current], row);
+    if (state !== "bad") return state;
+    // An unfinished rekey leaves rows under the old key: still the account's own writes.
+    return checkRow(db, rowMacKeys.retired(), row) === "ok" ? "ok" : "bad";
+}
+
+/**
+ * One cached message for an action that acts on it (quote, forward, delete, recall, pin, media), checked against its
+ * row MAC unless storage.json's `rowMac.verifyOnRead` is `off`. Null when it is not cached.
+ *
+ * @param {string} msgId
+ * @returns {object|null}
+ * @throws {RowIntegrityError} (`code` ROW_MAC) when the row fails its check: the action must not go ahead
+ */
+export function getMessageForAction(msgId) {
+    const row = getMessageById(msgId);
+    if (!row || verifyOnReadMode(readStorageFile()) === "off") return row;
+    const state = checkMessageRow(row);
+    if (state !== "ok") throw new RowIntegrityError(String(msgId), state);
+    return row;
+}
+
+/**
+ * Check the row MAC of every cached message, or one thread's, or those since a time (`db verify`).
+ *
+ * @param {{threadId?: string, since?: number, listMax?: number}} [opts]
+ * @returns {ReturnType<typeof verifyRows>}
+ */
+export function verifyMessageRows(opts = {}) {
+    if (!db) throw new Error("Database not initialized");
+    return verifyRows(db, [rowMacKeys.current, ...rowMacKeys.retired()], opts);
+}
+
+export { RowIntegrityError };
 
 /** Get a bookkeeping value (e.g. "lastConnectedAt"). Returns null if unset. */
 export function getSyncState(key) {

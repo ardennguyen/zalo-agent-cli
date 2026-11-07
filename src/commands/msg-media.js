@@ -16,7 +16,7 @@
 import { closeSync, openSync } from "node:fs";
 import { getActive } from "../core/accounts.js";
 import { getAccountDbPath, getAccountDir } from "../core/credentials.js";
-import { getMessageById, initDb } from "../core/db.js";
+import { getMessageForAction, initDb } from "../core/db.js";
 import { mediaLinkViaDaemon } from "../core/daemon-channel.js";
 import { resolveMediaDelivery } from "../core/deploy-policy.js";
 import { hiddenChatsFor } from "../core/hidden-chats.js";
@@ -68,9 +68,9 @@ export function registerMsgMedia(msg, program) {
             let row;
             try {
                 initDb(getAccountDbPath(account.ownId));
-                row = getMessageById(String(msgId));
+                row = getMessageForAction(String(msgId));
             } catch (e) {
-                fail(`The local cache could not be opened: ${e.message}`);
+                fail(e?.code === "ROW_MAC" ? e.message : `The local cache could not be opened: ${e.message}`);
             }
             if (!row) fail(`Message ${msgId} is not in the local cache.`);
             if (hiddenChatsFor(account.ownId, { stateDir: accountDir }).isHidden(row.threadId)) {

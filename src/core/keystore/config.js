@@ -10,7 +10,8 @@
  *       "systemdCreds": { "withKey": "auto" },       // host | tpm2 | host+tpm2 | auto; ZALO_SYSTEMD_CREDS_WITH_KEY
  *       "kms": { "backend": "aws", "key": "…" },     // aws | gcp | azure | vault; ZALO_KMS_BACKEND, ZALO_KMS_KEY
  *       "passphrase": { "file": "/path" },           // ZALO_STORAGE_PASSPHRASE_FILE
- *       "env": { "variable": "ZALO_STORAGE_KEY" }    // the variable that holds the key (base64, 32 bytes)
+ *       "env": { "variable": "ZALO_STORAGE_KEY" },   // the variable that holds the key (base64, 32 bytes)
+ *       "rowMac": { "verifyOnRead": "actions" }      // or "off": actions check a cached row's MAC (../row-mac.js)
  *     }
  *
  * mcp-config.json is the MCP server's own file; the key layer serves every command, so it has its own. The file holds

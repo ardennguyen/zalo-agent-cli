@@ -11,6 +11,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR, getAccountDbPath, getAccountDir } from "../../src/core/credentials.js";
+import { openRawWriter } from "./support/raw-db.js";
 import { Database, dbFileState, databaseState, migratePlaintextDatabase, openDatabase } from "../../src/core/sqlite.js";
 import { closeDb, ensureSearchIndex, initDb, insertMessage, searchMessages, upsertThread } from "../../src/core/db.js";
 import { getDataKey } from "../../src/core/keystore/index.js";
@@ -68,7 +69,9 @@ function dump(db) {
         .all()
         .map((r) => r.name)
         .filter((t) => !t.startsWith("messages_fts"));
-    return Object.fromEntries(names.map((t) => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY rowid`).all()]));
+    // message_macs is a WITHOUT ROWID table: ordered by its key.
+    const order = (t) => (t === "message_macs" ? "msgId" : "rowid");
+    return Object.fromEntries(names.map((t) => [t, db.prepare(`SELECT * FROM "${t}" ORDER BY ${order(t)}`).all()]));
 }
 
 const leftovers = (file) =>
@@ -364,7 +367,8 @@ describe("the repairs initDb runs on every open", () => {
         }
         const touching = seen.filter((q) => /\bmessages\b/.test(q));
         assert.ok(touching.length >= 4, `the four repairs are seen: ${touching.length}`);
-        const db = openDatabase(file);
+        // Keyed like initDb's, with the row-MAC function: the repairs fire its triggers.
+        const db = openRawWriter(file);
         try {
             for (const q of touching) {
                 const plan = db

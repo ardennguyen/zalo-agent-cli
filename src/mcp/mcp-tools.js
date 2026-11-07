@@ -22,6 +22,7 @@ import {
     getMessages,
     getMessagesInRange,
     getMessageById,
+    getMessageForAction,
     getDisplayName,
     setContactName,
     getThreadType,
@@ -1181,8 +1182,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     // open reads as "not cached", whose message names the fix.
                     let row = null;
                     try {
-                        row = getMessageById(quoteMsgId);
+                        row = getMessageForAction(quoteMsgId);
                     } catch (e) {
+                        if (e?.code === "ROW_MAC") return err(e.message);
                         console.error("[mcp-tools] cache unavailable for quote:", e.message);
                     }
                     const built = buildQuote(row, { msgId: quoteMsgId, threadId });
@@ -1632,8 +1634,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // fallback for a thread id.
                 let row = null;
                 try {
-                    row = getMessageById(msgId);
+                    row = getMessageForAction(msgId);
                 } catch (e) {
+                    if (e?.code === "ROW_MAC") return err(e.message);
                     console.error("[mcp-tools] cache unavailable:", e.message);
                 }
                 const buffered = buffer.read(threadId, 0, 9999).messages.find((m) => m.msgId === msgId) || null;
@@ -2477,9 +2480,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             try {
                 let row = null;
                 try {
-                    row = getMessageById(msgId);
+                    row = getMessageForAction(msgId);
                 } catch (e) {
-                    return err(`Local cache unavailable (${e.message}).`);
+                    return err(e?.code === "ROW_MAC" ? e.message : `Local cache unavailable (${e.message}).`);
                 }
                 if (!row) {
                     return err(
@@ -2993,8 +2996,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     if (!msgId) return err("msgId is required for action='pin_message'.");
                     let row = null;
                     try {
-                        row = getMessageById(msgId);
-                    } catch {
+                        row = getMessageForAction(msgId);
+                    } catch (e) {
+                        if (e?.code === "ROW_MAC") return err(e.message);
                         row = null;
                     }
                     if (!row) {
@@ -3035,8 +3039,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     if (!msgId) return err("msgId is required for action='unpin_message'.");
                     let row = null;
                     try {
-                        row = getMessageById(msgId);
-                    } catch {
+                        row = getMessageForAction(msgId);
+                    } catch (e) {
+                        if (e?.code === "ROW_MAC") return err(e.message);
                         row = null;
                     }
                     const targetThread = threadIdIn || groupId;

@@ -40,8 +40,9 @@ function forwardBlock(src) {
 describe("msg forward reads the cache and dispatches by kind", () => {
     it("reads the message out of the local cache", () => {
         const block = forwardBlock(MSG_CODE);
-        assert.ok(/getMessageById\s*\(/.test(block), "the text to forward has to come from somewhere");
-        assert.ok(/import\s*\{[^}]*getMessageById[^}]*\}\s*from\s*"\.\.\/core\/db\.js"/.test(MSG_CODE));
+        // getMessageForAction: the cached row, checked against its row MAC (src/core/row-mac.js) before it is sent on.
+        assert.ok(/getMessageForAction\s*\(/.test(block), "the text to forward has to come from somewhere");
+        assert.ok(/import\s*\{[^}]*getMessageForAction[^}]*\}\s*from\s*"\.\.\/core\/db\.js"/.test(MSG_CODE));
     });
 
     it("dispatches on the row's classified type, not on typeof text", () => {

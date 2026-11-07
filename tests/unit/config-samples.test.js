@@ -13,6 +13,7 @@ import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import { PROVIDER_NAMES } from "../../src/core/keystore/config.js";
+import { verifyOnReadMode } from "../../src/core/row-mac.js";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -410,6 +411,8 @@ describe("storage samples", () => {
             const cfg = JSON.parse(read("storage", file));
             assert.ok(PROVIDER_NAMES.includes(cfg.provider), `${cfg.provider} is a provider`);
             assert.equal(typeof cfg.dkeyLayer, "boolean");
+            // Every key set explicitly, even at its default (the owner's rule), and to a value the layer takes.
+            assert.equal(verifyOnReadMode(cfg), cfg.rowMac?.verifyOnRead, "rowMac.verifyOnRead is set and valid");
             assert.doesNotMatch(read("storage", file), /"(key|secret|passphrase)"\s*:\s*"[A-Za-z0-9+/=]{40,}"/);
         });
     }

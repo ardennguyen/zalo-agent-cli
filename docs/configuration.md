@@ -26,7 +26,7 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `mcp start --config <path>` | that server | a second config for one service. It must exist and be valid JSON, or the server **refuses to start** (a missing file would otherwise mean "watch every thread"). It replaces the base file and the per-account file below |
 | `accounts.<ownId>` block inside `mcp-config.json` | the server for that account | per-account overrides in one file: [`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json) |
 | `<accountDir>/mcp-config.json` — `~/.zalo-agent-cli/accounts/<ownId>/` | the server for that account | a per-account file; refused at start if present but unreadable |
-| `<CONFIG_DIR>/storage.json` | every command that reads or writes a saved login | the key provider and the dkey layer that protect the saved files ([security.md](security.md)); no secret in it |
+| `<CONFIG_DIR>/storage.json` | every command that reads or writes a saved login | the key provider and the dkey layer that protect the saved files, and `rowMac.verifyOnRead` (`actions` (default) or `off`: whether an action checks the cached message it acts on against its row MAC) ([security.md](security.md)); no secret in it |
 
 ### Precedence
 

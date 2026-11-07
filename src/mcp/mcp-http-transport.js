@@ -540,6 +540,9 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     app.all("/mcp", async (req, res) => {
         try {
             const server = newMcpServer(pkg.version);
+            // This server lives for one request, so it cannot ask the person anything and hear back: the guard
+            // reads this and refuses confirmMode "human" at once instead of waiting (src/core/confirm-guard.js).
+            server.statelessHttp = true;
             registerToolsFn(
                 server,
                 deps.api,

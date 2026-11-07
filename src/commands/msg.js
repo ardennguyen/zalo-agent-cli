@@ -453,10 +453,13 @@ function sentAttachmentIds(result) {
  * @param {string} threadId
  * @param {number} type
  * @param {object} opts - {caption, uploadTimeout}
- * @returns {Promise<{result?: object, error?: string, listenerStarted?: boolean, viaDaemon?: boolean}>}
+ * @param {object|null} [video] - send `absPaths[0]` as a video message instead (`sendVideoFile`'s options other than
+ *   the file and the caption: thumbnailFile or thumbnailUrl, width, height, duration)
+ * @returns {Promise<{result?: object, error?: string, listenerStarted?: boolean, viaDaemon?: boolean,
+ *   oldDaemon?: boolean}>} `oldDaemon`: a daemon that predates video sends took it and sent the file as a file
  */
-async function sendAttachments(api, absPaths, threadId, type, opts) {
-    const needsListener = !allInlineImages(absPaths);
+async function sendAttachments(api, absPaths, threadId, type, opts, video = null) {
+    const needsListener = video !== null || !allInlineImages(absPaths);
     let listenerStarted = false;
 
     // A running `listen`/`mcp` daemon already holds the account's one permitted
@@ -473,12 +476,14 @@ async function sendAttachments(api, absPaths, threadId, type, opts) {
                 type,
                 caption: opts.caption,
                 timeoutMs: Number(opts.uploadTimeout),
+                ...(video ? { video } : {}),
             });
             // null means no daemon answered; fall through and open our own.
             if (viaDaemon) {
+                const oldDaemon = Boolean(video) && viaDaemon.video !== true;
                 return viaDaemon.ok
-                    ? { result: viaDaemon.result, viaDaemon: true }
-                    : { error: viaDaemon.error, viaDaemon: true };
+                    ? { result: viaDaemon.result, viaDaemon: true, oldDaemon }
+                    : { error: viaDaemon.error, viaDaemon: true, oldDaemon };
             }
         }
     }
@@ -504,8 +509,11 @@ async function sendAttachments(api, absPaths, threadId, type, opts) {
     }
 
     try {
+        const send = video
+            ? api.sendVideoFile({ ...video, file: absPaths[0], msg: opts.caption }, threadId, type)
+            : api.sendMessage({ msg: opts.caption, attachments: absPaths }, threadId, type);
         const result = await withTimeout(
-            api.sendMessage({ msg: opts.caption, attachments: absPaths }, threadId, type),
+            send,
             Number(opts.uploadTimeout),
             "Upload timed out waiting for Zalo's upload-complete event",
         );
@@ -1119,15 +1127,64 @@ export function registerMsgCommands(program) {
             }
         });
 
-    msg.command("send-video <threadId> <videoUrl>")
-        .description("Send a video from URL")
-        .requiredOption("--thumb <url>", "Thumbnail image URL")
+    msg.command("send-video <threadId> <video>")
+        .description(
+            "Send a video from a URL, or a local file uploaded in chunks and sent as a video as Zalo Web does " +
+                "(the local-file path is unverified live)",
+        )
+        .requiredOption("--thumb <urlOrFile>", "Thumbnail: an image URL, or a local jpg/png/webp (uploaded)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .option("-m, --caption <text>", "Caption text", "")
         .option("-d, --duration <ms>", "Video duration in milliseconds", parseIntOption)
         .option("-W, --width <px>", "Video width", parseIntOption, 1280)
         .option("-H, --height <px>", "Video height", parseIntOption, 720)
+        .option("--upload-timeout <ms>", "Max wait for the upload-complete event (a local file)", "120000")
         .action(async (threadId, videoUrl, opts) => {
+            if (!/^https?:\/\//i.test(videoUrl)) {
+                // A local file: uploaded on the account's socket (or the running daemon's), then sent as a video.
+                const file = resolve(videoUrl);
+                if (!existsSync(file)) {
+                    error(`Send video failed: ${videoUrl} is neither an http(s) URL nor a file here`);
+                    process.exitCode = 1;
+                    return;
+                }
+                const thumbIsUrl = /^https?:\/\//i.test(opts.thumb);
+                const video = {
+                    ...(thumbIsUrl ? { thumbnailUrl: opts.thumb } : { thumbnailFile: resolve(opts.thumb) }),
+                    width: opts.width,
+                    height: opts.height,
+                    duration: opts.duration,
+                };
+                const {
+                    result,
+                    error: err,
+                    listenerStarted,
+                    viaDaemon,
+                    oldDaemon,
+                } = await sendAttachments(getApi(), [file], threadId, Number(opts.type), opts, video);
+                if (err) error(`Send video failed: ${err}`);
+                else {
+                    if (oldDaemon) {
+                        warning(
+                            "The running daemon predates video sends: it sent the file as a file attachment. " +
+                                "Restart it to send videos as videos.",
+                        );
+                    }
+                    output({ ...result, viaDaemon: Boolean(viaDaemon), verified: false }, program.opts().json, () =>
+                        success(`Video sent to ${threadId}${viaDaemon ? " (via the running daemon)" : ""}`),
+                    );
+                }
+                if (listenerStarted) process.exit(err ? 1 : 0);
+                else if (err) process.exitCode = 1;
+                return;
+            }
+            // A URL video is sent by reference, so its thumbnail must be a URL too
+            // (a local path would reach Zalo as a broken link). zalo_send_message refuses the same.
+            if (!/^https?:\/\//i.test(opts.thumb)) {
+                error("Send video failed: with a video URL, --thumb must be an image URL too");
+                process.exitCode = 1;
+                return;
+            }
             try {
                 info(`Sending video: ${videoUrl}`);
                 const result = await getApi().sendVideo(

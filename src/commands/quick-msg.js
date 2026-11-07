@@ -54,5 +54,5 @@ export function registerQuickMsgCommands(program) {
             }
         });
     // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
-    guardSubcommand(qm, "remove", "quickMsg.remove", { target: (itemIds) => ({ itemIds }) });
+    guardSubcommand(qm, "remove", "quickMsg.remove", { target: (itemIds) => ({ quickMessageIds: itemIds }) });
 }

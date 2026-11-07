@@ -92,6 +92,8 @@ describe("the three controls are known", () => {
                 ["4", "oneone", "remove_reminder11", {}],
                 ["5", "user_devices", "update_user_devices", {}],
                 ["6", "oneone", "create_reminder11", {}],
+                ["7", "oneone", "update_reminder11", {}],
+                ["8", "oneone", "remind_reminder11", {}],
             ),
         );
         assert.deepEqual(
@@ -102,8 +104,10 @@ describe("the three controls are known", () => {
                 ["edit_prod", "catalog", true],
                 ["remove_reminder11", "reminder", true],
                 ["update_user_devices", "devices", true],
-                // Only the removal of the `oneone` family is handled; a created reminder is still named.
-                ["create_reminder11", "unknown", false],
+                ["create_reminder11", "reminder", true],
+                ["update_reminder11", "reminder", true],
+                // Another act of the `oneone` family is still named as unhandled.
+                ["remind_reminder11", "unknown", false],
             ],
         );
         assert.equal(out[0].ts, 1_790_000_000_000, "the control's own time is kept");
@@ -179,6 +183,87 @@ describe("a DM reminder removed on another device", () => {
         upsertReminder({ reminderId: "r-1", threadId: PEER });
         assert.deepEqual(removeReminder("r-1", []), { removed: 0, threadIds: [] });
         assert.deepEqual(removeReminder("r-1", [PEER, null]), { removed: 1, threadIds: [PEER] });
+    });
+});
+
+describe("a DM reminder created or edited on another device", () => {
+    it("stores a created reminder under the other end of the DM, as sync-boards would, and reports it", () => {
+        const [ev] = applyControlEvents({
+            data: frameData([
+                "11",
+                "oneone",
+                "create_reminder11",
+                reminderData({ toUid: OWN, creatorUid: PEER, startTime: 1_790_000_100_000, repeat: 1 }),
+            ]),
+            ownId: OWN,
+        });
+        // Red if a reminder created on the phone stays missing from the cache until the next sync-boards.
+        const [row] = getReminders(PEER);
+        assert.equal(row.reminderId, "r-1");
+        assert.equal(row.title, "standup");
+        assert.equal(row.threadType, "dm");
+        assert.equal(row.creatorId, PEER);
+        assert.equal(row.startTime, 1_790_000_100_000);
+        assert.equal(row.repeatMode, 1);
+        assert.equal(ev.event, "reminder_created");
+        assert.equal(ev.threadId, PEER);
+        assert.equal(ev.by, PEER);
+        assert.equal(ev.title, "standup");
+        assert.equal(ev.stored, true);
+    });
+
+    it("updates the stored row in place on an edit, and names the editor", () => {
+        upsertReminder({ reminderId: "r-1", threadId: PEER, threadType: "dm", title: "old", startTime: 5 });
+        const [ev] = applyControlEvents({
+            data: frameData([
+                "12",
+                "oneone",
+                "update_reminder11",
+                reminderData({
+                    toUid: PEER,
+                    creatorUid: PEER,
+                    editorUid: OWN,
+                    params: JSON.stringify({ title: "moved" }),
+                    startTime: 9,
+                    editTime: 2,
+                }),
+            ]),
+            ownId: OWN,
+        });
+        const rows = getReminders(PEER);
+        assert.equal(rows.length, 1, "an edit is not a second reminder");
+        assert.equal(rows[0].title, "moved");
+        assert.equal(rows[0].startTime, 9);
+        assert.equal(ev.event, "reminder_updated");
+        assert.equal(ev.by, OWN);
+    });
+
+    it("reports, stores nothing, and says why when the control has no id", () => {
+        const lines = [];
+        const writes = [];
+        const [ev] = applyControlEvents({
+            data: frameData(["13", "oneone", "create_reminder11", reminderData({ reminderId: undefined })]),
+            ownId: OWN,
+            upsert: (row) => writes.push(row),
+            say: (l) => lines.push(l),
+        });
+        assert.equal(writes.length, 0);
+        assert.equal(ev.stored, false);
+        assert.equal(ev.reminderId, null);
+    });
+
+    it("a failed write is said, not thrown, and the event still goes out", () => {
+        const lines = [];
+        const [ev] = applyControlEvents({
+            data: frameData(["14", "oneone", "update_reminder11", reminderData()]),
+            ownId: OWN,
+            upsert: () => {
+                throw new Error("disk full");
+            },
+            say: (l) => lines.push(l),
+        });
+        assert.equal(ev.stored, false);
+        assert.match(lines.join("\n"), /could not store reminder r-1: disk full/);
     });
 });
 
@@ -293,5 +378,9 @@ describe("`listen` prints them only when asked", () => {
         // Red if the handler printed without asking --events, or lost one of the three names.
         assert.match(body, /enabledEvents\.has\(/);
         for (const name of ['"catalog"', '"reminder"', '"devices"']) assert.ok(body.includes(name), name);
+        // Red if a created or edited reminder were printed without a name of its own, or under another one.
+        for (const ev of ["reminder_created", "reminder_updated", "reminder_removed"]) {
+            assert.ok(new RegExp(`${ev}: "reminder"`).test(body), ev);
+        }
     });
 });

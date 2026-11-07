@@ -203,9 +203,9 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 
 ### Numbers quoted across many docs
 
-CLI commands (**230**), command groups (**27** containers), MCP tools (**27**), OA commands (**32**), offline tests (**4664** as of 2026-11-07). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
+CLI commands (**233**), command groups (**27** containers), MCP tools (**36**), OA commands (**32**), offline tests (**4991** as of 2026-11-07). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
-**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`.
+**Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`, `zalo_conversation`, `zalo_profile`, `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link`.
 
 `tests/cli/surface.test.js` is the **machine-checkable twin** of `command-reference.md`. For the wiki, the authoritative EN⇄VN pairing is `_Sidebar.md` in that checkout.
 

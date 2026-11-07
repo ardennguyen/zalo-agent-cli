@@ -18,6 +18,8 @@
  *   emptyOn: {code: value},                 // a code that means "nothing", and what to return for it
  *   bigIdKeys: [key...],                    // parse the reply losslessly for these keys (json-ids.js)
  *   timeoutMs,                              // 10 s by default; none for a multipart body
+ *   swapHosts: true,                        // an HTTP 4xx/5xx moves on to the service map's next host (Web's
+ *                                           // switchDomain), once per host the map lists
  *   transform(data, args, {code, message}) -> value }
  * ```
  *
@@ -58,6 +60,32 @@ export function hostOf(serviceMap, key) {
         if (url) return String(url).replace(/\/+$/, "");
     }
     throw new CallUsageError(`this account's service map has no "${keys.join('" or "')}" host`);
+}
+
+/**
+ * Every base URL a service-map key names, in the map's order, without trailing slashes: the hosts Zalo Web's
+ * `switchDomain` moves through after an HTTP 4xx/5xx. The first present key wins, as in {@link hostOf}.
+ *
+ * @param {Record<string, string|string[]>|null|undefined} serviceMap
+ * @param {string|string[]} key
+ * @returns {string[]} at least one
+ * @throws {CallUsageError} naming the key when the map has none of them
+ */
+export function hostsOf(serviceMap, key) {
+    const keys = Array.isArray(key) ? key : [key];
+    for (const k of keys) {
+        if (k === "auth") return [AUTH_DOMAIN];
+        const v = serviceMap?.[k];
+        const urls = (Array.isArray(v) ? v : [v]).filter(Boolean).map((u) => String(u).replace(/\/+$/, ""));
+        if (urls.length) return [...new Set(urls)];
+    }
+    throw new CallUsageError(`this account's service map has no "${keys.join('" or "')}" host`);
+}
+
+/** Whether an error is an HTTP 4xx/5xx answer (decodeReply's `HTTP <status>`), the case Web's switchDomain handles. */
+function isHttpFailure(e) {
+    const status = Number(e?.status);
+    return e instanceof ZaloApiError && status >= 400 && status < 600;
 }
 
 /**
@@ -162,10 +190,22 @@ export async function sendRequest(ctx, req, args = {}) {
 export async function callEndpoint(target, def, args = {}) {
     const ctx = target?.ctx ?? target?.getContext?.();
     if (!ctx) throw new Error("Not logged in. Run: zalo-agent login");
-    const base =
-        typeof target.host === "function"
-            ? target.host(def.host)
-            : hostOf(target.zpwServiceMap ?? ctx.loginInfo?.zpw_service_map_v3, def.host);
+    const map = target.zpwServiceMap ?? target.api?.zpwServiceMap ?? ctx.loginInfo?.zpw_service_map_v3;
+    if (def.swapHosts) {
+        const bases = typeof target.hosts === "function" ? target.hosts(def.host) : hostsOf(map, def.host);
+        let last;
+        for (const base of bases) {
+            try {
+                return await sendRequest(ctx, buildRequest(ctx, `${base}${def.path}`, def, args), args);
+            } catch (e) {
+                if (!isHttpFailure(e)) throw e;
+                last = e;
+            }
+        }
+        if (bases.length > 1) last.message = `${last.message} (on each of the ${bases.length} hosts tried)`;
+        throw last;
+    }
+    const base = typeof target.host === "function" ? target.host(def.host) : hostOf(map, def.host);
     const req = buildRequest(ctx, `${base}${def.path}`, def, args);
     return sendRequest(ctx, req, args);
 }

@@ -6,27 +6,7 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
-
-/** One year in milliseconds — the default window for an open-ended rule. */
-const DEFAULT_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
-
-/**
- * Resolve the {startTime, endTime} window for an auto-reply rule.
- *
- * These used to default to 0/0, which Zalo rejects outright with
- * "Tham số không hợp lệ" — so `auto-reply create` could never succeed on
- * its defaults. Zalo treats the pair as a real active window, so an unset
- * start means "from now" and an unset end means "no foreseeable end",
- * expressed as a far-future timestamp rather than 0.
- *
- * @param {{start?: number, end?: number}} opts
- * @returns {{startTime: number, endTime: number}}
- */
-function activeWindow(opts) {
-    const startTime = Number.isFinite(opts.start) && opts.start > 0 ? opts.start : Date.now();
-    const endTime = Number.isFinite(opts.end) && opts.end > 0 ? opts.end : startTime + DEFAULT_WINDOW_MS;
-    return { startTime, endTime };
-}
+import { activeWindow } from "../core/auto-reply.js";
 
 export function registerAutoReplyCommands(program) {
     const ar = program.command("auto-reply").description("Manage auto-reply messages");
@@ -102,5 +82,5 @@ export function registerAutoReplyCommands(program) {
             }
         });
     // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
-    guardSubcommand(ar, "delete", "autoReply.delete", { target: (id) => ({ id }) });
+    guardSubcommand(ar, "delete", "autoReply.delete", { target: (id) => ({ autoReplyId: id }) });
 }

@@ -19,7 +19,10 @@
  * - the close-friends list is asked with no `params` at all, as the Web asks it.
  *
  * Two endpoints answer HTTP 404 on live accounts since 2026-09-29 (`getFriendOnlines`, `getCloseFriends`); they are
- * ported as the Web still has them and marked `verified: false` (design 6.1 item 13).
+ * ported as the Web still has them and marked `verified: false` (design 6.1 item 13). The Web's Friends tab
+ * (bundle 2026-11-06, its `FriendsOnline` store) still asks `friend/onlines` with `{imei}`, at most once a minute
+ * (`list_friend_online_time`), and nothing newer replaced it; what it does that this client did not is move to the
+ * service map's next profile host after an HTTP 4xx/5xx (`switchDomain`), so `getFriendOnlines` now does the same.
  *
  * Ids stay strings throughout: no id is ever converted to a number.
  */
@@ -305,13 +308,18 @@ export const FRIEND_BOARD = Object.freeze({
             : data,
 });
 
-/** `GET {profile}/api/social/friend/onlines`: Web `requestGetFriendOnlines`. HTTP 404 live since 2026-09-29. */
+/**
+ * `GET {profile}/api/social/friend/onlines`: Web `requestGetFriendOnlines`, what its Friends tab asks. HTTP 404 live
+ * since 2026-09-29 on the first profile host; an HTTP 4xx/5xx moves on to the next host of the service map, as the
+ * Web's `switchDomain` does. Unverified until a capture of the Web's Friends tab.
+ */
 export const FRIEND_ONLINES = Object.freeze({
     host: "profile",
     path: "/api/social/friend/onlines",
     cmd: 11290,
     method: "get",
     verified: false,
+    swapHosts: true,
     body: (_args, ctx) => ({ imei: ctx.imei }),
     reply: "session",
     transform: parseOnlineStatuses,

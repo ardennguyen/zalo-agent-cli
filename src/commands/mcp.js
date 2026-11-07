@@ -33,6 +33,7 @@ import { createSyncRunners } from "../core/daemon-sync.js";
 import { createSocketContext, startEventLoopMonitor } from "../core/daemon-log.js";
 import { setUserInfoLogger } from "../zalo/custom/user-info.js";
 import { createSyncJobs } from "../mcp/sync-jobs.js";
+import { createMcpStageRunners } from "../mcp/sync-stages.js";
 import { createSocketTap } from "../zalo/listener/socket-tap.js";
 import { createSelfHeal } from "../core/self-heal.js";
 import { createUndecryptableNotice } from "../core/e2ee-notice.js";
@@ -595,7 +596,13 @@ export function registerMCPCommands(program) {
                     }
                 },
             });
-            const syncJobs = createSyncJobs({ runners: syncRunners, lock: stageLock });
+            // The media and board stages run in this server too (src/mcp/sync-stages.js), under the same lock.
+            const stageRunners = createMcpStageRunners({
+                getApi,
+                accountDir,
+                mediaRoot: MEDIA_DIR || config.media?.downloadDir || undefined,
+            });
+            const syncJobs = createSyncJobs({ runners: { ...syncRunners, ...stageRunners }, lock: stageLock });
             syncJobs.onSelfName = onSelfName;
 
             // What the tools and the notifier call. Not getApi()'s object:
@@ -833,7 +840,8 @@ export function registerMCPCommands(program) {
                 file: voiceTextFile(accountDir),
                 log: (line) => console.error(`[mcp] ${line}`),
             });
-            // A DM reminder removed on another device leaves the cache, a device-list change is logged, as in
+            // A DM reminder created, edited or removed on another device is stored or dropped in the cache, a
+            // device-list change is logged, as in
             // `listen` (src/core/control-events.js); the events are printed only by `listen`.
             attachControlEvents({
                 tap: socketTap,

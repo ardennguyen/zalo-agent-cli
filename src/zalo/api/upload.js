@@ -7,7 +7,12 @@
  * What goes on the wire, as Zalo Web sends it (the legacy upload path, design 6.1 item 9):
  *
  * - Routing by lowercase extension: `jpg jpeg png webp` are photos (`photo_original/*`), `gif` its own path
- *   (`upthumb`, then `gif`), everything else, `mp4` included, a file (`asyncfile/*`).
+ *   (`upthumb`, then `gif` in chunks of 512000 bytes, up to six in flight, as the Web's `sendGifByChunk`), everything
+ *   else, `mp4` included, a file (`asyncfile/*`).
+ * - A local video sent as a video (`sendVideoFile`, the Web's `uploadVideoMessage`): the video goes up as a file
+ *   (its URL arrives as the `video_done`/`file_done` push), the thumbnail as a photo unless a URL is given, and the
+ *   message is the forward-video send of `sendVideo`. Not verified live: the Web uploads the thumbnail through its
+ *   async-file path and reads `oriUrl`/`hdUrl` from it; this sends it as a photo and reads the same names.
  * - Limits from the login's `settings.features.sharefile`, all checked before the first request (the caption
  *   included): `max_file` (count), `max_size_share_file_v3` (MB), `restricted_ext_file` (denied extensions).
  * - Upload: `POST {file}/api/{message|group}/{photo_original|asyncfile}/upload?zpw_ver&zpw_type&params&type`, `type`
@@ -331,16 +336,62 @@ const UPTHUMB = Object.freeze({
     reply: "session",
 });
 
-/** `POST {file}/api/{message|group}/gif`: a local GIF, sent whole as one chunk. */
+/** A local GIF's chunk size: the Web's `blobToChunk(file, 512e3)` in `_sendByChunk`. */
+export const GIF_CHUNK_SIZE = 512000;
+
+/** GIF chunks in flight at once (the Web's `_sendByChunk` sends while fewer than six are waiting). */
+export const GIF_CHUNKS_IN_FLIGHT = 6;
+
+/**
+ * `POST {file}/api/{message|group}/gif`: one chunk of a local GIF. An inner code 1 or 220 is a chunk taken while the
+ * upload goes on (the Web's `_sendByChunk` reads 0, 1 and 220 as success); the chunk that says `isFinish`, or 0,
+ * carries the message.
+ */
 const gifEndpoint = (group) => ({
     host: "file",
     path: `/api/${group ? "group" : "message"}/gif`,
+    cmd: group ? 11194 : 11292,
     method: "multipart",
     body: (a) => a.params,
     query: () => ({ type: 1 }),
     file: (a) => ({ field: "chunkContent", filename: a.fileName, type: "application/octet-stream", bytes: a.bytes }),
     reply: "session",
+    okCodes: [1, 220],
+    timeoutMs: CHUNK_TIMEOUT_MS,
+    transform: (data, _args, { code }) => ({ data: data && typeof data === "object" ? data : {}, code }),
 });
+
+/**
+ * Send a local GIF in chunks, as the Web's `_sendGifByChunk`: every chunk but the last, at most
+ * {@link GIF_CHUNKS_IN_FLIGHT} at a time, then the last, so its reply is the one that says the message was made.
+ *
+ * @param {import("../api.js").Session} s
+ * @param {{item: object, bytes: Buffer}} g - the GIF and its bytes
+ * @param {boolean} group
+ * @param {object} params - the message params, without `totalChunk` and `chunkId`
+ * @returns {Promise<object>} the reply of the chunk that finished the upload
+ */
+async function sendGifChunks(s, g, group, params) {
+    const total = Math.max(1, Math.ceil(g.bytes.length / GIF_CHUNK_SIZE));
+    const def = gifEndpoint(group);
+    let finished = null;
+    let last = null;
+    const send = async (chunkId) => {
+        const start = (chunkId - 1) * GIF_CHUNK_SIZE;
+        const bytes = g.bytes.subarray(start, Math.min(start + GIF_CHUNK_SIZE, g.bytes.length));
+        const r = await s.call(def, {
+            params: { ...params, totalChunk: total, chunkId },
+            fileName: g.item.fileName,
+            bytes,
+        });
+        last = r.data;
+        if (!finished && (r.code === 0 || r.data?.isFinish)) finished = r.data;
+    };
+    const rest = Array.from({ length: total - 1 }, (_, i) => i + 1);
+    while (rest.length) await Promise.all(rest.splice(0, GIF_CHUNKS_IN_FLIGHT).map(send));
+    await send(total);
+    return finished ?? last ?? {};
+}
 
 /**
  * What a chunk reply says.
@@ -699,6 +750,7 @@ function stamped(reply, clientId) {
  *     styles?: object[], urgency?: number, ttl?: number}, threadId: string, type?: number) =>
  *     Promise<{message: object|null, attachment: object[]}>,
  *   uploadAttachment: (sources: string|string[], threadId: string, type?: number) => Promise<object[]>,
+ *   sendVideoFile: (options: object, threadId: string, type?: number) => Promise<object>,
  * }}
  */
 export function uploadMethods(s) {
@@ -855,11 +907,70 @@ export function uploadMethods(s) {
                 totalChunk: 1,
                 chunkId: 1,
             };
-            const reply = await s.call(gifEndpoint(group), { params, fileName: g.item.fileName, bytes: g.bytes });
+            const reply = await sendGifChunks(s, g, group, params);
             responses.attachment.push(stamped(reply, g.clientId));
         }
         return responses;
     }
 
-    return { sendAttachments, uploadAttachment };
+    /**
+     * Send a local video file as a video message, as the Web's `uploadVideoMessage` then `sendVideoMessage` do: the
+     * video uploaded as a file (its URL comes from the listener's `video_done`/`file_done`), the thumbnail uploaded
+     * as a photo when it is a local file, then the forward-video send. Unverified live.
+     *
+     * @param {{file: string, thumbnailFile?: string, thumbnailUrl?: string, msg?: string, duration?: number,
+     *   width: number, height: number, ttl?: number}} options - a local thumbnail or its URL; `duration` in ms
+     * @param {string} threadId
+     * @param {number} [type] - 0 a user, 1 a group
+     * @returns {Promise<{msgId: string, cliMsgId: string, videoUrl: string, thumbnailUrl: string}>}
+     * @throws {ZaloApiError} before any request, for no file, a file that is not a video's route (a photo or a GIF),
+     *   no thumbnail, missing geometry or a thread type other than 0/1
+     */
+    async function sendVideoFile(options, threadId, type = THREAD_TYPE.USER) {
+        const t = Number(type);
+        if (t !== THREAD_TYPE.USER && t !== THREAD_TYPE.GROUP) throw new ZaloApiError("Thread type is invalid");
+        if (!options?.file) throw new ZaloApiError("Missing video file");
+        if (!options.thumbnailFile && !options.thumbnailUrl) {
+            throw new ZaloApiError(
+                "A video needs a thumbnail: a local image (thumbnailFile) or its URL (thumbnailUrl)",
+            );
+        }
+        if (!(Number(options.width) > 0) || !(Number(options.height) > 0)) {
+            throw new ZaloApiError("A video needs its width and height (Zalo refuses one without them, code 114)");
+        }
+        const cfg = uploadSettings(s.ctx);
+        checkList([options.file], threadId, cfg);
+        const [video] = await inspect(s.ctx, [options.file], cfg);
+        if (video.route !== "file") throw new ZaloApiError(`${video.fileName} is not a video file`);
+        const items = [{ ...video, fileType: "video" }];
+        if (options.thumbnailFile && !options.thumbnailUrl) {
+            const [thumb] = await inspect(s.ctx, [options.thumbnailFile], cfg);
+            if (thumb.route !== "photo") throw new ZaloApiError(`${thumb.fileName} is not a jpg, png or webp image`);
+            items.push(thumb);
+        }
+        const group = t === THREAD_TYPE.GROUP;
+        const uploads = await uploadAll(s, items, { group, threadId: String(threadId), cfg });
+        const videoUrl = uploads[0].urls?.fileUrl;
+        if (!videoUrl) throw new ZaloApiError("Zalo gave no address for the uploaded video");
+        const thumbUrls = uploads[1]?.urls ?? {};
+        const thumbnailUrl = options.thumbnailUrl ?? thumbUrls.hdUrl ?? thumbUrls.normalUrl ?? thumbUrls.thumbUrl;
+        if (!thumbnailUrl) throw new ZaloApiError("Zalo gave no address for the uploaded thumbnail");
+        const sent = await s.api.sendVideo(
+            {
+                videoUrl,
+                thumbnailUrl,
+                msg: options.msg,
+                duration: options.duration,
+                width: Number(options.width),
+                height: Number(options.height),
+                ttl: options.ttl,
+                fileSize: video.size,
+            },
+            threadId,
+            t,
+        );
+        return { ...sent, videoUrl, thumbnailUrl };
+    }
+
+    return { sendAttachments, uploadAttachment, sendVideoFile };
 }

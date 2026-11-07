@@ -46,7 +46,9 @@ export function registerFriendCommands(program) {
 
     friend
         .command("online")
-        .description("List currently online friends")
+        .description(
+            "List currently online friends (unverified: asked as Zalo Web's Friends tab asks, on each profile host)",
+        )
         .action(async () => {
             try {
                 const result = await getApi().getFriendOnlines();
@@ -54,7 +56,7 @@ export function registerFriendCommands(program) {
             } catch (e) {
                 error(
                     /404/.test(e.message)
-                        ? `${e.message}. Zalo answers 404 for the online-friends list on this build (rechecked live on two accounts, 2026-10-28); the web client still asks for it, and its answer was never captured. \`friend last-online <userId>\` works.`
+                        ? `${e.message}. Zalo answered 404 for the online-friends list on every profile host of this account's service map. Zalo Web's Friends tab asks the same thing, and its answer was never captured. \`friend last-online <userId>\` works.`
                         : e.message,
                 );
             }

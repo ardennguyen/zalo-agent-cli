@@ -55,31 +55,31 @@ export const GUARDS = Object.freeze({
     },
     "group.removeAdmin": {
         cli: "group remove-admin",
-        mcp: null,
+        mcp: "zalo_group remove_admin",
         irreversible: false,
         what: (t) => `take admin rights away from ${ids(t.userIds)} in group ${t.groupId}`,
     },
     "group.transferOwner": {
         cli: "group transfer-owner",
-        mcp: null,
+        mcp: "zalo_group transfer_owner",
         irreversible: true,
         what: (t) => `make ${t.userId} the owner of group ${t.groupId}; this account stops being its owner`,
     },
     "group.disperse": {
         cli: "group disperse",
-        mcp: null,
+        mcp: "zalo_group disperse",
         irreversible: true,
         what: (t) => `disband group ${t.groupId} for every member`,
     },
     "group.disableLink": {
         cli: "group disable-link",
-        mcp: null,
+        mcp: "zalo_group disable_link",
         irreversible: true,
         what: (t) => `turn off group ${t.groupId}'s invite link; the current link stops working for good`,
     },
     "group.settings": {
         cli: "group settings",
-        mcp: null,
+        mcp: "zalo_group settings",
         irreversible: false,
         what: (t) =>
             t.approvalOff
@@ -88,19 +88,19 @@ export const GUARDS = Object.freeze({
     },
     "group.blockMember": {
         cli: "group block-member",
-        mcp: null,
+        mcp: "zalo_group block_member",
         irreversible: false,
         what: (t) => `block ${ids(t.userIds)} from group ${t.groupId}; they cannot rejoin until unblocked`,
     },
     "friend.remove": {
         cli: "friend remove",
-        mcp: null,
+        mcp: "zalo_friend remove",
         irreversible: true,
         what: (t) => `unfriend ${t.userId}; becoming friends again takes a new friend request`,
     },
     "friend.block": {
         cli: "friend block",
-        mcp: null,
+        mcp: "zalo_friend block",
         irreversible: false,
         what: (t) => `block ${t.userId}: they can no longer message or call this account`,
     },
@@ -133,25 +133,25 @@ export const GUARDS = Object.freeze({
     },
     "conv.delete": {
         cli: "conv delete",
-        mcp: null,
+        mcp: "zalo_conversation delete",
         irreversible: true,
         what: (t) => `delete the history of conversation ${t.threadId} on Zalo, for this account`,
     },
     "conv.hiddenPinReset": {
         cli: "conv hidden-pin-reset",
-        mcp: null,
+        mcp: "zalo_conversation hidden_pin_reset",
         irreversible: true,
         what: () => "reset the PIN that protects this account's hidden conversations",
     },
     "conv.unhide": {
         cli: "conv unhide",
-        mcp: null,
+        mcp: "zalo_conversation unhide",
         irreversible: false,
         what: (t) => `unhide ${count(t.threadIds, "conversation")} (${ids(t.threadIds)}): they show without the PIN`,
     },
     "conv.forget": {
         cli: "conv forget",
-        mcp: null,
+        mcp: "zalo_conversation forget",
         irreversible: true,
         what: (t) =>
             `delete this machine's copy of ${t.orphans ? "every orphaned conversation" : `conversation ${t.threadId}`} ` +
@@ -181,37 +181,45 @@ export const GUARDS = Object.freeze({
     },
     "catalog.delete": {
         cli: "catalog delete",
-        mcp: null,
+        mcp: "zalo_catalog delete",
         irreversible: true,
         what: (t) => `delete catalog ${t.catalogId} and every product in it`,
     },
     "catalog.deleteProduct": {
         cli: "catalog delete-product",
-        mcp: null,
+        mcp: "zalo_catalog delete_product",
         irreversible: true,
         what: (t) => `delete ${count(t.productIds, "product")} (${ids(t.productIds)}) from catalog ${t.catalogId}`,
     },
+    "cloud.delete": {
+        cli: "cloud apply",
+        mcp: "zalo_cloud apply",
+        irreversible: true,
+        what: (t) =>
+            `delete the chat message behind each of ${t.items ?? 0} zCloud item(s) (${t.size ?? "0 B"}) in ` +
+            `${t.conversations ?? 0} conversation(s), for this account on every device, so the cloud drops them`,
+    },
     "bank.remove": {
         cli: "bank remove",
-        mcp: null,
+        mcp: "zalo_bank remove",
         irreversible: true,
-        what: (t) => `remove saved bank account ${t.accountId} from this Zalo account`,
+        what: (t) => `remove saved bank account ${t.bankAccountId} from this Zalo account`,
     },
     "autoReply.delete": {
         cli: "auto-reply delete",
-        mcp: null,
+        mcp: "zalo_auto_reply delete",
         irreversible: true,
-        what: (t) => `delete auto-reply ${t.id}`,
+        what: (t) => `delete auto-reply ${t.autoReplyId}`,
     },
     "quickMsg.remove": {
         cli: "quick-msg remove",
-        mcp: null,
+        mcp: "zalo_quick_message remove",
         irreversible: true,
-        what: (t) => `remove ${count(t.itemIds, "quick message")} (${ids(t.itemIds)})`,
+        what: (t) => `remove ${count(t.quickMessageIds, "quick message")} (${ids(t.quickMessageIds)})`,
     },
     "profile.deleteAvatar": {
         cli: "profile delete-avatar",
-        mcp: null,
+        mcp: "zalo_profile delete_avatar",
         irreversible: true,
         what: (t) => `delete ${count(t.photoIds, "photo")} (${ids(t.photoIds)}) from this account's avatar history`,
     },
@@ -498,6 +506,17 @@ function mcpError(payload, line) {
     };
 }
 
+/**
+ * Why `human` mode cannot ask over the HTTP transport. That transport is stateless: every POST gets a fresh server
+ * (src/mcp/mcp-http-transport.js), so the server answering a tool call never saw the client's `initialize` and does
+ * not know it can be asked, and the client's answer to a question would arrive as a new POST that a fresh server
+ * cannot match to the waiting call, which would then hang until ELICIT_TIMEOUT_MS. So it refuses at once instead.
+ */
+export const STATELESS_HUMAN_REFUSAL =
+    "but this call came over the HTTP transport, which is stateless (every request is a fresh server), so the " +
+    'answer could never reach it. Use the stdio transport for confirmMode "human", or set confirmMode to "agent" ' +
+    '(or "off") in mcp-config.json, or ZALO_MCP_CONFIRM_MODE, and restart the server.';
+
 /** How long the server waits for a person to answer an elicitation. */
 export const ELICIT_TIMEOUT_MS = 5 * 60_000;
 
@@ -518,12 +537,25 @@ export const ELICIT_TIMEOUT_MS = 5 * 60_000;
  * @param {object} [call.extra] - the tool call's request context, so the question rides on its request
  * @param {boolean} [call.applies=true] - false when this call is not the guarded case (it goes ahead)
  * @param {boolean} [call.always=false] - guarded even when the mode is `off` (zalo_write)
+ * @param {boolean} [call.stateless=false] - the call came over the stateless HTTP transport, where a question
+ *   cannot be answered (see STATELESS_HUMAN_REFUSAL)
  * @returns {Promise<object|null>}
  */
 export async function gateMcp(
     key,
     target,
-    { confirm, dryRun, config, env = process.env, accountId, server, extra, applies = true, always = false } = {},
+    {
+        confirm,
+        dryRun,
+        config,
+        env = process.env,
+        accountId,
+        server,
+        extra,
+        applies = true,
+        always = false,
+        stateless = false,
+    } = {},
 ) {
     if (dryRun === true) {
         const report = dryRunReport(key, target, "mcp");
@@ -540,6 +572,12 @@ export async function gateMcp(
 
     // human: only the person's own answer counts; the caller's confirm does not stand in for it.
     const d = describeGuarded(key, target, "mcp");
+    if (stateless) {
+        const why =
+            `Not done: this server is set to confirmMode "human", which asks you before it would ${sentence(d)}, ` +
+            STATELESS_HUMAN_REFUSAL;
+        return mcpError({ error: why, statelessTransport: true, confirmMode: "human", ...d }, why);
+    }
     const asker = server?.server;
     const elicitation = asker?.getClientCapabilities?.()?.elicitation;
     if (!elicitation || (!elicitation.form && elicitation.url)) {

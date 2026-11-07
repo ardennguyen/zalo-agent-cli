@@ -140,6 +140,7 @@ describe("api surface: what the engine calls", () => {
             "sendLink",
             "sendVoice",
             "sendVideo",
+            "sendVideoFile",
             "sendBankCard",
         ];
         const NOT_A_MESSAGE = {

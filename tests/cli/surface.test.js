@@ -163,7 +163,7 @@ const COMMAND_SURFACE = {
     "auto-reply": ["list", "create", "update", "delete"],
     "quick-msg": ["list", "add", "update", "remove"],
     label: ["list", "update"],
-    cloud: ["ls", "plan"],
+    cloud: ["ls", "plan", "apply", "get"],
     bank: ["list", "accounts", "add", "update", "remove"],
     catalog: [
         "list",
@@ -171,6 +171,7 @@ const COMMAND_SURFACE = {
         "rename",
         "delete",
         "products",
+        "product",
         "add-product",
         "update-product",
         "delete-product",
@@ -397,6 +398,9 @@ const FLAG_CONTRACT = {
     "mcp wait": ["--account", "--since", "--thread", "--timeout", "--consumer"],
     "mcp mark-read": ["--account", "--consumer"],
     "catalog add-product": ["--photos"],
+    "cloud apply": ["--yes", "--dry-run", "--conv", "--type", "--older-than", "--larger-than", "--limit"],
+    "cloud get": ["--out", "--key-stdin", "--key-prompt", "--raw"],
+    "msg send-video": ["--thumb", "--width", "--height", "--duration", "--upload-timeout"],
     "friend add": ["--msg"],
     "profile update": ["--name", "--dob", "--gender"],
 };

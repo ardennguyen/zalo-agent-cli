@@ -63,6 +63,66 @@ describe("callEndpoint with bigIdKeys", () => {
     });
 });
 
+describe("callEndpoint with swapHosts (Web's switchDomain)", () => {
+    /** A transport that answers each host with the status in `byHost`, 200 with an empty object otherwise. */
+    function hostsAnswering(byHost, profile) {
+        const seen = [];
+        const ctx = {
+            API_TYPE: 30,
+            API_VERSION: 695,
+            secretKey: KEY,
+            imei: "fake-imei",
+            userAgent: "Mozilla/5.0 (offline test)",
+            options: {
+                polyfill: async (url) => {
+                    const host = new URL(String(url)).host;
+                    seen.push(host);
+                    const status = byHost[host] ?? 200;
+                    const body =
+                        status === 200
+                            ? JSON.stringify({ error_code: 0, error_message: "", data: sealSession(KEY, INNER_OK) })
+                            : "not found";
+                    return new Response(body, { status });
+                },
+            },
+        };
+        return { api: { getContext: () => ctx, zpwServiceMap: { profile } }, seen };
+    }
+    const INNER_OK = '{"error_code":0,"error_message":"","data":{"onlines":[]}}';
+    const SWAP = { host: "profile", path: "/api/fake/onlines", method: "get", swapHosts: true, body: () => ({}) };
+
+    it("moves to the next profile host after an HTTP 404, and answers from it", async () => {
+        const { api, seen } = hostsAnswering({ "a.zalo.invalid": 404 }, [
+            "https://a.zalo.invalid/",
+            "https://b.zalo.invalid",
+        ]);
+        const data = await callEndpoint(api, SWAP, {});
+        assert.deepEqual(data, { onlines: [] });
+        assert.deepEqual(seen, ["a.zalo.invalid", "b.zalo.invalid"]);
+    });
+
+    it("fails with the last HTTP status, naming how many hosts were tried, when every host fails", async () => {
+        const { api, seen } = hostsAnswering({ "a.zalo.invalid": 404, "b.zalo.invalid": 404 }, [
+            "https://a.zalo.invalid",
+            "https://b.zalo.invalid",
+        ]);
+        await assert.rejects(callEndpoint(api, SWAP, {}), (e) => {
+            assert.match(e.message, /^HTTP 404 \(on each of the 2 hosts tried\)$/);
+            assert.equal(e.status, 404);
+            return true;
+        });
+        assert.equal(seen.length, 2);
+    });
+
+    it("keeps one host's error as it is, and never swaps a definition that did not ask for it", async () => {
+        const one = hostsAnswering({ "a.zalo.invalid": 404 }, ["https://a.zalo.invalid"]);
+        await assert.rejects(callEndpoint(one.api, SWAP, {}), { message: "HTTP 404" });
+        const plain = hostsAnswering({ "a.zalo.invalid": 404 }, ["https://a.zalo.invalid", "https://b.zalo.invalid"]);
+        await assert.rejects(callEndpoint(plain.api, { ...SWAP, swapHosts: false }, {}), { message: "HTTP 404" });
+        assert.deepEqual(plain.seen, ["a.zalo.invalid"], "a definition without swapHosts asks the first host only");
+    });
+});
+
 describe("callEndpoint with paramsFirst", () => {
     const keys = (url) => [...new URL(url).searchParams.keys()];
 

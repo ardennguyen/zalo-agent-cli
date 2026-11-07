@@ -70,6 +70,10 @@ function fakeDaemon(dirPath, impl) {
             if (impl) return impl(payload, threadId, type);
             return { message: { msgId: "m1" } };
         },
+        sendVideoFile: async (options, threadId, type) => {
+            sent.push({ video: options, threadId, type });
+            return { msgId: "v1", cliMsgId: "c1" };
+        },
     };
     return { api, sent, getApi: () => api, dirPath };
 }
@@ -200,6 +204,22 @@ describe("sendViaDaemon", () => {
         assert.deepEqual(d.sent[0].payload.attachments, ["/a.pdf", "/b.zip"]);
         assert.equal(d.sent[0].threadId, "t9");
         assert.equal(d.sent[0].type, 1, "a group send must not arrive as a 1-1");
+    });
+
+    it("hands a local video to the daemon as a video, and the daemon says it sent it as one", async () => {
+        const d = fakeDaemon(dir);
+        const chan = await startDaemonChannel({ getApi: d.getApi, accountDir: dir });
+        started.push(chan);
+
+        const video = { thumbnailFile: "/t.png", width: 640, height: 360, duration: 1000 };
+        const r = await sendViaDaemon(dir, { paths: ["/clip.mp4"], threadId: "t9", type: 1, caption: "c", video });
+        // Red if the daemon sent the clip as a file attachment, or the sender could not tell a daemon that did.
+        assert.equal(r.ok, true);
+        assert.equal(r.video, true);
+        assert.deepEqual(d.sent, [{ video: { ...video, file: "/clip.mp4", msg: "c" }, threadId: "t9", type: 1 }]);
+        // A plain attachment send is not marked as a video.
+        const plain = await sendViaDaemon(dir, { paths: ["/a.pdf"], threadId: "t9", type: 0 });
+        assert.equal(plain.video, undefined);
     });
 
     it("surfaces a failed upload as an error, leaving the daemon up", async () => {

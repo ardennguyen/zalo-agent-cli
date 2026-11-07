@@ -581,6 +581,17 @@ describe("the table", () => {
         }
     });
 
+    it("offers blocksharing-update, marked unverified and naming the zBusiness Max tier it needs", () => {
+        // Red if the write disappeared, claimed a success nobody saw, or stopped saying what a live check needs.
+        const d = WRITES["blocksharing-update"];
+        assert.ok(d, "blocksharing-update is reachable through `write run`");
+        assert.equal(d.verified, false);
+        assert.match(d.note, /zBusiness Max/);
+        assert.match(d.note, /829/);
+        const listed = describeWrites().find((w) => w.name === "blocksharing-update");
+        assert.ok(listed, "`write list` shows it");
+    });
+
     it("has no write for an endpoint Zalo answers with 404 (profile/mode, closefr/update)", () => {
         const paths = Object.values(WRITES).map((d) => d.path);
         assert.ok(!paths.includes("/api/social/profile/mode"));

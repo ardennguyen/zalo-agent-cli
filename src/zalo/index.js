@@ -42,6 +42,7 @@ export * as gid from "./custom/gid.js";
 export * as renewLink from "./custom/renewlink.js";
 export * as userInfo from "./custom/user-info.js";
 export * as zcloud from "./zcloud.js";
+export * as zcloudE2ee from "./zcloud-e2ee.js";
 
 // ── message text ───────────────────────────────────────────────────────────
 export { looksLikeMarkdown, markdownToZalo } from "./format/markdown.js";

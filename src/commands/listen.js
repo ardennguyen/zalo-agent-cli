@@ -637,8 +637,8 @@ export function registerListenCommand(program) {
                 file: voiceTextFile(accountDir),
                 log: (line) => console.error(`[listen] ${line}`),
             });
-            // A catalog changed, a DM reminder removed, the device list changed, on another device
-            // (src/core/control-events.js): the removed reminder is dropped from the cache whatever --events says;
+            // A catalog changed, a DM reminder created, edited or removed, the device list changed, on another device
+            // (src/core/control-events.js): the reminder is stored or dropped in the cache whatever --events says;
             // the events are printed only when asked for (`catalog`, `reminder`, `devices`). Same in `mcp start`.
             attachControlEvents({
                 tap: socketTap,
@@ -647,11 +647,17 @@ export function registerListenCommand(program) {
                 onEvent: (ev) => {
                     const human = {
                         catalog_changed: () => `Catalog: ${ev.act} (catalog ${ev.catalogId ?? "?"})`,
+                        reminder_created: () =>
+                            `Reminder created: ${ev.title ?? ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
+                        reminder_updated: () =>
+                            `Reminder edited: ${ev.title ?? ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
                         reminder_removed: () => `Reminder removed: ${ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
                         devices_changed: () => "The account's device list changed — see `zalo-agent account devices`",
                     }[ev.event];
                     const kind = {
                         catalog_changed: "catalog",
+                        reminder_created: "reminder",
+                        reminder_updated: "reminder",
                         reminder_removed: "reminder",
                         devices_changed: "devices",
                     };

@@ -125,5 +125,5 @@ export function registerBankCommands(program) {
             }
         });
     // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
-    guardSubcommand(bank, "remove", "bank.remove", { target: (accountId) => ({ accountId }) });
+    guardSubcommand(bank, "remove", "bank.remove", { target: (accountId) => ({ bankAccountId: accountId }) });
 }

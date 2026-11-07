@@ -1,10 +1,12 @@
 /**
- * What is in the zCloud index, and what a cleanup would touch: a report, never an action (decision D27, 2026-10-28).
+ * What is in the zCloud index, what a cleanup would touch (decision D27, 2026-10-28), and what deleting it sends.
  *
- * Zalo has no endpoint that deletes a zCloud item. The only removal the clients have is deleting the chat MESSAGE the
- * item belongs to, for this account on every device (`onlyMe`), which has no undo, so this module only describes. It
- * reads the local index (`cloud_items`, filled by `sync-cloud`) and the local message cache, and names the items a
- * cleanup of a given shape would cover, how much space that frees, and what is risky about it. Nothing is sent to Zalo.
+ * Zalo has no endpoint that deletes a zCloud item. Zalo Web's own "Delete" in its cloud view (the confirm dialog
+ * `STR_MY_CLOUD_DELETE_TITLE`, bundle 2026-11-06) deletes the chat MESSAGE each item belongs to, for this account only
+ * (`onlyMe`, the delete-for-me sync), one message at a time, conversation by conversation, and waits for the cloud
+ * queue to drop the items. That has no undo. The planning half reads the local index (`cloud_items`, filled by
+ * `sync-cloud`) and the local message cache and sends nothing; {@link cloudDeleteTarget} builds the message reference
+ * the Web sends for one item, which `cloud apply` hands to the session's `deleteMessage`.
  */
 
 /** The message types of a queue item, as the Web client names them, reduced to the kinds a person thinks in. */
@@ -53,8 +55,84 @@ export function describeItem(row, ownId = null) {
         selfChat: Boolean(ownId && String(row.threadId) === String(ownId)),
         e2ee: Number(info.isE2EE) === 1,
         cliMsgId: info.cliMsgId === undefined || info.cliMsgId === null ? null : String(info.cliMsgId),
+        msgId: info.glbMsgId === undefined || info.glbMsgId === null ? null : String(info.glbMsgId),
+        srcId: src,
         zKey: row.zKey ?? null,
     };
+}
+
+/**
+ * The message reference Zalo Web's cloud delete sends for one item (its `deleteCloudItems`): the message's global id,
+ * or `<cliMsgId>_001` when the queue names none; this account written as `"0"` when it sent the message; the
+ * conversation the item belongs to. In the shape the session's `deleteMessage(target, true)` takes.
+ *
+ * @param {ReturnType<typeof describeItem>} item
+ * @param {string|null} ownId
+ * @returns {{data: {cliMsgId: string, msgId: string, uidFrom: string}, threadId: string, type: 0|1}|null} null for an
+ *   item without a client message id, a sender or a conversation (it cannot be named), or an encrypted one
+ */
+export function cloudDeleteTarget(item, ownId) {
+    if (!item || item.e2ee || !item.cliMsgId || !item.srcId || !item.threadId) return null;
+    const msgId = item.msgId || `${item.cliMsgId}_001`;
+    const uidFrom = ownId && item.srcId === String(ownId) ? "0" : item.srcId;
+    return { data: { cliMsgId: item.cliMsgId, msgId, uidFrom }, threadId: item.threadId, type: item.group ? 1 : 0 };
+}
+
+/**
+ * Delete the messages behind planned items for this account, as Zalo Web's cloud delete does: conversation by
+ * conversation, one message at a time, stopping a conversation at its first failure (the Web throws there) and going
+ * on with the next. The local index is left alone: the server's cloud queue reports the removals, and the next
+ * `sync-cloud` applies them, as the Web's view waits for them.
+ *
+ * @param {object} args
+ * @param {Array<ReturnType<typeof describeItem>>} args.items - the planned items
+ * @param {string|null} args.ownId
+ * @param {(target: object) => Promise<unknown>} args.deleteForMe - `(t) => api.deleteMessage(t, true)`
+ * @param {(p: {done: number, total: number, item: object, ok: boolean, error?: string}) => void} [args.onProgress]
+ * @returns {Promise<{deleted: number, failed: Array<{noiseId: string, threadId: string|null, error: string}>,
+ *   skipped: Array<{noiseId: string, reason: string}>, bytes: number}>} `bytes`: the media of the deleted items
+ */
+export async function applyCloudCleanup({ items, ownId, deleteForMe, onProgress = () => {} }) {
+    const byConv = new Map();
+    const skipped = [];
+    for (const it of items) {
+        const target = cloudDeleteTarget(it, ownId);
+        if (!target) {
+            skipped.push({
+                noiseId: it.noiseId,
+                reason: it.e2ee ? "end-to-end encrypted" : "the message is not named",
+            });
+            continue;
+        }
+        const list = byConv.get(target.threadId) ?? [];
+        list.push({ it, target });
+        byConv.set(target.threadId, list);
+    }
+    const total = items.length - skipped.length;
+    const failed = [];
+    let deleted = 0;
+    let bytes = 0;
+    let done = 0;
+    for (const [threadId, list] of byConv) {
+        for (let i = 0; i < list.length; i++) {
+            const { it, target } = list[i];
+            try {
+                await deleteForMe(target);
+                deleted++;
+                bytes += it.bytes;
+                onProgress({ done: ++done, total, item: it, ok: true });
+            } catch (e) {
+                const error = e?.message || String(e);
+                failed.push({ noiseId: it.noiseId, threadId, error });
+                onProgress({ done: ++done, total, item: it, ok: false, error });
+                for (const rest of list.slice(i + 1)) {
+                    failed.push({ noiseId: rest.it.noiseId, threadId, error: "not tried: an earlier delete failed" });
+                }
+                break;
+            }
+        }
+    }
+    return { deleted, failed, skipped, bytes };
 }
 
 /**
@@ -178,6 +256,6 @@ export function planCloudCleanup({
  * The words that go with every plan: what applying one would mean at Zalo. Printed, and stored in the plan file.
  */
 export const CLEANUP_WARNING =
-    "Zalo has no endpoint that deletes a zCloud item. The only removal is deleting the chat message the item belongs to, " +
-    "for this account on every device, and that cannot be undone. This is a report: nothing was sent to Zalo and nothing " +
-    "was deleted.";
+    "Zalo has no endpoint that deletes a zCloud item. The only removal, the one Zalo Web's cloud view uses, is deleting " +
+    "the chat message the item belongs to, for this account on every device, and that cannot be undone. This is a " +
+    "report: nothing was sent to Zalo and nothing was deleted (`cloud apply --yes` with the same filters does it).";

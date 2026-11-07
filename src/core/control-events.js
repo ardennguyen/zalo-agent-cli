@@ -1,6 +1,6 @@
 /**
- * Three `601` controls Zalo pushes about changes made on another device, which this client used to name as
- * unhandled: a product catalog changed, a DM reminder removed, the account's device list changed.
+ * The `601` controls Zalo pushes about changes made on another device, which this client used to name as
+ * unhandled: a product catalog changed, a DM reminder created, edited or removed, the account's device list changed.
  *
  * What Zalo Web does with each (read in its bundle, 2026-11-06), and what this does:
  *
@@ -10,6 +10,11 @@
  *   `catalog` commands read it live. So nothing is stored; the change is reported.
  * - **`oneone` / `remove_reminder11`**. The Web removes the reminder (`reminderId`) from the conversation's board. This
  *   removes the row `sync-boards` stored for it, from whichever end of the DM it was stored under, and reports it.
+ * - **`oneone` / `create_reminder11`, `update_reminder11`** (seen live, key names only). The Web inserts or updates the
+ *   reminder on the conversation's board from the control's own reminder object (`reminderId`, `creatorUid`, `toUid`,
+ *   `editorUid`, `emoji`, `params` with the title, `startTime`, `duration`, `repeat`, `color`, `createTime`,
+ *   `editTime`). This writes the row `sync-boards` would write (under the other end of the DM, type `dm`) and reports
+ *   it. Not verified against a live payload: the field names are the Web's.
  * - **`user_devices` / `update_user_devices`**. The Web's trusted-device module checks the new, signed device list it
  *   carries (`devices`) against its own identity, and may sign itself out if it is no longer on it. This client does
  *   not verify that list; it logs one line every time (a device signed in or out is worth seeing whether or not anyone
@@ -22,7 +27,7 @@
  * A control can come twice (live, then again in a replayed `603` page): one already seen (by its action id) is skipped.
  * `listen` and `mcp start` both build one (AGENTS.md §13); only `listen` prints the events.
  */
-import { removeReminder } from "./db.js";
+import { removeReminder, upsertReminder } from "./db.js";
 import { readControls } from "../zalo/queues/control-queue.js";
 
 /** The control push that carries them. */
@@ -102,6 +107,48 @@ export function reminderThreadOf(d, ownId) {
     return to ?? creator;
 }
 
+/** A control's `params` (JSON text or an object) read as an object, or null. */
+function paramsOf(d) {
+    let params = d?.params;
+    if (typeof params === "string") {
+        try {
+            params = JSON.parse(params);
+        } catch {
+            params = null;
+        }
+    }
+    return params && typeof params === "object" ? params : null;
+}
+
+/**
+ * The reminder row a `create_reminder11` / `update_reminder11` control describes, in the shape `sync-boards` stores
+ * (src/core/sync-v2/board.js `normalizeReminder`), or null without an id or a conversation.
+ *
+ * @param {object} d - the control's data
+ * @param {string|null} threadId - the DM it belongs to
+ * @returns {object|null}
+ */
+export function reminderRowOf(d, threadId) {
+    const reminderId = str(d?.reminderId ?? d?.id);
+    if (!reminderId || !threadId) return null;
+    return {
+        reminderId,
+        threadId,
+        threadType: "dm",
+        title: str(paramsOf(d)?.title),
+        creatorId: str(d.creatorUid ?? d.creatorId),
+        createTime: d.createTime,
+        editTime: d.editTime,
+        startTime: d.startTime,
+        duration: d.duration,
+        repeatMode: d.repeat,
+        emoji: str(d.emoji),
+        color: d.color,
+        eventType: d.eventType ?? d.type,
+        raw_data: d,
+    };
+}
+
 /**
  * Apply and report the controls of one `601` frame.
  *
@@ -110,10 +157,18 @@ export function reminderThreadOf(d, ownId) {
  * @param {string|null} [args.ownId]
  * @param {Set<string>} [args.seen] - action ids already handled (updated)
  * @param {typeof removeReminder} [args.remove]
+ * @param {typeof upsertReminder} [args.upsert]
  * @param {(line: string) => void} [args.say]
  * @returns {object[]} the events, in the frame's order
  */
-export function applyControlEvents({ data, ownId = null, seen = new Set(), remove = removeReminder, say = () => {} }) {
+export function applyControlEvents({
+    data,
+    ownId = null,
+    seen = new Set(),
+    remove = removeReminder,
+    upsert = upsertReminder,
+    say = () => {},
+}) {
     const out = [];
     for (const c of readControls(data)) {
         if (c.handler !== "control-events") continue;
@@ -132,6 +187,32 @@ export function applyControlEvents({ data, ownId = null, seen = new Set(), remov
                     "); `zalo-agent account devices` lists them",
             );
             out.push(ev);
+        } else if (c.kind === "reminder" && c.act !== "remove_reminder11") {
+            const d = c.data || {};
+            const threadId = reminderThreadOf(d, ownId);
+            const row = reminderRowOf(d, threadId);
+            let stored = false;
+            if (row) {
+                try {
+                    upsert(row);
+                    stored = true;
+                } catch (e) {
+                    say(`could not store reminder ${row.reminderId}: ${e?.message || e}`);
+                }
+            }
+            const created = c.act === "create_reminder11";
+            out.push({
+                event: created ? "reminder_created" : "reminder_updated",
+                threadId,
+                reminderId: row?.reminderId ?? str(d.reminderId ?? d.id),
+                by: created ? str(d.creatorUid) : (str(d.editorUid) ?? str(d.creatorUid)),
+                title: row?.title ?? null,
+                emoji: str(d.emoji),
+                startTime: Number(d.startTime) || null,
+                stored,
+                ts: c.ts,
+                control: c.data,
+            });
         } else if (c.kind === "reminder") {
             const d = c.data || {};
             const reminderId = str(d.reminderId ?? d.id);
@@ -146,16 +227,7 @@ export function applyControlEvents({ data, ownId = null, seen = new Set(), remov
                     say(`could not remove reminder ${reminderId}: ${e?.message || e}`);
                 }
             }
-            let title = null;
-            let params = d.params;
-            if (typeof params === "string") {
-                try {
-                    params = JSON.parse(params);
-                } catch {
-                    params = null;
-                }
-            }
-            if (params && typeof params === "object") title = str(params.title);
+            const title = str(paramsOf(d)?.title);
             out.push({
                 event: "reminder_removed",
                 threadId,
@@ -181,6 +253,7 @@ export function applyControlEvents({ data, ownId = null, seen = new Set(), remov
  * @param {(event: object) => void} [args.onEvent] - told every event (`listen` prints them)
  * @param {(line: string) => void} [args.log]
  * @param {typeof removeReminder} [args.remove] - test seam
+ * @param {typeof upsertReminder} [args.upsert] - test seam
  * @returns {{stop: () => void}}
  */
 export function attachControlEvents({
@@ -189,6 +262,7 @@ export function attachControlEvents({
     onEvent = () => {},
     log = (line) => console.error(line),
     remove = removeReminder,
+    upsert = upsertReminder,
 }) {
     const say = (line) => {
         try {
@@ -201,7 +275,7 @@ export function attachControlEvents({
     const off = tap.on(CMD_PUSH_CONTROLS, (frame) => {
         let events = [];
         try {
-            events = applyControlEvents({ data: frame?.data, ownId, seen, remove, say });
+            events = applyControlEvents({ data: frame?.data, ownId, seen, remove, upsert, say });
         } catch (e) {
             say(`could not read a control frame: ${e?.message || e}`);
         }

@@ -18,6 +18,7 @@ import { FAKE, expectGolden, openWire } from "../helpers/wire-diff/index.js";
 import {
     parseBoardTopics,
     parseOnlineStatuses,
+    FRIEND_ONLINES,
     peopleMethods,
     readAllAliases,
     webPhone,
@@ -441,6 +442,12 @@ describe("wire: people (src/zalo/api/people.js)", () => {
                 rec.own.result.onlines.map((o) => o.status),
                 ["fake busy", undefined],
             );
+        });
+
+        it("getFriendOnlines swaps profile hosts on an HTTP failure, as the Web's Friends tab does", () => {
+            // Red if the one difference from the Web found in its bundle (switchDomain) were dropped again.
+            assert.equal(FRIEND_ONLINES.swapHosts, true);
+            assert.equal(FRIEND_ONLINES.verified, false);
         });
 
         it("getFriendOnlines: HTTP 404 keeps the status in the message (friend online's hint matches /404/)", async () => {

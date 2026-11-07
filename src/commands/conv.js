@@ -8,27 +8,26 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDbPath } from "../core/credentials.js";
-import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads, forgetThread } from "../core/db.js";
+import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads } from "../core/db.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readStateLabel } from "../core/read-state.js";
-import { pruneDownloadedMedia } from "../core/sync-v2/media.js";
 import { pinnedConversations } from "../core/sync-v2/conv-state.js";
 import { markConversationRead, unreadMarkAnchor } from "../core/receipts.js";
-import { zaloPost } from "../zalo/receipts.js";
+import {
+    AUTO_DELETE_TTLS,
+    SEEN_ANCHOR_SCAN_DEPTH,
+    forgetConversation,
+    newestMessageAnchor as newestAnchorFromSources,
+    setConversationArchived,
+    setConversationPinned,
+} from "../core/conversation-actions.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 
 /**
- * Find the newest message in a thread and return the anchor triple
- * `deleteChat` needs.
- *
- * Groups expose a REST history endpoint; DMs do not, so the caller has to
- * supply the ids by hand there. Both paths are best-effort: Zalo's history
- * APIs lag live traffic, so the "newest" message found may not be the true
- * newest (see agent/work/transfer-sync-v2/NOTES.md § Ordering).
- *
- * Opens the account's zalo.db whichever source answers, because the caller
- * writes to it next.
+ * The anchor `conv delete` deletes backwards from (src/core/conversation-actions.js), with this account's cache
+ * opened first: the group store may not answer, and `conv delete` flags the thread in the cache (markThreadGone)
+ * straight after.
  *
  * @param {object} api
  * @param {string} threadId
@@ -36,85 +35,14 @@ import { guardSubcommand } from "../core/confirm-guard.js";
  * @returns {Promise<{ownerId: string, cliMsgId: string, globalMsgId: string}|null>}
  */
 async function newestMessageAnchor(api, threadId, type) {
-    // Open the cache before either source runs. Source 2 reads it, and
-    // `conv delete` flags the thread in it (markThreadGone) straight after --
-    // which only ever worked because source 1 always failed and source 2
-    // opened the cache on the way.
-    let cacheOpen = false;
     try {
         const activeAcc = getActive();
-        if (activeAcc) {
-            initDb(getAccountDbPath(activeAcc.ownId));
-            cacheOpen = true;
-        }
+        if (activeAcc) initDb(getAccountDbPath(activeAcc.ownId));
     } catch {
-        // No cache on this machine; source 1 can still answer.
+        // No cache on this machine; the group store can still answer.
     }
-
-    // Source 1: Zalo's cloud-message store, the group history Zalo Web reads
-    // (src/zalo/custom/group-history.js). The previous engine's getGroupChatHistory asked
-    // /api/group/history, which Zalo answers with 404 -- and this used to read
-    // its answer as an array, a shape it never had.
-    if (type === 1) {
-        try {
-            // Loaded on demand: only the group path needs it.
-            const { getGroupHistory } = await import("../zalo/custom/group-history.js");
-            const history = await getGroupHistory(api, threadId, 1);
-            const last = history.groupMsgs[0]?.data;
-            const anchor = toAnchor(last?.uidFrom ?? last?.ownerId, last?.cliMsgId, last?.msgId ?? last?.globalMsgId);
-            if (anchor) return anchor;
-        } catch {
-            // Store unreachable, or no group_cloud_message host — fall through to the local cache.
-        }
-    }
-
-    // Source 2: the local SQLite cache. Anything `listen`, `sync` or a prior
-    // `msg history` wrote is here, and rows carry the raw payload, which is
-    // where cliMsgId lives.
-    //
-    // Scan BACKWARDS rather than trusting the newest row, because not every
-    // writer stores a usable payload. `listen` and the `msg history` socket
-    // backfill persist the full frame (cliMsgId, uidFrom, …); the sync-v2
-    // restore persists a minimal shape with no cliMsgId at all. A thread
-    // whose newest rows came from sync-v2 therefore has a newest row that
-    // cannot anchor anything, while older rows can — measured on a live
-    // account as 10 usable rows out of 294 for a group, and 0 out of 43 for
-    // a DM that had never been history-fetched. Reading only row 1 turned
-    // that into "Could not determine the last message", and made the group
-    // path succeed or fail on the luck of which writer touched it last.
-    //
-    // Deleting backwards from a slightly older anchor leaves the newest few
-    // messages in place, which is the same staleness `msg history` already
-    // has (see agent/work/transfer-sync-v2/NOTES.md § Ordering) and is far
-    // better than refusing outright.
-    if (!cacheOpen) return null;
-    try {
-        for (const row of getMessages(threadId, ANCHOR_SCAN_DEPTH)) {
-            let raw = {};
-            try {
-                raw = JSON.parse(row.raw_data || "{}");
-            } catch {
-                continue; // unparseable payload — try an older row
-            }
-            const data = raw.data ?? raw;
-            const anchor = toAnchor(row.senderId ?? data.uidFrom, data.cliMsgId, row.msgId ?? data.msgId);
-            if (anchor) return anchor;
-        }
-        return null;
-    } catch {
-        return null;
-    }
+    return newestAnchorFromSources(api, threadId, type);
 }
-
-/**
- * How many cached rows to inspect before giving up on finding an anchor.
- * Deep enough to see past a run of sync-v2 rows, shallow enough that the
- * lookup stays a single cheap query.
- */
-/** How far back to look for an incoming message to anchor a seen event on. */
-const SEEN_ANCHOR_SCAN_DEPTH = 50;
-
-const ANCHOR_SCAN_DEPTH = 200;
 
 /**
  * The newest cached message of a thread, as `addUnreadMark` names it, or null when the cache has none (or there is
@@ -134,93 +62,10 @@ function newestMessageForUnreadMark(threadId) {
     }
 }
 
-/** Build the deleteChat anchor triple, or null when any part is missing. */
-function toAnchor(ownerId, cliMsgId, globalMsgId) {
-    if (!ownerId || !cliMsgId || !globalMsgId) return null;
-    return { ownerId: String(ownerId), cliMsgId: String(cliMsgId), globalMsgId: String(globalMsgId) };
-}
-
 /** `-t` as 0 (user) or 1 (group), or null for anything else. */
 function threadTypeOf(value) {
     const t = Number(value);
     return t === 0 || t === 1 ? t : null;
-}
-
-/**
- * Pin or unpin one conversation, exactly as Zalo Web does.
- *
- * `POST {conversation}/api/pinconvers/updatev2` with
- * `{actionType: 1 pin | 2 unpin, conversations: ["g<id>" | "u<id>"], tab: 0}`
- * -- captured for a group and a DM, both directions. The previous engine's
- * setPinnedConversations sent the same minus `tab`, so it is not used.
- *
- * @param {object} api - logged-in session
- * @param {{threadId: string, type: 0|1, pinned: boolean}} opts
- * @returns {Promise<object>}
- */
-async function setConversationPinned(api, { threadId, type, pinned }) {
-    const conversation = `${type === 1 ? "g" : "u"}${threadId}`;
-    const response = await zaloPost(api, {
-        url: `${api.zpwServiceMap.conversation[0]}/api/pinconvers/updatev2`,
-        params: () => ({ actionType: pinned ? 1 : 2, conversations: [conversation], tab: 0 }),
-    });
-    return { threadId: String(threadId), type, pinned, conversation, response };
-}
-
-/**
- * Move one conversation to Zalo's "Other" tab (archive) or back to Focused.
- *
- * `POST {label}/api/archivedchat/update` with
- * `{ids: [{id, type: 1 group | 0 user}], version, actionType: 0 to Other | 1 back, imei}`.
- *
- * `version` is the one decision here. The previous engine's updateArchivedChatList
- * sent `Date.now()`. Zalo Web sends the SERVER's version: each captured update
- * carried exactly the `version` the previous response returned, and the first
- * carried the one the web had stored from the server -- 25 days older than the
- * clock. Its archived-chat manager (module FEfs in the web API bundle) keeps
- * that value, refreshes it from `archivedchat/list` at start-up and from every
- * update response, and refetches the list when an answer flags it stale. A CLI
- * run is a fresh client every time, so it does what the web does at start-up:
- * read the list (getArchivedChatList, the same GET a fresh web
- * session makes) and send the version found there. With no version, nothing
- * is sent.
- *
- * @param {object} api - logged-in session
- * @param {{threadId: string, type: 0|1, archived: boolean}} opts
- * @returns {Promise<object>}
- */
-async function setConversationArchived(api, { threadId, type, archived }) {
-    let listed;
-    try {
-        listed = await api.getArchivedChatList();
-    } catch (e) {
-        throw new Error(`Could not read Zalo's archived-chat version, so nothing was sent: ${e.message}`);
-    }
-    const v = listed?.version;
-    const version = typeof v === "number" ? v : /^\d+$/.test(String(v ?? "")) ? Number(v) : NaN;
-    if (!Number.isFinite(version)) {
-        throw new Error(
-            `Zalo's archived-chat list carried no usable version (${JSON.stringify(v)}), so nothing was sent.`,
-        );
-    }
-    const response = await zaloPost(api, {
-        url: `${api.zpwServiceMap.label[0]}/api/archivedchat/update`,
-        params: (ctx) => ({
-            ids: [{ id: String(threadId), type: type === 1 ? 1 : 0 }],
-            version,
-            actionType: archived ? 0 : 1,
-            imei: ctx.imei,
-        }),
-    });
-    return {
-        threadId: String(threadId),
-        type,
-        archived,
-        previousVersion: version,
-        version: response?.version ?? null,
-        needResync: Boolean(response?.needResync),
-        response,
-    };
 }
 
 /**
@@ -687,8 +532,7 @@ export function registerConvCommands(program, deps = {}) {
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, ttl, opts) => {
             try {
-                const ttlMap = { off: 0, "1d": 86400000, "7d": 604800000, "14d": 1209600000 };
-                const ttlValue = ttlMap[ttl];
+                const ttlValue = AUTO_DELETE_TTLS[ttl];
                 if (ttlValue === undefined) {
                     error(`Invalid TTL "${ttl}". Valid: off, 1d, 7d, 14d`);
                     return;
@@ -809,19 +653,13 @@ export function registerConvCommands(program, deps = {}) {
             let removed = 0;
             let files = 0;
             for (const t of targets) {
-                // Files first: forgetThread drops the rows that point at them,
-                // and a deleted row would leave its media stranded on disk.
-                try {
-                    const pruned = await pruneDownloadedMedia({ all: true, threadId: t.threadId });
-                    files += pruned.deleted;
-                } catch (e) {
-                    warning(`Media cleanup failed for ${t.threadId}: ${e.message}`);
-                }
-                try {
-                    const counts = forgetThread(t.threadId);
-                    removed += counts.messages || 0;
-                } catch (e) {
-                    error(`Failed to forget ${t.threadId}: ${e.message}`);
+                // Media first, then rows (src/core/conversation-actions.js); each failure is reported, not fatal.
+                const gone = await forgetConversation(t.threadId);
+                files += gone.files;
+                removed += gone.messages;
+                for (const e of gone.errors) {
+                    if (e.what === "media") warning(`Media cleanup failed for ${t.threadId}: ${e.message}`);
+                    else error(`Failed to forget ${t.threadId}: ${e.message}`);
                 }
             }
             success(

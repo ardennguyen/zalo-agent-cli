@@ -9,55 +9,7 @@ import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff, parseLanguage } from "../utils/cli-args.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
-
-/** Valid privacy setting keys and their human-readable labels + value descriptions. */
-const SETTING_MAP = {
-    "online-status": {
-        key: "show_online_status",
-        label: "Show online status",
-        values: { 0: "hidden", 1: "visible" },
-    },
-    "seen-status": {
-        key: "display_seen_status",
-        label: "Display seen status",
-        values: { 0: "hidden", 1: "visible" },
-    },
-    birthday: {
-        key: "view_birthday",
-        label: "Birthday visibility",
-        values: { 0: "hidden", 1: "full (day/month/year)", 2: "partial (day/month)" },
-    },
-    "receive-msg": {
-        key: "receive_message",
-        label: "Receive messages from",
-        values: { 1: "everyone", 2: "friends only" },
-    },
-    "accept-call": {
-        key: "accept_stranger_call",
-        label: "Accept calls from",
-        values: { 2: "friends only", 3: "everyone", 4: "friends + contacted" },
-    },
-    "add-by-phone": {
-        key: "add_friend_via_phone",
-        label: "Find by phone number",
-        values: { 0: "disabled", 1: "enabled" },
-    },
-    "add-by-qr": {
-        key: "add_friend_via_qr",
-        label: "Find by QR code",
-        values: { 0: "disabled", 1: "enabled" },
-    },
-    "add-by-group": {
-        key: "add_friend_via_group",
-        label: "Find via group",
-        values: { 0: "disabled", 1: "enabled" },
-    },
-    recommend: {
-        key: "display_on_recommend_friend",
-        label: "Show in friend recommendations",
-        values: { 0: "disabled", 1: "enabled" },
-    },
-};
+import { SETTING_MAP, profileUpdatePayload } from "../core/profile-settings.js";
 
 export function registerProfileCommands(program) {
     const profile = program.command("profile").description("View and update your Zalo profile and settings");
@@ -142,22 +94,9 @@ export function registerProfileCommands(program) {
                 // Fetch current profile to fill missing fields (API requires all 3)
                 const current = await getApi().fetchAccountInfo();
                 const p = current?.profile || {};
-                // Convert sdob (DD/MM/YYYY) to YYYY-MM-DD format required by API
-                let currentDob = "2000-01-01";
-                if (p.sdob) {
-                    const parts = p.sdob.split("/");
-                    if (parts.length === 3) currentDob = `${parts[2]}-${parts[1]}-${parts[0]}`;
-                }
-                const nextName = opts.name || p.displayName || p.zaloName;
-                const payload = {
-                    profile: {
-                        name: nextName,
-                        dob: opts.dob || currentDob,
-                        gender: opts.gender !== undefined ? Number(opts.gender) : (p.gender ?? 0),
-                    },
-                };
+                const payload = profileUpdatePayload(p, opts);
                 const result = await getApi().updateProfile(payload);
-                updateAccountName(p.userId || getOwnId(), nextName);
+                updateAccountName(p.userId || getOwnId(), payload.profile.name);
                 output(result, program.opts().json, () => success("Profile updated"));
             } catch (e) {
                 error(`Profile update failed: ${e.message}`);

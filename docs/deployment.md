@@ -56,7 +56,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 >
 > | | `listen` | `mcp start` |
 > |---|---|---|
-> | MCP tool surface (the 27 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
+> | MCP tool surface (the 36 tools in `src/mcp/mcp-tools.js`) | no | **yes** |
 > | HTTP / HTTPS `/health`, `/ready`, `/status`, `/metrics`, `/events/wait`, OAuth 2.0 endpoints | no | **yes** (`--http` only) |
 > | `-w, --webhook <url>` + `--webhook-secret <secret>` outbound fan-out | **yes** | **yes** |
 > | `--save <dir>` JSONL archive | **yes** | no |
@@ -72,7 +72,7 @@ So the very first deployment decision is forced: **you get one socket-holding pr
 > `tests/unit/listener-lifecycle-rules.test.js` holds both to the same gap rules (each builds a `SyncManager` and files a startup gap), and `tests/unit/self-heal-wiring.test.js` runs its wiring checks against both files. Loss detection is therefore no longer a reason to pick one over the other: pick `mcp start` for MCP bots (and webhook push / long-polling), `listen` for a CLI-only webhook or JSONL consumer.
 
 > [!NOTE]
-> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 27 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
+> **`mcp start`'s tools follow a re-login.** A socket the supervisor cannot keep alive on its session (Zalo refused the session, or no usable socket came up after 8 tries in a row) is handled inside the process by the socket host: `clearSession()`, then a login, which builds a new API object (`loginWithCredentials` in `src/core/zalo-client.js`). The listener handlers, the self-heal, the daemon channel and media downloads follow the new object through `getApi()`, and so do the 36 tools and the notifier: they are handed `liveApi(getApi)` (`src/core/live-api.js`), which reads the current session at every call. Before 2.0.0's fix they were handed the start-up object once, so after a `Re-login successful` line they kept calling the replaced session, and `zalo_get_history`'s socket scan paged a closed listener. While a re-login is in flight, a tool call fails with "The Zalo session is logging in again after a dropped connection; try again in a few seconds."
 
 ### 1.2 What `daemon-channel.js` actually is
 

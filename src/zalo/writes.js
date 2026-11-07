@@ -473,7 +473,12 @@ export const WRITES = {
             isEnabled: a.enabled ? 1 : 0,
             clientLang: a.lang === "en" ? "en" : "vi",
         }),
-        note: "answers 829 (this feature is for zBusiness accounts only) on a personal account, so no success was seen; the list read answers",
+        verified: false,
+        note:
+            "unverified: needs zBusiness Max. It answers 829 (this feature is for zBusiness accounts only) on a " +
+            "personal account, so no success was seen; the list read answers. The Web names its other refusals: 273 " +
+            "the server could not save the setting, 275 only group admins may change it, 277 and 278 this account's " +
+            "or the other side's limit of such settings is reached, 280 this account blocks the other side",
     },
     "label-add": {
         host: "label",

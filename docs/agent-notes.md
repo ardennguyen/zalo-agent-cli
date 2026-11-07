@@ -111,11 +111,11 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **230** invokable leaves (198 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **233** invokable leaves (201 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
-| MCP tools | **27** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
+| MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **4664** as of 2026-11-07 (4655 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **4991** as of 2026-11-07 (4982 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -940,6 +940,7 @@ the old names and made `threadType` the words `"dm"` / `"group"` in every MCP in
 | a Zalo user | `userId` | a message's author is `senderId` (a userId); `@[userId]` mentions. Dropped in 3.0: `uid` (group members) |
 | a message's author, as an input | `senderId` | `zalo_search_messages` and `zalo_delete_message`; never `uidFrom` |
 | reading position | `cursor` | from a read or wait reply, back into `since` or `zalo_mark_read` |
+| the action tools' objects (3.0) | `groupIds`, `photoId(s)`, `autoReplyId`, `quickMessageId(s)`, `catalogId`, `productId(s)`, `bankAccountId`, `stickerIds` | one name per kind of object, each from the listing action that returns it; never a bare `id` (a guard's `target` uses the same names) |
 
 Rules for whoever adds or changes an MCP tool:
 
@@ -2085,6 +2086,28 @@ was done (items are the audit's ZP numbers):
 - **My Cloud blobs (ZP-10): tried live, not retrievable.** The 11 key-less items of the paid account sum to exactly the
   `usage-mycloud` bytes. `downloadurls` gives a URL for each, and the GET with the viewer key answers 404 `NOT_FOUND`
   (without the key, 401). Until a Web capture of opening a My Cloud item shows the real path, they stay unfetched.
+- **Built from the bundle of 2026-11-06, all unverified (owner's "later" items, built inside 3.0.0).**
+  - *Opening a cloud item* (`src/zalo/zcloud-e2ee.js`, `fetchCloudBlob`, `cloud get`): the Web fetches
+    `<downloadUrl>?zcloudurl=true` (with a trailing `&` when the item has a key: its download layer cuts the address at
+    `pcloudsession=`, which carries the wrapped key for local decryption and never leaves the browser), header
+    `cloud-viewer-key` only. The 404 above came from the bare URL. A My Cloud item is opened by its chat message first.
+    Live check: `cloud get` on one key-less My Cloud item of the paid account.
+  - *The key*: RSA-OAEP SHA-256 (2048, PKCS#8) unwraps `encryptKey` into key(32) | IV(12) | tag(16); data is AES-256-GCM
+    (the metadata, and `algoversion` 1 blobs); `algoversion` 2 is AES-CTR in 4096-byte blocks and is not built. The RSA
+    key comes only from the phone (`personalcloud_key/req_cloud_key`, then a Signal-wrapped `personal_cloud` control
+    opened with a registered device identity). No PIN path exists in the Web or PC bundles, so `cloud get` takes the
+    RSA key at run time (stdin or a hidden prompt) and never stores it. Missing: the Signal identity (D8).
+  - *Cloud delete* (`cloud apply`): the Web's "Delete data" dialog calls `deleteCloudItems`: per conversation, per item,
+    the delete-for-me sync (`msgId` = `glbMsgId` or `<cliMsgId>_001`, the sender `"0"` when it is the account). Live
+    check: one disposable item with the owner watching.
+  - *`friend online`*: the Web's Friends tab still asks `friend/onlines` `{imei}` (cached `list_friend_online_time`,
+    60 s); the only difference found is its `switchDomain` after an HTTP 4xx/5xx, now copied (`swapHosts`). Live
+    check: a HAR of the Friends tab.
+  - *Local GIFs* go in 512000-byte chunks, six in flight (`_sendGifByChunk`); *local videos* as `uploadVideoMessage`
+    (file upload, thumbnail upload, forward-video send). Live check: one GIF over 512 KB and one local video.
+  - *`catalog product`* (`product/view` `{product_id}`) and `blocksharing-update` need a zBusiness account (Max for the
+    latter). *`create_reminder11` / `update_reminder11`* are stored from the Web's field names; live check: create and
+    edit one DM reminder on the phone while `listen --events reminder` runs.
 - **The phone's "back up text messages to zCloud" has no client surface.** `opt_in` bit 4 and `service_usage.message_backup`
   are read nowhere in the Web or PC bundles, the Web logs the old `msgbackup` control as unsupported, and no zCloud path
   lists or restores a message backup. The Web restores messages only from the phone (transfer-sync-v2). Restoring it

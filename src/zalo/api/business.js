@@ -158,6 +158,15 @@ export const PRODUCT_LIST = catalogCall("/product/list", 12039, (a) => ({
     page: a.page,
 }));
 
+/**
+ * getProductInfo, 12057: one product by its id, `{product_id}` only. Not verified: the Web's catalog editor and its
+ * product card call it, and no live answer has been seen (a zBusiness catalog with a product is needed).
+ */
+export const PRODUCT_VIEW = Object.freeze({
+    ...catalogCall("/product/view", 12057, (a) => ({ product_id: a.productId })),
+    verified: false,
+});
+
 /** The product fields create and update share, after `product_id` on an update. */
 const productFields = (a) => ({
     product_name: a.productName,
@@ -511,6 +520,20 @@ export function businessMethods(s) {
                 lastProductId: payload.lastProductId ?? -1,
                 page: payload.page ?? 0,
             }),
+
+        /**
+         * One product, by its id (unverified: no live answer seen).
+         *
+         * @param {string} productId
+         * @returns {Promise<object>} Zalo's answer: the product
+         * @throws {ZaloApiError} before any request, for a missing id
+         */
+        getProductInfo: (productId) => {
+            if (productId === undefined || productId === null || String(productId) === "") {
+                throw new ZaloApiError("Missing productId");
+            }
+            return s.call(PRODUCT_VIEW, { productId: String(productId) });
+        },
 
         /**
          * Add a product to a catalog.

@@ -9,9 +9,12 @@ import {
     CLEANUP_WARNING,
     PLAN_DEFAULT_LIMIT,
     PLAN_MAX_LIMIT,
+    applyCloudCleanup,
+    cloudDeleteTarget,
     describeItem,
     planCloudCleanup,
 } from "../../src/core/cloud-plan.js";
+import { GUARDS, describeGuarded } from "../../src/core/confirm-guard.js";
 
 const OWN = "1000000000000000001";
 const PEER = "1000000000000000002";
@@ -148,5 +151,86 @@ describe("planCloudCleanup", () => {
         assert.match(CLEANUP_WARNING, /no endpoint that deletes a zCloud item/);
         assert.match(CLEANUP_WARNING, /cannot be undone/);
         assert.match(CLEANUP_WARNING, /nothing was deleted/);
+    });
+});
+
+describe("cloud apply: the message reference Zalo Web's cloud delete sends", () => {
+    const item = (r) => describeItem(r, OWN);
+
+    it("names a peer's message by its global id and sender, in the DM it belongs to", () => {
+        const t = cloudDeleteTarget(item(row("p", { msgInfo: { glbMsgId: "777" } })), OWN);
+        assert.deepEqual(t, { data: { cliMsgId: "c-p", msgId: "777", uidFrom: PEER }, threadId: PEER, type: 0 });
+    });
+
+    it("writes this account as 0 for its own message, and keeps the queue's literal 0 global id as the Web does", () => {
+        // The Web sends `glbMsgId || cliMsgId_001`: the string "0" is not empty, so it is sent as it is.
+        const t = cloudDeleteTarget(item(row("m", { msgInfo: { srcId: OWN, destId: PEER } })), OWN);
+        assert.deepEqual(t.data, { cliMsgId: "c-m", msgId: "0", uidFrom: "0" });
+        assert.equal(t.threadId, PEER);
+    });
+
+    it("falls back to <cliMsgId>_001 when the queue names no global id, and marks a group item type 1", () => {
+        const g = row("g", { threadId: GROUP, msgInfo: { destId: GROUP, destType: 6, glbMsgId: "" } });
+        const t = cloudDeleteTarget(item(g), OWN);
+        assert.equal(t.data.msgId, "c-g_001");
+        assert.equal(t.type, 1);
+        assert.equal(t.threadId, GROUP);
+    });
+
+    it("names nothing for an encrypted item or one without a client id", () => {
+        assert.equal(cloudDeleteTarget(item(row("e", { msgInfo: { isE2EE: 1 } })), OWN), null);
+        assert.equal(cloudDeleteTarget(item(row("n", { msgInfo: { cliMsgId: null } })), OWN), null);
+    });
+});
+
+describe("cloud apply: deleting, conversation by conversation", () => {
+    const items = [
+        describeItem(row("a1"), OWN),
+        describeItem(row("a2"), OWN),
+        describeItem(row("a3"), OWN),
+        describeItem(row("g1", { threadId: GROUP, mediaSize: 7, msgInfo: { destId: GROUP, destType: 6 } }), OWN),
+        describeItem(row("x", { msgInfo: { isE2EE: 1 } }), OWN),
+    ];
+
+    it("deletes each named message for this account only and counts the bytes", async () => {
+        const sent = [];
+        const r = await applyCloudCleanup({ items, ownId: OWN, deleteForMe: async (t) => sent.push(t) });
+        assert.equal(r.deleted, 4);
+        assert.equal(r.bytes, 3_007);
+        assert.deepEqual(
+            sent.map((t) => t.data.cliMsgId),
+            ["c-a1", "c-a2", "c-a3", "c-g1"],
+        );
+        assert.deepEqual(r.skipped, [{ noiseId: "x", reason: "end-to-end encrypted" }]);
+        assert.deepEqual(r.failed, []);
+    });
+
+    it("stops a conversation at its first failure, as the Web does, and goes on with the next", async () => {
+        const sent = [];
+        const r = await applyCloudCleanup({
+            items,
+            ownId: OWN,
+            deleteForMe: async (t) => {
+                sent.push(t.data.cliMsgId);
+                if (t.data.cliMsgId === "c-a2") throw new Error("refused");
+            },
+        });
+        // Red if one refusal went on deleting the rest of that conversation, or stopped the other conversations.
+        assert.deepEqual(sent, ["c-a1", "c-a2", "c-g1"]);
+        assert.equal(r.deleted, 2);
+        assert.deepEqual(
+            r.failed.map((f) => [f.noiseId, f.error]),
+            [
+                ["a2", "refused"],
+                ["a3", "not tried: an earlier delete failed"],
+            ],
+        );
+    });
+
+    it("is guarded, final, and says how much it deletes", () => {
+        assert.equal(GUARDS["cloud.delete"].cli, "cloud apply");
+        const d = describeGuarded("cloud.delete", { items: 3, size: "2.0 MB", conversations: 2 });
+        assert.equal(d.irreversible, true);
+        assert.match(d.wouldDo, /3 zCloud item\(s\) \(2\.0 MB\) in 2 conversation\(s\), for this account/);
     });
 });

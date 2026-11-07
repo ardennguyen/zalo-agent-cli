@@ -1066,6 +1066,42 @@ export default {
         error: null,
         result: {},
     },
+    "product-view": {
+        requests: [
+            {
+                method: "POST",
+                service: "catalog",
+                path: "/api/prodcatalog/product/view",
+                queryOrder: ["zpw_ver", "zpw_type"],
+                query: {
+                    zpw_ver: "695",
+                    zpw_type: "30",
+                },
+                params: {
+                    product_id: "4000000000000000001",
+                },
+                paramsOrder: ["product_id"],
+                headers: {
+                    accept: "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    "content-type": "application/x-www-form-urlencoded",
+                    cookie: "wire=fake-w",
+                    origin: "https://chat.zalo.me",
+                    referer: "https://chat.zalo.me/",
+                    "user-agent": "Mozilla/5.0 (offline test)",
+                },
+                form: {},
+                formOrder: ["params"],
+                parts: null,
+                body: null,
+            },
+        ],
+        error: null,
+        result: {
+            product_id: "4000000000000000001",
+            product_name: "Tea",
+        },
+    },
     "quick-add": {
         requests: [
             {

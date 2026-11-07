@@ -163,4 +163,31 @@ describe("planSyncRun — through a running daemon", () => {
             }
         }
     });
+    describe("the cloud walk's route (D31, ZP-09)", () => {
+        it("says the cloud stage runs in the daemon when the daemon serves it", () => {
+            const plan = planSyncRun({ freshness: stale, lockOk: false, cloudRoute: { via: "daemon", reason: "" } });
+            const cloud = byName(plan).cloud;
+            // Red if --plan went back to showing the walk as a local REST stage beside a daemon that walks it.
+            assert.equal(cloud.run, true);
+            assert.equal(cloud.via, "daemon");
+            assert.equal(plan.cloudViaDaemon, true);
+            // The REST stages around it still run here.
+            assert.equal(byName(plan).boards.via, "local");
+        });
+
+        it("skips the cloud stage, with the reason, when the process holding the account cannot run it", () => {
+            const plan = planSyncRun({ freshness: stale, cloudRoute: { via: "skip", reason: "held elsewhere" } });
+            assert.equal(byName(plan).cloud.run, false);
+            assert.equal(byName(plan).cloud.why, "held elsewhere");
+            assert.equal(plan.cloudViaDaemon, false);
+        });
+
+        it("runs it here with no route, or a local one, and --no-cloud still wins", () => {
+            assert.equal(byName(planSyncRun({ freshness: stale })).cloud.via, "local");
+            assert.equal(byName(planSyncRun({ freshness: stale, cloudRoute: { via: "local" } })).cloud.via, "local");
+            const off = planSyncRun({ want: { cloud: false }, freshness: stale, cloudRoute: { via: "daemon" } });
+            assert.equal(byName(off).cloud.run, false);
+            assert.equal(off.cloudViaDaemon, false);
+        });
+    });
 });

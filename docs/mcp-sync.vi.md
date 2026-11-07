@@ -2,12 +2,14 @@
 
 [English](mcp-sync.md)
 
-Engine cung cấp 27 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
+Engine cung cấp 36 MCP tool, bao gồm `zalo_sync` và `zalo_sync_status` (có từ
 `@ardennguyen/zalo-agent-cli` v2.1.0+ và `@ardennguyen/zalo-mcp` v2.0.0+).
 `mcp start --account <ID>` (hoặc `ZALO_ACCOUNT=<ID>`) ghim tiến trình vào đúng
 tài khoản đã đăng ký lúc khởi động và qua các lần reconnect; hai tool sync chỉ
 dùng runner và khóa của tài khoản đó, không nhận tham số đổi tài khoản theo
 từng request.
+
+Ngoài `messages` và `reactions`, `stage` nhận `cloud` (đi qua chỉ mục zCloud, như `sync-cloud`; `full: true` đi lại từ đầu), `media` (tải các tệp đính kèm mà lần khôi phục đã ghi, như `sync-media`: `threadId`, `kinds`, `days`, và `limit` số tệp lần này) và `boards` (ghi chú, ghim, bình chọn, nhắc hẹn, như `sync-boards`: `threadId`, `limit` số hội thoại). Chỉ `messages` cần xác nhận trên điện thoại; tham số không thuộc stage đã chọn bị từ chối.
 
 ## Cách dùng
 

@@ -43,6 +43,17 @@ const ALLOWED = {
     labelId: "a label",
     jobId: "a sync job",
     requestId: "a sync request key",
+    groupIds: "several groups",
+    photoId: "a photo in this account's avatar gallery",
+    photoIds: "several gallery photos",
+    autoReplyId: "an auto-reply rule",
+    quickMessageId: "a quick message",
+    quickMessageIds: "several quick messages",
+    catalogId: "a Zalo Shop catalog",
+    productId: "a catalog product",
+    productIds: "several catalog products",
+    bankAccountId: "a bank account saved on this Zalo account",
+    stickerIds: "stickers",
 };
 
 /** Names that mean one of the above under another spelling; an input must never use them. */

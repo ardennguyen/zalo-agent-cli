@@ -14,7 +14,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";
-import { businessMethods, PRODUCT_PHOTO, bankHolderName, ruleUids } from "../../src/zalo/api/business.js";
+import { businessMethods, PRODUCT_PHOTO, PRODUCT_VIEW, bankHolderName, ruleUids } from "../../src/zalo/api/business.js";
 
 const AREA = "business";
 const CATALOG = "3000000000000000001";
@@ -211,6 +211,24 @@ describe("wire: business (src/zalo/api/business.js)", () => {
                 last_product_id: -1,
                 page: 2,
             });
+        });
+
+        it("getProductInfo: POST {catalog}/prodcatalog/product/view {product_id} (Web getProductInfo, 12057)", async () => {
+            const reply = { product_id: PRODUCT, product_name: "Tea" };
+            const rec = await ok("product-view", "getProductInfo", [PRODUCT], { reply });
+            const [req] = rec.own.requests;
+            assert.equal(req.method, "POST");
+            assert.equal(req.service, "catalog");
+            assert.equal(req.path, "/api/prodcatalog/product/view");
+            assert.deepEqual(req.params, { product_id: PRODUCT });
+            assert.deepEqual(rec.own.result, reply);
+            assert.equal(PRODUCT_VIEW.verified, false, "no live answer was seen");
+        });
+
+        it("getProductInfo: a missing id is refused before any request", async () => {
+            const rec = await wire.run("getProductInfo", [""], { reply: {} });
+            assert.equal(rec.own.requests.length, 0);
+            assert.equal(rec.own.error.message, "Missing productId");
         });
 
         it("createProductCatalog: the photo URLs, the dong, and the session clock as create_time", async () => {
@@ -561,6 +579,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
             ["updateCatalog", [{ catalogId: CATALOG, catalogName: "R" }]],
             ["deleteCatalog", [CATALOG]],
             ["getProductCatalogList", [{ catalogId: CATALOG }]],
+            ["getProductInfo", [PRODUCT]],
             ["createProductCatalog", [{ catalogId: CATALOG, productName: "T", price: "1", description: "" }]],
             [
                 "updateProductCatalog",
@@ -617,6 +636,7 @@ describe("wire: business (src/zalo/api/business.js)", () => {
                 "getListBank",
                 "getListBankAccount",
                 "getProductCatalogList",
+                "getProductInfo",
                 "getQuickMessageList",
                 "registerCatalog",
                 "removeQuickMessage",

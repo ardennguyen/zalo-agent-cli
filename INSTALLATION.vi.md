@@ -233,14 +233,14 @@ Mỗi tài khoản cá nhân đã đăng ký có cơ sở dữ liệu SQLite (`<
    zalo-mcp --account 202 sync --days 7
    ```
 
-### Danh sách 27 MCP tools
+### Danh sách 36 MCP tools
 
-Engine này đăng ký **27 MCP tools** trong `src/mcp/mcp-tools.js`, phục vụ cho **tài khoản cá nhân**:
+Engine này đăng ký **36 MCP tools** trong `src/mcp/mcp-tools.js`, phục vụ cho **tài khoản cá nhân**:
 
 | Tool | Công dụng |
 |:---|:---|
 | `zalo_get_messages` | Đọc tin nhắn live trong buffer kèm cursor để đọc tăng dần |
-| `zalo_send_message` | Gửi văn bản, tệp/ảnh đính kèm (`filePath`/`files`), thẻ xem trước liên kết (`link`), hoặc danh thiếp (`cardUserId`) vào DM hoặc nhóm — hỗ trợ tag `@[uid]`, trả lời trích dẫn, đánh dấu Quan trọng/Khẩn cấp (`urgency`), hoặc `threadId: "me"` cho My Documents |
+| `zalo_send_message` | Gửi văn bản, tệp/ảnh đính kèm (`filePath`/`files`), thẻ xem trước liên kết (`link`), danh thiếp (`cardUserId`), sticker, tin nhắn thoại từ URL, video từ URL hoặc tệp cục bộ, thẻ ngân hàng hoặc ảnh QR chuyển khoản VietQR vào DM hoặc nhóm — hỗ trợ tag `@[uid]`, trả lời trích dẫn, đánh dấu Quan trọng/Khẩn cấp (`urgency`), hoặc `threadId: "me"` cho My Documents |
 | `zalo_list_threads` | Liệt kê các hội thoại trong buffer kèm số tin chưa đọc |
 | `zalo_search_threads` | Tìm kiếm hội thoại theo tên (fuzzy, không phân biệt dấu tiếng Việt) |
 | `zalo_mark_read` | Đánh dấu đã đọc các tin trong buffer đến một cursor cho một consumer (toàn cục, không xóa dữ liệu khỏi buffer nên nhiều bot có thể dùng chung một server) |
@@ -251,7 +251,7 @@ Engine này đăng ký **27 MCP tools** trong `src/mcp/mcp-tools.js`, phục v�
 | `zalo_get_group_members` | Liệt kê thành viên nhóm — `uid` và tên hiển thị — giống `group members` |
 | `zalo_list_conversations` | Liệt kê các hội thoại gần đây từ cache cục bộ, mới nhất trước, giống `conv recent` |
 | `zalo_coverage` | Chỉ đọc: kiểm tra các khoảng hở (coverage gaps) đang chờ trong cache, số khoảng đã đóng, và lệnh `zalo-agent sync --from <date>` để khôi phục |
-| `zalo_sync` | Khởi chạy khôi phục tin nhắn hoặc đồng bộ cảm xúc khi chủ tài khoản yêu cầu; trả về ngay mã công việc (`jobId`). Khôi phục tin nhắn vẫn cần xác nhận trên điện thoại |
+| `zalo_sync` | Khởi chạy một bước đồng bộ khi chủ tài khoản yêu cầu (tin nhắn, cảm xúc, chỉ mục zCloud, tải media, bảng tin nhóm); trả về ngay mã công việc (`jobId`). Khôi phục tin nhắn vẫn cần xác nhận trên điện thoại |
 | `zalo_sync_status` | Xem tiến độ và kết quả đồng bộ |
 | `zalo_search_messages` | Tìm kiếm nội dung văn bản tin nhắn trên toàn bộ cache SQLite cục bộ (`zalo.db`), không gọi mạng |
 | `zalo_lookup_user` | Tra cứu người dùng Zalo theo số điện thoại, username, `userId`, hoặc xem hồ sơ tài khoản đang đăng nhập (`self: true`) |
@@ -262,14 +262,23 @@ Engine này đăng ký **27 MCP tools** trong `src/mcp/mcp-tools.js`, phục v�
 | `zalo_poll` | Tạo, xem chi tiết, bình chọn, rút bình chọn, thêm phương án, khóa hoặc chia sẻ bình chọn nhóm |
 | `zalo_wait_for_message` | Chờ tin nhắn mới tiếp theo trong buffer theo cơ chế long-poll (0% CPU, không cần vòng lặp polling; tương đương `GET /events/wait`) |
 | `zalo_label` | Liệt kê, gắn, gỡ hoặc cập nhật nhãn hội thoại (ví dụ `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) |
-| `zalo_group` | Rời nhóm (có thể rời im lặng), xem thông tin nhóm, tạo nhóm, thêm hoặc xóa thành viên |
-| `zalo_friend` | Trạng thái kết bạn, lời mời đã gửi / đã nhận, gửi / chấp nhận / từ chối / huỷ lời mời, danh sách bạn bè |
+| `zalo_group` | Mọi lệnh `group`: xem, tạo, đổi tên, thành viên, phó nhóm, trưởng nhóm, chặn thành viên, cài đặt, yêu cầu tham gia, link mời và lời mời, rời nhóm, giải tán nhóm |
+| `zalo_friend` | Lời mời kết bạn, danh sách bạn bè, biệt danh, trực tuyến và lần cuối online, xóa bạn, chặn / bỏ chặn, ẩn nhật ký, tìm theo nhiều số điện thoại, mã QR, nhóm chung, thông tin doanh nghiệp |
 | `zalo_read` | Chạy một endpoint chỉ-đọc của Zalo Web mà không tool nào khác phủ tới (danh mục sticker và GIF, tìm GIF, hạng hồ sơ, danh sách chặn, biệt danh, trạng thái…), hoặc liệt kê chúng |
 | `zalo_write` | Thực hiện một lời gọi thay đổi trạng thái của Zalo Web mà không tool nào khác phủ tới (RSVP nhắc hẹn, ghi chú và nhắc hẹn nhóm có lặp lại, ghim, thu hồi nhiều tin…), hoặc liệt kê chúng; gọi thật cần `confirm: true`, `dryRun: true` để xem yêu cầu |
+| `zalo_conversation` | Ghim, lưu trữ, tắt thông báo, ẩn, đánh dấu đã đọc / chưa đọc, tự xóa, xóa hoặc quên một hội thoại; hiển thị đang soạn tin; báo cáo người dùng hoặc nhóm |
+| `zalo_profile` | Ảnh đại diện, tiểu sử, tên, cài đặt riêng tư, trạng thái online, ngôn ngữ và các thiết bị đã liên kết của tài khoản |
+| `zalo_auto_reply` | Liệt kê, tạo, sửa hoặc xóa quy tắc trả lời tự động |
+| `zalo_quick_message` | Liệt kê, thêm, sửa hoặc xóa tin nhắn nhanh |
+| `zalo_catalog` | Danh mục và sản phẩm Zalo Shop |
+| `zalo_bank` | Các ngân hàng được hỗ trợ và tài khoản ngân hàng đã lưu |
+| `zalo_cloud` | Chỉ mục zCloud cục bộ: tóm tắt, kế hoạch dọn dẹp và dọn dẹp thật (được bảo vệ) |
+| `zalo_sticker` | Tìm sticker theo từ khóa và xem chi tiết |
+| `zalo_link` | Xem trước một liên kết và kiểm tra Zalo có coi nó là an toàn không |
 
 Xem thêm [Chi tiết sử dụng đồng bộ qua MCP](docs/mcp-sync.vi.md) / [English](docs/mcp-sync.md).
 
-Các tính năng Official Account (`oa`), danh mục sản phẩm (`catalog`), trả lời tự động (`auto-reply`), tin nhắn nhanh (`quick-msg`), hồ sơ (`profile`), quản lý bạn bè ngoài lời mời kết bạn và danh sách bạn (`friend`; hai phần đó đã có trong `zalo_friend`), quản trị nhóm nâng cao ngoài rời nhóm, xem thông tin, tạo nhóm và thêm/xóa thành viên (`group`; các thao tác đó đã có trong `zalo_group`), và quản lý tài khoản (`account`) **chỉ có trên CLI** — chưa có MCP tool riêng. AI agent có thể sử dụng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
+Mọi lệnh CLI của tài khoản cá nhân đều có hành động MCP tương ứng. **Chỉ có trên CLI**: các lệnh Official Account (`oa …`, một API riêng), đăng nhập và đăng xuất, danh sách tài khoản trên máy (`account list|login|switch|remove|info|export`), các lệnh daemon và fleet (`listen`, `mcp start`, `mcp webhook …`, `fleet …`), `update`, `profile lost-focus`, và `cloud get` (cần khóa cloud của tài khoản); AI agent dùng chúng bằng cách gọi `zalo-agent <lệnh> --json` (hoặc `zalo-mcp <lệnh> --json`).
 
 Tham chiếu đầy đủ về MCP tools (tham số, cấu trúc trả về, cấu hình): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -329,7 +338,7 @@ Thông tin xác thực Official Account được lưu riêng tại `~/.zalo-agen
 
 ## Tham chiếu nhanh lệnh CLI (qua `npx zalo-agent <lệnh>`)
 
-Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 230 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
+Thêm `--json` vào bất kỳ lệnh nào để nhận kết quả JSON phục vụ tự động hóa. Dưới đây là các lệnh tiêu biểu — tài liệu tham chiếu đầy đủ cho toàn bộ 233 lệnh nằm tại [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Phiên đăng nhập & bảo trì
 | Lệnh | Mô tả |

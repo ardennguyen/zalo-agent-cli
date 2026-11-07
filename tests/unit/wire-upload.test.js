@@ -26,6 +26,8 @@ import {
     CHUNK_TIMEOUT_MS,
     DEFAULT_CHUNK_SIZE,
     FINAL_REPLAY_GRACE_MS,
+    GIF_CHUNK_SIZE,
+    GIF_CHUNKS_IN_FLIGHT,
     REPLAY_SIZE_STEP,
     TICK_MS,
     replayDelayMs,
@@ -170,6 +172,9 @@ function playFileDone(reg, names, mode) {
 
 /** Calls the stand-in text half received, with how many requests had gone out before each. */
 const captionCalls = [];
+/** Calls the stand-in forward-video send received (`sendVideoFile` ends in it). */
+const videoCalls = [];
+const VIDEO_MSG_ID = "6100000002";
 let currentFake = null;
 
 const UPLOAD_AREA = { name: "upload", factories: [uploadMethods] };
@@ -180,6 +185,10 @@ const CAPTION_AREA = {
             sendText: async (message, threadId, type) => {
                 captionCalls.push({ message, threadId, type, requestsBefore: currentFake?.requests.length ?? 0 });
                 return { message: { msgId: TEXT_MSG_ID, cliMsgId: String(s.nextClientId()) }, attachment: [] };
+            },
+            sendVideo: async (options, threadId, type) => {
+                videoCalls.push({ options, threadId, type });
+                return { msgId: VIDEO_MSG_ID, cliMsgId: String(s.nextClientId()) };
             },
         }),
     ],
@@ -295,6 +304,15 @@ const made = {
     spaced: join(DIR, "sub dir", "report 1.txt"),
 };
 writeFileSync(made.clip, pattern(3000, 12));
+// A GIF of two full chunks and a short third: the fixture's header (so its size reads 64x48) and filler after it.
+made.bigGif = join(DIR, "big.gif");
+writeFileSync(
+    made.bigGif,
+    Buffer.concat([
+        readFileSync(IMAGES.gif.path),
+        pattern(GIF_CHUNK_SIZE * 2 + 700 - readFileSync(IMAGES.gif.path).length, 4),
+    ]),
+);
 writeFileSync(made.big, pattern(200000, 5));
 writeFileSync(made.wide, pattern(64000 * 5 + 1000, 9));
 writeFileSync(made.exe, pattern(100, 1));
@@ -449,6 +467,114 @@ describe("wire: attachments", () => {
             [gif.params.width, gif.params.height, gif.params.totalChunk, gif.params.chunkId],
             [64, 48, 1, 1],
         );
+    });
+
+    it("a GIF over one chunk goes in 512000-byte chunks, the last one after the others, as the Web sends it", async () => {
+        const answers = {
+            ...replies(),
+            // A chunk taken while the upload goes on answers 220 (the Web reads 0, 1 and 220 as success); the last
+            // one carries the message. Not seen live: every GIF sent so far was one chunk.
+            "/gif": (r) =>
+                r.params.chunkId < r.params.totalChunk
+                    ? { inner: { error_code: 220, error_message: "chunk received", data: { isFinish: 0 } } }
+                    : { data: { msgId: gifMsgIdOf(r.params.fileName), isFinish: 1 } },
+        };
+        const rec = await compared(
+            "sendMessage/gif-chunks",
+            "sendMessage",
+            [{ msg: "", attachments: [made.bigGif] }, USER, 0],
+            { replies: answers },
+        );
+        const chunks = ofKind(rec.own.requests, "gif");
+        const bytes = readFileSync(made.bigGif);
+        // Red if a big GIF went up whole again, or in another chunking than the Web's.
+        assert.deepEqual(
+            chunks.map((c) => [c.params.chunkId, c.params.totalChunk, c.parts[0].size]),
+            [
+                [1, 3, GIF_CHUNK_SIZE],
+                [2, 3, GIF_CHUNK_SIZE],
+                [3, 3, bytes.length - 2 * GIF_CHUNK_SIZE],
+            ],
+        );
+        assert.equal(new Set(chunks.map((c) => c.params.clientId)).size, 1, "one clientId for every chunk");
+        assert.ok(
+            chunks.every((c) => c.params.checksum === md5(bytes)),
+            "the checksum is the whole file's",
+        );
+        assert.equal(rec.own.result.attachment[0].msgId, gifMsgIdOf("big.gif"));
+        assert.equal(rec.own.result.attachment[0].cliMsgId, String(chunks[0].params.clientId));
+        assert.equal(GIF_CHUNKS_IN_FLIGHT, 6);
+    });
+
+    it("a local video goes up as a file, its thumbnail as a photo, then the forward-video send", async () => {
+        videoCalls.length = 0;
+        const rec = await compared(
+            "sendVideoFile/local",
+            "sendVideoFile",
+            [
+                {
+                    file: made.clip,
+                    thumbnailFile: IMAGES.png.path,
+                    width: 640,
+                    height: 360,
+                    duration: 4000,
+                    msg: "clip",
+                },
+                USER,
+                0,
+            ],
+            { replies: replies(), during: playFileDone(reg, ["clip.mp4"], "settle") },
+        );
+        assert.deepEqual(rec.own.requests.map(requestKind), ["chunk", "chunk"], "two uploads, no file or photo send");
+        assert.equal(videoCalls.length, 1);
+        const [{ options, threadId, type }] = videoCalls;
+        // Red if the message did not carry the uploaded video's own address and the thumbnail's HD one.
+        assert.equal(options.videoUrl, fileUrlOf("clip.mp4"));
+        assert.equal(options.thumbnailUrl, photoUrlsOf("image-64x48.png").hdUrl);
+        assert.deepEqual(
+            [options.width, options.height, options.duration, options.fileSize, options.msg],
+            [640, 360, 4000, 3000, "clip"],
+        );
+        assert.deepEqual([threadId, type], [USER, 0]);
+        assert.equal(rec.own.result.msgId, VIDEO_MSG_ID);
+        assert.equal(rec.own.result.videoUrl, fileUrlOf("clip.mp4"));
+    });
+
+    it("a local video with a thumbnail URL uploads the video only", async () => {
+        videoCalls.length = 0;
+        const thumb = "https://photo.zalo.invalid/given/thumb.jpg";
+        const rec = await runOwn(
+            wire,
+            "sendVideoFile",
+            [{ file: made.clip, thumbnailUrl: thumb, width: 1, height: 1 }, GROUP, 1],
+            {
+                replies: replies(),
+                during: playFileDone(reg, ["clip.mp4"], "callback"),
+            },
+        );
+        assert.equal(rec.error, null);
+        assert.equal(rec.requests.length, 1);
+        assert.equal(rec.requests[0].params.grid, GROUP);
+        assert.equal(videoCalls[0].options.thumbnailUrl, thumb);
+        assert.equal(videoCalls[0].type, 1);
+    });
+
+    it("sendVideoFile refuses, before any request, what cannot be a video message", async () => {
+        const cases = [
+            [{ thumbnailUrl: "https://x.zalo.invalid/t.jpg", width: 1, height: 1 }, "Missing video file"],
+            [{ file: made.clip, width: 1, height: 1 }, /needs a thumbnail/],
+            [{ file: made.clip, thumbnailUrl: "https://x.zalo.invalid/t.jpg" }, /width and height/],
+            [
+                { file: IMAGES.png.path, thumbnailUrl: "https://x.zalo.invalid/t.jpg", width: 1, height: 1 },
+                /not a video/,
+            ],
+            [{ file: made.clip, thumbnailFile: made.spaced, width: 1, height: 1 }, /not a jpg, png or webp/],
+        ];
+        for (const [options, message] of cases) {
+            const rec = await runOwn(wire, "sendVideoFile", [options, USER, 0], { replies: replies() });
+            assert.equal(rec.requests.length, 0, JSON.stringify(options));
+            assert.match(rec.error.message, message instanceof RegExp ? message : new RegExp(`^${message}$`));
+        }
     });
 
     it("a photo, a file and a GIF: attachment[i] carries the clientId its own send went out with", async () => {

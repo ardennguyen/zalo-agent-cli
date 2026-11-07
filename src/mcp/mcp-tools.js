@@ -1,17 +1,20 @@
 /**
  * MCP tool registrations for Zalo message access, sending, user lookup, and group productivity.
- * Registers 27 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
+ * Registers 36 tools: zalo_get_messages, zalo_get_history, zalo_send_message, zalo_list_threads,
  * zalo_search_threads, zalo_mark_read, zalo_view_media, zalo_react, zalo_undo, zalo_get_group_members,
  * zalo_list_conversations, zalo_coverage, zalo_sync, zalo_sync_status, zalo_search_messages,
  * zalo_lookup_user, zalo_forward_message, zalo_delete_message, zalo_reminder, zalo_note, zalo_poll,
- * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group, zalo_read, zalo_write.
+ * zalo_wait_for_message, zalo_label, zalo_friend, zalo_group, zalo_read, zalo_write, and the action tools
+ * zalo_conversation, zalo_profile, zalo_auto_reply, zalo_quick_message, zalo_catalog, zalo_bank, zalo_cloud,
+ * zalo_sticker and zalo_link (their action tables are src/mcp/actions-*.js, run by src/mcp/action-tool.js).
+ * Every personal CLI command has an action here; tests/unit/mcp-cli-parity.test.js holds the map.
  *
  * A tool that mirrors a CLI command calls the same code the command does (src/core/cached-message.js,
  * forward.js, pin.js, group-members.js, recent-conversations.js, src/utils/my-documents.js, urgency.js),
  * so the two cannot drift apart.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { openFile } from "../utils/open-file.js";
@@ -28,7 +31,7 @@ import {
 } from "../core/db.js";
 import { searchPage } from "../core/search.js";
 import { parsePeriod } from "../utils/date-range.js";
-import { downloadSyncedMedia } from "../core/sync-v2/media.js";
+import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import { boardPage, groupReminderPage } from "../zalo/api/boards.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
@@ -57,7 +60,7 @@ import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { callRead, describeReads, READ_NAMES, ReadUsageError } from "../zalo/reads.js";
 import "../core/local-reads.js";
-import { callWrite, describeWrites, WRITE_NAMES, WRITES } from "../zalo/writes.js";
+import { buildWrite, callWrite, describeWrites, WRITE_NAMES, WRITES } from "../zalo/writes.js";
 import { describeReadState, readOnZalo } from "../core/read-state.js";
 import { extractMessageText } from "../zalo/format/extract-message-text.js";
 import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../zalo/format/mentions.js";
@@ -68,6 +71,7 @@ import { splitMessage, sendParts } from "../zalo/format/split-message.js";
 import { hasLiteralNewline, LITERAL_NEWLINE_WARNING } from "../utils/literal-newline.js";
 import { markdownToZalo, resolveSendFormat } from "../zalo/format/markdown.js";
 import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "./wait-result.js";
+import { SYNC_STAGES } from "./sync-jobs.js";
 import {
     describeFriendAddError,
     describeFriendUndoError,
@@ -88,6 +92,27 @@ import {
 } from "../core/group-admin.js";
 import { gateMcp, removedLabels } from "../core/confirm-guard.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
+import { actionTool, confirmInput, dryRunInput } from "./action-tool.js";
+import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
+import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
+import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
+import {
+    AUTO_REPLY_ACTIONS,
+    AUTO_REPLY_META,
+    BANK_ACTIONS,
+    BANK_META,
+    CATALOG_ACTIONS,
+    CATALOG_META,
+    QUICK_MESSAGE_ACTIONS,
+    QUICK_MESSAGE_META,
+} from "./actions-business.js";
+import { CLOUD_ACTIONS, CLOUD_META, LINK_ACTIONS, LINK_META, STICKER_ACTIONS, STICKER_META } from "./actions-media.js";
+import {
+    FRIEND_EXTRA_ACTIONS,
+    FRIEND_EXTRA_INPUTS,
+    GROUP_EXTRA_ACTIONS,
+    GROUP_EXTRA_INPUTS,
+} from "./actions-social.js";
 
 /** Repeat mode codes matching Zalo's reminder repeat modes and src/commands/reminder.js. */
 const REMINDER_REPEAT_MODES = { none: 0, daily: 1, weekly: 2, monthly: 3 };
@@ -225,6 +250,29 @@ const threadTypeName = (type) => (Number(type) === THREAD_GROUP ? "group" : "dm"
  * too; 50 is the batch the group commands already use for `getGroupInfo`.
  */
 const MEMBER_NAME_BATCH = 50;
+
+/** The kinds of content zalo_send_message sends besides text; one per call. */
+const SEND_MODES = ["filePath/files", "link", "cardUserId", "sticker", "voiceUrl", "video", "bankCard", "qrTransfer"];
+
+/**
+ * Which of SEND_MODES a zalo_send_message call gives, by its input names.
+ *
+ * @param {object} val - the call's input
+ * @returns {string[]}
+ */
+function sendModes(val) {
+    const hasFile = Boolean(val.filePath || (Array.isArray(val.files) && val.files.length > 0));
+    return [
+        hasFile && "files",
+        val.link && "link",
+        val.cardUserId && "cardUserId",
+        val.sticker && "sticker",
+        val.voiceUrl && "voiceUrl",
+        val.video && "video",
+        val.bankCard && "bankCard",
+        val.qrTransfer && "qrTransfer",
+    ].filter(Boolean);
+}
 
 /** How a refusal tells an agent to supply a message's cliMsgId itself. */
 const CLI_MSG_ID_HINT = "the `cliMsgId` parameter (zalo_send_message returns it for a message you sent)";
@@ -509,24 +557,37 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "so one bot's zalo_mark_read does not hide messages from another. Omit it for a single bot.",
         );
 
-    // Every tool with an action Zalo Web asks about first takes these two, and settles it through gate()
-    // (src/core/confirm-guard.js) after its arguments are checked and before anything is sent.
-    const confirmInput = (which) =>
-        z
-            .boolean()
-            .optional()
-            .describe(
-                `Set true to go ahead with ${which}, which is asked about first. The deployment's confirmMode ` +
-                    'decides what counts: "agent" (the default) needs this; "human" asks the user through the client ' +
-                    'instead, and this does not answer for them; "off" asks nothing',
-            );
-    const dryRunInput = (which) =>
-        z
-            .boolean()
-            .optional()
-            .describe(`Set true to preview ${which}: the reply says what it would do, and nothing is sent`);
+    // Every tool with an action Zalo Web asks about first takes `confirm` and `dryRun` (confirmInput, dryRunInput
+    // in action-tool.js), and settles it through gate() (src/core/confirm-guard.js) after its arguments are checked
+    // and before anything is sent.
+    // Over the stateless HTTP transport this server lives for one request (mcp-http-transport.js marks it), so
+    // "human" mode cannot ask there; the guard says so at once rather than wait for an answer that cannot arrive.
     const gate = (key, target, { confirm, dryRun } = {}, extra, more = {}) =>
-        gateMcp(key, target, { confirm, dryRun, config, accountId: ownIdOf(api), server, extra, ...more });
+        gateMcp(key, target, {
+            confirm,
+            dryRun,
+            config,
+            accountId: ownIdOf(api),
+            server,
+            extra,
+            stateless: server?.statelessHttp === true,
+            ...more,
+        });
+
+    // What an action table's rows read (src/mcp/action-tool.js): the session, the guard, and the helpers that type
+    // a thread and name this account, so a row resolves a thread the way every other tool here does.
+    const toolCtx = {
+        api,
+        ok,
+        err,
+        gate,
+        ownId: () => ownIdOf(api),
+        threadType: resolveThreadType,
+        threadTypeName,
+        onSelfName: (name) => syncJobs?.onSelfName?.(name),
+    };
+    const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
+    const groupExtra = actionTool("zalo_group", GROUP_EXTRA_ACTIONS, toolCtx);
 
     // --- zalo_get_messages ---
     server.registerTool(
@@ -612,7 +673,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Send Zalo Message",
             description:
-                "Send a message to a Zalo conversation: text, files or images, a link preview card, or a contact card. Give `threadId` and one kind of content: `text`, `filePath` or `files`, `link`, or `cardUserId`. With files or a link, `text` is an optional caption. " +
+                "Send a message to a Zalo conversation: text, files or images, a link preview card, a contact card, a sticker, a voice message or a video from a URL, a bank account card, or a VietQR transfer image. Give `threadId` and one kind of content: `text`, `filePath` or `files`, `link`, `cardUserId`, `sticker`, `voiceUrl`, `video`, `bankCard` or `qrTransfer`. With files, a link, a video or a QR transfer, `text` is an optional caption. " +
                 'Text: use real line breaks, never the two characters backslash and n (Zalo shows those as typed). Markdown is converted to Zalo formatting by default; `format: "plain"` sends the text exactly as written. A text over 3000 bytes (a Chinese, Japanese, Korean, Thai or Hindi character is 3, a Cyrillic or Arabic one 2) is split into several messages at paragraph or sentence ends, as Zalo Web does, and the reply then lists every part (`splitInto`, `parts`). ' +
                 "Mention in a group: put `@[userId]` in the text where the tag belongs (`@[-1]` is @All). Take the user id from a message's `senderId` (zalo_get_messages, zalo_get_history) or from zalo_get_group_members. It is sent as `@Their Name` and notifies that person; a user id the cache cannot name is tagged as the bare id and listed in `unresolvedMentions`. Mentions only work in groups. " +
                 "Reply to a message: pass its msgId as `quoteMsgId` (text messages only, and the message must be in the local cache). " +
@@ -630,7 +691,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .min(1)
                         .optional()
                         .describe(
-                            "The message. Real line breaks only: never the two characters backslash and n. Markdown is converted unless `format` is 'plain'. Required unless `filePath`, `files`, `link` or `cardUserId` is given; with those it is the caption. `@[userId]` tokens become @-mentions (`@[-1]` is @All).",
+                            "The message. Real line breaks only: never the two characters backslash and n. Markdown is converted unless `format` is 'plain'. Required unless another kind of content is given; with files, a link, a video or a QR transfer it is the caption. `@[userId]` tokens become @-mentions (`@[-1]` is @All).",
                         ),
                     filePath: z
                         .string()
@@ -656,6 +717,72 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .min(1)
                         .optional()
                         .describe("The user id whose contact card to share in this conversation."),
+                    sticker: z
+                        .string()
+                        .min(1)
+                        .max(100)
+                        .optional()
+                        .describe(
+                            "A keyword: sends the first sticker Zalo finds for it (zalo_sticker 'search' lists them).",
+                        ),
+                    voiceUrl: z
+                        .string()
+                        .url()
+                        .optional()
+                        .describe("The URL of an audio file to send as a voice message (Zalo fetches it from there)."),
+                    video: z
+                        .object({
+                            source: z
+                                .string()
+                                .min(1)
+                                .describe(
+                                    "The video: an http(s) URL Zalo fetches, or a local file path on the machine this server runs on (uploaded)",
+                                ),
+                            thumbnail: z
+                                .string()
+                                .min(1)
+                                .describe("Its thumbnail: an image URL, or a local jpg/png/webp path (uploaded)"),
+                            durationMs: z.number().int().min(0).optional().describe("Its length in milliseconds"),
+                            width: z.number().int().min(1).optional().describe("Its width in pixels (default 1280)"),
+                            height: z.number().int().min(1).optional().describe("Its height in pixels (default 720)"),
+                        })
+                        .strict()
+                        .optional()
+                        .describe(
+                            "A video to send, from a URL or a local file, with its thumbnail. `text` is the caption.",
+                        ),
+                    bankCard: z
+                        .object({
+                            bank: z
+                                .string()
+                                .min(1)
+                                .describe("The bank: a short name such as vcb, ocb or bidv, or its BIN"),
+                            accountNumber: z.string().min(1).max(40).describe("The account number"),
+                            holderName: z.string().min(1).max(100).optional().describe("The account holder's name"),
+                        })
+                        .strict()
+                        .optional()
+                        .describe("A bank account card (số tài khoản) to send; zalo_bank 'banks' lists the banks."),
+                    qrTransfer: z
+                        .object({
+                            bank: z
+                                .string()
+                                .min(1)
+                                .describe("The bank: a short name such as vcb, ocb or bidv, or its BIN"),
+                            accountNumber: z.string().min(1).max(40).describe("The account number to pay into"),
+                            amount: z.number().int().min(1).optional().describe("The amount in VND"),
+                            content: z.string().max(50).optional().describe("The transfer note, at most 50 characters"),
+                            template: z
+                                .enum(["compact", "print", "qronly"])
+                                .optional()
+                                .describe("The QR image's style (default compact)"),
+                        })
+                        .strict()
+                        .optional()
+                        .describe(
+                            "A VietQR transfer image to generate and send. `text` replaces its default caption " +
+                                "(bank, account, amount and note).",
+                        ),
                     threadType: z
                         .enum(["dm", "group"])
                         .optional()
@@ -686,22 +813,19 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                                 "for an ordinary message",
                         ),
                 })
+                .strict()
                 .refine(
-                    (val) =>
-                        Boolean(
-                            val.text ||
-                            val.link ||
-                            val.cardUserId ||
-                            val.filePath ||
-                            (Array.isArray(val.files) && val.files.length > 0),
-                        ),
-                    "Provide at least one of text, filePath, files, link, or cardUserId",
+                    (val) => Boolean(val.text) || sendModes(val).length > 0,
+                    `Provide text, or one of ${SEND_MODES.join(", ")}`,
                 )
-                .refine((val) => {
-                    const hasFile = Boolean(val.filePath || (Array.isArray(val.files) && val.files.length > 0));
-                    const modes = [Boolean(val.link), Boolean(val.cardUserId), hasFile].filter(Boolean).length;
-                    return modes <= 1;
-                }, "Cannot combine link, cardUserId, and file attachments in a single call"),
+                .refine(
+                    (val) => sendModes(val).length <= 1,
+                    `Send one kind of content per call: ${SEND_MODES.join(", ")} cannot be combined`,
+                )
+                .refine(
+                    (val) => !(val.text && ["sticker", "voiceUrl", "bankCard"].includes(sendModes(val)[0])),
+                    "A sticker, a voice message or a bank card carries no text: send the text as its own message",
+                ),
         },
         async ({
             threadId: threadIdIn,
@@ -710,6 +834,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             files,
             link,
             cardUserId,
+            sticker,
+            voiceUrl,
+            video,
+            bankCard,
+            qrTransfer,
             threadType: threadTypeIn,
             quoteMsgId,
             urgency: urgencyIn,
@@ -723,7 +852,115 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return err(thread.error);
             }
             const { threadId, threadType } = thread;
+            // The reply every non-text send shares: the new message's ids, as a text send reports them.
+            const sentReply = (kind, result, more = {}) => {
+                const msgId = result?.msgId ?? result?.message?.msgId ?? null;
+                const cliMsgId = result?.cliMsgId ?? result?.message?.cliMsgId ?? null;
+                return ok({
+                    success: true,
+                    kind,
+                    ...more,
+                    msgId: msgId === null ? null : String(msgId),
+                    ...(cliMsgId !== null && { cliMsgId: String(cliMsgId) }),
+                    threadType: threadTypeName(threadType),
+                    ...(thread.notice && { threadId, notice: thread.notice }),
+                });
+            };
             try {
+                // The kinds `msg sticker`, `send-voice`, `send-video`, `send-bank` and `send-qr-transfer` send,
+                // through the same session calls.
+                if (sticker) {
+                    const found = (await api.searchSticker(sticker))?.[0];
+                    if (!found) return err(`No sticker found for "${sticker}".`);
+                    const stickerObj = {
+                        id: found.sticker_id || found.stickerId || found.id,
+                        cateId: found.cate_id || found.cateId,
+                        type: found.type || 7,
+                    };
+                    return sentReply("sticker", await api.sendSticker(stickerObj, threadId, Number(threadType)), {
+                        stickerId: String(stickerObj.id),
+                    });
+                }
+                if (voiceUrl) {
+                    return sentReply("voice", await api.sendVoice({ voiceUrl, ttl: 0 }, threadId, Number(threadType)));
+                }
+                if (video) {
+                    // As `msg send-video`: a URL Zalo fetches, or a local file uploaded on this server's socket; a
+                    // thumbnail likewise.
+                    const isUrl = (v) => /^https?:\/\//i.test(v);
+                    const size = {
+                        duration: video.durationMs,
+                        width: video.width ?? 1280,
+                        height: video.height ?? 720,
+                    };
+                    if (isUrl(video.source) && isUrl(video.thumbnail)) {
+                        const result = await api.sendVideo(
+                            { videoUrl: video.source, thumbnailUrl: video.thumbnail, msg: text ?? "", ...size },
+                            threadId,
+                            Number(threadType),
+                        );
+                        return sentReply("video", result);
+                    }
+                    if (isUrl(video.source)) {
+                        return err(
+                            "A video sent from a URL takes a thumbnail URL too; a local thumbnail goes with a local video.",
+                        );
+                    }
+                    const file = resolve(video.source.trim());
+                    const thumb = isUrl(video.thumbnail) ? null : resolve(video.thumbnail.trim());
+                    const missing = [file, thumb].filter((p) => p && !existsSync(p));
+                    if (missing.length > 0) return err(`File not found: ${missing.join(", ")}`);
+                    const result = await api.sendVideoFile(
+                        {
+                            file,
+                            msg: text ?? "",
+                            ...(thumb ? { thumbnailFile: thumb } : { thumbnailUrl: video.thumbnail }),
+                            ...size,
+                        },
+                        threadId,
+                        Number(threadType),
+                    );
+                    return sentReply("video", result);
+                }
+                if (bankCard || qrTransfer) {
+                    const spec = bankCard || qrTransfer;
+                    const bin = resolveBankBin(spec.bank);
+                    if (!bin)
+                        return err(`Unknown bank: '${spec.bank}'. zalo_bank 'banks' lists the banks Zalo supports.`);
+                    if (bankCard) {
+                        const payload = { binBank: bin, numAccBank: bankCard.accountNumber };
+                        if (bankCard.holderName) payload.nameAccBank = bankCard.holderName;
+                        const result = await api.sendBankCard(payload, threadId, Number(threadType));
+                        return sentReply("bank_card", result, { bank: BIN_TO_DISPLAY[bin] || String(bin) });
+                    }
+                    const qrPath = await generateQrTransferImage(
+                        bin,
+                        qrTransfer.accountNumber,
+                        qrTransfer.amount,
+                        qrTransfer.content,
+                        qrTransfer.template ?? "compact",
+                    );
+                    if (!qrPath) return err("Could not generate the VietQR image; nothing was sent.");
+                    try {
+                        const caption = text || qrTransferCaption(bin, qrTransfer);
+                        const result = await api.sendMessage(
+                            { msg: caption, attachments: [qrPath] },
+                            threadId,
+                            Number(threadType),
+                        );
+                        const att = Array.isArray(result?.attachment) ? result.attachment[0] : result?.attachment;
+                        return sentReply("qr_transfer", result?.message ?? att ?? result, {
+                            bank: BIN_TO_DISPLAY[bin] || String(bin),
+                        });
+                    } finally {
+                        try {
+                            unlinkSync(qrPath);
+                        } catch {
+                            /* a temp file left behind is harmless */
+                        }
+                    }
+                }
+
                 if (cardUserId) {
                     const result = await api.sendCard({ userId: cardUserId }, threadId, Number(threadType));
                     const messageId = result?.msgId ?? result?.message?.msgId ?? null;
@@ -801,7 +1038,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
 
                 if (!text) {
-                    return err("Provide text, filePath, files, link, or cardUserId.");
+                    return err(`Provide text, or one of ${SEND_MODES.join(", ")}.`);
                 }
 
                 const warnings = [];
@@ -1623,7 +1860,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Request Zalo Sync",
             description:
-                "OWNER ONLY: call it only when the owner explicitly asks. Start a restore of messages (or of the reaction backlog) on this server's existing Zalo connection. The `messages` stage makes the owner's phone ask for a confirmation, which the owner must tap. " +
+                "OWNER ONLY: call it only when the owner explicitly asks. Start a restore of messages, or another sync stage (the reaction backlog, the zCloud index, attachment downloads, group boards), on this server's existing Zalo connection. The `messages` stage makes the owner's phone ask for a confirmation, which the owner must tap; the other stages do not. " +
                 "It returns a job at once: poll zalo_sync_status every few seconds. Reuse the same `requestId` and arguments when retrying, so a retry does not start a second sync. It updates the local cache, not Zalo itself. `messages` restores every conversation in the window; it is not per conversation, and it downloads no media, boards, cloud index or conversation state.",
             inputSchema: z
                 .object({
@@ -1636,10 +1873,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             "Unique request key; reuse the same key and arguments after a timeout to avoid duplicate sync.",
                         ),
                     stage: z
-                        .enum(["messages", "reactions"])
+                        .enum(SYNC_STAGES)
                         .default("messages")
                         .describe(
-                            "`messages` restores chat history from the owner's phone (the phone asks for a confirmation); `reactions` drains Zalo's backlog of reactions (no phone tap).",
+                            "`messages` restores chat history from the owner's phone (the phone asks for a confirmation); `reactions` drains Zalo's backlog of reactions; `cloud` walks the zCloud index (zalo_cloud reads it); `media` downloads the attachments a restore recorded; `boards` stores notes, pinned messages, polls and reminders. Only `messages` taps the phone.",
                         ),
                     days: z
                         .number()
@@ -1647,7 +1884,34 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         .min(1)
                         .max(36500)
                         .optional()
-                        .describe("Restore the last N days; omit both days and from for full phone history."),
+                        .describe(
+                            "Messages: restore the last N days (omit both days and from for full phone history). Media: only attachments from the last N days (default: the window the last restore covered).",
+                        ),
+                    threadId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe("Media and boards only: just this conversation (default: all cached ones)."),
+                    kinds: z
+                        .array(z.enum([...DOWNLOADABLE_KINDS]))
+                        .min(1)
+                        .optional()
+                        .describe("Media only: just these kinds of attachment (default: all)."),
+                    limit: z
+                        .number()
+                        .int()
+                        .min(1)
+                        .max(10000)
+                        .optional()
+                        .describe(
+                            "Media: download at most this many files (the rest wait for the next run). Boards: visit at most this many threads, most recent first (default 200).",
+                        ),
+                    full: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Cloud only: walk from the top and drop every indexed item no page lists (corrects a stale index).",
+                        ),
                     from: z
                         .string()
                         .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -1691,20 +1955,25 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     (value) => !(value.days !== undefined && value.from !== undefined),
                     "Choose days or from, not both",
                 )
-                .refine(
-                    (value) => value.stage !== "reactions" || (value.days === undefined && value.from === undefined),
-                    "Reactions sync has no date window",
-                )
-                .refine(
-                    (value) => value.stage !== "messages" || value.applyRemovals === undefined,
-                    "applyRemovals is reactions-only",
-                )
-                .refine(
-                    (value) =>
-                        value.stage !== "reactions" ||
-                        (value.fullResync === undefined && value.shardSize === undefined),
-                    "fullResync and shardSize are messages-only",
-                ),
+                .refine((value) => {
+                    // Each option belongs to the stages named in its description; any other stage refuses it.
+                    const only = {
+                        days: ["messages", "media"],
+                        from: ["messages"],
+                        waitMs: ["messages", "reactions"],
+                        applyRemovals: ["reactions"],
+                        fullResync: ["messages"],
+                        shardSize: ["messages"],
+                        threadId: ["media", "boards"],
+                        kinds: ["media"],
+                        limit: ["media", "boards"],
+                        full: ["cloud"],
+                    };
+                    const stage = value.stage ?? "messages";
+                    return Object.entries(only).every(
+                        ([k, stages]) => value[k] === undefined || stages.includes(stage),
+                    );
+                }, "An option was given for a stage it does not apply to: each option's description names its stages"),
             annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
         },
         async (args) => {
@@ -3024,7 +3293,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Manage Zalo Friends and Friend Requests",
             description:
-                "Check, list and answer friend requests, and list friends. Actions: " +
+                "Friends and friend requests: check, list and answer requests, list, remove and block friends. Actions: " +
                 "'status' (the relationship with userId: is_friend, and is_requested / is_requesting, Zalo's two flags " +
                 "for a request pending between you and them; to tell which direction a request goes, use the two lists), " +
                 "'sent_requests' (requests you sent that are still pending), " +
@@ -3035,54 +3304,70 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'list' (your friends, most recently active first, capped by limit), " +
                 "'alias' (set the nickname this account shows for userId to `alias`; an empty alias removes it; " +
                 "the nickname is what `senderDisplayName` and `@[userId]` mentions then use), " +
-                "'alias_list' (the nicknames set on this account, capped by limit). " +
+                "'alias_list' (the nicknames set on this account, capped by limit), " +
+                "'online' (friends online now), 'close' (close friends), 'last_online' (when userId was last seen), " +
+                "'remove' (unfriend userId), 'block' / 'unblock' (userId), 'block_feed' (hide userId's posts from the " +
+                "feed; `unblock: true` shows them again), 'find_phones' (users by `phones`), 'qr' (the QR code URL of " +
+                "each of userIds), 'common_groups' (the groups you share with each of userIds), 'biz' (userId's " +
+                "business account details). 'reject', 'undo', 'remove' and 'block' are asked about first: " +
+                "`confirm`, `dryRun`. " +
                 "userId is the numeric Zalo id (zalo_lookup_user finds one from a phone number). " +
                 "Zalo restricts accounts that send many friend requests, so send sparingly.",
-            inputSchema: z.object({
-                action: z
-                    .enum([
-                        "status",
-                        "sent_requests",
-                        "received_requests",
-                        "send",
-                        "accept",
-                        "reject",
-                        "undo",
-                        "list",
-                        "alias",
-                        "alias_list",
-                    ])
-                    .describe("Friend operation to perform"),
-                userId: z
-                    .string()
-                    .min(1)
-                    .optional()
-                    .describe("Numeric Zalo user id (required for status, send, accept, reject, undo and alias)"),
-                message: z
-                    .string()
-                    .optional()
-                    .describe("Message sent with the friend request (only for 'send'; default: none)"),
-                alias: z
-                    .string()
-                    .max(200)
-                    .optional()
-                    .describe(
-                        "Only for 'alias': the nickname to show for userId; an empty string removes the nickname",
-                    ),
-                limit: z
-                    .number()
-                    .int()
-                    .min(1)
-                    .max(1000)
-                    .optional()
-                    .describe(
-                        "Most entries to return for 'list' (default 200) and 'alias_list' (default 100); the reply says how many there are in all",
-                    ),
-                confirm: confirmInput("'reject' and 'undo'"),
-                dryRun: dryRunInput("'reject' and 'undo'"),
-            }),
+            inputSchema: z
+                .object({
+                    action: z
+                        .enum([
+                            "status",
+                            "sent_requests",
+                            "received_requests",
+                            "send",
+                            "accept",
+                            "reject",
+                            "undo",
+                            "list",
+                            "alias",
+                            "alias_list",
+                            ...Object.keys(FRIEND_EXTRA_ACTIONS),
+                        ])
+                        .describe("Friend operation to perform"),
+                    userId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Numeric Zalo user id (required for status, send, accept, reject, undo, alias, remove, block, " +
+                                "unblock, last_online, biz and block_feed)",
+                        ),
+                    message: z
+                        .string()
+                        .optional()
+                        .describe("Message sent with the friend request (only for 'send'; default: none)"),
+                    alias: z
+                        .string()
+                        .max(200)
+                        .optional()
+                        .describe(
+                            "Only for 'alias': the nickname to show for userId; an empty string removes the nickname",
+                        ),
+                    limit: z
+                        .number()
+                        .int()
+                        .min(1)
+                        .max(1000)
+                        .optional()
+                        .describe(
+                            "Most entries to return for 'list' (default 200) and 'alias_list' (default 100); the reply says how many there are in all",
+                        ),
+                    ...FRIEND_EXTRA_INPUTS,
+                    confirm: confirmInput("'reject', 'undo', 'remove' and 'block'"),
+                    dryRun: dryRunInput("'reject', 'undo', 'remove' and 'block'"),
+                })
+                .strict(),
         },
-        async ({ action, userId, message, limit, alias, confirm, dryRun }, extra) => {
+        async (args, extra) => {
+            // The actions added with the action tools run through the shared runner (src/mcp/action-tool.js).
+            if (Object.hasOwn(FRIEND_EXTRA_ACTIONS, args.action)) return friendExtra(args, extra);
+            const { action, userId, message, limit, alias, confirm, dryRun } = args;
             const needsUser = ["status", "send", "accept", "reject", "undo", "alias"].includes(action);
             const target = userId === undefined ? "" : String(userId).trim();
             if (needsUser) {
@@ -3192,43 +3477,79 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'add_members' (add userIds to the group), " +
                 "'remove_member' (remove the one member userId from the group), " +
                 "'leave' (leave the group; `silent` hides the usual notice from ordinary members; the owner still sees it), " +
-                "'rename' (set the group's name to `name`; every member sees the change). " +
+                "'rename' (set the group's name to `name`; every member sees the change), " +
+                "'avatar' (set the group's avatar from a local image, `filePath`), " +
+                "'add_admin' / 'remove_admin' (userIds), 'transfer_owner' (to userId), " +
+                "'block_member' / 'unblock_member' (userIds; a blocked member cannot rejoin), 'blocked' (the blocked " +
+                "members), 'settings' (change `settings`; the rest keep their values), 'upgrade_community', " +
+                "'disperse' (disband the group for everyone), 'pending' / 'approve' / 'reject_member' (join requests, " +
+                "admins only), 'enable_link' / 'disable_link' / 'link_info' (the invite link), 'link_preview' / " +
+                "'join' (a group by its invite `link`), 'invite_boxes' (invitations you received), 'invite_info' / " +
+                "'join_invite' (one of them, by groupId), 'delete_invite' (groupIds), 'invite_to' (invite userId to " +
+                "groupIds), 'members_info' (profiles of userIds). " +
                 "groupId is the group's thread id (zalo_search_threads or zalo_list_conversations finds it); " +
                 "user ids are numeric Zalo ids (zalo_lookup_user finds one from a phone number). " +
-                "'leave' and 'remove_member' cannot be undone from here, so they are asked about first: " +
+                "'leave', 'remove_member', 'remove_admin', 'transfer_owner', 'block_member', 'disperse', " +
+                "'disable_link', and 'settings' when it turns join approval off, are asked about first: " +
                 "`confirm` and `dryRun`, as the deployment's confirmMode decides. Zalo can refuse some members " +
                 "of a create or add_members: the reply lists the members it did and did not take.",
-            inputSchema: z.object({
-                action: z
-                    .enum(["leave", "info", "create", "add_members", "remove_member", "rename"])
-                    .describe("Group operation to perform"),
-                groupId: z
-                    .string()
-                    .min(1)
-                    .optional()
-                    .describe("The group's id (required for leave, info, add_members, remove_member and rename)"),
-                name: z
-                    .string()
-                    .optional()
-                    .describe("The group's name: the new group's for 'create', the name to set for 'rename'"),
-                userIds: z
-                    .array(z.string().min(1))
-                    .min(1)
-                    .max(100)
-                    .optional()
-                    .describe("Numeric Zalo user ids (required for 'create' and 'add_members')"),
-                userId: z.string().min(1).optional().describe("Numeric Zalo user id (required for 'remove_member')"),
-                silent: z
-                    .boolean()
-                    .optional()
-                    .describe(
-                        "Only for 'leave': hide the usual notice from ordinary members; the owner still sees it (default false)",
-                    ),
-                confirm: confirmInput("'leave' and 'remove_member'"),
-                dryRun: dryRunInput("'leave' and 'remove_member'"),
-            }),
+            inputSchema: z
+                .object({
+                    action: z
+                        .enum([
+                            "leave",
+                            "info",
+                            "create",
+                            "add_members",
+                            "remove_member",
+                            "rename",
+                            ...Object.keys(GROUP_EXTRA_ACTIONS),
+                        ])
+                        .describe("Group operation to perform"),
+                    groupId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "The group's id (required for every action except create, link_preview, join, invite_boxes, " +
+                                "delete_invite, invite_to and members_info)",
+                        ),
+                    name: z
+                        .string()
+                        .optional()
+                        .describe("The group's name: the new group's for 'create', the name to set for 'rename'"),
+                    userIds: z
+                        .array(z.string().min(1))
+                        .min(1)
+                        .max(100)
+                        .optional()
+                        .describe(
+                            "Numeric Zalo user ids (required for 'create', 'add_members', 'add_admin', 'remove_admin', " +
+                                "'block_member', 'unblock_member', 'approve', 'reject_member' and 'members_info')",
+                        ),
+                    userId: z
+                        .string()
+                        .min(1)
+                        .optional()
+                        .describe(
+                            "Numeric Zalo user id (required for 'remove_member', 'transfer_owner' and 'invite_to')",
+                        ),
+                    silent: z
+                        .boolean()
+                        .optional()
+                        .describe(
+                            "Only for 'leave': hide the usual notice from ordinary members; the owner still sees it (default false)",
+                        ),
+                    ...GROUP_EXTRA_INPUTS,
+                    confirm: confirmInput("the actions asked about first (listed above)"),
+                    dryRun: dryRunInput("the actions asked about first (listed above)"),
+                })
+                .strict(),
         },
-        async ({ action, groupId, name, userIds, userId, silent, confirm, dryRun }, extra) => {
+        async (args, extra) => {
+            // The actions added with the action tools run through the shared runner (src/mcp/action-tool.js).
+            if (Object.hasOwn(GROUP_EXTRA_ACTIONS, args.action)) return groupExtra(args, extra);
+            const { action, groupId, name, userIds, userId, silent, confirm, dryRun } = args;
             const gid = groupId === undefined ? "" : String(groupId).trim();
             if (["leave", "info", "add_members", "remove_member", "rename"].includes(action)) {
                 if (!gid) return err(`groupId is required for action='${action}'.`);
@@ -3369,6 +3690,25 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         },
     );
 
+    // --- The action tools: one per area, each action the call its CLI command makes (src/mcp/actions-*.js) ---
+    server.registerTool(
+        "zalo_conversation",
+        CONVERSATION_META,
+        actionTool("zalo_conversation", CONVERSATION_ACTIONS, toolCtx),
+    );
+    server.registerTool("zalo_profile", PROFILE_META, actionTool("zalo_profile", PROFILE_ACTIONS, toolCtx));
+    server.registerTool("zalo_auto_reply", AUTO_REPLY_META, actionTool("zalo_auto_reply", AUTO_REPLY_ACTIONS, toolCtx));
+    server.registerTool(
+        "zalo_quick_message",
+        QUICK_MESSAGE_META,
+        actionTool("zalo_quick_message", QUICK_MESSAGE_ACTIONS, toolCtx),
+    );
+    server.registerTool("zalo_catalog", CATALOG_META, actionTool("zalo_catalog", CATALOG_ACTIONS, toolCtx));
+    server.registerTool("zalo_bank", BANK_META, actionTool("zalo_bank", BANK_ACTIONS, toolCtx));
+    server.registerTool("zalo_cloud", CLOUD_META, actionTool("zalo_cloud", CLOUD_ACTIONS, toolCtx));
+    server.registerTool("zalo_sticker", STICKER_META, actionTool("zalo_sticker", STICKER_ACTIONS, toolCtx));
+    server.registerTool("zalo_link", LINK_META, actionTool("zalo_link", LINK_ACTIONS, toolCtx));
+
     // --- zalo_read ---
     server.registerTool(
         "zalo_read",
@@ -3442,6 +3782,14 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         },
         async ({ name, args, dryRun, confirm }, extra) => {
             if (!name) return ok({ writes: describeWrites() });
+            // Arguments first, as for every guarded action: a call missing one is refused as the typo it is, before
+            // anyone is asked to confirm a request that could not be sent. Building the request sends nothing; a
+            // failure that is not about the arguments is left to the call itself.
+            try {
+                buildWrite(api, name, args || {});
+            } catch (e) {
+                if (e instanceof ReadUsageError) return err(e.message);
+            }
             // dryRun is the write's own: it returns the request itself, so only a real call is gated. A raw
             // endpoint runner stays gated even in confirmMode "off".
             if (!dryRun) {

@@ -235,12 +235,12 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
 
 ### MCP tools exposed
 
-This engine source registers **27 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
+This engine source registers **36 MCP tools** in `src/mcp/mcp-tools.js`, all covering the **personal account**:
 
 | Tool | Purpose |
 |:---|:---|
 | `zalo_get_messages` | Read buffered live messages with a cursor for incremental polling |
-| `zalo_send_message` | Send text, file/image attachments (`filePath`/`files`), a link preview card (`link`), or a contact card (`cardUserId`) to a DM or group — with @-mentions, a quote-reply, Important/Urgent `urgency`, or `threadId: "me"` for My Documents |
+| `zalo_send_message` | Send text, file/image attachments (`filePath`/`files`), a link preview card (`link`), a contact card (`cardUserId`), a sticker, a voice message from a URL, a video from a URL or a local file, a bank card or a VietQR transfer image to a DM or group — with @-mentions, a quote-reply, Important/Urgent `urgency`, or `threadId: "me"` for My Documents |
 | `zalo_list_threads` | List buffered threads with unread counts |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread search by name |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer (global, not per-thread; deletes nothing, so several bots can share one server) |
@@ -251,7 +251,7 @@ This engine source registers **27 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_get_group_members` | List a group's members — uid and display name — as `group members` does |
 | `zalo_list_conversations` | Recent conversations from the local cache, newest first, as `conv recent` does |
 | `zalo_coverage` | Read-only: pending coverage gaps in the local cache, how many are resolved, and the `zalo-agent sync --from <date>` run that restores the rest |
-| `zalo_sync` | Start an owner-requested message restore or reaction sync; returns immediately with a job ID. Messages still needs phone confirmation |
+| `zalo_sync` | Start an owner-requested sync stage (messages, reactions, zCloud index, media downloads, group boards); returns immediately with a job ID. Messages still needs phone confirmation |
 | `zalo_sync_status` | Read progress and final result; completed does not mean a partial restore became complete |
 | `zalo_search_messages` | Search message text across the local SQLite cache (`zalo.db`), zero network calls |
 | `zalo_lookup_user` | Look up a Zalo user by phone, username, userId, or inspect the logged-in account (`self: true`) |
@@ -262,14 +262,23 @@ This engine source registers **27 MCP tools** in `src/mcp/mcp-tools.js`, all cov
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll |
 | `zalo_wait_for_message` | Long-poll the live message buffer for the next incoming watched message without manual polling (mirrors `GET /events/wait` for remote HTTPS/OAuth2 MCP clients) |
 | `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) |
-| `zalo_group` | Leave (optionally silently), inspect, create a group, add or remove a member |
-| `zalo_friend` | Friend status, sent and received requests, send / accept / reject / cancel a request, list friends |
+| `zalo_group` | Every `group` command: inspect, create, rename, members, admins, owner, blocked members, settings, join requests, invite links and invitations, leave, disperse |
+| `zalo_friend` | Friend requests, the friend list, nicknames, online and last-seen, remove, block / unblock, hide a feed, find by phones, QR codes, shared groups, business details |
 | `zalo_read` | Run one of Zalo Web's read-only endpoints that no other tool covers (sticker and GIF catalogs and search, profile rank, block list, nicknames, status…), or list them |
 | `zalo_write` | Make one of Zalo Web's state-changing calls that no other tool covers (reminder RSVP, group notes and reminders with repeat rules, pins, multi-recall, …), or list them; a real call needs `confirm: true`, `dryRun: true` shows the request |
+| `zalo_conversation` | Pin, archive, mute, hide, mark read or unread, auto-delete, delete or forget a conversation; typing indicator; report a user or group |
+| `zalo_profile` | This account's avatar, bio, name, privacy settings, online status, language and linked devices |
+| `zalo_auto_reply` | List, create, update or delete auto-reply rules |
+| `zalo_quick_message` | List, add, update or remove quick messages |
+| `zalo_catalog` | Zalo Shop catalogs and products |
+| `zalo_bank` | Supported banks, and the bank accounts saved on this account |
+| `zalo_cloud` | The local zCloud index: summary, cleanup plan, and the cleanup itself (guarded) |
+| `zalo_sticker` | Find stickers by keyword, and their details |
+| `zalo_link` | A link's preview, and whether Zalo considers it safe |
 
 See [Sync usage and details](docs/mcp-sync.md) / [Tiếng Việt](docs/mcp-sync.vi.md).
 
-Official Account, catalog, auto-reply, quick-msg, profile, friend management beyond requests and the friend list (`zalo_friend` covers those), group administration beyond leaving, inspecting, creating and changing membership (`zalo_group` covers those), and account management are **CLI-only** — not exposed as MCP tools. Agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
+Every personal CLI command has an MCP action. **CLI-only** are Official Account commands (`oa …`, a separate API), logging in and out, the local account registry (`account list|login|switch|remove|info|export`), the daemon and fleet commands (`listen`, `mcp start`, `mcp webhook …`, `fleet …`), `update`, `profile lost-focus`, and `cloud get` (it takes the account's cloud key); agents reach them by shelling out to `zalo-agent <command> --json` (or `zalo-mcp <command> --json`).
 
 Full tool reference (parameters, return shapes, config): [skill/references/mcp-guide.md](skill/references/mcp-guide.md).
 
@@ -330,7 +339,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 230 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 233 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |

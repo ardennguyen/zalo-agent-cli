@@ -81,6 +81,18 @@ export function registerCatalogCommands(program) {
         });
 
     catalog
+        .command("product <productId>")
+        .description("Show one product by its id (unverified: no live answer seen yet)")
+        .action(async (productId) => {
+            try {
+                const result = await getApi().getProductInfo(productId);
+                output(result, program.opts().json);
+            } catch (e) {
+                error(`Get product failed: ${e.message}`);
+            }
+        });
+
+    catalog
         .command("add-product <catalogId> <name> <price> <description>")
         .description("Add a product to a catalog")
         .option("--photos <urls...>", "Product photo URLs (up to 5)")

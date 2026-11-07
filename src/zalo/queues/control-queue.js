@@ -38,9 +38,11 @@ const KNOWN = new Map([
     ["fr", { kind: "friend-event", handler: "listener" }],
     ["voice2text", { kind: "transcript", handler: "voice-text" }],
     // A product or catalog added, edited or deleted on another device (the whole `prod_catalog` family), a DM
-    // reminder deleted, the account's device list changed: src/core/control-events.js. Only the named `oneone` act is
-    // handled; the rest of that family (a reminder created or edited) is still named as unhandled.
+    // reminder created, edited or deleted, the account's device list changed: src/core/control-events.js. Only the
+    // named `oneone` acts are handled; another act of that family is still named as unhandled.
     ["prod_catalog", { kind: "catalog", handler: "control-events" }],
+    ["create_reminder11", { kind: "reminder", handler: "control-events" }],
+    ["update_reminder11", { kind: "reminder", handler: "control-events" }],
     ["remove_reminder11", { kind: "reminder", handler: "control-events" }],
     ["update_user_devices", { kind: "devices", handler: "control-events" }],
 ]);

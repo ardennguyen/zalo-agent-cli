@@ -7,7 +7,7 @@
  * factories, and the composed `sendMessage(message, threadId, type)`.
  */
 import { createClientIds } from "./kernel/session.js";
-import { callEndpoint, hostOf } from "./kernel/endpoint.js";
+import { callEndpoint, hostOf, hostsOf } from "./kernel/endpoint.js";
 import { sessionMethods } from "./api/session.js";
 import { messageMethods } from "./api/messages.js";
 import { uploadMethods } from "./api/upload.js";
@@ -25,6 +25,7 @@ import { createListener } from "./listener/listener.js";
  * @property {object} ctx - the live context (the same object for the session's life)
  * @property {(key: string|string[]) => string} host - a service-map base URL, no trailing slash; throws
  *   `CallUsageError` naming the key when the map lacks it
+ * @property {(key: string|string[]) => string[]} hosts - every base URL the key names, in the map's order
  * @property {(def: object, args?: object) => Promise<any>} call - run an endpoint definition (kernel/endpoint.js)
  * @property {() => number} now - the clock
  * @property {() => number} nextClientId - monotonic client ids: `max(now, last + 1)`
@@ -73,6 +74,7 @@ export function createApi(ctx, serviceMap, wsUrls, opts = {}) {
     const s = {
         ctx,
         host: (key) => hostOf(api.zpwServiceMap ?? serviceMap, key),
+        hosts: (key) => hostsOf(api.zpwServiceMap ?? serviceMap, key),
         call: (def, args) => callEndpoint(s, def, args),
         now,
         nextClientId: createClientIds(now),

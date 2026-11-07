@@ -336,15 +336,24 @@ export function startDaemonChannel({
         if (!paths.length || !body.threadId) return reply(400, { error: "paths and threadId are required" });
 
         try {
-            onLog?.(`upload on behalf of a sender: ${paths.length} file(s)`);
+            // A video send (`msg send-video` with a local file) names its options under `video`; the reply says
+            // `video: true`, so a sender can tell this daemon from one that would send the file as a file.
+            const video = body.video && typeof body.video === "object" ? body.video : null;
+            onLog?.(`upload on behalf of a sender: ${paths.length} file(s)${video ? " as a video" : ""}`);
             // Resolved per request, so a reconnect since startup does not
             // park the upload in a dead api's callback table.
-            const result = await getApi().sendMessage(
-                { msg: body.caption || "", attachments: paths },
-                String(body.threadId),
-                Number(body.type) || 0,
-            );
-            reply(200, { ok: true, result });
+            const result = video
+                ? await getApi().sendVideoFile(
+                      { ...video, file: paths[0], msg: body.caption || "" },
+                      String(body.threadId),
+                      Number(body.type) || 0,
+                  )
+                : await getApi().sendMessage(
+                      { msg: body.caption || "", attachments: paths },
+                      String(body.threadId),
+                      Number(body.type) || 0,
+                  );
+            reply(200, { ok: true, result, ...(video ? { video: true } : {}) });
         } catch (e) {
             // The sender decides what to do about it; the daemon stays up.
             reply(200, { ok: false, error: e?.message || String(e) });
@@ -570,8 +579,10 @@ export function startDaemonChannel({
  * Ask the running daemon to perform an attachment send.
  *
  * @param {string} accountDir
- * @param {{paths: string[], threadId: string, type: number, caption?: string, timeoutMs?: number}} req
- * @returns {Promise<{ok: boolean, result?: object, error?: string}|null>} null when no daemon is running
+ * @param {{paths: string[], threadId: string, type: number, caption?: string, timeoutMs?: number,
+ *   video?: object}} req - `video`: send `paths[0]` as a video message with these options (`sendVideoFile`)
+ * @returns {Promise<{ok: boolean, result?: object, error?: string, video?: boolean}|null>} null when no daemon is
+ *   running; `video` true when the daemon sent a video as a video
  */
 export function sendViaDaemon(accountDir, req) {
     const chan = getDaemonChannel(accountDir);
@@ -583,6 +594,7 @@ export function sendViaDaemon(accountDir, req) {
         threadId: String(req.threadId),
         type: Number(req.type) || 0,
         caption: req.caption || "",
+        ...(req.video ? { video: req.video } : {}),
     });
 
     return new Promise((resolve) => {

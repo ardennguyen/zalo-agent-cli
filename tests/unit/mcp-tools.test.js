@@ -59,6 +59,15 @@ const EXPECTED_TOOLS = [
     "zalo_group",
     "zalo_read",
     "zalo_write",
+    "zalo_conversation",
+    "zalo_profile",
+    "zalo_auto_reply",
+    "zalo_quick_message",
+    "zalo_catalog",
+    "zalo_bank",
+    "zalo_cloud",
+    "zalo_sticker",
+    "zalo_link",
 ];
 
 /** Records what registerTools() registers, standing in for McpServer. */
@@ -1694,7 +1703,7 @@ describe("zalo_friend", () => {
     }
     const call = (fa, args) => register({ api: fa.api }).server.call("zalo_friend", args);
 
-    it("takes exactly the ten actions, and a bounded limit", () => {
+    it("takes its first ten actions, and a bounded limit", () => {
         const { server } = register();
         const schema = server.tools.get("zalo_friend").meta.inputSchema;
         for (const action of [
@@ -1711,7 +1720,7 @@ describe("zalo_friend", () => {
         ]) {
             assert.doesNotThrow(() => schema.parse({ action }), action);
         }
-        assert.throws(() => schema.parse({ action: "block" }), "an action outside the list is refused");
+        assert.throws(() => schema.parse({ action: "explode" }), "an action outside the list is refused");
         assert.throws(() => schema.parse({ action: "list", limit: 0 }));
         assert.throws(() => schema.parse({ action: "list", limit: 1001 }));
     });
@@ -2022,7 +2031,7 @@ describe("zalo_group", () => {
         assert.match(r.content[0].text, /166/);
     });
 
-    it("takes exactly the six actions", () => {
+    it("takes its first six actions", () => {
         const schema = register().server.tools.get("zalo_group").meta.inputSchema;
         for (const action of ["leave", "info", "create", "add_members", "remove_member", "rename"]) {
             assert.doesNotThrow(() => schema.parse({ action }), action);
@@ -2495,6 +2504,15 @@ describe("zalo_write", () => {
             topicId: "t9",
             imei: "test-imei-0000",
         });
+    });
+
+    it("checks the arguments before asking for confirmation, so a typo is reported as one", async () => {
+        const wa = writeApi();
+        const res = await run(wa, { name: "topic-remove", args: { groupId: "555" } });
+        assert.equal(res.isError, true);
+        assert.match(res.content[0].text, /^Error: .*needs "topicId"/, "the usage error, not the confirm refusal");
+        assert.equal(res.content.length, 1, "no confirmation-refusal payload");
+        assert.equal(wa.calls.length, 0);
     });
 
     it("refuses a missing argument as an error result, even when confirmed", async () => {

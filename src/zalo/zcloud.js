@@ -68,6 +68,8 @@
  */
 import { boundUtils } from "./kernel/bound.js";
 import { decryptZCloud, encodeZCloudParams } from "./kernel/zcloud-cipher.js";
+import { createDownloadFetch } from "./download-fetch.js";
+import { cloudBlobRequest } from "./zcloud-e2ee.js";
 
 /** Where the viewer key is issued: Zalo Web's authDomain, the session's login host. */
 const AUTH_DOMAIN = "https://wpa.chat.zalo.me";
@@ -486,6 +488,49 @@ export async function fetchCloudDownloadUrl(api, noiseIds) {
         if (answers[k]) urls[id] = answers[k];
     });
     return { urls, unresolved: ids.filter((id) => !urls[id]) };
+}
+
+/**
+ * Download one cloud item's blob the way Zalo Web's download layer does (zcloud-e2ee.js, ZP-10): its signed URL from
+ * `downloadurls`, `?zcloudurl=true` (and the `&` the Web leaves when the item has a key), the `cloud-viewer-key` header,
+ * no cookie, in the account's own identity and proxy. Unverified live: the bare URL answered 404 before.
+ *
+ * The bytes are the blob as stored: encrypted when `encrypted` is true, opened with the account's cloud key
+ * (zcloud-e2ee.js `decryptCloudBlob`), which this client never holds on its own.
+ *
+ * @param {object} api
+ * @param {{noiseId: string, encryptInfo?: object|null, cloudConversation?: boolean}} item
+ * @param {{fetch?: typeof fetch}} [opts] - the transport (tests); the account's download fetch otherwise
+ * @returns {Promise<{bytes: Buffer, encrypted: boolean, wrappedKey: string|null, algoVersion: string|null,
+ *   contentType: string|null}>}
+ * @throws {ZCloudError} for no URL, a viewer key that cannot be had, or an HTTP failure (`.http`, the status as
+ *   `.code`)
+ */
+export async function fetchCloudBlob(api, item, opts = {}) {
+    const noiseId = String(item?.noiseId ?? "");
+    if (!noiseId) throw new ZCloudError("the item has no noiseId");
+    const found = await fetchCloudDownloadUrl(api, noiseId);
+    const downloadUrl = found?.urls?.[noiseId];
+    if (!downloadUrl) throw new ZCloudError("Zalo gave no download URL for this item (NOT_FOUND_DOWNLOAD_URL)");
+    const { key } = await resolveCloudKey(api);
+    const req = cloudBlobRequest({
+        downloadUrl,
+        encryptInfo: item.encryptInfo ?? null,
+        viewerKey: key.viewerKey,
+        cloudConversation: Boolean(item.cloudConversation),
+    });
+    const fetchFn = opts.fetch ?? createDownloadFetch(api);
+    const res = await fetchFn(req.url, { method: "GET", headers: req.headers });
+    if (!res?.ok) {
+        throw new ZCloudError(`zCloud download failed with HTTP ${res?.status}`, res?.status ?? null, { http: true });
+    }
+    return {
+        bytes: Buffer.from(await res.arrayBuffer()),
+        encrypted: req.encrypted,
+        wrappedKey: req.wrappedKey,
+        algoVersion: req.algoVersion,
+        contentType: res.headers?.get?.("content-type") ?? null,
+    };
 }
 
 /**

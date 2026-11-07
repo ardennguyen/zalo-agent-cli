@@ -2,13 +2,15 @@
 
 [Tiếng Việt](mcp-sync.vi.md)
 
-The engine exposes 27 MCP tools, including `zalo_sync` and `zalo_sync_status`
+The engine exposes 36 MCP tools, including `zalo_sync` and `zalo_sync_status`
 (available in `@ardennguyen/zalo-agent-cli` v2.1.0+ and `@ardennguyen/zalo-mcp`
 v2.0.0+). `mcp start --account <ID>` (or `ZALO_ACCOUNT=<ID>`) pins the process
 to a specific registered account at startup and across reconnects; sync tools
 use only that account's runners and lock, with no per-request account override.
 
 ## Usage
+
+Besides `messages` (below) and `reactions`, `stage` takes `cloud` (walk the zCloud index, as `sync-cloud`; `full: true` walks from the top), `media` (download the attachments a restore recorded, as `sync-media`: `threadId`, `kinds`, `days`, and `limit` files this run) and `boards` (notes, pins, polls and reminders, as `sync-boards`: `threadId`, `limit` threads). Only `messages` taps the phone; an option given for a stage it does not apply to is refused.
 
 Call `zalo_sync` only after the owner explicitly requests synchronization. A
 coverage report or missing search result alone does not authorize a phone prompt.

@@ -1707,6 +1707,7 @@ function printPlan(plan, win, jsonMode) {
             window: win.label,
             openSocket: plan.openSocket,
             viaDaemon: plan.viaDaemon,
+            cloudViaDaemon: Boolean(plan.cloudViaDaemon),
             stages: plan.stages.map((s) => ({
                 stage: s.name,
                 transport: s.transport,
@@ -1724,6 +1725,10 @@ function printPlan(plan, win, jsonMode) {
                 info("stops nothing, and the daemon keeps capturing live messages throughout.");
             } else {
                 info(plan.openSocket ? "Opens the WebSocket once, for the socket stages." : "Opens no WebSocket.");
+            }
+            if (plan.cloudViaDaemon) {
+                info("The zCloud walk runs in the running daemon (it walks the same queue on its own; two walkers");
+                info("would write its saved place out of order).");
             }
             for (const s of plan.stages) {
                 const tag = s.run ? (s.phone ? "RUN  (wakes your phone)" : "RUN") : "skip";
@@ -1802,6 +1807,10 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
                 freshness,
                 lockOk: !checkLock(accountDir).locked,
                 daemonChannel: Boolean(chan),
+                cloudRoute: cloudWalkRoute({
+                    locked: checkLock(accountDir).locked,
+                    chan: getSyncChannel(accountDir, "cloud"),
+                }),
             }),
             win,
             jsonMode,

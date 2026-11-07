@@ -236,3 +236,21 @@ export async function generateQrTransferImage(bin, accountNumber, amount = null,
         return null;
     }
 }
+
+/**
+ * The caption `msg send-qr-transfer` puts under its VietQR image: bank and account, then the amount and the note
+ * when given.
+ *
+ * @param {number} bin
+ * @param {{accountNumber: string, amount?: number|null, content?: string|null}} transfer
+ * @returns {string}
+ */
+export function qrTransferCaption(bin, { accountNumber, amount = null, content = null }) {
+    return [
+        `QR chuyển khoản ${BIN_TO_DISPLAY[bin]} - ${accountNumber}`,
+        amount ? `${amount.toLocaleString()}đ` : null,
+        content || null,
+    ]
+        .filter(Boolean)
+        .join(" - ");
+}

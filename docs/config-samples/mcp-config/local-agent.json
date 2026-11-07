@@ -17,5 +17,10 @@
         "on": ["dm"],
         "cooldown": "5m"
     },
-    "confirmMode": "agent"
+    "confirmMode": "agent",
+    "hiddenChats": "exclude",
+    "allowPinArgument": false,
+    "pinPage": {
+        "publicBaseUrl": null
+    }
 }

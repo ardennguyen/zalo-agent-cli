@@ -12,5 +12,10 @@
         "downloadDir": null,
         "autoOpen": false
     },
-    "confirmMode": "agent"
+    "confirmMode": "agent",
+    "hiddenChats": "exclude",
+    "allowPinArgument": false,
+    "pinPage": {
+        "publicBaseUrl": null
+    }
 }

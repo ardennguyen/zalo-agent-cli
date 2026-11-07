@@ -21,5 +21,10 @@
             "webhook": "https://crm.example.com/hooks/zalo/shop-b",
             "watchThreads": ["dm:*", "group:support"]
         }
+    },
+    "hiddenChats": "exclude",
+    "allowPinArgument": false,
+    "pinPage": {
+        "publicBaseUrl": null
     }
 }

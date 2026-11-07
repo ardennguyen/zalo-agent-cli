@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+### On-demand presence (groundwork; the daemons are not switched yet)
+
+- The presence core (`src/core/presence.js`): holds (a tool call, a wait, a CRM lease, a CLI request, a stage, the start-up catch-up), the park/wake state machine, the idle timeout (`5m`, never before `minConnected` `60s`), hysteresis (over `12` wakes an hour the idle timeout doubles per wake, up to an hour), always-on as one permanent hold, the catch-up pulse (**off** by default) with a per-account offset, metered connected time and wait time. `listen` and `mcp start` still stay connected all the time: switching them to on-demand is a later, separate change.
+
 ### fleet purge for a timer
 
 - feat: **`fleet purge [accounts...] [--dry-run|--yes]`**, for a systemd timer or cron: for each account on this machine with **no running daemon**, the same purge as `db purge`, under the account's `daemon.lock` (so a stopped account's grace period and age rules still run out); a **running daemon** is left alone while its last check is within `retention.purgeEvery` × 2, and asked over its channel to run it when it is behind. Guarded (exit 2 without `--yes`). `fleet generate` now also writes `zalo-mcp-purge.service` and `zalo-mcp-purge.timer` (hourly, random minute, `Persistent=true`); samples in `docs/config-samples/systemd/`. Each pass records `lastPass` in `quota-state.json`.

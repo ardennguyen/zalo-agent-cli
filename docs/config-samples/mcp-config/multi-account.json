@@ -8,7 +8,15 @@
     },
     "media": {
         "downloadDir": null,
-        "autoOpen": false
+        "autoOpen": false,
+        "deliver": {"photo": "inline", "gif": "inline", "doodle": "inline", "sticker": "inline", "voice": "inline", "audio": "inline", "video": "link", "file": "link"},
+        "inlineMaxBytes": 5242880,
+        "allowDeliver": ["inline", "link"],
+        "linkTtl": "10m",
+        "tempfileTtl": "10m",
+        "linkAuth": "auto",
+        "linkRateLimit": 60,
+        "capability": { "maxClients": 3, "ttl": "15m" }
     },
     "confirmMode": "agent",
     "accounts": {
@@ -19,7 +27,8 @@
         "1000000000000000002": {
             "httpPort": 3902,
             "webhook": "https://crm.example.com/hooks/zalo/shop-b",
-            "watchThreads": ["dm:*", "group:support"]
+            "watchThreads": ["dm:*", "group:support"],
+            "media": { "capability": { "maxClients": 10, "ttl": "30m" } }
         }
     },
     "hiddenChats": "exclude",

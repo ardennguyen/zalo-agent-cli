@@ -2,7 +2,7 @@
  * The media container (src/core/keystore/media-seal.js) and an account's media at rest (src/core/media-store.js):
  * round trips at the chunk edges, random access for HTTP Range reads, every tamper that must fail, the two-slot rekey
  * and its crash, the in-place seal of a 2.x plaintext file and its crashes, the account-level migration, status and
- * rekey, and the stopgap decrypted copy.
+ * rekey, and the decrypted copies of src/core/media-deliver.js.
  */
 import { SANDBOX_HOME, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -29,7 +29,7 @@ import {
     writeSealedMedia,
 } from "../../src/core/keystore/media-seal.js";
 import { mediaStatus, migrateMedia, rekeyMedia } from "../../src/core/media-store.js";
-import { decryptToTempfile, mediaTempRoot, removeMediaTemp, sweepMediaTemp } from "../../src/core/media-tempfile.js";
+import { decryptToTempfile, mediaTempRoot, removeMediaTemp, sweepMediaTemp } from "../../src/core/media-deliver.js";
 import { fullSecurityStatus, migrateStores } from "../../src/core/keystore/stores.js";
 
 let n = 0;
@@ -384,7 +384,7 @@ describe("plaintext media from 2.x", () => {
     });
 });
 
-describe("decrypted copies (stopgap until WP6)", () => {
+describe("decrypted copies (media-deliver tempfiles)", () => {
     it("go to a private folder under the config dir, and are removed on request or by the sweep", () => {
         const f = sealedFile(2000);
         const copy = decryptToTempfile(f.file, f.scope, { msgId: "m1" });

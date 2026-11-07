@@ -75,6 +75,9 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_ALLOW_PIN_ARGUMENT` | có | `true` cho phép các tool trò chuyện ẩn nhận mã PIN qua input `pin`. Mặc định `false`: input bị ghi vào log của MCP client và ngữ cảnh của mô hình. Chỉ dành cho client không phải AI | | `allowPinArgument` |
 | `ZALO_MCP_APPROVAL_SECRET` | có | trang duyệt (`confirmMode: "human"`) hỏi thêm gì ngoài một cú bấm, để một agent mở được link cũng không tự duyệt được hành động của chính nó: `pin` (mã PIN trò chuyện ẩn, có khóa tạm khi sai), `password` (mật khẩu người duyệt đặt bằng `zalo-agent mcp approver set`, chỉ lưu dạng băm scrypt có salt), `none` (bấm là duyệt: yếu hơn) hoặc `auto` (mặc định: mật khẩu người duyệt khi đã đặt và link đi qua agent, nếu không thì không hỏi gì và kết quả ghi `approverSecret: false`) | | `approval.secret` |
 | `ZALO_MCP_APPROVAL_DELIVER` | có | link của trang duyệt hoặc trang PIN được gửi đi đâu: `result` (mặc định: trong kết quả của tool), `webhook` (chỉ gửi tới webhook MCP, dạng sự kiện `approval_requested`; kết quả của tool không có link) hoặc `both` | | `approval.deliver` |
+| `ZALO_MCP_MEDIA_DELIVER` | có | cách `zalo_view_media` trả media đã lưu, cho mọi loại (`link`) hoặc theo từng loại (`photo=inline,video=link`): `inline` (nội dung image/audio của MCP), `link` (`<publicUrl>/zalo/media/<token>`) hoặc `tempfile` (bản giải mã riêng tư trên máy này). Ghi đè `media.deliver` theo từng loại; `deliver` của chính lời gọi được ưu tiên hơn | | `media.deliver` |
+| `ZALO_MCP_MEDIA_LINK_AUTH` | có | ai được tải link media: `bearer` (yêu cầu kèm `Authorization` của máy chủ này: `--auth`, `ZALO_MCP_AUTH_TOKEN` hoặc token OAuth), `capability` (chỉ cần link, giới hạn `media.capability.maxClients` địa chỉ client khi ra ngoài máy này) hoặc `auto` (mặc định: `bearer` khi `publicUrl` là máy khác, ngược lại `capability`) | | `media.linkAuth` |
+| `ZALO_MCP_TRUSTED_PROXIES` | có | danh sách địa chỉ reverse proxy (phân tách bằng dấu phẩy) mà `X-Forwarded-For` của nó được tin (`127.0.0.1`, hoặc `loopback`). Mặc định không có: địa chỉ client là đầu kia của kết nối | | `trustedProxies` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | đã lỗi thời: `0` nghĩa là chế độ `off`, `1` là `agent`; chế độ xác nhận đặt rõ được ưu tiên | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | số tên DM không phải bạn bè mà một lần restore được tra. Mặc định 500 | | |
 | `ZALO_START_JITTER` | có | chờ một khoảng ngẫu nhiên tối đa chừng này giây (0–600, mặc định 0) trước khi đăng nhập, để một đội daemon khởi động lại cùng lúc không đăng nhập cùng lúc | | |
@@ -103,7 +106,16 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `limits.bufferMaxAge` | `"2h"` | tin nằm trong bộ đệm live bao lâu |
 | `limits.bufferMaxSize` | 500 | số tin giữ trong bộ đệm live **cho mỗi thread** |
 | `media.downloadDir` | `null` | thư mục gốc media của máy chủ này (file trong đó được niêm phong bằng khóa media của tài khoản, như thư mục mặc định) |
-| `media.autoOpen` | `true` | tự mở media đã tải trên máy này; đặt `false` trên máy chủ |
+| `media.autoOpen` | không đặt (= `true` khi stdio, `false` khi HTTP) | `zalo_view_media` mở file bằng trình xem của máy này (qua tempfile). Qua HTTP thì không bao giờ mở |
+| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | theo từng loại: `inline`, `link` hoặc `tempfile` (xem `ZALO_MCP_MEDIA_DELIVER`). Inline lớn hơn `inlineMaxBytes`, hoặc kiểu client không hiển thị được, chuyển thành link; tempfile cho client ở máy khác chuyển thành link |
+| `media.inlineMaxBytes` | `5242880` | ảnh hoặc tin nhắn thoại lớn nhất gửi inline (5 MB là khoảng 6,7 MB base64 trong ngữ cảnh của model) |
+| `media.allowDeliver` | `["inline","link","tempfile"]` | các cách một lời gọi, hoặc mặc định, được chọn. Máy chủ CRM có thể bỏ `tempfile` |
+| `media.linkTtl` | `"10m"` | link media dùng được bao lâu |
+| `media.tempfileTtl` | `"10m"` | bản giải mã được giữ bao lâu trước khi bị xóa |
+| `media.linkAuth` | không đặt (= `auto`) | `auto`, `bearer` hoặc `capability` (xem `ZALO_MCP_MEDIA_LINK_AUTH`) |
+| `media.linkRateLimit` | `60` | số yêu cầu mỗi phút một địa chỉ client được gửi tới link media (và 10 token lạ mỗi phút), sau đó `429` |
+| `media.capability.maxClients`, `.ttl` | `3`, `"15m"` | link capability ra ngoài máy này phục vụ tối đa chừng này địa chỉ client khác nhau, mỗi địa chỉ trong chừng này thời gian kể từ yêu cầu đầu tiên (load balancer, kết nối lại trên mạng khác, các yêu cầu range của trình phát video). Nâng theo tài khoản trong `accounts.<ownId>.media.capability` |
+| `trustedProxies` | `null` (không có) | các reverse proxy mà `X-Forwarded-For` được tin (xem `ZALO_MCP_TRUSTED_PROXIES`). Ghi địa chỉ proxy của bạn, nếu không giới hạn theo client chỉ thấy một client |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | tắt | báo vào một nhóm Zalo khi agent vắng mặt |
 | `webhook`, `webhookSecret` | `null` | đẩy mỗi tin tới một URL, có ký (nên dùng `ZALO_WEBHOOK_SECRET`) |
 | `webhookBatchSize` | `1` | số sự kiện mỗi POST webhook (1–100) |

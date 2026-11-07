@@ -35,7 +35,7 @@ import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.j
 import { mediaPlainSize } from "../core/keystore/media-seal.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { getAccountDir } from "../core/credentials.js";
-import { decryptToTempfile, removeMediaTemp } from "../core/media-tempfile.js";
+import { decryptToTempfile, removeMediaTemp } from "../core/media-deliver.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import { boardPage, groupReminderPage } from "../zalo/api/boards.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
@@ -2361,7 +2361,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             `Message ${msgId} is "${row.type}" but its media is not downloaded locally. Call zalo_view_media with msgId="${msgId}" first.`,
                         );
                     }
-                    // Sealed on disk: the upload gets a private decrypted copy for the send only (stopgap, WP6).
+                    // Sealed on disk: the upload gets a private decrypted copy for the send only (media-deliver.js).
                     const copy = decryptToTempfile(resolve(row.localPath), mediaScope(), {
                         msgId: row.msgId,
                         ttlMs: 0,

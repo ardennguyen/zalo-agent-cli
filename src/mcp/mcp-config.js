@@ -30,10 +30,26 @@ export function getDefaultConfig() {
             bufferMaxAge: "2h",
             bufferMaxSize: 500,
         },
+        // Cached media (src/core/media-deliver.js, resolveMediaDelivery / resolveMediaLinkAuth in
+        // src/core/deploy-policy.js). Unset (null) keys take the defaults named beside them.
         media: {
             downloadDir: null, // unset -> the same per-account dir every other command uses
-            autoOpen: true,
+            // zalo_view_media opens the file with this machine's viewer: unset = true on stdio, false over HTTP.
+            autoOpen: null,
+            // Per kind: "inline" (MCP image/audio content), "link" (/zalo/media/<token>) or "tempfile" (a private
+            // decrypted copy). Unset: photo/gif/doodle/sticker/voice/audio inline, video/file link.
+            deliver: null,
+            inlineMaxBytes: null, // 5242880: larger media goes as a link
+            allowDeliver: null, // ["inline","link","tempfile"]: what a call (or the defaults) may pick
+            linkTtl: null, // "10m"
+            tempfileTtl: null, // "10m"
+            linkAuth: null, // "auto": "bearer" when publicUrl is another host, else "capability"
+            linkRateLimit: null, // 60 requests a minute per client address
+            capability: null, // {maxClients: 3, ttl: "15m"}: distinct client addresses a capability link serves
         },
+        // Reverse proxies whose X-Forwarded-For is believed (e.g. ["127.0.0.1"]). Unset (null) means
+        // ZALO_MCP_TRUSTED_PROXIES, else none: the client address is the socket's peer.
+        trustedProxies: null,
         tls: {
             cert: null,
             key: null,
@@ -75,6 +91,17 @@ export function getDefaultConfig() {
     };
 }
 
+/** The media block of two layers: its per-kind `deliver` map and `capability` limits merge key by key. */
+function mergeMedia(base = {}, layer) {
+    if (!layer || typeof layer !== "object") return { ...base };
+    const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : null);
+    const out = { ...base, ...layer };
+    for (const key of ["deliver", "capability"]) {
+        if (obj(base?.[key]) && obj(layer[key])) out[key] = { ...base[key], ...layer[key] };
+    }
+    return out;
+}
+
 /**
  * Deep-merge an override layer over a base MCP config object.
  * @param {object} base
@@ -88,7 +115,7 @@ export function mergeMCPConfigLayer(base, layer) {
         ...layer,
         notify: { ...base.notify, ...(layer.notify || {}) },
         limits: { ...base.limits, ...(layer.limits || {}) },
-        media: { ...base.media, ...(layer.media || {}) },
+        media: mergeMedia(base.media, layer.media),
         tls: { ...base.tls, ...(layer.tls || {}) },
         approval: { ...base.approval, ...(layer.approval || {}) },
         oauth: {

@@ -267,3 +267,264 @@ export function resolveApproval({ config, env = process.env, accountId } = {}) {
     );
     return { secret, secretSource, deliver, deliverSource };
 }
+
+// ── Media delivery (zalo_view_media, `msg media`, /zalo/media/<token>) ─────────────────────────────────────────────
+
+/** How a cached photo, voice message, video or file reaches the caller. */
+export const MEDIA_DELIVER_MODES = Object.freeze(["inline", "link", "tempfile"]);
+/** The media kinds a message carries, as the cache types them. */
+export const MEDIA_KINDS = Object.freeze(["photo", "gif", "doodle", "sticker", "voice", "audio", "video", "file"]);
+/** The default mode per kind: pictures and voice inline (up to inlineMaxBytes), video and files as a link. */
+export const DEFAULT_MEDIA_DELIVER = Object.freeze({
+    photo: "inline",
+    gif: "inline",
+    doodle: "inline",
+    sticker: "inline",
+    voice: "inline",
+    audio: "inline",
+    video: "link",
+    file: "link",
+});
+/** Who may fetch a media link: the MCP bearer token, or the link alone (`auto`: by where the link points). */
+export const MEDIA_LINK_AUTHS = Object.freeze(["auto", "bearer", "capability"]);
+/** The defaults of the `media.*` limits. */
+export const MEDIA_DEFAULTS = Object.freeze({
+    inlineMaxBytes: 5 * 1024 * 1024,
+    linkTtlMs: 10 * 60_000,
+    tempfileTtlMs: 10 * 60_000,
+    linkRateLimit: 60,
+    capabilityMaxClients: 3,
+    capabilityTtlMs: 15 * 60_000,
+});
+
+/**
+ * A duration as `"10m"`, `"30s"`, `"1h"`, `"500ms"` or a number of milliseconds; null when it is not one.
+ *
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+export function durationMs(value) {
+    if (typeof value === "number") return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+    const m = /^\s*(\d+)\s*(ms|s|m|h|d)?\s*$/i.exec(String(value ?? ""));
+    if (!m) return null;
+    const unit = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[(m[2] || "ms").toLowerCase()];
+    const n = Number(m[1]) * unit;
+    return n > 0 ? n : null;
+}
+
+/** The account's own `media` block in mcp-config.json (`accounts.<ownId>.media`), when there is one. */
+function accountMedia(config, accountId) {
+    const id = accountId ? String(accountId).trim() : "";
+    const block = id && config?.accounts && typeof config.accounts === "object" ? config.accounts[id] : null;
+    return block?.media && typeof block.media === "object" ? block.media : null;
+}
+
+/**
+ * Read a per-kind mode list: `"link"` (every kind) or `"photo=inline,video=link"`; an object in mcp-config.json.
+ * Unknown kinds and modes are reported once and skipped.
+ */
+function deliverMap(value, source) {
+    if (value === undefined || value === null || value === "") return null;
+    const out = {};
+    const put = (kind, mode) => {
+        const k = String(kind).trim().toLowerCase();
+        const m = String(mode ?? "")
+            .trim()
+            .toLowerCase();
+        if (!MEDIA_KINDS.includes(k)) return warnOnce(`${source}.${k}`, kind, `one of ${MEDIA_KINDS.join(", ")}`);
+        if (!MEDIA_DELIVER_MODES.includes(m)) return warnOnce(`${source}.${k}`, mode, "inline, link or tempfile");
+        out[k] = m;
+    };
+    if (typeof value === "object") {
+        for (const [k, m] of Object.entries(value)) put(k, m);
+        return out;
+    }
+    const text = String(value).trim();
+    if (!text.includes("=")) {
+        const m = text.toLowerCase();
+        if (!MEDIA_DELIVER_MODES.includes(m)) {
+            warnOnce(source, value, "inline, link, tempfile or a list like photo=inline,video=link");
+            return null;
+        }
+        for (const k of MEDIA_KINDS) out[k] = m;
+        return out;
+    }
+    for (const pair of text.split(",")) {
+        const [k, m] = pair.split("=");
+        if (k?.trim()) put(k, m);
+    }
+    return out;
+}
+
+/**
+ * How cached media is delivered, and the limits around it (`media.*` in mcp-config.json). Per kind, highest first:
+ * `ZALO_MCP_MEDIA_DELIVER_<ownId>`, `ZALO_MCP_MEDIA_DELIVER`, `accounts.<ownId>.media.deliver`, `media.deliver`, then
+ * {@link DEFAULT_MEDIA_DELIVER}. A per-call choice (`deliver` on zalo_view_media, `--deliver` on `msg media`) beats
+ * all of these; `allowDeliver` caps what any of them may pick.
+ *
+ * @param {object} [sources]
+ * @param {{media?: object, accounts?: object}|null} [sources.config]
+ * @param {NodeJS.ProcessEnv} [sources.env]
+ * @param {string} [sources.accountId]
+ * @returns {{deliver: Record<string, string>, deliverSource: Record<string, string>, allowDeliver: string[],
+ *   inlineMaxBytes: number, linkTtlMs: number, tempfileTtlMs: number, linkRateLimit: number,
+ *   autoOpen: boolean|null}}
+ */
+export function resolveMediaDelivery({ config, env = process.env, accountId } = {}) {
+    const own = accountMedia(config, accountId);
+    const media = { ...(config?.media || {}), ...(own || {}) };
+    const id = accountId ? String(accountId).trim() : "";
+    const deliver = { ...DEFAULT_MEDIA_DELIVER };
+    const deliverSource = Object.fromEntries(MEDIA_KINDS.map((k) => [k, "default"]));
+    // Lowest first, so a higher layer overwrites only the kinds it names.
+    const layered = [
+        [config?.media?.deliver, "media.deliver"],
+        [own?.deliver, `accounts.${id}.media.deliver`],
+        [env?.ZALO_MCP_MEDIA_DELIVER, "ZALO_MCP_MEDIA_DELIVER"],
+        ...(id ? [[env?.[`ZALO_MCP_MEDIA_DELIVER_${id}`], `ZALO_MCP_MEDIA_DELIVER_${id}`]] : []),
+    ];
+    for (const [value, source] of layered) {
+        const map = deliverMap(value, source);
+        if (!map) continue;
+        for (const [k, m] of Object.entries(map)) {
+            deliver[k] = m;
+            deliverSource[k] = source;
+        }
+    }
+    let allowDeliver = [...MEDIA_DELIVER_MODES];
+    if (Array.isArray(media.allowDeliver)) {
+        const listed = media.allowDeliver.map((m) => String(m).trim().toLowerCase());
+        const bad = listed.filter((m) => !MEDIA_DELIVER_MODES.includes(m));
+        if (bad.length) warnOnce("media.allowDeliver", bad.join(","), "inline, link or tempfile");
+        const kept = MEDIA_DELIVER_MODES.filter((m) => listed.includes(m));
+        if (kept.length) allowDeliver = kept;
+        else warnOnce("media.allowDeliver", "[]", "a list with at least one mode");
+    }
+    const positive = (value, name, fallback) => {
+        if (value === undefined || value === null || value === "") return fallback;
+        const n = Number(value);
+        if (Number.isInteger(n) && n > 0) return n;
+        warnOnce(name, value, "a positive whole number");
+        return fallback;
+    };
+    const duration = (value, name, fallback) => {
+        if (value === undefined || value === null || value === "") return fallback;
+        const ms = durationMs(value);
+        if (ms && ms >= 1000) return ms;
+        warnOnce(name, value, 'a duration of at least 1s (e.g. "10m")');
+        return fallback;
+    };
+    const autoOpen = media.autoOpen === true ? true : media.autoOpen === false ? false : null;
+    return {
+        deliver,
+        deliverSource,
+        allowDeliver,
+        inlineMaxBytes: positive(media.inlineMaxBytes, "media.inlineMaxBytes", MEDIA_DEFAULTS.inlineMaxBytes),
+        linkTtlMs: duration(media.linkTtl, "media.linkTtl", MEDIA_DEFAULTS.linkTtlMs),
+        tempfileTtlMs: duration(media.tempfileTtl, "media.tempfileTtl", MEDIA_DEFAULTS.tempfileTtlMs),
+        linkRateLimit: positive(media.linkRateLimit, "media.linkRateLimit", MEDIA_DEFAULTS.linkRateLimit),
+        autoOpen,
+    };
+}
+
+/**
+ * True for a URL whose host is this machine (localhost, 127.0.0.1, [::1]).
+ *
+ * @param {unknown} url
+ * @returns {boolean}
+ */
+export function isLoopbackUrl(url) {
+    try {
+        return LOOPBACK_HOSTS.has(new URL(String(url)).hostname.toLowerCase());
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Who may fetch a media link (`media.linkAuth`), and how far a capability link travels off this machine.
+ *
+ * - `bearer`: the request must carry the MCP server's own Authorization (`--auth` / `ZALO_MCP_AUTH_TOKEN` / an OAuth
+ *   access token) as well as the link. The default when publicUrl is set to a host other than this machine.
+ * - `capability`: the link alone admits. The default on loopback. Off loopback, one link serves at most
+ *   `media.capability.maxClients` distinct client addresses (3), each admitted for `media.capability.ttl` (15m) from
+ *   its first request: a load balancer, a reconnect on a new network, a video player's range requests.
+ *
+ * Highest first: `ZALO_MCP_MEDIA_LINK_AUTH_<ownId>`, `ZALO_MCP_MEDIA_LINK_AUTH`, `accounts.<ownId>.media.linkAuth`,
+ * `media.linkAuth`, then `auto`. The capability limits read `accounts.<ownId>.media.capability` over
+ * `media.capability`, so a deployment (or a SaaS tier) can raise them per account.
+ *
+ * @param {object} [sources]
+ * @param {{media?: object, accounts?: object}|null} [sources.config]
+ * @param {NodeJS.ProcessEnv} [sources.env]
+ * @param {string} [sources.accountId]
+ * @param {string|null} [sources.publicUrl] - where links point (resolvePublicUrl), for `auto`
+ * @returns {{linkAuth: "bearer"|"capability", configured: string, source: string, maxClients: number,
+ *   clientTtlMs: number}}
+ */
+export function resolveMediaLinkAuth({ config, env = process.env, accountId, publicUrl = null } = {}) {
+    const own = accountMedia(config, accountId);
+    const id = accountId ? String(accountId).trim() : "";
+    let configured = "auto";
+    let source = "default";
+    for (const [value, src] of [
+        ...(id ? [[env?.[`ZALO_MCP_MEDIA_LINK_AUTH_${id}`], `ZALO_MCP_MEDIA_LINK_AUTH_${id}`]] : []),
+        [env?.ZALO_MCP_MEDIA_LINK_AUTH, "ZALO_MCP_MEDIA_LINK_AUTH"],
+        [own?.linkAuth, `accounts.${id}.media.linkAuth`],
+        [config?.media?.linkAuth, "media.linkAuth"],
+    ]) {
+        const v = String(value ?? "")
+            .trim()
+            .toLowerCase();
+        if (!v) continue;
+        if (MEDIA_LINK_AUTHS.includes(v)) {
+            configured = v;
+            source = src;
+            break;
+        }
+        warnOnce(src, value, "auto, bearer or capability");
+    }
+    const linkAuth =
+        configured === "auto" ? (publicUrl && !isLoopbackUrl(publicUrl) ? "bearer" : "capability") : configured;
+    const cap = { ...(config?.media?.capability || {}), ...(own?.capability || {}) };
+    let maxClients = MEDIA_DEFAULTS.capabilityMaxClients;
+    if (cap.maxClients !== undefined && cap.maxClients !== null && cap.maxClients !== "") {
+        const n = Number(cap.maxClients);
+        if (Number.isInteger(n) && n >= 1) maxClients = n;
+        else warnOnce("media.capability.maxClients", cap.maxClients, "a whole number of at least 1");
+    }
+    let clientTtlMs = MEDIA_DEFAULTS.capabilityTtlMs;
+    if (cap.ttl !== undefined && cap.ttl !== null && cap.ttl !== "") {
+        const ms = durationMs(cap.ttl);
+        if (ms && ms >= 1000) clientTtlMs = ms;
+        else warnOnce("media.capability.ttl", cap.ttl, 'a duration of at least 1s (e.g. "15m")');
+    }
+    return { linkAuth, configured, source, maxClients, clientTtlMs };
+}
+
+/**
+ * The reverse proxies whose `X-Forwarded-For` this server believes (`trustedProxies`, `ZALO_MCP_TRUSTED_PROXIES` as
+ * a comma list). Empty by default: the client address is the socket's peer, as for every other route. List the
+ * proxy's own address (e.g. `127.0.0.1`) when one sits in front, or the media links' per-client limits see one
+ * client. `loopback` stands for 127.0.0.1 and ::1.
+ *
+ * @param {object} [sources]
+ * @param {{trustedProxies?: unknown}|null} [sources.config]
+ * @param {NodeJS.ProcessEnv} [sources.env]
+ * @param {string} [sources.accountId]
+ * @returns {string[]}
+ */
+export function resolveTrustedProxies({ config, env = process.env, accountId } = {}) {
+    for (const [value] of layers(
+        "ZALO_MCP_TRUSTED_PROXIES",
+        config?.trustedProxies,
+        "trustedProxies",
+        env,
+        accountId,
+    )) {
+        if (value === undefined || value === null || value === "") continue;
+        const list = Array.isArray(value) ? value : String(value).split(",");
+        return list.map((s) => String(s).trim().toLowerCase()).filter(Boolean);
+    }
+    return [];
+}

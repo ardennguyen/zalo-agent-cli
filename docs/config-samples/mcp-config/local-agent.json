@@ -9,7 +9,15 @@
     },
     "media": {
         "downloadDir": null,
-        "autoOpen": true
+        "autoOpen": true,
+        "deliver": {"photo": "inline", "gif": "inline", "doodle": "inline", "sticker": "inline", "voice": "inline", "audio": "inline", "video": "link", "file": "link"},
+        "inlineMaxBytes": 5242880,
+        "allowDeliver": ["inline", "link", "tempfile"],
+        "linkTtl": "10m",
+        "tempfileTtl": "10m",
+        "linkAuth": "capability",
+        "linkRateLimit": 60,
+        "capability": { "maxClients": 3, "ttl": "15m" }
     },
     "notify": {
         "enabled": false,

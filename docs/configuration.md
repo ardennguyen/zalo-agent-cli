@@ -75,6 +75,9 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_MCP_ALLOW_PIN_ARGUMENT` | yes | `true` lets the hidden-chat tools take the PIN as a `pin` input. Default `false`: an input is written to the MCP client's logs and the model's context. Only for a non-AI client | | `allowPinArgument` |
 | `ZALO_MCP_APPROVAL_SECRET` | yes | what an approve page (`confirmMode: "human"`) asks besides a click, so an agent that can open the link cannot approve its own action: `pin` (the hidden-chat PIN, with its lockout), `password` (the approver password set with `zalo-agent mcp approver set`, stored only as a salted scrypt hash), `none` (a click approves: weaker) or `auto` (default: the approver password when one is set and the link reaches the agent, else nothing, and the reply says `approverSecret: false`) | | `approval.secret` |
 | `ZALO_MCP_APPROVAL_DELIVER` | yes | where the link of an approve or PIN page goes: `result` (default: in the tool result), `webhook` (only to the MCP webhook, as an `approval_requested` event; the tool result carries no link) or `both` | | `approval.deliver` |
+| `ZALO_MCP_MEDIA_DELIVER` | yes | how `zalo_view_media` returns cached media, for every kind (`link`) or per kind (`photo=inline,video=link`): `inline` (MCP image/audio content), `link` (`<publicUrl>/zalo/media/<token>`) or `tempfile` (a private decrypted copy on this machine). Overrides `media.deliver` kind by kind; a call's own `deliver` beats it | | `media.deliver` |
+| `ZALO_MCP_MEDIA_LINK_AUTH` | yes | who may fetch a media link: `bearer` (the request also carries this server's `Authorization`: `--auth`, `ZALO_MCP_AUTH_TOKEN` or an OAuth token), `capability` (the link alone, limited to `media.capability.maxClients` client addresses off this machine) or `auto` (default: `bearer` when `publicUrl` is another host, else `capability`) | | `media.linkAuth` |
+| `ZALO_MCP_TRUSTED_PROXIES` | yes | comma list of reverse-proxy addresses whose `X-Forwarded-For` is believed (`127.0.0.1`, or `loopback`). Default none: the client address is the connection's peer | | `trustedProxies` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | deprecated: `0` means confirm mode `off`, `1` means `agent`; an explicit confirm mode wins | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | non-friend DM names one sync restore may look up. Default 500 | | |
 | `ZALO_START_JITTER` | yes | wait a random time up to this many seconds (0–600, default 0) before logging in, so a fleet restarting together does not log in together | | |
@@ -103,7 +106,16 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `limits.bufferMaxAge` | `"2h"` | how long a message stays in the live buffer |
 | `limits.bufferMaxSize` | 500 | messages kept **per thread** in the live buffer |
 | `media.downloadDir` | `null` | media root for this server (files there are sealed under the account's media key, like the default root) |
-| `media.autoOpen` | `true` | open downloaded media on this machine; set `false` on a server |
+| `media.autoOpen` | unset (= `true` on stdio, `false` over HTTP) | `zalo_view_media` opens the file with this machine's viewer (through a tempfile). Over HTTP it never opens anything |
+| `media.deliver` | photo, gif, doodle, sticker, voice, audio `inline`; video, file `link` | per kind: `inline`, `link` or `tempfile` (see `ZALO_MCP_MEDIA_DELIVER`). Inline over `inlineMaxBytes`, or of a type a client cannot render, goes as a link; a tempfile for a client on another machine goes as a link |
+| `media.inlineMaxBytes` | `5242880` | largest picture or voice message sent inline (5 MB is about 6.7 MB of base64 in the model's context) |
+| `media.allowDeliver` | `["inline","link","tempfile"]` | the modes a call, or the defaults, may pick. A CRM server can leave out `tempfile` |
+| `media.linkTtl` | `"10m"` | how long a media link works |
+| `media.tempfileTtl` | `"10m"` | how long a decrypted copy stays before it is deleted |
+| `media.linkAuth` | unset (= `auto`) | `auto`, `bearer` or `capability` (see `ZALO_MCP_MEDIA_LINK_AUTH`) |
+| `media.linkRateLimit` | `60` | requests a minute one client address may make to media links (and 10 unknown tokens a minute), then `429` |
+| `media.capability.maxClients`, `.ttl` | `3`, `"15m"` | a capability link that leaves this machine serves at most this many distinct client addresses, each for this long from its first request (load balancers, a reconnect on a new network, a video player's range requests). Raise per account in `accounts.<ownId>.media.capability` |
+| `trustedProxies` | `null` (none) | reverse proxies whose `X-Forwarded-For` is believed (see `ZALO_MCP_TRUSTED_PROXIES`). List your proxy's address, or the per-client limits see one client |
 | `notify.enabled`, `.thread`, `.on`, `.cooldown` | off | notify a Zalo group when the agent is away |
 | `webhook`, `webhookSecret` | `null` | push each message to a URL, signed (prefer `ZALO_WEBHOOK_SECRET`) |
 | `webhookBatchSize` | `1` | events per webhook POST (1–100) |

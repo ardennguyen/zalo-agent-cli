@@ -23,7 +23,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { writeSealedMedia } from "../../src/core/keystore/media-seal.js";
-import { mediaTempRoot } from "../../src/core/media-tempfile.js";
+import { mediaTempRoot } from "../../src/core/media-deliver.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";

@@ -29,7 +29,7 @@ import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { mediaPlainSize } from "../core/keystore/media-seal.js";
 import { scopeOf } from "../core/keystore/index.js";
-import { decryptToTempfile, removeMediaTemp } from "../core/media-tempfile.js";
+import { decryptToTempfile, removeMediaTemp } from "../core/media-deliver.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import {
     cachedCliMsgId,
@@ -1468,7 +1468,7 @@ export function registerMsgCommands(program) {
                     process.exit(1);
                 }
                 // The cached copy is sealed: the upload takes a path, so it gets a private decrypted copy for the
-                // length of the send (0600, its own folder, deleted in finally). Stopgap until WP6 delivery.
+                // length of the send (0600, its own folder, deleted in finally): src/core/media-deliver.js.
                 const copy = decryptToTempfile(resolve(row.localPath), scopeOf(activeAcc.ownId), {
                     msgId: row.msgId,
                     ttlMs: 0,

@@ -11,7 +11,15 @@
     },
     "media": {
         "downloadDir": "/var/lib/zalo-media",
-        "autoOpen": false
+        "autoOpen": false,
+        "deliver": {"photo": "inline", "gif": "inline", "doodle": "inline", "sticker": "inline", "voice": "inline", "audio": "inline", "video": "link", "file": "link"},
+        "inlineMaxBytes": 5242880,
+        "allowDeliver": ["inline", "link"],
+        "linkTtl": "10m",
+        "tempfileTtl": "10m",
+        "linkAuth": "bearer",
+        "linkRateLimit": 60,
+        "capability": { "maxClients": 3, "ttl": "15m" }
     },
     "notify": {
         "enabled": false,
@@ -22,6 +30,7 @@
     "confirmMode": "agent",
     "hiddenChats": "exclude",
     "allowPinArgument": false,
+    "trustedProxies": ["127.0.0.1"],
     "publicUrl": "https://zalo.crm.example.com",
     "approval": {
         "secret": "auto",

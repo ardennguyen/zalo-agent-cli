@@ -26,7 +26,14 @@ import {
     resolveAccountMCPConfig,
 } from "../../src/mcp/mcp-config.js";
 import { postMCPWebhook } from "../../src/commands/mcp.js";
-import { resolvePublicUrl, validatePublicUrl } from "../../src/core/deploy-policy.js";
+import {
+    DEFAULT_MEDIA_DELIVER,
+    resolveMediaDelivery,
+    resolveMediaLinkAuth,
+    resolvePublicUrl,
+    resolveTrustedProxies,
+    validatePublicUrl,
+} from "../../src/core/deploy-policy.js";
 import { eventsOf, verifyWebhook } from "../../docs/config-samples/clients/crm-webhook-receiver.mjs";
 import { createWebhookDispatcher, openOutbox } from "../../src/core/webhook-outbox.js";
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
@@ -107,6 +114,35 @@ describe("mcp-config samples", () => {
             error: null,
             deprecated: false,
         });
+    });
+
+    it("every sample sets each media key explicitly, and they resolve to what the docs say", () => {
+        for (const file of list("mcp-config", ".json")) {
+            const cfg = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", file)));
+            for (const key of ["deliver", "inlineMaxBytes", "allowDeliver", "linkTtl", "tempfileTtl", "linkAuth"]) {
+                assert.notEqual(cfg.media[key], null, `${file}: media.${key} is set`);
+            }
+            const p = resolveMediaDelivery({ config: cfg, env: {} });
+            assert.deepEqual(p.deliver, DEFAULT_MEDIA_DELIVER, `${file}: the documented defaults, spelled out`);
+            assert.equal(p.inlineMaxBytes, 5_242_880);
+            assert.equal(p.linkTtlMs, 600_000);
+        }
+        const auth = (file, id) => {
+            const base = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", file)));
+            const cfg = id ? resolveAccountMCPConfig(base, { accountId: id }).config : base;
+            return resolveMediaLinkAuth({ config: cfg, env: {}, accountId: id, publicUrl: cfg.publicUrl });
+        };
+        assert.equal(auth("internet.json").linkAuth, "bearer");
+        assert.equal(auth("crm-backend.json").linkAuth, "bearer");
+        assert.equal(auth("local-agent.json").linkAuth, "capability");
+        assert.deepEqual(
+            [auth("multi-account.json", "1000000000000000002").maxClients, auth("multi-account.json").maxClients],
+            [10, 3],
+            "a per-account tier raises the capability limit for that account only",
+        );
+        const internet = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "internet.json")));
+        assert.deepEqual(resolveMediaDelivery({ config: internet, env: {} }).allowDeliver, ["inline", "link"]);
+        assert.deepEqual(resolveTrustedProxies({ config: internet, env: {} }), ["127.0.0.1"]);
     });
 
     it("multi-account.json: each account block overrides the shared settings for that account only", () => {

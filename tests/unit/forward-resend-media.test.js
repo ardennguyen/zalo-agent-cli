@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { writeSealedMedia } from "../../src/core/keystore/media-seal.js";
-import { mediaTempRoot } from "../../src/core/media-tempfile.js";
+import { mediaTempRoot } from "../../src/core/media-deliver.js";
 import { insertMessage, initDb, upsertThread } from "../../src/core/db.js";
 import { FORWARD_VIDEO_FALLBACK, videoResendOptions, voiceResendOptions } from "../../src/zalo/custom/forward.js";
 import { HEAD_TIMEOUT_MS } from "../../src/zalo/api/messages.js";

@@ -53,13 +53,15 @@ import {
     resolvePublicUrl,
     resolveTrustedProxies,
 } from "../core/deploy-policy.js";
-import { getMediaLinks, startTempfileSweeper } from "../core/media-deliver.js";
+import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
+import { ensureMediaServed } from "../core/media-route.js";
+import { scopeOfDir } from "../core/keystore/keyring.js";
 import { approverStatus } from "../core/approval.js";
 import { resolveConfirmMode } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
 import { getQrPage } from "../utils/qr-http-server.js";
 import { readControls } from "../zalo/queues/control-queue.js";
-import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
+import { initDb, getMessageById, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
 import {
@@ -143,7 +145,6 @@ export function normalizeMessage(msg, info = null) {
                   type: cls.type,
                   url: media.url || media.thumbUrl || null,
                   description: media.title || null,
-                  localPath: null,
               }
             : null,
         // What this message replies to, so an agent can tell what "look at this" points at (bug-reports #8).
@@ -1310,6 +1311,17 @@ export function registerMCPCommands(program) {
                         lock: stageLock,
                         onStop: shutdown,
                         onStatus: () => health.snapshot(),
+                        // `msg media --deliver link`: a link this daemon serves (on its HTTP port, or 127.0.0.1).
+                        onMediaLink: ({ msgId }) =>
+                            linkForCachedMessage({
+                                row: getMessageById(msgId),
+                                scope: scopeOfDir(accountDir),
+                                accountId: activeAcc.ownId,
+                                hidden: hiddenPolicy.mode === "include" ? null : hidden,
+                                links: mediaLinks,
+                                ensureServed: ensureMediaServed,
+                                policy: mediaPolicy,
+                            }),
                         onWait: async (params, signal) => {
                             const cleanThreadId =
                                 typeof params?.threadId === "string" && params.threadId.trim()

@@ -90,7 +90,7 @@ export function hitToJson(hit, threadNames) {
         timestamp: r.timestamp,
         type: r.type,
         hasAttachment: Boolean(r.has_attachment),
-        localPath: r.localPath || null,
+        mediaCached: Boolean(r.localPath),
         ...(hit.context && { context: { before: hit.context.before.map(lite), after: hit.context.after.map(lite) } }),
     };
 }

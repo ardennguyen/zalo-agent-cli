@@ -54,6 +54,7 @@ import { applySelfThreadAlias } from "../utils/my-documents.js";
 import { buildQuote, resolveQuoteSender } from "../utils/quote.js";
 import { urgencyLevel } from "../zalo/format/urgency.js";
 import { registerMsgSearch } from "./msg-search.js";
+import { registerMsgMedia } from "./msg-media.js";
 import { markdownToZalo, resolveSendFormat } from "../zalo/format/markdown.js";
 import { splitMessage, sendParts } from "../zalo/format/split-message.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
@@ -618,7 +619,7 @@ async function showHistoryRange({ api, activeAcc, threadId, threadType, opts, cm
             text: m.text,
             timestamp: m.timestamp,
             type: m.type,
-            localPath: m.localPath,
+            mediaCached: Boolean(m.localPath),
         })),
         threadType === 0 ? [threadId] : [],
     );
@@ -640,7 +641,7 @@ async function showHistoryRange({ api, activeAcc, threadId, threadType, opts, cm
             for (const m of messages) {
                 const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                 const name = m.senderDisplayName || m.senderId || "?";
-                const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
+                const mediaInfo = m.mediaCached ? ` [Media: zalo-agent msg media ${m.msgId}]` : "";
                 console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
             }
             if (hasMore)
@@ -658,6 +659,7 @@ export function registerMsgCommands(program) {
     const msg = program.command("msg").description("Send and manage messages");
 
     registerMsgSearch(msg, program);
+    registerMsgMedia(msg, program);
 
     // `me` (or the own uid) as a thread argument means My Documents, a 1-1
     // thread of its own -- see src/utils/my-documents.js. Resolved once, here,
@@ -1791,7 +1793,7 @@ export function registerMsgCommands(program) {
                                 text: m.text,
                                 timestamp: m.timestamp,
                                 type: m.type,
-                                localPath: m.localPath,
+                                mediaCached: Boolean(m.localPath),
                             })),
                             threadType === 0 ? [threadId] : [],
                         );
@@ -1810,7 +1812,7 @@ export function registerMsgCommands(program) {
                                 for (const m of messages) {
                                     const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                                     const name = m.senderDisplayName || m.senderId || "?";
-                                    const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
+                                    const mediaInfo = m.mediaCached ? ` [Media: zalo-agent msg media ${m.msgId}]` : "";
                                     console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
                                 }
                             },
@@ -1962,7 +1964,7 @@ export function registerMsgCommands(program) {
                         for (const m of cleanResult) {
                             const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                             const name = m.senderDisplayName || m.senderId || "?";
-                            const mediaInfo = m.localPath ? ` [Media: ${m.localPath}]` : "";
+                            const mediaInfo = m.mediaCached ? ` [Media: zalo-agent msg media ${m.msgId}]` : "";
                             console.log(`  [${date}] ${name}: ${(m.text || "").slice(0, 200)}${mediaInfo}`);
                         }
                     },

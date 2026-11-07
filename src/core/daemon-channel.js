@@ -302,6 +302,8 @@ function readJsonBody(req, reply) {
  *   read-cursor callback invoked by `POST /mark-read` (`zalo-agent mcp mark-read`).
  * @param {() => object} [args.onStatus] - health snapshot returned by `POST /status`
  *   (`listen --status`, `mcp start --status`; see ./daemon-health.js).
+ * @param {(params: {msgId: string}) => Promise<object>} [args.onMediaLink] - a media link to one cached file, issued
+ *   by this daemon (`POST /media-link`, `msg media --deliver link`); the body lives in ./media-deliver.js.
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -314,6 +316,7 @@ export function startDaemonChannel({
     onWait = null,
     onMarkRead = null,
     onStatus = null,
+    onMediaLink = null,
 }) {
     const token = randomBytes(24).toString("hex");
     // The stage that is running, and the controller its runner was given: `POST /sync/cancel` aborts it.
@@ -502,6 +505,18 @@ export function startDaemonChannel({
         }
     };
 
+    /** A media link from this daemon, which serves it while it runs (`msg media --deliver link`). */
+    const serveMediaLink = async (body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof onMediaLink !== "function") return reply(503, { error: "this daemon does not serve media links" });
+        if (!body.msgId) return reply(400, { error: "msgId is required" });
+        try {
+            reply(200, { ok: true, ...(await onMediaLink({ msgId: String(body.msgId) })) });
+        } catch (e) {
+            reply(200, { ok: false, error: e?.message || String(e) });
+        }
+    };
+
     const server = http.createServer(async (req, res) => {
         const reply = (code, body) => {
             res.writeHead(code, { "content-type": "application/json" });
@@ -517,6 +532,7 @@ export function startDaemonChannel({
             req.url !== "/wait" &&
             req.url !== "/mark-read" &&
             req.url !== "/status" &&
+            req.url !== "/media-link" &&
             !stage
         ) {
             return reply(404, { error: "not found" });
@@ -529,6 +545,7 @@ export function startDaemonChannel({
         if (req.url === "/wait") return serveWait(body, res, reply);
         if (req.url === "/mark-read") return serveMarkRead(body, reply);
         if (req.url === "/status") return serveStatus(body, reply);
+        if (req.url === "/media-link") return serveMediaLink(body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 
@@ -1437,6 +1454,63 @@ export function statusViaDaemon(accountDir) {
                             ? { ok: true, health: body.health }
                             : { ok: false, error: body.error || `HTTP ${res.statusCode}` },
                     );
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout waiting for the daemon" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
+}
+
+/**
+ * Ask the running daemon for a media link to one cached file (`msg media --deliver link`): the daemon serves the
+ * link while it runs, so a CLI process that exits can still hand one out.
+ *
+ * @param {string} accountDir
+ * @param {{msgId: string, timeoutMs?: number}} req
+ * @returns {Promise<{ok: boolean, url?: string, expiresAt?: number, auth?: string, mimeType?: string, size?: number,
+ *   error?: string}|null>} null when no daemon channel is published
+ */
+export function mediaLinkViaDaemon(accountDir, { msgId, timeoutMs = 15_000 }) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+    const payload = JSON.stringify({ token: chan.token, msgId });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path: "/media-link",
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: timeoutMs,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    if (res.statusCode === 200 && body.ok) {
+                        const { url, expiresAt, auth, mimeType, size } = body;
+                        return resolve({ ok: true, url, expiresAt, auth, mimeType, size });
+                    }
+                    // A daemon from before this request answers 404: say what to do rather than "not found".
+                    const error =
+                        res.statusCode === 404
+                            ? "the running daemon is too old to hand out media links; restart it"
+                            : body.error || `HTTP ${res.statusCode}`;
+                    resolve({ ok: false, error });
                 });
             },
         );

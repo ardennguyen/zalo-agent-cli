@@ -88,6 +88,7 @@ export const EXCLUDED = {
 export const FAILS_OFFLINE = {
     "msg send-qr-transfer": "fetches the VietQR image from qr.sepay.vn",
     "cloud get": "needs an item in the local zCloud index, its signed download URL and the account's viewer key",
+    "msg media": "needs a downloaded, encrypted media file in the cache (tests/cli/msg-media.test.js has one)",
     "mcp wait": "asks a running `mcp start` server",
     "mcp mark-read": "asks a running `mcp start` server",
     "sync-cloud": "needs the account's zCloud viewer key, which only a real zCloud subscription hands out",

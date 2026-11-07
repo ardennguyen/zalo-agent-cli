@@ -52,6 +52,7 @@ const COMMAND_SURFACE = {
         "unpin",
         "history",
         "search",
+        "media",
     ],
     friend: [
         "list",

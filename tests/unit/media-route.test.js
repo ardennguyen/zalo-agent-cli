@@ -13,7 +13,10 @@ import { dirname, join } from "node:path";
 import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { writeSealedMedia } from "../../src/core/keystore/media-seal.js";
-import { MediaLinks } from "../../src/core/media-deliver.js";
+import { MediaLinks, linkForCachedMessage, setMediaLinks } from "../../src/core/media-deliver.js";
+import { mediaLinkViaDaemon, startDaemonChannel } from "../../src/core/daemon-channel.js";
+import { initDb, insertMessage } from "../../src/core/db.js";
+import { registerTools } from "../../src/mcp/mcp-tools.js";
 import {
     clientIpOf,
     closeMediaListener,
@@ -327,6 +330,136 @@ describe("the stdio listener", () => {
             assert.equal(res.body.toString(), "OggS-voice");
             assert.equal((await request(port, "/elsewhere")).status, 404);
         } finally {
+            await closeMediaListener(links);
+        }
+    });
+});
+
+describe("zalo_view_media over the MCP HTTP server", () => {
+    it("builds the link on publicUrl whatever Host the request names, and the link serves the file", async () => {
+        const accountDir = getAccountDir(ID);
+        mkdirSync(accountDir, { recursive: true });
+        const db = initDb(join(accountDir, "zalo.db"));
+        const { file } = sealed("call.mp4", Buffer.from("VIDEO-OVER-MCP"), "m-http");
+        insertMessage({
+            msgId: "m-http",
+            threadId: "t1",
+            senderId: "u2",
+            senderName: "A",
+            text: "",
+            timestamp: 100,
+            type: "video",
+            raw_data: "{}",
+            has_attachment: 1,
+            localPath: file,
+        });
+        const links = new MediaLinks().configure({
+            publicUrl: "https://zalo.example.com",
+            linkAuth: "bearer",
+            bearerAvailable: true,
+            log: () => {},
+        });
+        setMediaLinks(links);
+        const deps = {
+            api: { getOwnId: () => ID },
+            buffer: { read: () => ({ messages: [], cursor: 0 }), getStats: () => [] },
+            filter: { isWatched: () => true },
+            config: { limits: { maxMessagesPerPoll: 20 } },
+            nameCache: { ready: true, get: () => null, search: () => [] },
+            accountDir,
+            mediaLinks: links,
+        };
+        const server = createHTTPServer(registerTools, deps, 0, AUTH, "127.0.0.1");
+        await new Promise((r) => server.once("listening", r));
+        try {
+            const port = server.address().port;
+            links.configure({ localBaseUrl: `http://127.0.0.1:${port}` });
+            const body = JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "tools/call",
+                params: { name: "zalo_view_media", arguments: { msgId: "m-http" } },
+            });
+            const raw = await new Promise((resolve, reject) => {
+                const r = http.request(
+                    {
+                        host: "127.0.0.1",
+                        port,
+                        path: "/mcp",
+                        method: "POST",
+                        agent: false,
+                        headers: {
+                            host: "evil.example",
+                            authorization: `Bearer ${AUTH}`,
+                            "content-type": "application/json",
+                            accept: "application/json, text/event-stream",
+                            "content-length": Buffer.byteLength(body),
+                        },
+                    },
+                    (res) => {
+                        let text = "";
+                        res.on("data", (c) => (text += c));
+                        res.on("end", () => resolve(text));
+                    },
+                );
+                r.on("error", reject);
+                r.end(body);
+            });
+            const json = raw.trim().startsWith("{")
+                ? raw
+                : raw
+                      .split("\n")
+                      .find((l) => l.startsWith("data: "))
+                      .slice(6);
+            const reply = JSON.parse(JSON.parse(json).result.content[0].text);
+            assert.equal(reply.delivery, "link");
+            assert.equal(reply.auth, "bearer");
+            assert.match(reply.url, /^https:\/\/zalo\.example\.com\/zalo\/media\/[A-Za-z0-9_-]{22}$/);
+            assert.equal(reply.url.includes("evil.example"), false);
+            const got = await request(port, pathOf(reply.url), { headers: { authorization: `Bearer ${AUTH}` } });
+            assert.equal(got.body.toString(), "VIDEO-OVER-MCP");
+        } finally {
+            server.close();
+            setMediaLinks(null);
+            db.close();
+        }
+    });
+});
+
+describe("msg media --deliver link: a link the daemon serves, asked over its channel", () => {
+    it("the daemon issues and serves the link; a missing or hidden message is refused", async () => {
+        const accountDir = getAccountDir(ID);
+        const { file, scope } = sealed("chan.jpg", Buffer.from("CHANNEL-PHOTO"), "m-chan");
+        const links = new MediaLinks().configure({ linkAuth: "capability", log: () => {} });
+        const rows = {
+            "m-chan": { msgId: "m-chan", threadId: "t1", localPath: file },
+            "m-gone": { msgId: "m-gone", threadId: "t1", localPath: null },
+            "m-hid": { msgId: "m-hid", threadId: "t-secret", localPath: file },
+        };
+        const channel = await startDaemonChannel({
+            getApi: () => null,
+            accountDir,
+            onMediaLink: ({ msgId }) =>
+                linkForCachedMessage({
+                    row: rows[msgId] ?? null,
+                    scope,
+                    accountId: ID,
+                    hidden: { isHidden: (t) => t === "t-secret" },
+                    links,
+                    ensureServed: ensureMediaServed,
+                }),
+        });
+        try {
+            const got = await mediaLinkViaDaemon(accountDir, { msgId: "m-chan" });
+            assert.equal(got.ok, true, got.error);
+            assert.equal(got.auth, "capability");
+            const res = await request(Number(new URL(got.url).port), pathOf(got.url));
+            assert.equal(res.body.toString(), "CHANNEL-PHOTO");
+            assert.match((await mediaLinkViaDaemon(accountDir, { msgId: "m-gone" })).error, /no downloaded media/);
+            assert.match((await mediaLinkViaDaemon(accountDir, { msgId: "m-hid" })).error, /hidden chat/);
+            assert.match((await mediaLinkViaDaemon(accountDir, { msgId: "m-none" })).error, /not in the local cache/);
+        } finally {
+            channel.stop();
             await closeMediaListener(links);
         }
     });

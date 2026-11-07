@@ -20,11 +20,12 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { openSession, sealSession } from "../../src/zalo/kernel/cipher.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { registerTools } from "../../src/mcp/mcp-tools.js";
+import { registerTools, stickerPicture } from "../../src/mcp/mcp-tools.js";
 import { scopeOfDir } from "../../src/core/keystore/keyring.js";
 import { writeSealedMedia } from "../../src/core/keystore/media-seal.js";
 import { mediaTempRoot } from "../../src/core/media-deliver.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
+import { hiddenChatsFor } from "../../src/core/hidden-chats.js";
 import { MessageBuffer } from "../../src/mcp/message-buffer.js";
 import { initDb, insertMessage, upsertThread, upsertContact } from "../../src/core/db.js";
 
@@ -625,12 +626,13 @@ describe("MCP tools read the local cache", () => {
         assert.equal(out.count, 200);
     });
 
-    it("zalo_get_history surfaces cached delivery state and media paths", async () => {
+    it("zalo_get_history says media is cached, never where", async () => {
         cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: "/tmp/a.jpg" }]);
         const { server } = register({ api: emptyServerApi() });
         const [msg] = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 50 })).messages;
         assert.equal(msg.type, "photo");
-        assert.equal(msg.localPath, "/tmp/a.jpg");
+        assert.equal(msg.mediaCached, true);
+        assert.equal("localPath" in msg, false, "the encrypted file's path is not handed out");
         assert.equal(msg.hasAttachment, true);
     });
 
@@ -688,23 +690,104 @@ describe("MCP tools read the local cache", () => {
         assert.equal(s.parse({ threadId: "t1", before: 1_750_000_000_000 }).before, 1_750_000_000_000);
     });
 
-    it("zalo_view_media decrypts the cached file to a private copy, without refetching", async () => {
-        // The cached file is sealed for the account; the reply's path is a decrypted copy (stopgap until WP6).
+    /** A sealed photo in the cache, as the downloader leaves it. */
+    const sealedPhoto = (name = "a.jpg", plain = Buffer.from("JPEG-PLAINTEXT-BYTES"), extra = {}) => {
         const accountDir = join(CONFIG_DIR, "accounts", "100000000000000977");
-        const sealed = join(accountDir, "media", "t1", "a.jpg");
+        const sealed = join(accountDir, "media", "t1", name);
         mkdirSync(dirname(sealed), { recursive: true });
-        const plain = Buffer.from("JPEG-PLAINTEXT-BYTES");
-        writeSealedMedia(sealed, scopeOfDir(accountDir), { msgId: "m1" }, plain);
-        cache([{ msgId: "m1", ts: 100, type: "photo", attach: true, localPath: sealed }]);
+        writeSealedMedia(sealed, scopeOfDir(accountDir), { msgId: "m1", mime: extra.mime ?? null }, plain);
+        cache([{ msgId: "m1", ts: 100, type: extra.type ?? "photo", attach: true, localPath: sealed }]);
+        return { accountDir, sealed, plain };
+    };
+
+    it("zalo_view_media sends a photo inline as image content, without refetching or writing a copy", async () => {
+        const { accountDir, sealed, plain } = sealedPhoto();
+        const { server } = register({ api: emptyServerApi(), accountDir });
+        const res = await server.call("zalo_view_media", { msgId: "m1", open: false });
+        const out = payloadOf(res);
+        assert.deepEqual(
+            [out.success, out.mediaType, out.delivery, out.mimeType, out.size],
+            [true, "photo", "inline", "image/jpeg", plain.length],
+        );
+        assert.equal(out.path, undefined);
+        assert.deepEqual(res.content[1], { type: "image", data: plain.toString("base64"), mimeType: "image/jpeg" });
+        assert.equal(readFileSync(sealed).includes(plain), false, "the cached file stays sealed");
+    });
+
+    it("zalo_view_media hands out a link the stdio listener serves, decrypted on the way out", async () => {
+        const { accountDir, plain } = sealedPhoto("v.mp4", Buffer.from("MP4-PLAINTEXT"), { type: "video" });
         const { server } = register({ api: emptyServerApi(), accountDir });
         const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", open: false }));
-        assert.equal(out.success, true);
-        assert.equal(out.mediaType, "photo");
-        assert.notEqual(out.path, sealed);
+        assert.equal(out.delivery, "link", "a video goes as a link by default");
+        assert.match(out.url, /^http:\/\/127\.0\.0\.1:\d+\/zalo\/media\/[A-Za-z0-9_-]{22}$/);
+        assert.equal(out.auth, "capability");
+        assert.ok(Date.parse(out.expiresAt) > Date.now());
+        const res = await fetch(out.url);
+        assert.equal(res.status, 200);
+        assert.deepEqual(Buffer.from(await res.arrayBuffer()), plain);
+    });
+
+    it("zalo_view_media gives a private tempfile when asked, and opens nothing unless told", async () => {
+        const { accountDir, plain } = sealedPhoto();
+        const { server } = register({ api: emptyServerApi(), accountDir });
+        const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", deliver: "tempfile" }));
+        assert.equal(out.delivery, "tempfile");
+        assert.equal(out.opened, false, "a chosen mode is not overridden by autoOpen");
         assert.ok(out.path.startsWith(mediaTempRoot()), out.path);
         assert.deepEqual(readFileSync(out.path), plain);
-        assert.ok(Date.parse(out.expiresAt) > Date.now());
-        assert.equal(readFileSync(sealed).includes(plain), false, "the cached file stays sealed");
+    });
+
+    it("zalo_view_media over HTTP turns a tempfile for a remote client into a link, and refuses a forbidden mode", async () => {
+        const { accountDir } = sealedPhoto();
+        const { server } = register({
+            api: emptyServerApi(),
+            accountDir,
+            config: { limits: { maxMessagesPerPoll: 20 }, media: { allowDeliver: ["link", "tempfile"] } },
+        });
+        server.statelessHttp = true;
+        server.clientLoopback = false;
+        const out = payloadOf(await server.call("zalo_view_media", { msgId: "m1", deliver: "tempfile" }));
+        assert.equal(out.delivery, "link");
+        assert.match(out.notes.join(" "), /another machine/);
+        const inline = await server.call("zalo_view_media", { msgId: "m1", deliver: "inline" });
+        assert.equal(inline.isError, true);
+        assert.match(inline.content[0].text, /not allowed/);
+    });
+
+    it("stickerPicture fetches a sticker's picture by the id the message names, and keeps nothing", async () => {
+        const png = Buffer.from("PNG-STICKER");
+        let asked = null;
+        const api = {
+            getStickersDetail: async (ids) => ((asked = ids), [{ stickerWebpUrl: "https://cdn.example/s.webp" }]),
+        };
+        const fetchImpl = async (url) => ({
+            ok: url === "https://cdn.example/s.webp",
+            status: 200,
+            headers: new Headers({ "content-type": "image/webp" }),
+            arrayBuffer: async () => png,
+        });
+        const row = { raw_data: JSON.stringify({ content: { id: 4321, catId: 7, type: 7 } }) };
+        const got = await stickerPicture(api, row, null, fetchImpl);
+        assert.deepEqual(asked, [4321]);
+        assert.deepEqual(got, { bytes: png, mime: "image/webp" });
+        assert.match((await stickerPicture(api, { raw_data: "{}" }, null, fetchImpl)).error, /which sticker/);
+    });
+
+    it("zalo_view_media leaves a hidden chat's media out", async () => {
+        const { accountDir } = sealedPhoto();
+        const hidden = hiddenChatsFor("100000000000000977", { stateDir: accountDir });
+        hidden.setFromServer({ threads: [{ thread_id: "t1", is_group: 0 }] });
+        try {
+            const { server } = register({
+                api: { ...emptyServerApi(), getOwnId: () => "100000000000000977" },
+                accountDir,
+            });
+            const res = await server.call("zalo_view_media", { msgId: "m1", deliver: "link" });
+            assert.equal(res.isError, true);
+            assert.match(res.content[0].text, /hidden chats/);
+        } finally {
+            hidden.clear();
+        }
     });
 
     it("zalo_view_media says so when the message carries no media", async () => {

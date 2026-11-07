@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **242 CLI commands** across 28 command containers (19 top-level groups + 7 OA subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **243 CLI commands** across 28 command containers (19 top-level groups + 7 OA subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -81,6 +81,7 @@ zalo-agent msg pin <msgId> [threadId]                   # Pin a cached text mess
 zalo-agent msg unpin <msgId> [threadId]                 # Unpin
 zalo-agent msg history <ID> -n 50                       # History (from local cache)
 zalo-agent msg search duoc --last 3m --type text         # Search the local cache: no login, accents ignored (--exact to require them)
+zalo-agent msg media <msgId> --out photo.jpg             # Cached media, decrypted (default: a private copy for 10 min; --deliver link via the daemon)
 zalo-agent msg history <ID> -n 50 --no-cache            # Force live fetch; caches only what it lacked
 ```
 Reactions: `:>` haha · `/-heart` heart · `/-strong` like · `:o` wow · `:-((` cry · `:-h` angry
@@ -262,7 +263,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit` (default 10, max 50) |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global, not per-thread**; deletes nothing, so bots sharing a server keep their own cursors | `cursor`, `consumer` |
 | `zalo_get_history` | Older messages from local cache (`zalo.db`) first, falling back to Zalo server; or one period from the cache, oldest first | `threadId`, `threadType?`, `limit` (default 50, max 200; max 1000 with a period), `before?`, `lastMsgId?`, `since?`/`until?` (epoch ms) or `last?` (7d…), paged by `nextSince` |
-| `zalo_view_media` | Open a received image/audio/video attachment (downloads first if needed) | `msgId`, `threadId?`, `open` |
+| `zalo_view_media` | Get a received photo, sticker, voice message, video or file: inline (image/audio content), a 10-minute link, or a private tempfile on the server (downloads first if needed) | `msgId`, `threadId?`, `deliver?`, `open?` |
 | `zalo_react` | React to a message, as `msg react` — refused, nothing sent, when the cliMsgId is neither passed nor cached | `msgId`, `threadId`, `reaction`, `threadType?`, `cliMsgId?` |
 | `zalo_undo` | Recall one of your own messages for everyone, as `msg undo`; same cliMsgId rule | `msgId`, `threadId`, `threadType?`, `cliMsgId?` |
 | `zalo_get_group_members` | A group's members — uid and display name — as `group members` | `groupId` |
@@ -370,7 +371,7 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 242 commands + 36 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 243 commands + 36 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |
@@ -391,7 +392,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - 1 proxy per account recommended (shared proxies risk a ban)
 - Credentials: `~/.zalo-agent-cli/` (personal, 0600) and `~/.zalo-agent/` (OA, 0600) — different directories
 - Per-account data: `~/.zalo-agent-cli/accounts/<ownId>/` (`zalo.db`, `media/`, `sync/`, `daemon.lock`)
-- **One media directory.** Everything writes to `~/.zalo-agent-cli/accounts/<ownId>/media/<threadId>/`, including the MCP server and `zalo_view_media`. Every file there is encrypted at rest (open one through `zalo_view_media`, which hands back a decrypted copy that expires). Folders are thread IDs, not conversation names; `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` moves the root for the MCP server only.
+- **One media directory.** Everything writes to `~/.zalo-agent-cli/accounts/<ownId>/media/<threadId>/`, including the MCP server and `zalo_view_media`. Every file there is encrypted at rest (read one through `zalo_view_media` — inline, a 10-minute link or a private copy — or `msg media <msgId>`; history and search say `mediaCached: true`, never the path). Folders are thread IDs, not conversation names; `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` moves the root for the MCP server only.
 - **`logout --purge` / `account remove` do NOT delete a custom `media.downloadDir`.** They wipe `accounts/<ownId>/`, media included, and by default the MCP server downloads there too; a root moved with `media.downloadDir` sits outside it, so its attachments survive. If a user asks you to remove an account for privacy and one is set, say this and point at that directory — do not delete it on your own initiative
 - MCP buffer is in-memory only — it holds messages received since the server started; use `zalo_get_history` for anything older
 - MCP HTTP mode binds `127.0.0.1` unless `--host` says otherwise; always pair a non-loopback `--host` with `--auth`

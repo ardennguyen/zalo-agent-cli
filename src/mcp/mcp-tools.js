@@ -35,7 +35,15 @@ import { downloadSyncedMedia, DOWNLOADABLE_KINDS } from "../core/sync-v2/media.j
 import { mediaPlainSize } from "../core/keystore/media-seal.js";
 import { scopeOfDir } from "../core/keystore/keyring.js";
 import { getAccountDir } from "../core/credentials.js";
-import { decryptToTempfile, removeMediaTemp } from "../core/media-deliver.js";
+import {
+    chooseDelivery,
+    decryptToTempfile,
+    deliverCachedMedia,
+    inlineContent,
+    mediaInfo,
+    removeMediaTemp,
+} from "../core/media-deliver.js";
+import { ensureMediaServed } from "../core/media-route.js";
 import { describeZaloError } from "../core/sync-v2/board.js";
 import { boardPage, groupReminderPage } from "../zalo/api/boards.js";
 import { fetchAndCacheHistory } from "../core/history-fetch.js";
@@ -100,7 +108,7 @@ import { hiddenChatsFor, hiddenEventView, readThreadIds, withoutHidden } from ".
 
 /** The conversation ids a raw read names (moved to src/core/hidden-chats.js; `read run` uses it too). */
 export { readThreadIds } from "../core/hidden-chats.js";
-import { resolveHiddenChats } from "../core/deploy-policy.js";
+import { resolveHiddenChats, resolveMediaDelivery } from "../core/deploy-policy.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
@@ -457,11 +465,60 @@ function cachedHistoryRow(m) {
         text: m.text,
         timestamp: m.timestamp,
         type: m.type,
-        localPath: m.localPath || undefined,
+        mediaCached: m.localPath ? true : undefined,
         hasAttachment: m.has_attachment ? true : undefined,
         msgStatus: m.msgStatus ?? undefined,
         replyTo: cachedReplyTo(m),
     };
+}
+
+/** The largest sticker picture zalo_view_media fetches. */
+const STICKER_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * A sticker's picture, fetched for zalo_view_media and not kept: stickers are not downloaded with the messages. The
+ * URL comes from the live message, else from Zalo's sticker detail for the id the cached message names.
+ *
+ * @param {object} api
+ * @param {object|null} row - the cached message
+ * @param {object|null} buffered - the live message
+ * @param {(url: string, init: object) => Promise<Response>} [fetchImpl]
+ * @returns {Promise<{bytes: Buffer, mime: string} | {error: string}>}
+ */
+export async function stickerPicture(api, row, buffered, fetchImpl = (...a) => fetch(...a)) {
+    let url = buffered?.attachment?.url || null;
+    if (!url) {
+        let content = null;
+        try {
+            content = JSON.parse(row?.raw_data || "{}")?.content ?? null;
+        } catch {
+            /* no stored content */
+        }
+        const id = Number(content?.id);
+        if (!Number.isFinite(id) || id <= 0) return { error: "This sticker message does not say which sticker it is." };
+        try {
+            const [detail] = (await api.getStickersDetail([id])) ?? [];
+            url = detail?.stickerWebpUrl || detail?.stickerUrl || null;
+        } catch (e) {
+            return { error: `Zalo did not describe the sticker: ${e.message}` };
+        }
+        if (!url) return { error: "Zalo did not give a picture for this sticker." };
+    }
+    try {
+        const res = await fetchImpl(url, { signal: AbortSignal.timeout(15_000), redirect: "follow" });
+        const mime = String(res.headers.get("content-type") || "")
+            .split(";")[0]
+            .trim()
+            .toLowerCase();
+        if (!res.ok || !mime.startsWith("image/")) {
+            return { error: `The sticker's picture could not be fetched (HTTP ${res.status}).` };
+        }
+        const bytes = Buffer.from(await res.arrayBuffer());
+        if (bytes.length > STICKER_MAX_BYTES) return { error: "The sticker's picture is too large to show." };
+        return { bytes, mime };
+    } catch (e) {
+        return { error: `The sticker's picture could not be fetched: ${e.message}` };
+    }
 }
 
 /** The most one page of zalo_get_history holds: without a date range, and with one. */
@@ -1541,24 +1598,33 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "View Zalo Media",
             description:
-                "Get a received photo, voice message, video or file as a local file, and by default open it with the viewer of the machine this server runs on. Media is downloaded when a message arrives; if the file is not on disk yet it is downloaded first. " +
-                "Give the message's `msgId`. Returns `{ success, path, expiresAt, mediaType }`: the cached file is encrypted, so `path` is a private decrypted copy on the server's machine, deleted at `expiresAt` (10 minutes). Pass `open: false` when you only need the path (for example on a remote or headless server).",
+                "Get a received photo, sticker, voice message, video or file. The cached file is encrypted; it reaches you one of three ways (`deliver`): " +
+                '"inline" (the picture or voice itself, as image or audio content, up to about 5 MB), "link" (`url`, a link to this server that works for 10 minutes; ' +
+                'it may need the same Authorization as this server), or "tempfile" (`path`, a private decrypted copy on the machine this server runs on, deleted at `expiresAt`; only for a client on that machine). ' +
+                "By default pictures and voice come inline and videos and files as a link, as the server is configured. Media not downloaded yet is downloaded first. " +
+                "Returns `{ success, msgId, mediaType, delivery, mimeType, size }` plus `url`/`path` and `expiresAt`, and `notes` when the delivery differs from the one asked for.",
             inputSchema: z.object({
                 msgId: z
                     .string()
                     .describe(
-                        "msgId of a message that has a photo, voice message, video or file (from zalo_get_messages, zalo_wait_for_message or zalo_get_history).",
+                        "msgId of a message that has a photo, sticker, voice message, video or file (from zalo_get_messages, zalo_wait_for_message or zalo_get_history).",
                     ),
                 threadId: z.string().optional().describe("Only look in this conversation. Omit to search all of them."),
+                deliver: z
+                    .enum(["inline", "link", "tempfile"])
+                    .optional()
+                    .describe(
+                        'How to get it: "inline", "link" or "tempfile". Omit for the server\'s default for this kind of media. The server may forbid a mode (media.allowDeliver).',
+                    ),
                 open: z
                     .boolean()
-                    .default(mediaConfig.autoOpen ?? true)
+                    .optional()
                     .describe(
-                        "Also open the file with the viewer of the machine this server runs on. Pass false when you only need the path.",
+                        "Also open it with the viewer of the machine this server runs on (a local stdio server only; it delivers a tempfile). Omit for the server's default (media.autoOpen).",
                     ),
             }),
         },
-        async ({ msgId, threadId, open }) => {
+        async ({ msgId, threadId, deliver, open }) => {
             try {
                 // The cached row is authoritative: it records where a fetched
                 // file actually landed, so a message that arrived before this
@@ -1572,6 +1638,57 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
                 const buffered = buffer.read(threadId, 0, 9999).messages.find((m) => m.msgId === msgId) || null;
                 if (!row && !buffered) return err(`Message ${msgId} not found in cache or buffer`);
+                const kind = String(row?.type || buffered?.type || "");
+                const msgThread = row?.threadId ?? buffered?.threadId ?? threadId ?? null;
+                // A hidden chat's media is left out like its messages: no inline content, no link, no copy.
+                if (isHiddenThread(msgThread)) return err(HIDDEN_THREAD);
+
+                const accountId = String(ownIdOf(api) ?? "");
+                const policy = resolveMediaDelivery({ config, accountId: accountId || undefined });
+                const stdio = server?.statelessHttp !== true;
+                const choose = (size, mime) =>
+                    chooseDelivery({
+                        kind,
+                        size,
+                        mime,
+                        requested: deliver ?? null,
+                        open,
+                        policy,
+                        stdio,
+                        clientLoopback: server?.clientLoopback === true,
+                    });
+
+                // A sticker is not downloaded with the messages: its picture is fetched now, shown inline and not kept.
+                if (kind === "sticker" && !row?.localPath) {
+                    const sticker = await stickerPicture(api, row, buffered);
+                    if (sticker.error) return err(sticker.error);
+                    const pick = choose(sticker.bytes.length, sticker.mime);
+                    if (pick.error) return err(pick.error);
+                    if (pick.mode !== "inline") {
+                        return err(
+                            "A sticker is not stored on this server, so it can only be sent inline" +
+                                (pick.notes.length ? ` (${pick.notes.join("; ")})` : "") +
+                                ".",
+                        );
+                    }
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: JSON.stringify({
+                                    success: true,
+                                    msgId,
+                                    mediaType: kind,
+                                    delivery: "inline",
+                                    mimeType: sticker.mime,
+                                    size: sticker.bytes.length,
+                                }),
+                            },
+                            inlineContent(sticker.bytes, kind, sticker.mime),
+                        ],
+                    };
+                }
+
                 if (row && !row.has_attachment && !buffered?.attachment?.url) {
                     return err(`Message ${msgId} has no media attachment`);
                 }
@@ -1583,7 +1700,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     const stats = await downloadSyncedMedia({
                         api,
                         accountDir,
-                        threadId: String(row?.threadId || buffered?.threadId || threadId || ""),
+                        threadId: String(msgThread || ""),
                         limit: 50,
                         concurrency: 2,
                         mediaRoot: process.env.ZALO_MEDIA_DIR || mediaConfig.downloadDir || undefined,
@@ -1600,19 +1717,42 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     }
                 }
 
-                // The cached file is sealed (keystore/media-seal.js). STOPGAP until WP6/WP8 delivery modes: the reply's
-                // `path` is a private decrypted copy (0600, its own folder) that is deleted after 10 minutes.
-                const copy = decryptToTempfile(localPath, mediaScope(), {
+                // The cached file stays sealed (keystore/media-seal.js): it is delivered inline, as a link served from
+                // the sealed file, or as a private decrypted copy (src/core/media-deliver.js).
+                const info = mediaInfo(localPath);
+                const pick = choose(info.size, info.mime);
+                if (pick.error) return err(pick.error);
+                const out = await deliverCachedMedia({
+                    mode: pick.mode,
+                    file: localPath,
+                    scope: mediaScope(),
                     msgId: row?.msgId ?? msgId,
+                    threadId: msgThread,
+                    accountId,
+                    info,
+                    policy,
+                    ensureServed: ensureMediaServed,
                 });
-                if (open) openFile(copy.path);
-
-                return ok({
+                if (pick.open && out.path) openFile(out.path);
+                const reply = {
                     success: true,
-                    path: copy.path,
-                    expiresAt: new Date(copy.expiresAt).toISOString(),
-                    mediaType: row?.type || buffered?.type || null,
-                });
+                    msgId,
+                    mediaType: kind || null,
+                    delivery: out.mode,
+                    mimeType: out.mimeType,
+                    size: out.size,
+                    ...(out.url ? { url: out.url, auth: out.auth } : {}),
+                    ...(out.path ? { path: out.path, opened: pick.open } : {}),
+                    ...(out.expiresAt ? { expiresAt: new Date(out.expiresAt).toISOString() } : {}),
+                    ...(pick.notes.length ? { notes: pick.notes } : {}),
+                };
+                if (out.mode !== "inline") return ok(reply);
+                return {
+                    content: [
+                        { type: "text", text: JSON.stringify(reply) },
+                        inlineContent(out.bytes, kind, out.mimeType),
+                    ],
+                };
             } catch (e) {
                 console.error("[mcp-tools] zalo_view_media error:", e.message);
                 return err(e.message);
@@ -2192,7 +2332,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         timestamp: r.timestamp,
                         type: r.type,
                         hasAttachment: Boolean(r.has_attachment),
-                        localPath: r.localPath || null,
+                        mediaCached: Boolean(r.localPath),
                         replyTo: cachedReplyTo(r),
                         ...(around && { context: { before: around.before.map(lite), after: around.after.map(lite) } }),
                     };

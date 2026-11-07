@@ -307,7 +307,7 @@ zalo-agent oa whoami --oa-id shop2
 | Credentials | `~/.zalo-agent-cli/` | `~/.zalo-agent/` (không có hậu tố `-cli`) |
 | Disclaimer khi chạy | Có | Không (API chính thức) |
 | Auto-login trước lệnh | Có | Không — `oa` tự quản lý token riêng |
-| Số lệnh | 210 (trong tổng 242 lệnh CLI) | 32 |
+| Số lệnh | 211 (trong tổng 243 lệnh CLI) | 32 |
 | Realtime | WebSocket (`listen`) | Webhook HTTP (`oa listen`) |
 | Có MCP tool? | Có — 36 tools (xem [mcp-guide](../skill/references/mcp-guide.md)) | **Chưa** — chỉ dùng được qua CLI |
 

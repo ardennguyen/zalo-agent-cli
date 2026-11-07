@@ -385,18 +385,25 @@ Lấy tin nhắn cũ. **Đọc cache cục bộ (`zalo.db`) trước** — tức
 ---
 
 ### `zalo_view_media`
-Mở file media (ảnh/audio/video) đã nhận bằng trình xem mặc định của hệ thống. Media được tự động tải về khi nhận (auto-download) vào `accounts/<ownId>/media/<threadId>/`. Đường dẫn lấy từ `localPath` trong cache, nên mở được cả tin nhắn đến **trước khi** tiến trình này khởi động — không còn phụ thuộc vào buffer trong bộ nhớ. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng rồi mở. File trong cache được mã hóa: `path` trả về là một bản giải mã riêng trong `<config-dir>/tmp/media/`, bị xóa lúc `expiresAt` (sau 10 phút).
+Lấy ảnh, sticker, tin nhắn thoại, video hoặc file đã nhận. File trong cache được mã hóa và luôn giữ nguyên như vậy; tool trả media theo một trong ba cách (`deliver`, nếu không có thì theo `media.deliver` của từng loại):
+
+- **inline**: nội dung `image` / `audio` của MCP nằm cạnh JSON — ảnh, GIF, doodle, sticker và tin nhắn thoại tới `media.inlineMaxBytes` (5 MB). Model nhìn/nghe trực tiếp, không có file nào.
+- **link**: `url` = `<publicUrl>/zalo/media/<token>`, dùng được 10 phút, hỗ trợ range (tua video). `auth: "bearer"` nghĩa là yêu cầu tải còn cần `Authorization` của chính server này; khi chạy stdio, link do một listener `127.0.0.1` phục vụ.
+- **tempfile**: `path`, một bản giải mã riêng trong `<config-dir>/tmp/media/`, bị xóa lúc `expiresAt`; chỉ cho client chạy trên cùng máy với server.
+
+Mặc định: ảnh và tin nhắn thoại inline, video và file là link. Cách nào không dùng được thì đổi, kèm `notes`: inline quá giới hạn kích thước hoặc kiểu không hiển thị được thành link; tempfile cho client HTTP ở máy khác thành link; cách bị `media.allowDeliver` cấm thì bị từ chối khi được yêu cầu. Sticker được tải từ Zalo khi cần và gửi inline, không lưu lại. Media của trò chuyện ẩn bị từ chối như tin nhắn của nó. Nếu chưa tải, tool gọi cùng downloader mà `sync-media` dùng trước. `zalo_get_history` và `zalo_search_messages` chỉ báo `mediaCached: true`, không đưa đường dẫn file (file đã mã hóa). Bản CLI tương ứng: `zalo-agent msg media <msgId>`.
 
 **Tham số:**
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
 | `msgId` | string | `msgId` của tin nhắn (từ `zalo_get_messages`, `zalo_wait_for_message` hoặc `zalo_get_history`) có đính kèm media |
 | `threadId` | string (tuỳ chọn) | Giới hạn tìm kiếm trong 1 thread |
-| `open` | boolean (mặc định theo config `media.autoOpen`) | Có mở bằng trình xem hệ thống hay không |
+| `deliver` | `inline` | `link` | `tempfile` (tuỳ chọn) | Cách nhận; bỏ trống thì theo mặc định của server cho loại media này |
+| `open` | boolean (tuỳ chọn) | Mở bằng trình xem của máy chạy server (chỉ stdio, qua tempfile). Bỏ trống thì theo `media.autoOpen`: bật khi stdio, tắt khi HTTP |
 
-**Kết quả mẫu:**
+**Kết quả mẫu (link):**
 ```json
-{ "success": true, "path": "/home/user/.zalo-agent-cli/tmp/media/m-Ab12Cd/2026-09-19-14-05_8286035781_photo.jpg", "expiresAt": "2026-09-19T14:15:00.000Z", "mediaType": "photo" }
+{ "success": true, "msgId": "7300000000001", "mediaType": "video", "delivery": "link", "mimeType": "video/mp4", "size": 4823011, "url": "https://zalo.example.com/zalo/media/Q2hhbmdlTWVQbGVhc2UxMg", "auth": "bearer", "expiresAt": "2026-09-19T14:15:00.000Z" }
 ```
 
 ---

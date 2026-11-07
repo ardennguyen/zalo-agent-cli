@@ -17,6 +17,10 @@ import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
 import { createStartupGate, resolveStartupSettings } from "../core/startup-gate.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { startMediaMigration } from "../core/media-store.js";
+import { getMediaLinks, linkForCachedMessage, startTempfileSweeper } from "../core/media-deliver.js";
+import { ensureMediaServed } from "../core/media-route.js";
+import { resolveMediaDelivery } from "../core/deploy-policy.js";
+import { scopeOfDir } from "../core/keystore/keyring.js";
 import {
     createStageLock,
     statusViaDaemon,
@@ -38,7 +42,7 @@ import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { attachLastOnline } from "../core/last-online.js";
 import { attachControlEvents } from "../core/control-events.js";
-import { initDb, getPendingSyncGaps } from "../core/db.js";
+import { initDb, getMessageById, getPendingSyncGaps } from "../core/db.js";
 import {
     storeLiveMessage,
     refreshLiveMessageIdentities,
@@ -294,11 +298,26 @@ export function registerListenCommand(program) {
                 : opts.hiddenContentless
                   ? "contentless"
                   : "exclude";
+            // Media links this daemon hands out over its channel (`msg media --deliver link`): capability links on a
+            // 127.0.0.1 listener; `listen` has no config file, so the policy is the environment's and the defaults.
+            const listenMediaPolicy = resolveMediaDelivery({ accountId: activeAcc.ownId });
+            const mediaLinks = getMediaLinks().configure({
+                linkAuth: "capability",
+                ttlMs: listenMediaPolicy.linkTtlMs,
+                rateLimit: listenMediaPolicy.linkRateLimit,
+                log: (line) => console.error(line),
+            });
+            listenHidden.onChange?.((set) => {
+                if (listenHiddenMode === "include") return;
+                mediaLinks.revokeWhere((l) => l.threadId !== null && set.isHidden(l.threadId), "its chat was hidden");
+            });
             try {
                 initDb(join(accountDir, "zalo.db"));
                 info(`Local database initialized at ${accountDir}/zalo.db`);
                 // Media a 2.x install downloaded is sealed in the background, a batch at a time (media-store.js).
                 startMediaMigration(activeAcc.ownId, { log: (l) => console.error(`[listen] ${l}`) });
+                // Decrypted copies (msg media) expire on time while this daemon runs (src/core/media-deliver.js).
+                startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs });
                 // Logged in and the cache open: the heavy part of start-up is over.
                 gate.leave();
             } catch (err) {
@@ -1084,10 +1103,12 @@ export function registerListenCommand(program) {
                     return newApi;
                 },
                 onKicked: () => {
+                    mediaLinks.revokeAll("the session ended");
                     dropLock();
                     process.exit(EXIT_CODE.KICKED);
                 },
                 onRevoked: (e) => {
+                    mediaLinks.revokeAll("the session ended");
                     error(`Zalo keeps refusing the saved login (${e?.message ?? e}). Run \`zalo-agent login\` again.`);
                     dropLock();
                     process.exit(EXIT_CODE.SESSION_REVOKED);
@@ -1143,6 +1164,7 @@ export function registerListenCommand(program) {
                 health.noteStopping();
                 channel?.stop();
                 webhookDelivery?.stop();
+                mediaLinks.revokeAll("the daemon stopped");
                 deliveredReceipts.stop();
                 // The supervisor first, so the close that follows is read as a stop and not as a drop.
                 socketHost.stop().catch(() => {});
@@ -1191,6 +1213,17 @@ export function registerListenCommand(program) {
                     lock: stageLock,
                     onStop: shutdown,
                     onStatus: () => health.snapshot(),
+                    // `msg media --deliver link`: a link this daemon serves on 127.0.0.1 while it runs.
+                    onMediaLink: ({ msgId }) =>
+                        linkForCachedMessage({
+                            row: getMessageById(msgId),
+                            scope: scopeOfDir(accountDir),
+                            accountId: activeAcc.ownId,
+                            hidden: listenHiddenMode === "include" ? null : listenHidden,
+                            links: mediaLinks,
+                            ensureServed: ensureMediaServed,
+                            policy: listenMediaPolicy,
+                        }),
                 });
                 info(`Sync & upload channel ready on 127.0.0.1:${channel.port} — this socket is reused for both.`);
                 info("`zalo-agent sync` will run its socket stages here; it still needs your phone tap.");

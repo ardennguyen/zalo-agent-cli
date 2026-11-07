@@ -426,19 +426,19 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 
 ---
 
-## E26c: MCP — Where `zalo_view_media` Actually Writes
+## E26c: MCP — Getting a Photo or a Video Through `zalo_view_media`
 
-**Prompt:** (agent is connected over MCP) "Save that photo she sent and tell me where it went"
+**Prompt:** (agent is connected over MCP) "Show me the photo she sent, and save the video from yesterday"
 
 **Expected reasoning:**
-1. `zalo_view_media(msgId, threadId?)` downloads if needed and returns `{success, path, mediaType}`
-2. Report the `path` **as returned** — it is under `~/.zalo-agent-cli/accounts/<ownId>/media/<threadId>/`, named `<date>-<HH-mm>_<msgIdTail>_<name>.<ext>`
-3. It is the same folder every other command uses — one downloader, one layout — unless `media.downloadDir` in `mcp-config.json` moved the MCP server's root; the returned `path` already reflects that
-4. Set `open: false` when the user only wants it saved, not launched in a system viewer
-5. If asked to relocate it, point at `media.downloadDir` in `mcp-config.json` rather than moving files behind the server's back
+1. The cached media is encrypted at rest; `zalo_view_media(msgId)` delivers it, it does not hand out the cache's own file. History and search rows only say `mediaCached: true`
+2. The photo comes back **inline** by default (image content beside the JSON): look at it directly, no path involved
+3. The video comes back as a **link** (`url`, works for 10 minutes; `auth: "bearer"` means the request needs the same Authorization as the MCP server). Give the user the link as returned and say it expires
+4. Ask for `deliver: "tempfile"` only when the user is on the server's machine and needs a file there; a remote HTTP client gets a link instead, and the reply's `notes` say why
+5. To keep a file, the user runs `zalo-agent msg media <msgId> --out <file>` on the server (the CLI twin)
 
-**Must include:** the returned `path` verbatim, `open: false` when only saving
-**Must NOT:** Invent a path instead of using the tool's response, say the folder is named after the conversation, or claim `logout --purge` cleans up a custom `media.downloadDir`
+**Must include:** the returned `url` or `path` verbatim with its `expiresAt`, `deliver` only when needed
+**Must NOT:** Invent a path into `accounts/<ownId>/media/` (those files are encrypted), promise the link lasts, or ask for `tempfile` for a user on another machine
 
 ---
 

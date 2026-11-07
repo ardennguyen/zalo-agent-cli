@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
-import { decryptMediaToFile } from "./keystore/media-seal.js";
+import { decryptMediaToFile, mediaFileState, readMediaFile, readMediaHeader } from "./keystore/media-seal.js";
 import { onRekey } from "./keystore/index.js";
 import { isLoopbackUrl, MEDIA_DEFAULTS, validatePublicUrl } from "./deploy-policy.js";
 
@@ -556,3 +556,121 @@ export function setMediaLinks(links) {
 onRekey(() => {
     current?.revokeAll("the account was rekeyed");
 });
+
+// ── One cached file, delivered ───────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What a cached media file is, without its key: the plaintext size and type from a sealed file's header (or the file
+ * itself for a 2.x plaintext one), and the name it downloads as.
+ *
+ * @param {string} file
+ * @returns {{size: number, mime: string, name: string}}
+ * @throws {Error} when the file is not there
+ */
+export function mediaInfo(file) {
+    const state = mediaFileState(file);
+    if (state === "absent") throw new Error("the cached media file is missing");
+    if (state === "sealed") {
+        const { meta } = readMediaHeader(file);
+        return { size: Number(meta.size), mime: mediaMime(meta, file), name: safeMediaName(basename(file)) };
+    }
+    return { size: statSync(file).size, mime: mediaMime({}, file), name: safeMediaName(basename(file)) };
+}
+
+/**
+ * Deliver one cached file in a chosen mode.
+ *
+ * @param {object} args
+ * @param {"inline"|"link"|"tempfile"} args.mode
+ * @param {string} args.file - the sealed file
+ * @param {{id: string, dir: string}} args.scope
+ * @param {string} args.msgId
+ * @param {string|null} [args.threadId]
+ * @param {string} [args.accountId]
+ * @param {{size: number, mime: string, name: string}} [args.info] - {@link mediaInfo}, when already read
+ * @param {{tempfileTtlMs?: number, linkTtlMs?: number}} [args.policy]
+ * @param {MediaLinks} [args.links]
+ * @param {(links: MediaLinks) => Promise<void>} [args.ensureServed] - start the stdio listener (src/core/media-route.js)
+ * @param {boolean} [args.keepOnExit] - a tempfile for a CLI process that exits right after
+ * @returns {Promise<{mode: string, size: number, mimeType: string, name: string, bytes?: Buffer, url?: string,
+ *   auth?: string, path?: string, expiresAt?: number|null}>}
+ */
+export async function deliverCachedMedia({
+    mode,
+    file,
+    scope,
+    msgId,
+    threadId = null,
+    accountId = "",
+    info,
+    policy = {},
+    links = getMediaLinks(),
+    ensureServed = null,
+    keepOnExit = false,
+}) {
+    const meta = info ?? mediaInfo(file);
+    const base = { mode, size: meta.size, mimeType: meta.mime, name: meta.name };
+    if (mode === "inline") return { ...base, bytes: readMediaFile(file, scope, { msgId }) };
+    if (mode === "link") {
+        if (ensureServed) await ensureServed(links);
+        const link = links.issue({
+            accountId,
+            msgId,
+            threadId,
+            file,
+            scope,
+            mime: meta.mime,
+            name: meta.name,
+            size: meta.size,
+            ttlMs: policy.linkTtlMs,
+        });
+        return { ...base, url: link.url, auth: link.auth, expiresAt: link.expiresAt };
+    }
+    const copy = decryptToTempfile(file, scope, {
+        msgId,
+        ttlMs: policy.tempfileTtlMs ?? TEMPFILE_TTL_MS,
+        keepOnExit,
+    });
+    return { ...base, path: copy.path, expiresAt: copy.expiresAt };
+}
+
+/**
+ * A link to the cached media of one message, for a daemon asked over its channel (`msg media --deliver link`).
+ *
+ * @param {object} args
+ * @param {object|null} args.row - the cached message (getMessageById)
+ * @param {{id: string, dir: string}} args.scope
+ * @param {string} args.accountId
+ * @param {{isHidden: (threadId: string) => boolean}|null} [args.hidden] - hidden chats to refuse (null: none)
+ * @param {MediaLinks} [args.links]
+ * @param {(links: MediaLinks) => Promise<void>} [args.ensureServed]
+ * @param {{linkTtlMs?: number}} [args.policy]
+ * @returns {Promise<{url: string, expiresAt: number, auth: string, mimeType: string, size: number}>}
+ */
+export async function linkForCachedMessage({
+    row,
+    scope,
+    accountId,
+    hidden = null,
+    links = getMediaLinks(),
+    ensureServed = null,
+    policy = {},
+}) {
+    if (!row) throw new Error("that message is not in the local cache");
+    if (hidden?.isHidden(row.threadId)) throw new Error("that message is in a hidden chat");
+    if (!row.localPath || mediaFileState(row.localPath) === "absent") {
+        throw new Error(`message ${row.msgId} has no downloaded media (zalo-agent sync-media -T ${row.threadId})`);
+    }
+    const out = await deliverCachedMedia({
+        mode: "link",
+        file: row.localPath,
+        scope,
+        msgId: row.msgId,
+        threadId: row.threadId,
+        accountId,
+        policy,
+        links,
+        ensureServed,
+    });
+    return { url: out.url, expiresAt: out.expiresAt, auth: out.auth, mimeType: out.mimeType, size: out.size };
+}

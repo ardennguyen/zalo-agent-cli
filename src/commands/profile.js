@@ -211,8 +211,11 @@ export function registerProfileCommands(program) {
                     );
                     return;
                 }
-                const result = await getApi().updateSettings(meta.key, numVal);
-                output(result, program.opts().json, () => success(`${meta.label}: ${meta.values[numVal]} (${numVal})`));
+                await getApi().updateSettings(meta.key, numVal);
+                // Zalo answers the update with an empty body, so the reply is what was set
+                // (the same shape as zalo_profile `set`), not Zalo's "".
+                const reply = { success: true, setting, value: numVal, meaning: meta.values[numVal] };
+                output(reply, program.opts().json, () => success(`${meta.label}: ${meta.values[numVal]} (${numVal})`));
             } catch (e) {
                 error(`Setting update failed: ${e.message}`);
             }

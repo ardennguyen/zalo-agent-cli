@@ -76,7 +76,8 @@ export const PROFILE_ACTIONS = {
         needs: ["setting", "value"],
         check: (a) => {
             const meta = SETTING_MAP[a.setting];
-            if (meta && String(a.value) in meta.values) return undefined;
+            if (!meta) return `Unknown setting: "${a.setting}". Valid: ${Object.keys(SETTING_MAP).join(", ")}.`;
+            if (String(a.value) in meta.values) return undefined;
             const valid = Object.entries(meta.values)
                 .map(([k, v]) => `${k}=${v}`)
                 .join(", ");

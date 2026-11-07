@@ -8,16 +8,20 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { basename, join } from "node:path";
+import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
+import { Database, dbFileState, openDatabase } from "../../src/core/sqlite.js";
+import { rekeyAccount } from "../../src/core/keystore/index.js";
+import { storesStatus } from "../../src/core/keystore/stores.js";
 import {
     startWebhookDelivery,
     backoffMs,
     createWebhookDispatcher,
     describeWebhookUrl,
+    migratePlaintextOutbox,
     openOutbox,
     outboxPath,
     webhookHeaders,
@@ -584,5 +588,101 @@ describe("startWebhookDelivery (real timers, real receiver)", () => {
         assert.equal(posts[0].id, "dead1");
         writer.close();
         d.stop();
+    });
+});
+
+describe("at rest (SQLCipher, purpose outbox)", () => {
+    const quiet = () => {};
+    let k = 0;
+    const freshAccount = () => getAccountDir(String(1000000000000000970n + BigInt(k++)));
+
+    /** A 2.x outbox: plaintext, the same schema, with `pending` and `dead` rows. */
+    function plaintextOutbox(accountDir, { pending = 0, dead = 0 } = {}) {
+        const o = openOutbox(accountDir, { now });
+        for (let i = 0; i < pending + dead; i++) o.enqueue(`k${i}`, ev(i, { text: "PLAINMARKER" }));
+        const deadSeqs = o
+            .head(pending + dead)
+            .slice(pending)
+            .map((r) => r.seq);
+        o.markDead(deadSeqs, "test");
+        o.markDelivered([]); // nothing: counters only
+        o.close();
+        const db = openDatabase(outboxPath(accountDir), { purpose: "outbox", log: quiet });
+        db.pragma("journal_mode = DELETE");
+        db.pragma("rekey = ''");
+        db.close();
+        assert.equal(dbFileState(outboxPath(accountDir)), "plaintext");
+    }
+
+    it("a new outbox is encrypted: no plaintext header or body, a plain reader gets NOTADB", () => {
+        outbox.enqueue("k", ev(1, { text: "PLAINMARKER" }));
+        outbox.close();
+        const file = outboxPath(dir);
+        assert.equal(dbFileState(file), "encrypted");
+        for (const f of [file, `${file}-wal`]) {
+            let bytes = Buffer.alloc(0);
+            try {
+                bytes = readFileSync(f);
+            } catch {
+                /* no WAL */
+            }
+            assert.equal(bytes.includes("PLAINMARKER"), false, `${f} holds the body in the clear`);
+        }
+        const plain = new Database(file, { readonly: true });
+        assert.throws(() => plain.prepare("SELECT count(*) FROM sqlite_master").get(), { code: "SQLITE_NOTADB" });
+        plain.close();
+        outbox = openOutbox(dir, { now });
+        assert.equal(outbox.stats().pending, 1);
+    });
+
+    it("a plaintext outbox with nothing queued is removed and recreated encrypted", () => {
+        const acct = freshAccount();
+        plaintextOutbox(acct);
+        assert.equal(migratePlaintextOutbox(outboxPath(acct), { log: quiet }), "recreated");
+        assert.equal(dbFileState(outboxPath(acct)), "absent");
+        const o = openOutbox(acct, { now, log: quiet });
+        assert.equal(o.stats().pending, 0);
+        o.close();
+        assert.equal(dbFileState(outboxPath(acct)), "encrypted");
+    });
+
+    it("a plaintext outbox with a backlog is encrypted with every row kept, by the first writer", () => {
+        const acct = freshAccount();
+        plaintextOutbox(acct, { pending: 3, dead: 2 });
+        const o = openOutbox(acct, { now, log: quiet });
+        const s = o.stats();
+        o.close();
+        assert.deepEqual([s.pending, s.dead], [3, 2]);
+        assert.equal(dbFileState(outboxPath(acct)), "encrypted");
+        assert.equal(readFileSync(outboxPath(acct)).includes("PLAINMARKER"), false);
+    });
+
+    it("a read-only opener never migrates: a plaintext outbox fails closed with the reason", () => {
+        const acct = freshAccount();
+        plaintextOutbox(acct, { pending: 1 });
+        assert.throws(() => openOutbox(acct, { readonly: true }), { code: "PLAINTEXT" });
+        assert.equal(dbFileState(outboxPath(acct)), "plaintext");
+        const ro = (openOutbox(acct, { log: quiet }).close(), openOutbox(acct, { readonly: true }));
+        assert.equal(ro.stats().pending, 1);
+        ro.close();
+    });
+
+    it("is listed by account security status and follows a rekey", () => {
+        const acct = freshAccount();
+        const id = basename(acct);
+        const o = openOutbox(acct, { now, log: quiet });
+        o.enqueue("k", ev(1));
+        o.close();
+        const row = () => storesStatus(id).find((f) => f.kind === "webhook-outbox");
+        const before = row();
+        assert.equal(before.state, "encrypted");
+        rekeyAccount(id);
+        const after = row();
+        assert.equal(after.state, "encrypted");
+        assert.equal(after.currentKey, true);
+        assert.notEqual(after.keyId, before.keyId);
+        const again = openOutbox(acct, { readonly: true });
+        assert.equal(again.stats().pending, 1);
+        again.close();
     });
 });

@@ -7,20 +7,36 @@
  * (`account security rekey`) must import it: without the handlers a rekey would drop the key the database is
  * encrypted under.
  *
- * Today: the message database (`zalo.db`, SQLCipher, purpose `sqlcipher`). Later work packages add theirs here:
- * the webhook outbox (`webhook-outbox.db`, purpose `outbox`, the same database handler) and the media container
- * (purpose `media`: a rekey re-wraps each file's key, see {@link rekeyStores}).
+ * The message database (`zalo.db`, SQLCipher, purpose `sqlcipher`) and the webhook outbox (`webhook-outbox.db`,
+ * purpose `outbox`, the same database handler). The media container (purpose `media`: a rekey re-wraps each file's
+ * key, see {@link rekeyStores}).
  */
-import { getAccountDbPath } from "../credentials.js";
+import { join } from "node:path";
+import { getAccountDbPath, getAccountDir } from "../credentials.js";
 import { databaseState, migratePlaintextDatabase, rekeyDatabase } from "../sqlite.js";
+import { OUTBOX_FILE, OUTBOX_PURPOSE, migratePlaintextOutbox } from "../webhook-outbox.js";
 import { onRekey, securityStatus } from "./index.js";
 
 /**
- * Every encrypted database of an account. `key` is the keyring key it derives from (always the data key).
+ * Every encrypted database of an account. `key` is the keyring key it derives from (always the data key); `migrate`
+ * encrypts a plaintext one and returns whether it did.
  */
 export const DATABASE_STORES = Object.freeze([
-    { kind: "message-database", key: "data", purpose: "sqlcipher", path: (id) => getAccountDbPath(id) },
-    // The webhook outbox joins here (purpose "outbox").
+    {
+        kind: "message-database",
+        key: "data",
+        purpose: "sqlcipher",
+        path: (id) => getAccountDbPath(id),
+        migrate: (file, opts) => migratePlaintextDatabase(file, { purpose: "sqlcipher", ...opts }).migrated,
+    },
+    {
+        kind: "webhook-outbox",
+        key: "data",
+        purpose: OUTBOX_PURPOSE,
+        path: (id) => join(getAccountDir(id), OUTBOX_FILE),
+        // An empty 2.x outbox is removed (recreated encrypted on its next open), one with rows is encrypted.
+        migrate: (file, opts) => migratePlaintextOutbox(file, opts) !== "already-encrypted",
+    },
 ]);
 
 /**
@@ -85,8 +101,8 @@ export function migrateStores(ownId, { log } = {}) {
         if (state === "absent") return { kind: s.kind, file, result: "absent" };
         if (state !== "plaintext") return { kind: s.kind, file, result: "already-encrypted" };
         try {
-            migratePlaintextDatabase(file, { purpose: s.purpose, ...(log ? { log } : {}) });
-            return { kind: s.kind, file, result: "encrypted" };
+            const done = s.migrate(file, log ? { log } : {});
+            return { kind: s.kind, file, result: done ? "encrypted" : "already-encrypted" };
         } catch (e) {
             if (e?.code === "LOCKED") return { kind: s.kind, file, result: "locked", error: e.message };
             return { kind: s.kind, file, result: "failed", error: e.message };

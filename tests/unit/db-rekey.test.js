@@ -92,7 +92,9 @@ describe("rekey re-encrypts the message database", () => {
         const file = cache(id, 2);
         const before = readFileSync(file);
         assert.deepEqual(
-            rekeyStores(id).map((r) => r.result),
+            rekeyStores(id)
+                .filter((r) => r.kind === "message-database")
+                .map((r) => r.result),
             ["current"],
         );
         assert.deepEqual(readFileSync(file), before);
@@ -114,7 +116,9 @@ describe("rekey re-encrypts the message database", () => {
         const empty = freshId();
         getDataKey(empty, "sqlcipher"); // a keyring, no database
         assert.deepEqual(
-            rekeyStores(empty).map((r) => r.result),
+            rekeyStores(empty)
+                .filter((r) => r.kind === "message-database")
+                .map((r) => r.result),
             ["absent"],
         );
         rekeyAccount(empty);

@@ -90,7 +90,10 @@ describe("account security", () => {
         const r = await json(["account", "security", "rekey"]);
         assert.equal(r.code, 0, r.all);
         assert.equal(r.value.resealed, 1);
-        assert.deepEqual(r.value.databases, [{ kind: "message-database", state: "encrypted", currentKey: true }]);
+        assert.deepEqual(r.value.databases, [
+            { kind: "message-database", state: "encrypted", currentKey: true },
+            { kind: "webhook-outbox", state: "absent" },
+        ]);
         const after = (await json(["account", "security", "status"])).value;
         const db = after.files.find((f) => f.kind === "message-database");
         assert.equal(db.currentKey, true);

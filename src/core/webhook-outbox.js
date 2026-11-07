@@ -19,12 +19,20 @@
  * The file is `accounts/<ownId>/webhook-outbox.db`, separate from `zalo.db`: it holds no message rows
  * (AGENTS.md section 13 limits those to three writers) and a damaged outbox can be deleted without
  * touching the cache.
+ *
+ * At rest it is encrypted like `zalo.db` (SQLCipher v4, src/core/sqlite.js) under its own subkey of the account's data
+ * key (purpose `outbox`): the queued bodies are message content. A 2.x plaintext outbox is migrated by the first
+ * writer: one with nothing queued or dead-lettered is simply removed and recreated encrypted (it holds only counters),
+ * one with rows is copied, encrypted and verified like the database. A read-only opener (`mcp webhook status`) never
+ * migrates: it fails closed with the reason.
  */
 
 import { createHmac } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { Database } from "./sqlite.js";
+import { mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { KeystoreError } from "./keystore/container.js";
+import { checkLock } from "./lock.js";
+import { Database, dbFileState, migratePlaintextDatabase, openDatabase, shredFile } from "./sqlite.js";
 
 export const OUTBOX_FILE = "webhook-outbox.db";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -59,19 +67,67 @@ export function webhookHeaders(body, secret) {
     return headers;
 }
 
+/** The data-key purpose the outbox is encrypted under. */
+export const OUTBOX_PURPOSE = "outbox";
+
+/**
+ * Encrypt a plaintext (2.x) outbox in place. Nothing queued and nothing dead-lettered: the file holds only counters,
+ * so it is shredded and removed (the next open recreates it encrypted). Otherwise it is migrated like the message
+ * database (copy, `PRAGMA rekey`, verify, swap, shred). Idempotent: an absent or encrypted outbox is left alone.
+ *
+ * @param {string} file - `accounts/<ownId>/webhook-outbox.db`
+ * @param {{log?: (line: string) => void, hooks?: object}} [opts]
+ * @returns {"absent"|"already-encrypted"|"recreated"|"encrypted"}
+ * @throws {import("./keystore/container.js").KeystoreError} `IN_USE`, `NO_SPACE`, and the key layer's codes
+ */
+export function migratePlaintextOutbox(file, { log = (l) => console.error(l), hooks } = {}) {
+    const state = dbFileState(file);
+    if (state === "absent" || state === "empty") return "absent";
+    if (state !== "plaintext") return "already-encrypted";
+    let rows = 0;
+    const plain = new Database(file, { readonly: true, fileMustExist: true, timeout: 5000 });
+    try {
+        const has = plain.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outbox'").get();
+        if (has) rows = plain.prepare("SELECT count(*) AS n FROM outbox WHERE status IN ('pending', 'dead')").get().n;
+    } finally {
+        plain.close();
+    }
+    if (rows === 0) {
+        const holder = checkLock(dirname(file));
+        if (holder.locked && holder.pid !== process.pid) {
+            throw new KeystoreError(
+                `${file} is still plaintext and must be encrypted, but process ${holder.pid} holds this account ` +
+                    "(daemon.lock): stop it (an older version cannot read the encrypted outbox), then run again",
+                "IN_USE",
+            );
+        }
+        // Only counters: nothing worth a verified copy. A writer still in WAL has nothing queued either.
+        shredFile(file);
+        for (const s of ["-wal", "-shm", "-journal"]) rmSync(file + s, { force: true });
+        log(`[outbox] ${file} held nothing queued: removed, it is recreated encrypted`);
+        return "recreated";
+    }
+    const res = migratePlaintextDatabase(file, { purpose: OUTBOX_PURPOSE, log, ...(hooks ? { hooks } : {}) });
+    return res.migrated ? "encrypted" : "already-encrypted";
+}
+
 /**
  * Open (creating if needed) the outbox of one account.
  *
  * @param {string} accountDir - `accounts/<ownId>`
- * @param {{ now?: () => number, readonly?: boolean }} [options] - `readonly` for status commands: never creates the file
+ * @param {{ now?: () => number, readonly?: boolean, log?: (line: string) => void }} [options] - `readonly` for
+ *   status commands: never creates or migrates the file (a plaintext one is `KeystoreError` `PLAINTEXT`)
  * @returns {object} Outbox handle
+ * @throws {import("./keystore/container.js").KeystoreError} when the outbox's key cannot be had (fail closed)
  */
-export function openOutbox(accountDir, { now = Date.now, readonly = false } = {}) {
-    if (!readonly) mkdirSync(accountDir, { recursive: true });
-    const db = new Database(outboxPath(accountDir), readonly ? { readonly: true, fileMustExist: true } : {});
+export function openOutbox(accountDir, { now = Date.now, readonly = false, log } = {}) {
+    if (!readonly) {
+        mkdirSync(accountDir, { recursive: true });
+        migratePlaintextOutbox(outboxPath(accountDir), log ? { log } : {});
+    }
+    const db = openDatabase(outboxPath(accountDir), { purpose: OUTBOX_PURPOSE, readonly, ...(log ? { log } : {}) });
     db.pragma("busy_timeout = 5000");
     if (!readonly) {
-        db.pragma("journal_mode = WAL");
         db.exec(`
             CREATE TABLE IF NOT EXISTS outbox (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,

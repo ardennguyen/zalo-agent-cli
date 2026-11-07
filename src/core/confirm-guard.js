@@ -270,7 +270,10 @@ export const GUARDS = Object.freeze({
         irreversible: false,
         what: (t) =>
             `write the message database of account ${t.ownerId ?? "(active)"} decrypted to ${t.output ?? "a file"}: ` +
-            "anyone who reads that file reads every cached message, hidden chats included",
+            "anyone who reads that file reads every cached message in it" +
+            (t.includeHidden
+                ? ", hidden chats included (after the PIN)"
+                : "; hidden chats are left out unless --include-hidden and the PIN"),
     },
     "db.purge": {
         cli: "db purge",

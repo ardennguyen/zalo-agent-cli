@@ -3,6 +3,10 @@
  * programs that used to open `zalo.db` themselves. The key never leaves: these read the database for them.
  *
  * - `db query <sql>`: one read-only statement, rows out (`--json` for programs). Safe beside a running daemon.
+ * - Hidden chats stay hidden: `query` and `export` work on a copy without them unless `--include-hidden` and the
+ *   hidden-chat PIN (asked at a prompt that does not echo, or `--pin-stdin`; checked as `conv hidden` checks it, with
+ *   its lockout). `backup` keeps them: it is the account's restore image, encrypted under its key, and opens only
+ *   through these commands, which leave them out again.
  * - `db backup --out <file>`: an encrypted, verified copy; it opens only with this account's keyring and provider.
  * - `db export --out <file>`: the same copy; with `--plaintext` decrypted, for other SQLite tools: guarded like
  *   `account export` (`--yes` to write it, `--dry-run` to preview, exit 2 without either).
@@ -19,6 +23,7 @@
  * CLI-only: raw SQL and a decrypted copy are an operator's tools, never an agent's (tests/unit/mcp-cli-parity.test.js).
  */
 import { getActive } from "../core/accounts.js";
+import { autoLogin, getApi } from "../core/zalo-client.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { getAccountDbPath, getAccountDir } from "../core/credentials.js";
 import { callViaDaemon } from "../core/daemon-channel.js";
@@ -30,6 +35,7 @@ import { QUERY_ROW_LIMIT, QUERY_ROW_LIMIT_MAX, copyDatabase, runReadOnlyQuery } 
 import { parseDateBound, parsePeriod } from "../utils/date-range.js";
 import { error, info, output, success, warning } from "../utils/output.js";
 import { parseIntAtLeast } from "../utils/parse-options.js";
+import { addHiddenOptions, hiddenAccess, hiddenSetForCli } from "../utils/hidden-access.js";
 
 /** The active (or `--account`) account's database path, or exit 1. */
 function accountDb() {
@@ -45,6 +51,58 @@ function accountDb() {
 function fail(e) {
     error(e?.message ?? String(e));
     process.exit(1);
+}
+
+/** The session, when one can be had (a login with the saved credentials); null otherwise. */
+async function sessionOrNull(json) {
+    try {
+        await autoLogin(json);
+        return getApi();
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Which threads `db query` / `db export` leave out: the hidden chats, unless `--include-hidden` and the PIN (asked,
+ * then checked against the hash Zalo gives a session, with the lockout; exits on failure). Without a session at hand
+ * the ids come from the mirror the listener and the hidden-chat commands keep; when no list is known yet, one login
+ * reads it. When it still cannot be known, the command refuses (exit 1) rather than show hidden chats.
+ *
+ * @param {object} opts
+ * @param {string} ownId
+ * @param {boolean} json
+ * @returns {Promise<{mode: "include"|"exclude"|"none", ids: string[]}>}
+ */
+async function hiddenScope(opts, ownId, json) {
+    if (opts.includeHidden) {
+        const api = await sessionOrNull(json);
+        if (!api) {
+            fail(new Error("--include-hidden checks the PIN against Zalo's answer: log in first (zalo-agent login)."));
+        }
+        await hiddenAccess(opts, { ownId, api, json });
+        return { mode: "include", ids: [] };
+    }
+    let set;
+    try {
+        set = await hiddenSetForCli(ownId, null, { preferMirror: true });
+        if (!set.known) {
+            const api = await sessionOrNull(json);
+            if (api) await set.ensure(api);
+        }
+    } catch (e) {
+        fail(new Error(`Could not read which chats are hidden (${e.message}): nothing was read.`));
+    }
+    if (!set.known) {
+        fail(
+            new Error(
+                "Which chats are hidden is not known on this machine yet, and Zalo could not be asked: nothing was " +
+                    "read. Log in (zalo-agent login) or start the listener once, then run this again.",
+            ),
+        );
+    }
+    const ids = [...set.ids];
+    return { mode: ids.length ? "exclude" : "none", ids };
 }
 
 const mib = (n) => `${(Number(n || 0) / 1024 / 1024).toFixed(1)} MiB`;
@@ -80,12 +138,13 @@ export function registerDbCommands(program) {
             parseIntAtLeast(1),
             QUERY_ROW_LIMIT,
         )
-        .action((sql, opts) => {
+        .action(async (sql, opts) => {
             const jsonMode = program.opts().json;
-            const { file } = accountDb();
+            const { ownId, file } = accountDb();
+            const hidden = await hiddenScope(opts, ownId, jsonMode);
             let result;
             try {
-                result = runReadOnlyQuery(file, sql, { limit: opts.limit });
+                result = runReadOnlyQuery(file, sql, { limit: opts.limit, excludeThreadIds: hidden.ids });
             } catch (e) {
                 fail(e);
             }
@@ -96,8 +155,11 @@ export function registerDbCommands(program) {
                     `${result.rowCount} row(s)${result.truncated ? `, cut at --limit ${opts.limit}: there are more` : ""} ` +
                         `(${result.ms} ms)`,
                 );
+                if (hidden.mode === "exclude")
+                    info("Hidden chats are left out (--include-hidden and the PIN show them).");
             });
         });
+    addHiddenOptions(query);
 
     const backup = db
         .command("backup")
@@ -131,14 +193,15 @@ export function registerDbCommands(program) {
         .requiredOption("-o, --out <file>", "The new file to write (never overwritten)")
         .option(
             "--plaintext",
-            "Decrypt the copy, so any SQLite tool opens it (every cached message, readable by anyone)",
+            "Decrypt the copy, so any SQLite tool opens it (every cached message outside hidden chats, readable by anyone)",
         )
-        .action((opts) => {
+        .action(async (opts) => {
             const jsonMode = program.opts().json;
-            const { file } = accountDb();
+            const { ownId, file } = accountDb();
+            const hidden = await hiddenScope(opts, ownId, jsonMode);
             let r;
             try {
-                r = copyDatabase(file, opts.out, { plaintext: Boolean(opts.plaintext) });
+                r = copyDatabase(file, opts.out, { plaintext: Boolean(opts.plaintext), excludeThreadIds: hidden.ids });
             } catch (e) {
                 fail(e);
             }
@@ -148,10 +211,13 @@ export function registerDbCommands(program) {
                     info("For a copy other SQLite tools can open: --plaintext --yes.");
                 } else {
                     success(`Wrote a decrypted copy (${r.messages} messages) to ${r.file}`);
-                    warning("Anyone who can read that file reads every cached message: delete it when done.");
+                    warning("Anyone who can read that file reads every message in it: delete it when done.");
                 }
+                if (r.hiddenChats === "excluded")
+                    info("Hidden chats are left out (--include-hidden and the PIN add them).");
             });
         });
+    addHiddenOptions(exporter);
 
     const verify = db
         .command("verify")
@@ -290,7 +356,11 @@ export function registerDbCommands(program) {
     });
     // A decrypted copy is the whole message history in the clear: --yes to write it, --dry-run to preview.
     guardSubcommand(db, "export", "db.exportPlaintext", {
-        target: (opts) => ({ ownerId: getActive()?.ownId ?? null, output: opts.out }),
+        target: (opts) => ({
+            ownerId: getActive()?.ownId ?? null,
+            output: opts.out,
+            includeHidden: Boolean(opts.includeHidden),
+        }),
         when: (_target, opts) => Boolean(opts.plaintext),
     });
     return db;

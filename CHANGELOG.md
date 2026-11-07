@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+### Hidden chats stay hidden in db query and db export
+
+- feat: **`db query` and `db export` (with or without `--plaintext`) leave hidden chats out** unless `--include-hidden` and the hidden-chat PIN (a prompt that does not echo, or `--pin-stdin`; never an argument), checked as `conv hidden` checks it, with the same lockout. Without the PIN they work on a snapshot with every row of those conversations removed (messages, search entries, reactions, row MACs, conversation state, boards, reminders, cloud items), so no SQL reaches them, and an exported file holds no trace of them. When this machine does not know which chats are hidden yet and Zalo cannot be asked, they read nothing. `db backup` keeps them: it is the encrypted restore image, read only through these commands.
+
 ### Storage quotas and retention
 
 - feat: **storage quotas, the zCloud way.** `quota.account.limit`, a tenant's `quota.tenant.limit` shared by its `quota.tenant.accounts`, `quota.graceDays` (45) and `quota.warnAt` (0.8), set in the runtime policy (or `storage.json`). Over a limit, **caching goes on**: the daemon sends `storage_quota` events (`warn`, `over`, `grace_ending` 7 days and 1 day before, `purged`, `ok`) to the webhook, and `listen` prints them. Only after the grace period does it purge, oldest media first, then the oldest messages with their search entries, reactions and row MACs (`secure_delete`, WAL checkpoint), until usage is at or under the limit. Back under the limit (a raise, a renewal) clears the clock. A tenant on several hosts: each host sums only the accounts it runs; the console reads `/zalo/admin/usage` and pushes per-account caps.

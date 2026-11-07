@@ -12,11 +12,17 @@
  *   count) and renamed into place, created 0600. With `plaintext` the copy is decrypted in place (`PRAGMA rekey = ''`)
  *   before that, and verified again as a plain SQLite file.
  *
+ * Hidden chats (src/core/hidden-chats.js) stay hidden here until the PIN is given: with `excludeThreadIds` both work on
+ * a copy with every row of those threads removed ({@link stripHiddenThreads}), so no SQL text, however it is written
+ * (the search tables, `sqlite_master`, joins), reaches them: they are not in the file it reads.
+ *
  * Nothing here writes to the account's database: a running `listen` / `mcp start` keeps writing while it runs (WAL).
  */
-import { chmodSync, existsSync, renameSync, rmSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { Database, dbFileState, openDatabase } from "./sqlite.js";
+import { ROW_MAC_TABLE } from "./row-mac.js";
 
 /** Rows `db query` returns unless told otherwise, and the most it ever returns. */
 export const QUERY_ROW_LIMIT = 1000;
@@ -166,22 +172,155 @@ function jsonValue(v) {
     return v;
 }
 
+/** The forms a thread id takes: as given, and without or with Zalo's `g`/`u` list prefix. */
+function threadIdForms(ids) {
+    const out = new Set();
+    for (const raw of ids ?? []) {
+        const id = String(raw ?? "").trim();
+        if (!id) continue;
+        const bare = /^[gu]\d+$/i.test(id) ? id.slice(1) : id;
+        for (const v of [id, bare, `g${bare}`, `u${bare}`]) out.add(v);
+    }
+    return [...out];
+}
+
+/**
+ * Remove every row of the given threads from an open, writable database (a copy, never the account's own): their
+ * messages with their search entries, row MACs and reactions, every row of any table with a `threadId` column
+ * (threads, reactions, conv_state, board_items, reminders, cloud_items, and any added later), and the `sync_state`
+ * keys named after them. The search index is then merged (`optimize`), so the deleted entries leave its segments too;
+ * `secure_delete` zeroes the freed pages.
+ *
+ * @param {import("better-sqlite3-multiple-ciphers").Database} db
+ * @param {Iterable<string>} threadIds
+ * @returns {{threads: number}} how many thread ids were asked for
+ */
+export function stripHiddenThreads(db, threadIds) {
+    const ids = threadIdForms(threadIds);
+    if (!ids.length) return { threads: 0 };
+    db.pragma("secure_delete = ON");
+    const tables = db
+        .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
+        .all()
+        .filter((t) => !t.name.startsWith("sqlite_") && !/^CREATE VIRTUAL/i.test(t.sql ?? ""))
+        .map((t) => t.name);
+    const has = (t) => tables.includes(t);
+    const hasFts = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'messages_fts'").get());
+    const quote = (name) => `"${name.replace(/"/g, '""')}"`;
+    db.exec("CREATE TEMP TABLE IF NOT EXISTS hidden_ids (id TEXT PRIMARY KEY)");
+    const add = db.prepare("INSERT OR IGNORE INTO temp.hidden_ids (id) VALUES (?)");
+    const inHidden = "threadId IN (SELECT id FROM temp.hidden_ids)";
+    const ofHidden = `SELECT msgId FROM messages WHERE ${inHidden}`;
+    db.transaction(() => {
+        for (const id of ids) add.run(id);
+        if (has("messages")) {
+            // What the delete triggers do, done here too: nothing may depend on them.
+            if (hasFts) {
+                db.exec(`DELETE FROM messages_fts WHERE rowid IN (SELECT rowid FROM messages WHERE ${inHidden})`);
+            }
+            if (has(ROW_MAC_TABLE)) db.exec(`DELETE FROM ${ROW_MAC_TABLE} WHERE msgId IN (${ofHidden})`);
+            if (has("reactions")) db.exec(`DELETE FROM reactions WHERE msgId IN (${ofHidden})`);
+        }
+        for (const t of tables) {
+            const cols = db.prepare("SELECT name FROM pragma_table_info(?)").all(t);
+            if (cols.some((c) => c.name === "threadId")) db.exec(`DELETE FROM ${quote(t)} WHERE ${inHidden}`);
+        }
+        if (has("sync_state")) {
+            db.exec(
+                "DELETE FROM sync_state WHERE EXISTS (SELECT 1 FROM temp.hidden_ids h WHERE key LIKE '%:' || h.id)",
+            );
+        }
+    })();
+    if (hasFts) db.exec("INSERT INTO messages_fts(messages_fts) VALUES ('optimize')");
+    db.exec("DROP TABLE temp.hidden_ids");
+    return { threads: new Set(ids.map((id) => (/^[gu]\d+$/i.test(id) ? id.slice(1) : id))).size };
+}
+
+/** The name prefix of the filtered copies `db query` reads (next to the account's database, encrypted like it). */
+const FILTERED_PREFIX = ".db-query-";
+
+/** Remove the filtered copies a killed `db query` left behind (older than ten minutes: a running query's is younger). */
+function sweepFilteredCopies(accountDir) {
+    let names = [];
+    try {
+        names = readdirSync(accountDir);
+    } catch {
+        return;
+    }
+    for (const n of names) {
+        if (!n.startsWith(FILTERED_PREFIX)) continue;
+        const p = join(accountDir, n);
+        try {
+            if (Date.now() - statSync(p).mtimeMs > 10 * 60_000) rmSync(p, { force: true });
+        } catch {
+            /* gone already */
+        }
+    }
+}
+
+/**
+ * A snapshot of the account's database with the given threads removed, written encrypted under the same key next to
+ * it. The caller removes it (`drop`).
+ *
+ * @param {string} file
+ * @param {Iterable<string>} threadIds
+ * @returns {{path: string, drop: () => void}}
+ */
+function filteredCopy(file, threadIds) {
+    const accountDir = dirname(resolve(file));
+    sweepFilteredCopies(accountDir);
+    const path = join(accountDir, `${FILTERED_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}.db`);
+    const drop = () => {
+        for (const s of ["", "-wal", "-shm", "-journal"]) rmSync(path + s, { force: true });
+    };
+    try {
+        const src = openDatabase(file, { readonly: true });
+        try {
+            src.prepare("VACUUM INTO ?").run(path);
+        } finally {
+            src.close();
+        }
+        chmodSync(path, 0o600);
+        const w = openDatabase(path, { accountDir });
+        try {
+            w.pragma("journal_mode = DELETE");
+            stripHiddenThreads(w, threadIds);
+        } finally {
+            w.close();
+        }
+    } catch (e) {
+        drop();
+        throw e;
+    }
+    return { path, drop };
+}
+
 /**
  * Run one read-only statement on an account's database.
  *
  * @param {string} file - `accounts/<ownId>/zalo.db`
  * @param {string} sql
- * @param {{limit?: number, params?: Array<unknown>}} [opts]
+ * @param {{limit?: number, params?: Array<unknown>, excludeThreadIds?: string[]}} [opts] - `excludeThreadIds`: the
+ *   hidden threads; the statement then runs on a copy without them
  * @returns {{columns: string[], rows: object[], rowCount: number, truncated: boolean, ms: number}}
  * @throws {QueryRefused} for a statement it does not run; `KeystoreError` when the key cannot be had; SqliteError for
  *   SQL that does not prepare
  */
-export function runReadOnlyQuery(file, sql, { limit = QUERY_ROW_LIMIT, params = [] } = {}) {
+export function runReadOnlyQuery(file, sql, { limit = QUERY_ROW_LIMIT, params = [], excludeThreadIds = [] } = {}) {
     checkQuery(sql);
     const cap = Math.min(Math.max(1, Math.floor(Number(limit) || QUERY_ROW_LIMIT)), QUERY_ROW_LIMIT_MAX);
     if (!existsSync(file)) throw new QueryRefused(`There is no message database for this account yet (${file}).`);
     const started = Date.now();
-    const db = openDatabase(file, { readonly: true });
+    const copy = excludeThreadIds?.length ? filteredCopy(file, excludeThreadIds) : null;
+    let db;
+    try {
+        db = copy
+            ? openDatabase(copy.path, { readonly: true, accountDir: dirname(resolve(file)) })
+            : openDatabase(file, { readonly: true });
+    } catch (e) {
+        copy?.drop();
+        throw e;
+    }
     try {
         db.pragma("query_only = ON");
         let stmt;
@@ -206,6 +345,7 @@ export function runReadOnlyQuery(file, sql, { limit = QUERY_ROW_LIMIT, params = 
         return { columns, rows, rowCount: rows.length, truncated, ms: Date.now() - started };
     } finally {
         db.close();
+        copy?.drop();
     }
 }
 
@@ -215,11 +355,12 @@ export function runReadOnlyQuery(file, sql, { limit = QUERY_ROW_LIMIT, params = 
  *
  * @param {string} file - `accounts/<ownId>/zalo.db`
  * @param {string} out
- * @param {{plaintext?: boolean}} [opts]
+ * @param {{plaintext?: boolean, excludeThreadIds?: string[]}} [opts] - `excludeThreadIds`: the hidden threads, left out
+ *   of the copy (removed from it, then the copy is rebuilt with `VACUUM`, so no freed page keeps them)
  * @returns {{file: string, bytes: number, encrypted: boolean, keyId: string|null, messages: number, quickCheck: string,
- *   ms: number}}
+ *   hiddenChats: "excluded"|null, ms: number}}
  */
-export function copyDatabase(file, out, { plaintext = false } = {}) {
+export function copyDatabase(file, out, { plaintext = false, excludeThreadIds = [] } = {}) {
     const target = resolve(out);
     if (!existsSync(file)) throw new Error(`There is no message database for this account yet (${file}).`);
     if (existsSync(target)) throw new Error(`${target} exists: name a new file (nothing was written).`);
@@ -242,6 +383,16 @@ export function copyDatabase(file, out, { plaintext = false } = {}) {
             src.close();
         }
         chmodSync(tmp, 0o600);
+        if (excludeThreadIds?.length) {
+            const w = openDatabase(tmp, { accountDir });
+            try {
+                w.pragma("journal_mode = DELETE");
+                stripHiddenThreads(w, excludeThreadIds);
+                w.exec("VACUUM");
+            } finally {
+                w.close();
+            }
+        }
         if (plaintext) {
             const w = openDatabase(tmp, { accountDir });
             try {
@@ -274,6 +425,7 @@ export function copyDatabase(file, out, { plaintext = false } = {}) {
             keyId: plaintext ? null : keyId,
             messages,
             quickCheck,
+            hiddenChats: excludeThreadIds?.length ? "excluded" : null,
             ms: Date.now() - started,
         };
     } catch (e) {

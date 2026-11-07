@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, getAccountDbPath, getAccountDir } from "../../src/core/credentials.js";
 import { closeDb, initDb, insertMessage } from "../../src/core/db.js";
+import { HiddenChats } from "../../src/core/hidden-chats.js";
 import { registerRowMacFunction } from "../../src/core/row-mac.js";
 import { dbFileState, openDatabase } from "../../src/core/sqlite.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
@@ -41,6 +42,8 @@ describe("db", () => {
             });
         }
         closeDb();
+        // The listener's mirror of the hidden list: none hidden (tests/cli/db-hidden.test.js has the hidden cases).
+        new HiddenChats({ accountId: OWN, stateDir: getAccountDir(OWN) }).setFromServer({ threads: [] });
     });
 
     it("query --json returns the rows; a write is refused with exit 1", async () => {

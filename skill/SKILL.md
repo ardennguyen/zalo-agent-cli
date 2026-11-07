@@ -157,9 +157,10 @@ zalo-agent cloud apply <same filters> --dry-run | --yes # Deletes the messages b
 zalo-agent cloud get <noiseId> -o <file> [--key-stdin]  # One item's file; an encrypted one needs the account's cloud key at run time, never stored (unverified)
 
 # The cache is encrypted (SQLCipher): read it through db, never by opening zalo.db. All local, no login, safe beside a daemon.
-zalo-agent --json db query "SELECT msgId, text FROM messages WHERE threadId = '<id>' ORDER BY timestamp DESC LIMIT 20"   # One read-only statement
+zalo-agent --json db query "SELECT msgId, text FROM messages WHERE threadId = '<id>' ORDER BY timestamp DESC LIMIT 20"   # One read-only statement; hidden chats left out
+zalo-agent --json db query "<SQL>" --include-hidden --pin-stdin   # Hidden chats too: the PIN on stdin (or a prompt), never an argument
 zalo-agent db backup --out backup.db                  # Encrypted, verified copy (opens only with this account's keyring.json + provider)
-zalo-agent db export --out plain.db --plaintext --yes # Decrypted copy for other SQLite tools (asks first: exit 2 without --yes)
+zalo-agent db export --out plain.db --plaintext --yes # Decrypted copy for other SQLite tools (asks first: exit 2 without --yes); hidden chats only with --include-hidden + PIN
 zalo-agent db verify                                  # Row MAC check of every cached message (tamper evidence); exit 1 on a finding
 zalo-agent db usage                                   # Storage on this machine, quota state (ok/warn/over, purge date), retention rules
 zalo-agent db purge --dry-run | --yes                 # Quota/retention purge now (delete-only; through the daemon when one runs)

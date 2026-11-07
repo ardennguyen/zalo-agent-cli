@@ -281,7 +281,10 @@ export function conversationMethods(s) {
     const updateHiddenConversPin = async (pin) => s.call(HIDDEN_PIN_SET, { pinHash: hiddenPinHash(pin) });
 
     /**
-     * Remove the hidden-conversation PIN (Zalo unhides every hidden conversation with it).
+     * Remove the hidden-conversation PIN. This call does not unhide anything by itself: Zalo Web, on the device that
+     * asks, then deletes every hidden conversation through the ordinary delete (which Zalo syncs), and the other
+     * devices only clear their local hidden state on the 601 `hidden_chat` `reset` control. The caller does the
+     * deletes.
      *
      * @returns {Promise<any>}
      */

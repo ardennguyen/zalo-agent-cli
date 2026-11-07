@@ -29,6 +29,7 @@ const ALLOWED = {
     threadIds: "several conversations",
     groupId: "a group's id (the threadId of a group), for tools that only work on groups",
     msgId: "one message",
+    msgIds: "several messages of one conversation",
     quoteMsgId: "the message being quoted",
     lastMsgId: "a server-side history cursor (a msgId)",
     cliMsgId: "the sender's own id for a message",

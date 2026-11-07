@@ -10,8 +10,14 @@ import { UPDATE_LANG } from "../zalo/enums.js";
 import { createTrustStore } from "../zalo/trust-store.js";
 import { getAccountDir } from "../core/credentials.js";
 import { summarizeCompanion } from "../core/account-devices.js";
-import { SETTING_MAP, profileUpdatePayload } from "../core/profile-settings.js";
-import { confirmInput, dryRunInput } from "./action-tool.js";
+import {
+    SETTING_MAP,
+    describeSettings,
+    profileUpdatePayload,
+    settingValueError,
+    updateSetting,
+} from "../core/profile-settings.js";
+import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 
 /** A local file the server can read, or the refusal that names it. */
 function localFile(path) {
@@ -62,31 +68,15 @@ export const PROFILE_ACTIONS = {
     },
     settings: {
         async run(_a, { api }) {
-            const res = (await api.getSettings()) || {};
-            const settings = Object.entries(SETTING_MAP).map(([setting, meta]) => {
-                const raw = res[meta.key];
-                // Normalize booleans to 0/1 (the API returns a bool for some settings).
-                const value = raw === true ? 1 : raw === false ? 0 : (raw ?? null);
-                return { setting, label: meta.label, value, meaning: meta.values[value] ?? null };
-            });
-            return { settings };
+            // The same reply as `profile settings --json` (src/core/profile-settings.js).
+            return describeSettings(await api.getSettings());
         },
     },
     set: {
         needs: ["setting", "value"],
-        check: (a) => {
-            const meta = SETTING_MAP[a.setting];
-            if (!meta) return `Unknown setting: "${a.setting}". Valid: ${Object.keys(SETTING_MAP).join(", ")}.`;
-            if (String(a.value) in meta.values) return undefined;
-            const valid = Object.entries(meta.values)
-                .map(([k, v]) => `${k}=${v}`)
-                .join(", ");
-            return `Invalid value for ${a.setting}. Valid: ${valid}.`;
-        },
+        check: (a) => settingValueError(a.setting, a.value),
         async run(a, { api }) {
-            const meta = SETTING_MAP[a.setting];
-            await api.updateSettings(meta.key, Number(a.value));
-            return { success: true, setting: a.setting, value: Number(a.value), meaning: meta.values[a.value] };
+            return updateSetting(api, a.setting, a.value);
         },
     },
     avatars: {
@@ -164,10 +154,13 @@ export const PROFILE_META = {
         "Change this account's own profile and settings, as the `profile` commands do (read the profile itself " +
         "with zalo_lookup_user `self: true`). Actions: 'avatar' (set the avatar from a local image, `filePath`), " +
         "'bio' (read it, or set it to `bio`), 'update' (`name`, `dob`, `gender`), 'settings' (the privacy " +
-        "settings) and 'set' (one of them: `setting`, `value`), 'avatars' (the avatar gallery), 'full_avatar' " +
+        "settings, the read-only ones, and every other key Zalo sent under `other`) and 'set' (one of them: " +
+        "`setting`, `value`), 'avatars' (the avatar gallery), 'full_avatar' " +
         "(a user's full-size avatar), 'avatar_url' (several users' avatar URLs), 'delete_avatar' (photos from " +
         "the gallery; asked about first: `confirm`, `dryRun`), 'reuse_avatar' (an earlier photo as the avatar), " +
-        "'active' (show or hide the online status), 'lang' (the account language) and 'devices' (the phone and " +
+        "'active' (this session's presence, active or away, as Zalo Web sends when its tab gains or " +
+        "loses focus; it does not hide the online status, which is 'set' with setting 'online-status'), " +
+        "'lang' (the account language) and 'devices' (the phone and " +
         "the devices linked to this account). Everyone who sees this account sees what changes here.",
     inputSchema: z
         .object({
@@ -220,11 +213,18 @@ export const PROFILE_META = {
                 .min(1)
                 .optional()
                 .describe("Only for 'reuse_avatar': a gallery photo id, from 'avatars'"),
-            enabled: z.boolean().optional().describe("Only for 'active': true shows the online status, false hides it"),
+            enabled: z
+                .boolean()
+                .optional()
+                .describe(
+                    "Only for 'active': true marks this session active, false away (session presence, not the " +
+                        "online-status privacy setting)",
+                ),
             language: z.enum(["vi", "en"]).optional().describe("Only for 'lang': vi or en"),
             limit: z.number().int().min(1).max(200).optional().describe("Only for 'avatars': page size (default 50)"),
             page: z.number().int().min(1).optional().describe("Only for 'avatars': page number (default 1)"),
             confirm: confirmInput("'delete_avatar'"),
+            ticket: ticketInput(),
             dryRun: dryRunInput("'delete_avatar'"),
         })
         .strict(),

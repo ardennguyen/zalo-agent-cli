@@ -367,14 +367,15 @@ export const UNBLOCK_USER = Object.freeze({
 
 /**
  * `GET {profile}/api/social/profile/lastOnline`: Web `getOnlinStatus` (sic). A GET in the Web method's body
- * (`this._get(..., 12090)`); `conv_type` 1 is the Web's value for a user who is not an OA.
+ * (`this._get(..., 12090)`). `conv_type` is the Web's `getLastOnlStatus` value: 1 for a user who is not an OA, 2 for
+ * an OA (a profile whose `type` is 1 or more), 0 for a group; 1 when the caller names none.
  */
 export const LAST_ONLINE = Object.freeze({
     host: "profile",
     path: "/api/social/profile/lastOnline",
     cmd: 12090,
     method: "get",
-    body: ({ uid }, ctx) => ({ uid, conv_type: 1, imei: ctx.imei }),
+    body: ({ uid, convType }, ctx) => ({ uid, conv_type: [0, 1, 2].includes(convType) ? convType : 1, imei: ctx.imei }),
     reply: "session",
 });
 
@@ -637,9 +638,10 @@ export function peopleMethods(s) {
          * When a user was last online.
          *
          * @param {string} uid
+         * @param {0|1|2} [convType] - 1 a user (default), 2 an OA, 0 a group
          * @returns {Promise<{settings?: object, lastOnline?: number}>}
          */
-        lastOnline: (uid) => s.call(LAST_ONLINE, { uid }),
+        lastOnline: (uid, convType = 1) => s.call(LAST_ONLINE, { uid, convType }),
 
         /**
          * Users by phone numbers, keyed by phone.

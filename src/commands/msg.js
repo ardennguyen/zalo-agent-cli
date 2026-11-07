@@ -13,6 +13,7 @@ import { parseIntOption } from "../utils/parse-options.js";
 import { parseThreadTypeArg, parseReportReason } from "../utils/cli-args.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDir, getAccountDbPath } from "../core/credentials.js";
+import { hiddenAccess } from "../utils/hidden-access.js";
 import {
     initDb,
     getMessages,
@@ -53,6 +54,8 @@ import { registerMsgSearch } from "./msg-search.js";
 import { markdownToZalo, resolveSendFormat } from "../zalo/format/markdown.js";
 import { splitMessage, sendParts } from "../zalo/format/split-message.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
+import { sendTyping } from "../core/typing.js";
+import { seenMessages } from "../core/receipts.js";
 
 /**
  * Open the active account's SQLite cache.
@@ -1680,6 +1683,11 @@ export function registerMsgCommands(program) {
         )
         .option("--until <date>", "Every cached message up to this date (YYYY-MM-DD: through the end of that day)")
         .option("--last <period>", "Every cached message of the last period: 12h, 7d, 2w, 3m, 1y (replaces --since)")
+        .option(
+            "--include-hidden",
+            "Allow a hidden conversation: asks for the hidden-chat PIN (never pass it on the command line)",
+        )
+        .option("--pin-stdin", "Read the hidden-chat PIN from standard input instead of a prompt")
         .action(async (threadId, opts, cmd) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
@@ -1704,6 +1712,17 @@ export function registerMsgCommands(program) {
             } catch (e) {
                 error(e.message);
                 process.exit(1);
+            }
+
+            // A hidden chat's history is shown only with --include-hidden and the PIN, as Web opens one.
+            const hidden = await hiddenAccess(opts, { ownId: activeAcc.ownId, api, json: jsonMode });
+            if (hidden.mode !== "include" && hidden.set.isHidden(threadId)) {
+                const why =
+                    `Not shown: ${threadId} is one of the account's hidden chats. Run again with --include-hidden ` +
+                    "and type the PIN at the prompt (or --pin-stdin).";
+                if (jsonMode) console.log(JSON.stringify({ error: why, hidden: true, pinRequired: true }, null, 2));
+                else error(why);
+                process.exit(2);
             }
 
             if (opts.since !== undefined || opts.until !== undefined || opts.last !== undefined) {
@@ -1946,12 +1965,59 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("typing <threadId>")
-        .description('Show the "typing…" indicator in a conversation')
+        .description(
+            'Show the "typing…" indicator in a conversation. Refused for a stranger in a 1-1 conversation when the ' +
+                "friend list is known, as Zalo Web never sends it there; a one-shot command knows none, so it sends " +
+                "and says so",
+        )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadId, opts) => {
             try {
-                const result = await getApi().sendTypingEvent(threadId, parseThreadTypeArg(opts.type));
-                output(result, program.opts().json, () => success("Typing indicator sent"));
+                // The same reply as zalo_conversation `typing` (src/core/typing.js).
+                const result = await sendTyping(getApi(), {
+                    threadId,
+                    type: parseThreadTypeArg(opts.type),
+                    ownId: getOwnId(),
+                });
+                output(result, program.opts().json, () => {
+                    success("Typing indicator sent");
+                    if (result.note) info(result.note);
+                });
+            } catch (e) {
+                error(e.message);
+            }
+        });
+
+    msg.command("seen <threadId> [msgIds...]")
+        .description(
+            "Mark messages seen: one seen receipt for the cached incoming messages named (at most 50), or the newest " +
+                'cached incoming one. The sender sees "Seen" unless your seen status is hidden (profile set ' +
+                "seen-status 0), and Zalo also moves your own read position up to them. `conv read` marks the whole " +
+                "conversation read",
+        )
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action(async (threadId, msgIds, opts) => {
+            const activeAcc = getActive();
+            if (!activeAcc) {
+                error("No active account. Please login first.");
+                return;
+            }
+            try {
+                initDb(getAccountDbPath(activeAcc.ownId));
+                // The same reply as zalo_conversation `seen` (src/core/receipts.js).
+                const result = await seenMessages(getApi(), {
+                    threadId,
+                    type: parseThreadTypeArg(opts.type),
+                    ownId: activeAcc.ownId,
+                    msgIds,
+                });
+                if (!result.success && program.opts().json) process.exitCode = 1;
+                output(result, program.opts().json, () => {
+                    if (result.success) success(`Marked ${result.sent} message(s) seen (${result.msgIds.join(", ")})`);
+                    else error(result.error);
+                    for (const n of result.notSent) info(`  ${n.msgId}: ${n.reason}`);
+                    if (result.note) info(result.note);
+                });
             } catch (e) {
                 error(e.message);
             }

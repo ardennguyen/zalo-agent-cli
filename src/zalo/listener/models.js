@@ -116,25 +116,44 @@ export class Reaction {
     }
 }
 
-/** Someone typing in a 1-1 conversation (cmd 602, act `typing`; `data` is `{uid, ts, isPC}`). */
+/**
+ * Someone typing, or sending a file, in a 1-1 conversation (cmd 602: act `typing` with act_type `typing`, `data`
+ * `{uid, ts, isPC}`; or act `sending` with act_type `fsending`, the peer is sending a file).
+ *
+ * `action` is `"typing"` or `"fsending"`. `isSelf` is true when the uid is this account's own (another of its
+ * devices); the dispatcher drops those, as Zalo Web does ("block send to me typing"), so an event reaching a
+ * subscriber is never self.
+ */
 export class UserTyping {
-    /** @param {{uid: string, ts?: any, isPC?: any}} data */
-    constructor(data) {
+    /**
+     * @param {{uid: string, ts?: any, isPC?: any}} data
+     * @param {{ownId?: string, action?: "typing"|"fsending"}} [opts]
+     */
+    constructor(data, { ownId = "", action = "typing" } = {}) {
         this.type = USER;
         this.data = data;
         this.threadId = data.uid;
-        this.isSelf = false;
+        this.action = action;
+        this.isSelf = Boolean(ownId) && String(data.uid) === String(ownId);
     }
 }
 
-/** Someone typing in a group (cmd 602, act `gtyping`; `data` is `{uid, gid, ts, isPC}`). */
+/**
+ * Someone typing, or sending a file, in a group (cmd 602: act `gtyping` with act_type `typing`, `data`
+ * `{uid, gid, ts, isPC}`; or act `gsending` with act_type `fsending`). See {@link UserTyping} for `action` and
+ * `isSelf`.
+ */
 export class GroupTyping {
-    /** @param {{uid: string, gid: string, ts?: any, isPC?: any}} data */
-    constructor(data) {
+    /**
+     * @param {{uid: string, gid: string, ts?: any, isPC?: any}} data
+     * @param {{ownId?: string, action?: "typing"|"fsending"}} [opts]
+     */
+    constructor(data, { ownId = "", action = "typing" } = {}) {
         this.type = GROUP;
         this.data = data;
         this.threadId = data.gid;
-        this.isSelf = false;
+        this.action = action;
+        this.isSelf = Boolean(ownId) && String(data.uid) === String(ownId);
     }
 }
 

@@ -87,6 +87,8 @@ export const FAILS_OFFLINE = {
     "mcp wait": "asks a running `mcp start` server",
     "mcp mark-read": "asks a running `mcp start` server",
     "sync-cloud": "needs the account's zCloud viewer key, which only a real zCloud subscription hands out",
+    "conv unhide": "needs the hidden-chat PIN typed by a person (no terminal and no --pin-stdin here: exit 2)",
+    "conv hidden-pin": "needs the hidden-chat PINs typed by a person (no terminal and no --pin-stdin here: exit 2)",
 };
 
 /** Run after every other command, in this order: they change the registry and credentials the others read. */
@@ -157,7 +159,6 @@ const argvTable = () => ({
     "conv mute": [FAKE_PEER_ID],
     "conv delete": [FAKE_PEER_ID],
     "conv auto-delete": [FAKE_PEER_ID, "1d"],
-    "conv hidden-pin": ["1234"],
     "conv forget": [FORGET_THREAD],
     "account remove": [SPARE_ACCOUNT],
     "account export": ["--output", join(files.dir, "exported-creds.json")],

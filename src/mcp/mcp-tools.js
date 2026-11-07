@@ -91,8 +91,11 @@ import {
     memberChangeFrom,
 } from "../core/group-admin.js";
 import { gateMcp, removedLabels } from "../core/confirm-guard.js";
+import { getSecurePage } from "../core/secure-page.js";
+import { hiddenChatsFor, hiddenEventView, withoutHidden } from "../core/hidden-chats.js";
+import { resolveHiddenChats } from "../core/deploy-policy.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
-import { actionTool, confirmInput, dryRunInput } from "./action-tool.js";
+import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
@@ -424,6 +427,31 @@ function ok(result) {
 }
 
 /**
+ * The conversation ids a `zalo_read` call names in its args (`uid`, `groupId`, `threadId`, `tId`, and the id lists
+ * `group`/`oneone`/`items`/`data`), so a hidden conversation can be refused before Zalo is asked.
+ *
+ * @param {object|undefined} args
+ * @returns {string[]}
+ */
+export function readThreadIds(args) {
+    const out = [];
+    const take = (v) => {
+        if (v === undefined || v === null) return;
+        if (Array.isArray(v)) {
+            v.forEach(take);
+            return;
+        }
+        if (typeof v === "object") {
+            for (const k of ["tId", "threadId", "id", "uid", "groupId", "toid"]) take(v[k]);
+            return;
+        }
+        out.push(String(v));
+    };
+    for (const k of ["uid", "groupId", "threadId", "tId", "group", "oneone", "items", "data", "toid"]) take(args?.[k]);
+    return out;
+}
+
+/**
  * Wrap an error message into MCP tool error content format.
  * @param {string} message
  * @returns {{ content: Array, isError: true }}
@@ -561,11 +589,14 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
     // in action-tool.js), and settles it through gate() (src/core/confirm-guard.js) after its arguments are checked
     // and before anything is sent.
     // Over the stateless HTTP transport this server lives for one request (mcp-http-transport.js marks it), so
-    // "human" mode cannot ask there; the guard says so at once rather than wait for an answer that cannot arrive.
-    const gate = (key, target, { confirm, dryRun } = {}, extra, more = {}) =>
+    // "human" mode cannot ask there; the guard hands out a one-time approve page and the call is repeated with
+    // `ticket` (src/core/secure-page.js).
+    const gate = (key, target, { confirm, dryRun, ticket } = {}, extra, more = {}) =>
         gateMcp(key, target, {
             confirm,
             dryRun,
+            ticket,
+            ticket,
             config,
             accountId: ownIdOf(api),
             server,
@@ -573,6 +604,25 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             stateless: server?.statelessHttp === true,
             ...more,
         });
+
+    // Hidden chats (src/core/hidden-chats.js), shown by the deployment's hiddenChats policy (src/core/deploy-policy.js):
+    // `exclude` (default) leaves them out of every list, search, history and event; `contentless` turns an event in
+    // one into `{event, hidden: true}`; `include` shows them.
+    const hiddenSet = () => hiddenChatsFor(ownIdOf(api) ?? "", { stateDir: accountDir ?? null });
+    const hiddenMode = () => resolveHiddenChats({ config, accountId: ownIdOf(api) ?? undefined }).mode;
+    const hiddenIds = () => (hiddenMode() === "include" ? [] : [...hiddenSet().ids]);
+    const isHiddenThread = (id) =>
+        id !== undefined && id !== null && hiddenMode() !== "include" && hiddenSet().isHidden(id);
+    const eventsView = (list) => {
+        const set = hiddenSet();
+        const mode = hiddenMode();
+        return list
+            .map((m) => hiddenEventView(m, set, mode, { name: m?.type === "undo" ? "undo" : "message" }))
+            .filter(Boolean);
+    };
+    const HIDDEN_THREAD =
+        "That conversation is one of the account's hidden chats, which this server leaves out (hiddenChats policy). " +
+        "The account owner can unhide it, or the deployment can set hiddenChats to include.";
 
     // What an action table's rows read (src/mcp/action-tool.js): the session, the guard, and the helpers that type
     // a thread and name this account, so a row resolves a thread the way every other tool here does.
@@ -585,6 +635,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         threadType: resolveThreadType,
         threadTypeName,
         onSelfName: (name) => syncJobs?.onSelfName?.(name),
+        // The hidden-chat actions: the deployment's policy, the PIN page, and a live elicitation where there is one.
+        config,
+        server,
+        stateless: server?.statelessHttp === true,
+        hidden: () => hiddenSet(),
+        securePage: () => getSecurePage(),
+        threadName: (id) => nameCache?.get?.(String(id))?.name ?? null,
     };
     const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
     const groupExtra = actionTool("zalo_group", GROUP_EXTRA_ACTIONS, toolCtx);
@@ -626,6 +683,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         },
         async ({ threadId, since, limit, consumer }) => {
             try {
+                if (isHiddenThread(threadId)) return err(HIDDEN_THREAD);
                 // An explicit cursor is honored as given; 0 starts after what this consumer marked read.
                 const from = since > 0 ? since : buffer.readCursor(consumer);
                 const result = buffer.read(threadId, from, limit);
@@ -659,6 +717,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     ...msg,
                     readOnZalo: readOnZalo(msg.msgId, watermarkOf(String(msg.threadId))),
                 }));
+                result.messages = eventsView(result.messages);
                 return ok(result);
             } catch (e) {
                 console.error("[mcp-tools] zalo_get_messages error:", e.message);
@@ -1198,7 +1257,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         async ({ type, consumer }) => {
             try {
                 // Unread is per consumer: after what this consumer marked read.
-                const stats = buffer.getStats(buffer.readCursor(consumer));
+                const stats = withoutHidden(buffer.getStats(buffer.readCursor(consumer)), hiddenSet(), hiddenMode());
                 const dmNames = await resolveCurrentUserNames(
                     api,
                     stats.filter((t) => buffer.getThreadType(t.threadId) === "dm").map((t) => t.threadId),
@@ -1251,7 +1310,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     return err("Thread name cache not initialized yet. Try again shortly.");
                 }
                 await nameCache.refreshUsers?.(api);
-                const results = nameCache.search(query, type, limit);
+                // Over-fetch by the hidden count, so a left-out conversation does not shorten the list.
+                const results = withoutHidden(
+                    nameCache.search(query, type, limit + hiddenIds().length),
+                    hiddenSet(),
+                    hiddenMode(),
+                ).slice(0, limit);
                 return ok({ results, total: results.length });
             } catch (e) {
                 console.error("[mcp-tools] zalo_search_threads error:", e.message);
@@ -1353,6 +1417,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             }),
         },
         async ({ threadId, threadType: threadTypeIn, limit, lastMsgId, before, since, until, last }) => {
+            if (isHiddenThread(threadId)) return err(HIDDEN_THREAD);
             const threadType = resolveThreadType(threadId, threadTypeIn);
             if (since !== undefined || until !== undefined || last !== undefined) {
                 if (before !== undefined || lastMsgId) {
@@ -1664,10 +1729,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 threadType: threadTypeSchema,
                 cliMsgId: cliMsgIdSchema,
                 confirm: confirmInput("the recall"),
+                ticket: ticketInput(),
                 dryRun: dryRunInput("the recall"),
             }),
         },
-        async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn, cliMsgId, confirm, dryRun }, extra) => {
+        async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn, cliMsgId, confirm, dryRun, ticket }, extra) => {
             const thread = actionThread(api, threadIdIn, threadTypeIn);
             if (thread.error) {
                 console.error("[mcp-tools] zalo_undo refused:", thread.error);
@@ -1684,7 +1750,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const held = await gate(
                     "msg.undo",
                     { msgId, threadId, cliMsgId: target.cliMsgId },
-                    { confirm, dryRun },
+                    { confirm, dryRun, ticket },
                     extra,
                 );
                 if (held) return held;
@@ -1793,7 +1859,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         },
         async ({ type, limit }) => {
             try {
-                const threads = recentConversations(limit, type);
+                const threads = recentConversations(limit, type, { excludeThreadIds: hiddenIds() });
                 const dmNames = await resolveCurrentUserNames(
                     api,
                     threads.filter((t) => t.type !== "group").map((t) => String(t.threadId)),
@@ -2098,6 +2164,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     limit,
                     cursor,
                     context,
+                    excludeThreadIds: hiddenIds(),
                 });
                 const threadNames = getThreadNames();
                 const lite = (m) => ({
@@ -2419,6 +2486,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .default(false)
                     .describe("Set true to delete someone else's message for everyone in a group (admin/owner)"),
                 confirm: confirmInput("the delete"),
+                ticket: ticketInput(),
                 dryRun: dryRunInput("the delete"),
             }),
         },
@@ -2432,6 +2500,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 everyone,
                 confirm,
                 dryRun,
+                ticket,
             },
             extra,
         ) => {
@@ -2464,7 +2533,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const held = await gate(
                     "msg.delete",
                     { msgId, threadId, cliMsgId: String(cliMsgId), senderId: String(uidFrom), everyone: !onlyMe },
-                    { confirm, dryRun },
+                    { confirm, dryRun, ticket },
                     extra,
                 );
                 if (held) return held;
@@ -2531,6 +2600,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .default(20)
                     .describe("Max items per page for 'list' (default 20)"),
                 confirm: confirmInput("'remove'"),
+                ticket: ticketInput(),
                 dryRun: dryRunInput("'remove'"),
             }),
         },
@@ -2548,6 +2618,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 count,
                 confirm,
                 dryRun,
+                ticket,
             },
             extra,
         ) => {
@@ -2645,7 +2716,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
                 if (action === "remove") {
                     if (!reminderId) return err("reminderId is required for action='remove'.");
-                    const held = await gate("reminder.remove", { reminderId, threadId }, { confirm, dryRun }, extra);
+                    const held = await gate(
+                        "reminder.remove",
+                        { reminderId, threadId },
+                        { confirm, dryRun, ticket },
+                        extra,
+                    );
                     if (held) return held;
                     const result = await api.removeReminder(reminderId, threadId, Number(threadType));
                     return ok({
@@ -2893,6 +2969,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .default(false)
                     .describe("Also cast your vote for the newly added options ('add_options' only)"),
                 confirm: confirmInput("'lock'"),
+                ticket: ticketInput(),
                 dryRun: dryRunInput("'lock'"),
             }),
         },
@@ -2912,6 +2989,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 voteNewOptions,
                 confirm,
                 dryRun,
+                ticket,
             },
             extra,
         ) => {
@@ -2982,7 +3060,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
 
                 if (action === "lock") {
-                    const held = await gate("poll.lock", { pollId: numericPollId }, { confirm, dryRun }, extra);
+                    const held = await gate("poll.lock", { pollId: numericPollId }, { confirm, dryRun, ticket }, extra);
                     if (held) return held;
                     const result = await api.lockPoll(numericPollId);
                     return ok({ action, success: true, pollId: numericPollId, result });
@@ -3057,22 +3135,27 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const cleanThreadId = typeof threadId === "string" && threadId.trim() ? threadId.trim() : null;
                 const clampedSec = Math.max(1, Math.min(300, Number(timeoutSec) || 55));
                 const batch = batchParams({ limit, settleMs });
-                const { messages, hasMore } = await buffer.waitForMessages({
+                if (isHiddenThread(cleanThreadId)) return err(HIDDEN_THREAD);
+                const waited = await buffer.waitForMessages({
                     threadId: cleanThreadId,
                     since: typeof since === "number" && Number.isFinite(since) ? since : undefined,
                     timeoutMs: clampedSec * 1000,
                     ...batch,
                 });
+                const messages = eventsView(waited.messages);
+                const hasMore = waited.hasMore;
                 return ok(
                     waitResult({
                         messages,
                         hasMore,
                         cursorWhenEmpty: Math.max(
+                            Number(waited.messages.at(-1)?._cursor) || 0,
                             typeof since === "number" && Number.isFinite(since) ? since : 0,
                             Number(buffer._globalCursor) || 0,
                             typeof buffer.readCursor === "function" ? buffer.readCursor() : 0,
                         ),
                         decorate: (msg) => {
+                            if (msg.hidden) return msg;
                             const tid = String(msg.threadId || "");
                             let threadName = nameCache?.get(tid)?.name || null;
                             if (!threadName && tid) {
@@ -3147,6 +3230,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .optional()
                     .describe("Label version integer from action='list' (required for raw action='update')"),
                 confirm: confirmInput("an 'update' that removes labels"),
+                ticket: ticketInput(),
                 dryRun: dryRunInput("'update'"),
             }),
         },
@@ -3162,6 +3246,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 version,
                 confirm,
                 dryRun,
+                ticket,
             },
             extra,
         ) => {
@@ -3185,7 +3270,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     const held = await gate(
                         "label.update",
                         { removedLabels: removed, version: Number(version) },
-                        { confirm, dryRun },
+                        { confirm, dryRun, ticket },
                         extra,
                         { applies: removed.length > 0 },
                     );
@@ -3305,7 +3390,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'alias' (set the nickname this account shows for userId to `alias`; an empty alias removes it; " +
                 "the nickname is what `senderDisplayName` and `@[userId]` mentions then use), " +
                 "'alias_list' (the nicknames set on this account, capped by limit), " +
-                "'online' (friends online now), 'close' (close friends), 'last_online' (when userId was last seen), " +
+                "'online' (friends online now: dead in practice, Zalo answers 404 and Zalo Web discards it too), " +
+                "'close' (close friends), 'last_online' (when userId was last seen, with hiddenBy \"you\" or \"them\" " +
+                "when hidden; nothing is asked when this account hides its own status, unless `askAnyway`; " +
+                "`cached` reads the listener's presence cache instead), " +
                 "'remove' (unfriend userId), 'block' / 'unblock' (userId), 'block_feed' (hide userId's posts from the " +
                 "feed; `unblock: true` shows them again), 'find_phones' (users by `phones`), 'qr' (the QR code URL of " +
                 "each of userIds), 'common_groups' (the groups you share with each of userIds), 'biz' (userId's " +
@@ -3360,6 +3448,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         ),
                     ...FRIEND_EXTRA_INPUTS,
                     confirm: confirmInput("'reject', 'undo', 'remove' and 'block'"),
+                    ticket: ticketInput(),
                     dryRun: dryRunInput("'reject', 'undo', 'remove' and 'block'"),
                 })
                 .strict(),
@@ -3367,7 +3456,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         async (args, extra) => {
             // The actions added with the action tools run through the shared runner (src/mcp/action-tool.js).
             if (Object.hasOwn(FRIEND_EXTRA_ACTIONS, args.action)) return friendExtra(args, extra);
-            const { action, userId, message, limit, alias, confirm, dryRun } = args;
+            const { action, userId, message, limit, alias, confirm, dryRun, ticket } = args;
             const needsUser = ["status", "send", "accept", "reject", "undo", "alias"].includes(action);
             const target = userId === undefined ? "" : String(userId).trim();
             if (needsUser) {
@@ -3380,7 +3469,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             }
             if (action === "reject" || action === "undo") {
                 const key = action === "reject" ? "friend.reject" : "friend.undoRequest";
-                const held = await gate(key, { userId: target }, { confirm, dryRun }, extra);
+                const held = await gate(key, { userId: target }, { confirm, dryRun, ticket }, extra);
                 if (held) return held;
             }
             try {
@@ -3542,6 +3631,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         ),
                     ...GROUP_EXTRA_INPUTS,
                     confirm: confirmInput("the actions asked about first (listed above)"),
+                    ticket: ticketInput(),
                     dryRun: dryRunInput("the actions asked about first (listed above)"),
                 })
                 .strict(),
@@ -3549,7 +3639,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         async (args, extra) => {
             // The actions added with the action tools run through the shared runner (src/mcp/action-tool.js).
             if (Object.hasOwn(GROUP_EXTRA_ACTIONS, args.action)) return groupExtra(args, extra);
-            const { action, groupId, name, userIds, userId, silent, confirm, dryRun } = args;
+            const { action, groupId, name, userIds, userId, silent, confirm, dryRun, ticket } = args;
             const gid = groupId === undefined ? "" : String(groupId).trim();
             if (["leave", "info", "add_members", "remove_member", "rename"].includes(action)) {
                 if (!gid) return err(`groupId is required for action='${action}'.`);
@@ -3592,7 +3682,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     action === "leave"
                         ? { groupId: gid, silent: silent === true }
                         : { groupId: gid, userIds: [target] },
-                    { confirm, dryRun },
+                    { confirm, dryRun, ticket },
                     extra,
                 );
                 if (held) return held;
@@ -3736,6 +3826,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         },
         async ({ name, args }) => {
             if (!name) return ok({ reads: describeReads() });
+            // A read about one conversation names it in its args; a hidden one is left out like everywhere else.
+            if (readThreadIds(args).some(isHiddenThread)) return err(HIDDEN_THREAD);
             try {
                 const data = await callRead(api, name, args || {});
                 return ok({ name, data: data ?? null });
@@ -3777,10 +3869,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .optional()
                     .describe("Return the request that would be sent, with its body decrypted, and send nothing"),
                 confirm: confirmInput("a real call (not needed with dryRun)"),
+                ticket: ticketInput(),
             }),
             annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         },
-        async ({ name, args, dryRun, confirm }, extra) => {
+        async ({ name, args, dryRun, confirm, ticket }, extra) => {
             if (!name) return ok({ writes: describeWrites() });
             // Arguments first, as for every guarded action: a call missing one is refused as the typo it is, before
             // anyone is asked to confirm a request that could not be sent. Building the request sends nothing; a
@@ -3797,7 +3890,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const held = await gate(
                     "write.run",
                     { name, risk: def?.risk, verified: def?.verified, args: args || {} },
-                    { confirm },
+                    { confirm, ticket },
                     extra,
                     { always: true },
                 );

@@ -45,6 +45,12 @@ const KNOWN = new Map([
     ["update_reminder11", { kind: "reminder", handler: "control-events" }],
     ["remove_reminder11", { kind: "reminder", handler: "control-events" }],
     ["update_user_devices", { kind: "devices", handler: "control-events" }],
+    // This account's own settings changed on another device (`act: "update"`, the changed keys in `data`; Zalo Web
+    // merges them into its settings store): a `settings_changed` event, src/core/control-events.js.
+    ["my_settings", { kind: "settings", handler: "control-events" }],
+    // Hidden chats hidden or unhidden (`add_remove`), their PIN removed (`reset`) or changed (`change_pin`, the new
+    // hash in `data.pin`) on another device: the app keeps its hidden set current from them.
+    ["hidden_chat", { kind: "hidden-chat", handler: "hidden-chats" }],
 ]);
 
 /** A control's `data`: an object, or the JSON text of one, or null when it is neither. */

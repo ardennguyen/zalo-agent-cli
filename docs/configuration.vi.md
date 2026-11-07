@@ -68,7 +68,10 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_WEBHOOK_SECRET` | có | ký webhook (`Authorization: Bearer` + `X-Zalo-Signature: sha256=…`) | `--webhook-secret` (hiện trong `ps`) | `webhookSecret` |
 | `ZALO_WEBHOOK_BATCH_SIZE` | có | số sự kiện mỗi POST webhook, 1–100. Mặc định 1: mỗi sự kiện một POST | | `webhookBatchSize` |
 | `ZALO_WEBHOOK_MAX_AGE` | có | thời gian thử lại một sự kiện chưa giao được trước khi chuyển vào dead-letter (`6h`, `24h`; tối thiểu `1m`). Mặc định `24h` | | `webhookMaxAge` |
-| `ZALO_MCP_CONFIRM_MODE` | có | ai xác nhận một thao tác không hoàn tác được của tool (thu hồi, xóa, rời nhóm, …): `agent` (mặc định; bên gọi gửi `confirm: true`), `human` (server tự hỏi người dùng qua MCP elicitation; cần client hỗ trợ) hoặc `off` (không hỏi; `zalo_write` vẫn cần `confirm`) | | `confirmMode` |
+| `ZALO_MCP_CONFIRM_MODE` | có | ai xác nhận một thao tác không hoàn tác được của tool (thu hồi, xóa, rời nhóm, …): `agent` (mặc định; bên gọi gửi `confirm: true`), `human` (server tự hỏi người dùng: qua MCP form elicitation khi chạy stdio, còn lại qua một trang duyệt dùng một lần có link trong kết quả, dùng được cả qua HTTP) hoặc `off` (không hỏi; `zalo_write` vẫn cần `confirm`) | | `confirmMode` |
+| `ZALO_MCP_HIDDEN_CHATS` | có | MCP server cho thấy gì về các cuộc trò chuyện ẩn: `exclude` (mặc định: bỏ khỏi mọi danh sách, tìm kiếm, lịch sử và sự kiện), `contentless` (bỏ khỏi danh sách; sự kiện trong đó chỉ đến dưới dạng `{event, hidden: true}`, không có thread id hay nội dung) hoặc `include` (hiện như mọi cuộc khác: giao chúng cho agent) | | `hiddenChats` |
+| `ZALO_MCP_ALLOW_PIN_ARGUMENT` | có | `true` cho phép các tool trò chuyện ẩn nhận mã PIN qua input `pin`. Mặc định `false`: input bị ghi vào log của MCP client và ngữ cảnh của mô hình. Chỉ dành cho client không phải AI | | `allowPinArgument` |
+| `ZALO_MCP_PIN_PAGE_URL` | có | địa chỉ công khai của trang nhập bảo mật dùng một lần (`https://zalo.example.com`) khi server đứng sau reverse proxy hoặc TLS; không đặt thì link là địa chỉ của chính server | | `pinPage.publicBaseUrl` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | đã lỗi thời: `0` nghĩa là chế độ `off`, `1` là `agent`; chế độ xác nhận đặt rõ được ưu tiên | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | số tên DM không phải bạn bè mà một lần restore được tra. Mặc định 500 | | |
 | `ZALO_START_JITTER` | có | chờ một khoảng ngẫu nhiên tối đa chừng này giây (0–600, mặc định 0) trước khi đăng nhập, để một đội daemon khởi động lại cùng lúc không đăng nhập cùng lúc | | |
@@ -103,6 +106,9 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `tls.cert`, `tls.key` | `null` | HTTPS |
 | `oauth.clientId`, `.clientSecret`, `.issuerUrl`, `.clients[]` | | các consumer OAuth 2.0; `clients[]` là danh sách `{clientId, clientSecret}` |
 | `confirmMode` | chưa đặt (= `agent`) | `agent`, `human` hoặc `off`: ai xác nhận một thao tác không hoàn tác được của tool. Đặt `agent` cho AI agent; `human` để server tự hỏi người dùng |
+| `hiddenChats` | chưa đặt (= `exclude`) | `exclude`, `contentless` hoặc `include`: agent thấy gì về trò chuyện ẩn (xem biến ở trên) |
+| `allowPinArgument` | chưa đặt (= `false`) | `true` cho các tool trò chuyện ẩn nhận PIN qua input; khi đó PIN nằm trong log của client |
+| `pinPage.publicBaseUrl` | `null` | địa chỉ trình duyệt dùng để mở trang nhập bảo mật của server (`/zalo/secure/<token>`) qua proxy |
 | `groupConfirm` | | đã lỗi thời: `false` nghĩa là `confirmMode: "off"` khi chưa đặt chế độ xác nhận |
 | `accounts.<ownId>` | | bất kỳ khóa nào ở trên, cho một tài khoản |
 
@@ -174,6 +180,8 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 **Gửi.** Một lời gọi JSON-RPC tới `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Gửi `Accept: application/json, text/event-stream` (thiếu một trong hai, máy chủ trả 406); phản hồi là một dòng SSE `data:`, và gửi thành công trả về `{"success":true,"messageId":…,"cliMsgId":…,"threadType":…}`. `threadId` là id người dùng cho tin nhắn riêng hoặc id nhóm cho nhóm. Mỗi request `/mcp` dựng một máy chủ mới với đủ 36 tool, tốn vài mili giây CPU: ổn cho CRM, và là lý do một tài khoản chạm trần khoảng 60–170 request/giây (xem [`docs/deployment.vi.md`](deployment.vi.md) §1.4).
 
 **Bắt kịp.** Sau thời gian ngừng, hỏi những gì đã lỡ: `zalo_get_history` theo từng thread, hoặc `zalo-agent sync --from <date>` (có thể yêu cầu chủ tài khoản xác nhận trên điện thoại).
+
+**Trò chuyện ẩn và trang nhập bảo mật.** Các cuộc trò chuyện ẩn của tài khoản bị bỏ khỏi mọi thứ CRM đọc (`hiddenChats: "exclude"`); `contentless` gửi sự kiện webhook `{event: "message", hidden: true, accountId}` không có thread id hay nội dung, như chấm chưa đọc mà Zalo Web hiện. Mọi thứ một người phải gõ hoặc duyệt (mã PIN trò chuyện ẩn, một lần duyệt của `confirmMode: "human"`) là một trang dùng một lần trên chính port của server, `/zalo/secure/<token>`: kết quả của tool có `secureUrl`, `ticketExpiresAt` (5 phút) và `retryWith.ticket`; CRM hiện link cho chủ tài khoản và gọi lại với `ticket` khi họ làm xong. Cho `/zalo/secure/` đi qua cùng proxy với `/mcp` và đặt `pinPage.publicBaseUrl` là địa chỉ công khai của nó. Trang không cần bearer token (token của nó là chìa khóa), gửi `Cache-Control: no-store`, không tải gì từ nơi khác, và token bị che trong log request. Xem [`docs/deployment.vi.md`](deployment.vi.md) §5.5.
 
 ### 3.6 Nhiều tài khoản
 

@@ -8,7 +8,7 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { getAccountDbPath } from "../core/credentials.js";
-import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads } from "../core/db.js";
+import { initDb, getMessages, getReadStates, markThreadGone, getOrphanThreads, getThreadNames } from "../core/db.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { describeReadState, readStateLabel } from "../core/read-state.js";
 import { pinnedConversations } from "../core/sync-v2/conv-state.js";
@@ -20,10 +20,22 @@ import {
     newestMessageAnchor as newestAnchorFromSources,
     setConversationArchived,
     setConversationPinned,
-    hiddenConversationsView,
 } from "../core/conversation-actions.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
+import { setBlockSharing } from "../core/block-sharing.js";
+import { parseOnOff } from "../utils/cli-args.js";
+import { withoutHidden } from "../core/hidden-chats.js";
+import { changeHiddenPin, readHidden, resetHiddenPinAndDelete } from "../core/hidden-chat-actions.js";
+import {
+    addHiddenOptions,
+    exitPinRequired,
+    hiddenAccess,
+    hiddenSetForCli,
+    readPin,
+    readPinLines,
+    unlockOrExit,
+} from "../utils/hidden-access.js";
 
 /**
  * The anchor `conv delete` deletes backwards from (src/core/conversation-actions.js), with this account's cache
@@ -87,6 +99,11 @@ export function registerConvCommands(program, deps = {}) {
         .option("-n, --limit <n>", "Max results per type", "20")
         .option("--friends-only", "Show only friend conversations")
         .option("--groups-only", "Show only group conversations")
+        .option(
+            "--include-hidden",
+            "Show hidden conversations too: asks for the hidden-chat PIN (never pass it on the command line)",
+        )
+        .option("--pin-stdin", "Read the hidden-chat PIN from standard input instead of a prompt")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
             const limit = Number(opts.limit);
@@ -96,6 +113,14 @@ export function registerConvCommands(program, deps = {}) {
                 error("No active account. Please login first.");
                 process.exit(1);
             }
+            // Hidden chats are left out, as Zalo Web lists them, unless --include-hidden and the PIN.
+            let liveApi = null;
+            try {
+                liveApi = getApi();
+            } catch {
+                /* cache only: the hidden-id mirror still applies */
+            }
+            const hidden = await hiddenAccess(opts, { ownId: activeAcc.ownId, api: liveApi, json: jsonMode });
 
             try {
                 initDb(getAccountDbPath(activeAcc.ownId));
@@ -111,6 +136,7 @@ export function registerConvCommands(program, deps = {}) {
                 const localThreads = recentConversations(
                     limit,
                     opts.friendsOnly ? "dm" : opts.groupsOnly ? "group" : "all",
+                    { excludeThreadIds: hidden.ids },
                 );
 
                 if (localThreads && localThreads.length > 0) {
@@ -216,6 +242,9 @@ export function registerConvCommands(program, deps = {}) {
                     }
                 }
 
+                const shown = withoutHidden(conversations, hidden.set, hidden.mode);
+                conversations.length = 0;
+                conversations.push(...shown);
                 output(conversations, program.opts().json, () => {
                     if (conversations.length === 0) {
                         error("No conversations found.");
@@ -246,7 +275,16 @@ export function registerConvCommands(program, deps = {}) {
             try {
                 const result = await zaloApi().getPinConversations();
                 // Zalo's `m1` entry is not a conversation; Web skips it (spec-actions 7.3), as the pin sync does.
-                output({ ...result, conversations: pinnedConversations(result?.conversations) }, program.opts().json);
+                // A hidden chat is left out, as Web's list leaves it out (`u<id>`/`g<id>` entries).
+                const active = getActive();
+                const hidden = active ? await hiddenSetForCli(active.ownId, zaloApi(), { preferMirror: true }) : null;
+                const conversations = withoutHidden(
+                    pinnedConversations(result?.conversations),
+                    hidden,
+                    "exclude",
+                    (c) => c,
+                );
+                output({ ...result, conversations }, program.opts().json);
             } catch (e) {
                 error(e.message);
             }
@@ -368,20 +406,19 @@ export function registerConvCommands(program, deps = {}) {
 
     conv.command("read <threadId>")
         .description(
-            "Mark a conversation as read, both ways Zalo Web does: clear its manual unread mark (undoing " +
-                "`conv unread`), and send a seen receipt for the newest incoming message in the local cache — " +
-                "Zalo marks a MESSAGE seen, not a thread.",
+            'Mark a conversation as read, as Zalo Web\'s "Mark as read" does: a seen receipt for every cached ' +
+                "incoming message newer than your read position (up to 50), a reaction-seen receipt when a reaction " +
+                'is unread (unverified), and removing the manual unread mark when it is set. The sender sees "Seen" unless your ' +
+                "seen status is hidden (profile set seen-status 0)",
         )
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .option(
+            "--mark-only",
+            "Only remove the manual unread mark (the red dot): Zalo's real unread count stays and nothing is marked seen",
+        )
         .action(async (threadId, opts) => {
-            // History, so it is not repeated: this used to hand the previous
-            // engine's sendSeenEvent the bare threadId -- the request reached Zalo with no
-            // thread id in it -- and, once that was fixed, still went out with
-            // st/at/cmd/ts all -1 (that call could not send real values), no imei on a
-            // DM, and no removeUnreadMark at all, so it could not undo
-            // `conv unread`. Both requests are now built in src/core/receipts.js
-            // (the seen receipt itself in src/zalo/receipts.js)
-            // to match a capture of the real Zalo Web client.
+            // Both surfaces call src/core/receipts.js markConversationRead and answer its JSON (zalo_conversation
+            // `read`). The requests are built to match a capture of the real Zalo Web client.
             //
             // process.exit stays outside the try blocks: inside one, a throwing
             // exit would be caught and reported as an API error.
@@ -399,30 +436,27 @@ export function registerConvCommands(program, deps = {}) {
             let result;
             try {
                 initDb(getAccountDbPath(activeAcc.ownId));
-                const rows = getMessages(String(threadId), SEEN_ANCHOR_SCAN_DEPTH);
-                result = await markConversationRead(zaloApi(), { threadId, type, ownId: activeAcc.ownId, rows });
+                result = await markConversationRead(zaloApi(), {
+                    threadId,
+                    type,
+                    ownId: activeAcc.ownId,
+                    markOnly: Boolean(opts.markOnly),
+                });
             } catch (e) {
                 error(e.message);
                 return;
             }
 
-            // Either half failing fails the command, in both modes (human mode's error() lines below set the exit
-            // code), so the JSON leads with the error, as every failure's does.
-            const seen = result.seen;
-            const failure = !seen.ok
-                ? seen.refused
-                    ? seen.error
-                    : `Seen receipt for message ${seen.msgId} failed: ${seen.error}`
-                : !result.unreadMark.ok
-                  ? `Could not clear the manual unread mark: ${result.unreadMark.error}`
-                  : null;
-            if (failure && program.opts().json) process.exitCode = 1;
-            output({ ...(failure && { error: failure }), ...result }, program.opts().json, () => {
-                if (result.unreadMark.ok) success("Cleared the manual unread mark");
-                else error(`Could not clear the manual unread mark: ${result.unreadMark.error}`);
+            if (!result.success && program.opts().json) process.exitCode = 1;
+            output(result, program.opts().json, () => {
+                const mark = result.unreadMark;
+                if (mark.removed) success("Removed the manual unread mark");
+                else if (mark.error) error(`Could not clear the manual unread mark: ${mark.error}`);
+                else if (mark.wasSet === false) info("No manual unread mark was set");
 
-                if (seen.ok) {
-                    success(`Sent a seen receipt for message ${seen.msgId}`);
+                const seen = result.seen;
+                if (seen?.sent) {
+                    success(`Marked ${seen.sent} message(s) seen (${seen.msgIds.join(", ")})`);
                     if (seen.guessed.length) {
                         warning(
                             `${seen.guessed.join(", ")} came from a fallback, not the message's own frame: the ` +
@@ -430,22 +464,29 @@ export function registerConvCommands(program, deps = {}) {
                                 "st=3 and at=5 are a guess).",
                         );
                     }
-                } else if (seen.refused === "no-anchor") {
+                } else if (seen?.refused === "no-cache") {
                     error(seen.error);
-                    info("Zalo marks a MESSAGE as seen, not a thread, so there is nothing to anchor the event to.");
-                    info("The cache is written by `listen` and by `sync` only. Run one of them first:");
+                    info("Zalo marks a MESSAGE as seen, not a thread. Run one of these first:");
                     info(`  zalo-agent sync --from ${new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10)}`);
-                } else if (seen.refused === "noised-sender") {
+                    info("  zalo-agent listen");
+                } else if (seen?.refused === "noised-sender") {
                     error(seen.error);
-                    info("A message the listener receives carries its real sender id. Keep `listen` or `mcp start`");
-                    info("running, and run `conv read` again once a new message has arrived in this conversation.");
-                } else {
-                    error(`Seen receipt for message ${seen.msgId} failed: ${seen.error}`);
+                    info("Keep `listen` or `mcp start` running, and run `conv read` again once a new message arrives.");
+                } else if (seen?.error) {
+                    error(seen.error);
                 }
+                if (seen?.skipped?.e2ee) {
+                    info(
+                        `${seen.skipped.e2ee} end-to-end encrypted message(s) left out: this client cannot mark those.`,
+                    );
+                }
+                if (result.reactions?.sent) success("Marked the conversation's reactions seen");
+                else if (result.reactions?.error) error(`Reaction-seen receipt failed: ${result.reactions.error}`);
+                if (result.note) info(result.note);
             });
             // A refused seen receipt is the command not doing what it says, so it
             // keeps the exit code the cold-cache refusal always had.
-            if (result.seen.refused) process.exit(1);
+            if (result.seen?.refused) process.exit(1);
         });
 
     conv.command("unread <threadId>")
@@ -470,60 +511,236 @@ export function registerConvCommands(program, deps = {}) {
             }
         });
 
-    conv.command("hidden")
-        .description("List hidden conversations")
-        .action(async () => {
-            try {
-                const result = hiddenConversationsView(await getApi().getHiddenConversations());
-                output(result, program.opts().json);
-            } catch (e) {
-                error(`Get hidden conversations failed: ${e.message}`);
-            }
+    /** The active account, or exit 1. */
+    const activeOrExit = () => {
+        const acc = getActive();
+        if (!acc) {
+            error("No active account. Please login first.");
+            process.exit(1);
+        }
+        return acc;
+    };
+
+    addHiddenOptions(
+        conv
+            .command("hidden")
+            .description(
+                "List hidden conversations: asks for the hidden-chat PIN first, as Zalo Web does (without it, " +
+                    "only how many there are and whether a PIN is set)",
+            ),
+        { include: false },
+    ).action(async (opts) => {
+        const json = program.opts().json;
+        const acc = activeOrExit();
+        let listed;
+        const set = await hiddenSetForCli(acc.ownId, null);
+        try {
+            listed = await readHidden(zaloApi(), set);
+        } catch (e) {
+            error(`Get hidden conversations failed: ${e.message}`);
+            return;
+        }
+        if (!listed.hasPin || listed.count === 0) {
+            output({ count: listed.count, hasPin: listed.hasPin, threads: [] }, json, () =>
+                info(listed.hasPin ? "No hidden conversations." : "No hidden-chat PIN is set; nothing is hidden."),
+            );
+            return;
+        }
+        await unlockOrExit(set, {
+            pinStdin: Boolean(opts.pinStdin),
+            json,
+            extra: { count: listed.count, hasPin: true },
         });
+        let names = new Map();
+        try {
+            initDb(getAccountDbPath(acc.ownId));
+            names = getThreadNames();
+        } catch {
+            /* no cache: ids only */
+        }
+        const threads = listed.threads.map((t) => ({
+            threadId: t.threadId,
+            threadType: t.isGroup === null ? null : t.isGroup ? "group" : "dm",
+            name: names.get(String(t.threadId))?.name ?? null,
+        }));
+        output({ count: threads.length, hasPin: true, threads }, json, () => {
+            info(`${threads.length} hidden conversation(s):`);
+            for (const t of threads)
+                console.log(`  ${t.threadId.padEnd(22)}  ${(t.threadType ?? "?").padEnd(6)}  ${t.name ?? ""}`);
+        });
+    });
 
     conv.command("hide <threadIds...>")
-        .description("Hide conversation(s)")
+        .description("Hide conversation(s) behind the hidden-chat PIN (a PIN must be set first: `conv hidden-pin`)")
         .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
         .action(async (threadIds, opts) => {
+            const acc = activeOrExit();
             try {
-                const result = await getApi().setHiddenConversations(true, threadIds, Number(opts.type));
+                const set = await hiddenSetForCli(acc.ownId, null);
+                await set.refresh(zaloApi());
+                // Zalo Web asks for a PIN before the first hide: a hidden chat with no PIN is hidden from nobody.
+                if (!set.hasPin) {
+                    error("No hidden-chat PIN is set: set one with `zalo-agent conv hidden-pin` first, then hide.");
+                    process.exit(1);
+                }
+                const result = await zaloApi().setHiddenConversations(true, threadIds, Number(opts.type));
+                for (const id of threadIds) set.ids.add(String(id));
                 output(result, program.opts().json, () => success(`Hidden ${threadIds.length} conversation(s)`));
             } catch (e) {
                 error(`Hide failed: ${e.message}`);
             }
         });
 
-    conv.command("unhide <threadIds...>")
-        .description("Unhide conversation(s)")
-        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
-        .action(async (threadIds, opts) => {
-            try {
-                const result = await getApi().setHiddenConversations(false, threadIds, Number(opts.type));
-                output(result, program.opts().json, () => success(`Unhidden ${threadIds.length} conversation(s)`));
-            } catch (e) {
-                error(`Unhide failed: ${e.message}`);
-            }
-        });
+    addHiddenOptions(
+        conv
+            .command("unhide <threadIds...>")
+            .description("Unhide conversation(s): asks for the hidden-chat PIN, as opening a hidden chat does")
+            .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0"),
+        { include: false },
+    ).action(async (threadIds, opts) => {
+        const json = program.opts().json;
+        const acc = activeOrExit();
+        const set = await hiddenSetForCli(acc.ownId, null);
+        try {
+            await set.refresh(zaloApi());
+        } catch (e) {
+            error(`Unhide failed: ${e.message}`);
+            return;
+        }
+        await unlockOrExit(set, { pinStdin: Boolean(opts.pinStdin), json });
+        try {
+            const result = await zaloApi().setHiddenConversations(false, threadIds, Number(opts.type));
+            for (const id of threadIds) set.ids.delete(String(id));
+            output(result, json, () => success(`Unhidden ${threadIds.length} conversation(s)`));
+        } catch (e) {
+            error(`Unhide failed: ${e.message}`);
+        }
+    });
 
-    conv.command("hidden-pin <pin>")
-        .description("Set or update PIN for hidden conversations (4 digits)")
-        .action(async (pin) => {
-            try {
-                const result = await getApi().updateHiddenConversPin(pin);
-                output(result, program.opts().json, () => success("Hidden conversation PIN updated"));
-            } catch (e) {
-                error(`Update PIN failed: ${e.message}`);
-            }
-        });
+    const hiddenPin = conv
+        .command("hidden-pin [removed]")
+        .description(
+            "Set or change the hidden-chat PIN: asks for the current PIN (when one is set), then the new one twice. " +
+                "The PIN is never a command-line argument; --pin-stdin reads the same answers, one per line",
+        )
+        .option("--pin-stdin", "Read the PINs from standard input, one per line (current, if set; new; new again)");
+    // The 2.x form `conv hidden-pin 1234` put the PIN in the shell history and the process list: refused before any
+    // login (src/index.js runs this preflight), with how to do it now.
+    hiddenPin.zaloPreflight = (command, { json }) => {
+        if (command.args.length === 0) return;
+        const why =
+            "Not done: `conv hidden-pin` no longer takes the PIN as an argument (it would land in your shell " +
+            "history and the process list). Run `zalo-agent conv hidden-pin` and type it at the prompt, or pipe " +
+            "it with --pin-stdin.";
+        if (json) console.log(JSON.stringify({ error: why, pinArgumentRemoved: true }, null, 2));
+        else error(why);
+        process.exit(1);
+    };
+    hiddenPin.action(async (_removed, opts) => {
+        const json = program.opts().json;
+        const acc = activeOrExit();
+        const set = await hiddenSetForCli(acc.ownId, null);
+        try {
+            await set.refresh(zaloApi());
+        } catch (e) {
+            error(`Update PIN failed: ${e.message}`);
+            return;
+        }
+        const lines = opts.pinStdin ? await readPinLines() : null;
+        const ask = async (prompt) => {
+            const v = await readPin({ pinStdin: Boolean(opts.pinStdin), prompt, lines });
+            if (v === null) exitPinRequired(json, { hasPin: set.hasPin });
+            return v;
+        };
+        let typed;
+        try {
+            typed = {
+                pin: set.hasPin ? await ask("Current hidden-chat PIN: ") : undefined,
+                newPin: await ask("New PIN (4 digits): "),
+                newPin2: await ask("New PIN again: "),
+            };
+        } catch (e) {
+            error(`Could not read the PIN: ${e.message}`);
+            process.exit(1);
+        }
+        let r;
+        try {
+            r = await changeHiddenPin(zaloApi(), set, typed);
+        } catch (e) {
+            error(`Update PIN failed: ${e.message}`);
+            return;
+        } finally {
+            typed = null;
+        }
+        if (!r.ok) {
+            error(r.message);
+            process.exit(1);
+        }
+        output({ success: true, changed: true, hadPin: r.hadPin }, json, () =>
+            success(r.hadPin ? "Hidden-chat PIN changed" : "Hidden-chat PIN set"),
+        );
+    });
 
     conv.command("hidden-pin-reset")
-        .description("Reset hidden conversations PIN")
+        .description(
+            "Remove the hidden-chat PIN (no PIN needed) and, as Zalo Web does, delete every hidden conversation's " +
+                "history for this account; each deletion is reported",
+        )
         .action(async () => {
+            const acc = activeOrExit();
             try {
-                const result = await getApi().resetHiddenConversPin();
-                output(result, program.opts().json, () => success("Hidden conversation PIN reset"));
+                initDb(getAccountDbPath(acc.ownId));
+            } catch {
+                /* no cache: the group store can still anchor a group's delete */
+            }
+            try {
+                const set = await hiddenSetForCli(acc.ownId, null);
+                const r = await resetHiddenPinAndDelete(zaloApi(), set);
+                const failed = r.conversations.filter((c) => !c.deleted);
+                if (failed.length && program.opts().json) process.exitCode = 1;
+                output(
+                    {
+                        ...(failed.length && { error: `${failed.length} hidden conversation(s) could not be deleted` }),
+                        success: failed.length === 0,
+                        ...r,
+                    },
+                    program.opts().json,
+                    () => {
+                        success("Hidden-chat PIN removed");
+                        for (const c of r.conversations) {
+                            if (c.deleted) success(`Deleted hidden conversation ${c.threadId} (${c.threadType})`);
+                            else error(`Could not delete hidden conversation ${c.threadId}: ${c.error}`);
+                        }
+                        if (!r.conversations.length) info("There were no hidden conversations to delete.");
+                    },
+                );
             } catch (e) {
                 error(`Reset PIN failed: ${e.message}`);
+            }
+        });
+
+    conv.command("block-sharing <threadId> <state>")
+        .description(
+            "Turn block sharing on or off for one conversation (on|off): Zalo Web's setting that stops its messages " +
+                "being forwarded or saved. Needs a zBusiness Max account; unverified (never seen to succeed). " +
+                "`read run blocksharing-list` lists the conversations that have it",
+        )
+        .option("-t, --type <n>", "Thread type: 0=User, 1=Group", "0")
+        .action(async (threadId, state, opts) => {
+            try {
+                const type = threadTypeOf(opts.type);
+                if (type === null) throw new Error(`Invalid --type "${opts.type}": use 0 (user) or 1 (group).`);
+                // The same reply as zalo_conversation `block_sharing` (src/core/block-sharing.js).
+                const result = await setBlockSharing(zaloApi(), {
+                    threadId,
+                    type,
+                    enabled: parseOnOff(state, "block-sharing"),
+                });
+                output(result, program.opts().json, () =>
+                    success(`Block sharing ${result.blockSharing ? "on" : "off"} for ${threadId} (unverified)`),
+                );
+            } catch (e) {
+                error(`Block sharing failed: ${e.message}`);
             }
         });
 

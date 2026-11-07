@@ -11,10 +11,12 @@
  *   "not confirmed" from "failed" (1). There is no global off switch.
  * - MCP: a guarded action takes `confirm: true` to act and `dryRun: true` to preview. What `confirm` means
  *   depends on the deployment's confirm mode (resolveConfirmMode): `agent` (the caller's confirm: true is
- *   enough), `human` (the server asks the person through MCP elicitation; the caller cannot answer for them),
- *   or `off` (no question). `zalo_write` runs raw endpoints and is guarded even when the mode is `off`.
+ *   enough), `human` (the server asks the person through MCP form elicitation, or else on a one-time approve page,
+ *   src/core/secure-page.js, whose `ticket` the repeated call carries; the caller cannot answer for them), or `off`
+ *   (no question). `zalo_write` runs raw endpoints and is guarded even when the mode is `off`.
  */
 import { error, info } from "../utils/output.js";
+import { askOnSecurePage, getSecurePage } from "./secure-page.js";
 
 /** What an unconfirmed guarded CLI command exits with: distinct from a failure (1). */
 export const CONFIRM_EXIT_CODE = 2;
@@ -141,7 +143,9 @@ export const GUARDS = Object.freeze({
         cli: "conv hidden-pin-reset",
         mcp: "zalo_conversation hidden_pin_reset",
         irreversible: true,
-        what: () => "reset the PIN that protects this account's hidden conversations",
+        what: () =>
+            "remove the PIN that protects this account's hidden conversations and, as Zalo Web does, delete every " +
+            "hidden conversation's history for this account",
     },
     "conv.unhide": {
         cli: "conv unhide",
@@ -507,15 +511,15 @@ function mcpError(payload, line) {
 }
 
 /**
- * Why `human` mode cannot ask over the HTTP transport. That transport is stateless: every POST gets a fresh server
- * (src/mcp/mcp-http-transport.js), so the server answering a tool call never saw the client's `initialize` and does
- * not know it can be asked, and the client's answer to a question would arrive as a new POST that a fresh server
- * cannot match to the waiting call, which would then hang until ELICIT_TIMEOUT_MS. So it refuses at once instead.
+ * How `human` mode asks over the HTTP transport. That transport is stateless: every POST gets a fresh server
+ * (src/mcp/mcp-http-transport.js), so the server answering a tool call never saw the client's `initialize` and cannot
+ * ask it anything, and an answer would arrive as a new POST that a fresh server cannot match to the waiting call. So
+ * the question goes to the one-time approve page (src/core/secure-page.js) instead: the reply carries its link, the
+ * person approves there, and the agent repeats the call with `ticket`.
  */
-export const STATELESS_HUMAN_REFUSAL =
-    "but this call came over the HTTP transport, which is stateless (every request is a fresh server), so the " +
-    'answer could never reach it. Use the stdio transport for confirmMode "human", or set confirmMode to "agent" ' +
-    '(or "off") in mcp-config.json, or ZALO_MCP_CONFIRM_MODE, and restart the server.';
+export const STATELESS_HUMAN_NOTE =
+    "this call came over the stateless HTTP transport, so the question is a one-time approve page instead of an " +
+    "MCP elicitation";
 
 /** How long the server waits for a person to answer an elicitation. */
 export const ELICIT_TIMEOUT_MS = 5 * 60_000;
@@ -537,8 +541,10 @@ export const ELICIT_TIMEOUT_MS = 5 * 60_000;
  * @param {object} [call.extra] - the tool call's request context, so the question rides on its request
  * @param {boolean} [call.applies=true] - false when this call is not the guarded case (it goes ahead)
  * @param {boolean} [call.always=false] - guarded even when the mode is `off` (zalo_write)
- * @param {boolean} [call.stateless=false] - the call came over the stateless HTTP transport, where a question
- *   cannot be answered (see STATELESS_HUMAN_REFUSAL)
+ * @param {boolean} [call.stateless=false] - the call came over the stateless HTTP transport, where no question can
+ *   be answered in the call: the approve page is used (see STATELESS_HUMAN_NOTE)
+ * @param {string} [call.ticket] - the caller's `ticket` from an approve page (human mode)
+ * @param {import("./secure-page.js").SecurePage} [call.securePage] - the process's page (getSecurePage())
  * @returns {Promise<object|null>}
  */
 export async function gateMcp(
@@ -555,6 +561,8 @@ export async function gateMcp(
         applies = true,
         always = false,
         stateless = false,
+        ticket,
+        securePage,
     } = {},
 ) {
     if (dryRun === true) {
@@ -572,21 +580,63 @@ export async function gateMcp(
 
     // human: only the person's own answer counts; the caller's confirm does not stand in for it.
     const d = describeGuarded(key, target, "mcp");
-    if (stateless) {
-        const why =
-            `Not done: this server is set to confirmMode "human", which asks you before it would ${sentence(d)}, ` +
-            STATELESS_HUMAN_REFUSAL;
-        return mcpError({ error: why, statelessTransport: true, confirmMode: "human", ...d }, why);
+    const page = securePage ?? getSecurePage();
+    const expect = { accountId: accountId ?? "", action: key, target };
+    if (ticket !== undefined && ticket !== null && ticket !== "") {
+        const used = page.store.consume(String(ticket), expect);
+        if (used.ok) return null;
+        const why = `Not done: ${used.message} Nothing was sent: ${d.wouldDo}.`;
+        return mcpError({ error: why, ticketRefused: used.reason, confirmMode: "human", ...d }, why);
     }
-    const asker = server?.server;
+    const asker = stateless ? null : server?.server;
     const elicitation = asker?.getClientCapabilities?.()?.elicitation;
-    if (!elicitation || (!elicitation.form && elicitation.url)) {
-        const why =
-            'Not done: this server is set to confirmMode "human", which asks you before it would ' +
-            `${sentence(d)}, but this MCP client does not support MCP elicitation, so it cannot ask. Use a client ` +
-            'that supports elicitation, or set confirmMode to "agent" (or "off") in mcp-config.json, or ' +
-            "ZALO_MCP_CONFIRM_MODE, and restart the server.";
-        return mcpError({ error: why, elicitationUnsupported: true, confirmMode: "human", ...d }, why);
+    if (!elicitation?.form) {
+        // No form question possible here (stateless HTTP, or a client without form elicitation): the approve page.
+        let asked;
+        try {
+            asked = await askOnSecurePage({
+                page,
+                server,
+                extra,
+                stateless,
+                needs: "confirmationRequired",
+                spec: {
+                    accountId: expect.accountId,
+                    action: key,
+                    target,
+                    kind: "confirm",
+                    title: "Approve a Zalo action",
+                    description: `${d.action} would ${sentence(d)}.`,
+                },
+                retryWith: {},
+            });
+        } catch (e) {
+            const why = `Not done: the approve page could not be opened (${e.message}), so nothing was sent: ${d.wouldDo}.`;
+            return mcpError({ error: why, confirmMode: "human", ...d }, why);
+        }
+        if (asked.token) {
+            const used = page.store.consume(asked.token, expect);
+            if (used.ok) return null;
+            const why = `Not done: ${used.message} Nothing was sent: ${d.wouldDo}.`;
+            return mcpError({ error: why, declined: true, confirmMode: "human", ...d }, why);
+        }
+        if (asked.declined) {
+            const why =
+                `Not done: the user did not open the approve page (${asked.declined}), so nothing was sent: ` +
+                `${d.wouldDo}. Do not repeat the call unless the user asks for it again.`;
+            return mcpError({ error: why, declined: true, confirmMode: "human", ...d }, why);
+        }
+        const payload = {
+            ...asked.reply,
+            confirmMode: "human",
+            ...(stateless && { statelessTransport: true }),
+            ...d,
+        };
+        const line =
+            `Not done yet: confirmMode "human" asks the account owner before it would ${sentence(d)}` +
+            `${stateless ? `; ${STATELESS_HUMAN_NOTE}` : ""}. Give them this one-time link to approve: ` +
+            `${payload.secureUrl} (expires ${payload.ticketExpiresAt}), then repeat the call with ticket.`;
+        return mcpError(payload, line);
     }
     let answer;
     try {

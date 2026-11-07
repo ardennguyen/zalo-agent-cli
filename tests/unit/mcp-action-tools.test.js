@@ -31,10 +31,16 @@ import {
 } from "../../src/mcp/actions-business.js";
 import { CLOUD_ACTIONS, LINK_ACTIONS, STICKER_ACTIONS } from "../../src/mcp/actions-media.js";
 import { FRIEND_EXTRA_ACTIONS, GROUP_EXTRA_ACTIONS } from "../../src/mcp/actions-social.js";
+import { resetHiddenChatsRegistry } from "../../src/core/hidden-chats.js";
+import { SecurePage, setSecurePage } from "../../src/core/secure-page.js";
 import { createMcpStageRunners } from "../../src/mcp/sync-stages.js";
 import { GROUP_SETTING_FIELDS } from "../../src/zalo/custom/group-settings.js";
 
 const OWN = "100";
+/** Zalo's get-all answer for an account whose hidden-chat PIN is 1234 (the hash is md5 of the PIN; a test value). */
+const HIDDEN_WITH_PIN = { getHiddenConversations: { pin: "81dc9bdb52d04dc20036dbd8313ed055", threads: [] } };
+/** A deployment that takes the PIN as an input (allowPinArgument), for the rows that need one. */
+const PIN_INPUT = { allowPinArgument: true };
 const PEER = "777";
 const GROUP = "555";
 const KEY = Buffer.alloc(16, 0x22).toString("base64");
@@ -166,11 +172,19 @@ const HAPPY = {
         ["mute", { threadId: PEER, durationSeconds: 3600 }, "setMute"],
         ["unmute", { threadId: PEER }, "setMute"],
         ["read", { threadId: "779" }, "removeUnreadMark"],
+        ["seen", { threadId: "779" }, "http"],
+        ["block_sharing", { threadId: PEER, enabled: true }, "http"],
         ["unread", { threadId: PEER }, "addUnreadMark"],
         ["hidden", {}, "getHiddenConversations"],
-        ["hide", { threadIds: [PEER, "778"] }, "setHiddenConversations"],
-        ["unhide", { threadIds: [PEER], confirm: true }, "setHiddenConversations"],
-        ["hidden_pin", { pin: "1234" }, "updateHiddenConversPin"],
+        ["hide", { threadIds: [PEER, "778"] }, "setHiddenConversations", HIDDEN_WITH_PIN],
+        [
+            "unhide",
+            { threadIds: [PEER], confirm: true, pin: "1234" },
+            "setHiddenConversations",
+            HIDDEN_WITH_PIN,
+            PIN_INPUT,
+        ],
+        ["hidden_pin", { pin: "1234", newPin: "4321" }, "updateHiddenConversPin", HIDDEN_WITH_PIN, PIN_INPUT],
         ["hidden_pin_reset", { confirm: true }, "resetHiddenConversPin"],
         ["auto_delete_status", {}, "getAutoDeleteChat"],
         ["auto_delete", { threadId: PEER, ttl: "7d" }, "updateAutoDeleteChat"],
@@ -205,6 +219,8 @@ const HAPPY = {
         ["add", { keyword: "hi", title: "Xin chào" }, "addQuickMessage"],
         ["update", { quickMessageId: "3", keyword: "hi", title: "Chào" }, "updateQuickMessage"],
         ["remove", { quickMessageIds: ["3"], confirm: true }, "removeQuickMessage"],
+        ["enable", {}, "updateSettings"],
+        ["disable", {}, "updateSettings"],
     ],
     zalo_catalog: [
         ["list", {}, "getCatalogList"],
@@ -346,10 +362,13 @@ describe("action tools: the tests cover every action", () => {
 
 for (const [tool, rows] of Object.entries(HAPPY)) {
     describe(`${tool}: happy paths`, () => {
-        for (const [action, args, expect, answers] of rows) {
+        for (const [action, args, expect, answers, config] of rows) {
             it(`${action} reaches ${expect ?? "the local cache only"}`, async () => {
+                // A hide must not leave its threads hidden for the tests after it.
+                resetHiddenChatsRegistry();
+                rmSync(join(ROOT, "hidden-threads.json"), { force: true });
                 const fa = fakeApi(answers);
-                const r = await tools({ api: fa.api }).call(tool, { action, ...args });
+                const r = await tools({ api: fa.api, config }).call(tool, { action, ...args });
                 assert.equal(r.isError, false, r.text);
                 assert.equal(r.body.action, action);
                 if (expect === "http") assert.ok(fa.http.length > 0, "a request reached the transport");
@@ -391,10 +410,10 @@ const GUARDED = Object.entries(HAPPY).flatMap(([tool, rows]) =>
     rows
         // The guarded case only: 'settings' is asked about only when it turns join approval off (tested below).
         .filter(([action, args]) => TABLES[tool][action].guard && TABLES[tool][action].guard(args).applies !== false)
-        .map(([action, args, , answers]) => {
+        .map(([action, args, , answers, config]) => {
             const rest = { ...args };
             delete rest.confirm;
-            return [tool, action, rest, answers];
+            return [tool, action, rest, answers, config];
         }),
 );
 
@@ -411,7 +430,7 @@ describe("guarded actions", () => {
         assert.equal(want.length, 19);
     });
 
-    for (const [tool, action, args, answers] of GUARDED) {
+    for (const [tool, action, args, answers, config] of GUARDED) {
         it(`${tool} ${action}: refused unconfirmed, previewed with dryRun, done with confirm`, async () => {
             let fa = fakeApi(answers);
             const refused = await tools({ api: fa.api }).call(tool, { action, ...args });
@@ -428,7 +447,7 @@ describe("guarded actions", () => {
             assert.deepEqual([fa.calls, fa.http], [[], []], "a dry run sends nothing");
 
             fa = fakeApi(answers);
-            const done = await tools({ api: fa.api }).call(tool, { action, ...args, confirm: true });
+            const done = await tools({ api: fa.api, config }).call(tool, { action, ...args, confirm: true });
             assert.equal(done.isError, false, done.text);
             assert.equal(done.body.action, action);
         });
@@ -488,28 +507,83 @@ describe("guarded actions", () => {
 });
 
 describe("confirmMode human over the stateless HTTP transport", () => {
-    it("refuses at once, saying why and what to use, and never asks", async () => {
+    let page;
+    before(() => {
+        // The page is mounted on an HTTP server in production; here only its tickets matter, so nothing listens.
+        page = new SecurePage().configure({ accountId: OWN, localBaseUrl: "http://127.0.0.1:9" });
+        setSecurePage(page);
+    });
+    after(() => setSecurePage(null));
+
+    it("hands out a one-time approve page instead of asking, then acts on the approved ticket once", async () => {
         const asked = [];
         const elicit = {
-            getClientCapabilities: () => ({ elicitation: { form: {} } }),
+            getClientCapabilities: () => ({ elicitation: { form: {}, url: {} } }),
             elicitInput: async (p) => {
                 asked.push(p);
                 return { action: "accept", content: { confirm: true } };
             },
         };
+        const human = { confirmMode: "human" };
         const fa = fakeApi();
-        const r = await tools({ api: fa.api, config: { confirmMode: "human" }, stateless: true, elicit }).call(
-            "zalo_friend",
-            { action: "block", userId: PEER, confirm: true },
-        );
+        const r = await tools({ api: fa.api, config: human, stateless: true, elicit }).call("zalo_friend", {
+            action: "block",
+            userId: PEER,
+            confirm: true,
+        });
         assert.equal(r.isError, true);
         const p = JSON.parse(r.text);
+        assert.equal(p.confirmationRequired, true);
         assert.equal(p.statelessTransport, true);
-        assert.match(p.error, /stateless/);
-        assert.match(p.error, /stdio/);
-        assert.match(p.error, /"agent"/);
-        assert.deepEqual(asked, [], "no question that could never be answered");
+        assert.match(p.secureUrl, /^http:\/\/127\.0\.0\.1:9\/zalo\/secure\/[A-Za-z0-9_-]{22}$/);
+        assert.ok(Date.parse(p.ticketExpiresAt) > Date.now());
+        assert.equal(p.secureUrl.endsWith(p.retryWith.ticket), true, "the ticket is the page's token");
+        assert.deepEqual(asked, [], "no MCP question over a transport that cannot hear the answer");
         assert.deepEqual(fa.calls, []);
+
+        // Before the owner answers, the ticket does not work.
+        const early = await tools({ api: fa.api, config: human, stateless: true }).call("zalo_friend", {
+            action: "block",
+            userId: PEER,
+            ticket: p.retryWith.ticket,
+        });
+        assert.equal(early.isError, true);
+        assert.equal(JSON.parse(early.text).ticketRefused, "pending");
+        assert.deepEqual(fa.calls, []);
+
+        page.store.settle(page.store.lookup(p.retryWith.ticket).ticket, "approved");
+        // A ticket approved for another target does not carry over.
+        const other = await tools({ api: fa.api, config: human, stateless: true }).call("zalo_friend", {
+            action: "block",
+            userId: "778",
+            ticket: p.retryWith.ticket,
+        });
+        assert.equal(JSON.parse(other.text).ticketRefused, "target");
+        assert.deepEqual(fa.calls, []);
+    });
+
+    it("the approved ticket acts once; a second use is refused", async () => {
+        const human = { confirmMode: "human" };
+        const fa = fakeApi();
+        const first = await tools({ api: fa.api, config: human, stateless: true }).call("zalo_friend", {
+            action: "block",
+            userId: PEER,
+        });
+        const ticket = JSON.parse(first.text).retryWith.ticket;
+        page.store.settle(page.store.lookup(ticket).ticket, "approved");
+        const done = await tools({ api: fa.api, config: human, stateless: true }).call("zalo_friend", {
+            action: "block",
+            userId: PEER,
+            ticket,
+        });
+        assert.equal(done.isError, false, done.text);
+        assert.ok(fa.calls.some((c) => c.method === "blockUser"));
+        const again = await tools({ api: fakeApi().api, config: human, stateless: true }).call("zalo_friend", {
+            action: "block",
+            userId: PEER,
+            ticket,
+        });
+        assert.equal(JSON.parse(again.text).ticketRefused, "used");
     });
 
     it("still asks over a stateful transport (stdio)", async () => {
@@ -553,7 +627,21 @@ describe("action tools: specific refusals", () => {
     });
 
     it("hidden_pin is four digits; report's content goes only with reason other", async () => {
-        await refusedWith("zalo_conversation", { action: "hidden_pin", pin: "12a4" }, /4 digits/);
+        await refusedWith("zalo_conversation", { action: "hidden_pin", newPin: "12a4" }, /4 digits/);
+        // Without allowPinArgument a PIN input is refused, and nothing reaches Zalo past the hidden-list read.
+        const fa = fakeApi(HIDDEN_WITH_PIN);
+        const r = await tools({ api: fa.api }).call("zalo_conversation", {
+            action: "unhide",
+            threadIds: [PEER],
+            confirm: true,
+            pin: "1234",
+        });
+        assert.equal(r.isError, true);
+        assert.match(r.text, /allowPinArgument/);
+        assert.deepEqual(
+            fa.calls.map((c) => c.method),
+            ["getHiddenConversations"],
+        );
         await refusedWith("zalo_conversation", { action: "report", threadId: PEER, reason: "other" }, /needs/);
         await refusedWith(
             "zalo_conversation",
@@ -640,7 +728,7 @@ describe("action tools: what the replies say", () => {
         const fa = fakeApi();
         const r = await tools({ api: fa.api }).call("zalo_conversation", { action: "read", threadId: "779" });
         assert.equal(r.isError, false, r.text);
-        assert.equal(r.body.seenMsgId, "9001");
+        assert.deepEqual(r.body.seen.msgIds, ["9001"]);
         assert.ok(fa.calls.some((c) => c.method === "removeUnreadMark"));
         assert.ok(fa.http.length > 0, "the seen receipt reached the transport");
     });

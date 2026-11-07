@@ -51,6 +51,17 @@ export function getDefaultConfig() {
         // ZALO_MCP_CONFIRM_MODE, then the deprecated groupConfirm / ZALO_MCP_GROUP_CONFIRM, else "agent". It is not
         // defaulted to "agent" here: a default would hide a file's own groupConfirm: false.
         confirmMode: null,
+        // What agents see of the account's hidden chats (src/core/deploy-policy.js): "exclude", "contentless" or
+        // "include". Unset (null) means ZALO_MCP_HIDDEN_CHATS, else "exclude", as Zalo Web hides them until the PIN.
+        hiddenChats: null,
+        // Whether the hidden-chat tools take the PIN as an input. It puts the PIN in the MCP client's logs: for
+        // non-AI clients only. Unset (null) means ZALO_MCP_ALLOW_PIN_ARGUMENT, else false.
+        allowPinArgument: null,
+        // The one-time secure input page (src/core/secure-page.js): the public base URL a browser reaches this
+        // server at behind a reverse proxy or TLS terminator. Unset means ZALO_MCP_PIN_PAGE_URL, else the local address.
+        pinPage: {
+            publicBaseUrl: null,
+        },
         httpPort: null,
         host: null,
     };
@@ -71,6 +82,7 @@ export function mergeMCPConfigLayer(base, layer) {
         limits: { ...base.limits, ...(layer.limits || {}) },
         media: { ...base.media, ...(layer.media || {}) },
         tls: { ...base.tls, ...(layer.tls || {}) },
+        pinPage: { ...base.pinPage, ...(layer.pinPage || {}) },
         oauth: {
             ...base.oauth,
             ...(layer.oauth || {}),

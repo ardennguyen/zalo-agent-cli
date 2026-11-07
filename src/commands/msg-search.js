@@ -6,7 +6,8 @@
  */
 import chalk from "chalk";
 import { getActive } from "../core/accounts.js";
-import { getAccountDbPath } from "../core/credentials.js";
+import { getAccountDbPath, getAccountDir } from "../core/credentials.js";
+import { hiddenChatsFor } from "../core/hidden-chats.js";
 import { configureSearchIndex, getThreadNames, initDb } from "../core/db.js";
 import { MAX_CONTEXT, MAX_PAGE, searchPage } from "../core/search.js";
 import { parseDateBound, parsePeriod } from "../utils/date-range.js";
@@ -168,6 +169,11 @@ export function registerMsgSearch(msg, program) {
                     cursor: opts.cursor,
                     context: opts.context,
                     ...filtersFromOptions(opts, account.ownId),
+                    // Hidden chats are left out, as Zalo Web's search leaves them out. This command has no session,
+                    // so the ids come from the mirror the listener and the hidden-chat commands keep.
+                    excludeThreadIds: [
+                        ...hiddenChatsFor(account.ownId, { stateDir: getAccountDir(account.ownId) }).ids,
+                    ],
                 });
                 names = getThreadNames();
             } catch (e) {

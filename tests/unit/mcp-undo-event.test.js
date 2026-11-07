@@ -165,12 +165,18 @@ describe("the mcp start undo handler", () => {
         const start = src.indexOf('api.listener.on("undo"');
         assert.ok(start > 0, "the undo handler exists");
         const body = src.slice(start, src.indexOf("});", start));
-        const order = ["storeLiveUndo(", "isSelf", "normalizeUndo(", "shouldWatch(", "buffer.push("];
+        // deliverToAgents is the buffer push behind the hidden-chat policy (a recall in a hidden chat must not
+        // reach an agent either), so it is the last step here and must itself still push.
+        const order = ["storeLiveUndo(", "isSelf", "normalizeUndo(", "shouldWatch(", "deliverToAgents("];
         let at = -1;
         for (const step of order) {
             const i = body.indexOf(step, at + 1);
             assert.ok(i > at, `${step} comes after the previous step in the undo handler`);
             at = i;
         }
+        const deliverAt = src.indexOf("const deliverToAgents");
+        assert.ok(deliverAt > 0, "deliverToAgents exists");
+        const deliver = src.slice(deliverAt, src.indexOf("};", deliverAt));
+        assert.ok(deliver.includes("buffer.push("), "deliverToAgents pushes to the buffer");
     });
 });

@@ -41,7 +41,12 @@ import { createCloudVerifier } from "../core/cloud-verify.js";
 import { attachUnknownActs } from "../core/unknown-acts.js";
 import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync } from "../core/read-state.js";
+import { attachLastOnline } from "../core/last-online.js";
 import { attachControlEvents } from "../core/control-events.js";
+import { attachHiddenChatControls, hiddenChatsFor, hiddenEventView } from "../core/hidden-chats.js";
+import { resolveHiddenChats, resolvePinPage } from "../core/deploy-policy.js";
+import { getSecurePage } from "../core/secure-page.js";
+import { readControls } from "../zalo/queues/control-queue.js";
 import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
@@ -561,6 +566,27 @@ export function registerMCPCommands(program) {
             } catch (e) {
                 console.error("[mcp] Thread name cache init failed (non-fatal):", e.message);
             }
+            // The account's hidden chats (src/core/hidden-chats.js), read once now and kept current from the 601
+            // `hidden_chat` controls below; the deployment's hiddenChats policy decides what agents see of them.
+            const hidden = hiddenChatsFor(activeAcc.ownId, { stateDir: accountDir });
+            await hidden.ensure(getApi());
+            const hiddenPolicy = resolveHiddenChats({ config, accountId: activeAcc.ownId });
+            console.error(
+                `[mcp] Hidden chats: ${hiddenPolicy.mode} (${hiddenPolicy.source})` +
+                    (hidden.known ? `, ${hidden.ids.size} hidden` : ", the hidden list could not be read yet"),
+            );
+            /** An event list as the policy shows it: hidden ones left out, or contentless. */
+            const hiddenEvents = (list) =>
+                list
+                    .map((m) =>
+                        hiddenEventView(m, hidden, hiddenPolicy.mode, {
+                            name: m?.type === "undo" ? "undo" : "message",
+                        }),
+                    )
+                    .filter(Boolean);
+            // The one-time secure input page (src/core/secure-page.js): this process's account, and, over --http,
+            // the public address a person's browser reaches it at.
+            const securePage = getSecurePage().configure({ accountId: activeAcc.ownId });
             // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
             gate.leave();
 
@@ -649,6 +675,8 @@ export function registerMCPCommands(program) {
                         stageLock,
                         syncJobs,
                         health,
+                        securePage,
+                        hiddenEvents,
                     };
                     const authToken =
                         opts.auth?.trim() ||
@@ -683,6 +711,17 @@ export function registerMCPCommands(program) {
                             : null;
                     const scheme = tlsOptions ? "HTTPS" : "HTTP";
                     httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions, oauthOptions);
+                    // The secure page is served on this port under /zalo/secure/<token>; its links use
+                    // pinPage.publicBaseUrl (behind a reverse proxy or TLS) or else this server's own address.
+                    const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+                    const pinPage = resolvePinPage({ config, accountId: activeAcc.ownId });
+                    securePage.configure({
+                        publicBaseUrl: pinPage.publicBaseUrl,
+                        localBaseUrl: `${tlsOptions ? "https" : "http"}://${localHost.includes(":") ? `[${localHost}]` : localHost}:${port}`,
+                    });
+                    console.error(
+                        `[mcp] Secure input page: ${pinPage.publicBaseUrl ? `${pinPage.publicBaseUrl} (${pinPage.source})` : "this server's own address (set pinPage.publicBaseUrl behind a proxy)"}`,
+                    );
                     console.error(`[mcp] ${scheme} server started on port ${port}`);
                     if (!authToken && !oauthClientSecret && oauthClients.length === 0) {
                         console.error(
@@ -744,12 +783,39 @@ export function registerMCPCommands(program) {
                 );
             }
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
-            /** Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent. */
-            const queueWebhook = (normalized) =>
-                webhookDelivery?.enqueue(
-                    `${normalized.type === "undo" ? "undo" : "message"}:${normalized.msgId ?? normalized.cliMsgId}`,
+            /**
+             * Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent; a message in a
+             * hidden chat goes as the policy says: not at all, or as `{event, hidden: true}` with no ids or content.
+             */
+            const queueWebhook = (normalized) => {
+                const kind = normalized.type === "undo" ? "undo" : "message";
+                const view = hiddenEventView(normalized, hidden, hiddenPolicy.mode, { name: kind });
+                if (!view) return undefined;
+                const key = `${kind}:${normalized.msgId ?? normalized.cliMsgId}`;
+                if (view.hidden) {
+                    return webhookDelivery?.enqueue(`hidden-${key}`, {
+                        event: view.event,
+                        hidden: true,
+                        accountId: activeAcc.ownId,
+                    });
+                }
+                return webhookDelivery?.enqueue(
+                    key,
                     buildMCPWebhookPayload(normalized, { accountId: activeAcc.ownId }),
                 );
+            };
+            /**
+             * Hand one message (or recall) to the agents: the buffer, the notifier, the webhook. A hidden chat's is
+             * dropped under `exclude`; under `contentless` the buffer keeps it (the tools show it without content)
+             * and the notifier, whose preview names the sender, is skipped.
+             */
+            const deliverToAgents = (n, { notify = true } = {}) => {
+                const isHidden = hiddenPolicy.mode !== "include" && hidden.isHidden(n.threadId);
+                if (isHidden && hiddenPolicy.mode === "exclude") return;
+                buffer.push(n.threadId, n);
+                if (notify && !isHidden) notifier.onMessage(n);
+                queueWebhook(n);
+            };
 
             // Delivered receipts: the same shared implementation `listen` uses
             // (AGENTS.md §13 -- the two listeners must not differ). Diagnostics
@@ -817,7 +883,14 @@ export function registerMCPCommands(program) {
             // The read state other devices report, stored exactly as `listen`
             // stores it, so a thread the human read on the phone stops
             // looking unread (src/core/read-state.js).
-            createReadStateSync({ tap: socketTap, log: (line) => console.error(`[mcp] ${line}`) });
+            createReadStateSync({
+                tap: socketTap,
+                ownId: activeAcc.ownId,
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            // A user's last-online time as Zalo pushes it (602 online_status), kept for zalo_friend `last_online`
+            // with `cached`, as in `listen` (src/core/last-online.js).
+            attachLastOnline({ tap: socketTap, log: (line) => console.error(`[mcp] ${line}`) });
             // The cloud queue, kept current when the server says it may be stale (cmd 621): bounded, read-only,
             // never beside another stage (src/core/cloud-verify.js). Same in `listen` and `mcp start`.
             createCloudVerifier({
@@ -848,6 +921,9 @@ export function registerMCPCommands(program) {
                 ownId: activeAcc.ownId,
                 log: (line) => console.error(`[mcp] ${line}`),
             });
+            // Hidden chats hidden, unhidden or their PIN changed or removed on another device (601 `hidden_chat`).
+            // Same in `listen` and `mcp start`.
+            attachHiddenChatControls({ tap: socketTap, set: hidden, getApi, readControls });
             // End-to-end encrypted messages this client cannot read: the first is named in the log, the rest counted.
             const undecryptable = createUndecryptableNotice({ log: (line) => console.error(`[mcp] ${line}`) });
             const selfHeal = createSelfHeal({
@@ -865,9 +941,7 @@ export function registerMCPCommands(program) {
                         const normalized = { ...normalizeMessage(msg, info), catchUp: true };
                         if (!filter.shouldWatch(normalized.threadId, normalized.threadType)) continue;
                         if (!filter.shouldKeep(normalized)) continue;
-                        buffer.push(normalized.threadId, normalized);
-                        notifier.onMessage(normalized);
-                        queueWebhook(normalized);
+                        deliverToAgents(normalized);
                     }
                 },
             });
@@ -944,9 +1018,7 @@ export function registerMCPCommands(program) {
                     // Apply noise filter (stickers, system msgs, short emoji)
                     if (!filter.shouldKeep(normalized)) return;
 
-                    buffer.push(normalized.threadId, normalized);
-                    notifier.onMessage(normalized);
-                    queueWebhook(normalized);
+                    deliverToAgents(normalized);
                     console.error(
                         `${DEBUG_MARK}[mcp] Buffered ${normalized.threadType} msg from ${normalized.threadId}`,
                     );
@@ -982,8 +1054,7 @@ export function registerMCPCommands(program) {
                     const recalled = normalizeUndo(u);
                     if (!recalled) return;
                     if (!filter.shouldWatch(recalled.threadId, recalled.threadType)) return;
-                    buffer.push(recalled.threadId, recalled);
-                    queueWebhook(recalled);
+                    deliverToAgents(recalled, { notify: false });
                     console.error(
                         `${DEBUG_MARK}[mcp] Buffered recall of ${recalled.msgId ?? recalled.cliMsgId} in ${recalled.threadId}`,
                     );

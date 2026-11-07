@@ -29,7 +29,12 @@
  *    the upload, `group` and `fr` controls.
  *
  * Cmd 613 carries `clearUnreads` too, on the reaction path: reactions seen,
- * not messages read. It is not read here.
+ * not messages read. It is read separately, as the reaction marks below.
+ *
+ * 3. Unread reactions, for `conv read`'s react_seen (src/core/receipts.js). A reaction someone else makes
+ *    (612 live, 610/611 the offline queues; `uidFrom` not "0") moves the conversation's `reactUnreadId` to the
+ *    reaction's own msgId; a 613 `clearUnreads` row moves `reactSeenId`. Zalo Web keeps the same pair per
+ *    conversation (its unread-reaction store). Unverified: no live 613 after a react_seen has been captured.
  *
  * What is stored: `conv_state.lastReadMsgId`/`lastReadTs`, which only move
  * forward (db.js `recordReadWatermark`), and `unreadMarked`/`unreadMarkedAt`,
@@ -39,11 +44,43 @@
  * Not yet measured live: which of these cmds a read on the phone arrives on,
  * and whether our own `conv read` is echoed back to the listener.
  */
-import { getConvState, getRecentThreads, recordReadWatermark, upsertConvState } from "./db.js";
+import { getConvState, getRecentThreads, recordReactionMark, recordReadWatermark, upsertConvState } from "./db.js";
 import { resolveLossyThreadId } from "./sync-v2/conv-state.js";
 
 /** Every envelope that can carry `clearUnreads` rows. */
 export const CLEAR_UNREADS_CMDS = Object.freeze([501, 502, 504, 510, 511, 521, 522, 524]);
+
+/** The reaction pushes (612 live, 610 and 611 the offline queues) and the reaction-seen push (613). */
+export const REACTION_CMDS = Object.freeze([610, 611, 612]);
+export const CMD_REACTIONS_SEEN = 613;
+
+/**
+ * The newest reaction someone else made in each conversation of one reaction frame.
+ *
+ * @param {object|null} data - a decoded 610/611/612 frame's `data`
+ * @param {string} [ownId]
+ * @returns {Array<{threadId: string, isGroup: boolean, reactionId: string}>}
+ */
+export function unreadReactionsFrom(data, ownId = "") {
+    const newest = new Map();
+    for (const [key, isGroup] of [
+        ["reacts", false],
+        ["reactGroups", true],
+    ]) {
+        for (const r of Array.isArray(data?.[key]) ? data[key] : []) {
+            const from = String(r?.uidFrom ?? "");
+            if (!from || from === "0" || (ownId && from === String(ownId))) continue;
+            const id = String(r?.msgId ?? "");
+            if (!/^\d+$/.test(id)) continue;
+            const threadId = isGroup ? String(r?.idTo ?? "") : from;
+            if (!/^\d+$/.test(threadId)) continue;
+            const k = `${isGroup ? "g" : "u"}${threadId}`;
+            const cur = newest.get(k);
+            if (!cur || BigInt(id) > BigInt(cur.reactionId)) newest.set(k, { threadId, isGroup, reactionId: id });
+        }
+    }
+    return [...newest.values()];
+}
 
 /** The control push; `mark_unread` is one of its `act_type`s. */
 export const CMD_PUSH_CTRL = 601;
@@ -305,7 +342,7 @@ export function readStateEvent(change) {
  * @param {(line: string) => void} [args.log]
  * @returns {{stop: () => void}}
  */
-export function createReadStateSync({ tap, onChange = () => {}, log = (line) => console.error(line) }) {
+export function createReadStateSync({ tap, ownId = "", onChange = () => {}, log = (line) => console.error(line) }) {
     const say = (line) => {
         try {
             log(`read state: ${line}`);
@@ -372,8 +409,30 @@ export function createReadStateSync({ tap, onChange = () => {}, log = (line) => 
         }
     }
 
+    function onReactions(frame) {
+        for (const r of unreadReactionsFrom(frame.data, ownId)) {
+            try {
+                recordReactionMark({ threadId: r.threadId, column: "reactUnreadId", msgId: r.reactionId });
+            } catch (e) {
+                say(`could not store an unread reaction of ${r.threadId}: ${e?.message || e}`);
+            }
+        }
+    }
+
+    function onReactionsSeen(frame) {
+        for (const r of readMarksFrom(frame.data)) {
+            try {
+                recordReactionMark({ threadId: r.threadId, column: "reactSeenId", msgId: r.lastMsgId });
+            } catch (e) {
+                say(`could not store the reactions seen in ${r.threadId}: ${e?.message || e}`);
+            }
+        }
+    }
+
     const offs = [
         ...CLEAR_UNREADS_CMDS.map((cmd) => tap.on(cmd, onEnvelope)),
+        ...REACTION_CMDS.map((cmd) => tap.on(cmd, onReactions)),
+        tap.on(CMD_REACTIONS_SEEN, onReactionsSeen),
         tap.on(CMD_PUSH_CTRL, onControl),
         tap.on(CMD_PUSH_CTRL, onPinControl),
     ];

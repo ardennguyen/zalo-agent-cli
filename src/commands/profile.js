@@ -9,7 +9,7 @@ import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff, parseLanguage } from "../utils/cli-args.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
-import { SETTING_MAP, profileUpdatePayload } from "../core/profile-settings.js";
+import { SETTING_MAP, describeSettings, profileUpdatePayload, updateSetting } from "../core/profile-settings.js";
 
 export function registerProfileCommands(program) {
     const profile = program.command("profile").description("View and update your Zalo profile and settings");
@@ -105,19 +105,27 @@ export function registerProfileCommands(program) {
 
     profile
         .command("settings")
-        .description("View current privacy settings")
+        .description(
+            "View the privacy settings, the read-only ones (strangers' messages, two-factor, quick messages), and " +
+                "with --json every other key Zalo sent, under `other`",
+        )
         .action(async () => {
             try {
-                const result = await getApi().getSettings();
+                // The same reply as zalo_profile `settings` (src/core/profile-settings.js).
+                const result = describeSettings(await getApi().getSettings());
                 output(result, program.opts().json, () => {
                     info("Privacy settings:");
                     console.log();
-                    for (const [slug, meta] of Object.entries(SETTING_MAP)) {
-                        const raw = result[meta.key];
-                        // Normalize booleans to 0/1 (API returns bool for some settings)
-                        const val = raw === true ? 1 : raw === false ? 0 : raw;
-                        const label = meta.values[val] || String(val);
-                        console.log(`  ${meta.label.padEnd(30)} ${label}  (${slug}=${val})`);
+                    for (const row of result.settings) {
+                        const label = row.meaning ?? String(row.value);
+                        console.log(`  ${row.label.padEnd(32)} ${label}  (${row.setting}=${row.value})`);
+                    }
+                    console.log();
+                    info("Read-only here:");
+                    for (const row of result.readOnly) {
+                        const label = row.meaning ?? String(row.value);
+                        const how = row.changeWith ? `  (change with ${row.changeWith})` : "";
+                        console.log(`  ${row.label.padEnd(32)} ${label}${how}`);
                     }
                     console.log();
                     info("Update: zalo-agent profile set <setting> <value>");
@@ -197,25 +205,11 @@ export function registerProfileCommands(program) {
         .description("Update a privacy setting (use 'profile settings' to see options)")
         .action(async (setting, value) => {
             try {
-                const meta = SETTING_MAP[setting];
-                if (!meta) {
-                    error(`Unknown setting: "${setting}". Valid: ${Object.keys(SETTING_MAP).join(", ")}`);
-                    return;
-                }
-                const numVal = Number(value);
-                if (!(numVal in meta.values)) {
-                    error(
-                        `Invalid value for ${setting}. Valid: ${Object.entries(meta.values)
-                            .map(([k, v]) => `${k}=${v}`)
-                            .join(", ")}`,
-                    );
-                    return;
-                }
-                await getApi().updateSettings(meta.key, numVal);
-                // Zalo answers the update with an empty body, so the reply is what was set
-                // (the same shape as zalo_profile `set`), not Zalo's "".
-                const reply = { success: true, setting, value: numVal, meaning: meta.values[numVal] };
-                output(reply, program.opts().json, () => success(`${meta.label}: ${meta.values[numVal]} (${numVal})`));
+                // Zalo answers the update with an empty body, so the reply is what was set (the same reply as
+                // zalo_profile `set`, src/core/profile-settings.js); an unknown setting or value sends nothing.
+                const reply = await updateSetting(getApi(), setting, value);
+                const label = SETTING_MAP[setting].label;
+                output(reply, program.opts().json, () => success(`${label}: ${reply.meaning} (${reply.value})`));
             } catch (e) {
                 error(`Setting update failed: ${e.message}`);
             }
@@ -223,7 +217,10 @@ export function registerProfileCommands(program) {
 
     profile
         .command("active <on|off>")
-        .description("Turn your online (active) status on or off")
+        .description(
+            "Set this session's presence, active (on) or away (off), as Zalo Web does when its tab gains or loses " +
+                "focus. It does not hide your online status from others: that is `profile set online-status 0`",
+        )
         .action(async (state) => {
             try {
                 const active = parseOnOff(state, "active");

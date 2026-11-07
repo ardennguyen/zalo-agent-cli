@@ -20,11 +20,17 @@ import { getRecentThreads } from "./db.js";
  *
  * @param {number} limit - max conversations of each kind
  * @param {"dm"|"group"|"all"} [kind="all"]
+ * @param {{excludeThreadIds?: Iterable<string>}} [opts] - conversations left out (hidden chats); `limit` still holds
  * @returns {object[]} `threads` rows (`threadId`, `type`, `name`, `lastUpdate`, …)
  */
-export function recentConversations(limit, kind = "all") {
-    if (kind === "dm" || kind === "group") return getRecentThreads(limit, kind);
-    return [...getRecentThreads(limit, "dm"), ...getRecentThreads(limit, "group")].sort(
-        (a, b) => (b.lastUpdate || 0) - (a.lastUpdate || 0),
-    );
+export function recentConversations(limit, kind = "all", { excludeThreadIds } = {}) {
+    const excluded = new Set([...(excludeThreadIds ?? [])].map(String));
+    const of = (k) => {
+        if (!excluded.size) return getRecentThreads(limit, k);
+        return getRecentThreads(limit + excluded.size, k)
+            .filter((t) => !excluded.has(String(t.threadId)))
+            .slice(0, limit);
+    };
+    if (kind === "dm" || kind === "group") return of(kind);
+    return [...of("dm"), ...of("group")].sort((a, b) => (b.lastUpdate || 0) - (a.lastUpdate || 0));
 }

@@ -411,6 +411,20 @@ export function initDb(dbPath) {
     try {
         db.exec("ALTER TABLE conv_state ADD COLUMN lastReadTs INTEGER");
     } catch {}
+    // Unread reactions (./read-state.js): the newest reaction someone else made in the conversation (its own msgId,
+    // from the reaction pushes) and the newest one reported seen (cmd 613 clearUnreads). `conv read` sends Zalo
+    // Web's react_seen when the first is newer than the second.
+    try {
+        db.exec("ALTER TABLE conv_state ADD COLUMN reactUnreadId TEXT");
+    } catch {}
+    try {
+        db.exec("ALTER TABLE conv_state ADD COLUMN reactSeenId TEXT");
+    } catch {}
+    // When each user was last online, as the listener hears it (602 online_status) (./last-online.js). Read by
+    // `friend last-online --cached` and zalo_friend `last_online` with `cached`, without a request.
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS last_online (userId TEXT PRIMARY KEY, lastOnline INTEGER, updatedAt INTEGER, source TEXT)",
+    );
 
     return db;
 }
@@ -2212,6 +2226,63 @@ export function upsertConvState(st) {
             unreadMarkedAt: st.unreadMarked === undefined ? null : Number(st.unreadMarkedAt) || Date.now(),
             updatedAt: Date.now(),
         });
+}
+
+/**
+ * Move one of a conversation's reaction marks forward: `reactUnreadId` (the newest reaction someone else made) or
+ * `reactSeenId` (the newest reported seen). Like the read watermark, it only moves forward; ids are compared as
+ * integers.
+ *
+ * @param {{threadId: string, column: "reactUnreadId"|"reactSeenId", msgId: string}} mark
+ * @returns {boolean} whether it moved
+ */
+export function recordReactionMark({ threadId, column, msgId }) {
+    if (!db) throw new Error("Database not initialized");
+    if (column !== "reactUnreadId" && column !== "reactSeenId") throw new Error(`Unknown reaction mark ${column}`);
+    const id = String(msgId ?? "");
+    if (!/^\d+$/.test(id) || BigInt(id) === 0n) return false;
+    const now = Date.now();
+    return db.transaction(() => {
+        const cur = db.prepare(`SELECT ${column} AS v FROM conv_state WHERE threadId = ?`).get(String(threadId));
+        if (/^\d+$/.test(cur?.v ?? "") && BigInt(cur.v) >= BigInt(id)) return false;
+        db.prepare(
+            `INSERT INTO conv_state (threadId, ${column}, updatedAt) VALUES (?, ?, ?)
+     ON CONFLICT(threadId) DO UPDATE SET ${column} = excluded.${column}, updatedAt = excluded.updatedAt`,
+        ).run(String(threadId), id, now);
+        return true;
+    })();
+}
+
+/**
+ * Store when a user was last online, keeping the newer of what is stored and what is given.
+ *
+ * @param {{userId: string, lastOnline: number, source?: string}} row - `lastOnline` in epoch ms
+ * @returns {boolean} whether it changed
+ */
+export function upsertLastOnline({ userId, lastOnline, source = "listen" }) {
+    if (!db) throw new Error("Database not initialized");
+    const t = Number(lastOnline);
+    if (!userId || !Number.isFinite(t) || t <= 0) return false;
+    const res = db
+        .prepare(
+            `INSERT INTO last_online (userId, lastOnline, updatedAt, source) VALUES (?, ?, ?, ?)
+     ON CONFLICT(userId) DO UPDATE SET lastOnline = excluded.lastOnline, updatedAt = excluded.updatedAt,
+       source = excluded.source
+     WHERE excluded.lastOnline > COALESCE(last_online.lastOnline, 0)`,
+        )
+        .run(String(userId), t, Date.now(), String(source));
+    return res.changes > 0;
+}
+
+/**
+ * When a user was last online, as stored, or null.
+ *
+ * @param {string} userId
+ * @returns {{userId: string, lastOnline: number, updatedAt: number, source: string}|null}
+ */
+export function getLastOnline(userId) {
+    if (!db) throw new Error("Database not initialized");
+    return db.prepare("SELECT * FROM last_online WHERE userId = ?").get(String(userId)) || null;
 }
 
 /** Conversation state for one thread, or every thread that has any. */

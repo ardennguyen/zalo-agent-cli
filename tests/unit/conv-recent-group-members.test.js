@@ -16,7 +16,9 @@
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { insertMessage, recordReadWatermark, upsertConvState, upsertThread } from "../../src/core/db.js";
 import { seedAccount, runOffline, requestsTo, OWN_UID } from "./support/offline-cli.js";
 
@@ -38,6 +40,12 @@ const SEEN = {
 before(() => {
     assertSandboxed(CONFIG_DIR);
     seedAccount();
+    // The hidden-chat id mirror a listener keeps (src/core/hidden-chats.js): with it, a cache answer leaves hidden
+    // chats out without asking Zalo. Nothing is hidden here.
+    writeFileSync(
+        join(getAccountDir(OWN_UID), "hidden-threads.json"),
+        JSON.stringify({ threadIds: [], hasPin: false }),
+    );
     upsertThread({ threadId: DM_OLD, type: "dm", name: "Chị Lan", lastUpdate: SEEN[DM_OLD] });
     upsertThread({ threadId: GROUP_MID, type: "group", name: "Nhóm B", lastUpdate: SEEN[GROUP_MID] });
     upsertThread({ threadId: DM_NEW, type: "dm", name: "Anh Minh", lastUpdate: SEEN[DM_NEW] });

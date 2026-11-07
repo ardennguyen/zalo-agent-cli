@@ -29,7 +29,13 @@ export { drainReactionBacklog } from "./listener/reactions.js";
 export { customCall, getWithParams, postWithParams } from "./session-call.js";
 export { READS, READ_NAMES, callRead, describeReads, registerLocalRead } from "./reads.js";
 export { WRITES, WRITE_NAMES, callWrite, describeWrites } from "./writes.js";
-export { createDeliveredReceipts, sendDeliveredReceipt, sendSeenReceipt, zaloPost } from "./receipts.js";
+export {
+    createDeliveredReceipts,
+    sendDeliveredReceipt,
+    sendReactionSeen,
+    sendSeenReceipt,
+    zaloPost,
+} from "./receipts.js";
 export { keySessionLogout, serverLogout } from "./logout.js";
 export { officialLogout } from "./official-logout.js";
 export * as pin from "./custom/pin.js";

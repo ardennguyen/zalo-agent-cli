@@ -15,6 +15,8 @@
  *   `editorUid`, `emoji`, `params` with the title, `startTime`, `duration`, `repeat`, `color`, `createTime`,
  *   `editTime`). This writes the row `sync-boards` would write (under the other end of the DM, type `dm`) and reports
  *   it. Not verified against a live payload: the field names are the Web's.
+ * - **`my_settings` / `update`**. The Web merges the changed settings into its store. This reports them as a
+ *   `settings_changed` event (`listen --events settings`); nothing is stored.
  * - **`user_devices` / `update_user_devices`**. The Web's trusted-device module checks the new, signed device list it
  *   carries (`devices`) against its own identity, and may sign itself out if it is no longer on it. This client does
  *   not verify that list; it logs one line every time (a device signed in or out is worth seeing whether or not anyone
@@ -28,6 +30,7 @@
  * `listen` and `mcp start` both build one (AGENTS.md §13); only `listen` prints the events.
  */
 import { removeReminder, upsertReminder } from "./db.js";
+import { describeSettingChanges } from "./profile-settings.js";
 import { readControls } from "../zalo/queues/control-queue.js";
 
 /** The control push that carries them. */
@@ -88,6 +91,25 @@ export function devicesEvent(c) {
         companions: Array.isArray(companions) ? companions.length : null,
         ts: c.ts,
         control: withoutSecrets(c.data),
+    };
+}
+
+/**
+ * A `my_settings` control (this account's own settings changed on another device) as an event: the changed keys as
+ * Zalo names them under `settings`, and each one this client knows under `changed`, with its `profile set` name
+ * (src/core/profile-settings.js). Zalo Web merges the same `data` into its settings store.
+ *
+ * @param {{act: string, data: object|null, ts: number|null}} c
+ * @returns {object}
+ */
+export function settingsEvent(c) {
+    const settings = c.data && typeof c.data === "object" ? c.data : {};
+    return {
+        event: "settings_changed",
+        act: c.act,
+        changed: describeSettingChanges(settings),
+        settings,
+        ts: c.ts,
     };
 }
 
@@ -179,6 +201,8 @@ export function applyControlEvents({
         }
         if (c.kind === "catalog") {
             out.push(catalogEvent(c));
+        } else if (c.kind === "settings") {
+            out.push(settingsEvent(c));
         } else if (c.kind === "devices") {
             const ev = devicesEvent(c);
             say(

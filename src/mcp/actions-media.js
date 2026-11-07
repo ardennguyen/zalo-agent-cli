@@ -13,7 +13,7 @@ import {
     applyCloudCleanup,
     planCloudCleanup,
 } from "../core/cloud-plan.js";
-import { confirmInput, dryRunInput } from "./action-tool.js";
+import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 
 const MB = 1024 * 1024;
 
@@ -262,6 +262,7 @@ export const CLOUD_META = {
                 .optional()
                 .describe("For 'plan' and 'apply': include My Cloud, the chat with yourself"),
             confirm: confirmInput("'apply'"),
+            ticket: ticketInput(),
             dryRun: dryRunInput("'apply'"),
         })
         .strict(),

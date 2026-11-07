@@ -379,8 +379,32 @@ describe("createReadStateSync -- through the real socket tap", () => {
 
     it("does not take the reaction path's clearUnreads (613) for a read", () => {
         listener.push(613, 0, { data: { clearUnreads: [row()] } });
-        assert.equal(getConvState(DM), null);
+        // Red if a reaction-seen report moves the read watermark; it is kept as the reactions-seen mark instead.
+        assert.equal(getConvState(DM)?.lastReadMsgId ?? null, null);
+        assert.equal(getConvState(DM)?.reactSeenId, row().lastMsgId);
         assert.deepEqual(changes, []);
+    });
+
+    it("keeps the newest reaction someone else made as the unread-reaction mark, never our own", () => {
+        const OTHER = "9300000000000000003";
+        listener.push(612, 0, {
+            data: {
+                reacts: [
+                    { msgId: "7100000000002", uidFrom: DM, idTo: "0", content: "{}" },
+                    // Ours (uidFrom "0"), newer: red if it moves the mark.
+                    { msgId: "7100000000009", uidFrom: "0", idTo: DM, content: "{}" },
+                ],
+                reactGroups: [
+                    { msgId: "7100000000004", uidFrom: OTHER, idTo: GROUP, content: "{}" },
+                    { msgId: "7100000000005", uidFrom: OTHER, idTo: GROUP, content: "{}" },
+                ],
+            },
+        });
+        assert.equal(getConvState(DM).reactUnreadId, "7100000000002");
+        assert.equal(getConvState(GROUP).reactUnreadId, "7100000000005");
+        // An older one from the offline queue (611) does not move it back.
+        listener.push(611, 0, { data: { reactGroups: [{ msgId: "7100000000001", uidFrom: OTHER, idTo: GROUP }] } });
+        assert.equal(getConvState(GROUP).reactUnreadId, "7100000000005");
     });
 
     it("sets and clears the unread mark from 601, reporting only what changed", () => {

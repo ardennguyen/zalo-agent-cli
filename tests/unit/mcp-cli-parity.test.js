@@ -48,6 +48,7 @@ const MCP_FOR = {
     "msg unpin": ["zalo_note", "unpin_message"],
     "msg history": ["zalo_get_history"],
     "msg typing": ["zalo_conversation", "typing"],
+    "msg seen": ["zalo_conversation", "seen"],
     "msg report": ["zalo_conversation", "report"],
     "msg link-preview": ["zalo_link", "preview"],
     "msg scan-url": ["zalo_link", "scan"],

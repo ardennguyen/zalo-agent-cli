@@ -13,6 +13,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { newMcpServer } from "./new-server.js";
+import { maskSecurePath, SECURE_PATH_PREFIX } from "../core/secure-page.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -146,8 +147,11 @@ function resolveIssuerOrigin(req, configuredIssuer, isTls) {
 /**
  * Create HTTP or HTTPS MCP server with optional bearer token and OAuth 2.0 auth.
  * @param {Function} registerToolsFn - Registers tools on a McpServer instance
- * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs, health }
- *   (`health` is the daemon's ./core/daemon-health.js object: behind /health, /ready, /status and /metrics)
+ * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs, health,
+ *   securePage, hiddenEvents }
+ *   (`health` is the daemon's ./core/daemon-health.js object: behind /health, /ready, /status and /metrics;
+ *   `securePage` serves the one-time input page at /zalo/secure/<token>, src/core/secure-page.js; `hiddenEvents`
+ *   applies the hiddenChats policy to /events/wait's messages)
  * @param {number} port
  * @param {string|null} authToken - Bearer token (null = no auth unless oauth.clientSecret or oauth.clients is set)
  * @param {string} [host="127.0.0.1"] - Bind address
@@ -196,7 +200,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 const ua = String(req.headers["user-agent"] || "-").slice(0, 80);
                 const h = String(req.headers.host || "-");
                 console.error(
-                    `${DEBUG_MARK}[mcp-http] ${req.method} ${req.originalUrl} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
+                    `${DEBUG_MARK}[mcp-http] ${req.method} ${maskSecurePath(req.originalUrl)} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
                 );
             });
         }
@@ -212,6 +216,23 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         }
         next();
     });
+
+    // The one-time secure input page (src/core/secure-page.js), before the body parsers and the bearer check: a
+    // person opens it in a browser with no token, and its own token in the path is what admits them. It reads its
+    // small form body itself.
+    if (deps.securePage) {
+        app.use(SECURE_PATH_PREFIX, (req, res, next) => {
+            req.url = `${SECURE_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
+            deps.securePage
+                .handle(req, res)
+                .then((handled) => {
+                    if (!handled) next();
+                })
+                .catch(() => {
+                    if (!res.headersSent) res.status(500).set("Cache-Control", "no-store").end();
+                });
+        });
+    }
 
     app.use(express.json());
     app.use(express.urlencoded({ extended: false }));
@@ -602,7 +623,16 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 settleMs,
             });
             if (res.writableEnded) return;
-            res.json(waitResult({ messages, hasMore, cursorWhenEmpty: deps.buffer.readCursor() }));
+            // Hidden chats by the deployment's policy; the cursor still moves past one left out.
+            const shown = deps.hiddenEvents ? deps.hiddenEvents(messages) : messages;
+            const skipped = Number(messages.at(-1)?._cursor) || 0;
+            res.json(
+                waitResult({
+                    messages: shown,
+                    hasMore,
+                    cursorWhenEmpty: Math.max(skipped, Number(deps.buffer.readCursor()) || 0),
+                }),
+            );
         } catch (err) {
             if (!res.headersSent) {
                 res.status(500).json({ error: err.message });

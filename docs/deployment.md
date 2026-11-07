@@ -720,6 +720,17 @@ This is a policy constraint, and it has a concrete technical shape here. The bot
 
 §6 scores each backend on this explicitly.
 
+### 5.6 CRM / SaaS deployment: no terminal, no persistent connection
+
+When the engine is the backend of a CRM module or a hosted service, the people who own the accounts never see a terminal, and the MCP transport is stateless HTTP (every `POST /mcp` is a fresh server). Three things follow.
+
+- **One process per account.** Run the fleet (`fleet start`, §4.8): each account is one `mcp start --http` process with its own port. The reverse proxy routes by account (a host name or a path prefix per account) to that process, for `/mcp`, `/events/wait` and `/zalo/secure/`.
+- **The secure input page.** Anything a person must type or approve, the hidden-chat PIN or a `confirmMode: "human"` approval, is a one-time page at `/zalo/secure/<token>` on the same port. The tool reply carries `secureUrl`, `ticketExpiresAt` and `retryWith.ticket` (`pinRequired` or `confirmationRequired`); the CRM shows the link to the account owner, who opens it in any browser, and the CRM repeats the call with `ticket`. A token is 128 random bits, lives 5 minutes, is bound to the account, the action and its target, and works once. Set `pinPage.publicBaseUrl` (or `ZALO_MCP_PIN_PAGE_URL[_<ownId>]`) to the public `https://` address the proxy serves that account at, so the link works from outside; the page itself needs no bearer token, answers `Cache-Control: no-store`, loads no external asset, never writes a typed PIN back, and its token is masked in the request log. Terminate TLS at the proxy: the PIN crosses the network in that form.
+- **Tickets live in the process's memory.** A restart forgets every open ticket (the person asks again), and a second process for the same account cannot see the first one's tickets: never load-balance one account across processes.
+- **The PIN never reaches the AI.** It is not a tool input (`allowPinArgument` stays `false` unless the client is not an AI and its logs are trusted), it is checked in memory against the hash Zalo hands the session, it is never stored or logged, and 6 wrong PINs start a growing back-off whose state file holds counts and times only.
+- **Policies per deployment**, each with a per-account variable: `confirmMode` / `ZALO_MCP_CONFIRM_MODE` (`human` now works over HTTP through the page), `hiddenChats` / `ZALO_MCP_HIDDEN_CHATS` (`exclude` by default; `contentless` sends a webhook event with no thread id or content; `include` hands hidden chats to the agent), `allowPinArgument` / `ZALO_MCP_ALLOW_PIN_ARGUMENT`, `pinPage.publicBaseUrl` / `ZALO_MCP_PIN_PAGE_URL`. Samples: [`config-samples/env/crm-backend.env`](config-samples/env/crm-backend.env), [`config-samples/mcp-config/crm-backend.json`](config-samples/mcp-config/crm-backend.json).
+- **A limit worth knowing.** A link handed to an agent in a tool reply can also be opened by that agent if it can browse. A PIN page is safe anyway (the agent does not know the PIN); a `human` approval page is only as strong as the agent's inability to reach it, so let the CRM, not the model, show approve links to the owner.
+
 ---
 
 ## 6. LLM backend options

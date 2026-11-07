@@ -6,6 +6,9 @@
 import { appendFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { resolve, join } from "path";
 import { getApi, clearSession } from "../core/zalo-client.js";
+import { attachHiddenChatControls, hiddenEventView } from "../core/hidden-chats.js";
+import { hiddenSetForCli, unlockOrExit } from "../utils/hidden-access.js";
+import { readControls } from "../zalo/queues/control-queue.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { resolveWebhookSecret } from "../utils/secrets.js";
 import { parseAccountId, selectDaemonAccount, loginDaemonAccount } from "../core/daemon-account.js";
@@ -32,6 +35,7 @@ import { createCloudVerifier } from "../core/cloud-verify.js";
 import { attachUnknownActs } from "../core/unknown-acts.js";
 import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
+import { attachLastOnline } from "../core/last-online.js";
 import { attachControlEvents } from "../core/control-events.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
@@ -90,7 +94,7 @@ export function registerListenCommand(program) {
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing), upload (Zalo finished processing a video or file you uploaded), catalog (a product catalog changed on another device), reminder (a DM reminder was removed) and devices (the account's device list changed)",
+            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing), upload (Zalo finished processing a video or file you uploaded), catalog (a product catalog changed on another device), reminder (a DM reminder was removed), devices (the account's device list changed), online (a user's last-online time, as Zalo pushes it) and settings (this account's own settings changed on another device)",
             "message,friend,group,reaction,read",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")
@@ -114,6 +118,15 @@ export function registerListenCommand(program) {
             "--log-level <level>",
             "Log level of daemon.log (and of stderr in the foreground): error, warn, info (default) or debug, which adds a line per HTTP request and per message. Env: ZALO_LOG_LEVEL[_<ownId>]; also ZALO_LOG_FORMAT=json, ZALO_LOG_MAX_SIZE (default 50m) and ZALO_LOG_KEEP (default 3) for rotation",
         )
+        .option(
+            "--include-hidden",
+            "Show events of hidden conversations too: asks for the hidden-chat PIN at start (foreground only)",
+        )
+        .option(
+            "--hidden-contentless",
+            "Report an event in a hidden conversation as {event, hidden: true}, with no thread id or content",
+        )
+        .option("--pin-stdin", "Read the hidden-chat PIN for --include-hidden from standard input")
         .option("-d, --daemon", "Run in the background (logs to <accountDir>/daemon.log)")
         .option("--stop", "Stop the running background daemon for this account")
         .option("--status", "Show background daemon status for this account")
@@ -189,6 +202,16 @@ export function registerListenCommand(program) {
             if (!process.env.ZALO_DAEMON_CHILD)
                 for (const w of logging.warnings) console.error(`[listen] [logging] ${w}`);
 
+            // The PIN is asked in the foreground only: a background daemon has no terminal, and a PIN must never
+            // ride on its command line.
+            if (opts.includeHidden && opts.daemon) {
+                error(
+                    "--include-hidden asks for the hidden-chat PIN, which a background daemon cannot do. Run " +
+                        "`listen --include-hidden` in the foreground, or use --hidden-contentless.",
+                );
+                process.exit(1);
+            }
+
             if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
                 const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
                 if (!spawned.ok) {
@@ -260,6 +283,16 @@ export function registerListenCommand(program) {
                 error(`Pinned account login failed: ${e.message}`);
                 process.exit(1);
             }
+            // The account's hidden chats (src/core/hidden-chats.js): left out of every event unless --include-hidden
+            // (and the PIN, asked now) or --hidden-contentless.
+            const listenHidden = await hiddenSetForCli(activeAcc.ownId, getApi());
+            if (opts.includeHidden)
+                await unlockOrExit(listenHidden, { pinStdin: Boolean(opts.pinStdin), json: jsonMode });
+            const listenHiddenMode = opts.includeHidden
+                ? "include"
+                : opts.hiddenContentless
+                  ? "contentless"
+                  : "exclude";
             try {
                 initDb(join(accountDir, "zalo.db"));
                 info(`Local database initialized at ${accountDir}/zalo.db`);
@@ -508,6 +541,13 @@ export function registerListenCommand(program) {
 
             /** Output event as JSON or human-readable, save locally, then post to webhook */
             function emitEvent(data, humanMsg) {
+                // Hidden chats, as the flags say: left out (default), contentless, or shown after the PIN.
+                const view = hiddenEventView(data, listenHidden, listenHiddenMode, { name: data?.event });
+                if (!view) return;
+                if (view.hidden) {
+                    data = view;
+                    humanMsg = `Something arrived in a hidden conversation (${view.event})`;
+                }
                 eventCount++;
                 if (process.env.ZALO_DAEMON_CHILD === "1") {
                     // In daemon.log an event line is a per-message line: debug (it carries the message text).
@@ -608,6 +648,7 @@ export function registerListenCommand(program) {
             // `--events read`. It rides the tap, which re-arms on every socket.
             createReadStateSync({
                 tap: socketTap,
+                ownId: activeAcc.ownId,
                 log: (line) => console.error(`[listen] ${line}`),
                 onChange: (change) => {
                     if (!enabledEvents.has("read")) return;
@@ -640,6 +681,9 @@ export function registerListenCommand(program) {
             // A catalog changed, a DM reminder created, edited or removed, the device list changed, on another device
             // (src/core/control-events.js): the reminder is stored or dropped in the cache whatever --events says;
             // the events are printed only when asked for (`catalog`, `reminder`, `devices`). Same in `mcp start`.
+            // Hidden chats hidden, unhidden or their PIN changed or removed on another device (601 `hidden_chat`).
+            // Same in `listen` and `mcp start`.
+            attachHiddenChatControls({ tap: socketTap, set: listenHidden, getApi, readControls });
             attachControlEvents({
                 tap: socketTap,
                 ownId: activeAcc.ownId,
@@ -653,6 +697,11 @@ export function registerListenCommand(program) {
                             `Reminder edited: ${ev.title ?? ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
                         reminder_removed: () => `Reminder removed: ${ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
                         devices_changed: () => "The account's device list changed — see `zalo-agent account devices`",
+                        settings_changed: () =>
+                            `Settings changed on another device: ${
+                                ev.changed.map((c) => `${c.setting}=${c.value}`).join(", ") ||
+                                Object.keys(ev.settings).join(", ")
+                            }`,
                     }[ev.event];
                     const kind = {
                         catalog_changed: "catalog",
@@ -660,8 +709,19 @@ export function registerListenCommand(program) {
                         reminder_updated: "reminder",
                         reminder_removed: "reminder",
                         devices_changed: "devices",
+                        settings_changed: "settings",
                     };
                     if (human && enabledEvents.has(kind[ev.event])) emitEvent(ev, human());
+                },
+            });
+            // A user's last-online time as Zalo pushes it (602 online_status): kept in the cache whatever --events
+            // says, for `friend last-online --cached`; printed with `--events online`. Same in `mcp start`.
+            attachLastOnline({
+                tap: socketTap,
+                log: (line) => console.error(`[listen] ${line}`),
+                onEvent: (ev) => {
+                    if (!enabledEvents.has("online")) return;
+                    emitEvent(ev, `Online: ${ev.userId} at ${new Date(ev.lastOnline).toLocaleString()}`);
                 },
             });
             // End-to-end encrypted messages this client cannot read: the first is named in the log, the rest counted.
@@ -824,13 +884,17 @@ export function registerListenCommand(program) {
                         emitEvent(
                             {
                                 event: "typing",
+                                // "typing", or "fsending": the peer is sending a file. Our own devices' typing never
+                                // arrives here (the listener drops it, as Zalo Web does).
+                                action: t.action ?? "typing",
                                 threadId: t.threadId,
                                 isGroup: t.type === THREAD_GROUP,
                                 uid: t.data?.uid ?? null,
+                                isSelf: Boolean(t.isSelf),
                                 isPC: Boolean(t.data?.isPC),
                                 data: t.data,
                             },
-                            `Typing: ${t.data?.uid ?? "?"} in ${t.threadId}`,
+                            `${t.action === "fsending" ? "Sending a file" : "Typing"}: ${t.data?.uid ?? "?"} in ${t.threadId}`,
                         );
                     });
                 }

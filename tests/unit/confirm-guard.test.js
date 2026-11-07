@@ -36,6 +36,7 @@ import { registerAccountCommands } from "../../src/commands/account.js";
 import { registerLoginCommands } from "../../src/commands/login.js";
 import { registerLabelCommands } from "../../src/commands/label.js";
 import { registerMCPWebhookCommands } from "../../src/commands/mcp-webhook.js";
+import { SecurePage } from "../../src/core/secure-page.js";
 
 const G = "7000000000000000001";
 const U = "9100000000000000001";
@@ -429,21 +430,73 @@ describe("the MCP guard", () => {
         assert.equal(await gateMcp("label.update", {}, { config: {}, applies: false }), null);
     });
 
-    it("human, client without elicitation: refused, saying what it needs and how to change the mode", async () => {
-        for (const server of [
-            undefined,
-            {},
-            askingServer({ capabilities: {} }),
-            askingServer({ capabilities: { elicitation: { url: {} } } }),
-        ]) {
-            const r = await gateMcp("group.leave", LEAVE, { confirm: true, config: { confirmMode: "human" }, server });
+    /** A secure page whose links point at an address nothing listens on: only its tickets are exercised. */
+    const testPage = () => new SecurePage().configure({ accountId: "1", localBaseUrl: "http://127.0.0.1:9" });
+
+    it("human, client without elicitation: a one-time approve page, whose approved ticket goes ahead once", async () => {
+        for (const server of [undefined, {}, askingServer({ capabilities: {} })]) {
+            const securePage = testPage();
+            const call = { config: { confirmMode: "human" }, server, accountId: "1", securePage };
+            const r = await gateMcp("group.leave", LEAVE, { ...call, confirm: true });
             assert.equal(r.isError, true);
             const p = payload(r);
-            assert.equal(p.elicitationUnsupported, true);
-            assert.match(p.error, /does not support MCP elicitation/);
-            assert.match(p.error, /confirmMode/);
-            assert.match(p.error, /ZALO_MCP_CONFIRM_MODE/);
+            assert.equal(p.confirmationRequired, true);
+            assert.match(p.secureUrl, /^http:\/\/127\.0\.0\.1:9\/zalo\/secure\//);
+            assert.ok(p.retryWith.ticket);
+            assert.match(r.content[1].text, /one-time link/);
+            // The caller's confirm does not stand in; the person's approval on the page does, once.
+            const pending = await gateMcp("group.leave", LEAVE, { ...call, confirm: true, ticket: p.retryWith.ticket });
+            assert.equal(payload(pending).ticketRefused, "pending");
+            securePage.store.settle(securePage.store.lookup(p.retryWith.ticket).ticket, "approved");
+            const wrong = await gateMcp("group.disperse", LEAVE, { ...call, ticket: p.retryWith.ticket });
+            assert.equal(payload(wrong).ticketRefused, "action", "a ticket is bound to its action");
+            securePage.store.tickets.get(p.retryWith.ticket).status = "approved";
+            assert.equal(await gateMcp("group.leave", LEAVE, { ...call, ticket: p.retryWith.ticket }), null);
+            const again = await gateMcp("group.leave", LEAVE, { ...call, ticket: p.retryWith.ticket });
+            assert.equal(payload(again).ticketRefused, "used");
         }
+    });
+
+    it("human, a client with URL-mode elicitation only: it is sent the page and the call waits for it", async () => {
+        const securePage = testPage();
+        const completed = [];
+        const srv = {
+            server: {
+                getClientCapabilities: () => ({ elicitation: { url: {} } }),
+                elicitInput: async (params) => {
+                    assert.equal(params.mode, "url");
+                    assert.ok(params.elicitationId);
+                    // The person opens the link and approves while the call waits.
+                    const token = params.url.split("/").pop();
+                    setImmediate(() => securePage.store.settle(securePage.store.lookup(token).ticket, "approved"));
+                    return { action: "accept" };
+                },
+                createElicitationCompletionNotifier: (id) => async () => completed.push(id),
+            },
+        };
+        const call = { config: { confirmMode: "human" }, server: srv, accountId: "1", securePage };
+        assert.equal(await gateMcp("group.leave", LEAVE, call), null);
+        assert.equal(completed.length, 1, "notifications/elicitation/complete was sent");
+
+        const declined = {
+            server: { ...srv.server, elicitInput: async () => ({ action: "decline" }) },
+        };
+        const r = await gateMcp("group.leave", LEAVE, { ...call, server: declined });
+        assert.equal(payload(r).declined, true);
+    });
+
+    it("human over the stateless HTTP transport: never asks, even a client that could", async () => {
+        const srv = askingServer({ capabilities: { elicitation: { form: {}, url: {} } } });
+        const r = await gateMcp("group.leave", LEAVE, {
+            config: { confirmMode: "human" },
+            server: srv,
+            stateless: true,
+            accountId: "1",
+            securePage: testPage(),
+        });
+        assert.equal(payload(r).statelessTransport, true);
+        assert.equal(payload(r).confirmationRequired, true);
+        assert.equal(srv.asked.length, 0);
     });
 
     it("human: only the person's accept and yes goes ahead; the caller's confirm does not stand in", async () => {

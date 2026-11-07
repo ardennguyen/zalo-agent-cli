@@ -22,7 +22,9 @@ import { Command } from "commander";
 import { GroupMessage, UserMessage } from "../../src/zalo/listener/models.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { addAccount } from "../../src/core/accounts.js";
-import { initDb, insertMessage } from "../../src/core/db.js";
+import { initDb, insertMessage, recordReactionMark, recordReadWatermark, upsertConvState } from "../../src/core/db.js";
+import { seenMessages } from "../../src/core/receipts.js";
+import { CONVERSATION_ACTIONS } from "../../src/mcp/actions-conversation.js";
 import { storeLiveMessage } from "../../src/core/live-store.js";
 import { registerConvCommands } from "../../src/commands/conv.js";
 import { createApi } from "../../src/zalo/api.js";
@@ -44,6 +46,8 @@ const HOSTS = {
     group: "https://tt-group.test.invalid",
     conversation: "https://tt-convers.test.invalid",
     label: "https://label.test.invalid",
+    reaction: "https://reaction.test.invalid",
+    auth: "https://auth.test.invalid",
 };
 
 /**
@@ -371,7 +375,7 @@ describe("conv read — clears the manual unread mark AND sends the web's seenv2
         assert.deepEqual({ st: entry.st, at: entry.at, cmd: entry.cmd }, { st: 3, at: 5, cmd: 521 });
         // --json: stdout is one JSON value, and it says which fields were guessed.
         const result = JSON.parse(r.stdout);
-        assert.equal(result.seen.ok, true);
+        assert.equal(result.seen.sent, 1);
         assert.deepEqual(result.seen.guessed.sort(), ["at", "st"]);
     });
 
@@ -424,6 +428,200 @@ describe("conv read — clears the manual unread mark AND sends the web's seenv2
     });
 });
 
+describe('conv read — Zalo Web\'s "Mark as read": every unread message, reactions, the mark only when set', () => {
+    it("sends one seenv2 for every cached incoming message after the read watermark, oldest first", async () => {
+        const grid = freshGroup();
+        for (const [i, id] of ["8000000000801", "8000000000802", "8000000000803", "8000000000804"].entries()) {
+            listenerWrites(
+                new GroupMessage(
+                    OWN,
+                    frame({ idTo: grid, msgId: id, cliMsgId: `170000000080${i}`, ts: `17000000008${i}0` }),
+                ),
+            );
+        }
+        recordReadWatermark({ threadId: grid, msgId: "8000000000802" });
+        // Known clear: Zalo Web removes the mark only when it is set.
+        upsertConvState({ threadId: grid, unreadMarked: false });
+        const { api, sent } = harness((rec) =>
+            rec.path === "/api/setting/me" ? { display_seen_status: 1 } : { status: 0 },
+        );
+        const r = await conv(["read", grid, "-t", "1"], api, { json: true });
+        const seen = find(sent, "/api/group/seenv2");
+        assert.equal(seen.length, 1, "one call for the batch");
+        // Red if the watermark is ignored (801, 802 would be there) or the order is newest first.
+        assert.deepEqual(
+            JSON.parse(seen[0].params.msgInfos).data.map((e) => e.gmi),
+            ["8000000000803", "8000000000804"],
+        );
+        assert.equal(find(sent, "/api/conv/removeUnreadMark").length, 0, "the mark is known clear: nothing to remove");
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.success, true);
+        assert.equal(out.seen.sent, 2);
+        assert.equal(out.unreadMark.wasSet, false);
+        assert.equal(out.senderReceipt, "visible");
+        assert.match(out.note, /Seen/);
+        assert.equal(r.exitCode, null);
+    });
+
+    it("leaves out end-to-end encrypted messages and counts them", async () => {
+        const grid = freshGroup();
+        listenerWrites(new GroupMessage(OWN, frame({ idTo: grid, msgId: "8000000000901", cliMsgId: "1700000000901" })));
+        insertMessage({
+            msgId: "8000000000902",
+            threadId: grid,
+            senderId: MEMBER,
+            senderName: "",
+            text: "",
+            timestamp: 1700000000902,
+            type: "text",
+            raw_data: { src: "listen", msgType: "chat.e2ee.text", cliMsgId: "1700000000902", undecryptable: true },
+            has_attachment: false,
+        });
+        const { api, sent } = harness();
+        const r = await conv(["read", grid, "-t", "1"], api, { json: true });
+        const [seen] = find(sent, "/api/group/seenv2");
+        assert.deepEqual(
+            JSON.parse(seen.params.msgInfos).data.map((e) => e.gmi),
+            ["8000000000901"],
+        );
+        assert.equal(JSON.parse(r.stdout).seen.skipped.e2ee, 1);
+    });
+
+    it("sends react_seen for an unread reaction, and not once it is reported seen", async () => {
+        const peer = freshPeer();
+        listenerWrites(
+            new UserMessage(OWN, frame({ uidFrom: peer, cmd: 501, msgId: "8000000001001", cliMsgId: "1700000001001" })),
+        );
+        recordReactionMark({ threadId: peer, column: "reactUnreadId", msgId: "8000000001005" });
+        const first = harness();
+        await conv(["read", peer], first.api, { json: true });
+        const [react] = find(first.sent, "/api/message/react_seen");
+        assert.ok(react, "an unread reaction must be marked seen");
+        assert.equal(react.origin, HOSTS.reaction);
+        assert.deepEqual(react.params.seenInfos, [{ msgIds: ["8000000001005"], uid: peer }]);
+        assert.equal(react.params.imei, IMEI);
+
+        recordReactionMark({ threadId: peer, column: "reactSeenId", msgId: "8000000001005" });
+        const again = harness();
+        await conv(["read", peer], again.api, { json: true });
+        assert.equal(find(again.sent, "/api/message/react_seen").length, 0);
+    });
+
+    it("--mark-only sends only removeUnreadMark and says the real unread count stays", async () => {
+        const grid = freshGroup();
+        listenerWrites(new GroupMessage(OWN, frame({ idTo: grid, msgId: "8000000001101", cliMsgId: "1700000001101" })));
+        upsertConvState({ threadId: grid, unreadMarked: false });
+        const { api, sent } = harness();
+        const r = await conv(["read", grid, "-t", "1", "--mark-only"], api, { json: true });
+        assert.deepEqual(
+            sent.map((s) => s.path),
+            ["/api/conv/removeUnreadMark"],
+            "red if a seen receipt or a settings read goes out",
+        );
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.markOnly, true);
+        assert.equal(out.seen, null);
+        assert.match(out.note, /real unread count stays/);
+    });
+
+    it("reports hidden when this account's seen status is hidden", async () => {
+        const grid = freshGroup();
+        listenerWrites(new GroupMessage(OWN, frame({ idTo: grid, msgId: "8000000001201", cliMsgId: "1700000001201" })));
+        const { api } = harness((rec) => (rec.path === "/api/setting/me" ? { display_seen_status: 0 } : { status: 0 }));
+        const out = JSON.parse((await conv(["read", grid, "-t", "1"], api, { json: true })).stdout);
+        assert.equal(out.senderReceipt, "hidden");
+        assert.match(out.note, /Received/);
+    });
+
+    it("zalo_conversation `read` answers the same JSON as `conv read --json`", async () => {
+        const grid = freshGroup();
+        listenerWrites(new GroupMessage(OWN, frame({ idTo: grid, msgId: "8000000001301", cliMsgId: "1700000001301" })));
+        upsertConvState({ threadId: grid, unreadMarked: true });
+        const viaCli = JSON.parse((await conv(["read", grid, "-t", "1"], harness().api, { json: true })).stdout);
+        const ctx = {
+            api: harness().api,
+            ownId: () => OWN,
+            threadType: () => 1,
+            threadTypeName: (t) => (Number(t) === 1 ? "group" : "dm"),
+        };
+        const viaMcp = await CONVERSATION_ACTIONS.read.run({ threadId: grid, threadType: "group" }, ctx);
+        assert.deepEqual(viaMcp, viaCli);
+        assert.equal(viaCli.unreadMark.removed, true);
+    });
+});
+
+describe("msg seen / zalo_conversation `seen` — chosen messages, no unread mark", () => {
+    it("marks the named cached messages seen and says which it could not", async () => {
+        const grid = freshGroup();
+        listenerWrites(new GroupMessage(OWN, frame({ idTo: grid, msgId: "8000000001401", cliMsgId: "1700000001401" })));
+        listenerWrites(new GroupMessage(OWN, frame({ idTo: grid, msgId: "8000000001402", cliMsgId: "1700000001402" })));
+        listenerWrites(
+            new GroupMessage(
+                OWN,
+                frame({ uidFrom: "0", idTo: grid, msgId: "8000000001403", cliMsgId: "1700000001403" }),
+            ),
+        );
+        const { api, sent } = harness();
+        const r = await seenMessages(api, {
+            threadId: grid,
+            type: 1,
+            ownId: OWN,
+            msgIds: ["8000000001402", "8000000001403", "8000000009999"],
+        });
+        const [seen] = find(sent, "/api/group/seenv2");
+        assert.deepEqual(
+            JSON.parse(seen.params.msgInfos).data.map((e) => e.gmi),
+            ["8000000001402"],
+        );
+        assert.equal(find(sent, "/api/conv/removeUnreadMark").length, 0, "msg seen never touches the unread mark");
+        assert.equal(r.success, true);
+        assert.deepEqual(
+            r.notSent.map((x) => x.msgId),
+            ["8000000001403", "8000000009999"],
+        );
+        assert.match(r.note, /read position/);
+    });
+
+    it("with no ids it marks the newest cached incoming message; with none usable it fails without a request", async () => {
+        const grid = freshGroup();
+        listenerWrites(new GroupMessage(OWN, frame({ idTo: grid, msgId: "8000000001501", cliMsgId: "1700000001501" })));
+        listenerWrites(new GroupMessage(OWN, frame({ idTo: grid, msgId: "8000000001502", cliMsgId: "1700000001502" })));
+        const { api, sent } = harness();
+        const r = await seenMessages(api, { threadId: grid, type: 1, ownId: OWN });
+        assert.deepEqual(r.msgIds, ["8000000001502"]);
+        const cold = harness();
+        const none = await seenMessages(cold.api, { threadId: freshGroup(), type: 1, ownId: OWN });
+        assert.equal(none.success, false);
+        assert.equal(cold.sent.length, 0);
+        assert.equal(find(sent, "/api/group/seenv2").length, 1);
+    });
+});
+
+describe("conv block-sharing — blocksharing/updateConvers (zBusiness Max, unverified)", () => {
+    it("sends the Web's body and answers {success, threadId, threadType, blockSharing, verified: false}", async () => {
+        const grid = freshGroup();
+        const { api, sent } = harness();
+        const r = await conv(["block-sharing", grid, "on", "-t", "1"], api, { json: true });
+        const [req] = find(sent, "/api/conv/blocksharing/updateConvers");
+        assert.equal(req.origin, HOSTS.conversation);
+        assert.deepEqual(req.params, { threadId: grid, isGroup: 1, isEnabled: 1, clientLang: "vi" });
+        assert.deepEqual(JSON.parse(r.stdout), {
+            success: true,
+            threadId: grid,
+            threadType: "group",
+            blockSharing: true,
+            verified: false,
+        });
+    });
+
+    it("names Zalo Web's refusal 829 (zBusiness only)", async () => {
+        const { api } = harness(() => ({ zaloError: { code: 829, message: "denied" } }));
+        const r = await conv(["block-sharing", freshPeer(), "off"], api);
+        assert.equal(r.exitCode, 1);
+        assert.match(r.stdout + r.stderr, /zBusiness/);
+    });
+});
+
 describe("conv pin / unpin — pinconvers/updatev2 with the web's tab:0", () => {
     for (const [cmd, type, action] of [
         ["pin", "1", 1],
@@ -461,8 +659,10 @@ describe("conv pinned — the list Web reads, without Zalo's m1 entry", () => {
         const u = freshPeer();
         const { api, sent } = harness(() => ({ conversations: [`g${g}`, "m1", `u${u}`], version: 7 }));
         const r = await conv(["pinned"], api, { json: true });
-        assert.equal(sent.length, 1);
-        assert.equal(sent[0].path, "/api/pinconvers/list");
+        // With no hidden-chat id mirror yet, the hidden list is read once too, to leave hidden chats out.
+        const lists = sent.filter((s) => s.path !== "/api/hiddenconvers/get-all");
+        assert.equal(lists.length, 1);
+        assert.equal(lists[0].path, "/api/pinconvers/list");
         // Red when `conv pinned` prints the list as Zalo answers it: "m1" is in the middle.
         assert.deepEqual(JSON.parse(r.stdout), { conversations: [`g${g}`, `u${u}`], version: 7 });
     });

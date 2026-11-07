@@ -159,6 +159,8 @@ export function searchCoverage({ threadId } = {}) {
  * @param {string} [opts.cursor] - `nextCursor` of the page before
  * @param {number} [opts.context=0] - messages shown before and after each hit, at most {@link MAX_CONTEXT}
  * @param {boolean} [opts.counts] - the tabs' numbers (default: on the first page only)
+ * @param {string[]} [opts.excludeThreadIds] - conversations left out of the hits and the counts (hidden chats,
+ *   src/core/hidden-chats.js); a page is still filled to `limit`
  * @returns {{
  *   query: string, accents: string, truncatedKeyword: boolean, count: number,
  *   hits: Array<{row: object, snippet: object, context?: {before: object[], after: object[]}}>,
@@ -186,9 +188,14 @@ export function searchPage(opts = {}) {
     // Fold mode: the SQL is the whole answer. Exact mode: the SQL finds the candidates, newest first, and the accents
     // are checked here, one row at a time until the page is full (and one more, to know whether there is a next).
     const hits = [];
-    if (accents === "exact") {
+    const excluded = new Set((opts.excludeThreadIds ?? []).map(String));
+    if (excluded.size && opts.threadId !== undefined && excluded.has(String(opts.threadId))) {
+        return emptyPage(kw, accents);
+    }
+    if (accents === "exact" || excluded.size) {
         for (const row of iterateSearchRows({ ...filters, after })) {
-            if (!matchesExact(row.text, kw.keyword)) continue;
+            if (excluded.has(String(row.threadId))) continue;
+            if (accents === "exact" && !matchesExact(row.text, kw.keyword)) continue;
             hits.push(row);
             if (hits.length > limit) break;
         }
@@ -201,6 +208,18 @@ export function searchPage(opts = {}) {
     let counts = null;
     if (opts.counts ?? firstPage) {
         counts = accents === "exact" ? exactCounts(filters, kw.keyword) : countSearchMatchesByType(filters);
+        // Take a left-out conversation's own matches back off the numbers, so they show nothing of it.
+        for (const id of excluded) {
+            const less =
+                accents === "exact"
+                    ? exactCounts({ ...filters, threadId: id }, kw.keyword)
+                    : countSearchMatchesByType({ ...filters, threadId: id });
+            for (const [type, n] of Object.entries(less)) {
+                if (counts[type] === undefined) continue;
+                counts[type] -= n;
+                if (counts[type] <= 0) delete counts[type];
+            }
+        }
     }
 
     return {
@@ -224,6 +243,21 @@ export function searchPage(opts = {}) {
         nextCursor: hasMore && page.length ? encodeCursor(page.at(-1)) : null,
         counts,
         coverage: searchCoverage({ threadId: opts.threadId }),
+    };
+}
+
+/** A page with no hits (a search confined to a left-out conversation). */
+function emptyPage(kw, accents) {
+    return {
+        query: kw.keyword,
+        accents,
+        truncatedKeyword: kw.truncated,
+        count: 0,
+        hits: [],
+        hasMore: false,
+        nextCursor: null,
+        counts: {},
+        coverage: searchCoverage({}),
     };
 }
 

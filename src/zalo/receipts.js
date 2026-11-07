@@ -33,7 +33,7 @@
  * `conv read` (marking a conversation read from the cached rows) is the app's: src/core/receipts.js.
  *
  * Read receipts are kept OFF on purpose, so nothing here sends seenv2 on its
- * own: `conv read` is the only caller. The listener's automatic receipt is
+ * own: `conv read` and `msg seen` are the only callers. The listener's automatic receipt is
  * deliveredv2 only -- what every Zalo client sends when a message arrives.
  */
 import { boundUtils } from "./kernel/bound.js";
@@ -196,6 +196,34 @@ export async function sendSeenReceipt(api, { threadId, type, messages, signal } 
             : `${api.zpwServiceMap.chat[0]}/api/message/seenv2`,
         query: { nretry: 0 },
         params: (ctx) => ({ msgInfos: JSON.stringify(msgInfos), imei: ctx.imei }),
+        signal,
+    });
+}
+
+/**
+ * Tell Zalo the reactions of one conversation were seen, as Zalo Web's `sendClearUnreadReaction` does when a
+ * conversation with unread reactions is read: `{reaction}/api/message/react_seen` (cmd 12448) for a DM,
+ * `{reaction}/api/group/react_seen` (12449) for a group, body `{seenInfos: [{msgIds: [<reaction id>], uid|groupId}],
+ * imei}`. The id is the newest unread reaction's own message id (a reaction frame's `msgId`), not the id of the
+ * message it reacts to.
+ *
+ * Unverified: read from the Web bundle (2026-11-06), never captured on the wire.
+ *
+ * @param {object} api - logged-in session
+ * @param {object} opts
+ * @param {string} opts.threadId - group id, or the DM peer's uid
+ * @param {0|1} opts.type - 0 user, 1 group
+ * @param {string} opts.reactionId - the newest unread reaction's own msgId
+ * @param {AbortSignal} [opts.signal]
+ * @returns {Promise<any>}
+ */
+export async function sendReactionSeen(api, { threadId, type, reactionId, signal } = {}) {
+    const [id, isGroup] = threadOf(threadId, type);
+    if (!isId(reactionId)) throw new Error("A reaction-seen receipt needs the reaction's own message id.");
+    const info = isGroup ? { msgIds: [String(reactionId)], groupId: id } : { msgIds: [String(reactionId)], uid: id };
+    return zaloPost(api, {
+        url: `${api.zpwServiceMap.reaction[0]}/api/${isGroup ? "group" : "message"}/react_seen`,
+        params: (ctx) => ({ seenInfos: [info], imei: ctx.imei }),
         signal,
     });
 }

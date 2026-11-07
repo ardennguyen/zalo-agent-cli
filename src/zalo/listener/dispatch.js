@@ -55,7 +55,7 @@ export const CMD_REACTIONS = 612;
 /** The old-reaction queue answers: 610 for 1-1 conversations, 611 for groups. */
 export const OLD_REACTION_CMDS = Object.freeze({ 610: false, 611: true });
 
-/** The action push (typing). */
+/** The action push (typing, file sending, online status). */
 export const CMD_ACTIONS = 602;
 
 /** Control kinds that settle an upload: the file, video and photo forms of "the server has the file". */
@@ -321,21 +321,59 @@ export function dispatchOldReactions(uid, cmd, data) {
     return out;
 }
 
+/** The 602 acts that are someone typing (`typing` act_type) or sending a file (`fsending`), and their thread kind. */
+const TYPING_ACTS = Object.freeze({
+    typing: { typing: false, gtyping: true },
+    fsending: { sending: false, gsending: true },
+});
+
 /**
- * An action push (602): the typing actions. `action.data` is a JSON fragment without its braces. Other action kinds
- * reach the raw taps only.
+ * One 602 action's `data`: a typing action's is a JSON fragment without its braces, a file-sending action's is whole
+ * JSON text (Zalo Web's `_processRawMessages`).
+ *
+ * @param {object} action
+ * @returns {object}
+ */
+function actionData(action) {
+    const d = action.data;
+    if (d && typeof d === "object") return d;
+    return JSON.parse(action.act_type === "typing" ? `{${d}}` : String(d));
+}
+
+/**
+ * A 602 `profile` / `online_status` action as `{userId, lastOnline}`, or null for any other action. Zalo Web reads it
+ * as "this user was last online at `lastOnline`" (`data` is JSON text `{uid, lastOnline}`). A malformed one throws.
+ *
+ * @param {object} action - one entry of a 602 frame's `actions`
+ * @returns {{userId: string, lastOnline: number}|null}
+ */
+export function onlineStatusOf(action) {
+    if (action?.act_type !== "profile" || action.act !== "online_status") return null;
+    const d = typeof action.data === "string" ? JSON.parse(action.data) : action.data;
+    if (!d?.uid || !d.lastOnline) return null;
+    const lastOnline = Number(d.lastOnline);
+    return Number.isFinite(lastOnline) ? { userId: String(d.uid), lastOnline } : null;
+}
+
+/**
+ * An action push (602): the typing and file-sending actions, as `typing` events (`action` "typing" or "fsending").
+ * One from this account's own uid (another of its devices) is dropped, as Zalo Web drops it. Other action kinds
+ * (`online_status` among them, read by src/core/last-online.js through the socket tap) reach the raw taps only.
  *
  * @param {object} data
+ * @param {string} [uid] - the own uid
  * @returns {object[]} steps
  */
-export function dispatchAction(data) {
+export function dispatchAction(data, uid = "") {
     const out = [];
     for (const action of listOf(data, "actions")) {
-        if (action?.act_type !== "typing") continue;
-        guarded(out, "cmd 602 typing", () => {
-            if (action.act !== "typing" && action.act !== "gtyping") return null;
-            const d = JSON.parse(`{${action.data}}`);
-            return { emit: "typing", args: [action.act === "gtyping" ? new GroupTyping(d) : new UserTyping(d)] };
+        const kinds = TYPING_ACTS[action?.act_type];
+        if (!kinds || !Object.hasOwn(kinds, action.act)) continue;
+        guarded(out, `cmd 602 ${action.act_type}`, () => {
+            const d = actionData(action);
+            const opts = { ownId: uid, action: action.act_type };
+            const ev = kinds[action.act] ? new GroupTyping(d, opts) : new UserTyping(d, opts);
+            return ev.isSelf ? null : { emit: "typing", args: [ev] };
         });
     }
     return out;
@@ -355,6 +393,6 @@ export function dispatchFrame(uid, { cmd, subCmd }, data) {
     if (Object.hasOwn(OLD_MESSAGE_CMDS, cmd)) return subCmd === 1 ? dispatchOldMessages(uid, cmd, data) : [];
     if (cmd === CMD_CONTROL || cmd === CMD_REACTIONS) return dispatchCtrl(uid, cmd, data);
     if (Object.hasOwn(OLD_REACTION_CMDS, cmd)) return dispatchOldReactions(uid, cmd, data);
-    if (cmd === CMD_ACTIONS) return dispatchAction(data);
+    if (cmd === CMD_ACTIONS) return dispatchAction(data, uid);
     return [];
 }

@@ -49,6 +49,9 @@ const profile = (id, name) => ({
 
 /** Plausible replies for the methods whose callers read a particular shape. */
 export const NORMAL_REPLIES = {
+    // A hidden-chat PIN is set (the md5 of "1234", a test value) and nothing is hidden yet, so `conv hide` can act and
+    // no other command's conversation is left out.
+    getHiddenConversations: { pin: "81dc9bdb52d04dc20036dbd8313ed055", threads: [] },
     getAllFriends: [profile(FAKE_PEER_ID, "Fake Friend")],
     getAllGroups: { version: "1", gridVerMap: { [FAKE_GROUP_ID]: "1" } },
     getGroupInfo: {

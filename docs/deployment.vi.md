@@ -471,6 +471,18 @@ Dưới systemd, unit đã rải thời điểm khởi động (`sleep $((RANDOM
 
 Mọi lệnh gọi gửi nội dung hội thoại từ `zalo.db` sang mô hình AI đều là một lần truyền dữ liệu. Đảm bảo sử dụng tài khoản/tổ chức API thuộc sở hữu của doanh nghiệp với chính sách bảo mật dữ liệu rõ ràng, không dùng API key cá nhân cho dữ liệu công ty.
 
+
+### 5.5 Triển khai CRM / SaaS: không có terminal, không có kết nối lâu dài
+
+Khi engine là backend của một module CRM hoặc một dịch vụ được host, chủ tài khoản không bao giờ thấy terminal, và MCP chạy qua HTTP stateless (mỗi `POST /mcp` là một server mới). Từ đó:
+
+- **Mỗi tài khoản một process.** Chạy fleet (`fleet start`): mỗi tài khoản là một process `mcp start --http` với port riêng. Reverse proxy định tuyến theo tài khoản (một tên miền hoặc một tiền tố đường dẫn cho mỗi tài khoản) tới đúng process đó, cho `/mcp`, `/events/wait` và `/zalo/secure/`.
+- **Trang nhập bảo mật.** Mọi thứ một người phải gõ hoặc duyệt, mã PIN trò chuyện ẩn hay một lần duyệt của `confirmMode: "human"`, là một trang dùng một lần tại `/zalo/secure/<token>` trên cùng port. Kết quả của tool có `secureUrl`, `ticketExpiresAt` và `retryWith.ticket` (`pinRequired` hoặc `confirmationRequired`); CRM hiện link cho chủ tài khoản, họ mở bằng trình duyệt bất kỳ, rồi CRM gọi lại với `ticket`. Token là 128 bit ngẫu nhiên, sống 5 phút, gắn với tài khoản, thao tác và đối tượng của nó, và chỉ dùng được một lần. Đặt `pinPage.publicBaseUrl` (hoặc `ZALO_MCP_PIN_PAGE_URL[_<ownId>]`) là địa chỉ `https://` công khai mà proxy phục vụ tài khoản đó, để link mở được từ bên ngoài; bản thân trang không cần bearer token, trả `Cache-Control: no-store`, không tải tài nguyên bên ngoài, không bao giờ ghi lại PIN đã gõ, và token bị che trong log request. Kết thúc TLS ở proxy: PIN đi qua mạng ở dạng đó.
+- **Ticket nằm trong bộ nhớ của process.** Khởi động lại sẽ quên mọi ticket đang mở (người dùng yêu cầu lại), và process thứ hai của cùng tài khoản không thấy ticket của process thứ nhất: đừng cân bằng tải một tài khoản qua nhiều process.
+- **PIN không bao giờ tới AI.** Nó không phải input của tool (`allowPinArgument` giữ `false` trừ khi client không phải AI và log của nó đáng tin), được kiểm tra trong bộ nhớ với mã băm Zalo trả cho phiên, không bao giờ được lưu hay ghi log, và 6 lần sai PIN bắt đầu thời gian chờ tăng dần; tệp trạng thái chỉ chứa số lần và thời điểm.
+- **Chính sách theo từng triển khai**, mỗi cái có biến theo tài khoản: `confirmMode` / `ZALO_MCP_CONFIRM_MODE` (`human` nay chạy được qua HTTP nhờ trang duyệt), `hiddenChats` / `ZALO_MCP_HIDDEN_CHATS` (mặc định `exclude`; `contentless` gửi sự kiện webhook không có thread id hay nội dung; `include` giao trò chuyện ẩn cho agent), `allowPinArgument` / `ZALO_MCP_ALLOW_PIN_ARGUMENT`, `pinPage.publicBaseUrl` / `ZALO_MCP_PIN_PAGE_URL`. Mẫu: [`config-samples/env/crm-backend.env`](config-samples/env/crm-backend.env), [`config-samples/mcp-config/crm-backend.json`](config-samples/mcp-config/crm-backend.json).
+- **Một giới hạn cần biết.** Link đưa cho agent trong kết quả tool cũng có thể bị chính agent đó mở nếu nó duyệt web được. Trang PIN vẫn an toàn (agent không biết PIN); trang duyệt của `human` chỉ mạnh bằng việc agent không với tới được nó, nên hãy để CRM, không phải mô hình, hiện link duyệt cho chủ tài khoản.
+
 ---
 
 ## 6. Đánh giá các lựa chọn LLM Backend

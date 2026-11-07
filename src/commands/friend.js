@@ -10,6 +10,10 @@ import { errorCodeOf } from "../zalo/errors.js";
 import { readUserAliases } from "../core/current-user-names.js";
 import { searchFriends } from "../core/friend-search.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
+import { lastOnlineStatus } from "../core/last-online.js";
+import { getActive } from "../core/accounts.js";
+import { getAccountDbPath } from "../core/credentials.js";
+import { initDb } from "../core/db.js";
 
 export function registerFriendCommands(program) {
     const friend = program.command("friend").description("Manage friends and contacts");
@@ -47,7 +51,8 @@ export function registerFriendCommands(program) {
     friend
         .command("online")
         .description(
-            "List currently online friends (unverified: asked as Zalo Web's Friends tab asks, on each profile host)",
+            "List currently online friends (unverified, dead in practice: Zalo answers 404, and Zalo Web discards " +
+                "this answer too). Use `friend last-online <userId>` or `listen --events online` instead",
         )
         .action(async () => {
             try {
@@ -56,7 +61,7 @@ export function registerFriendCommands(program) {
             } catch (e) {
                 error(
                     /404/.test(e.message)
-                        ? `${e.message}. Zalo answered 404 for the online-friends list on every profile host of this account's service map. Zalo Web's Friends tab asks the same thing, and its answer was never captured. \`friend last-online <userId>\` works.`
+                        ? `${e.message}. Zalo answered 404 for the online-friends list on every profile host of this account's service map. Zalo Web's contact list asks the same thing and discards the answer. \`friend last-online <userId>\` works, and \`listen --events online\` reports presence as Zalo pushes it.`
                         : e.message,
                 );
             }
@@ -198,11 +203,37 @@ export function registerFriendCommands(program) {
 
     friend
         .command("last-online <userId>")
-        .description("Check when user was last online")
-        .action(async (userId) => {
+        .description(
+            "When a user was last online, as Zalo Web reads it: when your own online status is hidden " +
+                '(profile set online-status 0) nothing is asked and hiddenBy is "you"; hiddenBy "them" means ' +
+                "they hide theirs (unverified live)",
+        )
+        .option("--ask-anyway", "Ask Zalo even when your own online status is hidden (diagnostics)")
+        .option(
+            "--cached",
+            "Answer from the listener's cache of Zalo's presence pushes (`listen`/`mcp start`); send nothing",
+        )
+        .option("--oa", "The user is an Official Account (skips the profile lookup that tells)")
+        .action(async (userId, opts) => {
             try {
-                const result = await getApi().lastOnline(userId);
-                output(result, program.opts().json);
+                if (opts.cached) {
+                    // The cache is the account's db, written by the daemon; this only reads it.
+                    const acc = getActive();
+                    if (acc) initDb(getAccountDbPath(acc.ownId));
+                }
+                // The same reply as zalo_friend `last_online` (src/core/last-online.js).
+                const result = await lastOnlineStatus(opts.cached ? null : getApi(), userId, {
+                    askAnyway: Boolean(opts.askAnyway),
+                    cached: Boolean(opts.cached),
+                    ...(opts.oa ? { isOA: true } : {}),
+                });
+                output(result, program.opts().json, () => {
+                    const when = result.lastOnline ? new Date(result.lastOnline).toLocaleString() : null;
+                    if (result.hiddenBy === "you") info("Hidden: your own online status is hidden, so none is shown.");
+                    else if (result.hiddenBy === "them") info("Hidden: this user hides their online status.");
+                    else info(`Last online: ${when ?? "unknown"}`);
+                    if (result.note) info(result.note);
+                });
             } catch (e) {
                 error(e.message);
             }

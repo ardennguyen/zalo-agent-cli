@@ -36,6 +36,9 @@ export const SERVER_INSTRUCTIONS = [
     "GUARDED ACTIONS",
     "- Actions Zalo Web asks about first are guarded: zalo_undo, zalo_delete_message, every zalo_write, and the removing or blocking actions of the tools above (each description names its own, e.g. zalo_group `leave`, `disperse`, zalo_friend `remove`, `block`). `dryRun: true` says what one would do and sends nothing; `confirm: true` goes ahead.",
     "- The FIRST time you reach a guarded action, stop and ask the user how they want these handled: always ask them first, let you confirm on your own for some kinds of action, or never do them. Remember the answer in the way you and the user agree on (your memory, the project's rules, its CLAUDE.md or AGENTS.md) so you do not ask again, and follow it: send `confirm: true` only where the user allowed it.",
-    '- A refusal with `confirmationRequired` means nothing was sent; repeat the call with `confirm: true` only when allowed. If the server says its confirm mode is "human", it asks the user itself and your `confirm` does not answer for them; a decline means do not retry. Over HTTP it cannot ask: that refusal names what to change.',
+    '- A refusal with `confirmationRequired` means nothing was sent; repeat the call with `confirm: true` only when allowed. If the server says its confirm mode is "human", it asks the user itself and your `confirm` does not answer for them; a decline means do not retry. When it cannot ask in the call (HTTP), the reply carries a one-time `secureUrl`: give it to the user, and once they approved there repeat the call with its `ticket`.',
     "- Try zalo_write with `dryRun: true` first.",
+    "",
+    "HIDDEN CHATS",
+    "- The account's hidden conversations are left out of every list, search, history and event unless the deployment includes them. Never ask the user for their hidden-chat PIN in chat: a reply with `pinRequired` carries a one-time `secureUrl` where they type it; then repeat the call with its `ticket`.",
 ].join("\n");

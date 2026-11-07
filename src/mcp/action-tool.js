@@ -45,6 +45,24 @@ export const confirmInput = (which) =>
         );
 
 /**
+ * `ticket`: the token of a one-time secure page (src/core/secure-page.js) the account owner completed, which the call
+ * consumes: an approval (confirmMode "human") or a hidden-chat PIN unlock. It never carries the PIN.
+ *
+ * @returns {import("zod").ZodOptional<import("zod").ZodString>}
+ */
+export const ticketInput = () =>
+    z
+        .string()
+        .min(1)
+        .max(64)
+        .optional()
+        .describe(
+            "Only when a reply asked for it (confirmationRequired or pinRequired with a secureUrl): the ticket " +
+                "from that reply, once the account owner completed the page. Repeat the same call with it; it " +
+                "works once",
+        );
+
+/**
  * `dryRun` for the same tools: a preview that sends nothing.
  *
  * @param {string} which - the actions it applies to, for the description
@@ -99,7 +117,8 @@ export function checkInputs(action, args, needs) {
  * - `prepare(a, ctx)`: what the guard and the call both need, read once before the guard (fields added to `a`);
  * - `guard(a)`: `{key, target, applies?}` for an action Zalo Web asks about first;
  * - `preview(a, ctx)`: more for a guarded action's dry run (what `conv forget --dry-run` lists);
- * - `run(a, ctx, extra)`: the session call; returns the reply's fields (the action's name is added);
+ * - `run(a, ctx, extra)`: the session call; returns the reply's fields (the action's name is added), or
+ *   `{needsReply}` for a "needs X" reply (pinRequired with a secure page link), returned as an error reply;
  * - `fail(e, a)`: a clearer message for a known refusal from Zalo, or nothing.
  *
  * `dryRun` on an action that is not asked about first is refused: it would otherwise be ignored, and the action done.
@@ -135,7 +154,7 @@ export function actionTool(tool, actions, ctx) {
             const held = await ctx.gate(
                 g.key,
                 g.target,
-                { confirm: a.confirm, dryRun: a.dryRun },
+                { confirm: a.confirm, dryRun: a.dryRun, ticket: a.ticket },
                 extra,
                 g.applies === undefined ? {} : { applies: g.applies },
             );
@@ -148,7 +167,19 @@ export function actionTool(tool, actions, ctx) {
         }
 
         try {
-            return ctx.ok({ action, ...(await def.run(a, ctx, extra)) });
+            const out = await def.run(a, ctx, extra);
+            // A "needs X" reply (a PIN or an approval on the secure page): an error reply with its fields, then the
+            // line a person reads, as the guard's refusals are.
+            if (out?.needsReply) {
+                return {
+                    content: [
+                        { type: "text", text: JSON.stringify({ action, ...out.needsReply }) },
+                        { type: "text", text: out.needsReply.error },
+                    ],
+                    isError: true,
+                };
+            }
+            return ctx.ok({ action, ...out });
         } catch (e) {
             console.error(`[mcp-tools] ${tool} ${action} error:`, e.message);
             return ctx.err(def.fail?.(e, a) || e.message);

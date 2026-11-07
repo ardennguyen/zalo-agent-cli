@@ -9,8 +9,9 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { activeWindow, AUTO_REPLY_SCOPES } from "../core/auto-reply.js";
 import { findBankAccount, filterBanks } from "../core/bank-accounts.js";
+import { setQuickMessageStatus } from "../core/profile-settings.js";
 import { resolveBankBin, BIN_TO_DISPLAY } from "../utils/bank-helpers.js";
-import { confirmInput, dryRunInput } from "./action-tool.js";
+import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 
 /** A bank name or BIN as the BIN Zalo wants, or the refusal (as `bank add` words it). */
 function bankBin(input) {
@@ -116,6 +117,7 @@ export const AUTO_REPLY_META = {
                 .optional()
                 .describe("Only these users, instead of a whole scope"),
             confirm: confirmInput("'delete'"),
+            ticket: ticketInput(),
             dryRun: dryRunInput("'delete'"),
         })
         .strict(),
@@ -153,6 +155,17 @@ export const QUICK_MESSAGE_ACTIONS = {
             return { success: true, quickMessageIds: a.quickMessageIds };
         },
     },
+    // The same reply as `quick-msg enable|disable` (src/core/profile-settings.js).
+    enable: {
+        async run(_a, { api }) {
+            return setQuickMessageStatus(api, true);
+        },
+    },
+    disable: {
+        async run(_a, { api }) {
+            return setQuickMessageStatus(api, false);
+        },
+    },
 };
 
 /** zalo_quick_message's metadata. */
@@ -161,8 +174,9 @@ export const QUICK_MESSAGE_META = {
     description:
         "List, add, update or remove this account's quick messages (the `quick-msg` commands): saved texts the " +
         "apps insert when the owner types `/keyword`. Actions: 'list', 'add' (`keyword`, `title`: the text), " +
-        "'update' (the same, for `quickMessageId`) and 'remove' (`quickMessageIds`; asked about first: " +
-        "`confirm`, `dryRun`).",
+        "'update' (the same, for `quickMessageId`), 'remove' (`quickMessageIds`; asked about first: " +
+        "`confirm`, `dryRun`), and 'enable' / 'disable' (turn the quick-message feature on or off for " +
+        "the account, as Zalo Web's switch does; unverified live).",
     inputSchema: z
         .object({
             action: z.enum(Object.keys(QUICK_MESSAGE_ACTIONS)).describe("Quick-message operation to perform"),
@@ -181,6 +195,7 @@ export const QUICK_MESSAGE_META = {
                 .describe("The shortcut typed after / (for 'add' and 'update')"),
             title: z.string().min(1).max(2000).optional().describe("The saved text itself (for 'add' and 'update')"),
             confirm: confirmInput("'remove'"),
+            ticket: ticketInput(),
             dryRun: dryRunInput("'remove'"),
         })
         .strict(),
@@ -335,6 +350,7 @@ export const CATALOG_META = {
                 .describe("Page size for 'list' (20) and 'products' (100)"),
             page: z.number().int().min(0).optional().describe("Page number for 'list' and 'products', from 0"),
             confirm: confirmInput("'delete' and 'delete_product'"),
+            ticket: ticketInput(),
             dryRun: dryRunInput("'delete' and 'delete_product'"),
         })
         .strict(),
@@ -426,6 +442,7 @@ export const BANK_META = {
             page: z.number().int().min(0).optional().describe("Only for 'accounts': page number, from 0"),
             limit: z.number().int().min(1).max(100).optional().describe("Only for 'accounts': page size (default 20)"),
             confirm: confirmInput("'remove'"),
+            ticket: ticketInput(),
             dryRun: dryRunInput("'remove'"),
         })
         .strict(),

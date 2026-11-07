@@ -111,11 +111,11 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **233** invokable leaves (201 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **237** invokable leaves (205 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **26** containers — 18 top-level + 7 OA subgroups + `mcp webhook` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5011** as of 2026-11-07 (5002 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5090** as of 2026-11-07 (5081 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -935,7 +935,7 @@ the old names and made `threadType` the words `"dm"` / `"group"` in every MCP in
 |---|---|---|
 | a conversation | `threadId` | a user id for a DM, the group id for a group; group-only tools call it `groupId` (the same value); `me` is My Documents |
 | conversation type | `threadType` | `"dm"` or `"group"`, in inputs and in replies |
-| one message | `msgId` | every input and every reply; `quoteMsgId` and `lastMsgId` are msgIds with a role. Dropped in 3.0: `id` (live messages), `messageId` (send replies) |
+| one message | `msgId` | every input and every reply; `quoteMsgId` and `lastMsgId` are msgIds with a role, `msgIds` several (zalo_conversation `seen`). Dropped in 3.0: `id` (live messages), `messageId` (send replies) |
 | the sender's own id for a message | `cliMsgId` | returned by a send; react and undo need it |
 | a Zalo user | `userId` | a message's author is `senderId` (a userId); `@[userId]` mentions. Dropped in 3.0: `uid` (group members) |
 | a message's author, as an input | `senderId` | `zalo_search_messages` and `zalo_delete_message`; never `uidFrom` |

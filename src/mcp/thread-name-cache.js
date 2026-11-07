@@ -1,4 +1,5 @@
 import { readUserAliases, resolveCurrentUserNames } from "../core/current-user-names.js";
+import { rememberFriends } from "../core/typing.js";
 
 /**
  * In-memory cache mapping threadId → {name, type, memberCount}.
@@ -72,6 +73,8 @@ export class ThreadNameCache {
         try {
             const friends = await api.getAllFriends();
             const list = Array.isArray(friends) ? friends : [];
+            // The friend list zalo_conversation `typing` checks a DM against (src/core/typing.js).
+            if (Array.isArray(friends)) rememberFriends(list);
             for (const f of list) {
                 if (f.userId) {
                     friendProfiles.set(String(f.userId), f);

@@ -10,10 +10,13 @@ import { z } from "zod";
 import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
 import { applyGroupSettingChanges } from "../zalo/custom/group-settings.js";
 import { SETTING_FLAGS } from "../core/group-settings.js";
+import { lastOnlineStatus } from "../core/last-online.js";
 
 /** What Zalo answers for an endpoint it has retired, and what to use instead (as `friend online` / `close` say). */
 const RETIRED_404 = {
-    online: "Zalo answers 404 for the online-friends list on this build; 'last_online' works for one user.",
+    online:
+        "Zalo answers 404 for the online-friends list, and Zalo Web discards this answer too; 'last_online' " +
+        "works for one user, and the listener caches Zalo's presence pushes ('last_online' with `cached`).",
     close: "Zalo has retired close friends: the web client has no caller for it, and the request answers 404.",
 };
 
@@ -56,7 +59,12 @@ export const FRIEND_EXTRA_ACTIONS = {
     last_online: {
         needs: ["userId"],
         async run(a, { api }) {
-            return { userId: a.userId, data: (await api.lastOnline(a.userId)) ?? null };
+            // The same reply as `friend last-online` (src/core/last-online.js).
+            return lastOnlineStatus(api, a.userId, {
+                askAnyway: a.askAnyway === true,
+                cached: a.cached === true,
+                ...(a.isOA === true ? { isOA: true } : {}),
+            });
         },
     },
     close: {
@@ -134,6 +142,21 @@ export const FRIEND_EXTRA_INPUTS = {
         .boolean()
         .optional()
         .describe("Only for 'block_feed': true shows the user's posts in the feed again instead of hiding them"),
+    askAnyway: z
+        .boolean()
+        .optional()
+        .describe(
+            "Only for 'last_online': ask Zalo even when this account's own online status is hidden (by default " +
+                'nothing is asked then and the reply says hiddenBy "you", as Zalo Web does)',
+        ),
+    cached: z
+        .boolean()
+        .optional()
+        .describe("Only for 'last_online': answer from the listener's cache of Zalo's presence pushes; send nothing"),
+    isOA: z
+        .boolean()
+        .optional()
+        .describe("Only for 'last_online': the user is an Official Account (skips the profile lookup that tells)"),
 };
 
 // --- zalo_group ---

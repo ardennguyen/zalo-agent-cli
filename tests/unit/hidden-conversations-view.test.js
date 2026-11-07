@@ -11,6 +11,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { hiddenConversationsView } from "../../src/core/conversation-actions.js";
 import { CONVERSATION_ACTIONS } from "../../src/mcp/actions-conversation.js";
+import { HiddenChats } from "../../src/core/hidden-chats.js";
+import { SecurePage } from "../../src/core/secure-page.js";
 
 const MD5_OF_A_PIN = "81dc9bdb52d04dc20036dbd8313ed055";
 const RAW = { pin: MD5_OF_A_PIN, threads: [{ thread_id: "1000000000000000001", is_group: 0 }], extra: "x" };
@@ -30,10 +32,27 @@ describe("hiddenConversationsView", () => {
 });
 
 describe("zalo_conversation hidden", () => {
-    it("never returns the PIN hash to the agent", async () => {
+    it("never returns the PIN hash to the agent: without the PIN, the count and a one-time page only", async () => {
         const hidden = CONVERSATION_ACTIONS.hidden;
         assert.ok(hidden, "the hidden action is where this test expects it");
-        const out = await hidden.run({}, { api: { getHiddenConversations: async () => RAW } });
-        assert.deepEqual(out, { threads: RAW.threads, hasPin: true });
+        const set = new HiddenChats();
+        const page = new SecurePage({ accountId: "1" }).configure({ localBaseUrl: "http://127.0.0.1:9" });
+        const ctx = {
+            api: { getHiddenConversations: async () => RAW },
+            hidden: () => set,
+            securePage: () => page,
+            ownId: () => "1",
+            config: {},
+            stateless: true,
+        };
+        const out = await hidden.run({}, ctx, {});
+        assert.equal(out.needsReply.pinRequired, true);
+        assert.equal(out.needsReply.count, 1);
+        assert.doesNotMatch(JSON.stringify(out), new RegExp(MD5_OF_A_PIN));
+        assert.doesNotMatch(JSON.stringify(out), /1000000000000000001/, "no thread before the PIN");
+
+        const unlocked = await hidden.run({ pin: "1234" }, { ...ctx, config: { allowPinArgument: true } }, {});
+        assert.equal(unlocked.count, 1);
+        assert.doesNotMatch(JSON.stringify(unlocked), new RegExp(MD5_OF_A_PIN));
     });
 });

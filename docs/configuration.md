@@ -68,7 +68,10 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_WEBHOOK_SECRET` | yes | sign the webhook (`Authorization: Bearer` + `X-Zalo-Signature: sha256=…`) | `--webhook-secret` (visible in `ps`) | `webhookSecret` |
 | `ZALO_WEBHOOK_BATCH_SIZE` | yes | events per webhook POST, 1–100. The default, 1, sends each event alone | | `webhookBatchSize` |
 | `ZALO_WEBHOOK_MAX_AGE` | yes | how long an undelivered event is retried before it is dead-lettered (`6h`, `24h`; at least `1m`). Default `24h` | | `webhookMaxAge` |
-| `ZALO_MCP_CONFIRM_MODE` | yes | who confirms a destructive tool action (recall, delete, leave a group, …): `agent` (default; the caller sends `confirm: true`), `human` (the server asks the user through MCP elicitation; needs a client that supports it) or `off` (no question; `zalo_write` still needs `confirm`) | | `confirmMode` |
+| `ZALO_MCP_CONFIRM_MODE` | yes | who confirms a destructive tool action (recall, delete, leave a group, …): `agent` (default; the caller sends `confirm: true`), `human` (the server asks the user: by MCP form elicitation under stdio, otherwise on a one-time approve page whose link is in the reply, which works over HTTP too) or `off` (no question; `zalo_write` still needs `confirm`) | | `confirmMode` |
+| `ZALO_MCP_HIDDEN_CHATS` | yes | what the MCP server shows of the account's hidden chats: `exclude` (default: left out of every list, search, history and event), `contentless` (left out of lists; an event in one arrives as `{event, hidden: true}` with no thread id or content) or `include` (shown like any other: hands them to the agent) | | `hiddenChats` |
+| `ZALO_MCP_ALLOW_PIN_ARGUMENT` | yes | `true` lets the hidden-chat tools take the PIN as a `pin` input. Default `false`: an input is written to the MCP client's logs and the model's context. Only for a non-AI client | | `allowPinArgument` |
+| `ZALO_MCP_PIN_PAGE_URL` | yes | the public base URL of the one-time secure input page (`https://zalo.example.com`), when the server sits behind a reverse proxy or TLS terminator; without it the link is the server's own address | | `pinPage.publicBaseUrl` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | deprecated: `0` means confirm mode `off`, `1` means `agent`; an explicit confirm mode wins | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | non-friend DM names one sync restore may look up. Default 500 | | |
 | `ZALO_START_JITTER` | yes | wait a random time up to this many seconds (0–600, default 0) before logging in, so a fleet restarting together does not log in together | | |
@@ -104,6 +107,9 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `oauth.clientId`, `.clientSecret`, `.issuerUrl`, `.clients[]` | | OAuth 2.0 consumers; `clients[]` is a list of `{clientId, clientSecret}` |
 | `confirmMode` | unset (= `agent`) | `agent`, `human` or `off`: who confirms a destructive tool action. Set `agent` for an AI agent; `human` makes the server ask the user itself |
 | `groupConfirm` | | deprecated: `false` means `confirmMode: "off"` when no confirm mode is set |
+| `hiddenChats` | unset (= `exclude`) | `exclude`, `contentless` or `include`: what agents see of hidden chats (see the variable above) |
+| `allowPinArgument` | unset (= `false`) | `true` lets the hidden-chat tools take the PIN as an input; it then sits in the client's logs |
+| `pinPage.publicBaseUrl` | `null` | the address a browser reaches this server's secure input page at (`/zalo/secure/<token>`) through a proxy |
 | `accounts.<ownId>` | | any of the above, for one account |
 
 A key that is not in this table is ignored without a message. (The `mode` key in older files is accepted and never read.)
@@ -174,6 +180,8 @@ A CRM needs three things from an account: to **hear** new messages, to **send**,
 **Send.** A JSON-RPC call to `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Send `Accept: application/json, text/event-stream` (without both the server answers 406); the reply is one SSE `data:` line, and a successful send returns `{"success":true,"messageId":…,"cliMsgId":…,"threadType":…}`. `threadId` is a user id for a direct message or a group id for a group. Each `/mcp` request builds a fresh server with all 36 tools, which costs a few milliseconds of CPU: fine for a CRM, and the reason one account tops out at roughly 60–170 requests/s (see [`docs/deployment.md`](deployment.md) §1.4).
 
 **Catch up.** After downtime, ask for what was missed: `zalo_get_history` per thread, or `zalo-agent sync --from <date>` (which can ask the owner's phone to confirm).
+
+**Hidden chats and the secure input page.** The account's hidden chats are left out of everything a CRM reads (`hiddenChats: "exclude"`); `contentless` sends a webhook event `{event: "message", hidden: true, accountId}` with no thread id or content, the unread dot Zalo Web shows. Anything a person must type or approve (the hidden-chat PIN, a `confirmMode: "human"` approval) is a one-time page on the server's own port, `/zalo/secure/<token>`: the tool reply carries `secureUrl`, `ticketExpiresAt` (5 minutes) and `retryWith.ticket`; the CRM shows the link to the account owner and repeats the call with `ticket` once they are done. Route `/zalo/secure/` through the same proxy as `/mcp` and set `pinPage.publicBaseUrl` to its public address. The page needs no bearer token (its token is the key), sends `Cache-Control: no-store`, loads nothing from elsewhere, and its token is masked in the request log. See [`docs/deployment.md`](deployment.md) §5.6.
 
 ### 3.6 Many accounts
 

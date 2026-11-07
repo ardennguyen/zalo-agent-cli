@@ -8,12 +8,13 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { CONFIG_DIR, getAccountDbPath, getAccountDir, resolveMediaRoot } from "../../src/core/credentials.js";
 import {
     closeDb,
+    dbUsedBytes,
     ensureSearchIndex,
     getMessageById,
     getReactions,
@@ -29,6 +30,7 @@ import { runReadOnlyQuery } from "../../src/core/db-tools.js";
 import {
     describeStorage,
     measureUsage,
+    memberUsage,
     quotaSystemEvent,
     readQuotaState,
     resolveQuota,
@@ -313,11 +315,12 @@ describe("storage quota: over the limit", () => {
     it("a tenant's limit: this account gives up its share of the excess", () => {
         const other = freshId();
         mkdirSync(getAccountDir(other), { recursive: true });
-        // The other account's daemon published its usage.
+        // The other account's daemon runs (it holds daemon.lock: this process, here) and published its usage.
         writeFileSync(
             join(getAccountDir(other), "quota-state.json"),
             JSON.stringify({ usage: { total: 1_000_000 }, account: {}, tenants: {} }),
         );
+        writeFileSync(join(getAccountDir(other), "daemon.lock"), String(process.pid));
         const a = account({ rows: 10, files: 10, fileBytes: 50_000 });
         const own = runStoragePass({ ownId: a.id, now: NOW, dryRun: true, policy: noPolicy() }).usageBefore.total;
         applyPolicy({
@@ -457,5 +460,112 @@ describe("storage quota: MCP clients see it (not every client is an agent)", () 
         assert.equal(r.usage.total, r.usage.db + r.usage.media + r.usage.outbox);
         assert.equal(r.retention.messages, "keep");
         assert.ok("accountLimit" in r.quota);
+    });
+});
+
+describe("storage quota: a tenant member whose daemon is down", () => {
+    /** Every file under a folder with its size and mtime: what "nothing written" means. */
+    const snapshot = (dir) => {
+        const out = {};
+        const walk = (d) => {
+            for (const e of readdirSync(d, { withFileTypes: true })) {
+                const p = join(d, e.name);
+                if (e.isDirectory()) walk(p);
+                else out[p] = `${statSync(p).size}:${statSync(p).mtimeMs}`;
+            }
+        };
+        walk(dir);
+        return out;
+    };
+    const stale = (dir) =>
+        writeFileSync(
+            join(dir, "quota-state.json"),
+            JSON.stringify({ usage: { total: 7, db: 7, media: 0, outbox: 0 }, account: {}, tenants: {} }),
+        );
+
+    it("its database is opened read-only with its own keys and counted as a daemon counts it; nothing is written", () => {
+        const b = account({ rows: 30, files: 3, fileBytes: 30_000 });
+        closeDb();
+        stale(b.dir);
+        // A lock left by a process that is gone is not a running daemon.
+        writeFileSync(join(b.dir, "daemon.lock"), "999999999");
+        const before = snapshot(b.dir);
+        const lines = [];
+        const u = memberUsage(b.id, { log: (l) => lines.push(l), context: "tenant t-down" });
+        assert.equal(u.method, "db");
+        assert.notEqual(u.total, 7, "the stale state is not trusted");
+        assert.deepEqual(snapshot(b.dir), before, "nothing in its folder was written, created or removed");
+        // The same figure a daemon gets from its open database.
+        initDb(b.file);
+        const live = measureUsage(b.id, { dbBytes: dbUsedBytes() });
+        closeDb();
+        assert.equal(u.db, live.db);
+        assert.equal(u.media, live.media);
+        assert.ok(u.media >= 3 * 30_000);
+        assert.match(
+            lines.join(" | "),
+            /tenant t-down: account [0-9]+: its daemon is not running; measured its database read-only/,
+        );
+    });
+
+    it("leaves every file of the other account as it was (names, sizes, times)", () => {
+        const b = account({ rows: 10, files: 1 });
+        closeDb();
+        stale(b.dir);
+        const before = snapshot(b.dir);
+        assert.equal(memberUsage(b.id).method, "db");
+        assert.deepEqual(snapshot(b.dir), before);
+    });
+
+    it("when its database does not open, the file sizes, and the log says why", () => {
+        const id = freshId();
+        const dir = getAccountDir(id);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "zalo.db"), randomBytes(8192));
+        stale(dir);
+        const before = snapshot(dir);
+        const lines = [];
+        const u = memberUsage(id, { log: (l) => lines.push(l) });
+        assert.equal(u.method, "files");
+        assert.ok(u.error);
+        assert.equal(u.db, 8192);
+        assert.match(lines.join(" | "), /did not open [(].+[)]; counted file sizes/);
+        assert.deepEqual(snapshot(dir), before);
+    });
+
+    it("a running daemon's published figure is used as it is", () => {
+        const id = freshId();
+        const dir = getAccountDir(id);
+        mkdirSync(dir, { recursive: true });
+        stale(dir);
+        writeFileSync(join(dir, "daemon.lock"), String(process.pid));
+        const u = memberUsage(id);
+        assert.equal(u.method, "daemon");
+        assert.equal(u.total, 7);
+    });
+
+    it("the tenant's sum in a pass uses the fresh count, not the stale state", () => {
+        const b = account({ rows: 20, files: 4, fileBytes: 40_000 });
+        closeDb();
+        stale(b.dir);
+        const bUsage = memberUsage(b.id).total;
+        const a = account({ rows: 5 });
+        const own = runStoragePass({ ownId: a.id, now: NOW, dryRun: true, policy: noPolicy() }).usageBefore.total;
+        // A limit between the stale sum and the real one: only the real one is over it.
+        applyPolicy({
+            target: { kind: "tenant", id: "t-fresh" },
+            op: "put",
+            policy: { quota: { tenant: { limit: own + Math.floor(bUsage / 2), accounts: [a.id, b.id] } } },
+            actor: "test",
+        });
+        const events = [];
+        const lines = [];
+        runStoragePass({ ownId: a.id, now: NOW, emit: (e) => events.push(e), log: (l) => lines.push(l) });
+        closeDb();
+        assert.ok(
+            events.some((e) => e.tenantId === "t-fresh" && e.level === "over" && e.usedBytes === own + bUsage),
+            JSON.stringify(events),
+        );
+        assert.ok(lines.some((l) => l.includes("measured its database read-only")));
     });
 });

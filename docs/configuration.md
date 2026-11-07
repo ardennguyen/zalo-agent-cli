@@ -96,7 +96,7 @@ the media files, the webhook outbox) every `retention.purgeEvery` and applies th
 | Key | Default | Meaning |
 |---|---|---|
 | `quota.account.limit` | `null` (no limit) | bytes, or `"2GB"` (1 GB = 1024³ bytes), or `"unlimited"` (beats a lower layer's limit) |
-| `quota.tenant.limit`, `quota.tenant.accounts` | none | in a tenant's policy only: one limit shared by the listed accounts. On one host the engine sums only the accounts it runs; for a tenant spread over several hosts the console is the source of truth (it reads `/zalo/admin/usage` and the events, and pushes per-account caps) |
+| `quota.tenant.limit`, `quota.tenant.accounts` | none | in a tenant's policy only: one limit shared by the listed accounts. On one host the engine sums only the accounts it runs. A member whose daemon is down is measured at each check as a daemon measures it (its database's pages in use, read with its own keys from a temporary copy, and its media folder), not taken from the figure its daemon last left; when its database does not open, its file sizes are used, and the daemon log says which. Nothing in that account's folder is written. For a tenant spread over several hosts the console is the source of truth (it reads `/zalo/admin/usage` and the events, and pushes per-account caps) |
 | `quota.graceDays` | `45` | days kept after going over before the purge |
 | `quota.warnAt` | `0.8` | the fraction of the limit that sends `warn` |
 | `quota.purgeOrder` | `media-first` | the oldest media files first, then the oldest messages |

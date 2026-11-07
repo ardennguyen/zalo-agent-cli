@@ -96,7 +96,7 @@ trước: mặc định, `storage.json` (cấp trên cùng, rồi `accounts.<own
 | Khóa | Mặc định | Ý nghĩa |
 |---|---|---|
 | `quota.account.limit` | `null` (không giới hạn) | số byte, hoặc `"2GB"` (1 GB = 1024³ byte), hoặc `"unlimited"` (thắng giới hạn của lớp thấp hơn) |
-| `quota.tenant.limit`, `quota.tenant.accounts` | không có | chỉ trong chính sách của tenant: một giới hạn chung cho các tài khoản được liệt kê. Trên một host, engine chỉ cộng các tài khoản nó chạy; với tenant trải trên nhiều host thì console là nguồn sự thật (nó đọc `/zalo/admin/usage` và các sự kiện, rồi đẩy giới hạn cho từng tài khoản) |
+| `quota.tenant.limit`, `quota.tenant.accounts` | không có | chỉ trong chính sách của tenant: một giới hạn chung cho các tài khoản được liệt kê. Trên một host, engine chỉ cộng các tài khoản nó chạy. Một tài khoản thành viên có daemon đang tắt được đo lại ở mỗi lần kiểm tra theo đúng cách daemon đo (số trang đang dùng của cơ sở dữ liệu, đọc bằng chính khóa của nó từ một bản sao tạm, cộng thư mục media), chứ không lấy con số daemon của nó để lại lần cuối; nếu cơ sở dữ liệu không mở được thì dùng kích thước file, và log của daemon ghi rõ đã dùng cách nào. Không ghi gì vào thư mục của tài khoản đó. Với tenant trải trên nhiều host thì console là nguồn sự thật (nó đọc `/zalo/admin/usage` và các sự kiện, rồi đẩy giới hạn cho từng tài khoản) |
 | `quota.graceDays` | `45` | số ngày giữ lại sau khi vượt trước khi xóa |
 | `quota.warnAt` | `0.8` | tỉ lệ của giới hạn thì gửi `warn` |
 | `quota.purgeOrder` | `media-first` | file media cũ nhất trước, rồi tin nhắn cũ nhất |

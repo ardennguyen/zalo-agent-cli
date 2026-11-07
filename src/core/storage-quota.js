@@ -27,7 +27,8 @@
  * Settings, lowest first: built-in defaults, `storage.json` (`quota`, `retention`, and `accounts.<ownId>` over them),
  * `ZALO_RETENTION_MESSAGES[_<ownId>]` / `ZALO_RETENTION_MEDIA[_<ownId>]`, then the runtime policy (./policy-store.js).
  */
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAccountDir, resolveMediaRoot } from "./credentials.js";
 import { readStorageFile } from "./keystore/config.js";
@@ -36,6 +37,8 @@ import { parseBytes, parseDays } from "./policy-schema.js";
 import { durationMs } from "./deploy-policy.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import * as cacheDb from "./db.js";
+import { checkLock } from "./lock.js";
+import { openDatabase } from "./sqlite.js";
 
 const DAY_MS = 86_400_000;
 /** The built-in defaults. */
@@ -97,6 +100,69 @@ export function measureUsage(ownId, { mediaRoot = null, dbBytes = null } = {}) {
     const media = folderSize(resolveMediaRoot(dir, mediaRoot));
     const outbox = sqliteSize(join(dir, "webhook-outbox.db"));
     return { accountId: String(ownId), db, media, outbox, total: db + media + outbox, measuredAt: Date.now() };
+}
+
+/**
+ * The bytes in use of an account's database, read from a copy: a reader opening the database itself in WAL mode
+ * creates its `-wal` / `-shm` files, which would be a write into the other account's folder. The copy (the file and
+ * its WAL, still encrypted) goes into a private temporary folder, is opened read-only with the account's own keys
+ * (same host, same provider), and is removed.
+ *
+ * @param {string} dir - the account's folder
+ * @param {string} scratch - where the temporary folder goes
+ * @returns {number}
+ */
+function usedBytesFromCopy(dir, scratch) {
+    const tmp = mkdtempSync(join(scratch, ".usage-"));
+    try {
+        const copy = join(tmp, "zalo.db");
+        copyFileSync(join(dir, "zalo.db"), copy);
+        if (existsSync(join(dir, "zalo.db-wal"))) copyFileSync(join(dir, "zalo.db-wal"), `${copy}-wal`);
+        const db = openDatabase(copy, { readonly: true, accountDir: dir });
+        try {
+            const pages = Number(db.pragma("page_count", { simple: true })) || 0;
+            const free = Number(db.pragma("freelist_count", { simple: true })) || 0;
+            return Math.max(0, pages - free) * (Number(db.pragma("page_size", { simple: true })) || 0);
+        } finally {
+            db.close();
+        }
+    } finally {
+        rmSync(tmp, { recursive: true, force: true });
+    }
+}
+
+/**
+ * The usage of another account of a tenant, on this host, for the tenant's sum.
+ *
+ * - Its daemon runs (it holds daemon.lock) and published a measurement: that (`method: "daemon"`).
+ * - Otherwise its last `quota-state.json` may be days old, so it is measured now the way a daemon measures: the pages
+ *   in use of its `zalo.db`, opened read-only with its own keys (from a copy, {@link usedBytesFromCopy}), plus its
+ *   media and outbox (`method: "db"`). When that fails (no key here, `IN_USE`, a plaintext or damaged file), the file
+ *   sizes (`method: "files"`, with `error`).
+ *
+ * Nothing in the other account's folder is written, created or removed.
+ *
+ * @param {string} id
+ * @param {{log?: (line: string) => void, context?: string, scratch?: string}} [opts] - `context` names the caller in
+ *   the log line; `scratch` is where the temporary copy goes (the caller's own account folder; else the OS temp folder)
+ * @returns {{accountId: string, db: number, media: number, outbox: number, total: number, measuredAt: number,
+ *   method: "daemon"|"db"|"files", error?: string}}
+ */
+export function memberUsage(id, { log = () => {}, context = "", scratch = tmpdir() } = {}) {
+    const dir = getAccountDir(String(id));
+    const state = readQuotaState(dir);
+    if (checkLock(dir).locked && Number.isFinite(state.usage?.total)) return { ...state.usage, method: "daemon" };
+    const who = `${context ? `${context}: ` : ""}account ${id}`;
+    let dbBytes;
+    try {
+        dbBytes = usedBytesFromCopy(dir, scratch);
+    } catch (e) {
+        const error = e?.code || e?.message || String(e);
+        log(`[storage] ${who}: its daemon is not running and its database did not open (${error}); counted file sizes`);
+        return { ...measureUsage(id), method: "files", error };
+    }
+    log(`[storage] ${who}: its daemon is not running; measured its database read-only and its media folder`);
+    return { ...measureUsage(id, { dbBytes }), method: "db" };
 }
 
 // ── Settings ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -444,15 +510,16 @@ export function runStoragePass({
     const scopes = [];
     if (quota.accountLimit)
         scopes.push({ key: "account", scope: "account", limit: quota.accountLimit, used: () => usage.total });
+    // The other members' usage, measured once per pass (memberUsage: the daemon's figure, or a read-only count).
+    const peers = new Map();
+    const peerTotal = (id, tenantId) => {
+        if (!peers.has(id)) peers.set(id, memberUsage(id, { log, context: `tenant ${tenantId}`, scratch: accountDir }));
+        return peers.get(id).total;
+    };
     for (const t of quota.tenants) {
         const members = t.accounts.filter((id) => id === String(ownId) || existsSync(getAccountDir(id)));
         const others = () =>
-            members
-                .filter((id) => id !== String(ownId))
-                .reduce(
-                    (sum, id) => sum + (readQuotaState(getAccountDir(id)).usage?.total ?? measureUsage(id).total),
-                    0,
-                );
+            members.filter((id) => id !== String(ownId)).reduce((sum, id) => sum + peerTotal(id, t.id), 0);
         scopes.push({
             key: `tenant:${t.id}`,
             scope: "tenant",

@@ -168,13 +168,16 @@ export async function send(targets, thread, text, extraArgs = []) {
 /** Delete a message (one-sided). */
 export async function deleteMsg(targets, thread, msgId) {
     assertDisposable(thread.threadId, "msg delete");
-    return runCli(["msg", "delete", "-t", String(thread.type), msgId, thread.threadId], live(targets));
+    return runCli(["msg", "delete", "--yes", "-t", String(thread.type), msgId, thread.threadId], live(targets));
 }
 
 /** Recall a message for both sides. Requires the cliMsgId from send(). */
 export async function undoMsg(targets, thread, msgId, cliMsgId) {
     assertDisposable(thread.threadId, "msg undo");
-    return runCli(["msg", "undo", "-t", String(thread.type), "-c", cliMsgId, msgId, thread.threadId], live(targets));
+    return runCli(
+        ["msg", "undo", "--yes", "-t", String(thread.type), "-c", cliMsgId, msgId, thread.threadId],
+        live(targets),
+    );
 }
 
 /**

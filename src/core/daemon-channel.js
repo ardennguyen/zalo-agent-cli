@@ -88,8 +88,11 @@ const CHANNEL_FILE = "daemon-channel.json";
 const LOCK_FILE = "daemon.lock";
 const LOG_FILE = "daemon.log";
 
-/** Sync stages a daemon will run on its own socket, as `POST /sync/<stage>`. */
-const SYNC_ROUTE = /^\/sync\/(messages|reactions|history)$/;
+/**
+ * Sync stages a daemon will run on its own socket, as `POST /sync/<stage>`. `cloud` is REST, not socket: it runs here so
+ * that it never walks the cloud queue beside the daemon's own cmd 621 walk (both hold the stage lock).
+ */
+const SYNC_ROUTE = /^\/sync\/(messages|reactions|history|cloud)$/;
 
 /**
  * Keepalive cadence on a running stage.
@@ -681,7 +684,7 @@ export function cancelViaDaemon(accountDir, { timeoutMs = 10_000 } = {}) {
  *
  * @param {string} accountDir
  * @param {object} req
- * @param {"messages"|"reactions"} req.stage
+ * @param {"messages"|"reactions"|"history"|"cloud"} req.stage
  * @param {object} [req.params] - stage options, passed through to the runner
  * @param {(event: object) => void} [req.onEvent] - one call per progress callback
  * @param {number} [req.idleTimeoutMs=90000] - give up after this long with no

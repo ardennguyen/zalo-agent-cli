@@ -472,8 +472,13 @@ describe("Commander hands the action only the flags that were typed", () => {
             assert.ok(longs.includes(`--${flag}`), `--${flag} is not registered`);
             assert.ok(longs.includes(`--no-${flag}`), `--no-${flag} is not registered`);
         }
+        // --yes and --dry-run are the confirmation guard's (turning join
+        // approval off asks first), not settings.
+        const GUARD_FLAGS = ["--yes", "--dry-run"];
         const stray = longs.filter(
-            (l) => !Object.keys(EXPECTED_FLAGS).some((f) => l === `--${f}` || l === `--no-${f}`),
+            (l) =>
+                !GUARD_FLAGS.includes(l) &&
+                !Object.keys(EXPECTED_FLAGS).some((f) => l === `--${f}` || l === `--no-${f}`),
         );
         assert.deepEqual(stray, [], "flags with no setting behind them");
     });

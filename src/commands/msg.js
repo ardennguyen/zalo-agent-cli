@@ -52,6 +52,7 @@ import { urgencyLevel } from "../zalo/format/urgency.js";
 import { registerMsgSearch } from "./msg-search.js";
 import { markdownToZalo, resolveSendFormat } from "../zalo/format/markdown.js";
 import { splitMessage, sendParts } from "../zalo/format/split-message.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 /**
  * Open the active account's SQLite cache.
@@ -1943,4 +1944,10 @@ export function registerMsgCommands(program) {
                 error(`URL scan failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    // `msg pin` is not guarded: Zalo Web asks only when the pin would replace one, and knowing that takes a read.
+    guardSubcommand(msg, "undo", "msg.undo", { target: (msgId, threadId) => ({ msgId, threadId }) });
+    guardSubcommand(msg, "delete", "msg.delete", {
+        target: (msgId, threadId, opts) => ({ msgId, threadId, everyone: Boolean(opts.everyone) }),
+    });
 }

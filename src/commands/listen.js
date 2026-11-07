@@ -32,6 +32,7 @@ import { createCloudVerifier } from "../core/cloud-verify.js";
 import { attachUnknownActs } from "../core/unknown-acts.js";
 import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
+import { attachControlEvents } from "../core/control-events.js";
 import { initDb, getPendingSyncGaps } from "../core/db.js";
 import {
     storeLiveMessage,
@@ -89,7 +90,7 @@ export function registerListenCommand(program) {
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing) and upload (Zalo finished processing a video or file you uploaded)",
+            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing), upload (Zalo finished processing a video or file you uploaded), catalog (a product catalog changed on another device), reminder (a DM reminder was removed) and devices (the account's device list changed)",
             "message,friend,group,reaction,read",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")
@@ -635,6 +636,27 @@ export function registerListenCommand(program) {
                 tap: socketTap,
                 file: voiceTextFile(accountDir),
                 log: (line) => console.error(`[listen] ${line}`),
+            });
+            // A catalog changed, a DM reminder removed, the device list changed, on another device
+            // (src/core/control-events.js): the removed reminder is dropped from the cache whatever --events says;
+            // the events are printed only when asked for (`catalog`, `reminder`, `devices`). Same in `mcp start`.
+            attachControlEvents({
+                tap: socketTap,
+                ownId: activeAcc.ownId,
+                log: (line) => console.error(`[listen] ${line}`),
+                onEvent: (ev) => {
+                    const human = {
+                        catalog_changed: () => `Catalog: ${ev.act} (catalog ${ev.catalogId ?? "?"})`,
+                        reminder_removed: () => `Reminder removed: ${ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
+                        devices_changed: () => "The account's device list changed — see `zalo-agent account devices`",
+                    }[ev.event];
+                    const kind = {
+                        catalog_changed: "catalog",
+                        reminder_removed: "reminder",
+                        devices_changed: "devices",
+                    };
+                    if (human && enabledEvents.has(kind[ev.event])) emitEvent(ev, human());
+                },
             });
             // End-to-end encrypted messages this client cannot read: the first is named in the log, the rest counted.
             const undecryptable = createUndecryptableNotice({ log: (line) => console.error(`[listen] ${line}`) });

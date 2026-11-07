@@ -93,3 +93,25 @@ describe("zalo_label: conversation ids in the Web's form", () => {
         assert.deepEqual(writes[0][0].conversations, [PEER]);
     });
 });
+
+describe("zalo_label update: removing a label is asked about first", () => {
+    it("an update that leaves a label out is refused without confirm, previewed with dryRun, done with confirm", async () => {
+        const { call, writes } = labelServer();
+        const refused = await call({ action: "update", labelData: [], version: 5 });
+        // Red if the guard is skipped: the label list would be written empty.
+        assert.equal(refused.confirmationRequired, true);
+        assert.match(refused.wouldDo, /remove 1 label \(1 \(Work\)\)/);
+        const preview = await call({ action: "update", labelData: [], version: 5, dryRun: true });
+        assert.equal(preview.dryRun, true);
+        assert.deepEqual(writes, [], "nothing is written unconfirmed or in a dry run");
+        assert.equal((await call({ action: "update", labelData: [], version: 5, confirm: true })).success, true);
+        assert.deepEqual(writes, [[]]);
+    });
+
+    it("an update that keeps every label goes ahead without confirm", async () => {
+        const { call, writes } = labelServer();
+        const r = await call({ action: "update", labelData: [{ id: 1, text: "Renamed" }], version: 5 });
+        assert.equal(r.success, true, JSON.stringify(r));
+        assert.equal(writes.length, 1);
+    });
+});

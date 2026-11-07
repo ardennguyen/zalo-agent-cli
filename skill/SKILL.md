@@ -130,7 +130,7 @@ zalo-agent listen --webhook http://n8n.local/webhook/zalo  # Forward to webhook
 zalo-agent listen --events message,friend                  # Narrow output to messages + friend events only
 zalo-agent listen --save ./logs                            # Save JSONL locally
 ```
-Default `--events` is `message,friend,group,reaction,read` (all five event types); `typing` and `upload` are opt-in extras.
+Default `--events` is `message,friend,group,reaction,read` (all five event types); `typing`, `upload`, `catalog`, `reminder` and `devices` are opt-in extras.
 Every received message is also written to the per-account SQLite cache (`zalo.db`) and its media auto-downloaded. Reactions, recalls, delivery receipts, board changes, read state from your other devices and "you left this group" are stored too, on every run — `--events` decides what is printed, not what is kept. Only **one** live socket per account (enforced by `daemon.lock`, shared with `mcp start`), and it cannot coexist with browser Zalo on the same account.
 Production-ready with `-d`/`--daemon` or pm2. Details: `references/listen-mode-guide.md`
 
@@ -187,7 +187,7 @@ zalo-agent group list                           # List
 zalo-agent group create "Name" <uid1> <uid2>    # Create
 zalo-agent group members <gID>                  # Members
 zalo-agent group add-member <gID> <uid>         # Add
-zalo-agent group remove-member <gID> <uid>      # Remove
+zalo-agent group remove-member <gID> <uid> --yes  # Remove (destructive: --yes, or --dry-run to preview)
 zalo-agent group rename <gID> "New Name"        # Rename
 ```
 Full commands: `references/command-reference.md`
@@ -277,7 +277,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_poll` | Create, inspect, vote, unvote, add options, lock, or share a group poll | `action`, `groupId?`, `pollId?`, `question?`, `options?`, `optionIds?` |
 | `zalo_wait_for_message` | Long-poll the live message buffer for the next incoming watched message without manual polling (mirrors `GET /events/wait`) | `threadId?`, `since?`, `timeoutSec` (default 55, max 300) |
 | `zalo_label` | List, assign, unassign, or update conversation/contact labels (e.g. `"Nội bộ"`, `"Khách hàng"`, `"Đối tác"`) | `action` (`list`｜`assign`｜`unassign`｜`update`), `labelId?`, `labelText?`, `threadId?`, `threadIds?`, `threadType?` (`"dm"`｜`"group"`; default: each thread's stored type), `labelData?`, `version?` |
-| `zalo_group` | Leave, inspect, create, rename and change the membership of a group (`zalo_get_group_members` lists who is in one) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`｜`rename`), `groupId?`, `name?` (`create`, `rename`), `userIds?`, `userId?`, `silent?`, `confirm?` (must be `true` for `leave` and `remove_member`) |
+| `zalo_group` | Leave, inspect, create, rename and change the membership of a group (`zalo_get_group_members` lists who is in one) | `action` (`leave`｜`info`｜`create`｜`add_members`｜`remove_member`｜`rename`), `groupId?`, `name?` (`create`, `rename`), `userIds?`, `userId?`, `silent?`, `confirm?`, `dryRun?` (`leave` and `remove_member` are guarded) |
 | `zalo_friend` | Friend requests and friends: relationship status, sent and received requests, send / accept / reject / cancel a request, list friends, set or remove a friend's nickname, list nicknames | `action` (`status`｜`sent_requests`｜`received_requests`｜`send`｜`accept`｜`reject`｜`undo`｜`list`｜`alias`｜`alias_list`), `userId?`, `message?`, `alias?` (empty removes), `limit?` |
 | `zalo_read` | Run one of Zalo Web's read-only endpoints that no other tool covers (sticker and GIF catalogs and search, profile rank, block list, nicknames, status…), or list them with their arguments | `name?` (omit to list), `args?` (by the read's argument names; ids are strings) |
 | `zalo_write` | Make one of Zalo Web's state-changing calls that no other tool covers (reminder RSVP, group notes/reminders with repeat rules, pins, multi-recall, …), or list them with their `risk`. A real call needs `confirm: true`; `dryRun: true` shows the request | `name?` (omit to list), `args?`, `dryRun?`, `confirm?` |
@@ -333,7 +333,8 @@ The server sends these as its `instructions` when a client connects; they are re
 - **Reading:** wait with `zalo_wait_for_message` or poll `zalo_get_messages`, then `zalo_mark_read` with the returned `cursor` (several bots on one server each pass their own `consumer`). A cursor saved across a daemon restart stays valid: cursors start at the clock, and one beyond the newest buffered message rereads the buffer instead of skipping it. A reply carries `replyTo` (the quoted message's `msgId`, `senderId`, `text`, …; `null` when it quotes nothing). A reply from the phone names the quoted message by `cliMsgId` only: `msgId` is then looked up in the cache and is `null` when that message is not cached, and every message carries its own `cliMsgId` to match on. Older messages: `zalo_get_history` (one day or week: pass `since`/`until` or `last`, and follow `nextSince` while `hasMore`), or `zalo_search_messages` across conversations.
 - **Sending text:** real line breaks in `text`, never the two characters backslash and `n` (Zalo shows them as typed; the reply warns when it sees them). Markdown is converted by default (`format: "plain"` sends it as written). A text over 3000 bytes goes out as several messages and the reply lists each part. A sent message cannot be edited: recall it with `zalo_undo` and send it again.
 - **Finding ids:** `zalo_search_threads` (by name), `zalo_list_conversations` (recent), `zalo_lookup_user` (phone or username), `zalo_get_group_members` (who is in a group).
-- **Only when the owner asks:** `zalo_sync` (it makes the owner's phone ask for a confirmation). `zalo_group` `leave` / `remove_member` need `confirm: true`; `zalo_write` needs `confirm: true` and a `dryRun: true` first.
+- **Only when the owner asks:** `zalo_sync` (it makes the owner's phone ask for a confirmation).
+- **Guarded actions:** `zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`/`remove_member`, `zalo_friend` `reject`/`undo`, `zalo_reminder` `remove`, `zalo_poll` `lock`, `zalo_label` `update` when it removes a label, and every `zalo_write` take `confirm` and `dryRun`. `dryRun: true` says what would happen and sends nothing. **The first time you reach one, stop and ask the user how they want guarded actions handled** — always ask them first, let you confirm on your own for some kinds of action, or never do them — and remember the answer in the way you agree with them (your memory, the project's rules, its `CLAUDE.md`/`AGENTS.md`) so you do not ask again. Send `confirm: true` only where they allowed it. A refusal with `confirmationRequired` sent nothing. If the server's confirm mode is `human` (`confirmMode` in `mcp-config.json` / `ZALO_MCP_CONFIRM_MODE`), the server asks the user itself and your `confirm` does not answer for them; a decline means do not retry. Try `zalo_write` with `dryRun: true` first.
 - **A refused call says why** in its error text. Fix the argument it names; do not repeat the same call.
 
 Full reference: `references/mcp-guide.md`
@@ -372,6 +373,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 
 ## Key Constraints
 - **1 WebSocket per account** — `listen`, `mcp start`, and browser Zalo cannot coexist on the same account. A duplicate session closes the connection (code 3000) and is fatal by design. `msg send-file`/`send-image` and the `zalo-agent sync` socket stages therefore run **on a live daemon's socket** when one is up, rather than opening a second session or refusing
+- **Destructive CLI commands need `--yes`** — `msg undo`/`delete`, `group leave`/`remove-member`/`disperse`/…, `friend remove`/`block`/`reject`/`undo-request`, `conv delete`/`forget`, `poll lock`, `reminder remove`, `logout`, `account remove` and the rest Zalo Web asks about. Without it nothing is sent and the exit code is `2`; `--dry-run` previews (exit 0). Ask the user before adding `--yes` on their behalf, as for the MCP guarded actions. The list: `references/command-reference.md` § Global Behavior
 - **1 db writer per account** — `daemon.lock` enforces it; `account remove` and `logout --purge` refuse while a `listen` daemon holds it
 - `cliMsgId` required for: react, undo, and rebuilding a `--quote` payload → get from `--json send` (the real wire id, not a guess) or `--json listen`; `msg delete`/`msg undo` also find it in the local cache on their own
 - Mentions only in groups (`-t 1`)

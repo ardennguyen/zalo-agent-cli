@@ -12,10 +12,7 @@ import { callWrite, describeWrites, WRITES } from "../zalo/writes.js";
 import { ReadUsageError } from "../zalo/reads.js";
 import { error, info, output } from "../utils/output.js";
 import { argsFromDef, collect } from "./read.js";
-
-/** Why a real call was refused, in the words a person needs next. */
-export const NEEDS_YES =
-    "This changes something on the account. Add --dry-run to see the request, or --yes to send it.";
+import { refuseCli } from "../core/confirm-guard.js";
 
 /** The colour a risk wears in `write list`. */
 const RISK_COLOUR = { private: chalk.cyan, visible: chalk.yellow, destructive: chalk.red };
@@ -63,16 +60,21 @@ export function registerWriteCommands(program) {
         .option("--args <json>", "Arguments as a JSON object")
         .option("-a, --arg <key=value>", "One argument; repeatable. Typed by what the write declares", collect, [])
         .option("--dry-run", "Print the request that would be sent and send nothing")
-        .option("-y, --yes", "Send it: this changes something on the account")
+        .option("-y, --yes", "Send it: this changes something on the account (without it or --dry-run: exit 2)")
         .action(async (name, opts) => {
             try {
                 const def = WRITES[name];
                 if (!def) throw new ReadUsageError(`unknown write "${name}"; \`write list\` shows them`);
                 const args = argsFromDef(def, name, opts);
-                if (!opts.dryRun && !opts.yes)
-                    throw new ReadUsageError(
-                        `"${name}" (${def.risk}${def.verified ? "" : ", not yet seen working"}): ${NEEDS_YES}`,
+                // Checked after the arguments, so a typo is reported as one; unconfirmed, it exits 2 like every
+                // guarded command (src/core/confirm-guard.js).
+                if (!opts.dryRun && !opts.yes) {
+                    refuseCli(
+                        "write.run",
+                        { name, risk: def.risk, verified: Boolean(def.verified), args },
+                        { json: program.opts().json },
                     );
+                }
                 const result = await callWrite(getApi(), name, args, { dryRun: !!opts.dryRun });
                 output(result ?? null, program.opts().json);
             } catch (e) {

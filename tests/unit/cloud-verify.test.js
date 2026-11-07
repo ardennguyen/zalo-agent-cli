@@ -15,7 +15,13 @@ import { walkAst } from "../helpers/api-call-sites.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getSyncState, setSyncState } from "../../src/core/db.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
-import { CMD_MYCLOUD, THROTTLE_MS, createCloudVerifier, readCloudNotice } from "../../src/core/cloud-verify.js";
+import {
+    CMD_MYCLOUD,
+    FORCED_MAX_PAGES,
+    THROTTLE_MS,
+    createCloudVerifier,
+    readCloudNotice,
+} from "../../src/core/cloud-verify.js";
 
 it("keeps Zalo Web's own pace: a cloud verify push is acted on once in 30 minutes", () => {
     assert.equal(THROTTLE_MS, 30 * 60 * 1000);
@@ -113,15 +119,19 @@ describe("reading the notice", () => {
             lastNoiseId: "server-newest-0000000000",
             pageSize: 300,
             forced: false,
+            left: [],
         });
     });
 
-    it("also takes it as an object, and flags the forcing fields without acting on them", () => {
+    it("also takes it as an object; forceVerify and forceReset force a walk, the other two flags are named", () => {
         const f = frame({ forceVerify: 1 });
         f.data.data = JSON.parse(f.data.data);
         assert.equal(readCloudNotice(f).forced, true);
-        for (const k of ["forceReset", "correctCloudKey", "auditLocalCloudQueue"]) {
-            assert.equal(readCloudNotice(frame({ [k]: 1 })).forced, true, k);
+        assert.equal(readCloudNotice(frame({ forceReset: 1 })).forced, true);
+        for (const k of ["correctCloudKey", "auditLocalCloudQueue"]) {
+            const notice = readCloudNotice(frame({ [k]: 1 }));
+            assert.equal(notice.forced, false, k);
+            assert.deepEqual(notice.left, [k]);
         }
     });
 
@@ -236,12 +246,54 @@ describe("when a cmd 621 notice makes the daemon walk", () => {
         assert.equal(await first, "walked");
     });
 
-    it("answers a forced verify with its ordinary bounded walk, and says it did not force", async () => {
+    it("answers a forced verify as the Web does: the whole queue from the top, swept, past the pace and the id check", async () => {
+        // The saved place equals the server's newest id, and a walk ran a minute ago: an ordinary notice would leave.
+        setSyncState("cloudCursor", "server-newest-0000000000");
+        const { verifier, calls, lines, advance } = build();
+        assert.equal(await verifier.handle(frame({ lastNoiseId: "other" })), "walked");
+        advance(60_000);
+        setSyncState("cloudCursor", "server-newest-0000000000");
+        assert.equal(await verifier.handle(frame()), "current");
+        assert.equal(await verifier.handle(frame({ lastNoiseId: "newer" })), "throttled");
+        assert.equal(await verifier.handle(frame({ forceVerify: 1 })), "walked");
+        const forced = calls.at(-1);
+        assert.equal(forced.full, true, "a forced walk sweeps what no page listed");
+        assert.equal(forced.lastNoiseId, "", "from the top, not from the saved place");
+        assert.equal(forced.maxPages, FORCED_MAX_PAGES);
+        assert.ok(
+            lines.some((l) => /forced verify \(the server asked\)/.test(l)),
+            lines.join("|"),
+        );
+    });
+
+    it("paces forced walks too, and still needs a person's first walk", async () => {
+        const { verifier, calls, advance } = build();
+        assert.equal(await verifier.handle(frame({ forceReset: 1 })), "no-baseline");
+        setSyncState("cloudCursor", "my-place");
+        assert.equal(await verifier.handle(frame({ forceReset: 1 })), "walked");
+        advance(60_000);
+        assert.equal(await verifier.handle(frame({ forceReset: 1 })), "throttled");
+        advance(THROTTLE_MS);
+        assert.equal(await verifier.handle(frame({ forceReset: 1 })), "walked");
+        assert.equal(calls.length, 2);
+    });
+
+    it("names the key correction and the audit it does not do, and walks as usual", async () => {
         setSyncState("cloudCursor", "my-place");
         const { verifier, calls, lines } = build();
-        assert.equal(await verifier.handle(frame({ forceVerify: 1, forceReset: 1 })), "walked");
+        assert.equal(await verifier.handle(frame({ correctCloudKey: 1, auditLocalCloudQueue: 1 })), "walked");
         assert.ok(!calls[0].full);
-        assert.ok(lines.some((l) => /forced verify; ignored/.test(l)));
+        assert.ok(lines.some((l) => /correct the cloud key; left/.test(l)));
+        assert.ok(lines.some((l) => /audit of the local cloud queue; left/.test(l)));
+    });
+
+    it("says when a forced walk stopped before the end, so nothing was swept", async () => {
+        setSyncState("cloudCursor", "my-place");
+        const { verifier, lines } = build({
+            walk: async () => ({ items: 1, removed: 0, pages: 500, failed: 0, failures: [], complete: false }),
+        });
+        assert.equal(await verifier.handle(frame({ forceVerify: 1 })), "walked");
+        assert.ok(lines.some((l) => /nothing was swept/.test(l)));
     });
 
     it("ignores frames that are not notices", async () => {

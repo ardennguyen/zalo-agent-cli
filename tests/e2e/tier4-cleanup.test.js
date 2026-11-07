@@ -83,7 +83,7 @@ describe("tier 4 · message deletion", { skip }, () => {
         await sleep(800);
         assertDisposable(T.group.threadId, "msg delete");
         const r = await runCli(
-            ["msg", "delete", "-t", "1", "-c", sent.cliMsgId, sent.msgId, T.group.threadId],
+            ["msg", "delete", "--yes", "-t", "1", "-c", sent.cliMsgId, sent.msgId, T.group.threadId],
             live(T),
         );
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
@@ -93,7 +93,7 @@ describe("tier 4 · message deletion", { skip }, () => {
 
     it("refuses a one-sided delete it has no cliMsgId for, instead of crashing", async () => {
         assertDisposable(T.group.threadId, "msg delete");
-        const r = await runCli(["msg", "delete", "-t", "1", "9999999999999", T.group.threadId], live(T));
+        const r = await runCli(["msg", "delete", "--yes", "-t", "1", "9999999999999", T.group.threadId], live(T));
         assert.doesNotMatch(r.all, /Cannot read properties|at Command\.|Unhandled/, r.all.slice(0, 300));
         assert.match(errorLineOf(r.stdout) || "", /cliMsgId is required/);
     });
@@ -103,7 +103,7 @@ describe("tier 4 · message deletion", { skip }, () => {
         await sleep(800);
         assertDisposable(T.group.threadId, "msg delete");
         const r = await runCli(
-            ["msg", "delete", "-t", "1", "--everyone", "-c", sent.cliMsgId, sent.msgId, T.group.threadId],
+            ["msg", "delete", "--yes", "-t", "1", "--everyone", "-c", sent.cliMsgId, sent.msgId, T.group.threadId],
             live(T),
         );
         assert.match(errorLineOf(r.stdout) || "", /undo/i, `expected Zalo's own guidance: ${r.all.slice(0, 300)}`);
@@ -124,7 +124,7 @@ describe("tier 4 · message deletion", { skip }, () => {
             await sleep(800);
             assertDisposable(T.dm.threadId, "msg delete");
             const r = await runCli(
-                ["msg", "delete", "-t", "0", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId],
+                ["msg", "delete", "--yes", "-t", "0", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId],
                 live(T),
             );
             assert.doesNotMatch(r.all, /Cannot read properties|at Command\.|Unhandled/, r.all.slice(0, 300));
@@ -141,7 +141,7 @@ describe("tier 4 · message deletion", { skip }, () => {
             await sleep(800);
             assertDisposable(T.dm.threadId, "msg delete");
             const r = await runCli(
-                ["msg", "delete", "-t", "0", "--everyone", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId],
+                ["msg", "delete", "--yes", "-t", "0", "--everyone", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId],
                 live(T),
             );
             // Zalo checks "is this my own message" before "is this a private
@@ -160,7 +160,10 @@ describe("tier 4 · message deletion", { skip }, () => {
         const sent = await send(T, T.group, mark("to be recalled"));
         await sleep(800);
         assertDisposable(T.group.threadId, "msg undo");
-        const r = await runCli(["msg", "undo", "-t", "1", "-c", sent.cliMsgId, sent.msgId, T.group.threadId], live(T));
+        const r = await runCli(
+            ["msg", "undo", "--yes", "-t", "1", "-c", sent.cliMsgId, sent.msgId, T.group.threadId],
+            live(T),
+        );
         assert.ok(
             hasSuccess(r.stdout) || /recalled/i.test(r.stdout),
             `undo did not report success: ${r.all.slice(0, 300)}`,
@@ -191,7 +194,7 @@ describe("tier 4 · message deletion", { skip }, () => {
         const stillVisible = [];
         for (const m of mine) {
             assertDisposable(m.threadId, `msg undo (${label} cleanup)`);
-            const args = ["msg", "undo", "-t", String(m.type)];
+            const args = ["msg", "undo", "--yes", "-t", String(m.type)];
             if (m.cliMsgId) args.push("-c", String(m.cliMsgId));
             args.push(m.msgId, m.threadId);
 
@@ -225,7 +228,10 @@ describe("tier 4 · message deletion", { skip }, () => {
             const sent = await send(T, T.dm, mark("dm to be recalled"));
             await sleep(800);
             assertDisposable(T.dm.threadId, "msg undo");
-            const r = await runCli(["msg", "undo", "-t", "0", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId], live(T));
+            const r = await runCli(
+                ["msg", "undo", "--yes", "-t", "0", "-c", sent.cliMsgId, sent.msgId, T.dm.threadId],
+                live(T),
+            );
             assert.equal(errorLineOf(r.stdout), null, `DM undo failed: ${errorLineOf(r.stdout)}`);
             assert.ok(hasSuccess(r.stdout), `DM undo did not report success: ${r.all.slice(0, 300)}`);
         },
@@ -237,7 +243,7 @@ describe("tier 4 · message deletion", { skip }, () => {
 describe("tier 4 · account artifact cleanup", { skip }, () => {
     it("removes the quick messages tier 2 added", { skip: skip || !haveArtifacts() }, async () => {
         for (const id of artifacts.quickMsgs) {
-            const r = await runCli(["quick-msg", "remove", id], live(T));
+            const r = await runCli(["quick-msg", "remove", "--yes", id], live(T));
             assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
         }
     });
@@ -254,14 +260,14 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
         for (const i of mine) {
             const id = i.id || i.itemId;
             if (!id) continue;
-            await runCli(["quick-msg", "remove", String(id)], live(T));
+            await runCli(["quick-msg", "remove", "--yes", String(id)], live(T));
             await sleep(250);
         }
     });
 
     it("deletes the auto-reply rules tier 2 created", { skip: skip || !haveArtifacts() }, async () => {
         for (const id of artifacts.autoReplies) {
-            const r = await runCli(["auto-reply", "delete", id], live(T));
+            const r = await runCli(["auto-reply", "delete", "--yes", id], live(T));
             assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
         }
     });
@@ -269,11 +275,14 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
     it("deletes catalog products, then the catalogs themselves", { skip: skip || !haveArtifacts() }, async () => {
         for (const cat of artifacts.catalogs) {
             for (const pid of cat.products || []) {
-                const r = await runCli(["catalog", "delete-product", cat.id, pid], live(T, { timeout: 120_000 }));
+                const r = await runCli(
+                    ["catalog", "delete-product", "--yes", cat.id, pid],
+                    live(T, { timeout: 120_000 }),
+                );
                 assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
                 await sleep(300);
             }
-            const r = await runCli(["catalog", "delete", cat.id], live(T, { timeout: 120_000 }));
+            const r = await runCli(["catalog", "delete", "--yes", cat.id], live(T, { timeout: 120_000 }));
             assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
         }
     });
@@ -293,7 +302,7 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
 
         const strays = (list.data?.items || []).filter((c) => /\[e2e\]/.test(c.name || ""));
         for (const c of strays) {
-            await runCli(["catalog", "delete", String(c.id)], live(T, { timeout: 120_000 }));
+            await runCli(["catalog", "delete", "--yes", String(c.id)], live(T, { timeout: 120_000 }));
             await sleep(300);
         }
 
@@ -325,7 +334,7 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
         for (const i of items.filter((x) => /\[e2e\]/.test(String(x.content ?? x.title ?? x.text ?? "")))) {
             const id = i.id || i.itemId;
             if (!id) continue;
-            await runCli(["auto-reply", "delete", String(id)], live(T));
+            await runCli(["auto-reply", "delete", "--yes", String(id)], live(T));
             await sleep(250);
         }
     });
@@ -334,7 +343,7 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
         for (const rem of artifacts.reminders) {
             assertDisposable(rem.threadId, "reminder remove");
             const r = await runCli(
-                ["reminder", "remove", "-t", String(rem.type), rem.id, rem.threadId],
+                ["reminder", "remove", "--yes", "-t", String(rem.type), rem.id, rem.threadId],
                 live(T, { timeout: 120_000 }),
             );
             assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
@@ -356,7 +365,7 @@ describe("tier 4 · account artifact cleanup", { skip }, () => {
     it("locks the polls tier 2 created — there is no delete for them", { skip: skip || !haveArtifacts() }, async () => {
         const stuck = [];
         for (const pollId of artifacts.polls) {
-            const r = await runCli(["poll", "lock", String(pollId)], live(T, { timeout: 120_000 }));
+            const r = await runCli(["poll", "lock", "--yes", String(pollId)], live(T, { timeout: 120_000 }));
             assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 300));
             const err = errorLineOf(r.stdout);
             // Already-locked is the desired end state, not a failure.

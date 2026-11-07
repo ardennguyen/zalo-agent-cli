@@ -24,6 +24,7 @@ import { maskProxy } from "../utils/proxy-helpers.js";
 import { runQrLogin } from "../core/qr-login-flow.js";
 import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { success, error, info, warning, output } from "../utils/output.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 export function registerAccountCommands(program) {
     const account = program.command("account").description("Manage multiple Zalo accounts with proxy");
@@ -304,4 +305,6 @@ export function registerAccountCommands(program) {
                 error(`Failed to list devices: ${e.message}`);
             }
         });
+    // It ends the session and deletes the account's data: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(account, "remove", "account.remove", { target: (ownerId) => ({ ownerId }) });
 }

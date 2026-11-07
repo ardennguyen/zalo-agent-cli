@@ -104,7 +104,7 @@ export const COMMON_ENV_TEMPLATE = `# /etc/zalo-mcp/common.env        read by ev
 # Per-account settings go in /etc/zalo-mcp/accounts/<id>.env, which is read after this file.
 
 ZALO_MCP_HOST=127.0.0.1
-ZALO_MCP_GROUP_CONFIRM=0
+ZALO_MCP_CONFIRM_MODE=agent
 ZALO_DATA_DIR=/var/lib/zalo-agent/accounts
 ZALO_MEDIA_DIR=/var/lib/zalo-media
 

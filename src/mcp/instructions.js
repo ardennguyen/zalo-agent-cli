@@ -28,6 +28,11 @@ export const SERVER_INSTRUCTIONS = [
     "",
     "RULES",
     "- Call zalo_sync only when the owner asked: it makes the owner's phone ask for a confirmation.",
-    "- zalo_group `leave` and `remove_member` need `confirm: true`. zalo_write needs `confirm: true` and should be tried with `dryRun: true` first.",
     "- A refused call says why in its error text. Fix the argument it names; do not repeat the same call.",
+    "",
+    "GUARDED ACTIONS",
+    "- Actions Zalo Web asks about first are guarded: zalo_undo, zalo_delete_message, zalo_group `leave` and `remove_member`, zalo_friend `reject` and `undo`, zalo_reminder `remove`, zalo_poll `lock`, zalo_label `update` when it removes a label, and every zalo_write. `dryRun: true` says what one would do and sends nothing; `confirm: true` goes ahead.",
+    "- The FIRST time you reach a guarded action, stop and ask the user how they want these handled: always ask them first, let you confirm on your own for some kinds of action, or never do them. Remember the answer in the way you and the user agree on (your memory, the project's rules, its CLAUDE.md or AGENTS.md) so you do not ask again, and follow it: send `confirm: true` only where the user allowed it.",
+    '- A refusal with `confirmationRequired` means nothing was sent; repeat the call with `confirm: true` only when allowed. If the server says its confirm mode is "human", it asks the user itself and your `confirm` does not answer for them; a decline means do not retry.',
+    "- Try zalo_write with `dryRun: true` first.",
 ].join("\n");

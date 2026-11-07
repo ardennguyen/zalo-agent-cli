@@ -43,6 +43,7 @@ import { checkForUpdates, selfUpdate } from "./utils/update-check.js";
 import { applyCachedThreadType } from "./utils/thread-type.js";
 import { attachDaemonLogIfChild } from "./core/daemon-channel.js";
 import { success, error, warning } from "./utils/output.js";
+import { enforceCliGuard } from "./core/confirm-guard.js";
 
 attachDaemonLogIfChild();
 
@@ -110,6 +111,9 @@ program
                 process.exit(1);
             }
         }
+        // A destructive command without --yes stops here (exit 2), and --dry-run reports it (exit 0): both
+        // before the login below, so neither can send anything (src/core/confirm-guard.js).
+        enforceCliGuard(actionCommand, { json: Boolean(globalOpts.json) });
         // Auto-login before any command that needs it (skip for login/account/oa
         // commands, and for a logout that will not call Zalo at all).
         // Daemons authenticate their pinned identity after acquiring its lock.

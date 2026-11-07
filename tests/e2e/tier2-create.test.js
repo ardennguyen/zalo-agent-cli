@@ -927,7 +927,7 @@ async function purgeStaleQuickMsgs() {
         (i) => MINE.test(i.keyword || "") || /\[e2e\]/.test(i.message?.title || ""),
     );
     for (const i of stale) {
-        await runCli(["quick-msg", "remove", String(i.id)], live(T));
+        await runCli(["quick-msg", "remove", "--yes", String(i.id)], live(T));
         await sleep(250);
     }
 }
@@ -943,7 +943,7 @@ async function purgeStaleCatalogs() {
     if (!list.ok) return;
     const stale = (list.data?.items || []).filter((c) => /\[e2e\]/.test(c.name || ""));
     for (const c of stale) {
-        await runCli(["catalog", "delete", String(c.id)], live(T, { timeout: 120_000 }));
+        await runCli(["catalog", "delete", "--yes", String(c.id)], live(T, { timeout: 120_000 }));
         await sleep(250);
     }
 }
@@ -965,7 +965,7 @@ async function purgeStaleAutoReplies() {
     for (const i of items.filter((x) => /\[e2e\]/.test(JSON.stringify(x)))) {
         const id = i.id || i.itemId;
         if (!id) continue;
-        await runCli(["auto-reply", "delete", String(id)], live(T));
+        await runCli(["auto-reply", "delete", "--yes", String(id)], live(T));
         await sleep(250);
     }
 }

@@ -202,6 +202,19 @@ Mọi tool dùng chung một bộ tên cho id và loại hội thoại, ở cả
 
 **Đổi tên ở 3.0** (so với 2.5.x): các tên cũ trong kết quả đã bị bỏ — tin nhắn live không còn `id` (dùng `msgId`), kết quả của `zalo_send_message` không còn `messageId` (dùng `msgId`), thành viên nhóm không còn `uid` (dùng `userId`), và `zalo_list_conversations` không còn trường `type` riêng. `threadType` là chữ `"dm"` / `"group"` ở mọi nơi (trước đây tham số là số `0`/`1`). Hai tham số đã đổi tên từ 2.5.8: `zalo_view_media` nhận `msgId` và `zalo_delete_message` nhận `senderId`.
 
+## Thao tác được bảo vệ
+
+Những thao tác mà chính Zalo Web hỏi lại trước khi làm được bảo vệ: `zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`/`remove_member`, `zalo_friend` `reject`/`undo`, `zalo_reminder` `remove`, `zalo_poll` `lock`, `zalo_label` `update` (chỉ khi danh sách mới bỏ bớt một nhãn) và mọi `zalo_write`. Chúng nhận `dryRun` và `confirm`:
+
+- `dryRun: true` trả về `{dryRun: true, sent: false, action, wouldDo, target, irreversible}` và không gửi gì.
+- `confirm: true` thực hiện, tùy **chế độ xác nhận** của server (`confirmMode` trong `mcp-config.json`, hoặc `ZALO_MCP_CONFIRM_MODE[_<ownId>]`, được ưu tiên):
+  - `agent` (mặc định): cần `confirm: true`. Thiếu nó, kết quả là lỗi: phần text đầu là JSON `{"error":"Not done: confirmation needed: …","confirmationRequired":true,"action":…,"wouldDo":…,"target":{…},"irreversible":…,"retryWith":{"confirm":true}}`, phần sau là một dòng cho người đọc. Không có gì được gửi.
+  - `human`: server tự hỏi người dùng qua MCP elicitation (`elicitation/create`, một form có/không nói rõ việc sẽ làm). Chỉ khi người dùng chấp nhận và chọn có thì mới thực hiện; `confirm: true` của agent không thay được câu trả lời đó. Client không khai báo khả năng elicitation sẽ nhận lỗi giải thích rằng chế độ `human` cần client hỗ trợ elicitation, và cách đổi `confirmMode`.
+  - `off`: không hỏi (`dryRun` vẫn dùng được). `zalo_write` chạy endpoint thô nên vẫn cần `confirm` kể cả ở chế độ `off`.
+- `groupConfirm: false` / `ZALO_MCP_GROUP_CONFIRM=0` (đã lỗi thời) nghĩa là `off` khi chưa đặt chế độ xác nhận.
+
+**Với agent:** lần đầu gặp một thao tác được bảo vệ, hãy dừng lại và hỏi người dùng muốn xử lý các thao tác này thế nào (luôn hỏi trước, cho phép agent tự xác nhận với một số loại thao tác, hay không bao giờ làm), rồi ghi nhớ lựa chọn theo cách đã thống nhất với người dùng (bộ nhớ của agent, quy tắc dự án, `CLAUDE.md`/`AGENTS.md` của dự án) để không phải hỏi lại. Chỉ gửi `confirm: true` khi người dùng đã cho phép.
+
 ## Tham chiếu Tools (27 tools)
 
 ### `zalo_get_messages`
@@ -693,7 +706,7 @@ Kết quả theo từng `action`:
 - `rename`: `{success: true, groupId, name}` — mọi thành viên thấy tên mới; không cần `confirm` vì đổi lại được.
 - `leave`: `{success: true, groupId, silent}`. Khi bạn không còn ở trong nhóm (đã rời hoặc chưa từng vào), Zalo trả mã 167 và tool giải thích bằng lời. Chủ nhóm vẫn rời được nhóm của mình (đã đo trên tài khoản thật).
 
-Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên cần `confirm: true`; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Luồng tự động/headless/backend không bị chặn: gửi `confirm: true` trong lệnh gọi, hoặc tắt hẳn bước kiểm tra bằng `"groupConfirm": false` trong `mcp-config.json` hay biến môi trường `ZALO_MCP_GROUP_CONFIRM=0` (biến môi trường được ưu tiên; `1`/`true` bật lại). Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool đã được chạy thử trên tài khoản thật (nhóm tạm thời): tạo nhóm, xem thông tin, thêm/xóa thành viên, rời nhóm với `silent`. Đã kiểm chứng trên tài khoản thật: với `silent: true`, các thành viên thường không thấy thông báo "đã rời nhóm", nhưng chủ nhóm vẫn thấy. Chủ nhóm rời nhóm thì quyền chủ nhóm được chuyển cho người khác trước, nên người đó thấy thông báo — muốn rời im lặng hoàn toàn với các thành viên, hãy chuyển quyền chủ nhóm (`group transfer-owner`) rồi mới rời.
+Lưu ý: `leave` và `remove_member` không hoàn tác được từ tool nên là thao tác được bảo vệ (xem **Thao tác được bảo vệ** bên dưới): `dryRun: true` để xem trước, `confirm: true` để thực hiện; kiểm tra `groupId`/`userId` trước, `info` cho biết nhóm đó là nhóm nào. Rời im lặng chỉ ẩn thông báo, không ẩn việc bạn đã rời. Tool đã được chạy thử trên tài khoản thật (nhóm tạm thời): tạo nhóm, xem thông tin, thêm/xóa thành viên, rời nhóm với `silent`. Đã kiểm chứng trên tài khoản thật: với `silent: true`, các thành viên thường không thấy thông báo "đã rời nhóm", nhưng chủ nhóm vẫn thấy. Chủ nhóm rời nhóm thì quyền chủ nhóm được chuyển cho người khác trước, nên người đó thấy thông báo — muốn rời im lặng hoàn toàn với các thành viên, hãy chuyển quyền chủ nhóm (`group transfer-owner`) rồi mới rời.
 
 ### `zalo_read`
 Chạy một trong các endpoint **chỉ-đọc** của Zalo Web mà không tool nào khác phủ tới — danh mục sticker và GIF, tìm GIF, hạng và trường phụ của hồ sơ, danh sách chặn, biệt danh, lịch sử tìm kiếm Zalo giữ, trạng thái gửi/đã xem, hạn mức nhóm và vai trò của tài khoản trong nhóm, trạng thái emoji của bạn bè, cài đặt phía máy chủ… — tương đương `read list` và `read run`. Không gửi, đánh dấu, đổi hay xóa gì. `voice-transcript` là read **cục bộ**: không gửi gì cho Zalo, chỉ đọc văn bản mà `listen`/`mcp start` đã ghi lại khi Zalo chuyển một tin nhắn thoại thành chữ (nhờ chuyển bằng write `voice-to-text`).
@@ -805,7 +818,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
   "triggerKeywords": ["@bot"],
   "webhook": null,
   "webhookSecret": null,
-  "groupConfirm": true,
+  "confirmMode": "agent",
   "httpPort": null,
   "host": null,
   "notify": {
@@ -845,7 +858,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `triggerKeywords` | Chỉ áp dụng cho tính năng notify — không lọc buffer của `zalo_get_messages` |
 | `webhook` | URL nhận POST mỗi tin nhắn mới (hoặc `-w, --webhook <url>` / `ZALO_WEBHOOK_URL[_<ownId>]`) |
 | `webhookSecret` | Khóa bí mật ký webhook bằng `Authorization: Bearer` + `X-Zalo-Signature: sha256=<hmac>` (`--webhook-secret` / `ZALO_WEBHOOK_SECRET[_<ownId>]`; thứ tự ưu tiên: cờ, biến môi trường, rồi khóa này) |
-| `groupConfirm` | `true` = `zalo_group` đòi `confirm: true` trước `leave` / `remove_member`; `false` (hoặc `ZALO_MCP_GROUP_CONFIRM=0`, được ưu tiên) cho luồng tự động bỏ qua bước này |
+| `confirmMode` | Ai xác nhận thao tác được bảo vệ: `agent` (mặc định; bên gọi gửi `confirm: true`), `human` (server tự hỏi người dùng qua MCP elicitation; cần client hỗ trợ), `off` (không hỏi; `zalo_write` vẫn cần `confirm`). `ZALO_MCP_CONFIRM_MODE[_<ownId>]` được ưu tiên. `groupConfirm: false` / `ZALO_MCP_GROUP_CONFIRM=0` (đã lỗi thời) nghĩa là `off` khi chưa đặt chế độ |
 | `httpPort` | Port HTTP/HTTPS mặc định cho tài khoản này (`--http <port>` / `ZALO_MCP_HTTP_PORT[_<ownId>]`) |
 | `host` | Địa chỉ bind khi chạy HTTP/HTTPS (`--host` / `ZALO_MCP_HOST[_<ownId>]`) |
 | `notify.enabled` | Bật/tắt gửi thông báo khi agent offline (qua `ZaloNotifier`) |

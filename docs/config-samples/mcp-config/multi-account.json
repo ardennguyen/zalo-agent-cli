@@ -10,7 +10,7 @@
         "downloadDir": null,
         "autoOpen": false
     },
-    "groupConfirm": false,
+    "confirmMode": "agent",
     "accounts": {
         "1000000000000000001": {
             "httpPort": 3901,

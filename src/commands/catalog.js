@@ -7,6 +7,7 @@ import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff } from "../utils/cli-args.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 export function registerCatalogCommands(program) {
     const catalog = program.command("catalog").description("Manage Zalo Shop catalogs and products");
@@ -155,4 +156,9 @@ export function registerCatalogCommands(program) {
                 error(e.message);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(catalog, "delete", "catalog.delete", { target: (catalogId) => ({ catalogId }) });
+    guardSubcommand(catalog, "delete-product", "catalog.deleteProduct", {
+        target: (catalogId, productIds) => ({ catalogId, productIds }),
+    });
 }

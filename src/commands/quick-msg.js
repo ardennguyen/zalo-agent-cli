@@ -4,6 +4,7 @@
 
 import { getApi } from "../core/zalo-client.js";
 import { success, error, output } from "../utils/output.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 export function registerQuickMsgCommands(program) {
     const qm = program.command("quick-msg").description("Manage quick/saved messages");
@@ -52,4 +53,6 @@ export function registerQuickMsgCommands(program) {
                 error(`Remove quick message failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(qm, "remove", "quickMsg.remove", { target: (itemIds) => ({ itemIds }) });
 }

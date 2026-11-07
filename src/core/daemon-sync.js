@@ -30,6 +30,8 @@
 import { SyncV2, resolveMaxResumes } from "./sync-v2/index.js";
 import { drainReactions, placeUnresolvedReactions } from "./sync-v2/reactions.js";
 import { fetchAndCacheHistory } from "./history-fetch.js";
+import { syncCloudIndex } from "./sync-v2/zcloud.js";
+import { getSyncState, setSyncState } from "./db.js";
 import { createStageLogger } from "./daemon-log.js";
 
 /**
@@ -161,6 +163,7 @@ function traceRunners(runners, { log, monitor }) {
  *   phase, a periodic "still running" line and its result or failure (daemon.log); silent without it
  * @param {{takeMax: () => number}} [args.monitor] - event-loop monitor; its worst stall is added to the
  *   "still running" lines
+ * @param {typeof syncCloudIndex} [args.cloudWalk] - the cloud walker (tests)
  * @returns {Record<string, (params: object, onEvent: (e: object) => void) => Promise<object>>}
  */
 export function createSyncRunners({
@@ -170,6 +173,7 @@ export function createSyncRunners({
     onSelfName,
     log = () => {},
     monitor = null,
+    cloudWalk = syncCloudIndex,
 }) {
     /** The live api, or a refusal the CLI can print. */
     const liveApi = (what) => {
@@ -324,6 +328,34 @@ export function createSyncRunners({
                 unresolvedLeft: (stats.unresolved?.length || 0) - placed,
                 socketAlive: socketAlive(api),
             };
+        },
+
+        /**
+         * One walk of the zCloud queue (`sync`'s cloud stage, `sync-cloud`), in this daemon (D31, ZP-09).
+         *
+         * The walk is REST, not socket, but it writes `cloud_items` and the `cloudCursor`, and this daemon walks the
+         * same queue on its own when the server sends cmd 621 (src/core/cloud-verify.js). Two walkers at once could
+         * write the cursor out of order, and a `--full` sweep could delete what the other had just recorded. Running
+         * it here, under the channel's stage lock that the cmd 621 walk also takes, makes them one at a time, with
+         * this process as the account's one writer.
+         *
+         * @param {{resume?: string, full?: boolean, pageSize?: number, maxPages?: number}} params - `resume` wins
+         *   over the saved place; `full` walks from the top and sweeps
+         * @param {(p: object) => void} onEvent - one `cloud-page` event per page
+         * @returns {Promise<object>} syncCloudIndex() stats
+         */
+        async cloud(params = {}, onEvent = () => {}) {
+            const api = getApi();
+            if (!api) throw new Error("this daemon has no session to walk the cloud queue with");
+            return cloudWalk({
+                api,
+                lastNoiseId: params.resume || getSyncState("cloudCursor") || "",
+                full: params.full === true,
+                pageSize: Number(params.pageSize) || undefined,
+                maxPages: Number(params.maxPages) || undefined,
+                onProgress: onEvent,
+                onPage: (p) => setSyncState("cloudCursor", p.cursor),
+            });
         },
     };
 

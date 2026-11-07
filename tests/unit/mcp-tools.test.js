@@ -1264,7 +1264,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         });
 
         const out = payloadOf(
-            await server.call("zalo_delete_message", { msgId: "m_del", threadId: "g1", everyone: true }),
+            await server.call("zalo_delete_message", { msgId: "m_del", threadId: "g1", everyone: true, confirm: true }),
         );
         assert.equal(out.success, true);
         assert.equal(out.cliMsgId, "cli_del");
@@ -1369,7 +1369,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(edited.success, true);
 
         const removed = payloadOf(
-            await server.call("zalo_reminder", { action: "remove", reminderId: "r1", threadId: "g1" }),
+            await server.call("zalo_reminder", { action: "remove", reminderId: "r1", threadId: "g1", confirm: true }),
         );
         assert.equal(removed.success, true);
     });
@@ -1562,7 +1562,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
             { pollId: 42, options: [{ content: "Cơm tấm", voted: true }], votedOptionIds: [] },
         ]);
 
-        const locked = payloadOf(await server.call("zalo_poll", { action: "lock", pollId: 42 }));
+        const locked = payloadOf(await server.call("zalo_poll", { action: "lock", pollId: 42, confirm: true }));
         assert.equal(locked.success, true);
 
         const shared = payloadOf(await server.call("zalo_poll", { action: "share", pollId: 42 }));
@@ -1820,7 +1820,7 @@ describe("zalo_friend", () => {
     it("undo explains Zalo's 301 (too many requests taken back) and passes another failure through", async () => {
         const limit = await call(
             friendApi({ undoFriendRequest: Object.assign(new Error("Zalo error"), { code: 301 }) }),
-            { action: "undo", userId: U },
+            { action: "undo", userId: U, confirm: true },
         );
         assert.equal(limit.isError, true);
         // Red without the 301 wording: Zalo's own text says nothing about waiting.
@@ -1828,7 +1828,7 @@ describe("zalo_friend", () => {
         assert.match(limit.content[0].text, new RegExp(U));
         const other = await call(
             friendApi({ undoFriendRequest: Object.assign(new Error("not found"), { code: 999 }) }),
-            { action: "undo", userId: U },
+            { action: "undo", userId: U, confirm: true },
         );
         assert.match(other.content[0].text, /not found/);
     });
@@ -1836,7 +1836,7 @@ describe("zalo_friend", () => {
     it("accept, reject and undo each call their own Zalo method with the user id", async () => {
         const fa = friendApi();
         for (const action of ["accept", "reject", "undo"]) {
-            const out = payloadOf(await call(fa, { action, userId: U }));
+            const out = payloadOf(await call(fa, { action, userId: U, confirm: true }));
             assert.deepEqual(out, { action, success: true, userId: U });
         }
         // Red if an action is wired to the wrong method (undo must not reject, accept must not send).
@@ -2218,12 +2218,15 @@ describe("zalo_group confirm guard", () => {
             for (const args of [LEAVE, REMOVE, { ...LEAVE, confirm: false }, { ...REMOVE, confirm: false }]) {
                 const r = await run(args);
                 assert.equal(r.isError, true, JSON.stringify(args));
-                assert.match(r.content[0].text, /Repeat the call with confirm: true/);
+                assert.equal(payloadOf(r).confirmationRequired, true);
+                assert.deepEqual(payloadOf(r).retryWith, { confirm: true });
+                assert.match(r.content[1].text, /Repeat the call with confirm: true/);
             }
-            assert.match((await run(LEAVE)).content[0].text, /leave group 7000000000000000001/);
+            assert.equal(payloadOf(await run(LEAVE)).action, "zalo_group leave");
+            assert.match(payloadOf(await run(LEAVE)).wouldDo, /leave group 7000000000000000001/);
             assert.match(
-                (await run(REMOVE)).content[0].text,
-                /remove 9100000000000000001 from group 7000000000000000001/,
+                payloadOf(await run(REMOVE)).wouldDo,
+                /remove 1 member \(9100000000000000001\) from group 7000000000000000001/,
             );
             // Red if the guard runs after the Zalo call, or is skipped.
             assert.deepEqual(calls, []);
@@ -2238,6 +2241,22 @@ describe("zalo_group confirm guard", () => {
                 ["leaveGroup", G, false],
                 ["removeUserFromGroup", [U1], G],
             ]);
+        });
+    });
+
+    it("dryRun says what leave would do and sends nothing", async () => {
+        await withEnv(undefined, async () => {
+            const out = payloadOf(await run({ ...LEAVE, dryRun: true }));
+            assert.equal(out.dryRun, true);
+            assert.match(out.wouldDo, /leave group 7000000000000000001/);
+            assert.deepEqual(calls, []);
+        });
+    });
+
+    it("confirmMode off (or the deprecated groupConfirm: false) goes ahead without confirm", async () => {
+        await withEnv(undefined, async () => {
+            assert.equal(payloadOf(await run(LEAVE, { confirmMode: "off" })).success, true);
+            assert.equal((await run(LEAVE, { confirmMode: "off", groupConfirm: true })).isError, undefined);
         });
     });
 
@@ -2287,9 +2306,11 @@ describe("zalo_group confirm guard", () => {
         });
     });
 
-    it("the default config ships the check on", async () => {
+    it("the default config ships the check on: no confirmMode, which means agent", async () => {
         const { getDefaultConfig } = await import("../../src/mcp/mcp-config.js");
-        assert.equal(getDefaultConfig().groupConfirm, true);
+        assert.equal(getDefaultConfig().confirmMode, null);
+        assert.equal(getDefaultConfig().groupConfirm, undefined);
+        assert.equal((await run(LEAVE, getDefaultConfig())).isError, true);
     });
 });
 
@@ -2430,11 +2451,23 @@ describe("zalo_write", () => {
         const wa = writeApi();
         const res = await run(wa, { name: "topic-remove", args: { groupId: "555", topicId: "t9" } });
         assert.equal(res.isError, true);
-        assert.match(res.content[0].text, /confirm: true/);
-        assert.match(res.content[0].text, /dryRun: true/);
+        assert.equal(payloadOf(res).confirmationRequired, true);
+        assert.equal(payloadOf(res).action, "zalo_write");
+        assert.match(res.content[1].text, /confirm: true/);
+        assert.match(res.content[1].text, /dryRun: true/);
         assert.equal(wa.calls.length, 0, "nothing is sent without the confirmation");
         const no = await run(wa, { name: "topic-remove", args: { groupId: "555", topicId: "t9" }, confirm: false });
         assert.equal(no.isError, true);
+        assert.equal(wa.calls.length, 0);
+    });
+
+    it("stays guarded when the deployment's confirmMode is off: it runs raw endpoints", async () => {
+        const wa = writeApi();
+        const res = await register({ api: wa.api, config: { confirmMode: "off" } }).server.call("zalo_write", {
+            name: "topic-remove",
+            args: { groupId: "555", topicId: "t9" },
+        });
+        assert.equal(res.isError, true);
         assert.equal(wa.calls.length, 0);
     });
 

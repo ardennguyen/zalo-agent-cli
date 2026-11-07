@@ -102,7 +102,7 @@ describe("mcp-config samples", () => {
         assert.deepEqual(b.watchThreads, ["dm:*", "group:support"]);
         assert.deepEqual(a.watchThreads, ["dm:*"], "shared setting still applies where the block does not override");
         assert.equal(other.httpPort, null, "an account without a block gets none of the overrides");
-        assert.equal(a.groupConfirm, false);
+        assert.equal(a.confirmMode, "agent");
     });
 });
 

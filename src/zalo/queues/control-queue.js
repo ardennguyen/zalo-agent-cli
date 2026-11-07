@@ -37,6 +37,12 @@ const KNOWN = new Map([
     ["group", { kind: "group-event", handler: "listener" }],
     ["fr", { kind: "friend-event", handler: "listener" }],
     ["voice2text", { kind: "transcript", handler: "voice-text" }],
+    // A product or catalog added, edited or deleted on another device (the whole `prod_catalog` family), a DM
+    // reminder deleted, the account's device list changed: src/core/control-events.js. Only the named `oneone` act is
+    // handled; the rest of that family (a reminder created or edited) is still named as unhandled.
+    ["prod_catalog", { kind: "catalog", handler: "control-events" }],
+    ["remove_reminder11", { kind: "reminder", handler: "control-events" }],
+    ["update_user_devices", { kind: "devices", handler: "control-events" }],
 ]);
 
 /** A control's `data`: an object, or the JSON text of one, or null when it is neither. */
@@ -57,8 +63,8 @@ function dataOf(data) {
  *
  * @param {object|null|undefined} data - a decoded 601 frame's `data`
  * @returns {Array<{actionId: string|null, actType: string, act: string, kind: string, handler: string|null,
- *   handled: boolean, data: object|null}>} `handled` is false for a control this client has no handler for; `data` is
- *   the control's own data when it is an object
+ *   handled: boolean, data: object|null, ts: number|null}>} `handled` is false for a control this client has no
+ *   handler for; `data` is the control's own data when it is an object; `ts` is the control's own time, when it has one
  */
 export function readControls(data) {
     const out = [];
@@ -76,6 +82,7 @@ export function readControls(data) {
             handler: known?.handler ?? null,
             handled: Boolean(known),
             data: dataOf(content.data),
+            ts: Number.isFinite(Number(content.ts)) && Number(content.ts) > 0 ? Number(content.ts) : null,
         });
     }
     return out;

@@ -156,7 +156,10 @@ describe("tier 5a · conversation history wipe", { skip }, () => {
 
     it("wipes the disposable GROUP's conversation and reports success", async () => {
         assertDisposable(T.group.threadId, "conv delete");
-        const del = await runCli(["conv", "delete", "-t", "1", T.group.threadId], live(T, { timeout: 120_000 }));
+        const del = await runCli(
+            ["conv", "delete", "--yes", "-t", "1", T.group.threadId],
+            live(T, { timeout: 120_000 }),
+        );
         assert.equal(errorLineOf(del.stdout), null, `conv delete failed: ${del.all.slice(0, 300)}`);
         assert.ok(hasSuccess(del.stdout), "expected a success line");
         await sleep(1500);
@@ -175,7 +178,10 @@ describe("tier 5a · conversation history wipe", { skip }, () => {
         { skip: skip || (T?.dm ? false : "no DM target configured") },
         async () => {
             assertDisposable(T.dm.threadId, "conv delete");
-            const del = await runCli(["conv", "delete", "-t", "0", T.dm.threadId], live(T, { timeout: 120_000 }));
+            const del = await runCli(
+                ["conv", "delete", "--yes", "-t", "0", T.dm.threadId],
+                live(T, { timeout: 120_000 }),
+            );
             assert.equal(errorLineOf(del.stdout), null, `conv delete failed: ${del.all.slice(0, 300)}`);
             await sleep(1500);
         },
@@ -203,7 +209,10 @@ describe("tier 5a · conversation history wipe", { skip }, () => {
 
     it("wiping is idempotent — a second delete does not error", async () => {
         assertDisposable(T.group.threadId, "conv delete");
-        const again = await runCli(["conv", "delete", "-t", "1", T.group.threadId], live(T, { timeout: 120_000 }));
+        const again = await runCli(
+            ["conv", "delete", "--yes", "-t", "1", T.group.threadId],
+            live(T, { timeout: 120_000 }),
+        );
         // Asserting only "no stack trace" proved nothing: this CLI catches
         // every API failure and prints a ✗ line, so the regex could not
         // match whatever happened. errorLineOf is what distinguishes the
@@ -281,7 +290,10 @@ describe("tier 5a · conversation history wipe", { skip }, () => {
             live(T, { timeout: 180_000 }),
         );
         assertDisposable(T.dm.threadId, "conv delete");
-        const again = await runCli(["conv", "delete", "-t", "0", T.dm.threadId], live(T, { timeout: 120_000 }));
+        const again = await runCli(
+            ["conv", "delete", "--yes", "-t", "0", T.dm.threadId],
+            live(T, { timeout: 120_000 }),
+        );
         assert.equal(
             errorLineOf(again.stdout),
             null,
@@ -317,7 +329,7 @@ describe("tier 5b · group disperse and recreate", { skip }, () => {
         assert.equal(target, T.group.threadId);
         assert.ok(!T.denylist.includes(target), "refusing to disperse a denylisted group");
 
-        const r = await runCli(["group", "disperse", target], live(T, { timeout: 120_000 }));
+        const r = await runCli(["group", "disperse", "--yes", target], live(T, { timeout: 120_000 }));
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 400));
         assert.ok(hasSuccess(r.stdout), `disperse did not report success: ${r.all.slice(0, 400)}`);
         dispersedId = target;
@@ -420,7 +432,7 @@ describe("tier 5c · logout --delete-history (credentials backed up)", { skip },
     });
 
     it("removes zalo.db, media/ and the saved credentials", async () => {
-        const r = await runCli(["logout", "--no-remote", "--delete-history"], live(T));
+        const r = await runCli(["logout", "--yes", "--no-remote", "--delete-history"], live(T));
         assert.match(r.all, /Logged out/);
 
         assert.equal(existsSync(join(accountDataDir(), "zalo.db")), false, "zalo.db should be gone");
@@ -480,7 +492,7 @@ describe("tier 5d · purge (server session preserved)", { skip }, () => {
     });
 
     it("logout --no-remote --purge deletes credentials, data dir, and registry entry", async () => {
-        const r = await runCli(["logout", "--no-remote", "--purge"], live(T));
+        const r = await runCli(["logout", "--yes", "--no-remote", "--purge"], live(T));
         assert.match(r.all, /purged credentials/i, r.all.slice(0, 400));
 
         assert.equal(existsSync(credPath()), false, "the credential file must be deleted");
@@ -529,7 +541,7 @@ const endSkip = skip || (END_SESSION ? false : "tier 5e needs ZALO_TEST_END_SESS
 
 describe("tier 5e · REAL logout (signs the device out at Zalo)", { skip: endSkip }, () => {
     it("signs the device out: Zalo then refuses the saved login", async () => {
-        const r = await runCli(["logout"], live(T, { timeout: 120_000 }));
+        const r = await runCli(["logout", "--yes"], live(T, { timeout: 120_000 }));
         // Red if the sign-out is only claimed: the success line is printed after the saved login was tried.
         assert.match(r.all, /Signed this device out at Zalo/, r.all.slice(0, 600));
         assert.doesNotMatch(r.all, /Logout step ".*" failed/, r.all.slice(0, 600));
@@ -544,7 +556,7 @@ describe("tier 5e · REAL logout (signs the device out at Zalo)", { skip: endSki
 
 describe("tier 5e · REAL purge (credentials deleted, QR re-scan required)", { skip: endSkip }, () => {
     it("removes every trace of the account from this machine", async () => {
-        const r = await runCli(["logout", "--purge"], live(T, { timeout: 120_000 }));
+        const r = await runCli(["logout", "--yes", "--purge"], live(T, { timeout: 120_000 }));
         assert.doesNotMatch(r.all, /at Command\.|Unhandled/, r.all.slice(0, 400));
 
         assert.equal(existsSync(credPath()), false);

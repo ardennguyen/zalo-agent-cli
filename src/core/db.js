@@ -1807,6 +1807,27 @@ export function upsertReminder(r) {
         });
 }
 
+/**
+ * Remove one reminder another device deleted (the `remove_reminder11` control), from whichever of the given
+ * conversations holds it. A DM reminder is stored under the other person's id, and the control names both ends.
+ *
+ * @param {string} reminderId
+ * @param {string[]} threadIds - the conversations it may be stored under
+ * @returns {{removed: number, threadIds: string[]}} the conversations a row was removed from
+ */
+export function removeReminder(reminderId, threadIds) {
+    if (!db) throw new Error("Database not initialized");
+    const ids = [...new Set((threadIds || []).filter((t) => t !== undefined && t !== null && t !== "").map(String))];
+    if (!ids.length || reminderId === undefined || reminderId === null) return { removed: 0, threadIds: [] };
+    const where = `reminderId = ? AND threadId IN (${ids.map(() => "?").join(", ")})`;
+    const hit = db
+        .prepare(`SELECT DISTINCT threadId FROM reminders WHERE ${where}`)
+        .all(String(reminderId), ...ids)
+        .map((r) => r.threadId);
+    const removed = db.prepare(`DELETE FROM reminders WHERE ${where}`).run(String(reminderId), ...ids).changes;
+    return { removed, threadIds: hit };
+}
+
 /** Reminders for a thread, or all of them, soonest start first. */
 export function getReminders(threadId = null) {
     if (!db) throw new Error("Database not initialized");

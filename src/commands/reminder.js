@@ -7,6 +7,7 @@ import { success, error, info, output } from "../utils/output.js";
 import { parseIntAtLeast } from "../utils/parse-options.js";
 import { groupReminderPage } from "../zalo/api/boards.js";
 import { THREAD_TYPE } from "../zalo/enums.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 /** Repeat mode labels matching Zalo's reminder repeat modes. */
 const REPEAT_MODES = { none: 0, daily: 1, weekly: 2, monthly: 3 };
@@ -202,4 +203,8 @@ export function registerReminderCommands(program) {
                 error(`Remove reminder failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(reminder, "remove", "reminder.remove", {
+        target: (reminderId, threadId) => ({ reminderId, threadId }),
+    });
 }

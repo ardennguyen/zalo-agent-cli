@@ -11,6 +11,7 @@ import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
 import { resolveBankBin, BIN_TO_DISPLAY } from "../utils/bank-helpers.js";
 import { findBankAccount, filterBanks } from "../core/bank-accounts.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 /**
  * A bank name or BIN as the BIN Zalo wants.
@@ -123,4 +124,6 @@ export function registerBankCommands(program) {
                 error(`Delete bank account failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(bank, "remove", "bank.remove", { target: (accountId) => ({ accountId }) });
 }

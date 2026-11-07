@@ -106,7 +106,7 @@ describe("tier 3 · DM conversation toggles", { skip: skip || (T?.dm ? false : "
         const failures = [];
         for (const [args, label] of [
             [["conv", "unmute", "-t", "0", T.dm.threadId], "unmute"],
-            [["conv", "unhide", "-t", "0", T.dm.threadId], "unhide"],
+            [["conv", "unhide", "--yes", "-t", "0", T.dm.threadId], "unhide"],
             [["conv", "auto-delete", "-t", "0", T.dm.threadId, "off"], "auto-delete off"],
             [["conv", "read", "-t", "0", T.dm.threadId], "read"],
         ]) {
@@ -144,7 +144,7 @@ describe("tier 3 · DM conversation toggles", { skip: skip || (T?.dm ? false : "
         });
         if (!hidden.ok) return; // no PIN on this account — nothing to unhide
         await sleep(400);
-        await ok(["conv", "unhide", "-t", "0", T.dm.threadId], "dm unhide");
+        await ok(["conv", "unhide", "--yes", "-t", "0", T.dm.threadId], "dm unhide");
     });
 
     it("sets a DM auto-delete TTL and turns it back off", async () => {
@@ -189,7 +189,7 @@ describe("tier 3 · hide / unhide", { skip }, () => {
 
     after(async () => {
         if (!g.run || !hidden) return;
-        await runCli(["conv", "unhide", "-t", "1", T.group.threadId], live(T));
+        await runCli(["conv", "unhide", "--yes", "-t", "1", T.group.threadId], live(T));
     });
 
     it("hides and unhides the disposable group", async () => {
@@ -202,7 +202,7 @@ describe("tier 3 · hide / unhide", { skip }, () => {
         if (hasSuccess(r.stdout)) {
             hidden = true;
             await sleep(500);
-            const back = await runCli(["conv", "unhide", "-t", "1", T.group.threadId], live(T));
+            const back = await runCli(["conv", "unhide", "--yes", "-t", "1", T.group.threadId], live(T));
             assert.ok(hasSuccess(back.stdout), back.stdout.slice(0, 300));
             hidden = false;
         }
@@ -382,6 +382,7 @@ describe("tier 3 · group settings", { skip }, () => {
             [
                 "group",
                 "settings",
+                "--yes",
                 T.group.threadId,
                 flag(priorSettings.lockCreatePoll, "lock-poll"),
                 flag(priorSettings.lockCreatePost, "lock-post"),
@@ -401,15 +402,15 @@ describe("tier 3 · group settings", { skip }, () => {
         const flip = priorSettings.signAdminMsg
             ? ["--no-sign-admin", "--sign-admin"]
             : ["--sign-admin", "--no-sign-admin"];
-        await ok(["group", "settings", T.group.threadId, flip[0]], `${flip[0]} (away from current)`);
+        await ok(["group", "settings", "--yes", T.group.threadId, flip[0]], `${flip[0]} (away from current)`);
         await sleep(600);
-        await ok(["group", "settings", T.group.threadId, flip[1]], `${flip[1]} (back)`);
+        await ok(["group", "settings", "--yes", T.group.threadId, flip[1]], `${flip[1]} (back)`);
     });
 
     it("accepts the negated form of each documented flag", async () => {
         assertDisposable(T.group.threadId, "group settings");
         const r = await runCli(
-            ["group", "settings", T.group.threadId, "--no-lock-poll", "--no-lock-post", "--no-block-name"],
+            ["group", "settings", "--yes", T.group.threadId, "--no-lock-poll", "--no-lock-post", "--no-block-name"],
             live(T, { timeout: 120_000 }),
         );
         assert.doesNotMatch(r.all, /at Command\.|Unhandled|unknown option/i, r.all.slice(0, 300));
@@ -427,7 +428,7 @@ describe("tier 3 · group invite link", { skip }, () => {
 
     after(async () => {
         if (!g.run || !enabled) return;
-        const off = await runCli(["group", "disable-link", T.group.threadId], live(T, { timeout: 120_000 }));
+        const off = await runCli(["group", "disable-link", "--yes", T.group.threadId], live(T, { timeout: 120_000 }));
         assert.equal(errorLineOf(off.stdout), null, `invite link left ENABLED on the group: ${off.all.slice(0, 300)}`);
     });
 
@@ -442,7 +443,7 @@ describe("tier 3 · group invite link", { skip }, () => {
         const info = await retryRead(() => runJson(["group", "link-info", T.group.threadId], live(T)));
         assert.equal(info.ok, true, info.error);
 
-        await ok(["group", "disable-link", T.group.threadId], "disable-link");
+        await ok(["group", "disable-link", "--yes", T.group.threadId], "disable-link");
         enabled = false;
     });
 });
@@ -576,7 +577,7 @@ describe("tier 3 · polls (vote lifecycle)", { skip }, () => {
 
         // Locking is the reversible end-state for a poll — there is no
         // `poll delete`, so a locked poll is as closed as it gets.
-        await ok(["poll", "lock", pollId], "poll lock");
+        await ok(["poll", "lock", "--yes", pollId], "poll lock");
     });
 
     // `poll add-option` and `poll share` sit between an existing create and
@@ -601,7 +602,7 @@ describe("tier 3 · polls (vote lifecycle)", { skip }, () => {
         assert.ok(names.includes("Three"), `added option missing from ${JSON.stringify(names)}`);
 
         await ok(["poll", "share", pollId], "poll share");
-        await ok(["poll", "lock", pollId], "poll lock");
+        await ok(["poll", "lock", "--yes", pollId], "poll lock");
     });
 });
 describe("tier 3 · local cache and the --no-cache flag", { skip }, () => {
@@ -773,7 +774,7 @@ describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
                 "catalog update-product",
             );
         } finally {
-            await runCli(["catalog", "delete", catId], live(T, { timeout: 120_000 }));
+            await runCli(["catalog", "delete", "--yes", catId], live(T, { timeout: 120_000 }));
         }
     });
 
@@ -799,7 +800,10 @@ describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
                 "reminder edit",
             );
         } finally {
-            await runCli(["reminder", "remove", "-t", "1", id, T.group.threadId], live(T, { timeout: 120_000 }));
+            await runCli(
+                ["reminder", "remove", "--yes", "-t", "1", id, T.group.threadId],
+                live(T, { timeout: 120_000 }),
+            );
         }
     });
 
@@ -811,7 +815,7 @@ describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
             try {
                 if (id) await ok(["quick-msg", "update", id, kw, "[e2e] lifecycle qm edited"], "quick-msg update");
             } finally {
-                if (id) await runCli(["quick-msg", "remove", id], live(T));
+                if (id) await runCli(["quick-msg", "remove", "--yes", id], live(T));
             }
         }
 
@@ -828,7 +832,7 @@ describe("tier 3 · create/mutate/delete lifecycles", { skip }, () => {
                     "auto-reply update",
                 );
         } finally {
-            if (rid) await runCli(["auto-reply", "delete", rid], live(T));
+            if (rid) await runCli(["auto-reply", "delete", "--yes", rid], live(T));
         }
     });
 });

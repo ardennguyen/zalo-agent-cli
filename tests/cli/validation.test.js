@@ -79,7 +79,7 @@ describe("msg undo requires a cliMsgId", () => {
     it("refuses without --cli-msg-id when the cache cannot supply one, and says where to get one", async () => {
         // The sandboxed cache is empty, so the lookup `msg undo` now shares
         // with `msg delete` finds nothing and the guard still fires.
-        const { all } = await runCli(["msg", "undo", "9999", TID], opts);
+        const { all } = await runCli(["msg", "undo", "9999", TID, "--yes"], opts);
         assert.match(all, /cliMsgId is required to recall a message/);
         assert.match(all, /not in the local cache/);
         assert.match(all, /listen --json/);
@@ -90,7 +90,7 @@ describe("msg undo requires a cliMsgId", () => {
     });
 
     it("gets past the guard when --cli-msg-id is supplied", async () => {
-        const { all } = await runCli(["msg", "undo", "9999", TID, "-c", "1700000000000"], opts);
+        const { all } = await runCli(["msg", "undo", "9999", TID, "-c", "1700000000000", "--yes"], opts);
         assert.doesNotMatch(all, /cliMsgId is required/);
         assert.match(all, /Not logged in/);
     });
@@ -206,7 +206,7 @@ describe("no-active-account guards", () => {
 
 describe("logout on a clean machine", () => {
     it("succeeds, and never claims credentials were kept", async () => {
-        const { all } = await runCli(["logout"], opts);
+        const { all } = await runCli(["logout", "--yes"], opts);
         assert.match(all, /Logged out/);
         // `logout` deletes the saved credentials since 2026-09-30: with them
         // kept, the next command logged straight back in (measured live).
@@ -215,7 +215,7 @@ describe("logout on a clean machine", () => {
     });
 
     it("--purge with nothing to purge still reports success rather than throwing", async () => {
-        const r = await runCli(["logout", "--purge"], opts);
+        const r = await runCli(["logout", "--purge", "--yes"], opts);
         assert.equal(r.code, 0);
         assert.doesNotMatch(r.all, /Error|stack/i);
     });
@@ -249,7 +249,7 @@ describe("--json stdout contract", () => {
             ["--json", "status"],
             ["--json", "msg", "send-bank", TID, "1", "-b", "notabank"],
             ["--json", "whoami"],
-            ["--json", "logout"],
+            ["--json", "logout", "--yes"],
         ]) {
             const r = await runCli(args, opts);
             assert.doesNotMatch(r.stdout, /[✓✗●⚠]/, `\`${args.join(" ")}\` leaked a human marker to stdout`);
@@ -261,7 +261,7 @@ describe("--json stdout contract", () => {
         for (const args of [
             ["--json", "msg", "send-qr-transfer", TID, "1", "-b", "nope"],
             ["--json", "conv", "auto-delete", TID, "3d"],
-            ["--json", "msg", "undo", "9999", TID],
+            ["--json", "msg", "undo", "9999", TID, "--yes"],
             ["--json", "whoami"],
         ]) {
             const r = await runCli(args, opts);

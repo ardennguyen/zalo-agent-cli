@@ -23,6 +23,7 @@ import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { clearKickMarker, kickFile } from "../core/kick-marker.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 /**
  * `login --sync`: restore the history at once with the key the phone offers when "auto sync" is ticked at the QR
@@ -338,4 +339,14 @@ export function registerLoginCommands(program) {
                 process.exitCode = 1;
             }
         });
+    // Every logout needs --yes, and --dry-run says what it would end and delete (src/core/confirm-guard.js).
+    guardSubcommand(program, "logout", "logout", {
+        target: (opts) => ({
+            account: getActive()?.ownId ?? null,
+            keepSession: Boolean(opts.keepSession),
+            purge: Boolean(opts.purge),
+            deleteHistory: Boolean(opts.deleteHistory),
+            remote: opts.remote !== false,
+        }),
+    });
 }

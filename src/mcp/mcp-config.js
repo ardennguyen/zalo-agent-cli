@@ -47,7 +47,10 @@ export function getDefaultConfig() {
         webhookSecret: null,
         webhookBatchSize: 1, // events per webhook POST; 1 = each event alone, exactly as before the outbox
         webhookMaxAge: "24h", // an undelivered event older than this is dead-lettered, never silently dropped
-        groupConfirm: true, // zalo_group asks for confirm: true before leave / remove_member
+        // Who confirms a guarded action (src/core/confirm-guard.js): "agent", "human" or "off". Unset (null) means
+        // ZALO_MCP_CONFIRM_MODE, then the deprecated groupConfirm / ZALO_MCP_GROUP_CONFIRM, else "agent". It is not
+        // defaulted to "agent" here: a default would hide a file's own groupConfirm: false.
+        confirmMode: null,
         httpPort: null,
         host: null,
     };

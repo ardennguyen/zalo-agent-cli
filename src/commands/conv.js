@@ -16,6 +16,7 @@ import { pinnedConversations } from "../core/sync-v2/conv-state.js";
 import { markConversationRead, unreadMarkAnchor } from "../core/receipts.js";
 import { zaloPost } from "../zalo/receipts.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 /**
  * Find the newest message in a thread and return the anchor triple
@@ -801,7 +802,7 @@ export function registerConvCommands(program, deps = {}) {
                         `  ${t.threadId}${t.name ? ` (${t.name})` : ""}${t.messages ? ` — ${t.messages} message(s), ${t.files || 0} file(s)` : ""}`,
                     );
                 }
-                info("Re-run without --dry-run to remove them. This does not contact Zalo.");
+                info("Re-run with --yes instead of --dry-run to remove them. This does not contact Zalo.");
                 process.exit(0);
             }
 
@@ -848,4 +849,13 @@ export function registerConvCommands(program, deps = {}) {
                 error(`Get muted conversations failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(conv, "delete", "conv.delete", { target: (threadId) => ({ threadId }) });
+    guardSubcommand(conv, "hidden-pin-reset", "conv.hiddenPinReset", { target: () => ({}) });
+    guardSubcommand(conv, "unhide", "conv.unhide", { target: (threadIds) => ({ threadIds }) });
+    // `forget` keeps its own --dry-run, which lists what would go.
+    guardSubcommand(conv, "forget", "conv.forget", {
+        target: (threadId, opts) => ({ threadId: threadId ?? null, orphans: Boolean(opts.orphans) }),
+        ownDryRun: true,
+    });
 }

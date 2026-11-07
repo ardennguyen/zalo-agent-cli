@@ -19,8 +19,15 @@
  *   a running sync or history fetch is dropped, and the next one (or a `sync-cloud`) catches up.
  * - **Never an acknowledgment.** The onboarding ack the web client sends after its first verify changes what Zalo
  *   does with this account's cloud; it is not ours to send.
- * - **`forceVerify`, `forceReset`, `correctCloudKey` and `auditLocalCloudQueue` are read and ignored.** They ask for a
- *   walk from nothing, a key change or an audit of the whole store; `sync-cloud --full` is the explicit form.
+ * - **`forceVerify` and `forceReset` walk the whole queue from the top**, as the Web does (`verifyFromNothing`): past
+ *   the 30-minute pace and the "already current" check, which the Web skips for them too, as a `--full` walk, so that
+ *   once the server says it is done every item no page listed is swept (an interrupted walk sweeps nothing). Where the
+ *   Web empties its store first, this keeps it until the walk has finished. A forced walk reads at most
+ *   {@link FORCED_MAX_PAGES} pages, and forced walks are themselves paced at one in 30 minutes, a guard the Web has
+ *   not. Still no baseline means still no walk, and the Web's report afterwards (`submit_verify_action`) is not sent.
+ * - **`correctCloudKey` and `auditLocalCloudQueue` are read and left.** The first makes the Web fetch the account's
+ *   cloud key again, which this client never holds (D8); the second audits its local media against the store and
+ *   reports to the server. Each is named in the log.
  *
  * `listen` and `mcp start` both build one (AGENTS.md §13: any asymmetry between them is a defect).
  */
@@ -36,12 +43,16 @@ export const THROTTLE_MS = 30 * 60 * 1000;
 /** Pages one automatic walk may read; a longer queue continues on the next notice. */
 const AUTO_MAX_PAGES = 20;
 
+/** Pages a forced walk may read: the whole queue of an old account, as `sync-cloud` reads it. */
+export const FORCED_MAX_PAGES = 500;
+
 /**
  * Read a cmd 621 frame.
  *
  * @param {{data?: object|null}} frame - a frame from the socket tap
- * @returns {{lastNoiseId: string|null, pageSize: number|null, forced: boolean}|null} null for anything that is not
- *   a `mycloudMedia` notice
+ * @returns {{lastNoiseId: string|null, pageSize: number|null, forced: boolean, left: string[]}|null} null for
+ *   anything that is not a `mycloudMedia` notice. `forced`: `forceVerify` or `forceReset` is set (walk from the top);
+ *   `left`: the other flags that are set, which this client does not act on
  */
 export function readCloudNotice(frame) {
     let payload = frame?.data?.data;
@@ -57,12 +68,8 @@ export function readCloudNotice(frame) {
     return {
         lastNoiseId: typeof n.lastNoiseId === "string" && n.lastNoiseId ? n.lastNoiseId : null,
         pageSize: Number.isFinite(Number(n.pageSize)) ? Number(n.pageSize) : null,
-        forced: !!(
-            Number(n.forceVerify) ||
-            Number(n.forceReset) ||
-            Number(n.correctCloudKey) ||
-            Number(n.auditLocalCloudQueue)
-        ),
+        forced: Boolean(Number(n.forceVerify) || Number(n.forceReset)),
+        left: ["correctCloudKey", "auditLocalCloudQueue"].filter((k) => Number(n[k])),
     };
 }
 
@@ -97,6 +104,7 @@ export function createCloudVerifier({
         }
     };
     let lastStartedAt = null;
+    let lastForcedAt = null;
     let running = false;
     let toldNoBaseline = false;
 
@@ -111,25 +119,48 @@ export function createCloudVerifier({
             toldNoBaseline = true;
             return "no-baseline";
         }
-        if (notice.forced) say("the server asked for a forced verify; ignored (`sync-cloud --full` does that)");
-        if (notice.lastNoiseId && notice.lastNoiseId === saved) return "current";
-        if (lastStartedAt !== null && now() - lastStartedAt < throttleMs) return "throttled";
+        for (const k of notice.left) {
+            say(
+                k === "correctCloudKey"
+                    ? "the server asked to correct the cloud key; left (this client never holds that key)"
+                    : "the server asked for an audit of the local cloud queue; left (a report this client does not send)",
+            );
+        }
+        const forced = notice.forced;
+        if (forced) {
+            if (lastForcedAt !== null && now() - lastForcedAt < throttleMs) return "throttled";
+        } else {
+            if (notice.lastNoiseId && notice.lastNoiseId === saved) return "current";
+            if (lastStartedAt !== null && now() - lastStartedAt < throttleMs) return "throttled";
+        }
         const release = lock.tryAcquire("cloud-verify");
         if (!release) return "stage-running";
 
         running = true;
         lastStartedAt = now();
+        if (forced) lastForcedAt = lastStartedAt;
         try {
             const api = getApi();
             const stats = await walk({
                 api,
-                lastNoiseId: saved,
-                maxPages: AUTO_MAX_PAGES,
+                lastNoiseId: forced ? "" : saved,
+                full: forced,
+                maxPages: forced ? FORCED_MAX_PAGES : AUTO_MAX_PAGES,
                 onPage: (p) => setSyncState("cloudCursor", p.cursor),
             });
             if (stats.failed && !stats.items && !stats.removed) {
                 say(`could not read the cloud queue: ${stats.failures[0]?.reason || "no reason given"}`);
                 return "failed";
+            }
+            if (forced) {
+                say(
+                    `forced verify (the server asked): ${stats.items} item(s) recorded, ${stats.removed} removed over ` +
+                        `${stats.pages} page(s) from the top` +
+                        (stats.complete
+                            ? `, ${stats.swept || 0} no page listed swept`
+                            : "; stopped before the end, so nothing was swept (`zalo-agent sync-cloud --full` finishes it)"),
+                );
+                return "walked";
             }
             say(
                 `${stats.items} item(s) recorded, ${stats.removed} removed over ${stats.pages} page(s)` +

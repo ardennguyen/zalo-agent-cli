@@ -18,33 +18,6 @@ export const NOT_A_MEMBER_CODES = Object.freeze([166, 167]);
 /** Zalo's code ("Nhóm không có thành viên.") for removing someone who is not in the group, measured live. */
 export const REMOVE_NOT_IN_GROUP = 165;
 
-/** `zalo_group` actions that cannot be undone from the tool, and so ask for `confirm: true`. */
-export const CONFIRMED_ACTIONS = Object.freeze(["leave", "remove_member"]);
-
-/**
- * Whether `zalo_group` asks for `confirm: true` before an irreversible action.
- *
- * The check is a parameter, never a prompt: an automatic or headless caller
- * either sends `confirm: true` or switches the check off, and nothing waits for
- * a person. `ZALO_MCP_GROUP_CONFIRM` (`0`/`false`/`off`/`no` to disable,
- * `1`/`true`/`on`/`yes` to enable) wins over `groupConfirm` in mcp-config.json,
- * so a backend deployment can turn it off without editing the file. On by
- * default; anything unrecognized leaves it on.
- *
- * @param {object} [sources]
- * @param {{groupConfirm?: unknown}|null} [sources.config] - the loaded MCP config
- * @param {NodeJS.ProcessEnv} [sources.env] - environment, process.env by default
- * @returns {boolean}
- */
-export function groupConfirmRequired({ config, env = process.env } = {}) {
-    const fromEnv = String(env?.ZALO_MCP_GROUP_CONFIRM ?? "")
-        .trim()
-        .toLowerCase();
-    if (["0", "false", "off", "no"].includes(fromEnv)) return false;
-    if (["1", "true", "on", "yes"].includes(fromEnv)) return true;
-    return config?.groupConfirm !== false;
-}
-
 /**
  * The details of one group out of `getGroupInfo`'s answer.
  *

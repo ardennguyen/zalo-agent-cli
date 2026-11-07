@@ -208,7 +208,7 @@ describe("zalo_react", () => {
 describe("zalo_undo", () => {
     it("refuses a message with no known cliMsgId, and never touches the api", async () => {
         const api = recordingApi();
-        const r = await call("zalo_undo", { msgId: UNCACHED, threadId: PEER }, api);
+        const r = await call("zalo_undo", { msgId: UNCACHED, threadId: PEER, confirm: true }, api);
         assert.equal(r.isError, true);
         assert.deepEqual(api.calls, [], "a recall without its cliMsgId must not be sent");
         assert.match(r.content[0].text, /cliMsgId is required to recall a message/);
@@ -217,7 +217,7 @@ describe("zalo_undo", () => {
 
     it("recalls with {msgId, cliMsgId} from the cache, typed from the cache", async () => {
         const api = recordingApi();
-        const r = await call("zalo_undo", { msgId: DM_MSG.msgId, threadId: PEER }, api);
+        const r = await call("zalo_undo", { msgId: DM_MSG.msgId, threadId: PEER, confirm: true }, api);
         assert.equal(r.isError, undefined, r.content[0].text);
         // Red if the payload loses the cached cliMsgId, or the DM goes out as a group.
         assert.deepEqual(api.calls, [
@@ -228,7 +228,7 @@ describe("zalo_undo", () => {
 
     it("a group message recalls on the group endpoint's type", async () => {
         const api = recordingApi();
-        await call("zalo_undo", { msgId: GROUP_MSG.msgId, threadId: GROUP }, api);
+        await call("zalo_undo", { msgId: GROUP_MSG.msgId, threadId: GROUP, confirm: true }, api);
         assert.equal(api.calls[0].type, THREAD_GROUP);
     });
 
@@ -236,7 +236,11 @@ describe("zalo_undo", () => {
         // The one way to recall something this server did not capture: the
         // id zalo_send_message handed back.
         const api = recordingApi();
-        const r = await call("zalo_undo", { msgId: UNCACHED, threadId: PEER, cliMsgId: "1700000000777" }, api);
+        const r = await call(
+            "zalo_undo",
+            { msgId: UNCACHED, threadId: PEER, cliMsgId: "1700000000777", confirm: true },
+            api,
+        );
         assert.equal(r.isError, undefined);
         assert.deepEqual(api.calls[0].payload, { msgId: UNCACHED, cliMsgId: "1700000000777" });
     });

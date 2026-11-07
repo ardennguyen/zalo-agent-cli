@@ -68,7 +68,8 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_WEBHOOK_SECRET` | yes | sign the webhook (`Authorization: Bearer` + `X-Zalo-Signature: sha256=…`) | `--webhook-secret` (visible in `ps`) | `webhookSecret` |
 | `ZALO_WEBHOOK_BATCH_SIZE` | yes | events per webhook POST, 1–100. The default, 1, sends each event alone | | `webhookBatchSize` |
 | `ZALO_WEBHOOK_MAX_AGE` | yes | how long an undelivered event is retried before it is dead-lettered (`6h`, `24h`; at least `1m`). Default `24h` | | `webhookMaxAge` |
-| `ZALO_MCP_GROUP_CONFIRM` |  | `0` lets `zalo_group` leave / remove members without `confirm: true` | | `groupConfirm` |
+| `ZALO_MCP_CONFIRM_MODE` | yes | who confirms a destructive tool action (recall, delete, leave a group, …): `agent` (default; the caller sends `confirm: true`), `human` (the server asks the user through MCP elicitation; needs a client that supports it) or `off` (no question; `zalo_write` still needs `confirm`) | | `confirmMode` |
+| `ZALO_MCP_GROUP_CONFIRM` |  | deprecated: `0` means confirm mode `off`, `1` means `agent`; an explicit confirm mode wins | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | non-friend DM names one sync restore may look up. Default 500 | | |
 | `ZALO_START_JITTER` | yes | wait a random time up to this many seconds (0–600, default 0) before logging in, so a fleet restarting together does not log in together | | |
 | `ZALO_LOGIN_SLOTS` | yes | at most this many daemons on the machine logging in and loading their lists at once (0–64; default 0, no cap); the rest wait for a slot. `ZALO_LOGIN_SLOT_WAIT` (seconds, default 900) is how long one waits before going ahead anyway | | |
@@ -101,7 +102,8 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `httpPort`, `host` | `null` | HTTP port and bind address |
 | `tls.cert`, `tls.key` | `null` | HTTPS |
 | `oauth.clientId`, `.clientSecret`, `.issuerUrl`, `.clients[]` | | OAuth 2.0 consumers; `clients[]` is a list of `{clientId, clientSecret}` |
-| `groupConfirm` | `true` | `zalo_group` needs `confirm: true` before `leave` / `remove_member` |
+| `confirmMode` | unset (= `agent`) | `agent`, `human` or `off`: who confirms a destructive tool action. Set `agent` for an AI agent; `human` makes the server ask the user itself |
+| `groupConfirm` | | deprecated: `false` means `confirmMode: "off"` when no confirm mode is set |
 | `accounts.<ownId>` | | any of the above, for one account |
 
 A key that is not in this table is ignored without a message. (The `mode` key in older files is accepted and never read.)

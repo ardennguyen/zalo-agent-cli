@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { Command } from "commander";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { argsFromDef } from "../../src/commands/read.js";
-import { NEEDS_YES, registerWriteCommands } from "../../src/commands/write.js";
+import { registerWriteCommands } from "../../src/commands/write.js";
+import { refusalLine } from "../../src/core/confirm-guard.js";
 import { WRITES } from "../../src/zalo/writes.js";
 import { ReadUsageError } from "../../src/zalo/reads.js";
 
@@ -76,7 +77,8 @@ describe("the write command's guards", () => {
         const flags = run.options.map((o) => o.long);
         assert.ok(flags.includes("--dry-run"));
         assert.ok(flags.includes("--yes"));
-        assert.match(NEEDS_YES, /--dry-run/);
-        assert.match(NEEDS_YES, /--yes/);
+        const line = refusalLine("write.run", { name: "topic-remove", risk: "destructive" });
+        assert.match(line, /--dry-run/);
+        assert.match(line, /--yes/);
     });
 });

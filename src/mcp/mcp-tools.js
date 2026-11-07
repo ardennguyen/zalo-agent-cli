@@ -57,7 +57,7 @@ import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { callRead, describeReads, READ_NAMES, ReadUsageError } from "../zalo/reads.js";
 import "../core/local-reads.js";
-import { callWrite, describeWrites, WRITE_NAMES } from "../zalo/writes.js";
+import { callWrite, describeWrites, WRITE_NAMES, WRITES } from "../zalo/writes.js";
 import { describeReadState, readOnZalo } from "../core/read-state.js";
 import { extractMessageText } from "../zalo/format/extract-message-text.js";
 import { expandMentions, shiftStyles, ALL_MENTION_UID } from "../zalo/format/mentions.js";
@@ -80,14 +80,13 @@ import {
 } from "../core/friend-requests.js";
 import { errorCodeOf } from "../zalo/errors.js";
 import {
-    CONFIRMED_ACTIONS,
     NOT_A_MEMBER_CODES,
     REMOVE_NOT_IN_GROUP,
     createdGroupFrom,
-    groupConfirmRequired,
     groupInfoFrom,
     memberChangeFrom,
 } from "../core/group-admin.js";
+import { gateMcp, removedLabels } from "../core/confirm-guard.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 
 /** Repeat mode codes matching Zalo's reminder repeat modes and src/commands/reminder.js. */
@@ -509,6 +508,25 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             "Your bot's name, when several bots share this server: each name has its own read cursor, " +
                 "so one bot's zalo_mark_read does not hide messages from another. Omit it for a single bot.",
         );
+
+    // Every tool with an action Zalo Web asks about first takes these two, and settles it through gate()
+    // (src/core/confirm-guard.js) after its arguments are checked and before anything is sent.
+    const confirmInput = (which) =>
+        z
+            .boolean()
+            .optional()
+            .describe(
+                `Set true to go ahead with ${which}, which is asked about first. The deployment's confirmMode ` +
+                    'decides what counts: "agent" (the default) needs this; "human" asks the user through the client ' +
+                    'instead, and this does not answer for them; "off" asks nothing',
+            );
+    const dryRunInput = (which) =>
+        z
+            .boolean()
+            .optional()
+            .describe(`Set true to preview ${which}: the reply says what it would do, and nothing is sent`);
+    const gate = (key, target, { confirm, dryRun } = {}, extra, more = {}) =>
+        gateMcp(key, target, { confirm, dryRun, config, accountId: ownIdOf(api), server, extra, ...more });
 
     // --- zalo_get_messages ---
     server.registerTool(
@@ -1391,7 +1409,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Recall a Zalo Message",
             description:
-                'Recall (unsend) one of your own messages for everyone in the conversation, as the apps\' "Thu hồi" does. Zalo accepts a recall only for a while after the message was sent. ' +
+                'Recall (unsend) one of your own messages for everyone in the conversation, as the apps\' "Thu hồi" does. Zalo accepts a recall only for a while after the message was sent. It cannot be undone, so it is asked about first (`confirm`, `dryRun`). ' +
                 "Give the message's `msgId` (from the zalo_send_message reply, or from zalo_get_history) and its `cliMsgId` (also in the send reply; read from the local cache when you leave it out); with neither, nothing is sent. To remove a message from your own view only, or someone else's message in a group as an admin, use zalo_delete_message. `threadId` may be `me` for My Documents.",
             inputSchema: z.object({
                 msgId: z
@@ -1408,9 +1426,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     ),
                 threadType: threadTypeSchema,
                 cliMsgId: cliMsgIdSchema,
+                confirm: confirmInput("the recall"),
+                dryRun: dryRunInput("the recall"),
             }),
         },
-        async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn, cliMsgId }) => {
+        async ({ msgId, threadId: threadIdIn, threadType: threadTypeIn, cliMsgId, confirm, dryRun }, extra) => {
             const thread = actionThread(api, threadIdIn, threadTypeIn);
             if (thread.error) {
                 console.error("[mcp-tools] zalo_undo refused:", thread.error);
@@ -1424,6 +1444,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     console.error("[mcp-tools] zalo_undo refused:", target.error);
                     return err(target.error);
                 }
+                const held = await gate(
+                    "msg.undo",
+                    { msgId, threadId, cliMsgId: target.cliMsgId },
+                    { confirm, dryRun },
+                    extra,
+                );
+                if (held) return held;
                 // A group recall carries the group's own visibility, from the thread cache or Zalo, as `msg undo`.
                 const payload = await undoPayload(
                     api,
@@ -2092,7 +2119,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "Delete Zalo Message",
             description:
-                "Delete a message from your own view only (`everyone: false`, the default), or, as a group admin, delete someone else's message for everyone in the group (`everyone: true`). To recall your own message for both sides, use zalo_undo. `cliMsgId` and `uidFrom` are read from the local cache when you leave them out.",
+                "Delete a message from your own view only (`everyone: false`, the default), or, as a group admin, delete someone else's message for everyone in the group (`everyone: true`). To recall your own message for both sides, use zalo_undo. `cliMsgId` and `uidFrom` are read from the local cache when you leave them out. A delete cannot be undone, so it is asked about first (`confirm`, `dryRun`).",
             inputSchema: z.object({
                 msgId: z
                     .string()
@@ -2122,16 +2149,23 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .boolean()
                     .default(false)
                     .describe("Set true to delete someone else's message for everyone in a group (admin/owner)"),
+                confirm: confirmInput("the delete"),
+                dryRun: dryRunInput("the delete"),
             }),
         },
-        async ({
-            msgId,
-            threadId: threadIdIn,
-            threadType: threadTypeIn,
-            cliMsgId: cliMsgIdIn,
-            senderId: senderIdIn,
-            everyone,
-        }) => {
+        async (
+            {
+                msgId,
+                threadId: threadIdIn,
+                threadType: threadTypeIn,
+                cliMsgId: cliMsgIdIn,
+                senderId: senderIdIn,
+                everyone,
+                confirm,
+                dryRun,
+            },
+            extra,
+        ) => {
             const thread = actionThread(api, threadIdIn, threadTypeIn);
             if (thread.error) {
                 console.error("[mcp-tools] zalo_delete_message refused:", thread.error);
@@ -2158,6 +2192,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     type: Number(threadType),
                 };
                 const onlyMe = Boolean(everyone) === false;
+                const held = await gate(
+                    "msg.delete",
+                    { msgId, threadId, cliMsgId: String(cliMsgId), senderId: String(uidFrom), everyone: !onlyMe },
+                    { confirm, dryRun },
+                    extra,
+                );
+                if (held) return held;
                 const result = await api.deleteMessage(dest, onlyMe);
                 return ok({
                     success: true,
@@ -2185,7 +2226,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Create, list, inspect, view responses, edit, or remove reminders in a Zalo DM or group thread. " +
                 "Actions: 'create' (requires threadId, title), 'list' (requires threadId), 'info' (requires reminderId, group only), " +
                 "'responses' (requires reminderId, group only), 'edit' (requires reminderId, threadId, title), " +
-                "'remove' (requires reminderId, threadId).",
+                "'remove' (requires reminderId, threadId; it cannot be undone, so it is asked about first: `confirm`, `dryRun`).",
             inputSchema: z.object({
                 action: z
                     .enum(["create", "list", "info", "responses", "edit", "remove"])
@@ -2220,20 +2261,27 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .max(100)
                     .default(20)
                     .describe("Max items per page for 'list' (default 20)"),
+                confirm: confirmInput("'remove'"),
+                dryRun: dryRunInput("'remove'"),
             }),
         },
-        async ({
-            action,
-            threadId: threadIdIn,
-            threadType: threadTypeIn,
-            reminderId,
-            title,
-            time,
-            emoji,
-            repeat,
-            page,
-            count,
-        }) => {
+        async (
+            {
+                action,
+                threadId: threadIdIn,
+                threadType: threadTypeIn,
+                reminderId,
+                title,
+                time,
+                emoji,
+                repeat,
+                page,
+                count,
+                confirm,
+                dryRun,
+            },
+            extra,
+        ) => {
             try {
                 if (action === "info") {
                     if (!reminderId) return err("reminderId is required for action='info'.");
@@ -2328,6 +2376,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
 
                 if (action === "remove") {
                     if (!reminderId) return err("reminderId is required for action='remove'.");
+                    const held = await gate("reminder.remove", { reminderId, threadId }, { confirm, dryRun }, extra);
+                    if (held) return held;
                     const result = await api.removeReminder(reminderId, threadId, Number(threadType));
                     return ok({
                         action,
@@ -2530,7 +2580,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Create, inspect, vote, unvote, add options, lock, or share a poll in a Zalo group. " +
                 "Actions: 'create' (requires groupId, question, options with >=2 items), 'info' (requires pollId), " +
                 "'vote' (requires pollId, optionIds), 'unvote' (requires pollId), " +
-                "'add_options' (requires pollId, options), 'lock' (requires pollId), 'share' (requires pollId).",
+                "'add_options' (requires pollId, options), 'lock' (requires pollId; closing a poll cannot be undone, so it is " +
+                "asked about first: `confirm`, `dryRun`), 'share' (requires pollId).",
             inputSchema: z.object({
                 action: z
                     .enum(["create", "info", "vote", "unvote", "add_options", "lock", "share"])
@@ -2572,22 +2623,29 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .boolean()
                     .default(false)
                     .describe("Also cast your vote for the newly added options ('add_options' only)"),
+                confirm: confirmInput("'lock'"),
+                dryRun: dryRunInput("'lock'"),
             }),
         },
-        async ({
-            action,
-            groupId,
-            pollId,
-            question,
-            options,
-            optionIds,
-            multi,
-            allowAddOptions,
-            anonymous,
-            hidePreview,
-            expireMinutes,
-            voteNewOptions,
-        }) => {
+        async (
+            {
+                action,
+                groupId,
+                pollId,
+                question,
+                options,
+                optionIds,
+                multi,
+                allowAddOptions,
+                anonymous,
+                hidePreview,
+                expireMinutes,
+                voteNewOptions,
+                confirm,
+                dryRun,
+            },
+            extra,
+        ) => {
             try {
                 if (action === "create") {
                     if (!groupId) return err("groupId is required for action='create'.");
@@ -2655,6 +2713,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
 
                 if (action === "lock") {
+                    const held = await gate("poll.lock", { pollId: numericPollId }, { confirm, dryRun }, extra);
+                    if (held) return held;
                     const result = await api.lockPoll(numericPollId);
                     return ok({ action, success: true, pollId: numericPollId, result });
                 }
@@ -2774,7 +2834,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Actions: 'list' (returns all labels with their IDs, text, colors, conversations array, and version), " +
                 "'assign' (adds threadId or threadIds to a label identified by labelId or labelText), " +
                 "'unassign' (removes threadId or threadIds from a label identified by labelId or labelText), " +
-                "'update' (raw update with full labelData array and version, matching 'label update').",
+                "'update' (raw update with full labelData array and version, matching 'label update'; the list " +
+                "replaces the current one, so a label left out of it is deleted: that is asked about first, " +
+                "`confirm`, `dryRun`).",
             inputSchema: z.object({
                 action: z
                     .enum(["list", "assign", "unassign", "update"])
@@ -2815,9 +2877,25 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .int()
                     .optional()
                     .describe("Label version integer from action='list' (required for raw action='update')"),
+                confirm: confirmInput("an 'update' that removes labels"),
+                dryRun: dryRunInput("'update'"),
             }),
         },
-        async ({ action, labelId, labelText, threadId, threadIds, threadType: threadTypeIn, labelData, version }) => {
+        async (
+            {
+                action,
+                labelId,
+                labelText,
+                threadId,
+                threadIds,
+                threadType: threadTypeIn,
+                labelData,
+                version,
+                confirm,
+                dryRun,
+            },
+            extra,
+        ) => {
             try {
                 if (action === "list") {
                     const res = await api.getLabels();
@@ -2833,6 +2911,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     if (!Array.isArray(labelData) || typeof version !== "number" || !Number.isFinite(version)) {
                         return err("labelData (array) and version (number) are required for action='update'.");
                     }
+                    // Only a label dropped from the list is asked about; knowing which takes the current list.
+                    const removed = removedLabels((await api.getLabels())?.labelData, labelData);
+                    const held = await gate(
+                        "label.update",
+                        { removedLabels: removed, version: Number(version) },
+                        { confirm, dryRun },
+                        extra,
+                        { applies: removed.length > 0 },
+                    );
+                    if (held) return held;
                     const updated = await api.updateLabels({
                         labelData,
                         version: Number(version),
@@ -2942,8 +3030,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'sent_requests' (requests you sent that are still pending), " +
                 "'received_requests' (requests others sent you, newest first, with their message), " +
                 "'send' (friend request to userId, with an optional message), " +
-                "'accept' / 'reject' (the request from userId), " +
-                "'undo' (cancel the request you sent to userId), " +
+                "'accept' / 'reject' (the request from userId; 'reject' is asked about first), " +
+                "'undo' (cancel the request you sent to userId; asked about first: `confirm`, `dryRun`), " +
                 "'list' (your friends, most recently active first, capped by limit), " +
                 "'alias' (set the nickname this account shows for userId to `alias`; an empty alias removes it; " +
                 "the nickname is what `senderDisplayName` and `@[userId]` mentions then use), " +
@@ -2990,9 +3078,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .describe(
                         "Most entries to return for 'list' (default 200) and 'alias_list' (default 100); the reply says how many there are in all",
                     ),
+                confirm: confirmInput("'reject' and 'undo'"),
+                dryRun: dryRunInput("'reject' and 'undo'"),
             }),
         },
-        async ({ action, userId, message, limit, alias }) => {
+        async ({ action, userId, message, limit, alias, confirm, dryRun }, extra) => {
             const needsUser = ["status", "send", "accept", "reject", "undo", "alias"].includes(action);
             const target = userId === undefined ? "" : String(userId).trim();
             if (needsUser) {
@@ -3002,6 +3092,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         `userId must be a numeric Zalo id (got "${target}"). zalo_lookup_user finds one from a phone number.`,
                     );
                 }
+            }
+            if (action === "reject" || action === "undo") {
+                const key = action === "reject" ? "friend.reject" : "friend.undoRequest";
+                const held = await gate(key, { userId: target }, { confirm, dryRun }, extra);
+                if (held) return held;
             }
             try {
                 switch (action) {
@@ -3100,9 +3195,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "'rename' (set the group's name to `name`; every member sees the change). " +
                 "groupId is the group's thread id (zalo_search_threads or zalo_list_conversations finds it); " +
                 "user ids are numeric Zalo ids (zalo_lookup_user finds one from a phone number). " +
-                "'leave' and 'remove_member' cannot be undone from here, so they need confirm: true (a plain " +
-                "parameter, no prompt; a deployment can turn the check off with groupConfirm: false in " +
-                "mcp-config.json or ZALO_MCP_GROUP_CONFIRM=0). Zalo can refuse some members " +
+                "'leave' and 'remove_member' cannot be undone from here, so they are asked about first: " +
+                "`confirm` and `dryRun`, as the deployment's confirmMode decides. Zalo can refuse some members " +
                 "of a create or add_members: the reply lists the members it did and did not take.",
             inputSchema: z.object({
                 action: z
@@ -3130,16 +3224,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .describe(
                         "Only for 'leave': hide the usual notice from ordinary members; the owner still sees it (default false)",
                     ),
-                confirm: z
-                    .boolean()
-                    .optional()
-                    .describe(
-                        "Must be true for 'leave' and 'remove_member', which cannot be undone from here " +
-                            "(ignored when the deployment has switched the check off)",
-                    ),
+                confirm: confirmInput("'leave' and 'remove_member'"),
+                dryRun: dryRunInput("'leave' and 'remove_member'"),
             }),
         },
-        async ({ action, groupId, name, userIds, userId, silent, confirm }) => {
+        async ({ action, groupId, name, userIds, userId, silent, confirm, dryRun }, extra) => {
             const gid = groupId === undefined ? "" : String(groupId).trim();
             if (["leave", "info", "add_members", "remove_member", "rename"].includes(action)) {
                 if (!gid) return err(`groupId is required for action='${action}'.`);
@@ -3176,13 +3265,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             }
 
             // After validation, before Zalo: a refused call changes nothing and says exactly how to retry.
-            if (CONFIRMED_ACTIONS.includes(action) && confirm !== true && groupConfirmRequired({ config })) {
-                const what = action === "leave" ? `leave group ${gid}` : `remove ${target} from group ${gid}`;
-                return err(
-                    `Not done: this would ${what}, which cannot be undone from here. Repeat the call with ` +
-                        "confirm: true to proceed. (An automatic or headless deployment can turn this check off " +
-                        "with groupConfirm: false in mcp-config.json, or ZALO_MCP_GROUP_CONFIRM=0 in the environment.)",
+            if (action === "leave" || action === "remove_member") {
+                const held = await gate(
+                    action === "leave" ? "group.leave" : "group.removeMember",
+                    action === "leave"
+                        ? { groupId: gid, silent: silent === true }
+                        : { groupId: gid, userIds: [target] },
+                    { confirm, dryRun },
+                    extra,
                 );
+                if (held) return held;
             }
 
             try {
@@ -3326,7 +3418,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Official Account, removing one account from several groups, the search history. Omit `name` to list " +
                 "every write with what it touches (`risk`: private, visible to others, or destructive), what it takes, " +
                 "whether a live success was seen (`verified`) and, if not, why (`note`). EVERY write changes " +
-                "something, so a real call needs `confirm: true` (a plain parameter, no prompt), and `dryRun: true` " +
+                'something, so a real call is asked about first, even where the deployment\'s confirmMode is "off" ' +
+                '(`confirm: true`; in "human" mode the server asks the user), and `dryRun: true` ' +
                 "returns the request that would be sent without sending anything: use it first, and try an unverified " +
                 "write on something disposable. Enum-like arguments take the web client's names or numbers (`list` " +
                 "shows them). `args` is an object named by the write's own argument list (ids are strings).",
@@ -3343,17 +3436,24 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     .boolean()
                     .optional()
                     .describe("Return the request that would be sent, with its body decrypted, and send nothing"),
-                confirm: z.boolean().optional().describe("Must be true for a real call (not needed with dryRun)"),
+                confirm: confirmInput("a real call (not needed with dryRun)"),
             }),
             annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         },
-        async ({ name, args, dryRun, confirm }) => {
+        async ({ name, args, dryRun, confirm }, extra) => {
             if (!name) return ok({ writes: describeWrites() });
-            if (!dryRun && confirm !== true) {
-                return err(
-                    `"${name}" changes something on the account. ` +
-                        "Pass dryRun: true to see the request, or confirm: true to send it.",
+            // dryRun is the write's own: it returns the request itself, so only a real call is gated. A raw
+            // endpoint runner stays gated even in confirmMode "off".
+            if (!dryRun) {
+                const def = WRITES[name];
+                const held = await gate(
+                    "write.run",
+                    { name, risk: def?.risk, verified: def?.verified, args: args || {} },
+                    { confirm },
+                    extra,
+                    { always: true },
                 );
+                if (held) return held;
             }
             try {
                 const data = await callWrite(api, name, args || {}, { dryRun: dryRun === true });

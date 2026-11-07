@@ -11,6 +11,7 @@ import { getAccountDir } from "../core/credentials.js";
 import { getDaemonStatus } from "../core/daemon-channel.js";
 import { openOutbox, outboxPath } from "../core/webhook-outbox.js";
 import { error, info, output, success } from "../utils/output.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
 
@@ -194,4 +195,11 @@ export function registerMCPWebhookCommands(mcp, program) {
                 });
             });
     }
+    // Purging dead letters cannot be taken back: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(webhook, "purge", "webhook.purge", {
+        target: (seq, opts) => ({
+            account: opts.account ?? program.opts().account ?? (process.env.ZALO_ACCOUNT?.trim() || null),
+            ...(seq !== undefined && { seq }),
+        }),
+    });
 }

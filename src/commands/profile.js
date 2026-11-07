@@ -8,6 +8,7 @@ import { updateAccountName } from "../core/accounts.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff, parseLanguage } from "../utils/cli-args.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 /** Valid privacy setting keys and their human-readable labels + value descriptions. */
 const SETTING_MAP = {
@@ -315,4 +316,6 @@ export function registerProfileCommands(program) {
                 error(`Lost focus failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(profile, "delete-avatar", "profile.deleteAvatar", { target: (photoIds) => ({ photoIds }) });
 }

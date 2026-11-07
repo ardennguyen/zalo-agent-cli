@@ -902,7 +902,19 @@ async function runCloudSync(activeAcc, opts) {
         process.exit(1);
     }
 
-    const r = await cloudPass(api, opts);
+    const route = routeCloudWalk(accountDir);
+    if (route.via === "skip") {
+        error(`Not walking the cloud queue: ${route.reason}.`);
+        process.exit(1);
+    }
+    if (route.via === "daemon") info("A listen/mcp daemon holds this account — walking the cloud queue in it.");
+    let r;
+    try {
+        r = await cloudPass(api, { ...opts, walk: route.walk });
+    } catch (err) {
+        error(`Failed: ${err.message}`);
+        process.exit(1);
+    }
     if (r.status === "skipped") {
         info("Pass --full to walk the queue anyway.");
         process.exit(0);
@@ -966,6 +978,59 @@ export function describeCloudPlan(plan) {
 }
 
 /**
+ * Where a cloud walk may run (D31, ZP-09). The daemon walks the same queue on its own when the server sends cmd 621,
+ * under its stage lock, and two walkers at once can write the saved place out of order or sweep what the other just
+ * recorded. So with a daemon up the walk runs in it, through its channel; a process that holds the account but cannot
+ * run the walk (a daemon older than the route, or another `sync` holding the lock) means no walk here.
+ *
+ * @param {object} args
+ * @param {boolean} args.locked - whether another live process holds `daemon.lock`
+ * @param {object|null} args.chan - the daemon's channel when it runs the `cloud` stage (`getSyncChannel(dir, "cloud")`)
+ * @returns {{via: "local"|"daemon"|"skip", reason: string}}
+ */
+export function cloudWalkRoute({ locked, chan }) {
+    if (chan) return { via: "daemon", reason: "" };
+    if (locked) {
+        return {
+            via: "skip",
+            reason:
+                "another process holds this account (a listen/mcp daemon that cannot run the cloud walk, or another " +
+                "sync), and it may walk the cloud queue itself; restart the daemon to pick the capability up",
+        };
+    }
+    return { via: "local", reason: "" };
+}
+
+/**
+ * The `walk` that runs a cloud walk in the daemon, for {@link cloudPass}. A daemon that did not run it throws, with
+ * the reason the other daemon stages give.
+ *
+ * @param {string} accountDir
+ * @returns {(params: object) => Promise<object>}
+ */
+function daemonCloudWalk(accountDir) {
+    return async ({ onProgress, ...params }) => {
+        const r = await syncViaDaemon(accountDir, { stage: "cloud", params, onEvent: onProgress });
+        if (!r?.ok) throw new Error(daemonStageError(r));
+        return r.result;
+    };
+}
+
+/**
+ * {@link cloudWalkRoute} for this account, with the `walk` it implies.
+ *
+ * @param {string} accountDir
+ * @returns {{via: "local"|"daemon"|"skip", reason: string, walk?: (params: object) => Promise<object>}}
+ */
+function routeCloudWalk(accountDir) {
+    const route = cloudWalkRoute({
+        locked: checkLock(accountDir).locked,
+        chan: getSyncChannel(accountDir, "cloud"),
+    });
+    return route.via === "daemon" ? { ...route, walk: daemonCloudWalk(accountDir) } : route;
+}
+
+/**
  * One walk of the zCloud index. Exit-free.
  *
  * The cursor is saved after every page and kept when the walk is complete, as Zalo Web keeps its last noise id: the
@@ -973,11 +1038,16 @@ export function describeCloudPlan(plan) {
  * the top). `full` ignores the saved place, walks from the top and sweeps what no page listed; an explicit `resume`
  * wins over the saved place.
  *
+ * The walk itself runs where {@link cloudWalkRoute} says: here, or in the running daemon (`walk`), which also walks
+ * this queue on its own and must not do it beside us.
+ *
  * @param {object} api
  * @param {{resume?: string, full?: boolean, pageSize?: number, pages?: number,
+ *   walk?: (params: {resume: string, full: boolean, pageSize?: number, maxPages?: number,
+ *     onProgress: (p: object) => void}) => Promise<object>,
  *   verify?: (params: object) => Promise<object>, usage?: () => Promise<object>, myCloud?: () => Promise<object>,
- *   settings?: () => Promise<object>}} opts - `verify`, `usage`, `myCloud` and `settings` replace the network calls
- *   (tests)
+ *   settings?: () => Promise<object>}} opts - `walk` runs the walk elsewhere (the daemon) and returns its stats;
+ *   `verify`, `usage`, `myCloud` and `settings` replace the network calls (tests)
  * @returns {Promise<{status: "ok"|"unavailable"|"skipped", plan: object|null, stats: object}>} `skipped`: the account
  *   has no zCloud plan and nothing in the cloud, so no page was asked for (a `full` or `resume` walk is never skipped)
  */
@@ -993,16 +1063,25 @@ export async function cloudPass(api, opts) {
     const resume = opts.resume || saved || "";
     if (!opts.full && !opts.resume && saved) info("Reading the cloud queue from where the last walk stopped.");
     info(opts.full ? "Walking the whole zCloud queue…" : "Walking the zCloud media index…");
-    const stats = await syncCloudIndex({
-        api,
-        lastNoiseId: resume,
-        full: !!opts.full,
-        verify: opts.verify,
-        pageSize: opts.pageSize,
-        maxPages: opts.pages,
-        onProgress: (p) => info(`  page ${p.page}: ${p.items} item(s) so far`),
-        onPage: (p) => setSyncState("cloudCursor", p.cursor),
-    });
+    const onProgress = (p) => info(`  page ${p.page}: ${p.items} item(s) so far`);
+    const stats = opts.walk
+        ? await opts.walk({
+              resume: opts.resume || "",
+              full: !!opts.full,
+              pageSize: opts.pageSize,
+              maxPages: opts.pages,
+              onProgress,
+          })
+        : await syncCloudIndex({
+              api,
+              lastNoiseId: resume,
+              full: !!opts.full,
+              verify: opts.verify,
+              pageSize: opts.pageSize,
+              maxPages: opts.pages,
+              onProgress,
+              onPage: (p) => setSyncState("cloudCursor", p.cursor),
+          });
     if (stats.failed && !stats.items && !stats.removed) return { status: "unavailable", plan, stats };
     const bits = [`Recorded ${stats.items} cloud item(s) across ${stats.pages} page(s)`];
     if (stats.removed) bits.push(`removed ${stats.removed} the cloud no longer holds`);
@@ -1993,9 +2072,14 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
         }
     }
 
-    if (runs("cloud")) {
+    const cloudRoute = runs("cloud") ? routeCloudWalk(accountDir) : null;
+    if (cloudRoute?.via === "skip") {
+        info(`zCloud index skipped: ${cloudRoute.reason}.`);
+        record("cloud", "skipped", cloudRoute.reason);
+    } else if (cloudRoute) {
         try {
-            const r = await cloudPass(api, { pages: 500, pageSize: 300 });
+            if (cloudRoute.via === "daemon") info("Walking the zCloud index in the running daemon.");
+            const r = await cloudPass(api, { pages: 500, pageSize: 300, walk: cloudRoute.walk });
             if (r.status === "skipped") {
                 record("cloud", "skipped", "no zCloud plan on this account", { plan: r.plan?.plan ?? null });
             } else if (r.status === "unavailable") {

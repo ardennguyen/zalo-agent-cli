@@ -5,6 +5,7 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 /** One year in milliseconds — the default window for an open-ended rule. */
 const DEFAULT_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
@@ -100,4 +101,6 @@ export function registerAutoReplyCommands(program) {
                 error(`Delete auto-reply failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(ar, "delete", "autoReply.delete", { target: (id) => ({ id }) });
 }

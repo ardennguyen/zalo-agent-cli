@@ -57,9 +57,9 @@ describe("write", () => {
         assert.match(text, /None has been answered by a live account/);
     });
 
-    it("refuses to send without --yes, with the way forward, and a failing exit", async () => {
+    it("refuses to send without --yes, with the way forward, and exit 2 (not confirmed, not failed)", async () => {
         const r = await runCli(["write", "run", "topic-remove", "--arg", "groupId=g1", "--arg", "topicId=t1"], options);
-        assert.equal(r.code, 1);
+        assert.equal(r.code, 2);
         const text = stripAnsi(r.all);
         assert.match(text, /✗/);
         assert.match(text, /destructive/);

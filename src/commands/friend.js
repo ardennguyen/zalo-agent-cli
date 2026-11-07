@@ -9,6 +9,7 @@ import { describeFriendUndoError, friendAddFailure, readSentRequests } from "../
 import { errorCodeOf } from "../zalo/errors.js";
 import { readUserAliases } from "../core/current-user-names.js";
 import { searchFriends } from "../core/friend-search.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 export function registerFriendCommands(program) {
     const friend = program.command("friend").description("Manage friends and contacts");
@@ -450,4 +451,9 @@ export function registerFriendCommands(program) {
                 error(`Block feed failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(friend, "remove", "friend.remove", { target: (userId) => ({ userId }) });
+    guardSubcommand(friend, "block", "friend.block", { target: (userId) => ({ userId }) });
+    guardSubcommand(friend, "reject", "friend.reject", { target: (userId) => ({ userId }) });
+    guardSubcommand(friend, "undo-request", "friend.undoRequest", { target: (userId) => ({ userId }) });
 }

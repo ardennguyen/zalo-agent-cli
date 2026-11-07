@@ -5,6 +5,7 @@
 import { getApi } from "../core/zalo-client.js";
 import { success, error, info, output } from "../utils/output.js";
 import { parseIntOption } from "../utils/parse-options.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 export function registerPollCommands(program) {
     const poll = program.command("poll").description("Create and manage polls in groups");
@@ -161,4 +162,6 @@ export function registerPollCommands(program) {
                 error(`Share poll failed: ${e.message}`);
             }
         });
+    // Asked about first, as Zalo Web does: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
+    guardSubcommand(poll, "lock", "poll.lock", { target: (pollId) => ({ pollId }) });
 }

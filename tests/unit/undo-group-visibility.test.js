@@ -82,7 +82,7 @@ describe("zalo_undo in a group", () => {
         const buffer = { read: () => ({ messages: [] }), getStats: () => [], getThreadType: () => "group" };
         const cache = { ready: true, get: (id) => (id === GROUP ? entry : null), search: () => [] };
         registerTools(server, api, buffer, {}, { limits: {} }, cache);
-        return tools.get("zalo_undo")({ ...MSG, threadId: GROUP, threadType: "group" });
+        return tools.get("zalo_undo")({ ...MSG, threadId: GROUP, threadType: "group", confirm: true });
     }
 
     it("sends the visibility the thread cache holds", async () => {
@@ -119,7 +119,7 @@ describe("msg undo in a group", () => {
     });
 
     it("recalls with the group's visibility from its info", async () => {
-        const r = await runOffline(["msg", "undo", MSG.msgId, GROUP, "-t", "1"], {
+        const r = await runOffline(["msg", "undo", MSG.msgId, GROUP, "-t", "1", "--yes"], {
             responses: { "/api/group/getmg-v2": { gridInfoMap: { [GROUP]: { groupId: GROUP, visibility: 1 } } } },
         });
         const recalls = requestsTo(r.requests, "/api/group/undomsg");
@@ -130,7 +130,7 @@ describe("msg undo in a group", () => {
     });
 
     it("still recalls, with 0, when the group's info cannot be read", async () => {
-        const r = await runOffline(["msg", "undo", MSG.msgId, GROUP, "-t", "1"], {
+        const r = await runOffline(["msg", "undo", MSG.msgId, GROUP, "-t", "1", "--yes"], {
             responses: { "/api/group/getmg-v2": { __error: { code: 114, message: "offline refusal" } } },
         });
         const recalls = requestsTo(r.requests, "/api/group/undomsg");

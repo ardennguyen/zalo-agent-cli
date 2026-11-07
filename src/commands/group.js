@@ -10,6 +10,7 @@ import { getGroupHistory } from "../zalo/custom/group-history.js";
 import { groupMemberUids } from "../core/group-members.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 
 export function registerGroupCommands(program) {
     const group = program.command("group").description("Manage groups");
@@ -692,4 +693,28 @@ export function registerGroupCommands(program) {
                 error(`Group invite info failed: ${e.message}`);
             }
         });
+
+    // The actions Zalo Web asks about first: each needs --yes, and --dry-run says what it would do (src/core/confirm-guard.js).
+    guardSubcommand(group, "leave", "group.leave", {
+        target: (groupId, opts) => ({ groupId, silent: Boolean(opts.silent) }),
+    });
+    guardSubcommand(group, "remove-member", "group.removeMember", {
+        target: (groupId, userIds) => ({ groupId, userIds }),
+    });
+    guardSubcommand(group, "remove-admin", "group.removeAdmin", {
+        target: (groupId, userIds) => ({ groupId, userIds }),
+    });
+    guardSubcommand(group, "transfer-owner", "group.transferOwner", {
+        target: (groupId, userId) => ({ groupId, userId }),
+    });
+    guardSubcommand(group, "block-member", "group.blockMember", {
+        target: (groupId, userIds) => ({ groupId, userIds }),
+    });
+    guardSubcommand(group, "disable-link", "group.disableLink", { target: (groupId) => ({ groupId }) });
+    guardSubcommand(group, "disperse", "group.disperse", { target: (groupId) => ({ groupId }) });
+    // Only turning membership approval off is asked about; every other setting goes ahead as before.
+    guardSubcommand(group, "settings", "group.settings", {
+        target: (groupId, opts) => ({ groupId, approvalOff: opts.joinAppr === false }),
+        when: (target) => target.approvalOff,
+    });
 }

@@ -12,5 +12,5 @@
         "downloadDir": null,
         "autoOpen": false
     },
-    "groupConfirm": true
+    "confirmMode": "agent"
 }

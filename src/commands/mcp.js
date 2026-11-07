@@ -40,6 +40,7 @@ import { createCloudVerifier } from "../core/cloud-verify.js";
 import { attachUnknownActs } from "../core/unknown-acts.js";
 import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync } from "../core/read-state.js";
+import { attachControlEvents } from "../core/control-events.js";
 import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
@@ -830,6 +831,13 @@ export function registerMCPCommands(program) {
             attachVoiceText({
                 tap: socketTap,
                 file: voiceTextFile(accountDir),
+                log: (line) => console.error(`[mcp] ${line}`),
+            });
+            // A DM reminder removed on another device leaves the cache, a device-list change is logged, as in
+            // `listen` (src/core/control-events.js); the events are printed only by `listen`.
+            attachControlEvents({
+                tap: socketTap,
+                ownId: activeAcc.ownId,
                 log: (line) => console.error(`[mcp] ${line}`),
             });
             // End-to-end encrypted messages this client cannot read: the first is named in the log, the rest counted.

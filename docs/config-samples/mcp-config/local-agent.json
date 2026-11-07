@@ -17,5 +17,5 @@
         "on": ["dm"],
         "cooldown": "5m"
     },
-    "groupConfirm": true
+    "confirmMode": "agent"
 }

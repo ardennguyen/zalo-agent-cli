@@ -176,7 +176,10 @@ export function renderCaddyfile({ domain, accounts }) {
 #   ZALO_MCP_PUBLIC_URL_${exampleId}=https://${domain}/a/${exampleId}
 # (or "publicUrl" in that account's block of mcp-config.json). handle_path strips the prefix.
 ${domain} {
-	encode zstd gzip
+	# Media links (/a/<id>/zalo/media/<token>) are never compressed: it breaks byte ranges.
+	# Set trustedProxies: ["127.0.0.1"] in mcp-config.json so their per-client limit counts clients.
+	@compress not path /a/*/zalo/media/*
+	encode @compress zstd gzip
 
 ${blocks}
 	# A client for an account talks to  https://${domain}/a/<id>/mcp  and  https://${domain}/a/<id>/events/wait

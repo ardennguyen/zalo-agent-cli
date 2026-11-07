@@ -1,7 +1,13 @@
 # Caddyfile: one account's MCP server on the internet, TLS terminated by Caddy.
 # The engine stays on 127.0.0.1:3847 (ZALO_MCP_HOST / ZALO_MCP_HTTP_PORT).
 zalo.example.com {
-	encode zstd gzip
+	# Media links (/zalo/media/<token>) are never compressed: a compressed body
+	# breaks byte ranges (video seek). Caddy already sends the engine the real
+	# client address in X-Forwarded-For; set trustedProxies: ["127.0.0.1"]
+	# (ZALO_MCP_TRUSTED_PROXIES=127.0.0.1) so a capability link's per-client
+	# limit counts clients, not this proxy.
+	@compress not path /zalo/media/*
+	encode @compress zstd gzip
 
 	# Optional: only your office or CRM addresses may connect at all.
 	# @blocked not remote_ip 203.0.113.0/24 198.51.100.7
@@ -17,8 +23,8 @@ zalo.example.com {
 		reverse_proxy 127.0.0.1:18927
 	}
 
-	# Everything else, the one-time secure page /zalo/secure/<token> included,
-	# goes to the MCP server. Its links are built from publicUrl
+	# Everything else, the one-time secure page /zalo/secure/<token> and the
+	# media links /zalo/media/<token> included, goes to the MCP server. Its links are built from publicUrl
 	# (ZALO_MCP_PUBLIC_URL=https://zalo.example.com), never from the Host header.
 	# `/events/wait` holds the request open for up to 300 s and MCP replies are
 	# streamed: no response buffering, and a read timeout above 300 s.

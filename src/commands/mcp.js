@@ -45,7 +45,15 @@ import { createReadStateSync } from "../core/read-state.js";
 import { attachLastOnline } from "../core/last-online.js";
 import { attachControlEvents } from "../core/control-events.js";
 import { attachHiddenChatControls, hiddenChatsFor, hiddenEventView } from "../core/hidden-chats.js";
-import { resolveApproval, resolveHiddenChats, resolvePublicUrl } from "../core/deploy-policy.js";
+import {
+    resolveApproval,
+    resolveHiddenChats,
+    resolveMediaDelivery,
+    resolveMediaLinkAuth,
+    resolvePublicUrl,
+    resolveTrustedProxies,
+} from "../core/deploy-policy.js";
+import { getMediaLinks, startTempfileSweeper } from "../core/media-deliver.js";
 import { approverStatus } from "../core/approval.js";
 import { resolveConfirmMode } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
@@ -649,6 +657,35 @@ export function registerMCPCommands(program) {
             const securePage = getSecurePage().configure({ accountId: activeAcc.ownId });
             // The QR login page, served on the HTTP port when a login runs in this process (src/utils/qr-http-server.js).
             const qrPage = getQrPage();
+            // Media links (src/core/media-deliver.js): the policy they are issued under. Over --http they are served
+            // on its port and point at publicUrl (below); under stdio a 127.0.0.1 listener serves them on first use.
+            const mediaPolicy = resolveMediaDelivery({ config, accountId: activeAcc.ownId });
+            const mediaAuth = resolveMediaLinkAuth({
+                config,
+                accountId: activeAcc.ownId,
+                publicUrl: effectiveHttpPort ? publicUrl.publicUrl : null,
+            });
+            const trustedProxies = resolveTrustedProxies({ config, accountId: activeAcc.ownId });
+            const mediaLinks = getMediaLinks().configure({
+                linkAuth: effectiveHttpPort ? mediaAuth.linkAuth : "capability",
+                maxClients: mediaAuth.maxClients,
+                clientTtlMs: mediaAuth.clientTtlMs,
+                ttlMs: mediaPolicy.linkTtlMs,
+                rateLimit: mediaPolicy.linkRateLimit,
+                trustedProxies,
+                log: (line) => console.error(line),
+            });
+            // A chat hidden while its links are out: they stop working at once (unless the policy shows hidden chats).
+            hidden.onChange((set) => {
+                if (hiddenPolicy.mode === "include") return;
+                const n = mediaLinks.revokeWhere(
+                    (l) => l.threadId !== null && set.isHidden(l.threadId),
+                    "its chat was hidden",
+                );
+                if (n) console.error(`[mcp] ${n} media link(s) revoked: their chat was hidden`);
+            });
+            // Decrypted copies a CLI command or a crash left behind expire on time while this daemon runs.
+            startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs });
             // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
             gate.leave();
 
@@ -740,6 +777,8 @@ export function registerMCPCommands(program) {
                         securePage,
                         qrPage,
                         hiddenEvents,
+                        mediaLinks,
+                        trustedProxies,
                     };
                     const authToken =
                         opts.auth?.trim() ||
@@ -777,6 +816,17 @@ export function registerMCPCommands(program) {
                     const localBaseUrl = `${tlsOptions ? "https" : "http"}://${localHost.includes(":") ? `[${localHost}]` : localHost}:${port}`;
                     securePage.configure({ publicUrl: publicUrl.publicUrl, localBaseUrl });
                     qrPage.configure({ publicUrl: publicUrl.publicUrl, localBaseUrl, mounted: true });
+                    mediaLinks.configure({
+                        publicUrl: publicUrl.publicUrl,
+                        localBaseUrl,
+                        bearerAvailable: Boolean(authToken || oauthClientSecret || oauthClients.length > 0),
+                    });
+                    console.error(
+                        `[mcp] Media links: ${mediaLinks.linkAuth} (${mediaAuth.source}), ${Math.round(mediaPolicy.linkTtlMs / 60_000)} min` +
+                            (mediaLinks.linkAuth === "capability" && publicUrl.publicUrl
+                                ? `, at most ${mediaAuth.maxClients} client address(es) per link`
+                                : ""),
+                    );
                     console.error(
                         `[mcp] Public address: ${publicUrl.publicUrl ? `${publicUrl.publicUrl} (${publicUrl.source})` : `none set: links use ${localBaseUrl} (set publicUrl behind a proxy)`}`,
                     );
@@ -1200,6 +1250,7 @@ export function registerMCPCommands(program) {
                 }
                 notifier?.destroy();
                 webhookDelivery?.stop();
+                mediaLinks.revokeAll("the server stopped");
                 httpServer?.close();
                 dropLock();
                 process.exit(0);
@@ -1220,10 +1271,13 @@ export function registerMCPCommands(program) {
                     return newApi;
                 },
                 onKicked: () => {
+                    // The session ended: no media link may outlive it, even for the moments before the exit.
+                    mediaLinks.revokeAll("the session ended");
                     dropLock();
                     process.exit(EXIT_CODE.KICKED);
                 },
                 onRevoked: (e) => {
+                    mediaLinks.revokeAll("the session ended");
                     console.error(
                         `[mcp] Zalo keeps refusing the saved login (${e?.message ?? e}). Run \`zalo-agent login\` again.`,
                     );

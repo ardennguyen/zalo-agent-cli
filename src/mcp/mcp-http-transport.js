@@ -15,6 +15,8 @@ import { dirname, join } from "path";
 import { newMcpServer } from "./new-server.js";
 import { maskSecurePath, SECURE_PATH_PREFIX } from "../core/secure-page.js";
 import { maskQrPath, QR_PATH_PREFIX } from "../utils/qr-http-server.js";
+import { maskMediaPath, MEDIA_PATH_PREFIX } from "../core/media-deliver.js";
+import { clientIpOf, handleMediaRequest, isLoopbackIp } from "../core/media-route.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -193,6 +195,24 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     // Bounded dynamic client registrations (RFC 7591)
     const dynamicClients = new Map();
 
+    /**
+     * Whether a request carries this server's own credential: the --auth token, a configured client secret, or an
+     * OAuth access token it signed. Used by the auth middleware and by a bearer media link.
+     * @param {import("express").Request} req
+     * @returns {boolean}
+     */
+    const isAuthorized = (req) => {
+        if (!signingSecret) return false;
+        const authHeader = req.headers.authorization || "";
+        const token = /^bearer\s+/i.test(authHeader) ? authHeader.slice(7).trim() : "";
+        if (!token) return false;
+        if ((authToken && safeEqual(token, authToken)) || safeEqual(token, signingSecret)) return true;
+        for (const sec of configuredClients.values()) {
+            if (safeEqual(token, sec)) return true;
+        }
+        return Boolean(verifyOAuthToken(token, "zmcp_at_", signingSecret));
+    };
+
     // CORS headers for browser-based MCP clients and OAuth discovery
     app.use((req, res, next) => {
         const remoteIp = req.socket?.remoteAddress || "";
@@ -204,7 +224,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 const ua = String(req.headers["user-agent"] || "-").slice(0, 80);
                 const h = String(req.headers.host || "-");
                 console.error(
-                    `${DEBUG_MARK}[mcp-http] ${req.method} ${maskQrPath(maskSecurePath(req.originalUrl))} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
+                    `${DEBUG_MARK}[mcp-http] ${req.method} ${maskMediaPath(maskQrPath(maskSecurePath(req.originalUrl)))} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
                 );
             });
         }
@@ -244,6 +264,24 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             req.url = `${QR_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
             deps.qrPage
                 .handle(req, res)
+                .then((handled) => {
+                    if (!handled) next();
+                })
+                .catch(() => {
+                    if (!res.headersSent) res.status(500).set("Cache-Control", "no-store").end();
+                });
+        });
+    }
+
+    // Media links (/zalo/media/<token>, src/core/media-route.js), before the bearer check as well: a capability link
+    // is admitted by its token, and a bearer link checks this server's own Authorization itself (isAuthorized).
+    if (deps.mediaLinks) {
+        app.use(MEDIA_PATH_PREFIX, (req, res, next) => {
+            req.url = `${MEDIA_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
+            handleMediaRequest(req, res, {
+                links: deps.mediaLinks,
+                authorize: signingSecret ? isAuthorized : null,
+            })
                 .then((handled) => {
                     if (!handled) next();
                 })
@@ -551,20 +589,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             const authHeader = req.headers.authorization || "";
             const token = /^bearer\s+/i.test(authHeader) ? authHeader.slice(7).trim() : "";
 
-            let matchesStaticToken =
-                Boolean(token) && ((authToken && safeEqual(token, authToken)) || safeEqual(token, signingSecret));
-            if (!matchesStaticToken && token) {
-                for (const sec of configuredClients.values()) {
-                    if (safeEqual(token, sec)) {
-                        matchesStaticToken = true;
-                        break;
-                    }
-                }
-            }
-            const oauthClaims =
-                !matchesStaticToken && token ? verifyOAuthToken(token, "zmcp_at_", signingSecret) : null;
-
-            if (!matchesStaticToken && !oauthClaims) {
+            if (!isAuthorized(req)) {
                 const origin = resolveIssuerOrigin(req, configuredIssuer, isTls);
                 const wwwAuth = token
                     ? `Bearer error="invalid_token", error_description="Unauthorized", resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`
@@ -583,6 +608,9 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             // This server lives for one request, so it cannot ask the person anything and hear back: the guard
             // reads this and refuses confirmMode "human" at once instead of waiting (src/core/confirm-guard.js).
             server.statelessHttp = true;
+            // Whether this request's client runs on this machine: only then can a tempfile path mean anything to it
+            // (src/core/media-deliver.js chooseDelivery). X-Forwarded-For counts only from a trusted proxy.
+            server.clientLoopback = isLoopbackIp(clientIpOf(req, deps.trustedProxies || []));
             registerToolsFn(
                 server,
                 deps.api,

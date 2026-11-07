@@ -286,7 +286,7 @@ describe("helpers", () => {
     });
 
     it("maskMediaPath hides the token", () => {
-        assert.equal(maskMediaPath("GET /zalo/media/abcDEF123_-xyzXYZ0123456?x=1"), "GET /zalo/media/***?x=1");
+        assert.equal(maskMediaPath("GET /zalo/media/abcDEF123_-xyzXYZ0123456?x=1"), "GET /zalo/media/***");
     });
 });
 

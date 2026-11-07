@@ -83,6 +83,7 @@ export function pinBackoffMs(failures) {
 /** One account's hidden conversations, in this process. */
 export class HiddenChats {
     #hash = null;
+    #listeners = new Set();
 
     /**
      * @param {object} [opts]
@@ -129,7 +130,30 @@ export class HiddenChats {
         this.updatedAt = this.now();
         this.source = "zalo";
         this.#mirror();
+        this.#emit();
         return this;
+    }
+
+    /**
+     * Be told when the hidden set changes (Zalo's list was read again, or it was cleared): media links into a chat
+     * that is now hidden are revoked (src/commands/mcp.js).
+     *
+     * @param {(set: HiddenChats) => void} listener
+     * @returns {() => void} unsubscribe
+     */
+    onChange(listener) {
+        this.#listeners.add(listener);
+        return () => this.#listeners.delete(listener);
+    }
+
+    #emit() {
+        for (const fn of this.#listeners) {
+            try {
+                fn(this);
+            } catch (e) {
+                console.error(`[hidden-chats] a change listener failed: ${e.message}`);
+            }
+        }
     }
 
     /** The hidden threads as Zalo listed them: `{threadId, isGroup}` (from the last get-all answer, or ids only). */
@@ -179,6 +203,7 @@ export class HiddenChats {
         this.known = true;
         this.updatedAt = this.now();
         this.#mirror();
+        this.#emit();
     }
 
     /** Take a new PIN hash (a `change_pin` control carries it). */

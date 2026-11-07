@@ -311,13 +311,13 @@ const MAX_LINKS = 2000;
 const TOMBSTONE_MS = 30 * 60_000;
 
 /**
- * A request path or URL with any media token replaced, for logs.
+ * A request path or URL with any media token replaced, for logs; the query after it goes too.
  *
  * @param {unknown} url
  * @returns {string}
  */
 export function maskMediaPath(url) {
-    return String(url ?? "").replace(/\/zalo\/media\/[^/?#\s]*/g, "/zalo/media/***");
+    return String(url ?? "").replace(/\/zalo\/media\/[^/?#\s]*(?:\?[^#\s]*)?/g, "/zalo/media/***");
 }
 
 /**

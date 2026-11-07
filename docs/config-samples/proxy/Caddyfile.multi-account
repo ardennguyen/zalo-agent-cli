@@ -8,7 +8,10 @@
 #   ZALO_MCP_PUBLIC_URL_1000000000000000001=https://zalo.example.com/a/1000000000000000001
 # (or "publicUrl" in that account's block of mcp-config.json). handle_path strips the prefix.
 zalo.example.com {
-	encode zstd gzip
+	# Media links (/a/<id>/zalo/media/<token>) are never compressed: it breaks byte ranges.
+	# Set trustedProxies: ["127.0.0.1"] in mcp-config.json so their per-client limit counts clients.
+	@compress not path /a/*/zalo/media/*
+	encode @compress zstd gzip
 
 	handle_path /a/1000000000000000001/* {
 		@internal path /metrics /status

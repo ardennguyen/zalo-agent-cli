@@ -225,6 +225,19 @@ describe("systemd unit and proxy samples", () => {
         assert.match(nginx, /proxy_buffering off/);
     });
 
+    it("the proxies never compress media links (byte ranges) and give the engine the client's own address", () => {
+        assert.match(read("proxy", "Caddyfile.internet"), /@compress not path \/zalo\/media\/\*\s+encode @compress /);
+        assert.match(
+            read("proxy", "Caddyfile.multi-account"),
+            /@compress not path \/a\/\*\/zalo\/media\/\*\s+encode @compress /,
+        );
+        assert.doesNotMatch(read("proxy", "Caddyfile.internet"), /^\tencode zstd/m, "no unconditional encode");
+        const media = /location \/zalo\/media\/ \{([^}]*)\}/.exec(read("proxy", "nginx.internet.conf"))?.[1] ?? "";
+        assert.match(media, /gzip off;/);
+        assert.match(media, /proxy_buffering off;/);
+        assert.match(media, /proxy_set_header X-Forwarded-For \$remote_addr;/);
+    });
+
     it("the internet proxies route the one-time QR link to the login's QR port, and the rest to the MCP server", () => {
         assert.match(
             read("proxy", "Caddyfile.internet"),

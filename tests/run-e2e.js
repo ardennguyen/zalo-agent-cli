@@ -44,6 +44,39 @@ const TIERS = [
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
+
+// No arguments means tiers 1–4, which send to real chats. So a mistyped or
+// unsupported flag (`--help`, `--tier=1`) must stop here instead of being
+// ignored and falling through to that default.
+const FLAGS = ["--tier", "--through", "--destructive", "--end-session", "--keep-going"];
+const VALUED = ["--tier", "--through"];
+const USAGE = [
+    "Usage: node tests/run-e2e.js [--tier N | --through N] [--destructive | --end-session] [--keep-going]",
+    "  (no flags)       tiers 1–4",
+    "  --tier N         one tier",
+    "  --through N      tiers 1–N",
+    "  --destructive    tiers 1–5d (logout --no-remote, purge, credential unlink)",
+    "  --end-session    tiers 1–5e (a real server-side logout; QR re-scan needed)",
+    "  --keep-going     do not stop at the first failing tier",
+].join("\n");
+if (has("--help") || has("-h")) {
+    console.log(USAGE);
+    process.exit(0);
+}
+for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!FLAGS.includes(a)) {
+        console.error(`\n✗ Unknown argument: ${a}\n\n${USAGE}\n`);
+        process.exit(2);
+    }
+    if (VALUED.includes(a)) {
+        if (!/^[1-5]$/.test(argv[i + 1] ?? "")) {
+            console.error(`\n✗ ${a} needs a tier number 1–5\n\n${USAGE}\n`);
+            process.exit(2);
+        }
+        i++;
+    }
+}
 const valueOf = (f) => {
     const i = argv.indexOf(f);
     return i >= 0 ? argv[i + 1] : null;

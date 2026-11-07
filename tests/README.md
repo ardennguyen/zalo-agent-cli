@@ -13,7 +13,7 @@ contacts Zalo or reads your real `~/.zalo-agent-cli/`. Some tests use disposable
 loopback servers and subprocess transports.
 
 ```bash
-npm test                      # 4558 offline tests — no Zalo session needed
+npm test                      # 4562 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -77,7 +77,8 @@ tests/
 ├── cli/                         # offline, drives the real binary
 │   ├── surface.test.js          # every command/subcommand/flag is registered
 │   ├── validation.test.js       # every guard that fires before a network call
-│   └── sandbox-discipline.test.js  # no offline test may touch the real ~/.zalo-agent-cli/
+│   ├── sandbox-discipline.test.js  # no offline test may touch the real ~/.zalo-agent-cli/
+│   └── run-e2e-args.test.js     # the live runner refuses unknown flags before any tier
 └── e2e/                         # live, tiered — see below
     ├── tier1-readonly.test.js         tier1-web-reads.test.js
     ├── tier2-create.test.js
@@ -398,6 +399,10 @@ node tests/run-e2e.js --destructive       # tiers 1–5d
 node tests/run-e2e.js --end-session       # tiers 1–5e  ⚠ QR re-scan needed
 node tests/run-e2e.js --keep-going        # don't stop at the first failing tier
 ```
+
+Any other argument stops the runner with exit 2 before it reads `targets.json`, and
+`--help` prints the usage. Without that check an unknown flag was ignored and the run
+fell through to the no-flag default, tiers 1–4, which send to real chats.
 
 `run-e2e.js` runs each tier file in **its own process, sequentially**. That is
 not a style choice:

@@ -161,13 +161,26 @@ describe("tier 3 · read / unread", { skip }, () => {
         await runCli(["conv", "read", "-t", "1", T.group.threadId], live(T));
     });
 
-    it("marks the group read, then unread, then read again", async () => {
+    it("marks the group read, then unread, then read again", async (t) => {
         assertDisposable(T.group.threadId, "conv read/unread");
-        await ok(["conv", "read", "-t", "1", T.group.threadId], "read");
+        // `conv read` anchors its seen receipt on an incoming message among the
+        // thread's newest cached rows. Tier 2 fills the disposable group with
+        // our own sends, and only another member can post an incoming one, so
+        // that refusal is the group's state, not a failure. The unread mark is
+        // still cleared and must say so; the DM test covers the seen receipt.
+        const read = async (label) => {
+            const r = await ok(["conv", "read", "-t", "1", T.group.threadId], label, {
+                allowError: /No incoming message for this conversation is in the local cache/,
+            });
+            if (!r.refused) return;
+            assert.match(r.raw.stdout, /Cleared the manual unread mark/, `${label} did not clear the unread mark`);
+            t.diagnostic(`${label}: no incoming message among the group's newest cached rows; unread mark only`);
+        };
+        await read("read");
         await sleep(400);
         await ok(["conv", "unread", "-t", "1", T.group.threadId], "unread");
         await sleep(400);
-        await ok(["conv", "read", "-t", "1", T.group.threadId], "read again");
+        await read("read again");
     });
 });
 
@@ -380,11 +393,17 @@ describe("tier 3 · group settings", { skip }, () => {
         assert.equal(errorLineOf(r.stdout), null, `group settings not restored: ${errorLineOf(r.stdout)}`);
     });
 
-    it("toggles a setting on and back off", async () => {
+    it("toggles a setting away from its current value and back", async () => {
         assertDisposable(T.group.threadId, "group settings");
-        await ok(["group", "settings", T.group.threadId, "--sign-admin"], "sign-admin on");
+        // Flip from what the group has: asking for the value it already holds
+        // is answered "Nothing to change", which is right, not a success.
+        assert.ok(priorSettings, "could not read the group's settings first");
+        const flip = priorSettings.signAdminMsg
+            ? ["--no-sign-admin", "--sign-admin"]
+            : ["--sign-admin", "--no-sign-admin"];
+        await ok(["group", "settings", T.group.threadId, flip[0]], `${flip[0]} (away from current)`);
         await sleep(600);
-        await ok(["group", "settings", T.group.threadId, "--no-sign-admin"], "sign-admin off");
+        await ok(["group", "settings", T.group.threadId, flip[1]], `${flip[1]} (back)`);
     });
 
     it("accepts the negated form of each documented flag", async () => {

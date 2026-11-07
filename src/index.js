@@ -34,6 +34,7 @@ import { registerMCPCommands } from "./commands/mcp.js";
 import { registerFleetCommands } from "./commands/fleet.js";
 import { registerSyncCommands } from "./commands/sync.js";
 import { registerCloudCommands } from "./commands/cloud.js";
+import { registerDbCommands } from "./commands/db.js";
 import { autoLogin } from "./core/zalo-client.js";
 import { getActive, setPinnedAccount } from "./core/accounts.js";
 import { parseAccountId, selectDaemonAccount } from "./core/daemon-account.js";
@@ -173,6 +174,7 @@ registerMCPCommands(program);
 registerFleetCommands(program);
 registerSyncCommands(program);
 registerCloudCommands(program);
+registerDbCommands(program);
 
 // parseAsync, so a registry that exists but cannot be read (src/core/accounts.js) reaches the user as a
 // message, not as a stack trace from inside a command; so does a refused test-only fake session

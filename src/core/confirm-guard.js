@@ -263,6 +263,14 @@ export const GUARDS = Object.freeze({
             `write the saved login of account ${t.ownerId ?? "(active)"} in plaintext to ${t.output ?? "a file"}: ` +
             "anyone who reads that file can use the account",
     },
+    "db.exportPlaintext": {
+        cli: "db export --plaintext",
+        mcp: null,
+        irreversible: false,
+        what: (t) =>
+            `write the message database of account ${t.ownerId ?? "(active)"} decrypted to ${t.output ?? "a file"}: ` +
+            "anyone who reads that file reads every cached message, hidden chats included",
+    },
     "webhook.purge": {
         cli: "mcp webhook purge",
         mcp: null,

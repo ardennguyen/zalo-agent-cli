@@ -370,6 +370,19 @@ What the zCloud index holds, what a cleanup would touch, the cleanup, and one it
 | `apply [same filters as plan] [-y, --yes] [--dry-run]` | **Deletes**, as Zalo Web's cloud view does: for each item `plan` would list (largest first, up to `--limit`), the chat message it belongs to, for this account on every device (the delete-for-me of `msg delete`), conversation by conversation, stopping a conversation at its first failure. End-to-end encrypted items are never touched. Guarded: without `--yes` nothing is sent and it exits 2; `--dry-run` prints the plan and what would be sent and exits 0. The local index is left as it is: the cloud queue reports the removals and the next `sync-cloud` applies them. **Unverified**: no such delete has been watched on a disposable item yet (`verified: false` in `--json`). No undo. |
 | `get <noiseId> -o, --out <file> [--key-stdin \| --key-prompt] [--raw]` | Download one item's file as Zalo Web opens it: its signed URL from `downloadurls`, fetched with `?zcloudurl=true` and the `cloud-viewer-key` header (the bare URL answered 404 before). A My Cloud item whose chat message is already downloaded is copied from that file, as the Web opens My Cloud through the message first. An encrypted item (one with a key) opens only with the account's cloud key, an RSA private key in base64 PKCS#8, given at run time on standard input (`--key-stdin`) or typed at a prompt that does not echo (`--key-prompt`); it is never stored or logged. Without a key the command refuses, or writes the bytes as downloaded with `--raw`. Only the whole-file encryption (`algoversion` 1) is opened. Writes the file at mode 0600. **Unverified live.** Neither Zalo Web nor the PC client derives the key from a PIN; they receive it from the phone over an end-to-end session this client does not have (decision D8). |
 
+## Message database — `db` (4 commands)
+
+The account's message database (`accounts/<ownId>/zalo.db`) is encrypted at rest (SQLCipher v4) and its key never leaves the machine's key provider, so `sqlite3`, `better-sqlite3`, DB Browser and bots can no longer open the file: these commands read it for them. They read the local database only (no login, unless the dkey layer needs one to open the key) and never go through a daemon: a reader beside a running `listen` / `mcp start` is what the database's write-ahead log is for, and each reads a consistent snapshot. CLI-only: raw SQL and a decrypted copy are an operator's or a bot's tools, not an MCP agent's (agents read through `zalo_get_history` / `zalo_search_messages`, which leave hidden chats out; these do not).
+
+| Command | Description |
+|---------|-------------|
+| `query <sql> [-n, --limit <n>]` | Run **one** read-only statement and print its rows (tab-separated; `--json`: `{columns, rows, rowCount, truncated, ms}`, a blob as `{"$blob": "<base64>"}`). It opens the database read-only with `query_only=ON`, and refuses before preparing anything: a statement that does not start with `SELECT`, `WITH`, `VALUES` or `EXPLAIN`; `INSERT` / `UPDATE` / `DELETE` / `CREATE` / `DROP` / `ALTER` / `VACUUM` / `REINDEX` / `ANALYZE` / `ATTACH` / `DETACH` anywhere outside a string; more than one statement; any `PRAGMA` but `table_info`, `table_xinfo`, `table_list`, `index_list`, `index_info`, `index_xinfo`, `foreign_key_list`, `user_version`, `page_count`, `page_size`, `freelist_count`, and those only to read (so `PRAGMA key` / `rekey` never reach the cipher); `load_extension`, `readfile`, `writefile`, `edit`, `fts3_tokenizer`, the cipher's `sqlite3mc_*` functions and the row-MAC function. At most `--limit` rows (default 1000, at most 100000); `truncated: true` says there were more. Exit 1 on a refusal or an SQL error. Hidden chats are **not** left out. Tables: `messages`, `threads`, `contacts`, `reactions`, `conv_state`, `board_items`, `reminders`, `cloud_items`, `sync_state`, `message_macs`, … (`PRAGMA table_list`). |
+| `backup -o, --out <file>` | Write an **encrypted** copy (`VACUUM INTO`: a consistent snapshot, under the same key), then open it with the account's key and check it (`quick_check`, the message count) before renaming it into place, mode 0600. Never overwrites a file; a failed copy leaves nothing behind. The copy opens only with this account's `keyring.json` and key provider: back those up with it (docs/security.md §7). `--json`: `{file, bytes, encrypted, keyId, messages, quickCheck, ms}`. |
+| `export -o, --out <file> [--plaintext] [-y, --yes] [--dry-run]` | The same copy as `backup`; with `--plaintext` **decrypted** (`PRAGMA rekey = ''` on the copy, then checked as a plain SQLite file), so any SQLite tool opens it: every cached message, hidden chats included, readable by anyone who can read the file. `--plaintext` is guarded like `account export`: without `--yes` nothing is written and it exits 2; `--dry-run` says what it would do and exits 0. The account's own database stays encrypted. |
+| `verify [-T, --thread <threadId>] [--since <date> \| --last <period>]` | Check every cached message (or one conversation's, or those since a date) against its **row MAC** (tamper evidence: an HMAC of the row under the account's `row-mac` key, kept by the database's triggers; docs/security.md §1). Prints `ok`, `changed` and `without a MAC` counts and the first 50 failing `msgId`s; `--json`: `{checked, ok, bad, missing, oldKey, orphanMacs, seal, failures, ms, clean}`. **Exit 1 when any row fails.** About 18 µs a row (400,000 messages in about 7 s). `oldKey` counts rows still under a retired key (an unfinished `account security rekey`: run it again); `seal` is `sealed` once the rows cached before 3.0.0 were given their MACs. |
+
+---
+
 ## Bank — `bank` (5 commands)
 
 Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-qr-transfer` send a card or QR to a thread; these manage Zalo's own saved list.
@@ -598,11 +611,12 @@ Completely independent from the personal (unofficial-API) account: separate OAut
 | `catalog` | 10 |
 | `cloud` | 2 (`ls`, `plan`) |
 | `bank` | 5 |
+| `db` | 4 (`query`, `backup`, `export`, `verify`) |
 | `listen` | 1 |
 | `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 36 MCP tools) |
 | `fleet` | 6 (`ports`, `status`, `start`, `stop`, `restart`, `generate`) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **243 CLI commands** + 36 MCP tools |
+| **Total** | **247 CLI commands** + 36 MCP tools |
 
 ## Provenance
 

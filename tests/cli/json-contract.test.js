@@ -149,6 +149,9 @@ function argValue(name, path) {
     return "1";
 }
 
+/** Copies `db backup` / `db export` have written: each run names a new file. */
+let dbCopies = 0;
+
 /** Per-command argv where the name-based guess is not valid input. Values follow the command path. */
 const argvTable = () => ({
     "msg react": [msgs.main, FAKE_PEER_ID, "like"],
@@ -167,6 +170,10 @@ const argvTable = () => ({
     "conv forget": [FORGET_THREAD],
     "account remove": [SPARE_ACCOUNT],
     "account export": ["--output", join(files.dir, "exported-creds.json")],
+    // One statement that reads; a new file per run for the copies, which never overwrite one.
+    "db query": ["SELECT count(*) AS n FROM messages"],
+    "db backup": ["--out", join(files.dir, `db-backup-${++dbCopies}.db`)],
+    "db export": ["--out", join(files.dir, `db-export-${++dbCopies}.db`)],
     // The sandbox's own provider: re-wraps the fake account's keyring offline, and every later case still opens it.
     "account security provider": ["test"],
     "profile bio": ["fake bio"],

@@ -157,6 +157,12 @@ const CLI_ONLY = {
     "account security migrate": "seals this machine's files at rest: an operator's step, run once after an upgrade",
     "account security rekey": "replaces the keys protecting this machine's files: an operator's step, never an agent's",
     "account security provider": "moves the account's keys to another key store on this machine: an operator's step",
+    "db query":
+        "raw SQL over the whole cache, hidden chats included: an operator's or a bot's tool on the machine; agents read through zalo_get_history / zalo_search_messages, which leave hidden chats out",
+    "db backup": "writes a copy of the encrypted database to a path on this machine: an operator's step",
+    "db export": "writes the database to a path on this machine, decrypted with --plaintext: never handed to an agent",
+    "db verify":
+        "a full integrity scan of the cache: an operator's check; the actions an agent takes already check the row they act on",
     "profile lost-focus": "a client-presence signal, meaningless for a server",
     listen: "the MCP server is itself the listener (zalo_get_messages, zalo_wait_for_message)",
     "mcp start": "starts the MCP server",

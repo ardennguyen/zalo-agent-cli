@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **243 CLI commands** across 28 command containers (19 top-level groups + 7 OA subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **247 CLI commands** across 29 command containers (20 top-level groups + 7 OA subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ Use `--account <ID>` (or `ZALO_ACCOUNT=<ID>`) on any personal-account CLI comman
 3. Execute command (Quick Reference below or `references/command-reference.md`)
 4. Append `--json` for machine-readable output
 5. For continuous monitoring → `listen --webhook` (`references/listen-mode-guide.md`)
-6. When running as an MCP server inside an AI client → use the 36 MCP tools: every personal CLI command has an MCP action (messages, long-poll waiting, search, user lookup, conversations, groups, friends, profile, catalog, bank, auto-replies, quick messages, labels, reminders, notes/pins, polls, sync stages, the zCloud index); shell out to the CLI only for the CLI-only commands listed in `references/mcp-guide.md` (login, the account registry, the daemon and fleet, `cloud get`, `oa …`)
+6. When running as an MCP server inside an AI client → use the 36 MCP tools: every personal CLI command has an MCP action (messages, long-poll waiting, search, user lookup, conversations, groups, friends, profile, catalog, bank, auto-replies, quick messages, labels, reminders, notes/pins, polls, sync stages, the zCloud index); shell out to the CLI only for the CLI-only commands listed in `references/mcp-guide.md` (login, the account registry, the daemon and fleet, `cloud get`, `db …`, `oa …`)
 
 ## Quick Reference
 
@@ -155,6 +155,12 @@ zalo-agent sync-cloud                        # Walk the zCloud media index (reco
 zalo-agent cloud ls | cloud plan [--type video --older-than 365 --larger-than 50 --only-saved-locally]   # Reports on the local index: what a cleanup would cover. Deletes nothing
 zalo-agent cloud apply <same filters> --dry-run | --yes # Deletes the messages behind those items for this account, as Zalo Web's cloud view does (no undo; unverified)
 zalo-agent cloud get <noiseId> -o <file> [--key-stdin]  # One item's file; an encrypted one needs the account's cloud key at run time, never stored (unverified)
+
+# The cache is encrypted (SQLCipher): read it through db, never by opening zalo.db. All local, no login, safe beside a daemon.
+zalo-agent --json db query "SELECT msgId, text FROM messages WHERE threadId = '<id>' ORDER BY timestamp DESC LIMIT 20"   # One read-only statement
+zalo-agent db backup --out backup.db                  # Encrypted, verified copy (opens only with this account's keyring.json + provider)
+zalo-agent db export --out plain.db --plaintext --yes # Decrypted copy for other SQLite tools (asks first: exit 2 without --yes)
+zalo-agent db verify                                  # Row MAC check of every cached message (tamper evidence); exit 1 on a finding
 
 # Cleanup. Always preview with --dry-run; none of these contact Zalo.
 zalo-agent sync-media --prune 90 --dry-run   # Delete downloaded media older than N days (message text kept)
@@ -321,7 +327,7 @@ Sync requests share the daemon socket and lock. Reuse requestId and arguments af
 | Conversation settings, typing, report | `zalo_conversation` | `zalo-agent --json conv …` / `msg typing\|report` |
 | Profile, privacy, linked devices | `zalo_profile` | `zalo-agent --json profile …` / `account devices` |
 | Auto-reply, quick-msg, catalog, bank, zCloud index, stickers, links | `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link` | `zalo-agent --json auto-reply\|quick-msg\|catalog\|bank\|cloud …` |
-| Login, the account registry, daemon and fleet, `update`, `profile lost-focus`, `cloud get` | **none (CLI-only)** | `zalo-agent --json …` |
+| Login, the account registry, daemon and fleet, `update`, `profile lost-focus`, `cloud get`, `db …` | **none (CLI-only)** | `zalo-agent --json …` |
 | Official Account (all 32 commands) | **none** | `zalo-agent --json oa …` |
 
 **Rule of thumb:** use an MCP tool when one exists; otherwise shell out to `zalo-agent <command> --json` and parse the JSON. Do not claim a capability is unavailable just because it has no MCP tool.
@@ -371,7 +377,7 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 243 commands + 36 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 247 commands + 36 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

@@ -112,7 +112,7 @@ All but `status` refuse while a `listen` / `mcp start` daemon holds the account 
 
 - **A dedicated service account**, never root or Administrator, owning the config directory alone (`UMask=0077`). Log in, migrate and run as that account.
 - **Disk encryption** (BitLocker, LUKS, the cloud provider's volume encryption) under all of it: the shredding of the old plaintext database is best effort (an SSD or a copy-on-write filesystem can keep the old blocks, and so can earlier backups and snapshots), and logs at `debug` hold message text.
-- **Backups:** keep `accounts/<ownId>/keyring.json` in the same backup as `credentials/` and `zalo.db`. Without the keyring neither the credentials nor the message database can be opened; without the provider (the same machine for DPAPI/systemd-creds, the same KMS key, the same passphrase) neither can. Plan disaster recovery as a new QR login, or use a KMS key the recovery site can reach.
+- **Backups:** keep `accounts/<ownId>/keyring.json` in the same backup as `credentials/` and `zalo.db`. `zalo-agent db backup --out <file>` writes an encrypted, verified copy of the message database while the daemon runs (`sqlite3 .backup` cannot open it); `db export --out <file> --plaintext --yes` writes a decrypted one, which is the whole message history in the clear. Without the keyring neither the credentials nor the message database can be opened; without the provider (the same machine for DPAPI/systemd-creds, the same KMS key, the same passphrase) neither can. Plan disaster recovery as a new QR login, or use a KMS key the recovery site can reach.
 - Each `account remove` / `logout --purge` deletes the keyring with the account, and a keychain / Secret Service item with it.
 
 ## 8. After a leak

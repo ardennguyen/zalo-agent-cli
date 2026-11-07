@@ -856,7 +856,7 @@ Mọi lệnh CLI của tài khoản cá nhân đều có một hành động MCP
 | Catalog Zalo Shop, tài khoản ngân hàng đã lưu | `zalo_catalog`, `zalo_bank` | `zalo-agent --json catalog\|bank …` |
 | Chỉ mục zCloud (tóm tắt, kế hoạch dọn, dọn dẹp) | `zalo_cloud` | `zalo-agent --json cloud ls\|plan\|apply` |
 | Sticker, xem trước/kiểm tra link | `zalo_sticker`, `zalo_link` | `zalo-agent --json msg sticker-list\|sticker-detail\|link-preview\|scan-url` |
-| **Chỉ có trên CLI:** đăng nhập/đăng xuất, `status`, danh sách tài khoản trên máy (`account list\|login\|switch\|remove\|info\|export`), `listen`, `mcp start`, `mcp webhook …`, `fleet …`, `update`, `profile lost-focus`, `cloud get` (cần khóa cloud của tài khoản — không bao giờ đi qua agent hay tham số tool) | — | `zalo-agent --json <lệnh>` |
+| **Chỉ có trên CLI:** đăng nhập/đăng xuất, `status`, danh sách tài khoản trên máy (`account list\|login\|switch\|remove\|info\|export`), `listen`, `mcp start`, `mcp webhook …`, `fleet …`, `update`, `profile lost-focus`, `cloud get` (cần khóa cloud của tài khoản — không bao giờ đi qua agent hay tham số tool), `db query\|backup\|export\|verify` (SQL thô trên toàn bộ bộ nhớ đệm kể cả chat ẩn, và bản sao giải mã: công cụ của người vận hành, không phải của agent) | — | `zalo-agent --json <lệnh>` |
 | Official Account (32 lệnh) | — | `zalo-agent --json oa …` |
 
 **Nguyên tắc:** có MCP tool thì dùng tool; không có thì gọi CLI. Đừng trả lời "không làm được" chỉ vì chưa có MCP tool tương ứng.

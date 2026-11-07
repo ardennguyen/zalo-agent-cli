@@ -114,7 +114,7 @@ What exists today for inbound, and what each costs:
 | `zalo_get_messages` polling over `POST /mcp`, one `consumer` name per bot | N | **yes** | Works: each consumer has its own read cursor (§1.4a). The buffer is memory only and bounded by `limits.bufferMaxSize` and `limits.bufferMaxAge`; a restart empties it |
 | `listen` or `mcp start` `-w, --webhook <url> [--webhook-secret <secret>]` | **1** URL | **yes** | Durable outbox (`webhook-outbox.db` in the account directory, encrypted at rest like `zalo.db`): written to disk first, delivered in order and at least once, 10 s per POST, retried with backoff (1 s doubling to 5 min) while the receiver is down, dead-lettered on 400 / 413 / 422 or after 24 h (`ZALO_WEBHOOK_MAX_AGE`), optional batching (`ZALO_WEBHOOK_BATCH_SIZE`). Optional `Authorization: Bearer <secret>` + `X-Zalo-Signature: sha256=<hmac>` signing. Messages the self-heal recovers are posted too, with `catchUp: true`. Backlog: `zalo-agent mcp webhook status` |
 | `listen --save <dir>` JSONL | N tailers | **no** | `appendFileSync` per event, one file per `threadId`, recovered messages included. A fine audit trail; a poor bus |
-| Read `zalo.db` directly, read-only | N | **no, since 3.0.0** | The file is encrypted (SQLCipher, [security.md](security.md)): `sqlite3`, `better-sqlite3` and DB Browser get `file is not a database`. Read the same history through `zalo_get_history` / `zalo_search_messages` or `msg history` / `msg search --json`; a read-only SQL command, `zalo-agent db query`, comes with the `db` command group later in 3.0 |
+| `zalo-agent --json db query "<SQL>"` (was: read `zalo.db` directly) | N | **no** | Since 3.0.0 the file is encrypted (SQLCipher, [security.md](security.md)): `sqlite3`, `better-sqlite3` and DB Browser get `file is not a database`. `db query` runs one read-only statement for the bot (a read-only connection with `query_only`; writes, `ATTACH` and key pragmas refused; 1000 rows by default), beside the running daemon. Hidden chats are not left out. For a BI tool: `db export --out <file> --plaintext --yes`, a decrypted snapshot any SQLite tool opens. Or the MCP tools: `zalo_get_history` / `zalo_search_messages` |
 
 After a drop, the self-heal hands what it recovered to the MCP buffer through the same watch and noise filters, flagged `catchUp: true` (`onRecovered` in `mcp.js`), so a polling bot sees missed messages as it would have seen them live, minus the eviction limit in §1.4a.
 
@@ -149,7 +149,7 @@ What still bites:
 ### 1.5 What breaks if two consumers both write the database
 
 > [!NOTE]
-> **Since 3.0.0 `zalo.db` is encrypted** (SQLCipher v4 under the account's data key, [security.md](security.md)). What follows about readers and writers still describes the CLI's own processes, which open it with the key. A process outside the CLI cannot open it at all: reading it directly, the 2.x advice below, now fails with `file is not a database`.
+> **Since 3.0.0 `zalo.db` is encrypted** (SQLCipher v4 under the account's data key, [security.md](security.md)). What follows about readers and writers still describes the CLI's own processes, which open it with the key. A process outside the CLI cannot open it at all: reading it directly, the 2.x advice below, now fails with `file is not a database`; such a reader runs `zalo-agent db query` instead.
 
 This is the question with the least obvious answer, so be precise about the three separate mechanisms:
 
@@ -157,7 +157,7 @@ This is the question with the least obvious answer, so be precise about the thre
 
 **2. SQLite WAL is what actually arbitrates.** `initDb()` opens it through `openDatabase()` (`src/core/sqlite.js`), which sets `journal_mode = WAL` and a busy timeout of 5000 ms, the driver's own default kept explicit. Concretely:
 
-- Many concurrent **readers** are fine. On 2.x a dashboard or an analytics bot opening `zalo.db` read-only was the recommended way to give extra bots message data; from 3.0.0 such a reader needs the key (see the note above).
+- Many concurrent **readers** are fine. On 2.x a dashboard or an analytics bot opening `zalo.db` read-only was the recommended way to give extra bots message data; from 3.0.0 that reader is `zalo-agent --json db query "<SQL>"` (one read-only statement per call, a consistent snapshot, the key never leaves the CLI).
 - A second **writer** does not corrupt anything. It blocks on the write lock for up to 5 seconds, then throws `SQLITE_BUSY`. Your bot sees an exception.
 - **The daemon is under the same 5 seconds.** While another process holds the write lock, each daemon write waits, and because `better-sqlite3` is synchronous, the whole event loop waits with it. A wait past 5 seconds fails: `storeLiveMessage()` catches the error, the daemon logs `message not stored: <reason>`, and that message is in neither the cache nor the MCP buffer. No coverage gap is filed for it, because the socket was up, and the self-heal's cursor moves past it with the next message that is stored. Only a later fetch that covers it (`msg history` for that conversation, or a `sync` restore) brings it back.
 
@@ -168,7 +168,7 @@ This is the question with the least obvious answer, so be precise about the thre
 That was a bulk restore. A side writer can cause the same class of stall, capped per statement by the busy timeout. A socket dropped that way is now recorded as a gap and repaired by the self-heal with no phone tap, as far as Zalo's offline queue reaches (§4.5). A write that failed with `SQLITE_BUSY` is not a gap, and nothing repairs it automatically.
 
 > [!CAUTION]
-> **Rules for anything that is not the socket holder:** do not open `zalo.db` yourself: since 3.0.0 it is encrypted, and a reader without the key gets `file is not a database`. Read through the MCP tools or the CLI's `--json` output (a read-only SQL command, `zalo-agent db query`, comes with the `db` command group later in 3.0). If you must write, write to your own database file. Never run a second process that does bulk inserts into `zalo.db` while the daemon is up: the failure mode is dropped live messages and possibly a dropped Zalo session, not a database error, and it surfaces later as messages missing with no gap to explain them. Keep read transactions short too; a reader holding one open keeps SQLite from resetting the WAL, so it grows.
+> **Rules for anything that is not the socket holder:** do not open `zalo.db` yourself: since 3.0.0 it is encrypted, and a reader without the key gets `file is not a database`. Read through `zalo-agent --json db query "<SQL>"` (read-only SQL), the MCP tools or the CLI's `--json` output; for another tool, `zalo-agent db export --out <file> --plaintext --yes` writes a decrypted snapshot (every cached message, hidden chats included: treat it like the database itself). If you must write, write to your own database file. Never run a second process that does bulk inserts into `zalo.db` while the daemon is up: the failure mode is dropped live messages and possibly a dropped Zalo session, not a database error, and it surfaces later as messages missing with no gap to explain them. Keep read transactions short too; a reader holding one open keeps SQLite from resetting the WAL, so it grows.
 
 ---
 
@@ -581,10 +581,10 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
 - **`keyring.json` travels with the credentials.** Since 3.0.0 the saved login and the other secret files are sealed under the account's keys, and those keys open only through the key provider of the machine that made them ([security.md](security.md)). A restore onto another machine or user needs the same provider there (the same KMS key, the same passphrase) or an `account security provider` move before the backup; under DPAPI or systemd-creds the files open only on the original machine, so a disaster-recovery plan is a new QR login.
 - **`sync/` is regenerable.** `zproto-cache/` holds the assets `transfer-sync-v2` fetched from Zalo's CDN; they are fetched again on the next restore. The phone-backed restore generates its own key pairs per run. Backing `sync/` up is harmless; losing it costs nothing.
 - **Exclude `daemon.lock` and `daemon-channel.json`.** They are pid-stamped runtime state. Restoring them is usually harmless (both are reclaimed by a liveness check) but pointless, and a restored lock on a machine where that pid happens to belong to a live process will block a start.
-- **Quiesce the database, or snapshot it correctly.** Copying `zalo.db` while the daemon writes gives you a torn file. Stop the unit (the self-heal then pulls the window back, §4.5), or take a filesystem snapshot of the whole directory. Since 3.0.0 `sqlite3 zalo.db ".backup …"` cannot open the encrypted file and the driver's backup API refuses it; an online, encrypted copy (`zalo-agent db backup`) comes with the `db` command group later in 3.0. **A copied `zalo.db` opens only together with its `keyring.json` and the same key provider** ([security.md](security.md) §7).
+- **Quiesce the database, or snapshot it correctly.** Copying `zalo.db` while the daemon writes gives you a torn file. Stop the unit (the self-heal then pulls the window back, §4.5), or take a filesystem snapshot of the whole directory. Since 3.0.0 `sqlite3 zalo.db ".backup …"` cannot open the encrypted file and the driver's backup API refuses it; **`zalo-agent db backup --out <file>`** writes an online, encrypted, verified copy (a consistent snapshot while the daemon runs; it never overwrites a file). **A copied or backed-up `zalo.db` opens only together with its `keyring.json` and the same key provider** ([security.md](security.md) §7).
 - **A restored `zalo.db` brings its bookkeeping with it.** The next start files a startup gap from the snapshot's `lastConnectedAt` (clamped to 14 days), and the self-heal asks the offline queue from the snapshot's cursors; whatever the queue no longer holds stays pending for `sync`.
 - **Encrypt the backup at rest.** It contains the account's saved login and the full message history. See §5.2.
-- **Test the restore without contacting Zalo.** Restore into a scratch `HOME` (`USERPROFILE` on Windows), then run `zalo-agent account list` and `zalo-agent account security status` (the `account` group skips auto-login, in the `preAction` hook of `src/index.js`). The second opens the restored `zalo.db` with the restored keyring and must say `encrypted` for it; anything else means the keyring or the provider did not come back with it. Do not use `status` for this: it is outside the skip list, so it logs in over REST with the restored credentials first.
+- **Test the restore without contacting Zalo.** Restore into a scratch `HOME` (`USERPROFILE` on Windows), then run `zalo-agent account list` and `zalo-agent account security status` (the `account` group skips auto-login, in the `preAction` hook of `src/index.js`). The second opens the restored `zalo.db` with the restored keyring and must say `encrypted` for it; anything else means the keyring or the provider did not come back with it. Then `zalo-agent --json db query "select count(*) as n from messages"` and `zalo-agent db verify` (both local, no login) read the restored rows and check their row MACs. Do not use `status` for this: it is outside the skip list, so it logs in over REST with the restored credentials first.
 
 ### 4.7 Monitoring
 
@@ -620,10 +620,10 @@ Prometheus scrape and alert rules are in [`config-samples/monitoring/`](config-s
 > 3. Journal matches on `Another Zalo session took this account`, `The login was refused`, `Daemon channel unavailable`, `message not stored`, and the self-heal's `stays pending`, `not finished` and `dropped part of`.
 > 4. **`threads` stuck at a constant, or the newest `timestamp` in `zalo.db` going stale.** This is the only signal that distinguishes "connected and quiet" from "silently not receiving". A read-only query is the best liveness probe you have:
 >    ```bash
->    sqlite3 -readonly ~/.zalo-agent-cli/accounts/<ownId>/zalo.db \
->      "select (strftime('%s','now')*1000 - max(timestamp))/60000 from messages;"   # minutes since last message
+>    zalo-agent --account <ownId> --json db query \
+>      "select (strftime('%s','now')*1000 - max(timestamp))/60000 as minutes from messages"   # minutes since last message
 >    ```
->    Alert when that exceeds your quietest plausible period. **Since 3.0.0** `zalo.db` is encrypted and `sqlite3` cannot run this or the gap query below; until `zalo-agent db query` ships (the `db` command group, later in 3.0), ask the running server instead (`zalo_coverage`, `zalo_sync_status`).
+>    Alert when that exceeds your quietest plausible period. It reads beside the running daemon and needs no login (`zalo.db` is encrypted since 3.0.0, so `sqlite3` cannot run it; the running server's `zalo_coverage` / `zalo_sync_status` answer too).
 > 5. Disk free on the media filesystem (§3.3).
 > 6. **Pending coverage gaps**, which `listen` and `mcp start` both record: `select count(*) from sync_gaps where status='pending';`, or ask the running server, which also names the `sync` run that closes them:
 >    ```bash
@@ -792,7 +792,7 @@ Practical, and tied to what the tool does today. The bot is an MCP client; the d
 
 Three tiers that work today:
 
-1. **Conversation memory, already built.** `zalo.db` is a queryable history: `messages`, `threads`, `contacts`, `reactions`, `conv_state`, `board_items`, `reminders` and `cloud_items`, plus the `sync_state` and `sync_gaps` bookkeeping. Give every bot a **read-only** handle (§1.5) and it can answer "what did we tell this customer last month" with a SQL query and no model call. Reach it four ways: `zalo_get_messages` (the live buffer, per consumer); `zalo_get_history` (the cache first, which holds everything the daemon stored and `sync` restored; it asks Zalo only when the cache has nothing for the thread, and Zalo then serves only messages since this login); `zalo_list_conversations` (recent conversations, from the cache); or, on 2.x, direct read-only SQL (from 3.0.0 the file is encrypted: a read-only SQL command, `zalo-agent db query`, comes with the `db` command group later in 3.0).
+1. **Conversation memory, already built.** `zalo.db` is a queryable history: `messages`, `threads`, `contacts`, `reactions`, `conv_state`, `board_items`, `reminders` and `cloud_items`, plus the `sync_state` and `sync_gaps` bookkeeping. Give every bot a **read-only** handle (§1.5) and it can answer "what did we tell this customer last month" with a SQL query and no model call. Reach it four ways: `zalo_get_messages` (the live buffer, per consumer); `zalo_get_history` (the cache first, which holds everything the daemon stored and `sync` restored; it asks Zalo only when the cache has nothing for the thread, and Zalo then serves only messages since this login); `zalo_list_conversations` (recent conversations, from the cache); or read-only SQL through `zalo-agent --json db query "<SQL>"` (since 3.0.0 the file is encrypted, so a bot no longer opens it itself).
 2. **Enterprise documents: a directory plus an index you own.** Price lists, policies, product specs, SOPs. Keep them as files in a directory the bot process can read, and build whatever retrieval you need (embeddings and a vector store, or plain full-text search: for a few hundred business documents, BM25 over an FTS5 table is unglamorous and frequently better than a vector index). Version them in git. **Do not put them under `~/.zalo-agent-cli/`**: `logout --purge` and `account remove` delete the account's directory, `logout --delete-history` deletes its cache, and mixing your corpus with session state means one of those takes your knowledge base with it.
 3. **Prompt-resident facts.** The small, always-true set: who the company is, the escalation contact, opening hours, the refusal policy. Put it in the system prompt and use prompt caching so you are not paying for it in full on every message.
 
@@ -861,28 +861,27 @@ du -sh ~/.zalo-agent-cli/accounts/<ownId>/media
 find ~/.zalo-agent-cli/accounts/<ownId>/media -type f | wc -l
 ls -l  ~/.zalo-agent-cli/accounts/<ownId>/zalo.db*
 
-# Cache contents, coverage and the media growth rate, read-only.
-# 2.x only: since 3.0.0 zalo.db is encrypted and sqlite3 cannot open it. Until `zalo-agent db query`
-# ships (the db command group, later in 3.0), ask the running server: zalo_coverage, zalo_sync_status.
-sqlite3 -readonly ~/.zalo-agent-cli/accounts/<ownId>/zalo.db "
+# Cache contents, coverage and the media growth rate, read-only. zalo.db is encrypted since 3.0.0,
+# so sqlite3 cannot open it: db query reads it (local, no login, safe beside the daemon).
+zalo-agent --account <ownId> db query "
   select (select count(*) from messages)                                  as messages,
          (select count(*) from threads)                                   as threads,
          (select count(*) from messages where localPath is not null)      as media_rows,
          (select count(*) from messages where mediaPrunedAt is not null)  as media_pruned,
          (select count(*) from sync_gaps)                                 as gaps_total,
          (select count(*) from sync_gaps where status='pending')          as gaps_pending,
-         (select (max(timestamp)-min(timestamp))/86400000 from messages)  as span_days;"
+         (select (max(timestamp)-min(timestamp))/86400000 from messages)  as span_days"
 
 # Pending gaps, oldest first
-sqlite3 -readonly ~/.zalo-agent-cli/accounts/<ownId>/zalo.db \
+zalo-agent --account <ownId> db query \
   "select id, reason, datetime(fromTs/1000,'unixepoch'), datetime(toTs/1000,'unixepoch')
-     from sync_gaps where status='pending' order by fromTs;"
+     from sync_gaps where status='pending' order by fromTs"
 
 # Coverage watermarks and the self-heal's queue cursors
-sqlite3 -readonly ~/.zalo-agent-cli/accounts/<ownId>/zalo.db \
+zalo-agent --account <ownId> db query \
   "select key, value from sync_state
     where key in ('lastConnectedAt','lastDisconnectedAt','lastSyncOkAt','lastSyncOkFrom')
-       or key like 'offlineCursor:%';"
+       or key like 'offlineCursor:%'"
 
 # Permissions: the first three are 0600 by code; zalo.db and media/ follow the umask
 ls -l ~/.zalo-agent-cli/accounts.json ~/.zalo-agent-cli/credentials/

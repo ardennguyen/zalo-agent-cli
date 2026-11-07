@@ -2,7 +2,8 @@
  * Storage quotas and retention (src/core/storage-quota.js): the quota clock (warn, over, grace_ending, purged, ok, and a
  * cleared clock), the purge (oldest media first, then oldest messages with their search entries, reactions and row
  * MACs), the retention floor that keeps sync and history from restoring a purged message, the age rules, dead webhook
- * deliveries, a tenant's shared limit, a dry run that changes nothing, and `db purge` through a daemon's channel.
+ * deliveries, a tenant's shared limit, a dry run that changes nothing, `db purge` through a daemon's channel, and what MCP
+ * clients see: `storage_quota` system events in zalo_get_messages / zalo_wait_for_message, and zalo_profile 'usage'.
  */
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -28,6 +29,7 @@ import { runReadOnlyQuery } from "../../src/core/db-tools.js";
 import {
     describeStorage,
     measureUsage,
+    quotaSystemEvent,
     readQuotaState,
     resolveQuota,
     resolveRetention,
@@ -40,6 +42,8 @@ import { openOutbox, purgeDeadDeliveries } from "../../src/core/webhook-outbox.j
 import { callViaDaemon, startDaemonChannel } from "../../src/core/daemon-channel.js";
 import { storeHistoryMessage } from "../../src/core/live-store.js";
 import { describeAccountStatus } from "../../src/core/account-status.js";
+import { MessageBuffer } from "../../src/mcp/message-buffer.js";
+import { registerTools } from "../../src/mcp/mcp-tools.js";
 
 const DAY = 86_400_000;
 const NOW = Date.UTC(2026, 10, 8);
@@ -376,5 +380,82 @@ describe("storage quota: where it is shown", () => {
             lines.some((l) => /^This machine: .*retention: messages keep/.test(l)),
             lines.join(" | "),
         );
+    });
+});
+
+describe("storage quota: MCP clients see it (not every client is an agent)", () => {
+    /** The real tools over a real buffer, as `mcp start` wires them. */
+    function mcp(ownId) {
+        const tools = new Map();
+        const server = { registerTool: (name, meta, handler) => tools.set(name, { meta, handler }) };
+        const buffer = new MessageBuffer(50);
+        registerTools(
+            server,
+            { getOwnId: () => ownId },
+            buffer,
+            { isWatched: () => true },
+            { limits: { maxMessagesPerPoll: 20 } },
+            null,
+            getAccountDir(ownId),
+        );
+        const call = async (name, args) => {
+            const res = await tools.get(name).handler(args);
+            assert.notEqual(res.isError, true, res.content[0].text);
+            return JSON.parse(res.content[0].text);
+        };
+        return { buffer, call };
+    }
+    const event = {
+        event: "storage_quota",
+        accountId: "1",
+        level: "over",
+        scope: "account",
+        usedBytes: 3 * 1024 * 1024,
+        limitBytes: 2 * 1024 * 1024,
+        overSince: "2026-11-08T00:00:00.000Z",
+        purgeAt: "2026-12-23T00:00:00.000Z",
+    };
+
+    it("a storage_quota event is a system event in zalo_get_messages and zalo_wait_for_message, in order", async () => {
+        const id = freshId();
+        const { buffer, call } = mcp(id);
+        buffer.push("t1", { msgId: "a", threadId: "t1", senderId: "1", text: "before", timestamp: Date.now() });
+        buffer.pushSystem(quotaSystemEvent(event));
+        buffer.push("t1", { msgId: "b", threadId: "t1", senderId: "1", text: "after", timestamp: Date.now() });
+        const got = await call("zalo_get_messages", { since: 0, limit: 20 });
+        assert.deepEqual(
+            got.messages.map((m) => m.msgId ?? m.type),
+            ["a", "storage_quota", "b"],
+        );
+        const sys = got.messages[1];
+        assert.equal(sys.system, true);
+        assert.equal(sys.threadId, null);
+        assert.equal(sys.level, "over");
+        assert.equal(sys.limitBytes, event.limitBytes);
+        assert.match(sys.text, /over its limit .* purged at 2026-12-23/);
+        const waited = await call("zalo_wait_for_message", { since: got.messages[0]._cursor, timeoutSec: 1 });
+        assert.equal(waited.message.type, "storage_quota");
+        // A read of one conversation does not get it, and no conversation list shows it.
+        const one = await call("zalo_get_messages", { threadId: "t1", since: 0, limit: 20 });
+        assert.deepEqual(
+            one.messages.map((m) => m.msgId),
+            ["a", "b"],
+        );
+        assert.deepEqual(
+            buffer.getStats().map((t) => t.threadId),
+            ["t1"],
+        );
+    });
+
+    it("zalo_profile 'usage' reads the account's storage, as db usage prints it", async () => {
+        const a = account({ rows: 5, files: 2 });
+        const { call } = mcp(a.id);
+        const r = await call("zalo_profile", { action: "usage" });
+        closeDb();
+        assert.equal(r.accountId, a.id);
+        assert.ok(r.usage.db > 0 && r.usage.media >= 2 * 40_000, JSON.stringify(r.usage));
+        assert.equal(r.usage.total, r.usage.db + r.usage.media + r.usage.outbox);
+        assert.equal(r.retention.messages, "keep");
+        assert.ok("accountLimit" in r.quota);
     });
 });

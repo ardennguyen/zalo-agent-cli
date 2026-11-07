@@ -663,6 +663,18 @@ export function startStorageJobs({ firstDelayMs = 60_000, ...args }) {
 const mib = (n) => `${(Number(n) / 1024 / 1024).toFixed(1)} MiB`;
 
 /**
+ * One `storage_quota` event as the MCP server's live buffer carries it to `zalo_get_messages` /
+ * `zalo_wait_for_message` (and GET /events/wait): the event's fields, `type: "storage_quota"` and the line a person
+ * reads as `text`. Sizes, levels and dates only: no content.
+ *
+ * @param {object} e - the event `runStoragePass` emits
+ * @returns {object}
+ */
+export function quotaSystemEvent(e) {
+    return { type: "storage_quota", ...e, text: describeQuotaEvent(e) };
+}
+
+/**
  * One `storage_quota` event as a line for a person (the daemon's log, `listen`'s output).
  *
  * @param {object} e

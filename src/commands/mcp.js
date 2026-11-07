@@ -101,7 +101,7 @@ import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
 import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
-import { describeQuotaEvent, describeStorage, startStorageJobs } from "../core/storage-quota.js";
+import { describeQuotaEvent, describeStorage, quotaSystemEvent, startStorageJobs } from "../core/storage-quota.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
 
@@ -993,13 +993,15 @@ export function registerMCPCommands(program) {
             });
             // Quotas and retention (src/core/storage-quota.js): this daemon holds daemon.lock, so it is the one process
             // that purges, on its timer (retention.purgeEvery) and for `db purge` over its channel. Over a limit,
-            // caching goes on; the storage_quota events go to the webhook.
+            // caching goes on; the storage_quota events go to the webhook and, as system events, to the live buffer that
+            // zalo_get_messages / zalo_wait_for_message read (not every MCP client is an agent: a person sees their usage).
             const storageJobs = startStorageJobs({
                 ownId: activeAcc.ownId,
                 mediaRoot: MEDIA_DIR || config.media?.downloadDir || null,
                 emit: (event) => {
                     console.error(`[mcp] ${describeQuotaEvent(event)}`);
                     webhookDelivery?.enqueue(null, event);
+                    buffer.pushSystem(quotaSystemEvent(event));
                 },
                 log: (l) => console.error(`[mcp] ${l}`),
                 purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),

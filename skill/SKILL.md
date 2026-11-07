@@ -162,7 +162,7 @@ zalo-agent --json db query "<SQL>" --include-hidden --pin-stdin   # Hidden chats
 zalo-agent db backup --out backup.db                  # Encrypted, verified copy (opens only with this account's keyring.json + provider)
 zalo-agent db export --out plain.db --plaintext --yes # Decrypted copy for other SQLite tools (asks first: exit 2 without --yes); hidden chats only with --include-hidden + PIN
 zalo-agent db verify                                  # Row MAC check of every cached message (tamper evidence); exit 1 on a finding
-zalo-agent db usage                                   # Storage on this machine, quota state (ok/warn/over, purge date), retention rules
+zalo-agent db usage                                   # Storage on this machine, quota state (ok/warn/over, purge date), retention rules (MCP: zalo_profile usage)
 zalo-agent db purge --dry-run | --yes                 # Quota/retention purge now (delete-only; through the daemon when one runs)
 
 # Runtime policy: what a running daemon takes without a restart (confirm mode, links, webhooks, quotas, retention).
@@ -272,7 +272,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 
 | Tool | Purpose | Key params |
 |------|---------|-----------|
-| `zalo_get_messages` | Buffered live messages, cursor-based incremental reads; each says whether the human already read it on Zalo (`readOnZalo`) | `threadId?`, `since` (default 0), `limit` (default 20, max 100) |
+| `zalo_get_messages` | Buffered live messages, cursor-based incremental reads; each says whether the human already read it on Zalo (`readOnZalo`). System events (`system: true`, `type` `storage_quota`: storage near/over quota, purged, ok) come in the same list to a read without `threadId` | `threadId?`, `since` (default 0), `limit` (default 20, max 100) |
 | `zalo_send_message` | Send text, local file/image attachments (`filePath` / `files`), link preview card (`link`), contact card (`cardUserId`), sticker, voice from a URL, video from a URL or a local file, bank card or VietQR image to a DM or group; `@[uid]` mentions, quote-replies, Important/Urgent, and `threadId: "me"` for My Documents | `threadId`, `text?`, `filePath?`, `files?`, `link?`, `cardUserId?`, `sticker?`, `voiceUrl?`, `video?`, `bankCard?`, `qrTransfer?`, `threadType?` (cached type when omitted), `quoteMsgId?`, `urgency?` (`normal`/`important`/`urgent`) |
 | `zalo_list_threads` | Buffered threads with unread counts, names and the account's own read state on Zalo (`readState`) | `type` (`dm`/`group`/`all`) |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit` (default 10, max 50) |
@@ -300,7 +300,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_read` | Run one of Zalo Web's read-only endpoints that no other tool covers (sticker and GIF catalogs and search, profile rank, block list, nicknames, status…), or list them with their arguments | `name?` (omit to list), `args?` (by the read's argument names; ids are strings) |
 | `zalo_write` | Make one of Zalo Web's state-changing calls that no other tool covers (reminder RSVP, group notes/reminders with repeat rules, pins, multi-recall, …), or list them with their `risk`. A real call needs `confirm: true`; `dryRun: true` shows the request | `name?` (omit to list), `args?`, `dryRun?`, `confirm?` |
 | `zalo_conversation` | The `conv` commands, `msg typing` and `msg report`: pin, archive, mute, hide, mark read/unread, auto-delete, delete or forget a conversation | `action`, `threadId?`, `threadIds?`, `threadType?`, `durationSeconds?`, `ttl?`, `pin?`, `orphans?`, `reason?`, `content?`, `confirm?`, `dryRun?` |
-| `zalo_profile` | The `profile` commands and `account devices` | `action`, `filePath?`, `bio?`, `name?`, `dob?`, `gender?`, `setting?`, `value?`, `photoIds?`, `photoId?`, `enabled?`, `language?` |
+| `zalo_profile` | The `profile` commands, `account devices`, and `db usage` (`usage`: storage, quota level, purge date) | `action`, `filePath?`, `bio?`, `name?`, `dob?`, `gender?`, `setting?`, `value?`, `photoIds?`, `photoId?`, `enabled?`, `language?` |
 | `zalo_auto_reply` / `zalo_quick_message` | Auto-reply rules / quick messages (`auto-reply`, `quick-msg`) | `action`, `autoReplyId?` / `quickMessageId(s)?`, `content?` / `keyword?`, `title?` |
 | `zalo_catalog` / `zalo_bank` | Zalo Shop catalogs and products / supported banks and saved bank accounts (`catalog`, `bank`) | `action`, `catalogId?`, `productId(s)?` / `bankAccountId?`, `bank?`, `accountNumber?`, `holderName?` |
 | `zalo_cloud` | zCloud index summary and cleanup plan (`cloud ls`, `cloud plan`), and the guarded cleanup (`cloud apply`) | `action` (`summary`｜`plan`｜`apply`), filters, `confirm?`, `dryRun?` |

@@ -10,6 +10,8 @@ import { UPDATE_LANG } from "../zalo/enums.js";
 import { createTrustStore } from "../zalo/trust-store.js";
 import { getAccountDir } from "../core/credentials.js";
 import { summarizeCompanion } from "../core/account-devices.js";
+import { dbUsedBytes } from "../core/db.js";
+import { describeStorage } from "../core/storage-quota.js";
 import {
     SETTING_MAP,
     describeSettings,
@@ -145,6 +147,20 @@ export const PROFILE_ACTIONS = {
             };
         },
     },
+    usage: {
+        // `db usage`: this account's storage on the server (database, media, outbox), its quota and retention rules,
+        // and the quota state. Read-only and local: Zalo is not asked.
+        async run(_a, ctx) {
+            const ownId = String(ctx.ownId?.() ?? ctx.api.getOwnId());
+            let dbBytes = null;
+            try {
+                dbBytes = dbUsedBytes();
+            } catch {
+                /* no open cache: the file sizes */
+            }
+            return { accountId: ownId, ...describeStorage(ownId, { mediaRoot: ctx.mediaRoot ?? null, dbBytes }) };
+        },
+    },
 };
 
 /** zalo_profile's metadata. */
@@ -160,8 +176,11 @@ export const PROFILE_META = {
         "the gallery; asked about first: `confirm`, `dryRun`), 'reuse_avatar' (an earlier photo as the avatar), " +
         "'active' (this session's presence, active or away, as Zalo Web sends when its tab gains or " +
         "loses focus; it does not hide the online status, which is 'set' with setting 'online-status'), " +
-        "'lang' (the account language) and 'devices' (the phone and " +
-        "the devices linked to this account). Everyone who sees this account sees what changes here.",
+        "'lang' (the account language), 'devices' (the phone and " +
+        "the devices linked to this account) and 'usage' (read-only: this account's storage on the server, its " +
+        "database, media and webhook outbox in bytes, its quota and retention rules, and the quota level ok, warn or " +
+        "over with the purge date, as `db usage` prints it; the server also sends `storage_quota` system events " +
+        "through zalo_get_messages and zalo_wait_for_message). Everyone who sees this account sees what changes here.",
     inputSchema: z
         .object({
             action: z

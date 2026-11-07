@@ -93,6 +93,7 @@ const MCP_FOR = {
     "conv recent": ["zalo_list_conversations"],
     "account status": ["zalo_read", "account-status"],
     "account devices": ["zalo_profile", "devices"],
+    "db usage": ["zalo_profile", "usage"],
     "profile me": ["zalo_lookup_user"],
     "poll create": ["zalo_poll", "create"],
     "poll info": ["zalo_poll", "info"],
@@ -168,8 +169,6 @@ const CLI_ONLY = {
         "changes the runtime policy (limits, confirm mode, links): never an agent's, so it cannot raise its own",
     "policy unset": "changes the runtime policy: never an agent's, so it cannot lift its own limits",
     "policy token": "makes the admin API's own credential: an operator's step, never handed to an agent",
-    "db usage":
-        "this machine's storage report for an operator; an agent sees the same numbers in zalo_profile status (storage)",
     "db purge":
         "deletes cached data for good under the quota and retention rules: an operator's step, never an agent's",
     "profile lost-focus": "a client-presence signal, meaningless for a server",

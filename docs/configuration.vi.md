@@ -105,7 +105,8 @@ trước: mặc định, `storage.json` (cấp trên cùng, rồi `accounts.<own
 | `retention.outboxDead` | `30d` | lượt gửi webhook đã chết bị xóa sau thời gian này |
 | `retention.purgeEvery` | `6h` | daemon kiểm tra bao lâu một lần (ít nhất `1m`) |
 
-**Vượt giới hạn thì vẫn tiếp tục lưu đệm.** Daemon gửi sự kiện `storage_quota` tới webhook (và `listen` in ra):
+**Vượt giới hạn thì vẫn tiếp tục lưu đệm.** Daemon gửi sự kiện `storage_quota` tới webhook (`listen` in ra, và
+`mcp start` còn đưa chúng tới client MCP dưới dạng sự kiện hệ thống trong `zalo_get_messages` / `zalo_wait_for_message`):
 `{event: "storage_quota", accountId, scope: "account"|"tenant", tenantId?, level, usedBytes, limitBytes, overSince,
 purgeAt}` với `level` là `warn`, `over`, `grace_ending` (`daysLeft` 7 và 1), `purged` (`freedBytes`, `media`,
 `messages`) và `ok` (đã về dưới giới hạn: nâng giới hạn hoặc gia hạn sẽ xóa đồng hồ ân hạn). Sau `quota.graceDays` nó

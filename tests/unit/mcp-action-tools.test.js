@@ -207,6 +207,7 @@ const HAPPY = {
         ["active", { enabled: false }, "updateActiveStatus"],
         ["lang", { language: "en" }, "updateLang"],
         ["devices", {}, "getListDevice"],
+        ["usage", {}, null],
     ],
     zalo_auto_reply: [
         ["list", {}, "getAutoReplyList"],

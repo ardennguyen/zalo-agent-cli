@@ -53,6 +53,12 @@ async function settleUntilFull(read, limit, settleMs, signal) {
     return r;
 }
 
+/**
+ * The key system events are buffered under (not a conversation's messages: a `storage_quota` event). No thread id is
+ * this word (they are digits), so no conversation's read returns them, and the conversation lists leave the key out.
+ */
+export const SYSTEM_EVENTS = "system";
+
 /** The consumer a caller that names none reads as. */
 export const DEFAULT_CONSUMER = "default";
 
@@ -131,6 +137,15 @@ export class MessageBuffer {
                 waiter.resolve(message);
             }
         }
+    }
+
+    /**
+     * Add one system event: every read and wait that names no conversation gets it, in order with the messages
+     * (it moves the same cursor), marked `system: true` with `threadId` and `msgId` null.
+     * @param {object} event - `{type, ...}`
+     */
+    pushSystem(event) {
+        this.push(SYSTEM_EVENTS, { threadId: null, msgId: null, timestamp: Date.now(), ...event, system: true });
     }
 
     /**
@@ -292,7 +307,7 @@ export class MessageBuffer {
     getStats(readCursor = 0) {
         const stats = [];
         for (const [threadId, thread] of this._threads) {
-            if (thread.messages.length === 0) continue;
+            if (thread.messages.length === 0 || threadId === SYSTEM_EVENTS) continue;
             const unread = thread.messages.filter((m) => m._cursor > readCursor).length;
             stats.push({
                 threadId,

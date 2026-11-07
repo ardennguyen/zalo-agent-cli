@@ -105,7 +105,8 @@ the media files, the webhook outbox) every `retention.purgeEvery` and applies th
 | `retention.outboxDead` | `30d` | dead webhook deliveries are deleted after this |
 | `retention.purgeEvery` | `6h` | how often the daemon checks (at least `1m`) |
 
-**Over a limit, caching goes on.** The daemon sends `storage_quota` events to the webhook (and `listen` prints them):
+**Over a limit, caching goes on.** The daemon sends `storage_quota` events to the webhook (`listen` prints them, and
+`mcp start` also hands them to its MCP clients as system events in `zalo_get_messages` / `zalo_wait_for_message`):
 `{event: "storage_quota", accountId, scope: "account"|"tenant", tenantId?, level, usedBytes, limitBytes, overSince,
 purgeAt}` with `level` `warn`, `over`, `grace_ending` (`daysLeft` 7 and 1), `purged` (`freedBytes`, `media`,
 `messages`) and `ok` (back under: a raised limit or a renewal clears the grace clock). After `quota.graceDays` it
@@ -113,7 +114,7 @@ purges the oldest media, then the oldest messages (their search entries, reactio
 are zeroed by `secure_delete` and the WAL checkpointed) until usage is at or under the limit; a tenant's accounts each
 give up their share of the excess. A purge raises the database's retention floor: no sync or history fetch stores a
 message at or before it again. The database file keeps its size (SQLite reuses the freed pages); usage counts the
-pages in use. `zalo-agent db usage` shows all of it, `db purge --dry-run` counts what is due, and `db purge --yes` runs
+pages in use. `zalo-agent db usage` (and `zalo_profile` `usage` over MCP) shows all of it, `db purge --dry-run` counts what is due, and `db purge --yes` runs
 it now (through the daemon when one runs).
 
 The admin token: `zalo-agent policy token --rotate` makes one and shows it once; only its SHA-256 is kept, sealed in

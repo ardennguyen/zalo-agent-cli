@@ -596,6 +596,10 @@ function cacheHistory(threadId, limit, before, nameCache) {
     };
 }
 
+/** What zalo_get_messages and zalo_wait_for_message say about the system events in their list. */
+const SYSTEM_EVENTS_NOTE =
+    "A system event arrives in the same list with `system: true` and `threadId` null, only to a read or wait that names no `threadId`: `type` \"storage_quota\" says this account's storage on the server is near or over its quota, or was purged, or is back within it (`level` warn, over, grace_ending, purged or ok; `usedBytes`, `limitBytes`, `purgeAt`, and `text` to show a person). zalo_profile 'usage' reads the current usage. ";
+
 /**
  * Register all Zalo MCP tools on the server.
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server
@@ -685,6 +689,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         hiddenMode: () => hiddenMode(),
         securePage: () => getSecurePage(),
         threadName: (id) => nameCache?.get?.(String(id))?.name ?? null,
+        // zalo_profile 'usage': the media folder this server downloads into.
+        mediaRoot: config.media?.downloadDir ?? null,
     };
     const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
     const groupExtra = actionTool("zalo_group", GROUP_EXTRA_ACTIONS, toolCtx);
@@ -700,6 +706,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when the message was first seen), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
                 "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (phone or Zalo Web), and null when that is unknown; zalo_mark_read does not change it. " +
                 'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. ' +
+                SYSTEM_EVENTS_NOTE +
                 "Returns `{ messages, cursor, hasMore }`.",
             inputSchema: z.object({
                 threadId: z
@@ -730,6 +737,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // An explicit cursor is honored as given; 0 starts after what this consumer marked read.
                 const from = since > 0 ? since : buffer.readCursor(consumer);
                 const result = buffer.read(threadId, from, limit);
+                // A system event (storage_quota) belongs to no conversation: it is passed on as it is.
+                const order = result.messages;
+                const system = new Map(order.filter((m) => m?.system).map((m) => [m._cursor, m]));
+                result.messages = order.filter((m) => !m?.system);
                 // Enrich messages with thread name from cache
                 if (nameCache) {
                     for (const msg of result.messages) {
@@ -760,6 +771,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     ...msg,
                     readOnZalo: readOnZalo(msg.msgId, watermarkOf(String(msg.threadId))),
                 }));
+                if (system.size) {
+                    const byCursor = new Map(result.messages.map((m) => [m._cursor, m]));
+                    result.messages = order.map((m) => system.get(m._cursor) ?? byCursor.get(m._cursor));
+                }
                 result.messages = eventsView(result.messages);
                 return ok(result);
             } catch (e) {
@@ -3241,7 +3256,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             title: "Wait for Incoming Zalo Message",
             description:
                 'Wait for the next incoming message, without polling. It returns at once when a buffered message newer than `since` is already waiting; otherwise it waits up to `timeoutSec` seconds (default 55, max 300) and then returns `status: "timeout"` with no message. Call it in a loop to listen, and call zalo_mark_read with the `cursor` when a message is handled. ' +
-                "`limit` (default 1, max 100) returns up to that many buffered messages in one call, in order, in `messages` (`message` is the first, `cursor` is the last, so `since: cursor` continues where the batch ended; `hasMore` says more are already waiting); `settleMs` waits that long after the first message for the rest of a burst. A message's `id` is its msgId. Mirrors GET /events/wait for remote HTTPS/OAuth2 MCP clients.",
+                "`limit` (default 1, max 100) returns up to that many buffered messages in one call, in order, in `messages` (`message` is the first, `cursor` is the last, so `since: cursor` continues where the batch ended; `hasMore` says more are already waiting); `settleMs` waits that long after the first message for the rest of a burst. A message's `id` is its msgId. " +
+                SYSTEM_EVENTS_NOTE +
+                "Mirrors GET /events/wait for remote HTTPS/OAuth2 MCP clients.",
             inputSchema: z.object({
                 threadId: z
                     .string()
@@ -3310,7 +3327,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             typeof buffer.readCursor === "function" ? buffer.readCursor() : 0,
                         ),
                         decorate: (msg) => {
-                            if (msg.hidden) return msg;
+                            if (msg.hidden || msg.system) return msg;
                             const tid = String(msg.threadId || "");
                             let threadName = nameCache?.get(tid)?.name || null;
                             if (!threadName && tid) {

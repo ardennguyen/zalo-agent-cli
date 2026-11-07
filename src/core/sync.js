@@ -72,7 +72,9 @@ export class SyncManager {
         if (safeTo - safeFrom < 1000) return null; // not worth tracking (<1s)
         const id = recordSyncGap(safeFrom, safeTo, reason);
         setSyncState("lastConnectionOk", "false");
-        console.log(
+        // stderr: `listen --json` streams one event per stdout line, and a
+        // startup gap is recorded while that stream is open.
+        console.error(
             `[Sync] Recorded coverage gap #${id} (${reason}): ${new Date(safeFrom).toISOString()} → ${new Date(safeTo).toISOString()}`,
         );
         return id;

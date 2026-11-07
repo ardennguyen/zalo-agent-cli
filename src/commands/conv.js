@@ -20,6 +20,7 @@ import {
     newestMessageAnchor as newestAnchorFromSources,
     setConversationArchived,
     setConversationPinned,
+    hiddenConversationsView,
 } from "../core/conversation-actions.js";
 import { readUserAliases, currentUserName } from "../core/current-user-names.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
@@ -463,7 +464,7 @@ export function registerConvCommands(program, deps = {}) {
         .description("List hidden conversations")
         .action(async () => {
             try {
-                const result = await getApi().getHiddenConversations();
+                const result = hiddenConversationsView(await getApi().getHiddenConversations());
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Get hidden conversations failed: ${e.message}`);

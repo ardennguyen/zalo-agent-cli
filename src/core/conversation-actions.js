@@ -18,6 +18,20 @@ export const ANCHOR_SCAN_DEPTH = 200;
 /** How far back to look for an incoming message to anchor a seen event (or an unread mark) on. */
 export const SEEN_ANCHOR_SCAN_DEPTH = 50;
 
+/**
+ * The hidden-conversation list as the CLI and MCP hand it out: the threads and whether a PIN is set, never the PIN.
+ *
+ * Zalo's `hiddenconvers/get-all` answers with `pin`, the unsalted MD5 of the 4-digit PIN (Zalo Web keeps it to check
+ * the PIN on the device). Ten thousand guesses recover the PIN from it, so passing the answer through gave it to
+ * every script and every MCP agent that listed hidden conversations (seen live 2026-11-07).
+ *
+ * @param {object|null|undefined} raw - Zalo's get-all answer
+ * @returns {{threads: object[], hasPin: boolean}}
+ */
+export function hiddenConversationsView(raw) {
+    return { threads: Array.isArray(raw?.threads) ? raw.threads : [], hasPin: Boolean(raw?.pin) };
+}
+
 /** `conv auto-delete`'s periods, in milliseconds, as Zalo Web offers them. */
 export const AUTO_DELETE_TTLS = Object.freeze({ off: 0, "1d": 86400000, "7d": 604800000, "14d": 1209600000 });
 

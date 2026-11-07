@@ -17,6 +17,7 @@ import {
     newestMessageAnchor,
     setConversationArchived,
     setConversationPinned,
+    hiddenConversationsView,
 } from "../core/conversation-actions.js";
 import { confirmInput, dryRunInput } from "./action-tool.js";
 
@@ -174,7 +175,7 @@ export const CONVERSATION_ACTIONS = {
     },
     hidden: {
         async run(_a, { api }) {
-            return { data: (await api.getHiddenConversations()) ?? null };
+            return hiddenConversationsView(await api.getHiddenConversations());
         },
     },
     hide: {

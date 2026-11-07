@@ -9,6 +9,10 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+### fleet purge for a timer
+
+- feat: **`fleet purge [accounts...] [--dry-run|--yes]`**, for a systemd timer or cron: for each account on this machine with **no running daemon**, the same purge as `db purge`, under the account's `daemon.lock` (so a stopped account's grace period and age rules still run out); a **running daemon** is left alone while its last check is within `retention.purgeEvery` × 2, and asked over its channel to run it when it is behind. Guarded (exit 2 without `--yes`). `fleet generate` now also writes `zalo-mcp-purge.service` and `zalo-mcp-purge.timer` (hourly, random minute, `Persistent=true`); samples in `docs/config-samples/systemd/`. Each pass records `lastPass` in `quota-state.json`.
+
 ### Export my data (CRM)
 
 - feat: **`POST /zalo/admin/export/<ownId>`** on the admin API (its own credential, never the agent's): builds an export of the account's messages as a job (`GET .../export/<ownId>/<jobId>` for its state, `DELETE` to drop it) and hands it out as an **expiring download link** with the media-link rules (bearer or capability as `media.linkAuth` says, byte ranges, `no-store`, an attachment, `media.linkTtl`). The file is deleted once it has been downloaded whole, when the link expires or is revoked (logout, kick, rekey, a link-policy change, a chat hidden after the export was made), and with the server.

@@ -105,7 +105,7 @@ trước: mặc định, `storage.json` (cấp trên cùng, rồi `accounts.<own
 | `retention.messages` | `keep` | `keep`, hoặc `<N>d`: tin nhắn từ N ngày tuổi trở lên bị xóa |
 | `retention.media` | `keep` | `keep`, hoặc `<N>d`: file media của tin nhắn từ N ngày tuổi trở lên bị xóa (tin nhắn vẫn giữ) |
 | `retention.outboxDead` | `30d` | lượt gửi webhook đã chết bị xóa sau thời gian này |
-| `retention.purgeEvery` | `6h` | daemon kiểm tra bao lâu một lần (ít nhất `1m`) |
+| `retention.purgeEvery` | `6h` | daemon kiểm tra bao lâu một lần (ít nhất `1m`); `fleet purge` (chạy theo timer) yêu cầu daemon nào chưa kiểm tra trong khoảng gấp đôi thời gian này chạy ngay, và tự xóa cho tài khoản không có daemon |
 
 **Vượt giới hạn thì vẫn tiếp tục lưu đệm.** Daemon gửi sự kiện `storage_quota` tới webhook (`listen` in ra, và
 `mcp start` còn đưa chúng tới client MCP dưới dạng sự kiện hệ thống trong `zalo_get_messages` / `zalo_wait_for_message`):
@@ -300,6 +300,7 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 
 - [`systemd/zalo-mcp@.service`](config-samples/systemd/zalo-mcp@.service): tên instance chính là id tài khoản; token và port lấy từ `/etc/zalo-mcp/accounts/<id>.env`, nên không có gì bí mật trên dòng lệnh. Các instance khởi động lệch nhau trong 30 giây (mỗi lần khởi động đều đăng nhập và nạp danh sách của tài khoản; cả đàn khởi động cùng lúc là thời điểm nặng nhất) và mỗi instance bị giới hạn 600 MB (instance nhàn rỗi khoảng 100 MB).
 - [`systemd/common.env`](config-samples/systemd/common.env) cho phần chung, [`env/account.env`](config-samples/env/account.env) cho từng tài khoản.
+- [`systemd/zalo-mcp-purge.service`](config-samples/systemd/zalo-mcp-purge.service) và [`systemd/zalo-mcp-purge.timer`](config-samples/systemd/zalo-mcp-purge.timer): chạy `fleet purge --yes` mỗi giờ, để tài khoản có daemon đang dừng vẫn được xóa theo hạn mức và thời gian lưu giữ (dưới `daemon.lock` của nó), và daemon có lịch riêng bị trễ được yêu cầu chạy ngay.
 - **`zalo-agent fleet generate --out <dir>`** ghi toàn bộ những thứ trên cho mọi tài khoản đã đăng ký (unit, file env với token tự sinh cho từng tài khoản, bảng port, tuỳ chọn cả Caddyfile); `fleet status` cho xem mọi daemon trong một bảng, `fleet start` / `restart` khởi động theo từng lô được xáo trộn, và `fleet restart --unhealthy` chỉ khởi động lại những cái đang chết (xem [`docs/deployment.vi.md`](deployment.vi.md) §4.8).
 - Một kế hoạch port, ví dụ `3900 + n`, ghi trong một bảng (`fleet ports` giữ bảng đó giúp bạn). Sau một tên miền: [`proxy/Caddyfile.multi-account`](config-samples/proxy/Caddyfile.multi-account) định tuyến `/a/<ownId>/…` tới đúng port; dùng bearer token, mỗi tài khoản một token.
 - Cho mỗi tài khoản **proxy riêng** khi đăng nhập (`zalo-agent login --proxy …`) và dấu vân tay thiết bị riêng (tự động): hàng trăm tài khoản từ một địa chỉ là điều khiến tài khoản bị khóa.

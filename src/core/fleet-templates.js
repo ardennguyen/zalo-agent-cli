@@ -1,6 +1,7 @@
 /**
  * The files `zalo-agent fleet generate` writes: a systemd template unit (one instance per account, the
- * instance name IS the account id), the shared and per-account env files, and a Caddy reverse proxy with a
+ * instance name IS the account id), the shared and per-account env files, the purge service and its timer
+ * (`fleet purge` for the accounts whose daemon is stopped or behind), and a Caddy reverse proxy with a
  * path per account.
  *
  * They are the same files as docs/config-samples/ (the docs are not shipped in the npm package, the CLI
@@ -93,6 +94,79 @@ export function renderUnit(o = {}) {
     const v = { ...FLEET_DEFAULTS, ...o };
     return UNIT_TEMPLATE.replaceAll("User=zalo", `User=${v.user}`)
         .replaceAll("Group=zalo", `Group=${v.user}`)
+        .replaceAll("/home/zalo", v.home)
+        .replaceAll("/usr/bin/zalo-agent ", `${v.bin} `)
+        .replaceAll("/var/lib/zalo-media", v.mediaDir)
+        .replaceAll("/etc/zalo-mcp", v.etcDir);
+}
+
+export const PURGE_SERVICE_TEMPLATE = `# /etc/systemd/system/zalo-mcp-purge.service
+# The quota and retention purge for every account on this machine, run by zalo-mcp-purge.timer.
+# Each running zalo-mcp@<id> purges on its own timer (retention.purgeEvery). This covers an account
+# whose daemon is stopped (its grace period still runs out, under its daemon.lock) and asks a daemon
+# whose timer is behind (no check within purgeEvery x 2) to run it now.
+#   systemctl enable --now zalo-mcp-purge.timer
+#   journalctl -u zalo-mcp-purge
+# Per-account retention variables (ZALO_RETENTION_MEDIA_<id>) count here only from common.env; the
+# runtime policy (zalo-agent policy set, the admin API) counts everywhere.
+# Cron instead of the timer:  17 * * * *  zalo  /usr/bin/zalo-agent fleet purge --yes
+[Unit]
+Description=Zalo MCP quota and retention purge (every account on this machine)
+Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/configuration.md
+
+[Service]
+Type=oneshot
+User=zalo
+Group=zalo
+WorkingDirectory=/home/zalo
+UMask=0077
+EnvironmentFile=/etc/zalo-mcp/common.env
+Environment=NODE_ENV=production
+Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
+ExecStart=/usr/bin/zalo-agent fleet purge --yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zalo-mcp-purge
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/zalo/.zalo-agent-cli /var/lib/zalo-media
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=600M
+`;
+
+export const PURGE_TIMER_TEMPLATE = `# /etc/systemd/system/zalo-mcp-purge.timer
+# Runs zalo-mcp-purge.service every hour at a random minute, and once after a boot that missed a run.
+#   systemctl enable --now zalo-mcp-purge.timer
+#   systemctl list-timers zalo-mcp-purge.timer
+[Unit]
+Description=Hourly Zalo MCP quota and retention purge
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`;
+
+/**
+ * The purge service with the caller's user, home, binary and media directory (the timer takes none).
+ * @param {Partial<typeof FLEET_DEFAULTS>} [o]
+ * @returns {string}
+ */
+export function renderPurgeService(o = {}) {
+    const v = { ...FLEET_DEFAULTS, ...o };
+    return PURGE_SERVICE_TEMPLATE.replaceAll("User=zalo", `User=${v.user}`)
+        .replaceAll("Group=zalo", `Group=${v.user}`)
+        .replaceAll("  zalo  /usr/bin/zalo-agent ", `  ${v.user}  ${v.bin} `)
         .replaceAll("/home/zalo", v.home)
         .replaceAll("/usr/bin/zalo-agent ", `${v.bin} `)
         .replaceAll("/var/lib/zalo-media", v.mediaDir)

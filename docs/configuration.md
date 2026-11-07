@@ -105,7 +105,7 @@ the media files, the webhook outbox) every `retention.purgeEvery` and applies th
 | `retention.messages` | `keep` | `keep`, or `<N>d`: messages N days old or older are deleted |
 | `retention.media` | `keep` | `keep`, or `<N>d`: media files of messages N days old or older are deleted (the messages stay) |
 | `retention.outboxDead` | `30d` | dead webhook deliveries are deleted after this |
-| `retention.purgeEvery` | `6h` | how often the daemon checks (at least `1m`) |
+| `retention.purgeEvery` | `6h` | how often the daemon checks (at least `1m`); `fleet purge` (a timer) asks a daemon that has not checked within twice this, and purges an account with no daemon itself |
 
 **Over a limit, caching goes on.** The daemon sends `storage_quota` events to the webhook (`listen` prints them, and
 `mcp start` also hands them to its MCP clients as system events in `zalo_get_messages` / `zalo_wait_for_message`):
@@ -300,6 +300,7 @@ One account is one process, one WebSocket, one SQLite file and one port: there i
 
 - [`systemd/zalo-mcp@.service`](config-samples/systemd/zalo-mcp@.service): the instance name is the account id; the token and port come from `/etc/zalo-mcp/accounts/<id>.env`, so nothing secret is on the command line. Instances start staggered over 30 s (every start logs in and loads the account's lists; a fleet starting together is its heaviest moment) and each is capped at 600 MB (an idle one is about 100 MB).
 - [`systemd/common.env`](config-samples/systemd/common.env) for what all share, [`env/account.env`](config-samples/env/account.env) per account.
+- [`systemd/zalo-mcp-purge.service`](config-samples/systemd/zalo-mcp-purge.service) and [`systemd/zalo-mcp-purge.timer`](config-samples/systemd/zalo-mcp-purge.timer): `fleet purge --yes` every hour, so an account whose daemon is stopped still has its quota and retention purge (under its `daemon.lock`), and a daemon whose own timer is behind is asked to run it.
 - **`zalo-agent fleet generate --out <dir>`** writes all of the above for every registered account (unit, env files with a generated token each, port table, optionally the Caddyfile); `fleet status` shows every daemon in one table, `fleet start` / `restart` bring them up in shuffled batches, and `fleet restart --unhealthy` restarts only the ones that are down (see [`docs/deployment.md`](deployment.md) §4.8).
 - A port plan, e.g. `3900 + n`, kept in one table (`fleet ports` keeps it for you). Behind one hostname: [`proxy/Caddyfile.multi-account`](config-samples/proxy/Caddyfile.multi-account) routes `/a/<ownId>/…` to the right port; use bearer tokens, one per account.
 - Give each account **its own proxy** at login (`zalo-agent login --proxy …`) and its own device fingerprint (automatic): hundreds of accounts from one address is what gets accounts banned.

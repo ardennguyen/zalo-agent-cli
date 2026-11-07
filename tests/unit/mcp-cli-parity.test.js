@@ -185,6 +185,7 @@ const CLI_ONLY = {
     "fleet stop": "manages several daemons on the machine",
     "fleet restart": "manages several daemons on the machine",
     "fleet generate": "writes service files on the machine",
+    "fleet purge": "a machine's timer job across every account, beside their daemons",
     update: "updates the installed package",
     "cloud get":
         "needs the account's cloud key (a secret derived from the owner's PIN), which must never pass through an agent or a tool input",

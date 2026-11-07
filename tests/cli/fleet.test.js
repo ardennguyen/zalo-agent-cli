@@ -213,6 +213,36 @@ describe("fleet stop", () => {
     });
 });
 
+describe("fleet purge", () => {
+    it("asks first: without --yes or --dry-run it does nothing and exits 2", async () => {
+        const r = await fleet("purge");
+        assert.equal(r.code, 2, r.all);
+        assert.match(stripAnsi(r.all), /quota and retention purge for every account on this machine/);
+    });
+
+    it("--dry-run reports each account (no database here: skipped) and exits 0; --yes the same", async () => {
+        const { json, code } = await fleetJson("purge", "--dry-run");
+        assert.equal(code, 0);
+        assert.equal(json.dryRun, true);
+        assert.deepEqual(
+            json.purge.map((r) => [r.accountId, r.action]),
+            IDS.map((id) => [id, "skipped"]),
+        );
+        const yes = await fleetJson("purge", "502", "--yes");
+        assert.equal(yes.code, 0, yes.all);
+        assert.deepEqual(
+            yes.json.purge.map((r) => r.accountId),
+            ["502"],
+        );
+    });
+
+    it("an account that is not registered is refused", async () => {
+        const r = await fleet("purge", "999", "--dry-run");
+        assert.equal(r.code, 1);
+        assert.match(stripAnsi(r.all), /not registered/);
+    });
+});
+
 describe("fleet generate", () => {
     let out;
     beforeEach(() => {
@@ -225,6 +255,8 @@ describe("fleet generate", () => {
         const r = await gen();
         assert.equal(r.code, 0, r.all);
         assert.ok(existsSync(join(out, "zalo-mcp@.service")));
+        assert.ok(existsSync(join(out, "zalo-mcp-purge.service")));
+        assert.ok(existsSync(join(out, "zalo-mcp-purge.timer")));
         const ports = JSON.parse(readFileSync(join(out, "ports.json"), "utf8"));
         assert.deepEqual(ports, Object.fromEntries(IDS.map((id, i) => [id, 3900 + i])));
         for (const id of IDS) {

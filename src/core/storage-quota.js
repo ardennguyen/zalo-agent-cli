@@ -289,7 +289,8 @@ export function resolveRetention(ownId, { env = process.env, policy } = {}) {
  * The quota state a daemon left (its last usage and level), or an empty one.
  *
  * @param {string} accountDir
- * @returns {{usage: object|null, account: object, tenants: Record<string, object>, lastPurge: object|null}}
+ * @returns {{usage: object|null, account: object, tenants: Record<string, object>, lastPurge: object|null,
+ *   lastPass: {at: string}|null}} `lastPass`: the last pass that ran (`fleet purge` asks a daemon whose timer is behind)
  */
 export function readQuotaState(accountDir) {
     try {
@@ -299,9 +300,10 @@ export function readQuotaState(accountDir) {
             account: s.account ?? {},
             tenants: s.tenants ?? {},
             lastPurge: s.lastPurge ?? null,
+            lastPass: s.lastPass ?? null,
         };
     } catch {
-        return { usage: null, account: {}, tenants: {}, lastPurge: null };
+        return { usage: null, account: {}, tenants: {}, lastPurge: null, lastPass: null };
     }
 }
 
@@ -529,7 +531,13 @@ export function runStoragePass({
             others,
         });
     }
-    const nextState = { usage: null, account: {}, tenants: {}, lastPurge: state.lastPurge };
+    const nextState = {
+        usage: null,
+        account: {},
+        tenants: {},
+        lastPurge: state.lastPurge,
+        lastPass: dryRun ? state.lastPass : { at: new Date(now).toISOString() },
+    };
     let target = Infinity;
     const prevOf = (s) => (s.scope === "account" ? state.account : state.tenants[s.tenantId]) ?? {};
     const steps = scopes.map((s) => {

@@ -26,6 +26,8 @@ import {
     renderStatusTable,
 } from "../core/fleet.js";
 import { kickFile, readKickMarker } from "../core/kick-marker.js";
+import { fleetPurge } from "../core/fleet-purge.js";
+import { guardSubcommand } from "../core/confirm-guard.js";
 import { envForAccount } from "../mcp/mcp-config.js";
 import { error, info, output, success, warning } from "../utils/output.js";
 
@@ -391,6 +393,35 @@ export function registerFleetCommands(program) {
         });
 
     fleet
+        .command("purge [accounts...]")
+        .description(
+            "Run the quota/retention purge for accounts with no daemon, and ask a daemon whose purge timer is behind; asks first: --yes",
+        )
+        .option("--dry-run", "Count what would be purged, and purge nothing")
+        .action(async (ids, opts) => {
+            const accounts = pickAccounts(ids);
+            const dryRun = Boolean(opts.dryRun);
+            const log = (m) => (json() ? console.error(`  ● ${m}`) : info(m));
+            const results = await fleetPurge({ accounts: accounts.map((a) => a.ownId), dryRun, log });
+            const mib = (n) => `${(Number(n || 0) / 1024 / 1024).toFixed(1)} MiB`;
+            output({ purge: results, dryRun }, json(), () => {
+                for (const r of results) {
+                    const s = r.summary;
+                    const counts = s
+                        ? `: ${s.mediaFiles} media file(s), ${s.messages} message(s)` +
+                          (dryRun ? " due" : `, ${s.outboxDead} dead deliver(ies)`) +
+                          (s.usedAfter !== null ? `; ${mib(s.usedBefore)} -> ${mib(s.usedAfter)}` : "")
+                        : "";
+                    const line = `${r.accountId}: ${r.detail}${counts}${r.error ? ` (${r.error})` : ""}`;
+                    if (r.action === "failed") error(line);
+                    else if (r.action === "skipped") info(line);
+                    else success(line);
+                }
+            });
+            if (results.some((r) => r.action === "failed")) process.exit(1);
+        });
+
+    fleet
         .command("generate")
         .description(
             "Write the systemd unit, per-account env files (with generated tokens), the port table and, optionally, a Caddyfile",
@@ -437,6 +468,15 @@ export function registerFleetCommands(program) {
                 info(
                     "Start:   systemctl enable --now zalo-mcp@<ownId>   (or: zalo-agent fleet start --env-dir /etc/zalo-mcp/accounts)",
                 );
+                info(
+                    `Purge:   sudo install -m 644 ${opts.out}/zalo-mcp-purge.service ${opts.out}/zalo-mcp-purge.timer /etc/systemd/system/ && sudo systemctl enable --now zalo-mcp-purge.timer`,
+                );
             });
         });
+
+    // A purge deletes for good: --yes to run it, --dry-run (its own: it counts) to preview, exit 2 without either.
+    guardSubcommand(fleet, "purge", "fleet.purge", {
+        target: (ids) => ({ accounts: ids?.length ? `account(s) ${ids.join(", ")}` : null }),
+        ownDryRun: true,
+    });
 }

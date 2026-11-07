@@ -22,7 +22,14 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
 import { withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
-import { COMMON_ENV_TEMPLATE, renderAccountEnv, renderCaddyfile, renderUnit } from "./fleet-templates.js";
+import {
+    COMMON_ENV_TEMPLATE,
+    PURGE_TIMER_TEMPLATE,
+    renderAccountEnv,
+    renderCaddyfile,
+    renderPurgeService,
+    renderUnit,
+} from "./fleet-templates.js";
 
 export const DEFAULT_BASE_PORT = 3900;
 
@@ -256,6 +263,8 @@ export function generateFleetFiles({
     };
 
     put("zalo-mcp@.service", renderUnit(paths));
+    put("zalo-mcp-purge.service", renderPurgeService(paths));
+    put("zalo-mcp-purge.timer", PURGE_TIMER_TEMPLATE);
     put("common.env", COMMON_ENV_TEMPLATE, { secret: true });
     for (const { ownId, port } of accounts) {
         const rel = join("accounts", `${ownId}.env`);

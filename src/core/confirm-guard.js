@@ -284,6 +284,16 @@ export const GUARDS = Object.freeze({
             "downloaded media, then the oldest messages (with their search entries), and dead webhook deliveries past " +
             "retention.outboxDead; purged messages are never restored by a later sync or history fetch",
     },
+    "fleet.purge": {
+        cli: "fleet purge",
+        mcp: null,
+        irreversible: true,
+        what: (t) =>
+            `run the quota and retention purge for ${t.accounts ?? "every account on this machine"}: here under ` +
+            "daemon.lock for an account with no daemon, through its daemon for one whose purge timer is behind; " +
+            "the oldest downloaded media, then the oldest messages, where a rule makes them due, and dead webhook " +
+            "deliveries past retention.outboxDead; purged messages are never restored by a later sync",
+    },
     "webhook.purge": {
         cli: "mcp webhook purge",
         mcp: null,

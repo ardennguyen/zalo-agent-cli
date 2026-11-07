@@ -33,8 +33,11 @@ import {
 import {
     COMMON_ENV_TEMPLATE,
     FLEET_DEFAULTS,
+    PURGE_SERVICE_TEMPLATE,
+    PURGE_TIMER_TEMPLATE,
     UNIT_TEMPLATE,
     renderCaddyfile,
+    renderPurgeService,
     renderUnit,
 } from "../../src/core/fleet-templates.js";
 
@@ -311,7 +314,7 @@ describe("the files fleet generate writes", () => {
             (a) => /^ZALO_MCP_AUTH_TOKEN=(.+)$/m.exec(readFileSync(join(out, "accounts", `${a.ownId}.env`), "utf8"))[1],
         );
 
-    it("writes the unit, the common env, one env file per account and the port table", () => {
+    it("writes the unit, the purge service and timer, the common env, one env file per account and the port table", () => {
         const r = generateFleetFiles({ outDir: out, accounts });
         assert.deepEqual(
             r.written.sort(),
@@ -321,8 +324,16 @@ describe("the files fleet generate writes", () => {
                 "common.env",
                 "ports.json",
                 "zalo-mcp@.service",
+                "zalo-mcp-purge.service",
+                "zalo-mcp-purge.timer",
             ].sort(),
         );
+        assert.match(
+            readFileSync(join(out, "zalo-mcp-purge.service"), "utf8"),
+            /^ExecStart=\/usr\/bin\/zalo-agent fleet purge --yes$/m,
+            "the timer's run is confirmed: a unit has no terminal to ask on",
+        );
+        assert.match(readFileSync(join(out, "zalo-mcp-purge.timer"), "utf8"), /^OnCalendar=hourly$/m);
         assert.deepEqual(r.kept, []);
         assert.deepEqual(JSON.parse(readFileSync(join(out, "ports.json"), "utf8")), { 1001: 3901, 1002: 3902 });
         const env = readFileSync(join(out, "accounts", "1001.env"), "utf8");
@@ -353,7 +364,7 @@ describe("the files fleet generate writes", () => {
         writeFileSync(join(out, "common.env"), "mine\n");
         const second = generateFleetFiles({ outDir: out, accounts });
         assert.deepEqual(second.written, ["ports.json"], "only the port table, which is derived");
-        assert.equal(second.kept.length, 4);
+        assert.equal(second.kept.length, 6, "the unit, the purge service and timer, common.env, two account envs");
         assert.equal(readFileSync(join(out, "common.env"), "utf8"), "mine\n");
         const forced = generateFleetFiles({ outDir: out, accounts, force: true });
         assert.ok(forced.written.includes("common.env"));
@@ -400,6 +411,11 @@ describe("the files fleet generate writes", () => {
         assert.match(unit, /^ExecStart=\/opt\/zalo\/bin\/zalo-agent mcp start --account %i$/m);
         assert.match(unit, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli /m);
         assert.doesNotMatch(unit, /\/home\/zalo|User=zalo|\/usr\/bin\/zalo-agent /);
+        const purge = readFileSync(join(out, "zalo-mcp-purge.service"), "utf8");
+        assert.match(purge, /^User=bot$/m);
+        assert.match(purge, /^ExecStart=\/opt\/zalo\/bin\/zalo-agent fleet purge --yes$/m);
+        assert.match(purge, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli /m);
+        assert.doesNotMatch(purge, /\/home\/zalo|User=zalo|\/usr\/bin\/zalo-agent |  zalo  /);
     });
 });
 
@@ -410,6 +426,11 @@ describe("the embedded templates are the documented samples", () => {
         assert.equal(FLEET_DEFAULTS.user, "zalo");
     });
     it("the common env file", () => assert.equal(COMMON_ENV_TEMPLATE, sample("systemd", "common.env")));
+    it("the purge service and its timer", () => {
+        assert.equal(renderPurgeService(), sample("systemd", "zalo-mcp-purge.service"));
+        assert.equal(PURGE_SERVICE_TEMPLATE, sample("systemd", "zalo-mcp-purge.service"));
+        assert.equal(PURGE_TIMER_TEMPLATE, sample("systemd", "zalo-mcp-purge.timer"));
+    });
     it("the multi-account Caddyfile", () => {
         assert.equal(
             renderCaddyfile({

@@ -18,7 +18,7 @@ import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.
 import { serverLogout, reportLogout, finishLocalLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
 import { getQRPath } from "../utils/qr-display.js";
-import { runQrLogin } from "../core/qr-login-flow.js";
+import { resolveLoginPublicUrl, runQrLogin } from "../core/qr-login-flow.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntAtLeast, parseIntOption } from "../utils/parse-options.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
@@ -73,6 +73,10 @@ export function registerLoginCommands(program) {
         .option("-n, --name <label>", "Friendly name for this account", "")
         .option("--qr-url", "Start local HTTP server to view QR in browser (for VPS/headless)")
         .option("-q, --qr-port <port>", "Port for QR HTTP server (default: 18927)", parseIntOption)
+        .option(
+            "--public-url <url>",
+            "Print the QR page as <url>/zalo/qr/<one-time token>, for a reverse proxy that routes /zalo/qr/ to the QR port (https, or http on localhost; or ZALO_MCP_PUBLIC_URL / publicUrl in mcp-config.json)",
+        )
         .option("--credentials <path>", "Login from exported credentials file (skip QR)")
         .option(
             "--sync",
@@ -110,6 +114,11 @@ export function registerLoginCommands(program) {
 
             // QR-based login
             const jsonMode = program.opts().json;
+            const pub = resolveLoginPublicUrl(opts.publicUrl);
+            if (pub.error) {
+                error(`Invalid public URL: ${pub.error}.`);
+                process.exit(1);
+            }
             if (opts.proxy) info(`Using proxy: ${maskProxy(opts.proxy)}`);
             if (!jsonMode) info("Generating QR code... Scan with Zalo mobile app.");
 
@@ -120,6 +129,7 @@ export function registerLoginCommands(program) {
                     jsonMode,
                     qrPort: opts.qrPort || 18927,
                     qrUrl: Boolean(opts.qrUrl),
+                    publicUrl: pub.publicUrl,
                 });
                 const { ownId } = login;
 

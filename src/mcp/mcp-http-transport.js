@@ -14,6 +14,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { newMcpServer } from "./new-server.js";
 import { maskSecurePath, SECURE_PATH_PREFIX } from "../core/secure-page.js";
+import { maskQrPath, QR_PATH_PREFIX } from "../utils/qr-http-server.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -127,7 +128,9 @@ function verifyPkce(verifier, challenge, method = "S256") {
 }
 
 /**
- * Resolve the external origin (`https://host:port`) for OAuth metadata & `WWW-Authenticate` headers.
+ * Resolve the external origin (`https://host:port`) for OAuth metadata & `WWW-Authenticate` headers: `publicUrl`
+ * (with its deprecated names, resolvePublicUrl in src/core/deploy-policy.js) when set, else inferred from the request
+ * as 2.x always did. Only the OAuth metadata infers: the links to the one-time pages never use the Host header.
  * @param {import("express").Request} req
  * @param {string|null} configuredIssuer
  * @param {boolean} isTls
@@ -148,9 +151,10 @@ function resolveIssuerOrigin(req, configuredIssuer, isTls) {
  * Create HTTP or HTTPS MCP server with optional bearer token and OAuth 2.0 auth.
  * @param {Function} registerToolsFn - Registers tools on a McpServer instance
  * @param {object} deps - { api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs, health,
- *   securePage, hiddenEvents }
+ *   securePage, qrPage, hiddenEvents }
  *   (`health` is the daemon's ./core/daemon-health.js object: behind /health, /ready, /status and /metrics;
- *   `securePage` serves the one-time input page at /zalo/secure/<token>, src/core/secure-page.js; `hiddenEvents`
+ *   `securePage` serves the one-time input page at /zalo/secure/<token>, src/core/secure-page.js; `qrPage` the
+ *   one-time QR login page at /zalo/qr/<token>, src/utils/qr-http-server.js; `hiddenEvents`
  *   applies the hiddenChats policy to /events/wait's messages)
  * @param {number} port
  * @param {string|null} authToken - Bearer token (null = no auth unless oauth.clientSecret or oauth.clients is set)
@@ -200,7 +204,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 const ua = String(req.headers["user-agent"] || "-").slice(0, 80);
                 const h = String(req.headers.host || "-");
                 console.error(
-                    `${DEBUG_MARK}[mcp-http] ${req.method} ${maskSecurePath(req.originalUrl)} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
+                    `${DEBUG_MARK}[mcp-http] ${req.method} ${maskQrPath(maskSecurePath(req.originalUrl))} -> ${res.statusCode} (host=${h} ip=${remoteIp} ua="${ua}")`,
                 );
             });
         }
@@ -224,6 +228,21 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         app.use(SECURE_PATH_PREFIX, (req, res, next) => {
             req.url = `${SECURE_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
             deps.securePage
+                .handle(req, res)
+                .then((handled) => {
+                    if (!handled) next();
+                })
+                .catch(() => {
+                    if (!res.headersSent) res.status(500).set("Cache-Control", "no-store").end();
+                });
+        });
+    }
+
+    // The one-time QR login page, the same way: before the bearer check, admitted by its own token.
+    if (deps.qrPage) {
+        app.use(QR_PATH_PREFIX, (req, res, next) => {
+            req.url = `${QR_PATH_PREFIX}${req.url.replace(/^\//, "")}`;
+            deps.qrPage
                 .handle(req, res)
                 .then((handled) => {
                     if (!handled) next();

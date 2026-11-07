@@ -44,10 +44,11 @@ import { createReadStateSync } from "../core/read-state.js";
 import { attachLastOnline } from "../core/last-online.js";
 import { attachControlEvents } from "../core/control-events.js";
 import { attachHiddenChatControls, hiddenChatsFor, hiddenEventView } from "../core/hidden-chats.js";
-import { resolveApproval, resolveHiddenChats, resolvePinPage } from "../core/deploy-policy.js";
+import { resolveApproval, resolveHiddenChats, resolvePublicUrl } from "../core/deploy-policy.js";
 import { approverStatus } from "../core/approval.js";
 import { resolveConfirmMode } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
+import { getQrPage } from "../utils/qr-http-server.js";
 import { readControls } from "../zalo/queues/control-queue.js";
 import { initDb, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
@@ -322,9 +323,10 @@ export function registerMCPCommands(program) {
             "OAuth 2.0 Client Secret (defaults to --auth / ZALO_MCP_AUTH_TOKEN, or ZALO_MCP_OAUTH_CLIENT_SECRET)",
         )
         .option(
-            "--issuer-url <url>",
-            "Explicit OAuth 2.0 issuer base URL (e.g. https://mcp.example.com:3100; default: inferred from request Host)",
+            "--public-url <url>",
+            "The one public address of this server behind a reverse proxy or TLS terminator (e.g. https://zalo.example.com): the MCP endpoint, the OAuth issuer, and the links to the one-time secure and QR pages. https, or http on localhost; an optional base path. Or ZALO_MCP_PUBLIC_URL[_<ownId>] / publicUrl in mcp-config.json. Default: links use this server's local address and OAuth infers its issuer from the request",
         )
+        .option("--issuer-url <url>", "Deprecated name of --public-url (still works)")
         .option(
             "-w, --webhook <url>",
             "POST each watched incoming message as JSON to this URL (or set webhook in mcp-config.json)",
@@ -472,6 +474,19 @@ export function registerMCPCommands(program) {
 
             const effectiveHttpPort =
                 opts.http ?? envForAccount("ZALO_MCP_HTTP_PORT", activeAcc.ownId) ?? config?.httpPort ?? null;
+
+            // One public address for the MCP endpoint, the OAuth issuer and every link this server hands out
+            // (src/core/deploy-policy.js); --issuer-url, ZALO_MCP_ISSUER_URL and oauth.issuerUrl are its 2.x names.
+            // Only the HTTP transport uses it; a value that cannot be used is refused here, before a daemon is spawned.
+            const publicUrl = effectiveHttpPort
+                ? resolvePublicUrl({
+                      flag: opts.publicUrl,
+                      issuerFlag: opts.issuerUrl,
+                      config,
+                      accountId: activeAcc.ownId,
+                  })
+                : { publicUrl: null, source: "default", error: null };
+            if (publicUrl.error) failStart(`Refusing to start: ${publicUrl.error}.`);
 
             if (!tlsOptions) {
                 const acctCert = envForAccount("ZALO_MCP_TLS_CERT", activeAcc.ownId) ?? config?.tls?.cert;
@@ -629,6 +644,8 @@ export function registerMCPCommands(program) {
             // The one-time secure input page (src/core/secure-page.js): this process's account, and, over --http,
             // the public address a person's browser reaches it at.
             const securePage = getSecurePage().configure({ accountId: activeAcc.ownId });
+            // The QR login page, served on the HTTP port when a login runs in this process (src/utils/qr-http-server.js).
+            const qrPage = getQrPage();
             // Logged in and the friend and group lists are loaded: the heavy part of start-up is over.
             gate.leave();
 
@@ -718,6 +735,7 @@ export function registerMCPCommands(program) {
                         syncJobs,
                         health,
                         securePage,
+                        qrPage,
                         hiddenEvents,
                     };
                     const authToken =
@@ -736,11 +754,7 @@ export function registerMCPCommands(program) {
                         envForAccount("ZALO_MCP_OAUTH_CLIENT_SECRET", activeAcc.ownId) ||
                         config?.oauth?.clientSecret?.trim() ||
                         authToken;
-                    const oauthIssuerUrl =
-                        opts.issuerUrl?.trim() ||
-                        envForAccount("ZALO_MCP_ISSUER_URL", activeAcc.ownId) ||
-                        config?.oauth?.issuerUrl?.trim() ||
-                        null;
+                    const oauthIssuerUrl = publicUrl.publicUrl;
                     const oauthClients = Array.isArray(config?.oauth?.clients) ? config.oauth.clients : [];
                     const oauthOptions =
                         oauthClientSecret || oauthClients.length > 0
@@ -753,16 +767,15 @@ export function registerMCPCommands(program) {
                             : null;
                     const scheme = tlsOptions ? "HTTPS" : "HTTP";
                     httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions, oauthOptions);
-                    // The secure page is served on this port under /zalo/secure/<token>; its links use
-                    // pinPage.publicBaseUrl (behind a reverse proxy or TLS) or else this server's own address.
+                    // The secure page (/zalo/secure/<token>) and the QR login page (/zalo/qr/<token>) are served on this
+                    // port; their links use publicUrl (behind a reverse proxy or TLS) or else this server's own address,
+                    // never a request's Host header.
                     const localHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-                    const pinPage = resolvePinPage({ config, accountId: activeAcc.ownId });
-                    securePage.configure({
-                        publicBaseUrl: pinPage.publicBaseUrl,
-                        localBaseUrl: `${tlsOptions ? "https" : "http"}://${localHost.includes(":") ? `[${localHost}]` : localHost}:${port}`,
-                    });
+                    const localBaseUrl = `${tlsOptions ? "https" : "http"}://${localHost.includes(":") ? `[${localHost}]` : localHost}:${port}`;
+                    securePage.configure({ publicUrl: publicUrl.publicUrl, localBaseUrl });
+                    qrPage.configure({ publicUrl: publicUrl.publicUrl, localBaseUrl, mounted: true });
                     console.error(
-                        `[mcp] Secure input page: ${pinPage.publicBaseUrl ? `${pinPage.publicBaseUrl} (${pinPage.source})` : "this server's own address (set pinPage.publicBaseUrl behind a proxy)"}`,
+                        `[mcp] Public address: ${publicUrl.publicUrl ? `${publicUrl.publicUrl} (${publicUrl.source})` : `none set: links use ${localBaseUrl} (set publicUrl behind a proxy)`}`,
                     );
                     console.error(`[mcp] ${scheme} server started on port ${port}`);
                     if (!authToken && !oauthClientSecret && oauthClients.length === 0) {

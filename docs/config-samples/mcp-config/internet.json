@@ -5,7 +5,6 @@
     "oauth": {
         "clientId": "zalo-connector",
         "clientSecret": null,
-        "issuerUrl": "https://zalo.example.com",
         "clients": []
     },
     "limits": {
@@ -20,9 +19,7 @@
     "confirmMode": "agent",
     "hiddenChats": "exclude",
     "allowPinArgument": false,
-    "pinPage": {
-        "publicBaseUrl": null
-    },
+    "publicUrl": "https://zalo.example.com",
     "approval": {
         "secret": "auto",
         "deliver": "result"

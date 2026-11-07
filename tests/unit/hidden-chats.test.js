@@ -16,12 +16,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import {
-    HIDDEN_CHAT_MODES,
-    resolveAllowPinArgument,
-    resolveHiddenChats,
-    resolvePinPage,
-} from "../../src/core/deploy-policy.js";
+import { HIDDEN_CHAT_MODES, resolveAllowPinArgument, resolveHiddenChats } from "../../src/core/deploy-policy.js";
 import {
     HiddenChats,
     PIN_FREE_TRIES,
@@ -88,19 +83,6 @@ describe("the deployment policy", () => {
             true,
         );
         assert.equal(resolveAllowPinArgument({ config: { allowPinArgument: "maybe" }, env: {} }).allowed, false);
-    });
-
-    it("pinPage.publicBaseUrl: an http(s) URL, trailing slash dropped; anything else ignored", () => {
-        assert.equal(resolvePinPage({ env: {} }).publicBaseUrl, null);
-        const config = { pinPage: { publicBaseUrl: "https://zalo.example.com/" } };
-        assert.equal(resolvePinPage({ config, env: {} }).publicBaseUrl, "https://zalo.example.com");
-        assert.equal(
-            resolvePinPage({ config, env: { ZALO_MCP_PIN_PAGE_URL: "https://proxy.example.com/a1" } }).publicBaseUrl,
-            "https://proxy.example.com/a1",
-        );
-        for (const bad of ["javascript:alert(1)", "ftp://x.example.com", "https://x.example.com/?t=1", "not a url"]) {
-            assert.equal(resolvePinPage({ config: { pinPage: { publicBaseUrl: bad } }, env: {} }).publicBaseUrl, null);
-        }
     });
 });
 

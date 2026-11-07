@@ -21,7 +21,7 @@ import { createTrustStore } from "../zalo/trust-store.js";
 import { listAccounts, getActive, setActive, addAccount, removeAccount, getAccount } from "../core/accounts.js";
 import { serverLogout, reportLogout, lockHolder, describeTrustedDevice } from "../core/logout.js";
 import { maskProxy } from "../utils/proxy-helpers.js";
-import { runQrLogin } from "../core/qr-login-flow.js";
+import { resolveLoginPublicUrl, runQrLogin } from "../core/qr-login-flow.js";
 import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
@@ -60,7 +60,16 @@ export function registerAccountCommands(program) {
         .option("-p, --proxy <url>", "Dedicated proxy URL for this account")
         .option("-n, --name <label>", "Friendly label", "")
         .option("--qr-url", "Start local HTTP server to view QR in browser (for VPS/headless)")
+        .option(
+            "--public-url <url>",
+            "Print the QR page as <url>/zalo/qr/<one-time token>, for a reverse proxy that routes /zalo/qr/ to the QR port (https, or http on localhost; or ZALO_MCP_PUBLIC_URL / publicUrl in mcp-config.json)",
+        )
         .action(async (opts) => {
+            const pub = resolveLoginPublicUrl(opts.publicUrl);
+            if (pub.error) {
+                error(`Invalid public URL: ${pub.error}.`);
+                process.exit(1);
+            }
             if (opts.proxy) info(`Using proxy: ${maskProxy(opts.proxy)}`);
             info("Generating QR code... Scan with Zalo mobile app.");
 
@@ -71,6 +80,7 @@ export function registerAccountCommands(program) {
                     proxy: opts.proxy,
                     jsonMode: process.env.ZALO_JSON_MODE === "1",
                     qrUrl: Boolean(opts.qrUrl),
+                    publicUrl: pub.publicUrl,
                 });
                 const { ownId } = login;
 

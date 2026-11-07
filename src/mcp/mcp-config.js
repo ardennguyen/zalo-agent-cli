@@ -41,7 +41,7 @@ export function getDefaultConfig() {
         oauth: {
             clientId: null,
             clientSecret: null,
-            issuerUrl: null,
+            issuerUrl: null, // deprecated name of publicUrl, still read
             clients: [],
         },
         webhookSecret: null,
@@ -57,11 +57,11 @@ export function getDefaultConfig() {
         // Whether the hidden-chat tools take the PIN as an input. It puts the PIN in the MCP client's logs: for
         // non-AI clients only. Unset (null) means ZALO_MCP_ALLOW_PIN_ARGUMENT, else false.
         allowPinArgument: null,
-        // The one-time secure input page (src/core/secure-page.js): the public base URL a browser reaches this
-        // server at behind a reverse proxy or TLS terminator. Unset means ZALO_MCP_PIN_PAGE_URL, else the local address.
-        pinPage: {
-            publicBaseUrl: null,
-        },
+        // The one address people and clients reach this server at, behind a reverse proxy or TLS terminator
+        // (src/core/deploy-policy.js resolvePublicUrl): the MCP endpoint, the OAuth issuer, the one-time secure page
+        // and the QR login page. An https URL with an optional base path (http only for localhost). Unset (null) means
+        // --public-url / ZALO_MCP_PUBLIC_URL, then the deprecated oauth.issuerUrl, else the server's local address.
+        publicUrl: null,
         // The one-time pages' delivery and the approve page's secret (src/core/approval.js). `secret`: "auto" (unset:
         // the approver password when one is set and the link reaches the agent), "pin", "password" or "none";
         // `deliver`: "result" (unset: the link is in the tool result), "webhook" (only to the webhook) or "both".
@@ -90,7 +90,6 @@ export function mergeMCPConfigLayer(base, layer) {
         limits: { ...base.limits, ...(layer.limits || {}) },
         media: { ...base.media, ...(layer.media || {}) },
         tls: { ...base.tls, ...(layer.tls || {}) },
-        pinPage: { ...base.pinPage, ...(layer.pinPage || {}) },
         approval: { ...base.approval, ...(layer.approval || {}) },
         oauth: {
             ...base.oauth,

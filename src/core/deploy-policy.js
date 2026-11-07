@@ -10,8 +10,9 @@
  *   conversation, which hands them to the agent: an owner's explicit choice.
  * - `allowPinArgument` (`ZALO_MCP_ALLOW_PIN_ARGUMENT`): the hidden-chat tools accept the PIN as a `pin` input. Off by
  *   default: an input is written to the MCP client's logs and the model's context. For non-AI clients only.
- * - `pinPage.publicBaseUrl` (`ZALO_MCP_PIN_PAGE_URL`): the address a person's browser reaches this server's secure
- *   input page at, behind a reverse proxy or TLS terminator (src/core/secure-page.js).
+ * - `publicUrl` (`--public-url`, `ZALO_MCP_PUBLIC_URL`): the one address people and clients reach this server at, behind
+ *   a reverse proxy or TLS terminator: the MCP endpoint, the OAuth issuer, the one-time secure page
+ *   (src/core/secure-page.js) and the QR login page (src/utils/qr-http-server.js). See resolvePublicUrl.
  * - `approval.secret` (`ZALO_MCP_APPROVAL_SECRET`) and `approval.deliver` (`ZALO_MCP_APPROVAL_DELIVER`): what the approve
  *   page asks besides a click, and where a page's link goes (resolveApproval, src/core/approval.js).
  *
@@ -95,38 +96,125 @@ export function resolveAllowPinArgument({ config, env = process.env, accountId }
     return { allowed: false, source: "default" };
 }
 
+/** The deprecated names of `publicUrl`, as they were released in 2.x for the OAuth issuer alone. */
+export const PUBLIC_URL_ALIASES = Object.freeze(["--issuer-url", "ZALO_MCP_ISSUER_URL", "oauth.issuerUrl"]);
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+let aliasNoted = false;
+
 /**
- * The secure input page's public base URL (`pinPage.publicBaseUrl`), or null for the local address. Only http(s)
- * URLs are taken; a trailing slash is dropped.
+ * Check one public URL: an absolute http(s) URL with an optional base path and nothing else. Returns it normalized
+ * (lower-case host, default port dropped, trailing slashes trimmed), or why it cannot be used.
+ *
+ * - No user name or password, no query, no fragment.
+ * - A base path is allowed (`https://example.com/zalo`), for a proxy that mounts this server under a prefix and strips
+ *   it; links are then `<publicUrl>/zalo/secure/<token>` and the OAuth issuer is the URL as given. No `.` or `..`
+ *   segment and no empty one.
+ * - https only, except for localhost, 127.0.0.1 and [::1], which may be http (a browser on this machine): a link to a
+ *   public host over http would carry one-time tokens and OAuth codes in clear.
+ *
+ * @param {unknown} value
+ * @returns {{url: string|null, error: string|null}}
+ */
+export function validatePublicUrl(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return { url: null, error: null };
+    const refuse = (why) => ({ url: null, error: `"${text}" ${why}` });
+    if (/[?#]/.test(text)) return refuse("has a query or fragment; give the address only (https://host[/base-path])");
+    let url;
+    try {
+        url = new URL(text);
+    } catch {
+        return refuse("is not an absolute URL (https://host[/base-path])");
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") return refuse("is not an http(s) URL");
+    if (url.username || url.password) return refuse("carries a user name or password");
+    const raw = text.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "").replace(/\/+$/, "");
+    if (
+        raw &&
+        raw
+            .split("/")
+            .slice(1)
+            .some((seg) => seg === "" || seg === "." || seg === "..")
+    )
+        return refuse("has an empty, . or .. path segment");
+    if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname.toLowerCase()))
+        return refuse(
+            "is http on a host other than this machine: use https (the links carry one-time tokens); http is allowed only for localhost, 127.0.0.1 and [::1]",
+        );
+    return { url: `${url.origin}${url.pathname.replace(/\/+$/, "")}`, error: null };
+}
+
+/**
+ * The one public address of this server (`publicUrl`), and where it came from. Highest first: the `--public-url` flag,
+ * `ZALO_MCP_PUBLIC_URL_<ownId>`, `ZALO_MCP_PUBLIC_URL`, the account's block in mcp-config.json
+ * (`accounts.<ownId>.publicUrl`), `publicUrl`, then the deprecated 2.x names in the same order (`--issuer-url`,
+ * `ZALO_MCP_ISSUER_URL[_<ownId>]`, `oauth.issuerUrl`), which print a note once per process.
+ *
+ * The first value set decides: one that does not pass validatePublicUrl is an `error` for the caller to refuse,
+ * never a silent fall-through to a lower layer or to the local address. Unset, `publicUrl` is null: links use the
+ * server's local address, and only the OAuth metadata still infers its origin from the request.
  *
  * @param {object} [sources]
- * @param {{pinPage?: {publicBaseUrl?: unknown}}|null} [sources.config]
+ * @param {string|null} [sources.flag] - `--public-url`
+ * @param {string|null} [sources.issuerFlag] - `--issuer-url` (deprecated alias)
+ * @param {{publicUrl?: unknown, oauth?: {issuerUrl?: unknown}, accounts?: object}|null} [sources.config]
  * @param {NodeJS.ProcessEnv} [sources.env]
  * @param {string} [sources.accountId]
- * @returns {{publicBaseUrl: string|null, source: string}}
+ * @param {(line: string) => void} [sources.note] - where the deprecation note goes (stderr)
+ * @param {boolean} [sources.aliases] - read the deprecated names too (default); `login` does not, as they only ever
+ *   named the OAuth issuer and a proxy built for them does not route the QR page
+ * @returns {{publicUrl: string|null, source: string, error: string|null, deprecated: boolean}}
  */
-export function resolvePinPage({ config, env = process.env, accountId } = {}) {
-    for (const [value, source] of layers(
-        "ZALO_MCP_PIN_PAGE_URL",
-        config?.pinPage?.publicBaseUrl,
-        "pinPage.publicBaseUrl",
-        env,
-        accountId,
-    )) {
-        const text = String(value ?? "").trim();
-        if (!text) continue;
-        let url;
-        try {
-            url = new URL(text);
-        } catch {
-            url = null;
+export function resolvePublicUrl({
+    flag,
+    issuerFlag,
+    config,
+    env = process.env,
+    accountId,
+    note = (line) => console.error(line),
+    aliases = true,
+} = {}) {
+    const id = accountId ? String(accountId).trim() : "";
+    const block = id && config?.accounts && typeof config.accounts === "object" ? config.accounts[id] : null;
+    const scoped = (name) => (id ? [[env?.[`${name}_${id}`], `${name}_${id}`]] : []);
+    const current = [
+        [flag, "--public-url"],
+        ...scoped("ZALO_MCP_PUBLIC_URL"),
+        [env?.ZALO_MCP_PUBLIC_URL, "ZALO_MCP_PUBLIC_URL"],
+        ...(block ? [[block.publicUrl, `accounts.${id}.publicUrl`]] : []),
+        [config?.publicUrl, "publicUrl"],
+    ];
+    const legacy = [
+        [issuerFlag, "--issuer-url"],
+        ...scoped("ZALO_MCP_ISSUER_URL"),
+        [env?.ZALO_MCP_ISSUER_URL, "ZALO_MCP_ISSUER_URL"],
+        ...(block ? [[block.oauth?.issuerUrl, `accounts.${id}.oauth.issuerUrl`]] : []),
+        [config?.oauth?.issuerUrl, "oauth.issuerUrl"],
+    ];
+    for (const [layer, deprecated] of [
+        [current, false],
+        [aliases ? legacy : [], true],
+    ]) {
+        for (const [value, source] of layer) {
+            if (value === undefined || value === null || String(value).trim() === "") continue;
+            const { url, error } = validatePublicUrl(value);
+            if (deprecated && !aliasNoted) {
+                aliasNoted = true;
+                note(
+                    `[config] ${source} is a deprecated name of publicUrl (--public-url, ZALO_MCP_PUBLIC_URL): ` +
+                        "one address now serves the MCP endpoint, the OAuth issuer and the one-time pages. It still works.",
+                );
+            }
+            if (error) return { publicUrl: null, source, error: `${source} ${error}`, deprecated };
+            return { publicUrl: url, source, error: null, deprecated };
         }
-        if (url && (url.protocol === "https:" || url.protocol === "http:") && !url.search && !url.hash) {
-            return { publicBaseUrl: text.replace(/\/+$/, ""), source };
-        }
-        warnOnce(source, value, "an http(s) URL without a query");
     }
-    return { publicBaseUrl: null, source: "default" };
+    return { publicUrl: null, source: "default", error: null, deprecated: false };
+}
+
+/** Forget that the deprecation note was printed (tests). */
+export function resetPublicUrlNote() {
+    aliasNoted = false;
 }
 
 /** What a person must type on an approve page (confirmMode "human") besides pressing Approve. */

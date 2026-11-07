@@ -97,7 +97,8 @@ describe("the page over HTTP (the stdio listener on 127.0.0.1)", () => {
         assert.match(res.headers.get("content-security-policy"), /default-src 'none'/);
         assert.equal(res.headers.get("x-frame-options"), "DENY");
         const html = await res.text();
-        assert.match(html, new RegExp(`<form method="post" action="/zalo/secure/${token}"`));
+        // Relative to the page's own path, so it posts back to it under any base path a proxy serves it at.
+        assert.match(html, new RegExp(`<form method="post" action="${token}"`));
         assert.doesNotMatch(html, /<script|src=|href=|https?:\/\//, "nothing loaded from anywhere");
         assert.match(html, /type="password"/);
     });
@@ -193,7 +194,7 @@ describe("delivering the link", () => {
     });
 
     it("a public base URL builds the link (reverse proxy / TLS)", async () => {
-        const p = new SecurePage({ accountId: ACCOUNT, publicBaseUrl: "https://zalo.example.com" }).configure({
+        const p = new SecurePage({ accountId: ACCOUNT, publicUrl: "https://zalo.example.com" }).configure({
             localBaseUrl: "http://127.0.0.1:9",
         });
         const r = await askOnSecurePage({ page: p, spec: spec(), needs: "pinRequired" });

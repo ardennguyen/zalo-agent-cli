@@ -15,9 +15,7 @@
     "confirmMode": "agent",
     "hiddenChats": "exclude",
     "allowPinArgument": false,
-    "pinPage": {
-        "publicBaseUrl": null
-    },
+    "publicUrl": null,
     "approval": {
         "secret": "auto",
         "deliver": "result"

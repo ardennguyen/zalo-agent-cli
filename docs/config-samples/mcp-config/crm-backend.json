@@ -22,9 +22,7 @@
     "confirmMode": "agent",
     "hiddenChats": "exclude",
     "allowPinArgument": false,
-    "pinPage": {
-        "publicBaseUrl": "https://zalo.crm.example.com"
-    },
+    "publicUrl": "https://zalo.crm.example.com",
     "approval": {
         "secret": "auto",
         "deliver": "webhook"

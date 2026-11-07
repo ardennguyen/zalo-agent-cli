@@ -20,7 +20,8 @@ Tool nào mô phỏng một lệnh CLI (`zalo_react` ↔ `msg react`, `zalo_undo
 | `--key <path>` | `tls.key` / `ZALO_MCP_TLS_KEY[_<ownId>]` | Đường dẫn private key PEM để phục vụ HTTPS trực tiếp |
 | `--client-id <id>` | `zalo-mcp` / `ZALO_MCP_OAUTH_CLIENT_ID[_<ownId>]` | OAuth 2.0 Client ID cho các remote MCP client (Gemini Connected Apps, Claude Custom Connectors, …) |
 | `--client-secret <secret>` | `--auth` / `ZALO_MCP_OAUTH_CLIENT_SECRET[_<ownId>]` | OAuth 2.0 Client Secret cho bước đổi token tại `/token` |
-| `--issuer-url <url>` | *(suy từ header Host)* | Ghi đè URL gốc OAuth 2.0 issuer (`ZALO_MCP_ISSUER_URL[_<ownId>]`) |
+| `--public-url <url>` | *(địa chỉ của chính server)* | Địa chỉ công khai duy nhất khi đứng sau reverse proxy/TLS (`ZALO_MCP_PUBLIC_URL[_<ownId>]`, `publicUrl`): endpoint MCP, OAuth issuer, link trang bảo mật `/zalo/secure/<token>` và trang QR `/zalo/qr/<token>`. `https` (chỉ `http` cho localhost), có thể kèm base path, không query/fragment. Không đặt: link dùng địa chỉ local, OAuth suy issuer từ header `Host` |
+| `--issuer-url <url>` | *(deprecated)* | Tên cũ của `--public-url` (`ZALO_MCP_ISSUER_URL[_<ownId>]`, `oauth.issuerUrl`), vẫn dùng được, in một ghi chú |
 | `-w, --webhook <url>` | `webhook` / `ZALO_WEBHOOK_URL[_<ownId>]` | POST mỗi tin nhắn mới (đã lọc theo `watchThreads`) dạng JSON tới URL này |
 | `--webhook-secret <secret>` | `webhookSecret` / `ZALO_WEBHOOK_SECRET[_<ownId>]` | Ký mỗi webhook POST bằng `Authorization: Bearer <secret>` và `X-Zalo-Signature: sha256=<hmac>`. Cờ được ưu tiên, rồi biến môi trường, rồi khóa trong cấu hình; cờ để trống bị từ chối. Nên dùng biến môi trường: cờ lộ trong danh sách tiến trình |
 | *(webhook bền vững)* | `webhookBatchSize` / `ZALO_WEBHOOK_BATCH_SIZE`, `webhookMaxAge` / `ZALO_WEBHOOK_MAX_AGE` | Mỗi sự kiện được ghi xuống `accounts/<ownId>/webhook-outbox.db` rồi mới gửi: đúng thứ tự, ít nhất một lần, thử lại 1 giây nhân đôi đến 5 phút, sống sót qua khởi động lại. Payload bị từ chối (400/413/422) hoặc sự kiện quá `webhookMaxAge` (24h) vào dead-letter. Gộp tối đa N sự kiện mỗi POST dạng `{"event":"batch","events":[…]}`. Xem tồn đọng: `zalo-agent mcp webhook status`; bên nhận trả 2xx ngay và loại trùng theo id |
@@ -103,7 +104,7 @@ curl -s "http://localhost:3847/events/wait?timeout=300&since=0"
 
 Dự án [`zalo-mcp`](https://github.com/ardennguyen/zalo-mcp) (v2.0.0+) là bộ cài đặt và CLI launcher mỏng: cài lệnh global `zalo-mcp` (hoặc chạy `node mcp-server.js`). Khi không kèm lệnh con, nó chạy `zalo-agent mcp start`; khi kèm lệnh con (`zalo-mcp login`, `zalo-mcp status`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp nguyên vẹn sang CLI. **Danh sách 25 MCP tool hoàn toàn giống nhau** — tool surface do `src/mcp/mcp-tools.js` của `zalo-agent-cli` quyết định.
 
-- **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--cert <path>`, `--key <path>`, `--client-id <id>`, `--client-secret <secret>`, `--issuer-url <url>`, `-w`/`--webhook <url>`, `--webhook-secret <secret>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
+- **Forward đầy đủ mọi flag của `mcp start` và global storage flags:** `--account <id>` (`ZALO_ACCOUNT`), `--http [port]`, `--auth <token>`, `--host <addr>`, `--cert <path>`, `--key <path>`, `--client-id <id>`, `--client-secret <secret>`, `--public-url <url>`, `--issuer-url <url>`, `-w`/`--webhook <url>`, `--webhook-secret <secret>`, `--config <path>`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng `--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`.
 - **Phiên bản engine:** Wrapper chạy phiên bản `@ardennguyen/zalo-agent-cli` được cài trong `node_modules/` của nó (cập nhật lên bản mới nhất bằng `zalo-mcp.ps1 update` / `./zalo-mcp.sh update`). Kiểm tra phiên bản engine hiện tại bằng:
   ```bash
   node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
@@ -210,7 +211,7 @@ Những thao tác mà chính Zalo Web hỏi lại trước khi làm được b�
 - `dryRun: true` trả về `{dryRun: true, sent: false, action, wouldDo, target, irreversible}` và không gửi gì.
 - `confirm: true` thực hiện, tùy **chế độ xác nhận** của server (`confirmMode` trong `mcp-config.json`, hoặc `ZALO_MCP_CONFIRM_MODE[_<ownId>]`, được ưu tiên):
   - `agent` (mặc định): cần `confirm: true`. Thiếu nó, kết quả là lỗi: phần text đầu là JSON `{"error":"Not done: confirmation needed: …","confirmationRequired":true,"action":…,"wouldDo":…,"target":{…},"irreversible":…,"retryWith":{"confirm":true}}`, phần sau là một dòng cho người đọc. Không có gì được gửi.
-  - `human`: server tự hỏi người dùng qua MCP elicitation (`elicitation/create`, một form có/không nói rõ việc sẽ làm). Chỉ khi người dùng chấp nhận và chọn có thì mới thực hiện; `confirm: true` của agent không thay được câu trả lời đó. Client chỉ khai báo elicitation dạng URL được gửi một trang duyệt dùng một lần và lời gọi chờ người dùng duyệt. Client không có elicitation, và mọi lời gọi qua transport HTTP (không giữ trạng thái — mỗi request là một server mới — nên không nghe được câu trả lời), nhận phản hồi lỗi có `confirmationRequired: true`, `secureUrl` (trang `/zalo/secure/<token>` trên port của server, hoặc `pinPage.publicBaseUrl`), `ticketExpiresAt` (5 phút) và `retryWith: {ticket}`: đưa link cho người dùng, và khi họ đã duyệt thì gọi lại đúng lời gọi đó kèm `ticket` — chỉ dùng được một lần, gắn với tài khoản, thao tác và đối tượng. Mọi tool được bảo vệ đều nhận `ticket`.
+  - `human`: server tự hỏi người dùng qua MCP elicitation (`elicitation/create`, một form có/không nói rõ việc sẽ làm). Chỉ khi người dùng chấp nhận và chọn có thì mới thực hiện; `confirm: true` của agent không thay được câu trả lời đó. Client chỉ khai báo elicitation dạng URL được gửi một trang duyệt dùng một lần và lời gọi chờ người dùng duyệt. Client không có elicitation, và mọi lời gọi qua transport HTTP (không giữ trạng thái — mỗi request là một server mới — nên không nghe được câu trả lời), nhận phản hồi lỗi có `confirmationRequired: true`, `secureUrl` (trang `/zalo/secure/<token>` trên port của server, hoặc dưới `publicUrl`), `ticketExpiresAt` (5 phút) và `retryWith: {ticket}`: đưa link cho người dùng, và khi họ đã duyệt thì gọi lại đúng lời gọi đó kèm `ticket` — chỉ dùng được một lần, gắn với tài khoản, thao tác và đối tượng. Mọi tool được bảo vệ đều nhận `ticket`.
   - Trang duyệt có thể hỏi thêm **bí mật người duyệt** (`approval.secret`): `password` (mật khẩu đặt bằng `zalo-agent mcp approver set`, chỉ lưu dạng băm scrypt có salt), `pin` (mã PIN trò chuyện ẩn) hoặc `none`; mặc định `auto` hỏi mật khẩu khi đã đặt và link đi qua agent. Phản hồi ghi `approverSecret: true|false`. Agent không bao giờ hỏi bí mật này trong chat.
   - `approval.deliver: "webhook"`: link không đi qua agent mà được POST tới webhook dạng `{event: "approval_requested", accountId, kind, action, wouldDo, target, secureUrl, expiresAt, approverSecret}` (ký như sự kiện tin nhắn); phản hồi của tool chỉ có `confirmationRequired`/`pinRequired`, `approvalPending: true`, `ticket`, `ticketExpiresAt`, `deliveredTo: "webhook"` — không có link. Khi người dùng đã duyệt trên giao diện của CRM, gọi lại kèm `ticket`. `both` gửi cả hai nơi. Với client có elicitation dạng URL, link chỉ đi qua lời nhắc của client, không bao giờ nằm trong kết quả.
   - `off`: không hỏi (`dryRun` vẫn dùng được). `zalo_write` chạy endpoint thô nên vẫn cần `confirm` kể cả ở chế độ `off`.
@@ -894,9 +895,9 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
   "oauth": {
     "clientId": "zalo-mcp",
     "clientSecret": null,
-    "issuerUrl": null,
     "clients": []
   },
+  "publicUrl": null,
   "accounts": {}
 }
 ```
@@ -911,7 +912,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `confirmMode` | Ai xác nhận thao tác được bảo vệ: `agent` (mặc định; bên gọi gửi `confirm: true`), `human` (server tự hỏi người dùng: qua MCP elicitation, hoặc qua trang duyệt dùng một lần — chạy được cả qua HTTP), `off` (không hỏi; `zalo_write` vẫn cần `confirm`). `ZALO_MCP_CONFIRM_MODE[_<ownId>]` được ưu tiên. `groupConfirm: false` / `ZALO_MCP_GROUP_CONFIRM=0` (đã lỗi thời) nghĩa là `off` khi chưa đặt chế độ |
 | `hiddenChats` | `exclude` (mặc định), `contentless` hoặc `include`: agent thấy gì về trò chuyện ẩn. `ZALO_MCP_HIDDEN_CHATS[_<ownId>]` được ưu tiên |
 | `allowPinArgument` | `true` cho các tool trò chuyện ẩn nhận PIN qua input (mặc định `false`: PIN sẽ nằm trong log của client). `ZALO_MCP_ALLOW_PIN_ARGUMENT[_<ownId>]` |
-| `pinPage.publicBaseUrl` | Địa chỉ công khai của trang nhập bảo mật khi server đứng sau reverse proxy/TLS. `ZALO_MCP_PIN_PAGE_URL[_<ownId>]` |
+| `publicUrl` | Địa chỉ công khai duy nhất của server khi đứng sau reverse proxy/TLS: endpoint MCP, OAuth issuer, link trang bảo mật và trang QR. `ZALO_MCP_PUBLIC_URL[_<ownId>]`, `--public-url`; theo tài khoản: `accounts.<ownId>.publicUrl` |
 | `approval.secret` | Trang duyệt hỏi thêm gì ngoài một cú bấm: `auto` (mặc định), `pin`, `password` (đặt bằng `mcp approver set`) hoặc `none`. `ZALO_MCP_APPROVAL_SECRET[_<ownId>]` |
 | `approval.deliver` | Link của trang duyệt/trang PIN đi đâu: `result` (mặc định, trong kết quả tool), `webhook` (chỉ tới webhook, sự kiện `approval_requested`) hoặc `both`. `ZALO_MCP_APPROVAL_DELIVER[_<ownId>]` |
 | `httpPort` | Port HTTP/HTTPS mặc định cho tài khoản này (`--http <port>` / `ZALO_MCP_HTTP_PORT[_<ownId>]`) |
@@ -927,7 +928,7 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `media.downloadDir` | Ghi đè thư mục gốc lưu media của MCP server. Mặc định (bỏ trống) dùng đúng chỗ mọi lệnh khác dùng: `accounts/<ownId>/media/<threadId>/`, và chỗ đó **bị** `logout --purge` / `account remove` xóa. Đặt giá trị riêng nếu muốn media nằm ngoài vùng dữ liệu account |
 | `media.autoOpen` | Giá trị mặc định cho tham số `open` của `zalo_view_media` |
 | `tls.cert`, `tls.key` | Đường dẫn chứng chỉ và private key PEM cho HTTPS (`--cert`, `--key` hoặc `ZALO_MCP_TLS_CERT[_<ownId>]`, `ZALO_MCP_TLS_KEY[_<ownId>]`) |
-| `oauth.clientId`, `oauth.clientSecret`, `oauth.issuerUrl` | Cấu hình OAuth 2.0 chính cho remote MCP client |
+| `oauth.clientId`, `oauth.clientSecret` | Cấu hình OAuth 2.0 chính cho remote MCP client (`oauth.issuerUrl` là tên cũ của `publicUrl`, vẫn được đọc) |
 | `oauth.clients` | Danh sách các OAuth 2.0 client tĩnh bổ sung (`[{ "clientId": "crm-prod", "clientSecret": "..." }]`) để nhiều dịch vụ kết nối đồng thời |
 | `accounts["<ownId>"]` | Ghi đè cấu hình riêng cho từng tài khoản khi chạy `mcp start --account <ownId>` |
 

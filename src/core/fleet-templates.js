@@ -149,6 +149,7 @@ ZALO_MCP_AUTH_TOKEN=${token}
  * @returns {string}
  */
 export function renderCaddyfile({ domain, accounts }) {
+    const exampleId = accounts[0]?.ownId ?? "<id>";
     const blocks = accounts
         .map(
             ({ ownId, port }) => `	handle_path /a/${ownId}/* {
@@ -170,6 +171,10 @@ export function renderCaddyfile({ domain, accounts }) {
 # account; OAuth issuer URLs are awkward behind a path prefix, so use tokens here.
 # /metrics and /status are for Prometheus inside your network, so each block answers 404 for them
 # (only /mcp and /events/wait are meant for outside clients).
+# Give each account its public address with the prefix as a base path, so the links to its
+# one-time pages (/zalo/secure/<token>) come back through its own block:
+#   ZALO_MCP_PUBLIC_URL_${exampleId}=https://${domain}/a/${exampleId}
+# (or "publicUrl" in that account's block of mcp-config.json). handle_path strips the prefix.
 ${domain} {
 	encode zstd gzip
 

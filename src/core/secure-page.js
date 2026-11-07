@@ -7,8 +7,9 @@
  *   target, alive for TICKET_TTL_MS, used once. Several server processes share nothing: the fleet runs one process
  *   per account, so a reverse proxy routes by account.
  * - The page is `/zalo/secure/<token>`: on the MCP HTTP server's own port (`mcp start --http`), or on a 127.0.0.1
- *   listener started on first use (stdio). The link is built from `pinPage.publicBaseUrl` when set
- *   (src/core/deploy-policy.js), else from the local address.
+ *   listener started on first use (stdio). The link is built from `publicUrl` when set
+ *   (resolvePublicUrl, src/core/deploy-policy.js), else from the local address: never from a request's Host header.
+ *   The form posts to its own path relatively, so it also works under a base path (`https://example.com/zalo`).
  * - Every answer carries `Cache-Control: no-store` and a CSP that allows no external asset and no script. The form
  *   posts back to the same token path, the token is the only secret in the link, a PIN typed is never written back
  *   into any page, and request logs show the path with the token masked (maskSecurePath).
@@ -277,9 +278,12 @@ const pinInput = (name, label) =>
     `<label for="${name}">${esc(label)}</label><input id="${name}" name="${name}" type="password" ` +
     `inputmode="numeric" pattern="[0-9]{4}" maxlength="4" minlength="4" autocomplete="off" required>`;
 
-/** The form of a pending ticket. The action is the token path itself, so the form only ever posts back to it. */
+/**
+ * The form of a pending ticket. The action is the token path itself, relative (the page is `.../zalo/secure/<token>`),
+ * so the form only ever posts back to it, under whatever base path the proxy serves the page at.
+ */
 function formPage(ticket, notice) {
-    const action = `${SECURE_PATH_PREFIX}${ticket.token}`;
+    const action = ticket.token;
     const intro = `<p>${esc(ticket.description)}</p>${notice ? `<p class="msg">${esc(notice)}</p>` : ""}`;
     let fields;
     if (ticket.kind === "confirm") {
@@ -350,7 +354,7 @@ async function formFields(req) {
 }
 
 /** True when a POST comes from this page's own origin (or names none, as a plain form post may not). */
-function sameOrigin(req, publicBaseUrl) {
+function sameOrigin(req, publicUrl) {
     if (String(req.headers["sec-fetch-site"] ?? "") === "cross-site") return false;
     const origin = req.headers.origin;
     if (!origin || origin === "null") return true;
@@ -368,11 +372,11 @@ function sameOrigin(req, publicBaseUrl) {
                 .trim(),
         ].filter(Boolean),
     );
-    if (publicBaseUrl) {
+    if (publicUrl) {
         try {
-            allowed.add(new URL(publicBaseUrl).host);
+            allowed.add(new URL(publicUrl).host);
         } catch {
-            /* resolvePinPage only passes valid URLs */
+            /* resolvePublicUrl only passes valid URLs */
         }
     }
     return allowed.has(host);
@@ -384,10 +388,10 @@ function sameOrigin(req, publicBaseUrl) {
  *
  * @param {import("http").IncomingMessage & {body?: object}} req
  * @param {import("http").ServerResponse} res
- * @param {{store: TicketStore, accountId: string, publicBaseUrl?: string|null}} ctx
+ * @param {{store: TicketStore, accountId: string, publicUrl?: string|null}} ctx
  * @returns {Promise<boolean>}
  */
-export async function handleSecureRequest(req, res, { store, accountId, publicBaseUrl = null }) {
+export async function handleSecureRequest(req, res, { store, accountId, publicUrl = null }) {
     const path = String(req.url ?? "").split("?")[0];
     const m = PATH_SHAPE.exec(path);
     if (!m) return false;
@@ -425,7 +429,7 @@ export async function handleSecureRequest(req, res, { store, accountId, publicBa
         return true;
     }
 
-    if (!sameOrigin(req, publicBaseUrl)) {
+    if (!sameOrigin(req, publicUrl)) {
         send(res, 403, statusPage("Refused", "This form can only be sent from its own page."));
         return true;
     }
@@ -483,12 +487,12 @@ export async function handleSecureRequest(req, res, { store, accountId, publicBa
  */
 export class SecurePage {
     /**
-     * @param {{store?: TicketStore, accountId?: string, publicBaseUrl?: string|null}} [opts]
+     * @param {{store?: TicketStore, accountId?: string, publicUrl?: string|null}} [opts]
      */
-    constructor({ store = new TicketStore(), accountId = "", publicBaseUrl = null } = {}) {
+    constructor({ store = new TicketStore(), accountId = "", publicUrl = null } = {}) {
         this.store = store;
         this.accountId = String(accountId ?? "");
-        this.publicBaseUrl = publicBaseUrl;
+        this.publicUrl = publicUrl;
         /** The local base URL of the server the page is mounted on (`--http`), or of the stdio listener. */
         this.localBaseUrl = null;
         this.listener = null;
@@ -501,10 +505,10 @@ export class SecurePage {
      * Settings from `mcp start`: the account served, the public base URL, the HTTP server's own address, and the
      * function that queues an `approval_requested` event for the webhook (`(payload) => void`).
      */
-    configure({ accountId, publicBaseUrl, localBaseUrl, notify } = {}) {
+    configure({ accountId, publicUrl, localBaseUrl, notify } = {}) {
         if (accountId !== undefined) this.accountId = String(accountId ?? "");
         if (notify !== undefined) this.notify = notify;
-        if (publicBaseUrl !== undefined) this.publicBaseUrl = publicBaseUrl;
+        if (publicUrl !== undefined) this.publicUrl = publicUrl;
         if (localBaseUrl !== undefined) {
             this.localBaseUrl = localBaseUrl;
             this.mounted = Boolean(localBaseUrl);
@@ -517,7 +521,7 @@ export class SecurePage {
         return handleSecureRequest(req, res, {
             store: this.store,
             accountId: this.accountId,
-            publicBaseUrl: this.publicBaseUrl,
+            publicUrl: this.publicUrl,
         });
     }
 
@@ -560,7 +564,7 @@ export class SecurePage {
         // A process serves one account; the first ticket names it when `mcp start` did not.
         if (!this.accountId && spec.accountId) this.accountId = String(spec.accountId);
         const { token, claim, expiresAt } = this.store.issue({ ...spec, accountId: spec.accountId ?? this.accountId });
-        const base = this.publicBaseUrl || this.localBaseUrl;
+        const base = this.publicUrl || this.localBaseUrl;
         return { token, claim, expiresAt, url: `${base}${SECURE_PATH_PREFIX}${token}` };
     }
 }

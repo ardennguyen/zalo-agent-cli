@@ -26,6 +26,7 @@ import {
     resolveAccountMCPConfig,
 } from "../../src/mcp/mcp-config.js";
 import { postMCPWebhook } from "../../src/commands/mcp.js";
+import { resolvePublicUrl, validatePublicUrl } from "../../src/core/deploy-policy.js";
 import { eventsOf, verifyWebhook } from "../../docs/config-samples/clients/crm-webhook-receiver.mjs";
 import { createWebhookDispatcher, openOutbox } from "../../src/core/webhook-outbox.js";
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
@@ -63,7 +64,7 @@ describe("mcp-config samples", () => {
         it(`${file}: valid JSON that uses only keys the loader merges`, () => {
             const cfg = JSON.parse(read("mcp-config", file));
             for (const key of Object.keys(cfg)) assert.ok(known.has(key), `unknown top-level key "${key}"`);
-            for (const section of ["notify", "limits", "media", "tls", "oauth", "pinPage", "approval"]) {
+            for (const section of ["notify", "limits", "media", "tls", "oauth", "approval"]) {
                 for (const key of Object.keys(cfg[section] ?? {})) {
                     assert.ok(key in defaults[section], `unknown key "${key}" in "${section}"`);
                 }
@@ -72,6 +73,11 @@ describe("mcp-config samples", () => {
                 assert.match(id, /^[1-9][0-9]*$/, "an account block is keyed by the numeric account id");
                 for (const key of Object.keys(block))
                     assert.ok(known.has(key) && key !== "accounts", `${id}: unknown key "${key}"`);
+            }
+            // publicUrl is one address for the whole server; its 2.x names stay out of the samples.
+            assert.equal(cfg.oauth?.issuerUrl, undefined, "oauth.issuerUrl is the deprecated name of publicUrl");
+            if (cfg.publicUrl !== null && cfg.publicUrl !== undefined) {
+                assert.equal(validatePublicUrl(cfg.publicUrl).error, null, "a sample publicUrl must be usable");
             }
             // And it merges: no section the loader spreads is replaced by a non-object.
             const merged = mergeMCPConfigLayer(defaults, cfg);
@@ -92,6 +98,16 @@ describe("mcp-config samples", () => {
             }
         });
     }
+
+    it("crm-backend.json: the CRM reaches this server, and its one-time pages, at one public address", () => {
+        const cfg = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "crm-backend.json")));
+        assert.deepEqual(resolvePublicUrl({ config: cfg, env: {} }), {
+            publicUrl: "https://zalo.crm.example.com",
+            source: "publicUrl",
+            error: null,
+            deprecated: false,
+        });
+    });
 
     it("multi-account.json: each account block overrides the shared settings for that account only", () => {
         const base = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "multi-account.json")));
@@ -171,6 +187,17 @@ describe("systemd unit and proxy samples", () => {
         const nginx = read("proxy", "nginx.internet.conf");
         assert.match(nginx, /proxy_read_timeout 3[1-9]\d?s/);
         assert.match(nginx, /proxy_buffering off/);
+    });
+
+    it("the internet proxies route the one-time QR link to the login's QR port, and the rest to the MCP server", () => {
+        assert.match(
+            read("proxy", "Caddyfile.internet"),
+            /handle \/zalo\/qr\/\* \{\s*reverse_proxy 127\.0\.0\.1:18927/,
+        );
+        assert.match(
+            read("proxy", "nginx.internet.conf"),
+            /location \/zalo\/qr\/ \{\s*proxy_pass http:\/\/127\.0\.0\.1:18927;/,
+        );
     });
 });
 

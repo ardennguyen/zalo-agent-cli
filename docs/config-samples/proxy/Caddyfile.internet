@@ -7,6 +7,19 @@ zalo.example.com {
 	# @blocked not remote_ip 203.0.113.0/24 198.51.100.7
 	# respond @blocked 403
 
+	# The QR login page of `zalo-agent login --public-url https://zalo.example.com`
+	# (or ZALO_MCP_PUBLIC_URL / publicUrl): the login prints
+	# https://zalo.example.com/zalo/qr/<one-time token> and serves it on its QR
+	# port (18927 unless --qr-port), which answers only while the login runs.
+	# Without this block the request reaches the MCP server, which knows no
+	# such token (404).
+	handle /zalo/qr/* {
+		reverse_proxy 127.0.0.1:18927
+	}
+
+	# Everything else, the one-time secure page /zalo/secure/<token> included,
+	# goes to the MCP server. Its links are built from publicUrl
+	# (ZALO_MCP_PUBLIC_URL=https://zalo.example.com), never from the Host header.
 	# `/events/wait` holds the request open for up to 300 s and MCP replies are
 	# streamed: no response buffering, and a read timeout above 300 s.
 	reverse_proxy 127.0.0.1:3847 {

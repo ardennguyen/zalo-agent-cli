@@ -46,7 +46,7 @@ It does **not** protect against a live compromise of the account the service run
 
 ## 4. Choosing a provider
 
-The default is chosen by platform. Change it in `<config-dir>/storage.json` (or `ZALO_STORAGE_PROVIDER`), then run `account security provider <name>` to move existing keyrings.
+The default is chosen by platform. Change it in `<config-dir>/storage.json` (or `ZALO_STORAGE_PROVIDER`), then run `account security provider <name>` to move existing keyrings. Ready-made files per deployment are in [`docs/config-samples/storage/`](config-samples/storage/): `windows.json`, `windows-service.json`, `macos.json`, `linux-server.json`, `saas-kms.json`.
 
 | Where | Provider | Notes |
 |---|---|---|

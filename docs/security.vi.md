@@ -46,7 +46,7 @@ Nó **không** bảo vệ trước việc tài khoản hệ điều hành mà d�
 
 ## 4. Chọn bộ cung cấp khóa
 
-Mặc định được chọn theo nền tảng. Đổi trong `<config-dir>/storage.json` (hoặc `ZALO_STORAGE_PROVIDER`), rồi chạy `account security provider <tên>` để chuyển các keyring đã có.
+Mặc định được chọn theo nền tảng. Đổi trong `<config-dir>/storage.json` (hoặc `ZALO_STORAGE_PROVIDER`), rồi chạy `account security provider <tên>` để chuyển các keyring đã có. Các file mẫu theo từng kiểu triển khai nằm trong [`docs/config-samples/storage/`](config-samples/storage/): `windows.json`, `windows-service.json`, `macos.json`, `linux-server.json`, `saas-kms.json`.
 
 | Ở đâu | Bộ cung cấp | Ghi chú |
 |---|---|---|

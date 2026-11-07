@@ -1,0 +1,8 @@
+{
+    "provider": "kms",
+    "dkeyLayer": true,
+    "kms": {
+        "backend": "aws",
+        "key": "arn:aws:kms:ap-southeast-1:111122223333:key/00000000-0000-0000-0000-000000000000"
+    }
+}

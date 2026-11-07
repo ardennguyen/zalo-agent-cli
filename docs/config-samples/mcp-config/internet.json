@@ -22,5 +22,9 @@
     "allowPinArgument": false,
     "pinPage": {
         "publicBaseUrl": null
+    },
+    "approval": {
+        "secret": "auto",
+        "deliver": "result"
     }
 }

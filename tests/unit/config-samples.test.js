@@ -12,6 +12,7 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
+import { PROVIDER_NAMES } from "../../src/core/keystore/config.js";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -323,4 +324,17 @@ describe("monitoring samples", () => {
         assert.doesNotMatch(scrape, /^\s+credentials: /m);
         assert.ok(!scrape.includes("\t") && !rules.includes("\t"), "YAML does not allow tabs");
     });
+});
+
+describe("storage samples", () => {
+    // docs/config-samples/storage/*.json are what docs/security.md points operators at: each names a provider the key
+    // layer knows and holds no key material (a key id or path only).
+    for (const file of list("storage", ".json")) {
+        it(`${file}: a known provider, a boolean dkeyLayer, no key material`, () => {
+            const cfg = JSON.parse(read("storage", file));
+            assert.ok(PROVIDER_NAMES.includes(cfg.provider), `${cfg.provider} is a provider`);
+            assert.equal(typeof cfg.dkeyLayer, "boolean");
+            assert.doesNotMatch(read("storage", file), /"(key|secret|passphrase)"\s*:\s*"[A-Za-z0-9+/=]{40,}"/);
+        });
+    }
 });

@@ -1,0 +1,5 @@
+{
+    "provider": "systemd-creds",
+    "dkeyLayer": true,
+    "systemdCreds": { "withKey": "auto" }
+}

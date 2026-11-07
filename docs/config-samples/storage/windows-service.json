@@ -1,0 +1,5 @@
+{
+    "provider": "dpapi",
+    "dkeyLayer": true,
+    "dpapi": { "scope": "LocalMachine" }
+}

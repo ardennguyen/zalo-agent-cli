@@ -35,5 +35,9 @@
     "approval": {
         "secret": "auto",
         "deliver": "webhook"
+    },
+    "admin": {
+        "tokenFile": "/etc/zalo-mcp/admin-token",
+        "clientCa": null
     }
 }

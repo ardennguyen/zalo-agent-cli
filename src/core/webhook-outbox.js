@@ -371,7 +371,7 @@ export function createWebhookDispatcher({
     setTimer = setTimeout,
     clearTimer = clearTimeout,
 }) {
-    const size = Math.max(1, Math.floor(batchSize) || 1);
+    let size = Math.max(1, Math.floor(batchSize) || 1);
     let timer = null;
     let poller = null;
     let timerAt = 0;
@@ -535,6 +535,16 @@ export function createWebhookDispatcher({
                 poller.unref?.();
             }
         },
+        /**
+         * A live policy change (src/core/policy-store.js): a new receiver, batch size or max age, from the next POST on.
+         * @param {{ url?: string, batchSize?: number, maxAgeMs?: number }} [o]
+         */
+        reconfigure(o = {}) {
+            if (o.url) url = o.url;
+            if (o.batchSize) size = Math.max(1, Math.floor(o.batchSize) || 1);
+            if (o.maxAgeMs) maxAgeMs = o.maxAgeMs;
+            schedule(0);
+        },
         /** An event was just enqueued. */
         notify() {
             schedule(size > 1 ? batchWindowMs : 0);
@@ -623,6 +633,8 @@ export function startWebhookDelivery({
             }
         },
         status: () => dispatcher.status(),
+        /** A live policy change: the receiver, batch size or max age (createWebhookDispatcher reconfigure). */
+        reconfigure: (o) => dispatcher.reconfigure(o),
         /** Stop sending and release the file. Queued events stay for the next start. */
         stop() {
             dispatcher.stop({ graceMs: 0 }).finally(() => outbox.close());

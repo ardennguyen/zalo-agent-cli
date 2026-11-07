@@ -72,7 +72,7 @@ describe("mcp-config samples", () => {
         it(`${file}: valid JSON that uses only keys the loader merges`, () => {
             const cfg = JSON.parse(read("mcp-config", file));
             for (const key of Object.keys(cfg)) assert.ok(known.has(key), `unknown top-level key "${key}"`);
-            for (const section of ["notify", "limits", "media", "tls", "oauth", "approval"]) {
+            for (const section of ["notify", "limits", "media", "tls", "oauth", "approval", "admin"]) {
                 for (const key of Object.keys(cfg[section] ?? {})) {
                     assert.ok(key in defaults[section], `unknown key "${key}" in "${section}"`);
                 }
@@ -179,7 +179,9 @@ describe("env samples", () => {
 
         it(`${file}: tokens and secrets are CHANGE_ME placeholders`, () => {
             for (const { name, value } of assignments(read(file))) {
-                if (/TOKEN|SECRET/.test(name)) assert.match(value, /^CHANGE_ME/, `${name} must be a placeholder`);
+                // A *_FILE names where a secret is kept (a path), never the secret itself.
+                if (/_FILE$/.test(name)) assert.match(value, /^\//, `${name} must be an absolute path`);
+                else if (/TOKEN|SECRET/.test(name)) assert.match(value, /^CHANGE_ME/, `${name} must be a placeholder`);
             }
         });
     }
@@ -199,6 +201,14 @@ describe("env samples", () => {
             assert.ok(envForAccount("ZALO_MCP_AUTH_TOKEN", "1000000000000000001", env), `${file}: token`);
             assert.ok(envForAccount("ZALO_MCP_HTTP_PORT", "1000000000000000001", env), `${file}: port`);
         }
+    });
+
+    it("crm-backend.env: the admin console's credential is a file the service reads, never inline or the agent's", () => {
+        const env = parseEnv(read("env", "crm-backend.env"));
+        assert.match(envForAccount("ZALO_MCP_ADMIN_TOKEN_FILE", "1000000000000000001", env), /^\//);
+        assert.equal(envForAccount("ZALO_MCP_ADMIN_TOKEN", "1000000000000000001", env), null);
+        const cfg = JSON.parse(read("mcp-config", "crm-backend.json"));
+        assert.deepEqual(Object.keys(cfg.admin).sort(), ["clientCa", "tokenFile"]);
     });
 
     it("the wrapper-folder .env keeps to ports", () => {

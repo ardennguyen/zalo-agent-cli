@@ -85,6 +85,7 @@ import {
     envForAccount,
     parseDuration,
     resolveWebhookDelivery,
+    resolveWebhookUrl,
 } from "../mcp/mcp-config.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
@@ -98,6 +99,9 @@ import { registerMCPApproverCommand } from "./mcp-approver.js";
 import { createMCPServer } from "../mcp/mcp-server.js";
 import { registerTools } from "../mcp/mcp-tools.js";
 import { createHTTPServer } from "../mcp/mcp-http-transport.js";
+import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
+import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
+import { measureUsage } from "../core/storage-quota.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
 
@@ -620,6 +624,24 @@ export function registerMCPCommands(program) {
                 process.exit(1);
             }
 
+            // The runtime policy (src/core/policy-store.js): read now, watched for file drops, changed live by the admin
+            // API and `policy set`. A policy file that cannot be used stops the start: it is never replaced by defaults.
+            let onPolicyChanged = () => {};
+            let policyRuntime;
+            try {
+                policyRuntime = startPolicyRuntime({
+                    ownId: activeAcc.ownId,
+                    onChange: (changed) => onPolicyChanged(changed),
+                    log: (l) => console.error(`[mcp] ${l}`),
+                });
+                console.error(`[mcp] Runtime policy: ${policyRuntime.describe()}`);
+            } catch (e) {
+                gate.leave();
+                dropLock();
+                console.error(`[mcp] The runtime policy cannot be used: ${e.message}`);
+                process.exit(1);
+            }
+
             console.error("[mcp] Config loaded:", JSON.stringify(config.limits));
 
             // Build buffer + filter from config
@@ -639,7 +661,7 @@ export function registerMCPCommands(program) {
             // `hidden_chat` controls below; the deployment's hiddenChats policy decides what agents see of them.
             const hidden = hiddenChatsFor(activeAcc.ownId, { stateDir: accountDir });
             await hidden.ensure(getApi());
-            const hiddenPolicy = resolveHiddenChats({ config, accountId: activeAcc.ownId });
+            let hiddenPolicy = resolveHiddenChats({ config, accountId: activeAcc.ownId });
             console.error(
                 `[mcp] Hidden chats: ${hiddenPolicy.mode} (${hiddenPolicy.source})` +
                     (hidden.known ? `, ${hidden.ids.size} hidden` : ", the hidden list could not be read yet"),
@@ -660,8 +682,8 @@ export function registerMCPCommands(program) {
             const qrPage = getQrPage();
             // Media links (src/core/media-deliver.js): the policy they are issued under. Over --http they are served
             // on its port and point at publicUrl (below); under stdio a 127.0.0.1 listener serves them on first use.
-            const mediaPolicy = resolveMediaDelivery({ config, accountId: activeAcc.ownId });
-            const mediaAuth = resolveMediaLinkAuth({
+            let mediaPolicy = resolveMediaDelivery({ config, accountId: activeAcc.ownId });
+            let mediaAuth = resolveMediaLinkAuth({
                 config,
                 accountId: activeAcc.ownId,
                 publicUrl: effectiveHttpPort ? publicUrl.publicUrl : null,
@@ -765,7 +787,44 @@ export function registerMCPCommands(program) {
                     }
                     const host =
                         opts.host || envForAccount("ZALO_MCP_HOST", activeAcc.ownId) || config?.host || "127.0.0.1";
+                    // The admin API (src/core/admin-api.js): its own credential, never the agent's.
+                    const adminCreds = resolveAdminCredentials({ config, accountId: activeAcc.ownId });
+                    for (const p of adminCreds.problems) console.error(`[mcp] WARNING: ${p}`);
+                    let adminCa = null;
+                    if (adminCreds.clientCaFile) {
+                        if (!tlsOptions) {
+                            console.error("[mcp] WARNING: admin.clientCa needs --cert and --key (HTTPS); mTLS is off");
+                        } else {
+                            try {
+                                adminCa = readFileSync(adminCreds.clientCaFile);
+                            } catch (e) {
+                                dropLock();
+                                console.error(
+                                    `[mcp] Refusing to start: cannot read admin.clientCa ${adminCreds.clientCaFile} (${e.code || e.message}).`,
+                                );
+                                process.exit(1);
+                            }
+                        }
+                    }
+                    const admin = createAdminApi({
+                        ownId: activeAcc.ownId,
+                        config,
+                        hashes: adminCreds.hashes,
+                        mtls: Boolean(adminCa),
+                        publicUrl: publicUrl.publicUrl,
+                        usage: () => ({
+                            accounts: [
+                                measureUsage(activeAcc.ownId, { mediaRoot: MEDIA_DIR || config.media?.downloadDir }),
+                            ],
+                        }),
+                        log: (l) => console.error(`[mcp] ${l}`),
+                    });
+                    if (admin.enabled())
+                        console.error(
+                            `[mcp] Admin API: on /zalo/admin${adminCreds.sources.length ? ` (${adminCreds.sources.join(", ")})` : ""}${adminCa ? ", mTLS" : ""}`,
+                        );
                     const deps = {
+                        admin,
                         api: sessionApi,
                         buffer,
                         filter,
@@ -809,7 +868,15 @@ export function registerMCPCommands(program) {
                               }
                             : null;
                     const scheme = tlsOptions ? "HTTPS" : "HTTP";
-                    httpServer = createHTTPServer(registerTools, deps, port, authToken, host, tlsOptions, oauthOptions);
+                    httpServer = createHTTPServer(
+                        registerTools,
+                        deps,
+                        port,
+                        authToken,
+                        host,
+                        tlsOptions && adminCa ? { ...tlsOptions, ca: adminCa } : tlsOptions,
+                        oauthOptions,
+                    );
                     // The secure page (/zalo/secure/<token>) and the QR login page (/zalo/qr/<token>) are served on this
                     // port; their links use publicUrl (behind a reverse proxy or TLS) or else this server's own address,
                     // never a request's Host header.
@@ -858,11 +925,7 @@ export function registerMCPCommands(program) {
 
             // Setup notifier (sends to Zalo group when agent is offline)
             const notifier = new ZaloNotifier(sessionApi, config);
-            const webhookUrl =
-                opts.webhook?.trim() ||
-                envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) ||
-                config.webhook?.trim() ||
-                null;
+            const webhookUrl = resolveWebhookUrl({ accountId: activeAcc.ownId, flag: opts.webhook, config });
             const webhookSecret = resolveWebhookSecret({
                 flag: opts.webhookSecret,
                 env: envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId),
@@ -874,23 +937,37 @@ export function registerMCPCommands(program) {
             // Events are written to an on-disk outbox first and delivered from it, so a receiver
             // that is down or slow costs a backlog (mcp webhook status), not messages.
             let webhookDelivery = null;
-            if (webhookUrl) {
+            /** Start the delivery, or move a running one to the current receiver and settings (a live policy change). */
+            const applyWebhook = (url) => {
                 const delivery = resolveWebhookDelivery(activeAcc.ownId, config);
                 for (const w of delivery.warnings) console.error(`[mcp] ${w}`);
+                if (!url) {
+                    if (webhookDelivery)
+                        console.error("[mcp] Webhook disabled by the policy; queued events stay in the outbox");
+                    webhookDelivery?.stop();
+                    webhookDelivery = null;
+                    return;
+                }
+                if (webhookDelivery) {
+                    webhookDelivery.reconfigure({ url, batchSize: delivery.batchSize, maxAgeMs: delivery.maxAgeMs });
+                    console.error(`[mcp] Webhook settings changed by the policy (${delivery.batchSize} per POST)`);
+                    return;
+                }
                 webhookDelivery = startWebhookDelivery({
                     accountDir,
                     accountId: activeAcc.ownId,
-                    url: webhookUrl,
+                    url,
                     secret: webhookSecret,
                     batchSize: delivery.batchSize,
                     maxAgeMs: delivery.maxAgeMs,
                     log: (line) => console.error(`[mcp] ${line}`),
                 });
                 console.error(
-                    `[mcp] Webhook enabled: ${webhookUrl}${webhookSecret ? " (signed)" : ""}, ` +
+                    `[mcp] Webhook enabled: ${url}${webhookSecret ? " (signed)" : ""}, ` +
                         `durable outbox, ${delivery.batchSize === 1 ? "one event per POST" : `up to ${delivery.batchSize} events per POST`}`,
                 );
-            }
+            };
+            if (webhookUrl) applyWebhook(webhookUrl);
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
             // approval.deliver "webhook"/"both": a one-time page's link goes to the webhook as an `approval_requested`
             // event, signed and queued like the others, for a CRM's approval UI to show a person
@@ -904,6 +981,49 @@ export function registerMCPCommands(program) {
                 accountDir,
                 hasWebhook: Boolean(webhookDelivery),
             });
+            // A policy change (admin API, `policy set`, a file drop) counts from the next tool call: the per-call readers
+            // (confirm mode, approval, delivery modes) read the live policy themselves; what was set up at start is set
+            // up again here.
+            onPolicyChanged = (changed) => {
+                const id = activeAcc.ownId;
+                console.error(`[mcp] Policy changed: ${changed.join(", ")}`);
+                if (touches(changed, ["hiddenChats"])) {
+                    hiddenPolicy = resolveHiddenChats({ config, accountId: id });
+                    if (hiddenPolicy.mode !== "include") {
+                        mediaLinks.revokeWhere(
+                            (l) => l.threadId !== null && hidden.isHidden(l.threadId),
+                            "its chat is hidden by the policy",
+                        );
+                    }
+                }
+                if (touches(changed, ["media"])) {
+                    mediaPolicy = resolveMediaDelivery({ config, accountId: id });
+                    mediaAuth = resolveMediaLinkAuth({
+                        config,
+                        accountId: id,
+                        publicUrl: effectiveHttpPort ? publicUrl.publicUrl : null,
+                    });
+                    mediaLinks.configure({
+                        linkAuth: effectiveHttpPort ? mediaAuth.linkAuth : "capability",
+                        maxClients: mediaAuth.maxClients,
+                        clientTtlMs: mediaAuth.clientTtlMs,
+                        ttlMs: mediaPolicy.linkTtlMs,
+                        rateLimit: mediaPolicy.linkRateLimit,
+                    });
+                    startTempfileSweeper({ ttlMs: mediaPolicy.tempfileTtlMs });
+                    // Links issued under the old rule must not outlive it.
+                    if (touches(changed, ["media.linkAuth", "media.capability"])) {
+                        const n = mediaLinks.revokeAll("the link policy changed");
+                        if (n) console.error(`[mcp] ${n} media link(s) revoked: the link policy changed`);
+                    }
+                }
+                if (touches(changed, ["webhook", "webhookBatchSize", "webhookMaxAge"])) {
+                    applyWebhook(resolveWebhookUrl({ accountId: id, flag: opts.webhook, config }));
+                    securePage.configure({
+                        notify: webhookDelivery ? (payload) => webhookDelivery?.enqueue(null, payload) : null,
+                    });
+                }
+            };
             /**
              * Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent; a message in a
              * hidden chat goes as the policy says: not at all, or as `{event, hidden: true}` with no ids or content.
@@ -1250,6 +1370,7 @@ export function registerMCPCommands(program) {
                     /* already stopped */
                 }
                 notifier?.destroy();
+                policyRuntime.stop();
                 webhookDelivery?.stop();
                 mediaLinks.revokeAll("the server stopped");
                 httpServer?.close();
@@ -1311,6 +1432,8 @@ export function registerMCPCommands(program) {
                         lock: stageLock,
                         onStop: shutdown,
                         onStatus: () => health.snapshot(),
+                        // `policy set|unset`: applied here, so it counts at once (src/core/policy-store.js).
+                        onPolicy: servePolicyRequest,
                         // `msg media --deliver link`: a link this daemon serves (on its HTTP port, or 127.0.0.1).
                         onMediaLink: ({ msgId }) =>
                             linkForCachedMessage({

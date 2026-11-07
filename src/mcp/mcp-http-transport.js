@@ -17,6 +17,7 @@ import { maskSecurePath, SECURE_PATH_PREFIX } from "../core/secure-page.js";
 import { maskQrPath, QR_PATH_PREFIX } from "../utils/qr-http-server.js";
 import { maskMediaPath, MEDIA_PATH_PREFIX } from "../core/media-deliver.js";
 import { clientIpOf, handleMediaRequest, isLoopbackIp } from "../core/media-route.js";
+import { ADMIN_PATH_PREFIX } from "../core/admin-api.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -201,16 +202,18 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
      * @param {import("express").Request} req
      * @returns {boolean}
      */
-    const isAuthorized = (req) => {
-        if (!signingSecret) return false;
-        const authHeader = req.headers.authorization || "";
-        const token = /^bearer\s+/i.test(authHeader) ? authHeader.slice(7).trim() : "";
-        if (!token) return false;
+    const isAgentToken = (token) => {
+        if (!signingSecret || !token) return false;
         if ((authToken && safeEqual(token, authToken)) || safeEqual(token, signingSecret)) return true;
         for (const sec of configuredClients.values()) {
             if (safeEqual(token, sec)) return true;
         }
         return Boolean(verifyOAuthToken(token, "zmcp_at_", signingSecret));
+    };
+    const isAuthorized = (req) => {
+        const authHeader = req.headers.authorization || "";
+        const token = /^bearer\s+/i.test(authHeader) ? authHeader.slice(7).trim() : "";
+        return isAgentToken(token);
     };
 
     // CORS headers for browser-based MCP clients and OAuth discovery
@@ -289,6 +292,27 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                     if (!res.headersSent) res.status(500).set("Cache-Control", "no-store").end();
                 });
         });
+    }
+
+    // The admin API (src/core/admin-api.js), before the bearer check too: it takes its own credential (an admin token
+    // or a client certificate) and refuses the agent's, so an agent can never change its own policy.
+    if (deps.admin) {
+        app.use(
+            ADMIN_PATH_PREFIX,
+            express.json({ limit: "64kb" }),
+            (req, res) => deps.admin.handle(req, res),
+            (err, req, res, _next) => {
+                res.status(err?.status || 400)
+                    .set("Cache-Control", "no-store")
+                    .json({
+                        error:
+                            err?.type === "entity.parse.failed"
+                                ? "the body is not valid JSON"
+                                : String(err?.message || err),
+                    });
+            },
+        );
+        deps.admin.isAgentToken = isAgentToken;
     }
 
     app.use(express.json());
@@ -720,11 +744,16 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     });
 
     if (isTls) {
-        const primary = https.createServer({ cert: tls.cert, key: tls.key }, app).listen(port, host, () => {
-            console.error(`MCP HTTPS server listening on ${host}:${port}`);
-        });
+        // A client CA (admin.clientCa) asks every client for a certificate without requiring one: only the admin API
+        // looks at it (req.socket.authorized), and every other route goes on as before.
+        const clientCa = tls.ca ? { ca: tls.ca, requestCert: true, rejectUnauthorized: false } : {};
+        const primary = https
+            .createServer({ cert: tls.cert, key: tls.key, ...clientCa }, app)
+            .listen(port, host, () => {
+                console.error(`MCP HTTPS server listening on ${host}:${port}`);
+            });
         if (port !== 0 && port !== 443) {
-            const tls443 = https.createServer({ cert: tls.cert, key: tls.key }, app);
+            const tls443 = https.createServer({ cert: tls.cert, key: tls.key, ...clientCa }, app);
             tls443.on("error", () => {
                 /* port 443 already in use or restricted — ignore */
             });

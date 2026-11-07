@@ -383,6 +383,19 @@ The account's message database (`accounts/<ownId>/zalo.db`) is encrypted at rest
 
 ---
 
+## Runtime policy — `policy` (4 commands)
+
+The settings a running `listen` / `mcp start` takes **without a restart**: `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.*` delivery and links (not `media.downloadDir`), `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`. One sealed file per account (`<accountDir>/policy.json`) and per tenant (`<configDir>/tenants/<tenantId>.json`, for the accounts its `quota.tenant.accounts` lists), each with a revision (`rev`). Layers, lowest first: built-in defaults, files (`mcp-config.json`, `storage.json`), the environment, then the policy (a tenant's under the account's own); the resolvers read it on every call. A key read only at start (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`, the key provider) or a secret (`webhookSecret`) is refused as `restartRequired`; an unknown key or a bad value is refused naming the key. A change goes through the account's running daemon (its loopback channel), which applies it at once (a `media.linkAuth` / `media.capability` change revokes the outstanding media links; a `webhook*` change moves the delivery); with no daemon it is written to the file for the next start. Every change and refusal is a line in `<configDir>/policy-audit.log` (who, which file, which keys, old and new rev; never a value). The same policy is served to a console by the MCP HTTP server's admin API (`/zalo/admin/policy`, `/zalo/admin/usage`; docs/configuration.md). Local only: no login. CLI-only: an agent never reads or changes its own policy.
+
+| Command | Description |
+|---------|-------------|
+| `get [key] [--tenant <id>] [--effective]` | The active (or `--account`) account's policy, or a tenant's, with its `rev`, `updatedAt` and `updatedBy`; with a dotted key (`media.linkAuth`), that value only. `--effective`: the account's policy with its tenants' merged in, as the resolvers read it. `--json`: `{target, rev, updatedAt, updatedBy, tenants?, policy}` or `{…, key, value}`. |
+| `set <key> <value> [--tenant <id>] [--if-match <rev>]` | Set one dotted key. The value is JSON when it parses (`5`, `true`, `["1000000000000000001"]`, `{"video":"inline"}`), else the text (`bearer`, `2GB`, `90d`). `--if-match`: only if the policy is still at that rev (otherwise exit 1, nothing written). Exit 1 on a refused key or value. `--json`: `{target, rev, oldRev, changed, policy, via: "daemon"\|"file"}`. |
+| `unset <key> [--tenant <id>] [--if-match <rev>]` | Remove one key, so the files, the environment and the defaults apply again. Same reply as `set`. |
+| `token [--rotate]` | The admin API's own credential. Without `--rotate`: whether one is set and since when. `--rotate`: make a new admin token (`zadm_…`), print it **once**, keep only its SHA-256 sealed in `<configDir>/admin/admin-token.json`; the previous token stops working at once (a running server re-reads the file). Give it to the admin console only, never to an agent. The admin API also takes `ZALO_MCP_ADMIN_TOKEN_FILE` / `admin.tokenFile`, `ZALO_MCP_ADMIN_TOKEN`, or a client certificate (`ZALO_MCP_ADMIN_CLIENT_CA`); the agent's bearer and OAuth tokens are always refused there. |
+
+---
+
 ## Bank — `bank` (5 commands)
 
 Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-qr-transfer` send a card or QR to a thread; these manage Zalo's own saved list.
@@ -612,11 +625,12 @@ Completely independent from the personal (unofficial-API) account: separate OAut
 | `cloud` | 2 (`ls`, `plan`) |
 | `bank` | 5 |
 | `db` | 4 (`query`, `backup`, `export`, `verify`) |
+| `policy` | 4 (`get`, `set`, `unset`, `token`) |
 | `listen` | 1 |
 | `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 36 MCP tools) |
 | `fleet` | 6 (`ports`, `status`, `start`, `stop`, `restart`, `generate`) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **247 CLI commands** + 36 MCP tools |
+| **Total** | **251 CLI commands** + 36 MCP tools |
 
 ## Provenance
 

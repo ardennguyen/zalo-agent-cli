@@ -1,7 +1,7 @@
 /**
  * Per-deployment policy for the MCP server, read the way `confirmMode` is (src/core/confirm-guard.js): highest first,
- * the per-account environment variable (`<NAME>_<ownId>`), then the environment variable, then mcp-config.json, then
- * the default. A value that is not one of the allowed ones is reported once (on stderr) and skipped.
+ * the live runtime policy (src/core/policy-store.js, read through ./policy-layer.js on every call), the per-account
+ * environment variable (`<NAME>_<ownId>`), then the environment variable, then mcp-config.json, then the default. A value that is not one of the allowed ones is reported once (on stderr) and skipped.
  *
  * - `hiddenChats` (`ZALO_MCP_HIDDEN_CHATS`): what the MCP server shows of the account's hidden conversations.
  *   `exclude` (default) leaves them out of every list, search, history and event, as Zalo Web does until the PIN is
@@ -18,6 +18,8 @@
  *
  * The CLI does not read these: it follows its own flags (`--include-hidden`, `--pin-stdin`).
  */
+
+import { policyFor } from "./policy-layer.js";
 
 /** The hiddenChats policies. */
 export const HIDDEN_CHAT_MODES = Object.freeze(["exclude", "contentless", "include"]);
@@ -43,9 +45,22 @@ function warnOnce(source, value, allowed) {
  * @param {string} [accountId]
  * @returns {Array<[unknown, string]>}
  */
-function layers(envName, configValue, configName, env, accountId) {
+function layers(envName, configValue, configName, env, accountId, policyValue) {
     const scoped = accountId ? `${envName}_${accountId}` : null;
-    return [...(scoped ? [[env?.[scoped], scoped]] : []), [env?.[envName], envName], [configValue, configName]];
+    return [
+        [policyValue, `policy:${configName}`],
+        ...(scoped ? [[env?.[scoped], scoped]] : []),
+        [env?.[envName], envName],
+        [configValue, configName],
+    ];
+}
+
+/**
+ * The live policy (src/core/policy-store.js) of one account, as a resolver's top layer; `policy` given explicitly
+ * (null for none) wins, which is how the tests pin it.
+ */
+function livePolicy(policy, accountId) {
+    return policy === undefined ? policyFor(accountId) : policy;
 }
 
 /**
@@ -57,8 +72,16 @@ function layers(envName, configValue, configName, env, accountId) {
  * @param {string} [sources.accountId]
  * @returns {{mode: "exclude"|"contentless"|"include", source: string}}
  */
-export function resolveHiddenChats({ config, env = process.env, accountId } = {}) {
-    for (const [value, source] of layers("ZALO_MCP_HIDDEN_CHATS", config?.hiddenChats, "hiddenChats", env, accountId)) {
+export function resolveHiddenChats({ config, env = process.env, accountId, policy } = {}) {
+    const live = livePolicy(policy, accountId);
+    for (const [value, source] of layers(
+        "ZALO_MCP_HIDDEN_CHATS",
+        config?.hiddenChats,
+        "hiddenChats",
+        env,
+        accountId,
+        live?.hiddenChats,
+    )) {
         const mode = String(value ?? "")
             .trim()
             .toLowerCase();
@@ -78,13 +101,14 @@ export function resolveHiddenChats({ config, env = process.env, accountId } = {}
  * @param {string} [sources.accountId]
  * @returns {{allowed: boolean, source: string}}
  */
-export function resolveAllowPinArgument({ config, env = process.env, accountId } = {}) {
+export function resolveAllowPinArgument({ config, env = process.env, accountId, policy } = {}) {
     for (const [value, source] of layers(
         "ZALO_MCP_ALLOW_PIN_ARGUMENT",
         config?.allowPinArgument,
         "allowPinArgument",
         env,
         accountId,
+        livePolicy(policy, accountId)?.allowPinArgument,
     )) {
         if (value === undefined || value === null || value === "") continue;
         if (value === true || value === false) return { allowed: value, source };
@@ -239,9 +263,11 @@ export const APPROVAL_DELIVERIES = Object.freeze(["result", "webhook", "both"]);
  * @param {string} [sources.accountId]
  * @returns {{secret: "auto"|"pin"|"password"|"none", secretSource: string, deliver: "result"|"webhook"|"both", deliverSource: string}}
  */
-export function resolveApproval({ config, env = process.env, accountId } = {}) {
+export function resolveApproval({ config, env = process.env, accountId, policy } = {}) {
+    const live = livePolicy(policy, accountId)?.approval;
     const pick = (envName, configValue, configName, allowed, fallback) => {
-        for (const [value, source] of layers(envName, configValue, configName, env, accountId)) {
+        const top = configName === "approval.secret" ? live?.secret : live?.deliver;
+        for (const [value, source] of layers(envName, configValue, configName, env, accountId, top)) {
             const v = String(value ?? "")
                 .trim()
                 .toLowerCase();
@@ -370,9 +396,10 @@ function deliverMap(value, source) {
  *   inlineMaxBytes: number, linkTtlMs: number, tempfileTtlMs: number, linkRateLimit: number,
  *   autoOpen: boolean|null}}
  */
-export function resolveMediaDelivery({ config, env = process.env, accountId } = {}) {
+export function resolveMediaDelivery({ config, env = process.env, accountId, policy } = {}) {
     const own = accountMedia(config, accountId);
-    const media = { ...(config?.media || {}), ...(own || {}) };
+    const live = livePolicy(policy, accountId)?.media;
+    const media = { ...(config?.media || {}), ...(own || {}), ...(live || {}) };
     const id = accountId ? String(accountId).trim() : "";
     const deliver = { ...DEFAULT_MEDIA_DELIVER };
     const deliverSource = Object.fromEntries(MEDIA_KINDS.map((k) => [k, "default"]));
@@ -382,6 +409,7 @@ export function resolveMediaDelivery({ config, env = process.env, accountId } = 
         [own?.deliver, `accounts.${id}.media.deliver`],
         [env?.ZALO_MCP_MEDIA_DELIVER, "ZALO_MCP_MEDIA_DELIVER"],
         ...(id ? [[env?.[`ZALO_MCP_MEDIA_DELIVER_${id}`], `ZALO_MCP_MEDIA_DELIVER_${id}`]] : []),
+        [live?.deliver, "policy:media.deliver"],
     ];
     for (const [value, source] of layered) {
         const map = deliverMap(value, source);
@@ -462,12 +490,14 @@ export function isLoopbackUrl(url) {
  * @returns {{linkAuth: "bearer"|"capability", configured: string, source: string, maxClients: number,
  *   clientTtlMs: number}}
  */
-export function resolveMediaLinkAuth({ config, env = process.env, accountId, publicUrl = null } = {}) {
+export function resolveMediaLinkAuth({ config, env = process.env, accountId, publicUrl = null, policy } = {}) {
     const own = accountMedia(config, accountId);
+    const live = livePolicy(policy, accountId)?.media;
     const id = accountId ? String(accountId).trim() : "";
     let configured = "auto";
     let source = "default";
     for (const [value, src] of [
+        [live?.linkAuth, "policy:media.linkAuth"],
         ...(id ? [[env?.[`ZALO_MCP_MEDIA_LINK_AUTH_${id}`], `ZALO_MCP_MEDIA_LINK_AUTH_${id}`]] : []),
         [env?.ZALO_MCP_MEDIA_LINK_AUTH, "ZALO_MCP_MEDIA_LINK_AUTH"],
         [own?.linkAuth, `accounts.${id}.media.linkAuth`],
@@ -486,7 +516,7 @@ export function resolveMediaLinkAuth({ config, env = process.env, accountId, pub
     }
     const linkAuth =
         configured === "auto" ? (publicUrl && !isLoopbackUrl(publicUrl) ? "bearer" : "capability") : configured;
-    const cap = { ...(config?.media?.capability || {}), ...(own?.capability || {}) };
+    const cap = { ...(config?.media?.capability || {}), ...(own?.capability || {}), ...(live?.capability || {}) };
     let maxClients = MEDIA_DEFAULTS.capabilityMaxClients;
     if (cap.maxClients !== undefined && cap.maxClients !== null && cap.maxClients !== "") {
         const n = Number(cap.maxClients);

@@ -937,7 +937,10 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `tls.cert`, `tls.key` | Đường dẫn chứng chỉ và private key PEM cho HTTPS (`--cert`, `--key` hoặc `ZALO_MCP_TLS_CERT[_<ownId>]`, `ZALO_MCP_TLS_KEY[_<ownId>]`) |
 | `oauth.clientId`, `oauth.clientSecret` | Cấu hình OAuth 2.0 chính cho remote MCP client (`oauth.issuerUrl` là tên cũ của `publicUrl`, vẫn được đọc) |
 | `oauth.clients` | Danh sách các OAuth 2.0 client tĩnh bổ sung (`[{ "clientId": "crm-prod", "clientSecret": "..." }]`) để nhiều dịch vụ kết nối đồng thời |
+| `admin.tokenFile`, `admin.clientCa` | Thông tin xác thực riêng của admin API (`/zalo/admin/policy`, `/zalo/admin/usage`): tệp chứa token admin (`ZALO_MCP_ADMIN_TOKEN_FILE`) và CA cho chứng chỉ client (mTLS, `ZALO_MCP_ADMIN_CLIENT_CA`). Token của agent luôn bị từ chối ở đó |
 | `accounts["<ownId>"]` | Ghi đè cấu hình riêng cho từng tài khoản khi chạy `mcp start --account <ownId>` |
+
+**Chính sách chạy (đổi không cần khởi động lại).** `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.*` (trừ `downloadDir`), `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*` và `retention.*` còn có thể đặt trong chính sách chạy: tệp niêm phong theo tài khoản (`<accountDir>/policy.json`) và theo tenant (`<configDir>/tenants/<tenantId>.json`), đứng trên tệp cấu hình và biến môi trường, được đọc lại ở mỗi lần gọi tool. Người vận hành đổi bằng `zalo-agent policy set|unset` (đi qua daemon đang chạy), console đổi qua admin API (`PATCH /zalo/admin/policy` với `If-Match`), hoặc công cụ quản lý cấu hình thả tệp JSON. Agent không bao giờ đọc hay đổi chính sách của chính nó: không có tool MCP nào cho việc đó, và admin API từ chối token của agent. Chi tiết: `docs/configuration.vi.md`.
 
 ---
 

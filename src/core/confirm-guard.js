@@ -21,6 +21,7 @@ import { error, info } from "../utils/output.js";
 import { askOnSecurePage, getSecurePage } from "./secure-page.js";
 import { approverFor } from "./approval.js";
 import { resolveApproval } from "./deploy-policy.js";
+import { policyFor } from "./policy-layer.js";
 
 /** What an unconfirmed guarded CLI command exits with: distinct from a failure (1). */
 export const CONFIRM_EXIT_CODE = 2;
@@ -481,7 +482,7 @@ const warned = new Set();
 /**
  * The deployment's MCP confirm mode, and where it came from.
  *
- * Highest first: `ZALO_MCP_CONFIRM_MODE_<ownId>`, `ZALO_MCP_CONFIRM_MODE`, `confirmMode` in mcp-config.json, then the deprecated aliases
+ * Highest first: the live policy (`confirmMode` in the account's or its tenant's policy), `ZALO_MCP_CONFIRM_MODE_<ownId>`, `ZALO_MCP_CONFIRM_MODE`, `confirmMode` in mcp-config.json, then the deprecated aliases
  * `ZALO_MCP_GROUP_CONFIRM` (`0`/`false`/`off`/`no` mean `off`, `1`/`true`/`on`/`yes` mean `agent`) and
  * `groupConfirm: false` (means `off`). The environment wins over the file, as for every other setting, and an
  * explicit confirm mode wins over either alias. A value that is not a mode is reported once and skipped; with
@@ -493,13 +494,16 @@ const warned = new Set();
  * @param {string} [sources.accountId] - the account served, for the per-account variable
  * @returns {{mode: "agent"|"human"|"off", source: string}}
  */
-export function resolveConfirmMode({ config, env = process.env, accountId } = {}) {
+export function resolveConfirmMode({ config, env = process.env, accountId, policy } = {}) {
     const scoped = accountId ? `ZALO_MCP_CONFIRM_MODE_${accountId}` : null;
     const norm = (v) =>
         String(v ?? "")
             .trim()
             .toLowerCase();
+    // The live policy (src/core/policy-store.js) is above the environment.
+    const live = policy === undefined ? policyFor(accountId) : policy;
     for (const [value, source] of [
+        [live?.confirmMode, "policy:confirmMode"],
         ...(scoped ? [[env?.[scoped], scoped]] : []),
         [env?.ZALO_MCP_CONFIRM_MODE, "ZALO_MCP_CONFIRM_MODE"],
         [config?.confirmMode, "confirmMode"],

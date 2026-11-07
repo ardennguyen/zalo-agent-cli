@@ -9,6 +9,12 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 
 ## [Unreleased]
 
+### Runtime policy and the admin API
+
+- feat: **change policy while the server runs.** `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, media delivery and links (`media.*` but `downloadDir`), `webhook`, `webhookBatchSize`, `webhookMaxAge`, and the coming `quota.*` / `retention.*` can be set in a **runtime policy**: a sealed, revisioned file per account (`<accountDir>/policy.json`) and per tenant (`<configDir>/tenants/<tenantId>.json`, for the accounts it lists), above the files and the environment, read on every tool call. A change counts on the next call: a link-auth change revokes the outstanding media links, a webhook change moves the delivery. Keys read only at start (port, bind address, `publicUrl`, TLS, OAuth, the key provider) and secrets are refused as `restartRequired`. `.env` stays for start-up settings.
+- feat: **the admin API** on the MCP HTTP server: `GET|PUT|PATCH /zalo/admin/policy[/<ownId>|/tenants/<id>]` and `GET /zalo/admin/usage`, with `If-Match: "<rev>"` (412 on a stale rev) and `ETag`. It takes **its own credential**: an admin token (`zalo-agent policy token --rotate`, only its hash kept, sealed; or `ZALO_MCP_ADMIN_TOKEN_FILE` / `admin.tokenFile`) or a client certificate (`ZALO_MCP_ADMIN_CLIENT_CA` / `admin.clientCa`, mTLS). The agent's bearer and OAuth tokens are refused there, so an agent can never change its own limits. With no admin credential the API does not exist.
+- feat: **`zalo-agent policy get|set|unset [--tenant <id>] [--if-match <rev>]`** and **`policy token [--rotate]`**: through the running daemon (applied at once) or into the file. A config-management tool can also drop the file as plain JSON: the daemon checks and seals it, and keeps the last good policy when it does not validate (`policy.json.rejected`). Every change and refusal is in `<configDir>/policy-audit.log` (keys and revs, never a value or a credential). A daemon refuses to start on a policy file it cannot use.
+
 ## [3.0.0] — 2026-11-06
 
 ### What's changed since v2.5.9

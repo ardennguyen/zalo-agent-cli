@@ -42,6 +42,55 @@ Bí mật đặt trong `.env` (quyền `0600`), không đặt trong `mcp-config.
 
 [`env/multi-account.env`](config-samples/env/multi-account.env) minh họa quy tắc 2 thắng 3 trong một tệp.
 
+### Chính sách chạy (đổi trực tiếp, không cần khởi động lại)
+
+Trên tất cả các lớp trên là **chính sách chạy** (runtime policy): những cài đặt mà console hay người vận hành đổi trong lúc
+máy chủ đang chạy. Tệp và biến môi trường chỉ được đọc một lần khi khởi động; chính sách được đọc lại ở mỗi lần gọi tool.
+
+| Lớp (thấp nhất trước) | Ở đâu |
+|---|---|
+| mặc định có sẵn | mã nguồn |
+| tệp | `mcp-config.json`, `storage.json` |
+| môi trường | `.env`, `--env-file`, `EnvironmentFile` của systemd (chỉ để khởi động: port, địa chỉ bind, `publicUrl`, bộ cung cấp khóa, *tham chiếu* tới thông tin xác thực admin) |
+| **chính sách** | theo tenant `<CONFIG_DIR>/tenants/<tenantId>.json` (cho các tài khoản liệt kê trong `quota.tenant.accounts`), rồi theo tài khoản `<accountDir>/policy.json` |
+
+Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
+`media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
+`media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*` và `retention.*`. Khóa
+chỉ đọc khi khởi động (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`, bộ cung cấp khóa) và
+mọi bí mật (`webhookSecret`) bị từ chối với `restartRequired`; khóa khác bị từ chối vì không biết. Các tệp được niêm
+phong bằng khóa boot của tài khoản (của tenant thì bằng `<CONFIG_DIR>/tenants/keyring.json`) và có số phiên bản (`rev`)
+tăng sau mỗi lần đổi.
+
+Ba nơi ghi, cùng một cách kiểm tra:
+
+1. **Admin API** trên máy chủ MCP HTTP: `GET|PUT|PATCH /zalo/admin/policy` (tài khoản này),
+   `/zalo/admin/policy/<ownId>`, `/zalo/admin/policy/tenants/<tenantId>`, và `GET /zalo/admin/usage`. Nó dùng **thông tin
+   xác thực riêng**, không bao giờ là của agent: `Authorization: Bearer <admin token>` hoặc chứng chỉ client
+   (`admin.clientCa`). Bearer token MCP, secret OAuth và access token do máy chủ ký đều bị từ chối (401), nên agent không
+   bao giờ tự đổi giới hạn của chính nó. `PATCH` là JSON merge patch (`null` xóa một khóa); `PUT` thay cả chính sách.
+   `If-Match: "<rev>"` làm lệnh ghi có điều kiện: rev khác thì trả `412` và không đổi gì; phản hồi có `ETag: "<rev>"` và
+   các cài đặt đang có hiệu lực. `400` nêu từng khóa sai; `422` liệt kê `restartRequired`. Khi chưa đặt thông tin xác thực
+   admin nào thì API không tồn tại (`404`).
+2. **`zalo-agent policy set|unset <key> [<value>] [--tenant <id>] [--if-match <rev>]`**: đi qua daemon đang chạy của tài
+   khoản (áp dụng ngay), nếu không thì ghi vào tệp cho lần khởi động sau.
+3. **Thả tệp** bằng công cụ quản lý cấu hình: ghi tệp dạng JSON thường (`{"policy": {...}}`), ghi nguyên tử. Daemon đang
+   chạy nhận trong vòng một giây, kiểm tra và niêm phong với rev kế tiếp. Tệp không hợp lệ được chuyển thành
+   `policy.json.rejected` và ghi log, chính sách hợp lệ cuối cùng vẫn giữ nguyên. Daemon không khởi động với tệp chính
+   sách không dùng được.
+
+Mỗi thay đổi và mỗi lần từ chối là một dòng trong `<CONFIG_DIR>/policy-audit.log`: khi nào, ai, tệp nào, khóa nào, rev cũ
+và mới. Không bao giờ ghi giá trị (URL webhook có thể chứa token) và không bao giờ ghi thông tin xác thực.
+
+Tác dụng ngay của một thay đổi: `media.linkAuth` / `media.capability` thu hồi mọi link media đang mở; `hiddenChats` thu
+hồi link vào các chat vừa bị ẩn; `webhook*` chuyển việc gửi sang nơi nhận hoặc cài đặt mới (sự kiện đang xếp hàng vẫn
+còn); `quota.*` thấp hơn được kiểm tra ngay.
+
+Token admin: `zalo-agent policy token --rotate` tạo một token và hiện nó đúng một lần; chỉ SHA-256 của nó được giữ, niêm
+phong trong `<CONFIG_DIR>/admin/admin-token.json`, và lần xoay mới làm token cũ hết hiệu lực ngay. Hoặc trỏ
+`ZALO_MCP_ADMIN_TOKEN_FILE` (`admin.tokenFile`) tới tệp do bộ cung cấp của bạn điền (credential của systemd, mount giải
+mã bằng KMS). `ZALO_MCP_ADMIN_TOKEN` chỉ dùng khi phát triển.
+
 ---
 
 ## 2. Tra cứu
@@ -77,6 +126,9 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_APPROVAL_DELIVER` | có | link của trang duyệt hoặc trang PIN được gửi đi đâu: `result` (mặc định: trong kết quả của tool), `webhook` (chỉ gửi tới webhook MCP, dạng sự kiện `approval_requested`; kết quả của tool không có link) hoặc `both` | | `approval.deliver` |
 | `ZALO_MCP_MEDIA_DELIVER` | có | cách `zalo_view_media` trả media đã lưu, cho mọi loại (`link`) hoặc theo từng loại (`photo=inline,video=link`): `inline` (nội dung image/audio của MCP), `link` (`<publicUrl>/zalo/media/<token>`) hoặc `tempfile` (bản giải mã riêng tư trên máy này). Ghi đè `media.deliver` theo từng loại; `deliver` của chính lời gọi được ưu tiên hơn | | `media.deliver` |
 | `ZALO_MCP_MEDIA_LINK_AUTH` | có | ai được tải link media: `bearer` (yêu cầu kèm `Authorization` của máy chủ này: `--auth`, `ZALO_MCP_AUTH_TOKEN` hoặc token OAuth), `capability` (chỉ cần link, giới hạn `media.capability.maxClients` địa chỉ client khi ra ngoài máy này) hoặc `auto` (mặc định: `bearer` khi `publicUrl` là máy khác, ngược lại `capability`) | | `media.linkAuth` |
+| `ZALO_MCP_ADMIN_TOKEN_FILE` | có | tệp chứa token của admin API (ít nhất 16 ký tự): credential của systemd, mount giải mã bằng KMS. Đọc khi khởi động. Admin API cũng nhận token niêm phong do `zalo-agent policy token --rotate` tạo | | `admin.tokenFile` |
+| `ZALO_MCP_ADMIN_TOKEN` | có | chính token của admin API (khi phát triển; nên dùng tệp hoặc token niêm phong). Token của agent luôn bị từ chối ở đó, kể cả khi hai token trùng nhau | | |
+| `ZALO_MCP_ADMIN_CLIENT_CA` | có | chứng chỉ CA (PEM): chứng chỉ client do CA này ký được vào admin API (mTLS). Cần `--cert`/`--key` | | `admin.clientCa` |
 | `ZALO_MCP_TRUSTED_PROXIES` | có | danh sách địa chỉ reverse proxy (phân tách bằng dấu phẩy) mà `X-Forwarded-For` của nó được tin (`127.0.0.1`, hoặc `loopback`). Mặc định không có: địa chỉ client là đầu kia của kết nối | | `trustedProxies` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | đã lỗi thời: `0` nghĩa là chế độ `off`, `1` là `agent`; chế độ xác nhận đặt rõ được ưu tiên | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | số tên DM không phải bạn bè mà một lần restore được tra. Mặc định 500 | | |
@@ -131,6 +183,8 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `approval.secret` | không đặt (= `auto`) | `auto`, `pin`, `password` hoặc `none`: trang duyệt hỏi thêm gì ngoài một cú bấm (xem biến ở trên) |
 | `approval.deliver` | không đặt (= `result`) | `result`, `webhook` hoặc `both`: link của trang dùng một lần được gửi đi đâu |
 | `groupConfirm` | | đã lỗi thời: `false` nghĩa là `confirmMode: "off"` khi chưa đặt chế độ xác nhận |
+| `admin.tokenFile` | `null` | xem `ZALO_MCP_ADMIN_TOKEN_FILE` |
+| `admin.clientCa` | `null` | xem `ZALO_MCP_ADMIN_CLIENT_CA` |
 | `accounts.<ownId>` | | bất kỳ khóa nào ở trên, cho một tài khoản |
 
 Khóa không có trong bảng này bị bỏ qua mà không báo. (Khóa `mode` trong các tệp cũ được chấp nhận nhưng không bao giờ được đọc.)

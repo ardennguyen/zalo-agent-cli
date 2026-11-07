@@ -6,6 +6,7 @@ import { readFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { CONFIG_DIR } from "../core/credentials.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import { policyFor } from "../core/policy-layer.js";
 
 function mcpConfigFile() {
     return join(CONFIG_DIR, "mcp-config.json");
@@ -86,6 +87,14 @@ export function getDefaultConfig() {
             secret: null,
             deliver: null,
         },
+        // The admin API's own credential (src/core/admin-api.js; /zalo/admin/policy, /zalo/admin/usage), never the
+        // agent's. `tokenFile`: a file holding the admin token (a systemd credential, a KMS-decrypted mount); unset
+        // means ZALO_MCP_ADMIN_TOKEN_FILE, and `zalo-agent policy token --rotate` keeps one sealed in the key layer.
+        // `clientCa`: a CA whose client certificates are admitted (mTLS; needs --cert/--key). Read at start.
+        admin: {
+            tokenFile: null,
+            clientCa: null,
+        },
         httpPort: null,
         host: null,
     };
@@ -118,6 +127,7 @@ export function mergeMCPConfigLayer(base, layer) {
         media: mergeMedia(base.media, layer.media),
         tls: { ...base.tls, ...(layer.tls || {}) },
         approval: { ...base.approval, ...(layer.approval || {}) },
+        admin: { ...base.admin, ...(layer.admin || {}) },
         oauth: {
             ...base.oauth,
             ...(layer.oauth || {}),
@@ -264,7 +274,7 @@ export function saveMCPConfig(config) {
 
 /**
  * The webhook delivery settings of one account: `ZALO_WEBHOOK_BATCH_SIZE[_<ownId>]` and
- * `ZALO_WEBHOOK_MAX_AGE[_<ownId>]`, else `webhookBatchSize` / `webhookMaxAge` from the MCP config
+ * `ZALO_WEBHOOK_MAX_AGE[_<ownId>]` (under the live policy's `webhookBatchSize` / `webhookMaxAge`), else `webhookBatchSize` / `webhookMaxAge` from the MCP config
  * (`listen` has no config file and reads only the environment). A value that cannot be used falls
  * back to the default and is reported, so a typo is not mistaken for a working setting.
  *
@@ -273,11 +283,14 @@ export function saveMCPConfig(config) {
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {{ batchSize: number, maxAgeMs: number, warnings: string[] }}
  */
-export function resolveWebhookDelivery(accountId, config = {}, env = process.env) {
+export function resolveWebhookDelivery(accountId, config = {}, env = process.env, policy = undefined) {
     const warnings = [];
     const defaults = getDefaultConfig();
+    // The live policy (src/core/policy-store.js) is above the environment.
+    const live = policy === undefined ? policyFor(accountId) : policy;
 
-    const rawBatch = envForAccount("ZALO_WEBHOOK_BATCH_SIZE", accountId, env) ?? config?.webhookBatchSize;
+    const rawBatch =
+        live?.webhookBatchSize ?? envForAccount("ZALO_WEBHOOK_BATCH_SIZE", accountId, env) ?? config?.webhookBatchSize;
     let batchSize = defaults.webhookBatchSize;
     if (rawBatch !== undefined && rawBatch !== null && rawBatch !== "") {
         const n = Number(rawBatch);
@@ -285,7 +298,8 @@ export function resolveWebhookDelivery(accountId, config = {}, env = process.env
         else warnings.push(`webhook batch size "${rawBatch}" is not a whole number from 1 to 100; using ${batchSize}`);
     }
 
-    const rawAge = envForAccount("ZALO_WEBHOOK_MAX_AGE", accountId, env) ?? config?.webhookMaxAge;
+    const rawAge =
+        live?.webhookMaxAge ?? envForAccount("ZALO_WEBHOOK_MAX_AGE", accountId, env) ?? config?.webhookMaxAge;
     let maxAgeMs = parseDuration(defaults.webhookMaxAge);
     if (rawAge !== undefined && rawAge !== null && rawAge !== "") {
         const ms = parseDuration(rawAge);
@@ -296,6 +310,28 @@ export function resolveWebhookDelivery(accountId, config = {}, env = process.env
             );
     }
     return { batchSize, maxAgeMs, warnings };
+}
+
+/**
+ * The webhook receiver of one account: the live policy's `webhook`, then the flag (`--webhook`), then
+ * `ZALO_WEBHOOK_URL[_<ownId>]`, then `webhook` in the MCP config; null for none.
+ *
+ * @param {object} args
+ * @param {string} args.accountId
+ * @param {string|null} [args.flag]
+ * @param {object} [args.config]
+ * @param {NodeJS.ProcessEnv} [args.env]
+ * @returns {string|null}
+ */
+export function resolveWebhookUrl({ accountId, flag = null, config = {}, env = process.env }) {
+    const live = policyFor(accountId)?.webhook;
+    return (
+        (typeof live === "string" && live.trim()) ||
+        flag?.trim() ||
+        envForAccount("ZALO_WEBHOOK_URL", accountId, env) ||
+        (typeof config?.webhook === "string" && config.webhook.trim()) ||
+        null
+    );
 }
 
 /**

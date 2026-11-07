@@ -35,6 +35,9 @@ import { registerFleetCommands } from "./commands/fleet.js";
 import { registerSyncCommands } from "./commands/sync.js";
 import { registerCloudCommands } from "./commands/cloud.js";
 import { registerDbCommands } from "./commands/db.js";
+import { registerPolicyCommands } from "./commands/policy.js";
+// The runtime policy's store registers itself as the resolvers' top layer (src/core/policy-layer.js).
+import "./core/policy-store.js";
 import { autoLogin } from "./core/zalo-client.js";
 import { getActive, setPinnedAccount } from "./core/accounts.js";
 import { parseAccountId, selectDaemonAccount } from "./core/daemon-account.js";
@@ -175,6 +178,7 @@ registerFleetCommands(program);
 registerSyncCommands(program);
 registerCloudCommands(program);
 registerDbCommands(program);
+registerPolicyCommands(program);
 
 // parseAsync, so a registry that exists but cannot be read (src/core/accounts.js) reaches the user as a
 // message, not as a stack trace from inside a command; so does a refused test-only fake session

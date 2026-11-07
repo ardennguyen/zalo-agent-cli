@@ -59,7 +59,8 @@ import { downloadSyncedMedia } from "../core/sync-v2/media.js";
 import { SyncManager } from "../core/sync.js";
 import { describeGap } from "../core/sync-v2/gap-advice.js";
 import { createDeliveredReceipts } from "../zalo/receipts.js";
-import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
+import { envForAccount, resolveWebhookDelivery, resolveWebhookUrl } from "../mcp/mcp-config.js";
+import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
 import { startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
@@ -300,7 +301,7 @@ export function registerListenCommand(program) {
                   : "exclude";
             // Media links this daemon hands out over its channel (`msg media --deliver link`): capability links on a
             // 127.0.0.1 listener; `listen` has no config file, so the policy is the environment's and the defaults.
-            const listenMediaPolicy = resolveMediaDelivery({ accountId: activeAcc.ownId });
+            let listenMediaPolicy = resolveMediaDelivery({ accountId: activeAcc.ownId });
             const mediaLinks = getMediaLinks().configure({
                 linkAuth: "capability",
                 ttlMs: listenMediaPolicy.linkTtlMs,
@@ -324,6 +325,22 @@ export function registerListenCommand(program) {
                 gate.leave();
                 releaseLock(accountDir);
                 error(`Failed to initialize local DB: ${err.message}`);
+                process.exit(1);
+            }
+            // The runtime policy (src/core/policy-store.js), as `mcp start` reads it: a file that cannot be used stops
+            // the start; a change (`policy set`, a file drop) counts at once.
+            let onPolicyChanged = () => {};
+            let policyRuntime;
+            try {
+                policyRuntime = startPolicyRuntime({
+                    ownId: activeAcc.ownId,
+                    onChange: (changed) => onPolicyChanged(changed),
+                    log: (l) => console.error(`[listen] ${l}`),
+                });
+                info(`Runtime policy: ${policyRuntime.describe()}`);
+            } catch (err) {
+                releaseLock(accountDir);
+                error(`The runtime policy cannot be used: ${err.message}`);
                 process.exit(1);
             }
 
@@ -505,7 +522,7 @@ export function registerListenCommand(program) {
                 return h > 0 ? `${h}h${m}m` : `${m}m${s % 60}s`;
             }
 
-            const webhookUrl = opts.webhook?.trim() || envForAccount("ZALO_WEBHOOK_URL", activeAcc.ownId) || null;
+            const webhookUrl = resolveWebhookUrl({ accountId: activeAcc.ownId, flag: opts.webhook });
             const webhookSecret = resolveWebhookSecret({
                 flag: cliWebhookSecret,
                 env: envForAccount("ZALO_WEBHOOK_SECRET", activeAcc.ownId),
@@ -518,19 +535,44 @@ export function registerListenCommand(program) {
             // written to disk first and delivered from there, so a receiver that is down costs a
             // backlog (zalo-agent mcp webhook status), not events.
             let webhookDelivery = null;
-            if (webhookUrl) {
+            /** Start the delivery, or move a running one to the current receiver and settings (a live policy change). */
+            const applyWebhook = (url) => {
                 const delivery = resolveWebhookDelivery(activeAcc.ownId);
                 for (const w of delivery.warnings) warning(w);
+                if (!url) {
+                    webhookDelivery?.stop();
+                    webhookDelivery = null;
+                    return;
+                }
+                if (webhookDelivery) {
+                    webhookDelivery.reconfigure({ url, batchSize: delivery.batchSize, maxAgeMs: delivery.maxAgeMs });
+                    return;
+                }
                 webhookDelivery = startWebhookDelivery({
                     accountDir,
                     accountId: activeAcc.ownId,
-                    url: webhookUrl,
+                    url,
                     secret: webhookSecret,
                     batchSize: delivery.batchSize,
                     maxAgeMs: delivery.maxAgeMs,
                     log: (line) => console.error(`[listen] ${line}`),
                 });
-            }
+            };
+            if (webhookUrl) applyWebhook(webhookUrl);
+            // A policy change counts at once: the media link limits and the webhook are set up again.
+            onPolicyChanged = (changed) => {
+                console.error(`[listen] Policy changed: ${changed.join(", ")}`);
+                if (touches(changed, ["media"])) {
+                    listenMediaPolicy = resolveMediaDelivery({ accountId: activeAcc.ownId });
+                    mediaLinks.configure({
+                        ttlMs: listenMediaPolicy.linkTtlMs,
+                        rateLimit: listenMediaPolicy.linkRateLimit,
+                    });
+                    startTempfileSweeper({ ttlMs: listenMediaPolicy.tempfileTtlMs });
+                }
+                if (touches(changed, ["webhook", "webhookBatchSize", "webhookMaxAge"]))
+                    applyWebhook(resolveWebhookUrl({ accountId: activeAcc.ownId, flag: opts.webhook }));
+            };
 
             /** Queue an event for the webhook — never blocks event processing */
             function postWebhook(data) {
@@ -1163,6 +1205,7 @@ export function registerListenCommand(program) {
                 stopping = true;
                 health.noteStopping();
                 channel?.stop();
+                policyRuntime.stop();
                 webhookDelivery?.stop();
                 mediaLinks.revokeAll("the daemon stopped");
                 deliveredReceipts.stop();
@@ -1213,6 +1256,8 @@ export function registerListenCommand(program) {
                     lock: stageLock,
                     onStop: shutdown,
                     onStatus: () => health.snapshot(),
+                    // `policy set|unset`: applied here, so it counts at once (src/core/policy-store.js).
+                    onPolicy: servePolicyRequest,
                     // `msg media --deliver link`: a link this daemon serves on 127.0.0.1 while it runs.
                     onMediaLink: ({ msgId }) =>
                         linkForCachedMessage({

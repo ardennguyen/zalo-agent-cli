@@ -32,5 +32,9 @@
     "approval": {
         "secret": "auto",
         "deliver": "result"
+    },
+    "admin": {
+        "tokenFile": null,
+        "clientCa": null
     }
 }

@@ -163,6 +163,11 @@ const CLI_ONLY = {
     "db export": "writes the database to a path on this machine, decrypted with --plaintext: never handed to an agent",
     "db verify":
         "a full integrity scan of the cache: an operator's check; the actions an agent takes already check the row they act on",
+    "policy get": "reads the runtime policy an operator or console sets: an agent never sees or changes its own limits",
+    "policy set":
+        "changes the runtime policy (limits, confirm mode, links): never an agent's, so it cannot raise its own",
+    "policy unset": "changes the runtime policy: never an agent's, so it cannot lift its own limits",
+    "policy token": "makes the admin API's own credential: an operator's step, never handed to an agent",
     "profile lost-focus": "a client-presence signal, meaningless for a server",
     listen: "the MCP server is itself the listener (zalo_get_messages, zalo_wait_for_message)",
     "mcp start": "starts the MCP server",

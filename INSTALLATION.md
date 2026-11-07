@@ -356,7 +356,7 @@ Official Account credentials are stored separately at `~/.zalo-agent/oa-credenti
 
 ## CLI Command Reference (via `npx zalo-agent <command>`)
 
-Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 247 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
+Append `--json` to any command for machine-readable output. This is a shortlist — the exhaustive reference for all 251 commands is [skill/references/command-reference.md](skill/references/command-reference.md).
 
 ### Session & maintenance
 | Command | Description |

@@ -304,6 +304,10 @@ function readJsonBody(req, reply) {
  *   (`listen --status`, `mcp start --status`; see ./daemon-health.js).
  * @param {(params: {msgId: string}) => Promise<object>} [args.onMediaLink] - a media link to one cached file, issued
  *   by this daemon (`POST /media-link`, `msg media --deliver link`); the body lives in ./media-deliver.js.
+ * @param {(params: object) => object|Promise<object>} [args.onPolicy] - a policy change from `policy set|unset`
+ *   (`POST /policy`), applied in this daemon so the change counts at once; the body lives in ./policy-store.js.
+ * @param {(params: object) => object|Promise<object>} [args.onPurge] - a quota/retention purge from `db purge`
+ *   (`POST /purge`), run by this daemon, the account's one writer; the body lives in ./storage-quota.js.
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -317,6 +321,8 @@ export function startDaemonChannel({
     onMarkRead = null,
     onStatus = null,
     onMediaLink = null,
+    onPolicy = null,
+    onPurge = null,
 }) {
     const token = randomBytes(24).toString("hex");
     // The stage that is running, and the controller its runner was given: `POST /sync/cancel` aborts it.
@@ -517,6 +523,24 @@ export function startDaemonChannel({
         }
     };
 
+    /** A request answered by one daemon-side function (`/policy`, `/purge`): its result, or `{ok:false, error}`. */
+    const serveCall = async (fn, name, body, reply) => {
+        if (!tokenMatches(body.token, token)) return reply(403, { error: "bad token" });
+        if (typeof fn !== "function") return reply(503, { error: `this daemon does not take ${name} requests` });
+        try {
+            const params = { ...body };
+            delete params.token;
+            reply(200, { ok: true, ...(await fn(params)) });
+        } catch (e) {
+            reply(200, {
+                ok: false,
+                error: e?.message || String(e),
+                ...(e?.code ? { code: e.code } : {}),
+                ...(e?.details || {}),
+            });
+        }
+    };
+
     const server = http.createServer(async (req, res) => {
         const reply = (code, body) => {
             res.writeHead(code, { "content-type": "application/json" });
@@ -533,6 +557,8 @@ export function startDaemonChannel({
             req.url !== "/mark-read" &&
             req.url !== "/status" &&
             req.url !== "/media-link" &&
+            req.url !== "/policy" &&
+            req.url !== "/purge" &&
             !stage
         ) {
             return reply(404, { error: "not found" });
@@ -546,6 +572,8 @@ export function startDaemonChannel({
         if (req.url === "/mark-read") return serveMarkRead(body, reply);
         if (req.url === "/status") return serveStatus(body, reply);
         if (req.url === "/media-link") return serveMediaLink(body, reply);
+        if (req.url === "/policy") return serveCall(onPolicy, "policy", body, reply);
+        if (req.url === "/purge") return serveCall(onPurge, "purge", body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 
@@ -1509,6 +1537,59 @@ export function mediaLinkViaDaemon(accountDir, { msgId, timeoutMs = 15_000 }) {
                     const error =
                         res.statusCode === 404
                             ? "the running daemon is too old to hand out media links; restart it"
+                            : body.error || `HTTP ${res.statusCode}`;
+                    resolve({ ok: false, error });
+                });
+            },
+        );
+        r.on("timeout", () => {
+            r.destroy();
+            resolve({ ok: false, error: "timeout waiting for the daemon" });
+        });
+        r.on("error", (e) => resolve({ ok: false, error: e?.message || String(e) }));
+        r.end(payload);
+    });
+}
+
+/**
+ * Send one request to the running daemon's channel and return its JSON answer (`/policy`, `/purge`).
+ *
+ * @param {string} accountDir
+ * @param {string} path - e.g. "/policy"
+ * @param {object} params
+ * @param {{timeoutMs?: number}} [opts]
+ * @returns {Promise<{ok: boolean, error?: string}&object|null>} null when no daemon channel is published
+ */
+export function callViaDaemon(accountDir, path, params, { timeoutMs = 30_000 } = {}) {
+    const chan = getDaemonChannel(accountDir);
+    if (!chan) return Promise.resolve(null);
+    const payload = JSON.stringify({ ...params, token: chan.token });
+    return new Promise((resolve) => {
+        const r = http.request(
+            {
+                host: "127.0.0.1",
+                port: chan.port,
+                path,
+                method: "POST",
+                headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) },
+                timeout: timeoutMs,
+                agent: false,
+            },
+            (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (c) => (raw += c));
+                res.on("end", () => {
+                    let body = {};
+                    try {
+                        body = JSON.parse(raw);
+                    } catch {
+                        /* non-JSON response */
+                    }
+                    if (res.statusCode === 200) return resolve(body.ok ? body : { ...body, ok: false });
+                    const error =
+                        res.statusCode === 404
+                            ? `the running daemon is too old to take ${path} requests; restart it`
                             : body.error || `HTTP ${res.statusCode}`;
                     resolve({ ok: false, error });
                 });

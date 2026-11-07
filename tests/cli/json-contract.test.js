@@ -174,6 +174,9 @@ const argvTable = () => ({
     "db query": ["SELECT count(*) AS n FROM messages"],
     "db backup": ["--out", join(files.dir, `db-backup-${++dbCopies}.db`)],
     "db export": ["--out", join(files.dir, `db-export-${++dbCopies}.db`)],
+    // A real policy key and value: the policy store refuses any other (src/core/policy-schema.js).
+    "policy set": ["confirmMode", "agent"],
+    "policy unset": ["confirmMode"],
     // The sandbox's own provider: re-wraps the fake account's keyring offline, and every later case still opens it.
     "account security provider": ["test"],
     "profile bio": ["fake bio"],

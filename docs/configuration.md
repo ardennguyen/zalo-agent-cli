@@ -42,6 +42,55 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 
 [`env/multi-account.env`](config-samples/env/multi-account.env) shows rule 2 over 3 in one file.
 
+### The runtime policy (changed live, no restart)
+
+Above all of these sits the **runtime policy**: the settings a console or an operator changes while the server runs.
+Files and the environment are read once at start; the policy is read again on every tool call.
+
+| Layer (lowest first) | Where |
+|---|---|
+| built-in defaults | the code |
+| files | `mcp-config.json`, `storage.json` |
+| environment | `.env`, `--env-file`, a systemd `EnvironmentFile` (bootstrap only: port, bind address, `publicUrl`, the key provider, the admin credential's *reference*) |
+| **policy** | per tenant `<CONFIG_DIR>/tenants/<tenantId>.json` (for the accounts it lists in `quota.tenant.accounts`), then per account `<accountDir>/policy.json` |
+
+The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
+`media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
+`media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*` and `retention.*`.
+A key read only at start (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`, the key
+provider) and every secret (`webhookSecret`) is refused with `restartRequired`; any other key is refused as unknown.
+The files are sealed under the account's boot key (the tenants' under `<CONFIG_DIR>/tenants/keyring.json`) and carry a
+revision (`rev`) that every change raises.
+
+Three writers, all checked the same way:
+
+1. **The admin API** on the MCP HTTP server: `GET|PUT|PATCH /zalo/admin/policy` (this account),
+   `/zalo/admin/policy/<ownId>`, `/zalo/admin/policy/tenants/<tenantId>`, and `GET /zalo/admin/usage`. It takes **its own
+   credential**, never the agent's: `Authorization: Bearer <admin token>` or a client certificate (`admin.clientCa`).
+   The MCP bearer token, the OAuth secrets and the access tokens the server signs are refused (401), so an agent can
+   never change its own limits. `PATCH` is a JSON merge patch (`null` removes a key); `PUT` replaces the policy.
+   `If-Match: "<rev>"` makes a write conditional: another rev is `412` and nothing changes; the reply carries
+   `ETag: "<rev>"` and the effective settings. `400` names each bad key; `422` lists `restartRequired`. With no admin
+   credential set the API does not exist (`404`).
+2. **`zalo-agent policy set|unset <key> [<value>] [--tenant <id>] [--if-match <rev>]`**: through the account's running
+   daemon (which applies the change at once), else into the file for the next start.
+3. **A file drop** by a config-management tool: write the file as plain JSON (`{"policy": {...}}`), atomically. A
+   running daemon picks it up within a second, checks it and seals it with the next rev. A file that does not validate
+   is moved to `policy.json.rejected` and logged, and the last good policy stays. A daemon does not start on a policy
+   file it cannot use.
+
+Every change and every refusal is a line in `<CONFIG_DIR>/policy-audit.log`: when, who, which file, which keys, the old
+and new rev. Never a value (a webhook URL can carry a token) and never a credential.
+
+What a change does at once: `media.linkAuth` / `media.capability` revoke every outstanding media link; `hiddenChats`
+revokes the links into newly hidden chats; `webhook*` moves the delivery to the new receiver or settings (queued events
+stay queued); a lower `quota.*` is checked at once.
+
+The admin token: `zalo-agent policy token --rotate` makes one and shows it once; only its SHA-256 is kept, sealed in
+`<CONFIG_DIR>/admin/admin-token.json`, and a rotation retires the old one at once. Or point
+`ZALO_MCP_ADMIN_TOKEN_FILE` (`admin.tokenFile`) at a file your provider fills (a systemd credential, a KMS-decrypted
+mount). `ZALO_MCP_ADMIN_TOKEN` is for development.
+
 ---
 
 ## 2. Reference
@@ -77,6 +126,9 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `ZALO_MCP_APPROVAL_DELIVER` | yes | where the link of an approve or PIN page goes: `result` (default: in the tool result), `webhook` (only to the MCP webhook, as an `approval_requested` event; the tool result carries no link) or `both` | | `approval.deliver` |
 | `ZALO_MCP_MEDIA_DELIVER` | yes | how `zalo_view_media` returns cached media, for every kind (`link`) or per kind (`photo=inline,video=link`): `inline` (MCP image/audio content), `link` (`<publicUrl>/zalo/media/<token>`) or `tempfile` (a private decrypted copy on this machine). Overrides `media.deliver` kind by kind; a call's own `deliver` beats it | | `media.deliver` |
 | `ZALO_MCP_MEDIA_LINK_AUTH` | yes | who may fetch a media link: `bearer` (the request also carries this server's `Authorization`: `--auth`, `ZALO_MCP_AUTH_TOKEN` or an OAuth token), `capability` (the link alone, limited to `media.capability.maxClients` client addresses off this machine) or `auto` (default: `bearer` when `publicUrl` is another host, else `capability`) | | `media.linkAuth` |
+| `ZALO_MCP_ADMIN_TOKEN_FILE` | yes | a file holding the admin API's token (at least 16 characters): a systemd credential, a KMS-decrypted mount. Read at start. The admin API also takes the token sealed by `zalo-agent policy token --rotate` | | `admin.tokenFile` |
+| `ZALO_MCP_ADMIN_TOKEN` | yes | the admin API's token itself (development; prefer the file or the sealed token). The agent's token is always refused there, even if both are the same | | |
+| `ZALO_MCP_ADMIN_CLIENT_CA` | yes | a CA certificate (PEM): a client certificate it signed admits to the admin API (mTLS). Needs `--cert`/`--key` | | `admin.clientCa` |
 | `ZALO_MCP_TRUSTED_PROXIES` | yes | comma list of reverse-proxy addresses whose `X-Forwarded-For` is believed (`127.0.0.1`, or `loopback`). Default none: the client address is the connection's peer | | `trustedProxies` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | deprecated: `0` means confirm mode `off`, `1` means `agent`; an explicit confirm mode wins | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | non-friend DM names one sync restore may look up. Default 500 | | |
@@ -131,6 +183,8 @@ Secrets belong in `.env` (mode `0600`), not in `mcp-config.json`, and never on t
 | `allowPinArgument` | unset (= `false`) | `true` lets the hidden-chat tools take the PIN as an input; it then sits in the client's logs |
 | `approval.secret` | unset (= `auto`) | `auto`, `pin`, `password` or `none`: what an approve page asks besides a click (see the variable above) |
 | `approval.deliver` | unset (= `result`) | `result`, `webhook` or `both`: where a one-time page's link goes |
+| `admin.tokenFile` | `null` | see `ZALO_MCP_ADMIN_TOKEN_FILE` |
+| `admin.clientCa` | `null` | see `ZALO_MCP_ADMIN_CLIENT_CA` |
 | `accounts.<ownId>` | | any of the above, for one account |
 
 A key that is not in this table is ignored without a message. (The `mode` key in older files is accepted and never read.)

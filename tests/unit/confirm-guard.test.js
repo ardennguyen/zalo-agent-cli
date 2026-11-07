@@ -246,6 +246,7 @@ const GUARDED_CLI = [
     ["quick-msg remove", ["1"]],
     ["profile delete-avatar", ["1"]],
     ["account remove", [U]],
+    ["account export", []],
     ["logout", []],
     ["mcp webhook purge", ["1"]],
 ];

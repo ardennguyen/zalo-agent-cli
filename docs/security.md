@@ -89,7 +89,7 @@ Zalo's login reply carries `dkey`, a 32-character constant per account that Zalo
 - `account security migrate [ownerId] [--all]`: seal what is still plaintext and apply the dkey setting now.
 - `account security rekey [ownerId]`: new keys, every file re-sealed; the old keys stay until it is done, so an interrupted rekey is finished by running it again.
 - `account security provider <name> [ownerId]`: re-wrap the keys for another provider (the files are not touched) and make it the default.
-- There is **no way back to plaintext**. `account export` still writes the saved login to a JSON file exactly as before: it is the deliberate way to move a login to another machine; treat that file as the login itself.
+- There is **no way back to plaintext**. `account export --yes` still writes the saved login to a JSON file exactly as before (without `--yes` it writes nothing and exits 2): it is the deliberate way to move a login to another machine; treat that file as the login itself.
 
 All but `status` refuse while a `listen` / `mcp start` daemon holds the account (it holds the keys in memory).
 

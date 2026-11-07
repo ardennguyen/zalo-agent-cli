@@ -209,7 +209,7 @@ zalo-agent account login -p "proxy" -n "Shop"               # Add account with p
 zalo-agent account switch <ownerId>                         # Switch default active account in accounts.json
 zalo-agent --account <ownerId> msg send <ID> "hi" --json    # Run any command as <ownerId> without switching accounts.json
 ZALO_ACCOUNT=<ownerId> zalo-agent conv recent --json        # Or pin via environment variable
-zalo-agent account export -o creds.json                     # Export
+zalo-agent account export -o creds.json --yes               # Export (guarded)
 zalo-agent account devices                                  # List linked devices/sessions (read-only)
 zalo-agent account status                                   # Plans: zBusiness package, zCloud plan/usage/limits (read-only; --json)
 zalo-agent account remove <ownerId>                         # Invalidate remote session + wipe local data + delete creds

@@ -13,7 +13,7 @@ contacts Zalo or reads your real `~/.zalo-agent-cli/`. Some tests use disposable
 loopback servers and subprocess transports.
 
 ```bash
-npm test                      # 5198 offline tests — no Zalo session needed
+npm test                      # 5200 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -804,7 +804,7 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 
 - [ ] `account login --proxy URL --name "Shop"` — adds a second account
 - [ ] `account switch <ID>` — re-logs in with that account's proxy
-- [ ] `account export -o ./creds.json` — file created with 0600 perms
+- [ ] `account export -o ./creds.json --yes` — file created with 0600 perms (without `--yes`: nothing written, exit 2)
 - [ ] Import that file on another machine — session works there
 - [ ] `account remove <ID>` while a `listen` daemon holds the lock — refused, PID reported, credentials untouched
 - [ ] Proxy passwords never appear in any output (always `***`)

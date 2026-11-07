@@ -251,7 +251,7 @@ sudo -u zalo -H zalo-agent status
 
 Mã QR được lưu tại `~/.zalo-agent-cli/qr.png` và phục vụ tại **`http://127.0.0.1:18927/qr` (chỉ loopback)**. Từ máy trạm, bạn có thể tạo đường hầm SSH: `ssh -L 18927:127.0.0.1:18927 <host>`, sau đó mở `http://localhost:18927/qr` và quét bằng ứng dụng Zalo. Trang báo khi đăng nhập thành công hay thất bại. Mỗi mã dùng được 100 giây: khi chạy ở terminal, mã hết hạn chỉ được thay khi bạn yêu cầu (nhấn Enter, hoặc **Lấy mã mới** trên trang), và lệnh kết thúc nếu sau 5 phút không ai yêu cầu; khi chạy không có terminal (`--json`, dịch vụ, `&`), lệnh hiện tối đa 5 mã rồi kết thúc với `Login timed out`.
 
-Phương án không cần quét QR trên server: trên máy đã đăng nhập, chạy `zalo-agent account export` để xuất file thông tin phiên (quyền `0600`), chuyển file qua kênh mã hóa lên server và chạy `zalo-agent login --credentials <file>`, sau đó xóa file tạm và chạy `zalo-agent logout --no-remote` trên máy cũ.
+Phương án không cần quét QR trên server: trên máy đã đăng nhập, chạy `zalo-agent account export --yes` để xuất file thông tin phiên (quyền `0600`), chuyển file qua kênh mã hóa lên server và chạy `zalo-agent login --credentials <file>`, sau đó xóa file tạm và chạy `zalo-agent logout --no-remote` trên máy cũ.
 
 ### 4.2 Chạy nền (`-d, --daemon`) hoặc qua `systemd`
 

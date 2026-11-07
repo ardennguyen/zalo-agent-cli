@@ -6,7 +6,7 @@
 import { SANDBOX_HOME, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { runCli } from "../helpers/cli.js";
@@ -86,7 +86,7 @@ describe("account security", () => {
 
     it("account export still writes the login out in plaintext, as it always did", async () => {
         const out = join(SANDBOX_HOME, "exported.json");
-        const r = await json(["account", "export", "--output", out]);
+        const r = await json(["account", "export", "--output", out, "--yes"]);
         assert.equal(r.code, 0, r.all);
         const exported = JSON.parse(readFileSync(out, "utf8"));
         assert.deepEqual(
@@ -101,8 +101,18 @@ describe("account security", () => {
         assert.equal(exported.ownId, OWN);
     });
 
+    it("account export without --yes writes nothing and exits 2; --dry-run exits 0 and writes nothing", async () => {
+        const out = join(SANDBOX_HOME, "unconfirmed.json");
+        const refused = await json(["account", "export", "--output", out]);
+        assert.equal(refused.code, 2, refused.all);
+        assert.equal(existsSync(out), false);
+        const preview = await json(["account", "export", "--output", out, "--dry-run"]);
+        assert.equal(preview.code, 0, preview.all);
+        assert.equal(existsSync(out), false);
+    });
+
     it("a provider that cannot be used is a clear message (exit 1), never a stack trace", async () => {
-        const r = await runCli(["account", "export", "--output", join(SANDBOX_HOME, "x.json")], {
+        const r = await runCli(["account", "export", "--output", join(SANDBOX_HOME, "x.json"), "--yes"], {
             ...options,
             env: { ZALO_STORAGE_PROVIDER: "nope" },
         });

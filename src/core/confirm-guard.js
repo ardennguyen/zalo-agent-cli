@@ -255,6 +255,14 @@ export const GUARDS = Object.freeze({
             `remove account ${t.ownerId} from this machine: end its session if it is the active one, and delete ` +
             "its credentials and all its local data (chat cache, media, sync keys)",
     },
+    "account.export": {
+        cli: "account export",
+        mcp: null,
+        irreversible: false,
+        what: (t) =>
+            `write the saved login of account ${t.ownerId ?? "(active)"} in plaintext to ${t.output ?? "a file"}: ` +
+            "anyone who reads that file can use the account",
+    },
     "webhook.purge": {
         cli: "mcp webhook purge",
         mcp: null,

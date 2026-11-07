@@ -327,6 +327,10 @@ export function registerAccountCommands(program) {
 
     // It ends the session and deletes the account's data: --yes to act, --dry-run to preview (src/core/confirm-guard.js).
     guardSubcommand(account, "remove", "account.remove", { target: (ownerId) => ({ ownerId }) });
+    // It writes the login out in plaintext: --yes to write it, --dry-run to preview.
+    guardSubcommand(account, "export", "account.export", {
+        target: (ownerId, opts) => ({ ownerId, output: resolve(opts.output) }),
+    });
 }
 
 /**

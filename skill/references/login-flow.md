@@ -54,7 +54,7 @@ No human interaction. For automation, CI, server migration.
 
 ```bash
 # Export from logged-in account
-zalo-agent account export -o creds.json
+zalo-agent account export -o creds.json --yes
 
 # Login on new machine
 zalo-agent login --credentials ./creds.json

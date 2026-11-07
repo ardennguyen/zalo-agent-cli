@@ -89,7 +89,7 @@ Phản hồi đăng nhập của Zalo có `dkey`, một hằng số 32 ký tự 
 - `account security migrate [ownerId] [--all]`: niêm phong những gì còn thuần và áp dụng cấu hình dkey ngay.
 - `account security rekey [ownerId]`: khóa mới, niêm phong lại mọi file; khóa cũ được giữ tới khi xong, nên một lần rekey bị ngắt chỉ cần chạy lại.
 - `account security provider <tên> [ownerId]`: bọc lại khóa cho bộ cung cấp khác (không chạm vào file) và đặt nó làm mặc định.
-- **Không có đường quay về văn bản thuần.** `account export` vẫn ghi phiên đăng nhập ra file JSON y như trước: đó là cách có chủ đích để chuyển phiên sang máy khác; hãy coi file đó như chính phiên đăng nhập.
+- **Không có đường quay về văn bản thuần.** `account export --yes` vẫn ghi phiên đăng nhập ra file JSON y như trước (thiếu `--yes` thì không ghi gì và thoát mã 2): đó là cách có chủ đích để chuyển phiên sang máy khác; hãy coi file đó như chính phiên đăng nhập.
 
 Trừ `status`, các lệnh đều từ chối khi một daemon `listen` / `mcp start` đang giữ tài khoản (nó giữ khóa trong bộ nhớ).
 

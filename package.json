@@ -1,7 +1,7 @@
 {
     "name": "@ardennguyen/zalo-agent-cli",
     "version": "3.0.0",
-    "description": "CLI tool for Zalo automation — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
+    "description": "CLI and MCP server for Zalo automation, on its own Zalo Web-protocol engine — multi-account, proxy, bank transfers, QR payments, Official Account API v3.0",
     "type": "module",
     "bin": {
         "zalo-agent": "src/index.js"
@@ -37,7 +37,10 @@
         "vietqr",
         "official-account",
         "zalo-oa",
-        "webhook"
+        "webhook",
+        "mcp",
+        "mcp-server",
+        "model-context-protocol"
     ],
     "repository": {
         "type": "git",

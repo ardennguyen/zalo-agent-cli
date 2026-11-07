@@ -2,7 +2,7 @@
 
 [Tiếng Việt](current-user-names.vi.md)
 
-Unreleased implementation reference for [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2), targeting `v2.0-dev`.
+Historical: this change shipped in 2.x through [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2). The page is kept as the reference for how sender names are resolved; the command reference is current where the two differ.
 
 ## Current change
 

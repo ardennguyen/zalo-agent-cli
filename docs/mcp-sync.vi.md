@@ -9,6 +9,8 @@ tài khoản đã đăng ký lúc khởi động và qua các lần reconnect; h
 dùng runner và khóa của tài khoản đó, không nhận tham số đổi tài khoản theo
 từng request.
 
+> **3.0 đã đổi hợp đồng MCP.** Từ `zalo-agent-cli` 3.0.0 (wrapper `zalo-mcp` 2.1.0), mọi tool gọi id tin nhắn là `msgId` và id người dùng là `userId` (không còn `id`, `messageId` hay `uid`), `threadType` là `"dm"` hoặc `"group"` (số bị từ chối), và mọi id là chuỗi. Bản thân `zalo_sync` không đổi; phần còn lại xem mục usage notices của 3.0.0 trong CHANGELOG.
+
 Ngoài `messages` và `reactions`, `stage` nhận `cloud` (đi qua chỉ mục zCloud, như `sync-cloud`; `full: true` đi lại từ đầu), `media` (tải các tệp đính kèm mà lần khôi phục đã ghi, như `sync-media`: `threadId`, `kinds`, `days`, và `limit` số tệp lần này) và `boards` (ghi chú, ghim, bình chọn, nhắc hẹn, như `sync-boards`: `threadId`, `limit` số hội thoại). Chỉ `messages` cần xác nhận trên điện thoại; tham số không thuộc stage đã chọn bị từ chối.
 
 ## Cách dùng

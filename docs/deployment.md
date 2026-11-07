@@ -2,7 +2,7 @@
 
 [Tiếng Việt](deployment.vi.md)
 
-**Status:** written for `2.5.x` and updated on `v3.0-dev` for the 2026-10-28 behavior (the socket supervisor's log lines, restores in waves with three reconnects, the official QR login and its trusted-device file); the sections not named here were last re-verified against `zalo-agent-cli` `2.5.1`, with the 2.5.3 additions (`zalo_friend`, `zalo_group`, `--webhook-secret`) and the 2.5.4 daemon logging (stage progress, event-loop stalls, lookup limits) checked against the code (25 MCP tools, native HTTPS `--cert`/`--key`, built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and `-d, --daemon` / `--stop` / `--status` background lifecycle) and `zalo-mcp` `2.2.0+`. First written 2026-09-29.
+**Status:** updated for `zalo-agent-cli` `3.0.0` and `zalo-mcp` `2.1.0`: the engine's own Zalo Web-protocol layer (no zca-js), 36 MCP tools, the confirmation guard on destructive actions (`--yes` on the CLI, `confirm` and `confirmMode` over MCP), the socket supervisor's log lines, restores in waves with three reconnects, the official QR login and its trusted-device file, native HTTPS `--cert`/`--key`, the built-in OAuth 2.0 / 2.1 authorization server, signed webhooks on both `listen` and `mcp start`, `GET /events/wait` + `zalo_wait_for_message` zero-CPU long-polling, and the `-d, --daemon` / `--stop` / `--status` background lifecycle. First written 2026-09-29.
 **Licensing:** from 2.0.1 this software is licensed CC BY-NC-SA 4.0; use in a company's business operations needs a separate commercial license (see [NOTICE](../NOTICE)).
 **Audience:** whoever runs this on a server and gets paged when it stops.
 
@@ -331,7 +331,7 @@ Every live message is written synchronously on the event loop (`storeLiveMessage
 > [!NOTE]
 > **A `zalo-mcp` install runs a published engine, never a branch of this repository.**
 >
-> - Starting with `zalo-mcp` `2.0.0`, the wrapper tracks `@ardennguyen/zalo-agent-cli` `^2.1.0` and forwards all `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`), global storage flags, and CLI subcommands. (Older `1.0.x` wrapper releases pinned `2.0.0` or `1.0.7` and forwarded only `--http` and `--auth`.)
+> - `zalo-mcp` `2.1.0` tracks `@ardennguyen/zalo-agent-cli` `^3.0.0` (the `2.0.x` wrappers tracked `^2.1.0`) and forwards all `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`), global storage flags, and CLI subcommands. (Older `1.0.x` wrapper releases pinned `2.0.0` or `1.0.7` and forwarded only `--http` and `--auth`.)
 > - Its `update` command installs `@ardennguyen/zalo-mcp@latest` from npm, copies that package's `package.json` and scripts over yours, then runs `npm install @ardennguyen/zalo-agent-cli@latest`, also from npm (`run_update` in `zalo-mcp.sh`).
 >
 > Check what an existing install serves, and what npm has:

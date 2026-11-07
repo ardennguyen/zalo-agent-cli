@@ -45,11 +45,11 @@ A wrapper install serves whatever engine its lock file resolves, so the lock mus
 engine release even when the wrapper's own code did not change.
 
 1. In `zalo-mcp/` on `v2.0-dev`: `npm install @ardennguyen/zalo-agent-cli@X.Y.Z --package-lock-only`
-   (the `^2.5.0` range in `package.json` stays unless the engine's major or minor changed).
+   (the `^3.0.0` range in `package.json`, set by wrapper 2.1.0, stays unless the engine's major or minor changed).
 2. `npm test`, then `git diff` — only `package-lock.json` (and `package.json` if the range moved).
 3. Decide whether the wrapper itself needs a version: a new engine flag the launcher must forward,
    a README change, or a changed range → bump `version` in `package.json` and add a section to the
-   wrapper's `README.md` changelog table. A lock-only move does not need a wrapper release, but the
+   wrapper's `CHANGELOG.md` (from 2.1.0; earlier wrapper history is on its GitHub Releases). A lock-only move does not need a wrapper release, but the
    lock bump must still be committed and pushed so a fresh `git clone` + `npm ci` gets the engine.
 4. Commit `build: pin engine X.Y.Z in the lock file` (or `chore: bump version to A.B.C …`), push.
 5. If the wrapper version moved: **(user)** PR `v2.0-dev → main`, tag `vA.B.C`, GitHub Release —

@@ -10,7 +10,7 @@ Tài liệu này hướng dẫn triển khai bộ wrapper **`zalo-mcp`** — b�
 
 ## Mối quan hệ giữa hai repository
 
-- **`zalo-agent-cli`** (repo này) — engine cốt lõi. Toàn bộ logic API, xác thực và mã nguồn MCP server (`src/mcp/`) nằm tại đây.
+- **`zalo-agent-cli`** (repo này) — engine cốt lõi. Toàn bộ logic API, xác thực và mã nguồn MCP server (`src/mcp/`) nằm tại đây. Từ 3.0.0 engine giao tiếp với Zalo bằng phần cài đặt giao thức Zalo Web của chính nó (`src/zalo/`), không còn zca-js.
 - **`zalo-mcp`** — bộ wrapper triển khai gọn nhẹ (repo riêng: [github.com/ardennguyen/zalo-mcp](https://github.com/ardennguyen/zalo-mcp)). Repo này không chứa code engine; script cài đặt của nó tải `zalo-agent-cli` vào thư mục cục bộ cô lập, liên kết lệnh toàn cục `zalo-mcp` và `zalo-agent`, đồng thời tạo file `.env` để AI client có thể chạy ngay. Khi gọi không kèm lệnh con (`zalo-mcp` hoặc `node mcp-server.js`), nó khởi chạy `zalo-agent mcp start` và chuyển tiếp toàn bộ các flag của `mcp start` (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, `-d`/`--daemon`, `--stop`, `--status`, cùng các flag lưu trữ toàn cục); khi gọi kèm lệnh con CLI (`zalo-mcp login`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), nó chuyển tiếp trực tiếp các tham số sang `zalo-agent`.
 
 Vì wrapper hoạt động theo cơ chế chuyển tiếp nguyên vẹn (pass-through), **danh sách MCP tool được quyết định hoàn toàn bởi `src/mcp/mcp-tools.js` trong repo này** — theo đúng phiên bản `zalo-agent-cli` đang cài trong `zalo-mcp`.
@@ -21,6 +21,19 @@ Vì wrapper hoạt động theo cơ chế chuyển tiếp nguyên vẹn (pass-th
 > node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
 > ```
 > Chạy `./zalo-mcp.sh update` (hoặc `.\zalo-mcp.ps1 update`) để cập nhật lên phiên bản engine mới nhất đã phát hành trên npm.
+
+---
+
+## Nâng cấp từ 2.x
+
+Engine 3.0.0 thay zca-js bằng phần cài đặt giao thức Zalo Web của chính dự án; wrapper `zalo-mcp` 2.1.0 cần bản này. Chạy `update` như thường lệ, rồi kiểm tra các thay đổi phá vỡ tương thích:
+
+- **Lệnh CLI phá hủy cần `--yes`** (`msg undo`, `group leave`, `logout`, …): thiếu `--yes` thì không gửi gì và thoát với mã 2; `--dry-run` cho xem trước.
+- **Thao tác MCP được bảo vệ cần `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` trong `mcp-config.json` (hoặc `ZALO_MCP_CONFIRM_MODE`) quyết định ai xác nhận: `agent` (mặc định), `human` (máy chủ hỏi người dùng qua MCP elicitation; chỉ stdio) hoặc `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` vẫn dùng được như bí danh cũ của `off`.
+- **Tên trong MCP:** `msgId` (không còn `id`/`messageId`), `userId` (không còn `uid`), `threadType` là `"dm"` hoặc `"group"` (số bị từ chối), và mọi id là chuỗi.
+- **`ZALO_QR_FLOW=legacy` đã bị bỏ**; xóa khỏi `.env`.
+
+Danh sách đầy đủ trong [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -291,7 +304,8 @@ File tùy chọn tại `~/.zalo-agent-cli/mcp-config.json` — được gộp n�
   "watchThreads": ["dm:*", "group:*"],
   "notify": { "enabled": false, "thread": null, "on": ["dm"], "cooldown": "5m" },
   "limits": { "maxMessagesPerPoll": 20, "bufferMaxAge": "2h", "bufferMaxSize": 500 },
-  "media": { "downloadDir": null, "autoOpen": true }
+  "media": { "downloadDir": null, "autoOpen": true },
+  "confirmMode": "agent"
 }
 ```
 

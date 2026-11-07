@@ -5,7 +5,7 @@
 # zalo-agent-cli
 
 Công cụ CLI tự động hóa Zalo — đa tài khoản, proxy, chuyển khoản ngân hàng, thanh toán QR, Official Account API v3.0, và MCP server cho AI agent.
-Engine do dự án tự viết theo giao thức mà Zalo Web dùng: mỗi request được dựng như Zalo Web dựng.
+Engine do dự án tự viết theo giao thức mà Zalo Web dùng (từ 3.0, không còn zca-js): mỗi request được dựng như Zalo Web dựng, và engine theo sát giao thức Zalo Web hiện hành nên không phải chờ một thư viện bên thứ ba cập nhật.
 
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 
@@ -69,6 +69,19 @@ npm install -g @ardennguyen/zalo-agent-cli
 ```
 
 Muốn cài kèm MCP server dạng sandbox (khuyến nghị cho AI client) → xem [INSTALLATION.vi.md](INSTALLATION.vi.md) ([English](INSTALLATION.md)).
+
+### Nâng cấp từ 2.x lên 3.0
+
+3.0 thay zca-js bằng engine riêng; cách chạy CLI, MCP server và wrapper không đổi. Các thay đổi phá vỡ tương thích:
+
+- **Lệnh phá hủy cần `--yes`.** `msg undo`/`delete`, `group leave`, `friend remove`, `conv delete`, `logout`, `account remove`… thiếu `--yes` thì không gửi gì và thoát với mã 2; `--dry-run` cho xem trước. Script cần thêm `--yes`.
+- **MCP:** các thao tác tương ứng cần `confirm: true`; `confirmMode` của từng triển khai quyết định ai xác nhận (`agent` mặc định, `human` hỏi người dùng qua MCP elicitation, `off`). Mỗi id có một tên: `msgId` (không còn `id`/`messageId`), `userId` (không còn `uid`); `threadType` là `"dm"` hoặc `"group"`; mọi id là chuỗi. Các tool mới, `zalo_friend`, `zalo_group` và `zalo_send_message` từ chối tham số không nhận.
+- **`ZALO_QR_FLOW=legacy` đã bị bỏ** — xóa khỏi môi trường hoặc `.env`.
+- **`logout` đăng xuất thiết bị** ở phía Zalo; `--keep-session` giữ cách cũ.
+- Daemon bị kick hoặc bị từ chối đăng nhập thoát với mã 3 hoặc 4 và không được unit systemd đi kèm khởi động lại.
+- Wrapper `@ardennguyen/zalo-mcp` 2.1.0 cần engine 3.0.0.
+
+Chi tiết: [CHANGELOG.md](CHANGELOG.md).
 
 ## Bắt đầu nhanh
 
@@ -188,7 +201,7 @@ zalo-agent-cli © 2026 Arden Nguyen Duc Huy được cấp phép theo [CC BY-NC-
 ## English
 
 CLI tool for Zalo automation — multi-account, proxy support, bank transfers, QR payments, Official Account API v3.0, and an MCP server for AI agents.
-Its engine is this project's own implementation of the protocol Zalo Web uses: requests are built the way Zalo Web builds them.
+Its engine is this project's own implementation of the protocol Zalo Web uses (since 3.0, no zca-js): requests are built the way Zalo Web builds them, and the engine tracks the current Zalo Web protocol instead of waiting for a third-party library.
 
 > [!IMPORTANT]
 > **Zalo allows one web session per account — this CLI occupies it.**
@@ -246,6 +259,19 @@ zalo-agent msg send <THREAD_ID> "Hello!"   # 4. Send a message
 ```
 
 For the sandboxed MCP-server install (recommended for AI clients), see [INSTALLATION.md](INSTALLATION.md) ([Tiếng Việt](INSTALLATION.vi.md)).
+
+### Upgrading from 2.x
+
+3.0 replaces zca-js with the project's own engine; how you run the CLI, the MCP server and the wrapper does not change. The breaking changes:
+
+- **Destructive commands need `--yes`.** `msg undo`/`delete`, `group leave`, `friend remove`, `conv delete`, `logout`, `account remove`, … send nothing without it and exit 2; `--dry-run` previews. Scripts add `--yes`.
+- **MCP:** the matching actions need `confirm: true`; each deployment's `confirmMode` decides who confirms (`agent` by default, `human` asks the user through MCP elicitation, `off`). Every id has one name: `msgId` (not `id`/`messageId`), `userId` (not `uid`); `threadType` is `"dm"` or `"group"`; every id is a string. The new tools, `zalo_friend`, `zalo_group` and `zalo_send_message` refuse an input they do not take.
+- **`ZALO_QR_FLOW=legacy` is removed** — take it out of your environment or `.env`.
+- **`logout` signs the device out** at Zalo; `--keep-session` keeps the old behavior.
+- A kicked or refused daemon exits with code 3 or 4 and is not restarted by the shipped systemd unit.
+- Wrapper `@ardennguyen/zalo-mcp` 2.1.0 requires engine 3.0.0.
+
+Details: [CHANGELOG.md](CHANGELOG.md).
 
 ### Commands
 

@@ -2,7 +2,7 @@
 
 [English](current-user-names.md)
 
-Tài liệu tính năng chưa phát hành cho [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2), nhánh đích `v2.0-dev`.
+Tài liệu lịch sử: thay đổi này đã phát hành trong bản 2.x qua [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2). Trang được giữ lại làm tài liệu tham khảo về cách xác định tên người gửi; khi hai bên khác nhau, command reference là bản đúng.
 
 ## Thay đổi hiện tại
 

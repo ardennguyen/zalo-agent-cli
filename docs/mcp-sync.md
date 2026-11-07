@@ -10,6 +10,8 @@ use only that account's runners and lock, with no per-request account override.
 
 ## Usage
 
+> **3.0 changed the MCP contract.** Since `zalo-agent-cli` 3.0.0 (wrapper `zalo-mcp` 2.1.0), every tool names a message `msgId` and a user `userId` (not `id`, `messageId` or `uid`), `threadType` is `"dm"` or `"group"` (a number is refused), and every id is a string. `zalo_sync` itself is unchanged; see the CHANGELOG's 3.0.0 usage notices for the rest.
+
 Besides `messages` (below) and `reactions`, `stage` takes `cloud` (walk the zCloud index, as `sync-cloud`; `full: true` walks from the top), `media` (download the attachments a restore recorded, as `sync-media`: `threadId`, `kinds`, `days`, and `limit` files this run) and `boards` (notes, pins, polls and reminders, as `sync-boards`: `threadId`, `limit` threads). Only `messages` taps the phone; an option given for a stage it does not apply to is refused.
 
 Call `zalo_sync` only after the owner explicitly requests synchronization. A

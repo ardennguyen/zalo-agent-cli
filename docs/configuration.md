@@ -1,6 +1,6 @@
 # Configuration cookbook — `.env`, `mcp-config.json` and the setups worth running
 
-> **Status:** verified against `zalo-agent-cli` `2.5.6`. Every file shown here exists, ready to copy, under [`docs/config-samples/`](config-samples/), and `tests/unit/config-samples.test.js` holds each one to the code: every `mcp-config.json` key is one the loader merges, every environment variable is one a source file reads, and the CRM receiver verifies a signature produced by the real webhook sender. Vietnamese: [`configuration.vi.md`](configuration.vi.md).
+> **Status:** verified against `zalo-agent-cli` `3.0.0`. Every file shown here exists, ready to copy, under [`docs/config-samples/`](config-samples/), and `tests/unit/config-samples.test.js` holds each one to the code: every `mcp-config.json` key is one the loader merges, every environment variable is one a source file reads, and the CRM receiver verifies a signature produced by the real webhook sender. Vietnamese: [`configuration.vi.md`](configuration.vi.md).
 
 Two kinds of file configure a server, and they answer different questions:
 
@@ -212,7 +212,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp -H 'Authorization: Bearer wrong'
 
-# the tools are served (expect 25 names):
+# the tools are served (expect 36 names):
 curl -s http://HOST:PORT/mcp -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | grep -o '"name":"zalo_[a-z_]*"' | wc -l

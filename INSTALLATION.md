@@ -10,7 +10,7 @@ This document covers deploying the **`zalo-mcp`** wrapper — a self-contained, 
 
 ## How the two repos relate
 
-- **`zalo-agent-cli`** (this repo) — the core engine. All API logic, auth, and the actual MCP server source (`src/mcp/`) live here.
+- **`zalo-agent-cli`** (this repo) — the core engine. All API logic, auth, and the actual MCP server source (`src/mcp/`) live here. Since 3.0.0 it speaks to Zalo through its own implementation of the Zalo Web protocol (`src/zalo/`), with no zca-js.
 - **`zalo-mcp`** — a lightweight deployment wrapper (separate repo: [github.com/ardennguyen/zalo-mcp](https://github.com/ardennguyen/zalo-mcp)). It contains no engine code; its install script pulls `zalo-agent-cli` into an isolated local folder, links the global `zalo-mcp` and `zalo-agent` CLI commands, and writes a `.env` so an AI client can run it immediately. When invoked without a CLI subcommand (`zalo-mcp` or `node mcp-server.js`), it spawns `zalo-agent mcp start` and forwards all `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--config`, `--no-self-heal`, `--no-delivered-receipts`, plus global storage flags); when invoked with a CLI subcommand (`zalo-mcp login`, `zalo-mcp --account <ID> msg list --json`, `zalo-mcp sync`, …), it forwards the arguments directly to `zalo-agent`.
 
 Because the wrapper is a pass-through, **the MCP tool surface is defined entirely by `src/mcp/mcp-tools.js` in this repo** — whichever `zalo-agent-cli` version `zalo-mcp` has installed.
@@ -21,6 +21,19 @@ Because the wrapper is a pass-through, **the MCP tool surface is defined entirel
 > node -p "require('./node_modules/@ardennguyen/zalo-agent-cli/package.json').version"
 > ```
 > Run `./zalo-mcp.sh update` (or `.\zalo-mcp.ps1 update`) to pull the latest published engine.
+
+---
+
+## Upgrading from 2.x
+
+Engine 3.0.0 replaces zca-js with the project's own implementation of the Zalo Web protocol; wrapper `zalo-mcp` 2.1.0 requires it. Run `update` as usual, then check these breaking changes:
+
+- **Destructive CLI commands need `--yes`** (`msg undo`, `group leave`, `logout`, …): without it they send nothing and exit 2; `--dry-run` previews.
+- **Guarded MCP actions need `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` in `mcp-config.json` (or `ZALO_MCP_CONFIRM_MODE`) decides who confirms: `agent` (default), `human` (the server asks the user through MCP elicitation; stdio only) or `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` still work as deprecated aliases for `off`.
+- **MCP names:** `msgId` (not `id`/`messageId`), `userId` (not `uid`), `threadType` `"dm"` or `"group"` (a number is refused), and every id is a string.
+- **`ZALO_QR_FLOW=legacy` is removed**; delete it from `.env`.
+
+The full list is in the [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -291,7 +304,8 @@ Optional file at `~/.zalo-agent-cli/mcp-config.json` — shallow-merged per top-
   "watchThreads": ["dm:*", "group:*"],
   "notify": { "enabled": false, "thread": null, "on": ["dm"], "cooldown": "5m" },
   "limits": { "maxMessagesPerPoll": 20, "bufferMaxAge": "2h", "bufferMaxSize": 500 },
-  "media": { "downloadDir": null, "autoOpen": true }
+  "media": { "downloadDir": null, "autoOpen": true },
+  "confirmMode": "agent"
 }
 ```
 

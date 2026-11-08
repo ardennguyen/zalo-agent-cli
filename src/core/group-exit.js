@@ -130,14 +130,36 @@ export function exitReasonOf(type) {
 
 let sink = null;
 
+/** The most events kept while no sink is installed; the oldest go first. */
+export const HELD_GROUP_GONE_MAX = 200;
+const held = [];
+
 /**
  * Where `group_gone` events go in this process: `listen` and `mcp start` install theirs (stdout/JSONL/webhook; the
- * MCP buffer, webhook and thread-name cache). With none, the caller reports the result itself (a CLI command).
+ * MCP buffer, webhook and thread-name cache). With none, the caller reports the result itself (a CLI command), and the
+ * event is also held: a daemon finds exits before its route is up (`mcp start`'s thread-name cache asks every group's
+ * info at start-up), and installing the sink delivers what was held, in order.
  *
  * @param {((event: object) => void)|null} fn
  */
 export function setGroupGoneSink(fn) {
     sink = typeof fn === "function" ? fn : null;
+    if (!sink) return;
+    for (const event of held.splice(0)) deliver(event);
+}
+
+/** Hand one event to the sink, or hold it until there is one. */
+function deliver(event) {
+    if (!sink) {
+        held.push(event);
+        if (held.length > HELD_GROUP_GONE_MAX) held.shift();
+        return;
+    }
+    try {
+        sink(event);
+    } catch (e) {
+        console.error(`[groups] the group_gone sink failed: ${e?.message ?? e}`);
+    }
 }
 
 /** Let timers and socket reads run (setImmediate: after the I/O that is waiting). */
@@ -291,11 +313,7 @@ export function applyGroupExit({ ownId, threadId, reason, at = Date.now(), mode,
             source,
             purged,
         });
-        try {
-            sink?.(event);
-        } catch (e) {
-            console.error(`[groups] the group_gone sink failed: ${e?.message ?? e}`);
-        }
+        deliver(event);
         return event;
     })();
     inFlight.set(id, job);

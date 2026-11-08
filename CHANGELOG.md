@@ -17,6 +17,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 - feat: **a disbanded group is detected** from group info: listed in `removedsGroup`, or answered 161 / not-a-member when asked alone (`group info`, `group members`, `zalo_group` `info`, `zalo_get_group_members`, the MCP thread-name cache, `sync`'s group fetch).
 - feat: each exit is a **`group_gone`** event (reason, `leftAt`, mode, purged counts) to `listen`'s output, JSONL and webhook and to the MCP webhook and live buffer. It replaces `thread_gone`.
 - fix: while a group is gone, its later group events are ignored until a `join` naming the account (Zalo Web's rule): a late or replayed control no longer brings a left group back. The thread-name cache drops a purged group.
+- fix: **a disband `mcp start` finds while it builds its thread-name cache at start-up now reaches the webhook and the live buffer.** The group was purged, but its `group_gone` event was dropped because the event route was not set up yet; exits found before the route is ready are now held (at most 200) and emitted, in order, once it is.
 
 ### Fixes
 

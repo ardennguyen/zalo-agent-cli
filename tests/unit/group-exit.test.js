@@ -235,6 +235,32 @@ describe("disband detection from group info", () => {
         assert.equal(cache.get(OTHER_GID)?.name, "live");
         assert.equal(rowsOf(GID), 0);
     });
+
+    it("a disband the start-up cache finds before the event route is up is emitted once the route is set", async () => {
+        // `mcp start` builds the cache before it installs its sink (webhook, live buffer): the event must wait.
+        setGroupGoneSink(null);
+        seedGroup(GID);
+        const cache = new ThreadNameCache();
+        await cache.init(
+            {
+                getAllGroups: async () => ({ gridVerMap: { [GID]: "1" } }),
+                getGroupInfo: async () => ({ removedsGroup: [GID], gridInfoMap: {} }),
+                getAllFriends: async () => [],
+                getAliasList: async () => ({ items: [] }),
+            },
+            { ownId: FAKE.ownId },
+        );
+        assert.equal(rowsOf(GID), 0, "purged at once");
+        assert.deepEqual(events, [], "no route yet");
+        const late = [];
+        setGroupGoneSink((e) => late.push(e));
+        assert.deepEqual(
+            late.map((e) => [e.event, e.threadId, e.reason, e.source]),
+            [["group_gone", GID, "disbanded", "group-info"]],
+        );
+        setGroupGoneSink((e) => late.push(e));
+        assert.equal(late.length, 1, "delivered once, not again to the next sink");
+    });
 });
 
 describe('groups.onLeave "keep"', () => {

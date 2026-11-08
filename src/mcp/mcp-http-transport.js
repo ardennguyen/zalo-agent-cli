@@ -18,6 +18,7 @@ import { maskQrPath, QR_PATH_PREFIX } from "../utils/qr-http-server.js";
 import { maskMediaPath, MEDIA_PATH_PREFIX } from "../core/media-deliver.js";
 import { clientIpOf, handleMediaRequest, isLoopbackIp } from "../core/media-route.js";
 import { ADMIN_PATH_PREFIX } from "../core/admin-api.js";
+import { PRESENCE_PATH_PREFIX } from "../core/presence-leases.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -669,6 +670,13 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             }
         }
     });
+
+    // CRM leases on the socket (src/core/presence-leases.js), behind the agent's bearer check above: a lease holds the
+    // socket, it cannot change the presence mode. WP3 wiring point: `mcp start --http` passes `deps.leases` once the
+    // daemon runs presence; until then the route does not exist.
+    if (deps.leases) {
+        app.use(PRESENCE_PATH_PREFIX, (req, res) => deps.leases.handle(req, res));
+    }
 
     // Long-poll endpoint for zero-CPU event-driven wakeup (protected by auth middleware above)
     app.get("/events/wait", async (req, res) => {

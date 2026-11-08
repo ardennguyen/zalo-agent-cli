@@ -15,8 +15,8 @@ ZALO_ACCOUNT=<ACCOUNT_ID> zalo-agent conv recent --json
 
 # Or via the zalo-mcp launcher (v2.0+):
 zalo-mcp --account <ACCOUNT_ID>
-zalo-mcp --account <ACCOUNT_ID> --http 3847 --auth <TOKEN> --host 0.0.0.0
-zalo-mcp --account <ACCOUNT_ID> msg list --json
+ZALO_MCP_AUTH_TOKEN=<TOKEN> zalo-mcp --account <ACCOUNT_ID> --http 3847   # loopback; token from the environment
+zalo-mcp --account <ACCOUNT_ID> conv recent --json
 ```
 
 Replace `<ACCOUNT_ID>` with the full numeric ID of a registered account (or set
@@ -40,6 +40,19 @@ CLI commands invoked with `--account <ACCOUNT_ID>` automatically route socket
 operations (media upload, `msg history`, `sync`) through that account's running
 daemon channel if one is up.
 
+An `mcp start --http` or `listen --daemon` process runs on-demand presence by
+default (3.0): it parks its socket when idle but keeps holding the account (its
+lock, port and daemon channel). A one-shot command for that account still goes
+through it, and wakes the socket when it needs one; it never opens a second
+socket beside it.
+
+**One login, one place.** Never run two copies of one account's credentials at
+once (the same login on two machines, or a copied config folder): the second
+session takes the socket (close code 3000), and an on-demand daemon then waits,
+`yielded`, until `zalo-agent presence resume --yes`. Zalo also keeps only one web
+login per account: a QR login into Zalo Web elsewhere signs the server out
+(`signed_out`). Use the phone or Zalo PC beside the server, not Zalo Web.
+
 ## Running multiple live accounts simultaneously
 
 To keep multiple Zalo accounts live at the same time:
@@ -54,7 +67,11 @@ To keep multiple Zalo accounts live at the same time:
    account, each with `"args": ["mcp", "start", "--account", "<ACCOUNT_ID>"]`
    (or `"command": "zalo-mcp", "args": ["--account", "<ACCOUNT_ID>"]`).
 3. **HTTP MCP (VPS):** run one process per account on separate ports (`--http 3847`,
-   `--http 3848`, …) with separate `--auth` tokens (and optional `--config` files).
+   `--http 3848`, …), each with its own token in `ZALO_MCP_AUTH_TOKEN_<ACCOUNT_ID>`
+   (never `--auth` on the command line: it shows in `ps`) and optional `--config`
+   files. `zalo-agent fleet ports`, `fleet generate` and `fleet start` keep the
+   port table and the per-account units for you
+   ([configuration.md §3.6](configuration.md#36-many-accounts)).
 4. **Concurrent CLI commands:** pass `--account <ACCOUNT_ID>` (or `ZALO_ACCOUNT`)
    on every CLI call so concurrent scripts or agents never race on `accounts.json`.
    Changing startup proxy settings requires restarting that account's daemon.

@@ -26,7 +26,7 @@ Bí mật đặt trong `.env` (quyền `0600`), không đặt trong `mcp-config.
 | `mcp start --config <path>` | máy chủ đó | cấu hình thứ hai cho một dịch vụ. Phải tồn tại và là JSON hợp lệ, nếu không máy chủ **từ chối khởi động** (thiếu tệp sẽ có nghĩa "theo dõi mọi thread"). Nó thay thế tệp nền và tệp theo tài khoản bên dưới |
 | khối `accounts.<ownId>` trong `mcp-config.json` | máy chủ của tài khoản đó | ghi đè theo tài khoản trong một tệp: [`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json) |
 | `<accountDir>/mcp-config.json` — `~/.zalo-agent-cli/accounts/<ownId>/` | máy chủ của tài khoản đó | tệp theo tài khoản; bị từ chối khi khởi động nếu có mà không đọc được |
-| `<CONFIG_DIR>/storage.json` | mọi lệnh đọc hay ghi phiên đăng nhập đã lưu | bộ cung cấp khóa và lớp dkey bảo vệ các file đã lưu, và `rowMac.verifyOnRead` (`actions` (mặc định) hoặc `off`: thao tác có kiểm tra tin nhắn trong bộ nhớ đệm mà nó tác động với row MAC của tin đó hay không) ([security.vi.md](security.vi.md)); `retention.*` và `quota.*` của bộ nhớ đệm (xem mục Hạn mức dung lượng và thời gian lưu giữ); không chứa bí mật |
+| `<CONFIG_DIR>/storage.json` | mọi lệnh đọc hay ghi phiên đăng nhập đã lưu | bộ cung cấp khóa và lớp dkey bảo vệ các file đã lưu (ở cấp trên cùng, hoặc theo từng tài khoản trong `accounts.<ownId>`, ví dụ khóa KMS của một tenant trong `accounts.<ownId>.kms.key`, mà mọi lệnh đều đọc), và `rowMac.verifyOnRead` (`actions` (mặc định) hoặc `off`: thao tác có kiểm tra tin nhắn trong bộ nhớ đệm mà nó tác động với row MAC của tin đó hay không) ([security.vi.md](security.vi.md)); `retention.*` và `quota.*` của bộ nhớ đệm (xem [Hạn mức dung lượng và thời gian lưu giữ](#hạn-mức-dung-lượng-và-thời-gian-lưu-giữ)) và `groups.onLeave` (xem [Rời nhóm](#rời-nhóm-groupsonleave)); không chứa bí mật |
 
 ### Thứ tự ưu tiên
 
@@ -52,16 +52,17 @@ máy chủ đang chạy. Tệp và biến môi trường chỉ được đọc m
 | mặc định có sẵn | mã nguồn |
 | tệp | `mcp-config.json`, `storage.json` |
 | môi trường | `.env`, `--env-file`, `EnvironmentFile` của systemd (chỉ để khởi động: port, địa chỉ bind, `publicUrl`, bộ cung cấp khóa, *tham chiếu* tới thông tin xác thực admin) |
-| **chính sách** | theo tenant `<CONFIG_DIR>/tenants/<tenantId>.json` (cho các tài khoản liệt kê trong `quota.tenant.accounts`), rồi theo tài khoản `<accountDir>/policy.json` |
+| **chính sách** | theo tenant `<CONFIG_DIR>/tenants/<tenantId>.json` (cho tài khoản của các người dùng thuộc tenant và các tài khoản liệt kê trong `quota.tenant.accounts`), rồi theo người dùng `<CONFIG_DIR>/users/<userId>.json` (cho các tài khoản người đó sở hữu), rồi theo tài khoản `<accountDir>/policy.json` |
 
 Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
-`media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*` và
-`groups.onLeave`. Khóa
-chỉ đọc khi khởi động (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`, bộ cung cấp khóa) và
-mọi bí mật (`webhookSecret`) bị từ chối với `restartRequired`; khóa khác bị từ chối vì không biết. Các tệp được niêm
-phong bằng khóa boot của tài khoản (của tenant thì bằng `<CONFIG_DIR>/tenants/keyring.json`) và có số phiên bản (`rev`)
-tăng sau mỗi lần đổi.
+`media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*`,
+`groups.onLeave` và `presence.*` (`presence.alwaysOn.*` chỉ có trong chính sách của tenant hoặc người dùng;
+`quota.tenant.*` chỉ có trong chính sách của tenant). Khóa chỉ đọc khi khởi động (`httpPort`, `host`, `publicUrl`, `tls`,
+`oauth`, `trustedProxies`, `admin`, `media.downloadDir`, bộ cung cấp khóa và các tùy chọn của nó, `accounts`) và mọi bí
+mật (`webhookSecret`) bị từ chối với `restartRequired`; khóa khác bị từ chối vì không biết. Các tệp được niêm phong bằng
+khóa boot của tài khoản (của tenant và người dùng thì bằng `keyring.json` trong thư mục của chúng) và có số phiên bản
+(`rev`) tăng sau mỗi lần đổi.
 
 Ba nơi ghi, cùng một cách kiểm tra:
 
@@ -75,8 +76,9 @@ Ba nơi ghi, cùng một cách kiểm tra:
    admin nào thì API không tồn tại (`404`). Cùng thông tin xác thực đó khởi chạy việc xuất dữ liệu của tài khoản máy chủ
    này (`POST /zalo/admin/export/<ownId>`, [deployment.vi.md](deployment.vi.md) "Xuất dữ liệu của tôi"); link tải về theo
    các cài đặt link `media.*`.
-2. **`zalo-agent policy set|unset <key> [<value>] [--tenant <id>] [--if-match <rev>]`**: đi qua daemon đang chạy của tài
-   khoản (áp dụng ngay), nếu không thì ghi vào tệp cho lần khởi động sau.
+2. **`zalo-agent policy set|unset <key> [<value>] [--tenant <id>|--user <id>] [--if-match <rev>]`** (và `policy get
+   [key] [--effective]`): đi qua daemon đang chạy của tài khoản (áp dụng ngay), nếu không thì ghi vào tệp cho lần khởi
+   động sau.
 3. **Thả tệp** bằng công cụ quản lý cấu hình: ghi tệp dạng JSON thường (`{"policy": {...}}`), ghi nguyên tử. Daemon đang
    chạy nhận trong vòng một giây, kiểm tra và niêm phong với rev kế tiếp. Tệp không hợp lệ được chuyển thành
    `policy.json.rejected` và ghi log, chính sách hợp lệ cuối cùng vẫn giữ nguyên. Daemon không khởi động với tệp chính
@@ -117,7 +119,7 @@ xóa media cũ nhất, rồi tin nhắn cũ nhất (kèm mục tìm kiếm, reac
 đè số 0 và WAL được checkpoint) cho tới khi dung lượng bằng hoặc dưới giới hạn; mỗi tài khoản của tenant nhường phần
 vượt tương ứng với dung lượng của nó. Một lần xóa nâng mốc lưu giữ (retention floor) của cơ sở dữ liệu: không lần sync
 hay lấy lịch sử nào lưu lại tin nhắn ở hoặc trước mốc đó. File cơ sở dữ liệu giữ nguyên kích thước (SQLite dùng lại
-các trang đã giải phóng); dung lượng tính theo các trang đang dùng. `zalo-agent db usage` cho xem tất cả,
+các trang đã giải phóng); dung lượng tính theo các trang đang dùng. `zalo-agent db usage` (và `zalo_profile` `usage` qua MCP) cho xem tất cả,
 `db purge --dry-run` đếm những gì đến hạn, và `db purge --yes` chạy ngay (qua daemon nếu có daemon đang chạy).
 
 Token admin: `zalo-agent policy token --rotate` tạo một token và hiện nó đúng một lần; chỉ SHA-256 của nó được giữ, niêm
@@ -210,12 +212,13 @@ khoảng tạm nghỉ quay lại). Thay đổi chính sách của một khóa `p
 **Công cụ khi đang thức.** Mỗi công cụ MCP có một lớp: `none` (gửi, tra cứu) chạy ngay bên cạnh lần thức; `fresh` (đọc
 cache: `zalo_get_messages`, `zalo_get_history`, `zalo_search_messages`, `zalo_list_conversations`, `zalo_coverage`) chờ
 tối đa `warmWait` cho kết nối và lần bắt kịp, rồi trả lời kèm khối `presence: {state, catchUp, coveredUntil}`; `socket`
-(`zalo_sync`, `zalo_forward_message`, gửi kèm tệp) chờ tối đa `warmWait`, rồi báo lỗi có thể thử lại `WARMING`
-(`retryAfterSec`).
+(`zalo_sync`, `zalo_forward_message`, gửi kèm tệp hoặc video) chờ tối đa `warmWait`, rồi báo lỗi có thể thử lại `WARMING`
+(`retryAfterSec`); `wait` (`zalo_wait_for_message`) giữ socket trong lúc chờ (`waitHoldsSocket`). Một yêu cầu CLI chuyển
+qua daemon cư xử như lớp `socket`. Daemon không bao giờ tạm nghỉ giữa chừng một bước sync đang chạy.
 
 **Đã nhường (yielded) và đã bị đăng xuất (signed out).** Zalo chỉ giữ một lần đăng nhập web cho mỗi tài khoản: đăng nhập
-QR trên bất kỳ trình duyệt nào sẽ thu hồi lần trước, còn điện thoại và Zalo PC chạy song song với máy chủ được. Vì vậy có
-hai trạng thái không tự hồi phục, và trong cả hai daemon **vẫn chạy** (trạng thái, admin API, thêm lại bằng QR vẫn hoạt
+QR trên bất kỳ trình duyệt nào sẽ thu hồi lần trước, còn điện thoại và Zalo PC chạy song song với máy chủ được. **Đừng mở tài khoản trên
+Zalo Web khi đã có máy chủ giữ nó**; hãy đọc và trả lời trên điện thoại hoặc Zalo PC. Có hai trạng thái không tự hồi phục, và trong cả hai daemon **vẫn chạy** (trạng thái, admin API, thêm lại bằng QR vẫn hoạt
 động) và **từ chối** mọi lệnh gọi công cụ, lease, lệnh chờ và yêu cầu CLI:
 
 | Trạng thái (`account_state`) | Khi nào | Từ chối | Kết thúc bằng |
@@ -274,13 +277,19 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_TRUSTED_PROXIES` | có | danh sách địa chỉ reverse proxy (phân tách bằng dấu phẩy) mà `X-Forwarded-For` của nó được tin (`127.0.0.1`, hoặc `loopback`). Mặc định không có: địa chỉ client là đầu kia của kết nối | | `trustedProxies` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | đã lỗi thời: `0` nghĩa là chế độ `off`, `1` là `agent`; chế độ xác nhận đặt rõ được ưu tiên | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | số tên DM không phải bạn bè mà một lần restore được tra. Mặc định 500 | | |
+| `ZALO_SEND_FORMAT` |  | `markdown` hoặc `plain`: định dạng mặc định khi gửi tin chữ. Không đặt: `msg send` gửi nguyên văn (người gõ), `zalo_send_message` chuyển Markdown (mô hình viết). `--md`/`--markdown` hoặc `format` của tool, khi có, sẽ thắng | | |
 | `ZALO_START_JITTER` | có | chờ một khoảng ngẫu nhiên tối đa chừng này giây (0–600, mặc định 0) trước khi đăng nhập, để một đội daemon khởi động lại cùng lúc không đăng nhập cùng lúc | | |
 | `ZALO_CONNECT_SLOTS` | có | tối đa chừng này daemon trên máy cùng đánh thức socket đang tạm nghỉ một lúc (hiện diện on-demand; 0–64, mặc định 0, không giới hạn; mẫu fleet 16): một lần thức giữ suất cho đến khi lần bắt kịp đầu tiên xong, tối đa 60 giây. `ZALO_CONNECT_SLOT_WAIT` (giây, mặc định 120) là thời gian chờ tối đa trước khi cứ tiếp tục | | |
-| `ZALO_EXIT_ON_SIGNED_OUT` | có | `1`: lần đăng nhập Zalo liên tục từ chối sẽ dừng daemon với mã 4, như trước 3.0. Mặc định: daemon vẫn chạy ở trạng thái `signed_out` và từ chối yêu cầu cho đến khi tài khoản được thêm lại bằng QR | | |
+| `ZALO_EXIT_ON_SIGNED_OUT` | có | `1`: lần đăng nhập Zalo liên tục từ chối sẽ dừng daemon với mã 4, như trước 3.0 (`ZALO_EXIT_ON_SIGNED_OUT_<ownId>` cho riêng một tài khoản). Mặc định: daemon vẫn chạy ở trạng thái `signed_out` và từ chối yêu cầu cho đến khi tài khoản được thêm lại bằng QR | | |
 | `ZALO_LOGIN_SLOTS` | có | tối đa chừng này daemon trên máy cùng đăng nhập và nạp danh sách một lúc (0–64; mặc định 0, không giới hạn); phần còn lại chờ một slot. `ZALO_LOGIN_SLOT_WAIT` (giây, mặc định 900) là thời gian chờ tối đa trước khi cứ tiếp tục | | |
+| `ZALO_FLEET_CONTROLLER_PORT` |  | port mà `fleet serve` dùng khi không có `--http`. Mặc định `3899` | `fleet serve --http` | |
+| `ZALO_FLEET_DOMAIN` |  | tên miền proxy của `fleet generate --domain`: tài khoản thêm bằng QR qua `fleet serve` được ghi `ZALO_MCP_PUBLIC_URL=https://<host>/a/<ownId>` vào file env của nó | `fleet serve --domain` | |
+| `ZALO_FLEET_QR_FLOWS` |  | số lần đăng nhập QR fleet controller chạy cùng lúc (vượt thì `429`). Mặc định `4` | | |
+| `ZALO_FLEET_SUPERVISOR` |  | `systemd` hoặc `spawn`: ai khởi động, dừng và khởi động lại từng tài khoản cho `fleet start\|stop\|restart` và `fleet serve`. Không đặt: systemd với tài khoản có unit `zalo-mcp@<ownId>` đã nạp và đang chạy, lỗi hoặc được bật, còn lại thì tự spawn daemon. `common.env` do `fleet generate` tạo đặt `systemd` | | |
+| `ZALO_FLEET_WEBHOOK`, `ZALO_FLEET_WEBHOOK_SECRET` |  | webhook admin của fleet controller: mọi sự kiện `account_state` và sự kiện thêm bằng QR được POST dạng JSON, ký giống webhook của daemon (`Authorization: Bearer` + `X-Zalo-Signature`) khi có secret | | |
 | `ZALO_LOG_LEVEL` | có | `error`, `warn`, `info` (mặc định) hoặc `debug` (thêm một dòng cho mỗi HTTP request và mỗi tin nhắn) | `--log-level` | |
-| `ZALO_LOG_FORMAT` |  | `text` (mặc định, mỗi dòng có thời gian) hoặc `json` (mỗi dòng một đối tượng) | | |
-| `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` |  | xoay `daemon.log` khi đạt dung lượng này (mặc định `50m`, tối thiểu `4k`) và giữ chừng này file (mặc định 3) | | |
+| `ZALO_LOG_FORMAT` | có | `text` (mặc định, mỗi dòng có thời gian) hoặc `json` (mỗi dòng một đối tượng) | | |
+| `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` | có | xoay `daemon.log` khi đạt dung lượng này (mặc định `50m`, tối thiểu `4k`) và giữ chừng này file (mặc định 3) | | |
 | `ZALO_AGENT_NO_UPDATE_CHECK` |  | giá trị bất kỳ: không bao giờ chạy kiểm tra cập nhật `npm view` | | |
 | `ZALO_API_VERSION` |  | phiên bản giao thức báo cho Zalo. Mặc định 695 | | |
 | `ZALO_QR_FLOW` |  | cách `login` đăng nhập bằng QR: `official` (mặc định: đúng trình tự Zalo Web, không gọi `verify-client`, `continue=https://chat.zalo.me/`, chuyển hướng qua `jr.zaloapp.com` và `jr.chat.zalo.me`, kèm mã QR thứ hai mà tài khoản có thiết bị tin cậy phải quét, khiến client này thành một thiết bị tin cậy đi kèm), là cách đăng nhập QR duy nhất. `legacy` đã bị bỏ ở 3.0.0; nó và mọi giá trị khác bị từ chối trước khi liên hệ Zalo | | |
@@ -331,6 +340,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `groupConfirm` | | đã lỗi thời: `false` nghĩa là `confirmMode: "off"` khi chưa đặt chế độ xác nhận |
 | `admin.tokenFile` | `null` | xem `ZALO_MCP_ADMIN_TOKEN_FILE` |
 | `admin.clientCa` | `null` | xem `ZALO_MCP_ADMIN_CLIENT_CA` |
+| `presence.mode`, `.idleTimeout`, `.minConnected`, `.maxWakesPerHour`, `.warmWait`, `.connectOnStart`, `.catchUpEvery`, `.maxLeases`, `.leaseTtl`, `.leaseTtlMax`, `.waitHoldsSocket`, `.onKick` | xem [Người dùng, giới hạn luôn-kết-nối và hiện diện theo nhu cầu](#người-dùng-giới-hạn-luôn-kết-nối-và-hiện-diện-theo-nhu-cầu) | hiện diện theo nhu cầu của `mcp start --http` / `listen --daemon`; theo từng tài khoản trong `accounts.<ownId>.presence`; chính sách chạy thắng nó |
 | `accounts.<ownId>` | | bất kỳ khóa nào ở trên, cho một tài khoản |
 
 Khóa không có trong bảng này bị bỏ qua mà không báo. (Khóa `mode` trong các tệp cũ được chấp nhận nhưng không bao giờ được đọc.)
@@ -395,10 +405,11 @@ CRM cần ba thứ từ một tài khoản: **nghe** tin mới, **gửi**, và *
 - **Giao nhận bền vững, đúng thứ tự, ít nhất một lần.** Mỗi sự kiện được ghi vào `webhook-outbox.db` trong thư mục tài khoản trước khi gửi, nên bên nhận hỏng, chậm (mỗi POST có 10 giây) hoặc trả khác 2xx chỉ tạo ra tồn đọng chứ không mất tin: bên gửi thử lại với thời gian chờ 1 giây nhân đôi đến 5 phút, giữ mọi sự kiện phía sau sự kiện đang lỗi để không đảo thứ tự, và tiếp tục sau khi khởi động lại hoặc bị sập. Payload bị bên nhận từ chối vì sai định dạng (400, 413, 422) được chuyển vào **dead-letter**, sự kiện chưa giao quá `ZALO_WEBHOOK_MAX_AGE` (24 giờ) cũng vậy. Theo dõi bằng `zalo-agent mcp webhook status`, xem bằng `mcp webhook list --dead`, đưa trở lại hàng đợi bằng `mcp webhook retry`.
 - **Trả 2xx ngay, xử lý sau, và loại trùng theo id tin nhắn.** Ít nhất một lần nghĩa là một tin có thể đến hai lần (sập sau khi bạn trả lời nhưng trước khi bên gửi kịp ghi nhận). Mỗi POST có `X-Zalo-Attempt` và `X-Zalo-Delivery: <đầu>-<cuối>` (số thứ tự trong outbox).
 - **Gộp (batch).** Với `ZALO_WEBHOOK_BATCH_SIZE=10`, tối đa mười sự kiện đang chờ đi chung một POST dạng `{"event":"batch","accountId":…,"count":N,"events":[…]}`, chữ ký tính trên toàn bộ body; một sự kiện đơn lẻ vẫn là payload thường. Các bộ nhận mẫu xử lý được cả hai. Bật khi tồn đọng hoặc nhiều tài khoản khiến một POST mỗi tin là quá nhiều.
+- **Sự kiện hệ thống** đi qua cùng webhook (chỉ id và số đếm, không bao giờ có tên): `account_state` (trạng thái của tài khoản: `stopped`, `idle`, `connecting`, `connected`, `kicked`, `yielded`, `login_needed`, `signed_out`, `maintenance`; xem [hiện diện theo nhu cầu](#người-dùng-giới-hạn-luôn-kết-nối-và-hiện-diện-theo-nhu-cầu)), `storage_quota` ([hạn mức](#hạn-mức-dung-lượng-và-thời-gian-lưu-giữ)), `group_gone` ([rời nhóm](#rời-nhóm-groupsonleave)), `queue_overflow` (Zalo đã bỏ một phần hàng đợi offline: `{event, accountId, fromTs, toTs, queues, direct, groups, pending, command}`; tin nhắn nhóm được đọc lại từ kho cloud của nhóm, khoảng trống 1-1 vẫn chờ xử lý kèm lệnh `sync --from` để khôi phục) và, với `approval.deliver: "webhook"`, `approval_requested`. Tin nhắn đến khi socket đang tạm nghỉ được gửi ở lần kết nối kế tiếp với `catchUp: true`. Hãy định tuyến theo `event` và bỏ qua sự kiện bạn không biết.
 
 **Nghe: kéo.** `GET /events/wait?timeout=55&since=<cursor>&limit=50` trả về tối đa `limit` tin đang có trong bộ đệm mỗi lần gọi (mặc định 1, tối đa 100), hoặc `{"status":"timeout"}`, kèm cursor để tiếp tục. Phản hồi có `messages` (đúng thứ tự), `count`, `hasMore` và `cursor` là của tin **cuối**, nên `since=<cursor>` tiếp tục đúng chỗ lô vừa kết thúc; `message` vẫn là tin đầu, nên client không gửi `limit` vẫn thấy đúng như trước. Để xả một đống tồn, gọi lại ngay khi `hasMore` còn true; `settle=200` (ms, tối đa 5000) chờ thêm chừng đó sau tin đầu tiên để một đợt tin đến dồn vào một phản hồi. `limit` và `settleMs` cũng có ở tool `zalo_wait_for_message` và ở `mcp wait --limit --settle`. Bộ đệm phía sau giữ tối đa `limits.bufferMaxSize` tin cho mỗi thread trong `limits.bufferMaxAge` (mẫu CRM nâng cả hai lên 2.000 và 6 giờ). Quá mức đó, đọc cache bằng `zalo_get_history` / `zalo_get_messages`.
 
-**Gửi.** Một lời gọi JSON-RPC tới `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Gửi `Accept: application/json, text/event-stream` (thiếu một trong hai, máy chủ trả 406); phản hồi là một dòng SSE `data:`, và gửi thành công trả về `{"success":true,"messageId":…,"cliMsgId":…,"threadType":…}`. `threadId` là id người dùng cho tin nhắn riêng hoặc id nhóm cho nhóm. Mỗi request `/mcp` dựng một máy chủ mới với đủ 36 tool, tốn vài mili giây CPU: ổn cho CRM, và là lý do một tài khoản chạm trần khoảng 60–170 request/giây (xem [`docs/deployment.vi.md`](deployment.vi.md) §1.4).
+**Gửi.** Một lời gọi JSON-RPC tới `POST /mcp`: [`clients/crm-send-message.sh`](config-samples/clients/crm-send-message.sh). Gửi `Accept: application/json, text/event-stream` (thiếu một trong hai, máy chủ trả 406); phản hồi là một dòng SSE `data:`, và gửi thành công trả về `{"success":true,"msgId":…,"cliMsgId":…,"threadType":…}`. `threadId` là id người dùng cho tin nhắn riêng hoặc id nhóm cho nhóm. Mỗi request `/mcp` dựng một máy chủ mới với đủ 36 tool, tốn vài mili giây CPU: ổn cho CRM, và là lý do một tài khoản chạm trần khoảng 60–170 request/giây (xem [`docs/deployment.vi.md`](deployment.vi.md) §1.4).
 
 **Bắt kịp.** Sau thời gian ngừng, hỏi những gì đã lỡ: `zalo_get_history` theo từng thread, hoặc `zalo-agent sync --from <date>` (có thể yêu cầu chủ tài khoản xác nhận trên điện thoại).
 
@@ -415,10 +426,11 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 - [`systemd/za`](config-samples/systemd/za): chạy CLI dưới user dịch vụ, cùng home, `common.env` và credential như các unit; [`systemd/zalo-fleet-check.*`](config-samples/systemd/zalo-fleet-check.service) (`fleet status --check` mỗi 5 phút) và [`systemd/zalo-backup.*`](config-samples/systemd/zalo-backup.service) (`db backup` mỗi đêm); [`systemd/zalo-policy-audit.logrotate`](config-samples/systemd/zalo-policy-audit.logrotate).
 - [`systemd/zalo-mcp-purge.service`](config-samples/systemd/zalo-mcp-purge.service) và [`systemd/zalo-mcp-purge.timer`](config-samples/systemd/zalo-mcp-purge.timer): chạy `fleet purge --yes` mỗi giờ, để tài khoản có daemon đang dừng vẫn được xóa theo hạn mức và thời gian lưu giữ (dưới `daemon.lock` của nó), và daemon có lịch riêng bị trễ được yêu cầu chạy ngay.
 - **`zalo-agent fleet generate --out <dir>`** ghi toàn bộ những thứ trên cho các tài khoản được nêu tên, hoặc mọi tài khoản đã đăng ký (unit, timer, file env với token tự sinh cho từng tài khoản, `storage.json`, drop-in, `za`, bảng port, và với `--domain` thì Caddyfile và URL công khai của từng tài khoản), rồi in các bước cài đặt; `fleet status` cho xem mọi daemon trong một bảng, `fleet start` / `restart` khởi động theo từng lô được xáo trộn, và `fleet restart --unhealthy` chỉ khởi động lại những cái đang chết (xem [`docs/deployment.vi.md`](deployment.vi.md) §4.8).
+- **`zalo-agent fleet serve`** là fleet controller cho CRM hoặc console: một admin API cho mỗi máy (`/zalo/admin/accounts`: liệt kê, khởi động, dừng, khởi động lại, presence wake/park/resume, đăng xuất và gỡ tài khoản có xác nhận, thêm tài khoản mới bằng QR, luồng SSE `account_state` ở `GET /zalo/admin/events`), chỉ nhận thông tin xác thực admin, trên `ZALO_FLEET_CONTROLLER_PORT` (mặc định 3899), cùng `ZALO_FLEET_SUPERVISOR`, `ZALO_FLEET_DOMAIN`, `ZALO_FLEET_QR_FLOWS` và `ZALO_FLEET_WEBHOOK[_SECRET]` ở bảng trên; unit mẫu [`systemd/zalo-fleet-controller.service`](config-samples/systemd/zalo-fleet-controller.service). Với hiện diện theo nhu cầu, `ZALO_CONNECT_SLOTS` (mẫu đặt 16) giữ cho nhiều tài khoản không thức cùng lúc.
 - Một kế hoạch port, ví dụ `3900 + n`, ghi trong một bảng (`fleet ports` giữ bảng đó giúp bạn). Sau một tên miền: [`proxy/Caddyfile.multi-account`](config-samples/proxy/Caddyfile.multi-account) định tuyến `/a/<ownId>/…` tới đúng port; dùng bearer token, mỗi tài khoản một token.
 - Cho mỗi tài khoản **proxy riêng** khi đăng nhập (`zalo-agent login --proxy …`) và dấu vân tay thiết bị riêng (tự động): hàng trăm tài khoản từ một địa chỉ là điều khiến tài khoản bị khóa.
 - Cài đặt chung trong `mcp-config.json`, khác biệt theo tài khoản trong khối `accounts` của nó ([`mcp-config/multi-account.json`](config-samples/mcp-config/multi-account.json)).
-- Đọc §1.4 của [`docs/deployment.vi.md`](deployment.vi.md) trước khi vượt quá vài chục tài khoản.
+- Đọc §1.4 của [`docs/deployment.vi.md`](deployment.vi.md) và ghi chú về mở rộng quy mô trong `docs/agent-notes.md` (tiếng Anh) trước khi vượt quá vài chục tài khoản.
 - Bộ file đầy đủ theo từng trường hợp sử dụng (desktop, LAN, VPS, CRM, SaaS), mỗi bộ có README: [`config-samples/use-cases/`](config-samples/use-cases/).
 
 ---
@@ -432,15 +444,15 @@ Một tài khoản là một tiến trình, một WebSocket, một tệp SQLite 
 | `ZALO_MCP_HOST` là `127.0.0.1` sau proxy, hoặc một địa chỉ LAN cụ thể | `0.0.0.0` nghe trên mọi giao diện, kể cả giao diện công khai |
 | TLS kết thúc tại proxy, hoặc đã đặt `--cert`/`--key` | bearer token qua HTTP thường đọc được trên đường truyền |
 | proxy không ghi `Authorization` và không đệm `/events/wait` | token lọt vào log; long-poll bị cắt theo timeout của proxy |
-| `GET /health` và `GET /ready` là hai route duy nhất không cần xác thực | chúng chỉ cho biết tiến trình có trả lời không và socket Zalo có đang kết nối không, không nói gì về tài khoản. `/status` và `/metrics` nằm sau token: đừng công bố chúng qua proxy |
-| mỗi tài khoản một tiến trình, không bao giờ hai cho cùng tài khoản | phiên thứ hai đóng phiên thứ nhất (mã 3000) |
+| `GET /health` và `GET /ready` là hai route duy nhất không cần xác thực | chúng chỉ cho biết tiến trình có trả lời không và có phục vụ được tài khoản không (`/ready` trả 200 khi socket đang kết nối hoặc tạm nghỉ, 503 khi mất kết nối, đã nhường hoặc đã bị đăng xuất), không nói gì về bản thân tài khoản. `/status` và `/metrics` nằm sau token: đừng công bố chúng qua proxy |
+| mỗi tài khoản một tiến trình, không bao giờ hai cho cùng tài khoản, và không đăng nhập Zalo Web cho tài khoản mà máy chủ đang giữ | phiên thứ hai của cùng lần đăng nhập đóng phiên thứ nhất (mã 3000); đăng nhập Zalo Web bằng QR thu hồi lần đăng nhập của máy chủ (`signed_out`). Điện thoại và Zalo PC thì không sao |
 
 ## 5. Kiểm tra một mô hình đã chạy đúng
 
 ```bash
 # lên rồi, và token được thực thi (mong đợi 200, 401, 401):
 curl -s -o /dev/null -w '%{http_code}\n' http://HOST:PORT/health
-# socket Zalo đang kết nối (200; 503 khi đang mất), chi tiết nằm sau token:
+# tài khoản phục vụ được (200 khi kết nối hoặc tạm nghỉ; 503 khi mất kết nối, đã nhường hoặc bị đăng xuất), chi tiết nằm sau token:
 curl -s -o /dev/null -w '%{http_code}\n' http://HOST:PORT/ready
 curl -s -H "Authorization: Bearer $TOKEN" http://HOST:PORT/status | head -c 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://HOST:PORT/mcp

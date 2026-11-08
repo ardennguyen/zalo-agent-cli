@@ -46,8 +46,23 @@ bị từ chối với reactions.
 Reactions không có khoảng ngày hay prompt khôi phục trên điện thoại.
 `applyRemovals` mặc định true, chỉ áp dụng sự kiện gỡ phản ứng đã nhận vào cache
 cục bộ. Không gửi phản ứng hay sửa tin trên Zalo. Kết quả là các bộ đếm runner
-và `socketAlive`. Đây chưa phải sync tổng hợp CLI: trạng thái hội thoại, board,
-cloud index và media hàng loạt vẫn dùng CLI.
+và `socketAlive`. Các bước `cloud`, `media` và `boards` bao quát cloud index, tệp đính
+kèm và board; trạng thái hội thoại (ghim, lưu trữ, dấu chưa đọc) chỉ được khôi phục
+bằng lệnh tổng hợp `zalo-agent sync` của CLI.
+
+## Khi daemon chạy theo nhu cầu (3.0)
+
+Máy chủ `mcp start --http` tạm nghỉ socket khi không có gì cần đến nó (hiện diện theo
+nhu cầu, mặc định của 3.0; máy chủ stdio luôn kết nối). `zalo_sync` cần socket: gọi
+vào máy chủ đang tạm nghỉ sẽ đánh thức nó và chờ tối đa `presence.warmWait` (10 giây)
+cho kết nối; nếu vẫn đang kết nối, lệnh gọi báo lỗi có thể thử lại `WARMING` kèm
+`retryAfterSec`. Gọi lại với **cùng `requestId` và tham số** sau số giây đó. Khi một
+bước đã chạy, daemon không tạm nghỉ cho đến khi bước đó xong. Mọi tool, kể cả
+`zalo_sync_status`, bị từ chối với `YIELDED` khi một phiên khác của cùng lần đăng nhập
+đang giữ tài khoản (chủ tài khoản xác nhận `presence resume`) và với `SIGNED_OUT` sau khi
+một lần đăng nhập Zalo Web ở nơi khác đã thu hồi lần đăng nhập này (thêm lại tài khoản
+bằng QR). Xem
+[configuration.vi.md](configuration.vi.md#người-dùng-giới-hạn-luôn-kết-nối-và-hiện-diện-theo-nhu-cầu).
 
 ## Kết quả và thử lại
 

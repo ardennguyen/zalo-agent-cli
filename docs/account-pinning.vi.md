@@ -15,8 +15,8 @@ ZALO_ACCOUNT=<ACCOUNT_ID> zalo-agent conv recent --json
 
 # Hoặc qua zalo-mcp launcher (v2.0+):
 zalo-mcp --account <ACCOUNT_ID>
-zalo-mcp --account <ACCOUNT_ID> --http 3847 --auth <TOKEN> --host 0.0.0.0
-zalo-mcp --account <ACCOUNT_ID> msg list --json
+ZALO_MCP_AUTH_TOKEN=<TOKEN> zalo-mcp --account <ACCOUNT_ID> --http 3847   # loopback; token lấy từ biến môi trường
+zalo-mcp --account <ACCOUNT_ID> conv recent --json
 ```
 
 Thay `<ACCOUNT_ID>` bằng ID số đầy đủ của tài khoản đã đăng ký (hoặc đặt biến
@@ -40,6 +40,19 @@ một lần kèm `--account <ACCOUNT_ID>` tự động định tuyến các thao
 (upload media, `msg history`, `sync`) qua `daemon-channel.json` của đúng daemon
 thuộc tài khoản đó nếu đang chạy.
 
+Từ 3.0, tiến trình `mcp start --http` hoặc `listen --daemon` mặc định chạy chế độ
+hiện diện theo nhu cầu (on-demand): khi rảnh nó tạm nghỉ socket nhưng vẫn giữ tài
+khoản (khóa, port và daemon channel). Lệnh chạy một lần cho tài khoản đó vẫn đi qua
+nó và đánh thức socket khi cần; không bao giờ mở socket thứ hai bên cạnh.
+
+**Một lần đăng nhập, một nơi chạy.** Đừng bao giờ chạy hai bản của cùng một
+credentials cùng lúc (cùng lần đăng nhập trên hai máy, hoặc thư mục cấu hình bị sao
+chép): phiên thứ hai lấy socket (mã đóng 3000), và daemon on-demand khi đó chờ ở
+trạng thái `yielded` cho đến khi có `zalo-agent presence resume --yes`. Zalo cũng chỉ
+giữ một lần đăng nhập web cho mỗi tài khoản: đăng nhập Zalo Web bằng QR ở nơi khác sẽ
+đăng xuất máy chủ (`signed_out`). Bên cạnh máy chủ, hãy dùng điện thoại hoặc Zalo PC,
+không dùng Zalo Web.
+
 ## Chạy nhiều tài khoản live cùng lúc
 
 Để duy trì nhiều tài khoản Zalo hoạt động đồng thời:
@@ -54,7 +67,11 @@ thuộc tài khoản đó nếu đang chạy.
    trong `mcpServers` với `"args": ["mcp", "start", "--account", "<ACCOUNT_ID>"]`
    (hoặc `"command": "zalo-mcp", "args": ["--account", "<ACCOUNT_ID>"]`).
 3. **MCP chế độ HTTP (VPS):** chạy mỗi tài khoản một tiến trình trên port riêng
-   (`--http 3847`, `--http 3848`, …) kèm `--auth` token riêng (và `--config` riêng nếu cần).
+   (`--http 3847`, `--http 3848`, …), mỗi tiến trình có token riêng trong
+   `ZALO_MCP_AUTH_TOKEN_<ACCOUNT_ID>` (đừng dùng `--auth` trên dòng lệnh: nó hiện trong
+   `ps`) và `--config` riêng nếu cần. `zalo-agent fleet ports`, `fleet generate` và
+   `fleet start` giữ bảng port và các unit theo tài khoản giúp bạn
+   ([configuration.vi.md §3.6](configuration.vi.md#36-nhiều-tài-khoản)).
 4. **Gọi lệnh CLI song song:** truyền `--account <ACCOUNT_ID>` (hoặc `ZALO_ACCOUNT`)
    ở mỗi lệnh CLI để nhiều script/agent chạy cùng lúc không bao giờ tranh chấp
    `accounts.json`. Đổi cấu hình proxy lúc khởi động cần restart daemon tương ứng.

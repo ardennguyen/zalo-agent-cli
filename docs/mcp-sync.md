@@ -45,8 +45,23 @@ For the reaction backlog, call:
 Reactions has no date window or phone restore prompt. `applyRemovals` defaults to
 true and only applies observed reaction removals to the local cache. The stage
 does not send reactions or change messages on Zalo. It returns runner counts and
-`socketAlive`. This is not the unified CLI sync: conversation state, boards,
-cloud index and bulk media remain CLI operations.
+`socketAlive`. The `cloud`, `media` and `boards` stages cover the cloud index,
+attachments and boards; conversation state (pins, archives, unread marks) is
+restored only by the CLI's unified `zalo-agent sync`.
+
+## When the daemon runs on-demand (3.0)
+
+An `mcp start --http` server parks its socket when nothing needs it (on-demand
+presence, the 3.0 default; stdio servers stay connected). `zalo_sync` needs the
+socket: a call to a parked server wakes it and waits up to `presence.warmWait`
+(10 s) for the connect; if it is still connecting, the call fails with the
+retryable `WARMING` and `retryAfterSec`. Repeat it with the **same `requestId` and
+arguments** after that many seconds. Once a stage runs, the daemon does not park
+until it ends. Every tool, `zalo_sync_status` included, is refused with
+`YIELDED` while another session of the same login holds the account (the owner
+confirms `presence resume`) and with `SIGNED_OUT` after a Zalo Web login elsewhere
+revoked this one (add the account again by QR). See
+[configuration.md](configuration.md#users-the-always-on-cap-and-on-demand-presence).
 
 ## Results and retries
 

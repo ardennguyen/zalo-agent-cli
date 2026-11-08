@@ -2,16 +2,39 @@
 
 [English](current-user-names.md)
 
-Tài liệu lịch sử: thay đổi này đã phát hành trong bản 2.x qua [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2). Trang được giữ lại làm tài liệu tham khảo về cách xác định tên người gửi; khi hai bên khác nhau, command reference là bản đúng.
+Trang này nói cách client gọi tên một người trong mọi đầu ra (3.0), rồi đến thay đổi ở bản 2.x đã đưa vào tên hiện tại ([PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2)), giữ lại làm lịch sử. Khi trang này và [command reference](../skill/references/command-reference.md) khác nhau, command reference là bản đúng.
 
+## Cách gọi tên trong 3.0: alias trước tiên, ở mọi nơi
 
-> **3.0: alias trước tiên ở mọi nơi.** Từ 3.0, trường tên sẵn có của mọi đầu ra mang alias chủ tài khoản đặt trước
-> (`senderName` trên tin nhắn, `displayName` trên một người), kèm `senderAlias`/`alias` và
-> `senderZaloName`/`zaloName`; không có alias thì dùng tên Zalo, rồi tên hiển thị, rồi UID (thứ tự của Zalo Web).
-> Dòng đã lưu vẫn giữ tên mà mỗi tin mang theo. Các quy tắc về `senderName` bên dưới mô tả bản 2.x; command
-> reference là bản hiện hành.
+Mọi đầu ra gọi tên một người giống Zalo Web và PC: **alias mà chủ tài khoản đặt cho họ**, rồi tên trong danh bạ (chỉ
+khi nơi gọi truyền vào: client này không đọc danh bạ), rồi tên Zalo, rồi tên hiển thị, rồi UID
+(`src/core/contact-names.js`). Quy tắc này áp dụng cho các dòng của `listen`, JSONL và webhook, bộ đệm MCP, notifier và
+kết quả chờ, mọi phản hồi `zalo_*`, `msg history` / `msg search`, danh sách `conv`, các lệnh `friend` và
+`group`, mention, tin được trích dẫn (`replyTo`), reaction, đang gõ và sự kiện nhóm.
 
-## Thay đổi hiện tại
+| Trường | Có trên tin nhắn | Ý nghĩa |
+|---|---|---|
+| `senderName` | có | tên để hiển thị: alias của chủ tài khoản nếu có, không thì tên mà tin mang theo, không nữa thì tên profile hiện tại. **Đổi nghĩa trong 3.0:** trước đây là tên mà tin mang theo |
+| `senderAlias` | có | alias, hoặc `null` |
+| `senderZaloName` | có | tên mà tin mang theo (bản lưu, không bao giờ bị ghi đè) |
+| `senderDisplayName`, `senderDisplayNameSource` | có | tên hiện tại và nguồn của nó: `alias`, `phonebook`, `zalo`, `display` hoặc `uid` |
+| `displayName` / `dName` / `dpn` / `inviterName` | một người, sự kiện `listen`, thành viên chờ duyệt, lời mời | cùng giá trị ưu tiên alias, nằm trong trường vốn có |
+| `alias`, `zaloName` | một người | các giá trị gốc đặt bên cạnh |
+
+**Dòng đã lưu không bao giờ bị ghi lại.** `zalo.db` giữ tên mà mỗi tin mang theo; alias chỉ được áp khi hiển thị hoặc
+trả về. Chat 1-1 được đặt tiêu đề theo alias khi hiển thị; tiêu đề nhóm thì không bao giờ.
+
+**Alias lấy từ đâu.** Daemon `listen` hoặc `mcp start` đọc danh sách alias của tài khoản lúc khởi động, đọc lại khoảng
+1,5 giây sau control `alias` của Zalo (một alias được đặt, đổi hoặc xóa trên bất kỳ thiết bị nào) và mỗi 30 phút. Nó giữ
+bản chụp trong cơ sở dữ liệu của tài khoản (`user_aliases`, có trong `db export`) để lệnh chạy một lần dùng mà không
+cần gọi Zalo, và đặt lại tiêu đề các chat 1-1 đã lưu có alias vừa đổi. Một lần đọc lỗi hoặc thiếu không bao giờ thay bản
+chụp (thiếu một mục nghĩa là chủ tài khoản đã xóa alias đó, nên chỉ lần đọc đầy đủ mới được tính). Control `profile` (tên
+của chính tài khoản đổi trên thiết bị khác) khiến daemon đọc lại tên tài khoản. Tin nhắn 1-1 đến không tốn lần gọi alias
+nào: bản chụp của daemon trả lời luôn.
+
+Phần còn lại của trang là thay đổi ở bản 2.x đã đưa vào tên hiện tại, giữ làm lịch sử.
+
+## Thay đổi ở bản 2.x (lịch sử)
 
 Tin nhắn khôi phục từ điện thoại trước đây lưu ID người gửi dạng mã hóa và tên
 rỗng. Sync hiện phân giải người gửi trước transaction SQLite của từng chunk,
@@ -28,29 +51,28 @@ không giảm.
 
 Tên hiển thị hiện tại được tách khỏi tên lưu trên tin nhắn:
 
-- `senderName` giữ nguyên tên lịch sử/được ghi nhận lần đầu. Lịch sử từ điện
+- `senderName` khi đó giữ nguyên tên lịch sử/được ghi nhận lần đầu (trong 3.0 giá trị này là `senderZaloName`). Lịch sử từ điện
   thoại không có tên gốc chỉ có thể điền tên còn trống bằng profile tại lúc
   khôi phục; không thể tái dựng tên ở thời điểm gửi trong quá khứ.
 - `senderDisplayName` được tra lúc đọc theo UID: alias riêng của tài khoản,
-  rồi `zaloName` của profile, rồi UID. `senderDisplayNameSource` là `alias`,
-  `zalo` hoặc `uid`. Không dùng `displayName` có thể chứa bí danh để thay thế
+  rồi `zaloName` của profile, rồi UID. `senderDisplayNameSource` khi đó là `alias`,
+  `zalo` hoặc `uid` (3.0 thêm `phonebook` và `display`). Không dùng `displayName` có thể chứa bí danh để thay thế
   `zaloName` trong thứ tự này.
 - MCP đọc buffer/lịch sử và CLI đọc lịch sử trả thêm các trường trên. CLI dạng
   văn bản hiển thị tên hiện tại. Lượt đọc không sửa SQLite hoặc tên lịch sử
   trong buffer.
-- Tên hiện tại được tra mới theo từng tài khoản, có phân trang alias và chia
-  lô profile 100 UID. Không giữ cache alias qua nhiều lượt đọc nên nhận biết
-  được việc xóa alias. Bỏ toàn bộ snapshot alias không hoàn chỉnh/thất bại;
+- Tên hiện tại khi đó được tra mới theo từng tài khoản, có phân trang alias và
+  chia lô profile 100 UID (trong 3.0, daemon giữ một bản chụp alias đầy đủ, được
+  thay bằng mỗi lần đọc đầy đủ, xem ở trên). Bỏ toàn bộ snapshot alias không hoàn chỉnh/thất bại;
   profile không khả dụng thì fallback UID thay vì tên lịch sử đã cũ.
 - Sync cập nhật tên chat 1-1 đã cache, gồm cả người chưa kết bạn nằm ngoài
   khoảng tin đang khôi phục, không đổi thứ tự hoạt động. Danh sách hội thoại,
   thread và tìm kiếm DM qua MCP cũng làm mới tên. Tên nhóm không bị thay bằng
   alias của thành viên.
 
-## Kiểm tra và trạng thái
+## Kiểm tra (2.x)
 
-- Thay đổi dành cho [PR upstream #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2);
-  đang chờ upstream review và phát hành.
+- Đã phát hành trong bản 2.x qua [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2).
 - Test hồi quy: `tests/unit/sync-v2-senders.test.js`, gồm kết quả lịch sử MCP từ
   SQLite và bảo vệ trước danh tính người gửi mâu thuẫn.
 - Kiểm tra bắt buộc: `npm run format`, `npm run lint`, `npm run format:check`, `npm test`.
@@ -64,8 +86,8 @@ Tên hiển thị hiện tại được tách khỏi tên lưu trên tin nhắn:
 
 Không cần migration schema. Tin cũ được bổ sung danh tính khi chạy khôi phục
 tin nhắn từ điện thoại bằng engine đã sửa. Restart MCP hoặc đọc lịch sử không
-tự sửa các dòng cũ. Sao lưu database tài khoản trước khi khôi phục vận hành và
-dùng tùy chọn `sync-mobile` trong `skill/references/command-reference.md`;
+tự sửa các dòng cũ. Sao lưu database tài khoản (`zalo-agent db backup -o <file>`; từ 3.0 database được
+mã hóa khi lưu) trước khi khôi phục vận hành và dùng tùy chọn `sync-mobile` trong `skill/references/command-reference.md`;
 khôi phục cần xác nhận trên điện thoại.
 
 Tra cứu profile theo khả năng đáp ứng. UID đã phân giải dùng chính ID để hiển

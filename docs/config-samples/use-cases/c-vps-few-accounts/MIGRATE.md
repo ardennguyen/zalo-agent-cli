@@ -5,13 +5,13 @@
 This keeps each account's **message history and media** and its **device identity** (the phone keeps seeing the same device). It works because a 2.5.9 home is **plaintext**: nothing in it is tied to Windows, and the VPS seals it under its own passphrase on the first run.
 
 > [!CAUTION]
-> **Two copies of the same saved login must never run at the same time.** The Windows home and the VPS hold the same login after the copy; the moment both connect, their two sockets kick each other off (exit 3) and keep doing so. Stop everything on Windows first, and never start a listener for these accounts there again.
+> **Two copies of the same saved login must never run at the same time.** The Windows home and the VPS hold the same login after the copy; the moment both connect, their two sockets kick each other off (an always-on daemon exits 3, an on-demand one yields and refuses every request) and keep doing so. Stop everything on Windows first, and never start a listener for these accounts there again.
 
 ## 1. Before you start
 
 - The VPS is set up through step 4 of [README.md](README.md): the `zalo` user, the engine, `za`, `storage.json` (`"provider": "passphrase"`) and `/etc/zalo-mcp/storage-passphrase.cred`. Do not log in on the VPS: the accounts come from Windows.
 - Free disk on the VPS: about 1.1 times the size of the two account folders (the encryption writes a copy before it replaces the database).
-- **Run no 3.0 command on Windows before the copy.** A 3.0 command seals the files with Windows DPAPI, and DPAPI-sealed files do not open on another machine. Check what Windows runs: `zalo-agent --version` must print `2.5.9`.
+- **Run no 3.0 command on Windows before the copy.** A 3.0 command seals the files with Windows DPAPI, and DPAPI-sealed files do not open on another machine. Check what Windows runs: `zalo-agent --version` must print `2.5.9`. Sealing is one-way: once a 3.0 command has run on a home, no command turns it back into a 2.5.x one, so the copy you take in section 3 (step 1) is your only way back.
 
 ## 2. If Windows already ran 3.0
 
@@ -64,8 +64,9 @@ Then continue with step 6 of [README.md](README.md) (`za fleet generate`, instal
   zalo-agent logout --no-remote --account 1000000000000000001
   zalo-agent logout --no-remote --account 1000000000000000002
   ```
+  (If Windows already runs 3.0, `logout` is guarded: add `--yes`.)
   Then delete the encrypted archive and, once the VPS has run a few days, the old Windows folders.
-- **Zalo may challenge a login that moves** from a home address to a datacenter one. If an account goes `signed_out` (`za presence status` or `journalctl -u zalo-mcp@<id>` says the login was refused; the daemon stays up and refuses requests), log that account in again on the VPS with `za login` (QR over the SSH tunnel); its history stays.
+- **Zalo may challenge a login that moves** from a home address to a datacenter one. If an account goes `signed_out` (`za presence status` or `journalctl -u zalo-mcp@<id>` says the login was refused; the daemon stays up and refuses requests), log that account in again on the VPS with `za login` (QR over the SSH tunnel), then `sudo systemctl restart zalo-mcp@<id>`; its history stays.
 - **Keep using the phone or Zalo PC** next to the server. Logging the account into **Zalo Web** signs the server out (one web login per account).
 
 ## 6. Other ways, and why not

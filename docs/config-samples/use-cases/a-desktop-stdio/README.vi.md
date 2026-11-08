@@ -37,6 +37,8 @@ zalo-agent mcp start --account 1000000000000000001 --status   # chỉ khi client
 
 ## 4. Điện thoại, Zalo PC và Zalo Web
 
-Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và máy chủ này chính là phiên đó. Đăng nhập cùng tài khoản vào **Zalo Web** (chat.zalo.me) bằng QR sẽ đăng xuất máy chủ: lần khởi động tiếp theo bị từ chối và bạn phải đăng nhập lại. **Điện thoại** và **ứng dụng Zalo PC** là các phiên đăng nhập riêng và hoạt động song song với máy chủ. Hãy dùng điện thoại hoặc Zalo PC, không dùng Zalo Web.
+Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và máy chủ này chính là phiên đó. Đăng nhập cùng tài khoản vào **Zalo Web** (chat.zalo.me) bằng QR sẽ đăng xuất máy chủ: phiên đăng nhập của nó bị từ chối, và mọi lệnh gọi tool trả về `SIGNED_OUT` cho đến khi bạn chạy lại `zalo-agent login` (quét QR) và khởi động lại client. **Điện thoại** và **ứng dụng Zalo PC** là các phiên đăng nhập riêng và hoạt động song song với máy chủ. Hãy dùng điện thoại hoặc Zalo PC, không dùng Zalo Web.
+
+Mỗi lần đăng nhập QR thêm một mục mới vào danh sách thiết bị trên điện thoại (các mục web cũ hiện là đã đăng xuất). Đăng nhập lại cùng tài khoản thì giữ nguyên mã thiết bị, nên những tin Zalo xếp hàng cho nó trong lúc vắng mặt vẫn đến.
 
 Cũng đừng chạy cùng một tài khoản trên hai client cùng lúc (Claude Desktop và Claude Code cùng khởi động `--account <same id>`): lần khởi động thứ hai sẽ thấy tài khoản đang được dùng.

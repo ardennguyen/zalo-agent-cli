@@ -4,6 +4,8 @@
 
 One long-running MCP server per account on a Windows or macOS machine, reached over HTTP by AI clients on the same machine (loopback) or the same LAN. It keeps running when no client is open, and comes back after a reboot as a Windows service or a launchd agent.
 
+An HTTP server runs **on-demand** (`presence` in `mcp-config.json`): it opens the account's Zalo socket when a client calls a tool or waits for a message, and closes it after 5 idle minutes; what arrives meanwhile is fetched from Zalo's offline queue on the next call (`catchUp: true`). For a webhook that must fire in real time, set `"mode": "always-on"`.
+
 ## 1. The files
 
 | File in this folder | Goes to | What it is |
@@ -48,4 +50,6 @@ On plain http off loopback the server hands out no media links (they carry one-t
 
 ## 4. The phone, Zalo PC and Zalo Web
 
-Zalo keeps **one web login per account**, and this server is it. A QR login into **Zalo Web** signs the server out (the service then stops with "login refused" and needs `zalo-agent login` again). The **phone** and the **Zalo PC app** work beside it. Use those, not Zalo Web. And run each account in one place only: a second copy of the same login (another machine, or `mcp start` beside the service) kicks this one off.
+Zalo keeps **one web login per account**, and this server is it. A QR login into **Zalo Web** signs the server out: the service stays up but answers every call with `SIGNED_OUT` until you run `zalo-agent login` again and restart the service (`ZALO_EXIT_ON_SIGNED_OUT=1` in `server.env` makes it exit 4 instead). The **phone** and the **Zalo PC app** work beside it. Use those, not Zalo Web. Each QR login adds a new entry to the phone's device list (older web entries show as logged out); a re-login keeps the device id, so Zalo's queue of missed messages survives it.
+
+And run each account in one place only: a second copy of the same login (another machine, or `mcp start` beside the service) takes the socket. This server then **yields**: it stays up, answers `YIELDED`, and takes nothing back on its own. Close the other copy, then `zalo-agent presence resume --yes --account <id>`.

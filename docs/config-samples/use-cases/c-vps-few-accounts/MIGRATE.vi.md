@@ -5,13 +5,13 @@
 Cách này giữ lại **lịch sử tin nhắn và media** cùng **danh tính thiết bị** của mỗi tài khoản (điện thoại vẫn thấy cùng một thiết bị). Nó làm được vì thư mục home 2.5.9 là **văn bản thuần (plaintext)**: không có gì trong đó gắn với Windows, và VPS niêm phong nó bằng mật khẩu lưu trữ của chính VPS ở lần chạy đầu tiên.
 
 > [!CAUTION]
-> **Hai bản sao của cùng một phiên đăng nhập đã lưu không bao giờ được chạy cùng lúc.** Sau khi sao chép, thư mục home trên Windows và VPS giữ cùng một phiên đăng nhập; ngay khi cả hai kết nối, hai socket sẽ đá nhau ra (mã thoát 3) và cứ thế lặp lại. Hãy dừng mọi thứ trên Windows trước, và không bao giờ khởi động lại listener nào cho các tài khoản này ở đó nữa.
+> **Hai bản sao của cùng một phiên đăng nhập đã lưu không bao giờ được chạy cùng lúc.** Sau khi sao chép, thư mục home trên Windows và VPS giữ cùng một phiên đăng nhập; ngay khi cả hai kết nối, hai socket sẽ đá nhau ra (daemon always-on thoát mã 3, daemon on-demand thì nhường lại và từ chối mọi yêu cầu) và cứ thế lặp lại. Hãy dừng mọi thứ trên Windows trước, và không bao giờ khởi động lại listener nào cho các tài khoản này ở đó nữa.
 
 ## 1. Trước khi bắt đầu
 
 - VPS đã được cài đặt tới bước 4 của [README.md](README.md): người dùng `zalo`, engine, `za`, `storage.json` (`"provider": "passphrase"`) và `/etc/zalo-mcp/storage-passphrase.cred`. Đừng đăng nhập trên VPS: các tài khoản đến từ Windows.
 - Dung lượng trống trên VPS: khoảng 1,1 lần kích thước hai thư mục tài khoản (quá trình mã hóa ghi một bản sao trước khi thay thế cơ sở dữ liệu).
-- **Không chạy lệnh 3.0 nào trên Windows trước khi sao chép.** Một lệnh 3.0 sẽ niêm phong các tệp bằng Windows DPAPI, và tệp được niêm phong bằng DPAPI không mở được trên máy khác. Kiểm tra bản Windows đang chạy: `zalo-agent --version` phải in ra `2.5.9`.
+- **Không chạy lệnh 3.0 nào trên Windows trước khi sao chép.** Một lệnh 3.0 sẽ niêm phong các tệp bằng Windows DPAPI, và tệp được niêm phong bằng DPAPI không mở được trên máy khác. Kiểm tra bản Windows đang chạy: `zalo-agent --version` phải in ra `2.5.9`. Niêm phong là một chiều: một khi lệnh 3.0 đã chạy trên một thư mục cấu hình, không lệnh nào đưa nó trở lại dạng 2.5.x, nên bản sao bạn lấy ở mục 3 (bước 1) là đường quay về duy nhất.
 
 ## 2. Nếu Windows đã chạy 3.0
 
@@ -64,8 +64,9 @@ Sau đó tiếp tục với bước 6 của [README.md](README.md) (`za fleet ge
   zalo-agent logout --no-remote --account 1000000000000000001
   zalo-agent logout --no-remote --account 1000000000000000002
   ```
+  (Nếu Windows đã chạy 3.0, `logout` có bước xác nhận: thêm `--yes`.)
   Sau đó xóa tệp nén đã mã hóa và, khi VPS đã chạy được vài ngày, xóa các thư mục cũ trên Windows.
-- **Zalo có thể yêu cầu xác minh một phiên đăng nhập di chuyển** từ địa chỉ gia đình sang địa chỉ datacenter. Nếu một tài khoản chuyển sang `signed_out` (`za presence status` hoặc `journalctl -u zalo-mcp@<id>` báo phiên đăng nhập bị từ chối; daemon vẫn chạy và từ chối yêu cầu), hãy đăng nhập lại tài khoản đó trên VPS bằng `za login` (QR qua đường hầm SSH); lịch sử của nó vẫn còn.
+- **Zalo có thể yêu cầu xác minh một phiên đăng nhập di chuyển** từ địa chỉ gia đình sang địa chỉ datacenter. Nếu một tài khoản chuyển sang `signed_out` (`za presence status` hoặc `journalctl -u zalo-mcp@<id>` báo phiên đăng nhập bị từ chối; daemon vẫn chạy và từ chối yêu cầu), hãy đăng nhập lại tài khoản đó trên VPS bằng `za login` (QR qua đường hầm SSH), rồi `sudo systemctl restart zalo-mcp@<id>`; lịch sử của nó vẫn còn.
 - **Tiếp tục dùng điện thoại hoặc Zalo PC** bên cạnh máy chủ. Đăng nhập tài khoản vào **Zalo Web** sẽ đăng xuất máy chủ (một phiên đăng nhập web cho mỗi tài khoản).
 
 ## 6. Các cách khác, và vì sao không dùng

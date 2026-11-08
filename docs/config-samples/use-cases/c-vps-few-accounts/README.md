@@ -89,7 +89,7 @@ Run as your admin user over SSH. `<ver>` is the exact engine version you deploy 
    sudo systemctl daemon-reload
    sudo systemctl enable --now zalo-mcp@1000000000000000001 zalo-mcp@1000000000000000002
    sudo systemctl enable --now zalo-mcp-purge.timer zalo-fleet-check.timer zalo-backup.timer
-   journalctl -u zalo-mcp@1000000000000000001 -f     # until "socket up"
+   journalctl -u zalo-mcp@1000000000000000001 -f     # until "account <id>: connecting -> connected"
    ```
 8. **Clients.** Each account's token is `ZALO_MCP_AUTH_TOKEN` in its env file (`sudo grep TOKEN /etc/zalo-mcp/accounts/<id>.env`). Claude Code:
    ```json
@@ -111,17 +111,17 @@ systemctl list-timers 'zalo-*'                                      # the three 
 
 ## 5. Operate
 
-- **Stop, start, restart one account:** `sudo systemctl restart zalo-mcp@<id>` or `za fleet restart <id>` (both go through systemd). A unit that ended with exit 3 (another session took the account) or 4 (Zalo refuses the saved login) stays down on purpose and shows in `systemctl --failed`: read `journalctl -u zalo-mcp@<id>` before starting it.
+- **Stop, start, restart one account:** `sudo systemctl restart zalo-mcp@<id>` or `za fleet restart <id>` (both go through systemd). When another session of the same login takes an account, the main one (always-on) ends with exit 3 and its unit stays down on purpose (`systemctl --failed`): read `journalctl -u zalo-mcp@<id>`, close the other session, then start it. The companion (on-demand) yields instead and stays up refusing requests until `za --account <id> presence resume --yes`. A login Zalo refuses (`signed_out`) keeps either daemon up; it exits 4 only with `ZALO_EXIT_ON_SIGNED_OUT=1` (or `ZALO_EXIT_ON_SIGNED_OUT_<id>=1`).
 - **Health:** the check timer runs `fleet status --check`; a failure shows in `systemctl --failed` and `journalctl -u zalo-fleet-check`. Add `OnFailure=` to `zalo-fleet-check.service` to be told (mail, ntfy).
 - **Logs:** `journalctl -u 'zalo-mcp@*'`. `ZALO_LOG_LEVEL=info` in `common.env`; never `debug` on a server (it logs message text).
 - **Backups:** nightly into `/var/backups/zalo`: `<id>-<time>.db` (encrypted `db backup`), `<id>-<time>.keyring.json`, `config-<time>.tgz`; 14 days kept. Copy them off the machine. None opens without the passphrase from your password manager. Restore: a new VPS set up through step 4 with the **same** passphrase, the config tar unpacked into `/home/zalo`, each `.db` copied to `accounts/<id>/zalo.db`, then step 6.
 - **Upgrade:** `sudo npm install -g @ardennguyen/zalo-agent-cli@<new>`, then restart one account, check it, then the other (self-heal fills the restart window).
 - **Retention:** `za --account <id> policy set retention.media 180d` (or `retention` in `storage.json`); the daemons and the purge timer apply it.
-- **Presence:** `mcp-config.json` keeps the main account always-on (real-time webhooks) and the companion on-demand (the socket closes after 5 idle minutes and reopens on the next call). The daemons follow it once on-demand presence is switched on; until then both stay connected.
+- **Presence:** `mcp-config.json` keeps the main account always-on (real-time webhooks) and lets the companion run on-demand, the default for these daemons: its socket closes after 5 idle minutes and reopens on the next tool call, wait or `za` request, and what arrived meanwhile comes from Zalo's offline queue (`catchUp: true`). `za presence status --account <id>` shows it; `fleet status` shows a parked account as `idle`. Change it live with `za --account <id> policy set presence.mode always-on`.
 
 ## 6. The phone, Zalo PC and Zalo Web
 
-Zalo keeps **one web login per account**. The server is that web login. If someone logs the same account into **Zalo Web** (chat.zalo.me) with a QR code, Zalo signs the server out: its login is refused, the daemon stays up as `signed_out` (refusing requests; `ZALO_EXIT_ON_SIGNED_OUT=1` makes it exit 4 instead) and the account needs a new `za login`. The **phone** and the **Zalo PC app** are separate logins and work beside the server. So: use the phone or Zalo PC next to the server, never Zalo Web.
+Zalo keeps **one web login per account**. The server is that web login. If someone logs the same account into **Zalo Web** (chat.zalo.me) with a QR code, Zalo signs the server out: its login is refused, the daemon stays up as `signed_out` (refusing requests; `ZALO_EXIT_ON_SIGNED_OUT=1` makes it exit 4 instead) and the account needs a new `za login`, then `sudo systemctl restart zalo-mcp@<id>`. The **phone** and the **Zalo PC app** are separate logins and work beside the server. So: use the phone or Zalo PC next to the server, never Zalo Web. Each `za login` adds a new entry to the phone's device list (the older web entries show as logged out); a re-login keeps the account's device id, so the messages Zalo queued for it survive.
 
 Two copies of the **same** saved login (this VPS and the machine you moved it from) kick each other off (exit 3; an on-demand daemon yields instead and refuses requests until `za presence resume --yes`). Run each account in one place only.
 

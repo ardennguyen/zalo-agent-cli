@@ -4,6 +4,8 @@
 
 Mỗi tài khoản một máy chủ MCP chạy lâu dài trên một máy Windows hoặc macOS, được các AI client trên cùng máy (loopback) hoặc cùng mạng LAN truy cập qua HTTP. Máy chủ vẫn chạy khi không có client nào mở, và tự chạy lại sau khi khởi động lại máy dưới dạng Windows service hoặc launchd agent.
 
+Máy chủ HTTP chạy **theo nhu cầu** (on-demand, `presence` trong `mcp-config.json`): nó mở socket Zalo của tài khoản khi một client gọi tool hoặc chờ tin nhắn, và đóng socket sau 5 phút rảnh; những gì đến trong lúc đó được lấy từ hàng đợi ngoại tuyến của Zalo ở lần gọi kế tiếp (`catchUp: true`). Với webhook cần chạy thời gian thực, hãy đặt `"mode": "always-on"`.
+
 ## 1. Các tệp
 
 | Tệp trong thư mục này | Đặt vào | Nội dung |
@@ -48,4 +50,6 @@ Với http thường ngoài loopback, máy chủ không cấp link media (link m
 
 ## 4. Điện thoại, Zalo PC và Zalo Web
 
-Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và máy chủ này chính là phiên đó. Đăng nhập QR vào **Zalo Web** sẽ đăng xuất máy chủ (khi đó service dừng với "login refused" và cần `zalo-agent login` lại). **Điện thoại** và **ứng dụng Zalo PC** hoạt động song song với máy chủ. Hãy dùng chúng, không dùng Zalo Web. Và mỗi tài khoản chỉ chạy ở một nơi: một bản sao thứ hai của cùng phiên đăng nhập (một máy khác, hoặc `mcp start` chạy cạnh service) sẽ đá phiên này ra.
+Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và máy chủ này chính là phiên đó. Đăng nhập QR vào **Zalo Web** sẽ đăng xuất máy chủ: service vẫn chạy nhưng trả lời mọi lệnh gọi bằng `SIGNED_OUT` cho đến khi bạn chạy lại `zalo-agent login` và khởi động lại service (`ZALO_EXIT_ON_SIGNED_OUT=1` trong `server.env` cho nó thoát mã 4 thay vào đó). **Điện thoại** và **ứng dụng Zalo PC** hoạt động song song với máy chủ. Hãy dùng chúng, không dùng Zalo Web. Mỗi lần đăng nhập QR thêm một mục mới vào danh sách thiết bị trên điện thoại (các mục web cũ hiện là đã đăng xuất); đăng nhập lại thì giữ nguyên mã thiết bị, nên hàng đợi tin nhắn bị lỡ của Zalo vẫn còn.
+
+Và mỗi tài khoản chỉ chạy ở một nơi: một bản sao thứ hai của cùng phiên đăng nhập (một máy khác, hoặc `mcp start` chạy cạnh service) sẽ lấy socket. Khi đó máy chủ này **nhường lại**: nó vẫn chạy, trả lời `YIELDED`, và không tự lấy lại gì. Hãy đóng bản sao kia, rồi chạy `zalo-agent presence resume --yes --account <id>`.

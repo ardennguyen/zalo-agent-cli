@@ -89,7 +89,7 @@ Chạy bằng người dùng quản trị của bạn qua SSH. `<ver>` là phiê
    sudo systemctl daemon-reload
    sudo systemctl enable --now zalo-mcp@1000000000000000001 zalo-mcp@1000000000000000002
    sudo systemctl enable --now zalo-mcp-purge.timer zalo-fleet-check.timer zalo-backup.timer
-   journalctl -u zalo-mcp@1000000000000000001 -f     # cho tới khi thấy "socket up"
+   journalctl -u zalo-mcp@1000000000000000001 -f     # cho tới khi thấy "account <id>: connecting -> connected"
    ```
 8. **Client.** Token của mỗi tài khoản là `ZALO_MCP_AUTH_TOKEN` trong tệp env của nó (`sudo grep TOKEN /etc/zalo-mcp/accounts/<id>.env`). Claude Code:
    ```json
@@ -111,17 +111,17 @@ systemctl list-timers 'zalo-*'                                      # ba timer
 
 ## 5. Vận hành
 
-- **Dừng, khởi động, khởi động lại một tài khoản:** `sudo systemctl restart zalo-mcp@<id>` hoặc `za fleet restart <id>` (cả hai đều đi qua systemd). Một unit kết thúc với mã thoát 3 (một phiên khác đã chiếm tài khoản) hoặc 4 (Zalo từ chối phiên đăng nhập đã lưu) sẽ cố ý nằm yên và hiện trong `systemctl --failed`: hãy đọc `journalctl -u zalo-mcp@<id>` trước khi khởi động nó.
+- **Dừng, khởi động, khởi động lại một tài khoản:** `sudo systemctl restart zalo-mcp@<id>` hoặc `za fleet restart <id>` (cả hai đều đi qua systemd). Khi một phiên khác của cùng phiên đăng nhập chiếm một tài khoản, tài khoản chính (always-on) kết thúc với mã thoát 3 và unit của nó cố ý nằm yên (`systemctl --failed`): hãy đọc `journalctl -u zalo-mcp@<id>`, đóng phiên kia, rồi khởi động nó. Tài khoản phụ (on-demand) thì nhường lại, vẫn chạy và từ chối yêu cầu cho đến khi `za --account <id> presence resume --yes`. Một phiên đăng nhập bị Zalo từ chối (`signed_out`) giữ cho cả hai daemon vẫn chạy; nó chỉ thoát mã 4 khi có `ZALO_EXIT_ON_SIGNED_OUT=1` (hoặc `ZALO_EXIT_ON_SIGNED_OUT_<id>=1`).
 - **Tình trạng:** timer kiểm tra chạy `fleet status --check`; lỗi sẽ hiện trong `systemctl --failed` và `journalctl -u zalo-fleet-check`. Thêm `OnFailure=` vào `zalo-fleet-check.service` để được báo (mail, ntfy).
 - **Nhật ký:** `journalctl -u 'zalo-mcp@*'`. `ZALO_LOG_LEVEL=info` trong `common.env`; không bao giờ dùng `debug` trên máy chủ (nó ghi cả nội dung tin nhắn).
 - **Sao lưu:** hằng đêm vào `/var/backups/zalo`: `<id>-<time>.db` (`db backup` đã mã hóa), `<id>-<time>.keyring.json`, `config-<time>.tgz`; giữ 14 ngày. Hãy sao chép chúng ra khỏi máy. Không tệp nào mở được nếu thiếu mật khẩu lưu trữ trong trình quản lý mật khẩu của bạn. Khôi phục: một VPS mới cài đặt tới bước 4 với **cùng** mật khẩu lưu trữ, giải nén tar cấu hình vào `/home/zalo`, sao chép mỗi `.db` thành `accounts/<id>/zalo.db`, rồi làm bước 6.
 - **Nâng cấp:** `sudo npm install -g @ardennguyen/zalo-agent-cli@<new>`, rồi khởi động lại một tài khoản, kiểm tra nó, rồi tới tài khoản kia (self-heal lấp khoảng thời gian khởi động lại).
 - **Retention:** `za --account <id> policy set retention.media 180d` (hoặc `retention` trong `storage.json`); các daemon và timer dọn dẹp sẽ áp dụng.
-- **Presence:** `mcp-config.json` giữ tài khoản chính luôn bật (webhook thời gian thực) và tài khoản phụ theo yêu cầu (socket đóng sau 5 phút rảnh và mở lại ở lần gọi kế tiếp). Các daemon làm theo thiết lập này khi presence theo yêu cầu được bật; trước đó cả hai luôn giữ kết nối.
+- **Presence:** `mcp-config.json` giữ tài khoản chính luôn bật (webhook thời gian thực) và để tài khoản phụ chạy theo yêu cầu, mặc định của các daemon này: socket của nó đóng sau 5 phút rảnh và mở lại ở lần gọi tool, lần chờ hoặc yêu cầu `za` kế tiếp, và những gì đến trong lúc đó được lấy từ hàng đợi ngoại tuyến của Zalo (`catchUp: true`). `za presence status --account <id>` cho thấy trạng thái; `fleet status` hiển thị tài khoản đang nghỉ là `idle`. Đổi trực tiếp bằng `za --account <id> policy set presence.mode always-on`.
 
 ## 6. Điện thoại, Zalo PC và Zalo Web
 
-Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**. Máy chủ chính là phiên web đó. Nếu ai đó đăng nhập cùng tài khoản vào **Zalo Web** (chat.zalo.me) bằng mã QR, Zalo sẽ đăng xuất máy chủ: lần đăng nhập bị từ chối, daemon vẫn chạy ở trạng thái `signed_out` (từ chối yêu cầu; `ZALO_EXIT_ON_SIGNED_OUT=1` cho nó thoát với mã 4 như trước) và tài khoản cần `za login` lại. **Điện thoại** và **ứng dụng Zalo PC** là các phiên đăng nhập riêng và hoạt động song song với máy chủ. Vì vậy: dùng điện thoại hoặc Zalo PC bên cạnh máy chủ, không bao giờ dùng Zalo Web.
+Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**. Máy chủ chính là phiên web đó. Nếu ai đó đăng nhập cùng tài khoản vào **Zalo Web** (chat.zalo.me) bằng mã QR, Zalo sẽ đăng xuất máy chủ: lần đăng nhập bị từ chối, daemon vẫn chạy ở trạng thái `signed_out` (từ chối yêu cầu; `ZALO_EXIT_ON_SIGNED_OUT=1` cho nó thoát với mã 4 như trước) và tài khoản cần `za login` lại, rồi `sudo systemctl restart zalo-mcp@<id>`. **Điện thoại** và **ứng dụng Zalo PC** là các phiên đăng nhập riêng và hoạt động song song với máy chủ. Vì vậy: dùng điện thoại hoặc Zalo PC bên cạnh máy chủ, không bao giờ dùng Zalo Web. Mỗi lần `za login` thêm một mục mới vào danh sách thiết bị trên điện thoại (các mục web cũ hiện là đã đăng xuất); đăng nhập lại thì giữ nguyên mã thiết bị của tài khoản, nên những tin Zalo xếp hàng cho nó vẫn còn.
 
 Hai bản sao của **cùng** một phiên đăng nhập đã lưu (VPS này và máy bạn chuyển nó từ đó sang) sẽ đá nhau ra (mã thoát 3; daemon on-demand thì nhường lại và từ chối yêu cầu cho đến khi `za presence resume --yes`). Mỗi tài khoản chỉ chạy ở một nơi.
 

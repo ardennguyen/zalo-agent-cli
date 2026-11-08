@@ -37,6 +37,8 @@ zalo-agent mcp start --account 1000000000000000001 --status   # only while the c
 
 ## 4. The phone, Zalo PC and Zalo Web
 
-Zalo keeps **one web login per account**, and this server is it. Logging the same account into **Zalo Web** (chat.zalo.me) by QR signs the server out: its next start is refused and you log in again. The **phone** and the **Zalo PC app** are separate logins and work beside it. Use the phone or Zalo PC, not Zalo Web.
+Zalo keeps **one web login per account**, and this server is it. Logging the same account into **Zalo Web** (chat.zalo.me) by QR signs the server out: its login is refused, and every tool call answers `SIGNED_OUT` until you run `zalo-agent login` again (scan the QR) and restart the client. The **phone** and the **Zalo PC app** are separate logins and work beside it. Use the phone or Zalo PC, not Zalo Web.
+
+Each QR login adds a new entry to the phone's device list (the older web entries show as logged out). A re-login of the same account keeps its device id, so the messages Zalo queued for it while it was away still arrive.
 
 Do not run the same account in two clients at once either (Claude Desktop and Claude Code both starting `--account <same id>`): the second start finds the account in use.

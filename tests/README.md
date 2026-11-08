@@ -13,7 +13,7 @@ contacts Zalo or reads your real `~/.zalo-agent-cli/`. Some tests use disposable
 loopback servers and subprocess transports.
 
 ```bash
-npm test                      # 5785 offline tests — no Zalo session needed
+npm test                      # 5790 offline tests — no Zalo session needed
 npm run test:unit             # just tests/unit/
 npm run test:cli              # just tests/cli/
 npm run lint                  # ESLint over src/ and tests/
@@ -48,7 +48,7 @@ tests/
 ├── targets.json                 # your real targets (GITIGNORED)
 ├── run-e2e.js                   # live orchestrator — enforces tier order
 ├── fixtures/                    # committed sample media (see fixtures/README.md)
-│   ├── image-64x48.{png,jpg,gif}  image-200x120.jpg  image-1x1.webp
+│   ├── image-64x48.{png,jpg,gif,bmp,tiff}  image-200x120.jpg  image-200x120-rot90.jpg  image-1x1.webp
 │   ├── notes.txt  data.csv  document.pdf  archive.zip
 │   ├── index.js                 # paths, expected dimensions, SHA-256 integrity check
 │   └── checksums.js             # regenerate the checksum table
@@ -61,8 +61,14 @@ tests/
 │   ├── targets.js               # disposable-target registry + blast-radius guard
 │   ├── live.js                  # session probe, tier gates, write helpers
 │   ├── fake-zalo/               # an offline Zalo: HTTP via fetch, plus a real local WebSocket server
-│   └── replay/                  # replay harness: our requests diffed against hand-written official shapes
-├── unit/                        # offline, pure logic + filesystem (153 files)
+│   ├── replay/                  # replay harness: our requests diffed against hand-written official shapes
+│   ├── wire-diff/               # differential wire harness: each request against what Zalo Web sends (allow rows with reasons)
+│   ├── web-call.js              # a stand-in session for the read/write tables
+│   ├── api-call-{shapes,sites,compare}.js  # every session call site and the shape it must use
+│   ├── id-scan.js               # the real-id scanner behind no-real-ids.test.js
+│   ├── use-case-manifest.js     # the file set each docs/config-samples/use-cases/ folder must hold
+│   └── {registry,slot}-worker.mjs  # child processes for the registry-lock and start-up slot races
+├── unit/                        # offline, pure logic + filesystem (247 test files; a sample below)
 │   ├── accounts.test.js              credentials.test.js           daemon-channel.test.js
 │   ├── db.test.js                    image-metadata.test.js        listener-lifecycle-rules.test.js
 │   ├── live-store.test.js            lock.test.js                  mcp-config.test.js
@@ -77,10 +83,13 @@ tests/
 │   ├── sync-v2-message-types.test.js  sync-v2-plan.test.js          sync-v2-reactions.test.js
 │   ├── sync-v2-restore-success.test.js  sync-v2-resume.test.js        sync-v2-window.test.js
 │   └── sync-v2-zcloud.test.js        thread-type.test.js           api-surface.test.js
-├── cli/                         # offline, drives the real binary
+├── cli/                         # offline, drives the real binary (25 test files; a sample below)
 │   ├── surface.test.js          # every command/subcommand/flag is registered
 │   ├── json-contract.test.js    # every personal command, run with --json against a fake session
 │   ├── validation.test.js       # every guard that fires before a network call
+│   ├── confirm-guard.test.js    # destructive commands: exit 2 without --yes, --dry-run reports
+│   ├── db.test.js  db-hidden.test.js  db-purge.test.js  # the db group on an encrypted sandbox cache
+│   ├── policy.test.js  presence.test.js  fleet.test.js  # policy files, presence without a daemon, fleet
 │   ├── sandbox-discipline.test.js  # no offline test may touch the real ~/.zalo-agent-cli/
 │   └── run-e2e-args.test.js     # the live runner refuses unknown flags before any tier
 └── e2e/                         # live, tiered — see below
@@ -314,6 +323,28 @@ bare `ETIMEDOUT`, and keeps the original error as its `cause`.
 | `unit/socket-host-live.test.js`                                                                                                                       | the same host on the real stack: a kick ends the daemon with no second socket, a refused session moves to a new login and socket, a socket that cannot authenticate gets a fresh login                                                                                                                                                                                                                                                                                                                                                                                 |
 | `unit/sync-v2-transfer.test.js`                                                                                                                       | the phone's status table (only 4 and 5 confirm; 6 to 10 end the sync), how one session reads its controls, completion by index set, per-scope failures, the failure budget, and the real frames of a declined, completed and waiting sync (mutation-checked)                                                                                                                                                                                                                                                                                                           |
 | `unit/sync-*.test.js`, `unit/live-store`, `unit/daemon-channel`, `unit/msg-forward`, `unit/send-client-id`, `unit/quote-sender`, `unit/mcp-normalize` | the sync-v2 / daemon / live-capture suites, added alongside that surface. Sixteen files not individually described here — read the docblock at the top of each; they are written to be read in that order                                                                                                                                                                                                                                                                                                                                                              |
+
+#### Added for 3.0
+
+Grouped by area; each file's header comment says what would turn it red.
+
+| Area                         | Files                                                                                                                                                                                                         | Covers                                                                                                                                                                                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Own engine, wire format      | `unit/wire-*.test.js`, `unit/kernel-*.test.js`, `unit/listener-frames`, `unit/listener-own`, `unit/api-call-shapes`, `unit/people-call-sites`, `unit/protocol-version`, `unit/split-message`                  | every request against what Zalo Web sends (`helpers/wire-diff/`), the kernel's cipher, cookies, HTTP and endpoint runner, the socket frames and listener, each session call's shape, the announced client version, the Web-style split of a long text |
+| Encryption at rest           | `unit/keystore`, `unit/db-encryption`, `unit/db-rekey`, `unit/sqlite-driver`, `unit/media-seal`, `unit/row-mac`, `unit/daemon-loop-budget`, `cli/account-security`                                            | sealed files and every key provider (faked), the one-way migration of a 2.x `zalo.db` (and a crash at each step), rekey, the SQLCipher driver, the media container, the row MAC triggers, the background media sealing handing the event loop back    |
+| `db` group, export           | `unit/db-tools`, `unit/export-crypt`, `unit/admin-export`, `cli/db`, `cli/db-hidden`, `cli/db-purge`                                                                                                          | read-only `db query`, encrypted and plaintext copies, `db verify`, `db usage` / `db purge`, hidden chats removed without the PIN, the password-encrypted export file, the CRM export job, the hidden-access grant and the download link               |
+| Storage quotas               | `unit/storage-quota`, `unit/fleet-purge`                                                                                                                                                                      | the quota clock (`warn`, `over`, `grace_ending`, `purged`, `ok`), the purge order, retention rules, `fleet purge` beside running and stopped daemons                                                                                                  |
+| Runtime policy, admin API    | `unit/policy-store`, `unit/policy-users`, `unit/admin-api`, `cli/policy`                                                                                                                                      | schema, revisions and `If-Match`, sealed files and file drops, restart-only keys, users and membership (`409 MEMBERSHIP`), the always-on cap, the admin credential (an agent token refused)                                                           |
+| On-demand presence           | `unit/presence`, `unit/presence-park`, `unit/presence-leases`, `unit/daemon-presence`, `unit/account-state`, `unit/kick-marker`, `cli/presence`                                                               | park/wake on a fake clock, hysteresis, planned `idle` gaps, CRM leases, `WARMING` / `YIELDED` / `SIGNED_OUT`, `account_state` events, `/ready` while parked, the kick marker                                                                          |
+| Fleet                        | `unit/fleet-controller`, `unit/fleet-qr`, `unit/config-samples`, `cli/fleet`                                                                                                                                  | `fleet serve` routes and supervisors, the QR add flow, the generated VPS files and the five use-case sample sets                                                                                                                                      |
+| Approvals, links, public URL | `unit/confirm-guard`, `unit/approval-delivery`, `unit/secure-page`, `unit/public-url`, `unit/media-deliver`, `unit/media-route`, `cli/confirm-guard`, `cli/msg-media`                                         | the confirmation guard on both surfaces, approve pages and where their links go, the one-time secure page, `publicUrl`, media delivery modes and `/zalo/media/<token>`                                                                                |
+| Hidden chats                 | `unit/hidden-chats`, `unit/hidden-conversations-view`, `unit/mcp-hidden-chats`, `cli/hidden-chats-cli`, `cli/hidden-filters-cli`                                                                              | the `hiddenChats` policy on every list, search, history and event, the PIN flow and its lockout, no PIN hash handed out                                                                                                                               |
+| Names                        | `unit/contact-names`, `unit/current-user-names`, `unit/thread-name-cache`                                                                                                                                     | alias first everywhere, the daemon's alias snapshot, the `alias` and `profile` controls                                                                                                                                                               |
+| Group exit                   | `unit/group-exit`                                                                                                                                                                                             | the purge on leave, removal, block or disband, `groups.onLeave: "keep"`, the delete marker, `group_gone`                                                                                                                                              |
+| Offline queue, login         | `unit/device-since`, `unit/auto-sync`, `unit/qr-login-flow`, `unit/self-heal`, `unit/self-heal-wiring`, `unit/control-events`, `unit/trusted-device-logout`, `unit/logout-production`, `unit/account-devices` | coverage never spanning a device change, the device id kept on a QR re-login, the sync tick, overflow repair from the group cloud, expired QR codes, the controls from other devices                                                                  |
+| MCP contract                 | `unit/mcp-naming`, `unit/mcp-cli-parity`, `unit/mcp-descriptions`, `unit/mcp-action-tools`, `unit/mcp-send-*`, `unit/mcp-reply-to`, `unit/mcp-undo-event`, `unit/message-buffer`, `unit/notifier`             | one name per concept, an MCP action for every personal command, tool descriptions, send kinds and warnings, `replyTo`, recall events, the buffer's cursors                                                                                            |
+| History                      | `unit/history-*`, `unit/group-history*`, `unit/msg-send-writes-nothing`                                                                                                                                       | insert-if-absent fetches, the daemon as the only writer beside a daemon, history by period, `msg send` storing nothing                                                                                                                                |
+| Docs and repo rules          | `unit/docs-contract`, `unit/no-real-ids`, `unit/rule-files`                                                                                                                                                   | the counts the docs quote, no real ids in a tracked file, the four rule files identical and under 24,000 bytes                                                                                                                                        |
 
 `cli/surface.test.js` is the machine-checkable twin of
 `skill/references/command-reference.md`. When a subcommand is added, renamed
@@ -787,6 +818,9 @@ second machine, a proxy, or an OA app.
 - [ ] Scan without confirming — shows the scanning account's name/avatar first
 - [ ] Let the QR expire — reports expiry rather than hanging
 - [ ] The phone's "Thiết bị" label matches the generated fingerprint (Chrome + the right OS)
+- [ ] A second QR login of the same account on this machine — says `Device: the same device id`; the phone lists a new device entry and the older one is logged out; a message sent to the account while it was logged out still arrives by the offline queue after the re-login
+- [ ] After `logout`, a QR login says `Device: a new device id` and the window before it stays a `new-device` gap with its `sync --from` command
+- [ ] QR login with the phone's "sync messages to this device" box ticked — `login` restores at once with no tap (`login_auto_sync` `restored`); unticked — `declined` and the `sync --from` advice; `--no-sync` only reports; `--verbose` lists the control queues read
 
 ### Session exclusivity (needs two clients)
 
@@ -799,6 +833,22 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 - [ ] `zalo-agent login` afterwards restores the CLI **and** signs Zalo Web out
 - [ ] The phone app keeps working throughout
 - [ ] `status` still reports `loggedIn: true` against a revoked session — it is a local check, not a liveness probe; use `whoami`
+- [ ] With `mcp start --http` running, a QR login into Zalo Web for the same account — the daemon emits `account_state` `signed_out`, stays up, and answers tools with `SIGNED_OUT`; with `ZALO_EXIT_ON_SIGNED_OUT=1` it exits 4 instead
+- [ ] The phone and Zalo PC stay logged in beside a running daemon throughout
+
+### On-demand presence (needs a phone or a second client)
+
+- [ ] `mcp start --http <port> -d` — after the start-up catch-up and `presence.idleTimeout` (5 min) `presence status` says `parked`; `/ready` is 200 and `fleet status` shows `idle`
+- [ ] Send the account a message while parked, then call `zalo_get_messages` — the socket wakes, the message arrives with `catchUp: true`, and the webhook gets it then
+- [ ] `presence.mode: "always-on"` (`policy set presence.mode always-on`) — the socket connects at once and never parks; the webhook fires in real time
+- [ ] Start a second copy of the same login elsewhere — the on-demand daemon emits `account_state` `yielded`, tools answer `YIELDED`; close the other copy, `presence resume --yes` takes the account back; an always-on daemon exits 3 instead
+- [ ] A CRM lease (`POST /zalo/presence/leases`) keeps the socket connected until it expires or is deleted
+
+### At rest and group exit
+
+- [ ] Copy of a 2.5.9 home (never the real one): the first 3.0 command seals the saved login, encrypts `zalo.db` (`sqlite3` then says `file is not a database`), and `account security status` lists everything sealed; `db query "select count(*) from messages"` answers
+- [ ] Leave a disposable group from the phone — a `group_gone` event, the group gone from `conv recent`, and `msg history` for it empty; with `groups.onLeave: "keep"` it stays listed with `gone: true`
+- [ ] Set an alias for a friend on the phone — within seconds the daemon logs `aliases: 1 changed` and the friend's next message carries the alias as `senderName`
 
 ### Multi-account and proxy
 
@@ -837,12 +887,12 @@ Zalo allows one web session per account and this CLI occupies it. Verified
 
 - [ ] `mcp start` — stdio transport; logs on stderr only, stdout carries only JSON-RPC
 - [ ] `zalo_get_messages` — `since` excludes already-seen messages
-- [ ] `zalo_send_message` — returns `{success, messageId}` and actually delivers
+- [ ] `zalo_send_message` — returns `{success, msgId}` and actually delivers
 - [ ] `zalo_list_threads` — unread counts match `zalo_get_messages`
 - [ ] `zalo_search_threads` — finds a Vietnamese name with accents stripped
 - [ ] `zalo_mark_read` — the cursor is global, not thread-scoped
 - [ ] `zalo_get_history` — paginates via `lastMsgId`
-- [ ] `zalo_view_media` — opens a cached attachment, and downloads an uncached one
+- [ ] `zalo_view_media` — a photo comes back inline, a video as a link that plays and seeks, and `deliver: "tempfile"` gives a private copy on the server's machine; an uncached attachment is downloaded first
 - [ ] `zalo_send_message` with `urgency: "urgent"` shows the Urgent badge in the app; `threadId: "me"` lands in My Documents
 - [ ] `zalo_react` — the reaction appears on the message for the other side (Zalo answers success for a reaction it never shows, so look at the app)
 - [ ] `zalo_undo` — your message is recalled for the other side too

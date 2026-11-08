@@ -9,6 +9,7 @@ import { InvalidArgumentError } from "commander";
 import { getApi, getOwnId } from "../core/zalo-client.js";
 import { withCurrentSenderNames } from "../core/current-user-names.js";
 import { success, error, info, output, warning } from "../utils/output.js";
+import { sendRefusal } from "../core/group-exit.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseThreadTypeArg, parseReportReason } from "../utils/cli-args.js";
 import { getActive } from "../core/accounts.js";
@@ -655,6 +656,20 @@ async function showHistoryRange({ api, activeAcc, threadId, threadType, opts, cm
     );
 }
 
+/** The msg subcommands that send into the thread named by their first argument. */
+const GONE_CHECKED_SENDS = new Set([
+    "send",
+    "send-image",
+    "send-file",
+    "send-card",
+    "send-bank",
+    "send-qr-transfer",
+    "sticker",
+    "send-voice",
+    "send-link",
+    "send-video",
+]);
+
 export function registerMsgCommands(program) {
     const msg = program.command("msg").description("Send and manage messages");
 
@@ -675,6 +690,15 @@ export function registerMsgCommands(program) {
             process.exit(1);
         }
         if (out?.notice) info(out.notice);
+        // A group this account left, was removed or blocked from, or that was disbanded: refused here with why,
+        // not at the server (src/core/group-exit.js).
+        if (GONE_CHECKED_SENDS.has(actionCommand.name()) && openAccountDb()) {
+            const why = sendRefusal(String(actionCommand.args?.[0] ?? ""));
+            if (why) {
+                error(why);
+                process.exit(1);
+            }
+        }
     });
 
     msg.command("send <threadId> <message>")

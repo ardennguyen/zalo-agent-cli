@@ -204,6 +204,9 @@ export const POLICY_KEYS = Object.freeze({
             parseDays(v) ? { value: `${parseDays(v)}d` } : { error: 'is not a number of days (e.g. "30d")' },
     },
     "retention.purgeEvery": { check: duration(60_000) },
+    // What a group's local history becomes when the account leaves it, is removed or blocked, or it is disbanded
+    // (src/core/group-exit.js): read at each exit, no restart. keep -> purge purges the kept groups on the next pass.
+    "groups.onLeave": { check: oneOf(["purge", "keep"]) },
     // On-demand presence (src/core/presence.js, src/core/presence-config.js): live, no restart.
     "presence.mode": { check: oneOf(PRESENCE_MODES) },
     "presence.idleTimeout": { check: duration(30_000) },

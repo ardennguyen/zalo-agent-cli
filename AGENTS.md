@@ -28,7 +28,7 @@ If you read nothing else, read these.
 8. **Re-read a file after writing it.** Concurrent agents work in this tree. → §5, §7
 9. **`skill/references/command-reference.md` wins** when docs disagree. → §10
 10. **Bilingual docs come in pairs.** Update both sides in the same change. → §3, §10
-11. **Three writers to `zalo.db`: the listener, sync, and `msg history`'s fetch, plus the delete-only quota/retention purge.** Nothing else writes rows. → §13
+11. **Three writers to `zalo.db`: the listener, sync, and `msg history`'s fetch, plus delete-only purges (quota, group exit).** Nothing else writes rows. → §13
 
 ### First commands in a new session
 
@@ -201,7 +201,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 
 ### Numbers quoted across many docs
 
-CLI commands (**258**), command groups (**31** containers), MCP tools (**36**), OA commands (**32**), offline tests (**5596** as of 2026-11-08). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
+CLI commands (**258**), command groups (**31** containers), MCP tools (**36**), OA commands (**32**), offline tests (**5735** as of 2026-11-09). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`, `zalo_conversation`, `zalo_profile`, `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link`.
 
@@ -269,6 +269,6 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
   - **A daemon-routed sync still taps the phone.** Routing removes the second WebSocket, not the confirmation. The daemon must never start a phone-backed stage on its own.
 - **`listen` and `mcp start` are two entry points to the same socket. Any asymmetry between them is a defect.** Both track coverage gaps through `src/core/listener-lifecycle.js` and self-heal them (`src/core/self-heal.js`); down-ness is observed, never inferred from a counter, and a deliberate stop is not a drop.
 - **One db writer per account**, enforced by `daemon.lock`. With a `listen`/`mcp` daemon up, `msg history`'s fetch and write run in the daemon (its `history` stage, `src/core/history-fetch.js`); the CLI only displays, and exits 1 rather than fetching beside a daemon that cannot answer.
-- **Message rows have exactly three writers: the listener, sync, and `msg history`'s fetch** (insert-if-absent — it never modifies or removes a row already cached), **plus the quota/retention purge: delete-only, run by the daemon holding `daemon.lock`** (`src/core/storage-quota.js`). Nothing else writes to `zalo.db`; `msg send` stores nothing, not even a looked-up name. A message you just sent is therefore not quotable, forwardable or recallable until the listener sees its echo or a `msg history` fetch returns it; say so plainly.
+- **Message rows have exactly three writers: the listener, sync, and `msg history`'s fetch** (insert-if-absent — it never modifies or removes a row already cached), **plus the quota/retention purge: delete-only, run by the daemon holding `daemon.lock`** (`storage-quota.js`), and the group-exit purge (`group-exit.js`). Nothing else writes to `zalo.db`; `msg send` stores nothing, not even a looked-up name. A message you just sent is therefore not quotable, forwardable or recallable until the listener sees its echo or a `msg history` fetch returns it; say so plainly.
 - **One media downloader, one layout.** `src/core/sync-v2/media.js` is the only one; everything writes to `accounts/<ownId>/media/<threadId>/`. **Folders are thread IDs, never names** — a name can carry a path separator and changes on rename. `media/_conversations.json` maps ID to name. `mcp-config.json`'s `media.downloadDir` overrides the root for the MCP server only.
 - **`zalo-mcp` is a pass-through launcher that serves a published engine**: it forwards every flag and subcommand to `zalo-agent`, so a tool or flag added here reaches it only once published to npm and updated.

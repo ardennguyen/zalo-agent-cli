@@ -39,6 +39,7 @@ import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import * as cacheDb from "./db.js";
 import { checkLock } from "./lock.js";
 import { openDatabase } from "./sqlite.js";
+import { purgeKeptGoneGroups, purgeKeptGoneGroupsSync } from "./group-exit.js";
 
 const DAY_MS = 86_400_000;
 /** The built-in defaults. */
@@ -462,6 +463,8 @@ function purgeOldestMessages(db, { wanted, dryRun, chunk = 2000 }) {
  * @param {(line: string) => void} [args.log]
  * @param {(cutoff: number) => number} [args.purgeOutboxDead] - delete dead deliveries older than the cutoff
  * @param {object|null} [args.policy] - pin the live policy (tests)
+ * @param {"sync"|"skip"} [args.goneGroups] - the gone groups kept so far that `groups.onLeave: purge` now applies to
+ *   (./group-exit.js): purged here at once, or skipped (the daemon's timer purges them sliced first)
  * @returns {object} the report
  */
 export function runStoragePass({
@@ -474,6 +477,7 @@ export function runStoragePass({
     log = () => {},
     purgeOutboxDead = null,
     policy,
+    goneGroups = "sync",
 }) {
     const accountDir = getAccountDir(String(ownId));
     const retention = resolveRetention(ownId, { policy });
@@ -486,8 +490,18 @@ export function runStoragePass({
         usageBefore: before,
         retention: { media: { files: 0, bytes: 0 }, messages: { rows: 0, mediaFiles: 0 }, outboxDead: 0 },
         quota: { media: { files: 0, bytes: 0 }, messages: { rows: 0, mediaFiles: 0 } },
+        goneGroups: { groups: 0, messages: 0, files: 0 },
         events: [],
     };
+
+    // 0. Groups kept as gone (groups.onLeave was keep) that the policy now says to purge: the normal order otherwise.
+    if (goneGroups === "sync") {
+        try {
+            report.goneGroups = purgeKeptGoneGroupsSync(ownId, { dryRun, policy });
+        } catch (e) {
+            log(`[storage] purging gone groups failed: ${e.message}`);
+        }
+    }
 
     // 1. Age rules.
     if (retention.mediaDays) {
@@ -585,6 +599,8 @@ export function runStoragePass({
         if (left > 0) report.quota.messages = purgeOldestMessages(db, { wanted: left, dryRun });
     }
     const freed =
+        report.goneGroups.messages +
+        report.goneGroups.files +
         report.retention.media.files +
         report.retention.messages.rows +
         report.quota.media.files +
@@ -709,10 +725,16 @@ export function describeStorage(ownId, { mediaRoot = null, dbBytes = null } = {}
 export function startStorageJobs({ firstDelayMs = 60_000, ...args }) {
     let timer = null;
     let stopped = false;
-    const pass = ({ dryRun = false } = {}) => runStoragePass({ ...args, dryRun });
-    const tick = () => {
+    const pass = ({ dryRun = false, goneGroups = "sync" } = {}) => runStoragePass({ ...args, dryRun, goneGroups });
+    const tick = async () => {
+        // Gone groups first, sliced: the socket is served on this thread (each one a group_gone event).
         try {
-            pass();
+            await purgeKeptGoneGroups(args.ownId);
+        } catch (e) {
+            args.log?.(`[storage] purging gone groups failed: ${e.message}`);
+        }
+        try {
+            pass({ goneGroups: "skip" });
         } catch (e) {
             args.log?.(`[storage] the quota/retention pass failed: ${e.message}`);
         }

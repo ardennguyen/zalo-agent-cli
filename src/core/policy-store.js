@@ -45,6 +45,7 @@ import { isSealed, openBuffer, scopeOfDir, writeSealedJson } from "./keystore/in
 import { setPolicyProvider } from "./policy-layer.js";
 import { setTenantLookup } from "./storage-quota.js";
 import { changedKeys, flattenPolicy, mergePolicy, policyGet, validatePolicy } from "./policy-schema.js";
+import { onLeaveChangeNote } from "./group-exit.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 /** The account's policy file. */
@@ -627,7 +628,17 @@ function writeOne({ t, op, v, keys, ifMatch, actor, member }) {
         changed.sort();
         audit({ actor, target: t.label, op, keys: changed, oldRev: before.rev, newRev: doc.rev, result: "applied" });
         emit({ target: t.label, kind: t.kind, id: t.id, rev: doc.rev, changed, accounts: reached });
-        return { target: t.label, rev: doc.rev, oldRev: before.rev, changed, policy: next, accounts: reached };
+        // What a change means beyond the value: a switch of groups.onLeave is not symmetric (src/core/group-exit.js).
+        const notes = changed.includes("groups.onLeave") ? [onLeaveChangeNote(policyGet(next, "groups.onLeave"))] : [];
+        return {
+            target: t.label,
+            rev: doc.rev,
+            oldRev: before.rev,
+            changed,
+            policy: next,
+            accounts: reached,
+            ...(notes.length ? { notes } : {}),
+        };
     });
 }
 

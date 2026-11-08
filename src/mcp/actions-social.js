@@ -12,6 +12,16 @@ import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
 import { applyGroupSettingChanges } from "../zalo/custom/group-settings.js";
 import { SETTING_FLAGS } from "../core/group-settings.js";
 import { lastOnlineStatus } from "../core/last-online.js";
+import { recordOwnExit } from "../core/group-exit.js";
+
+/** The session's own uid, or "". */
+function ownOf(api) {
+    try {
+        return String(api.getOwnId?.() ?? "");
+    } catch {
+        return "";
+    }
+}
 
 /** What Zalo answers for an endpoint it has retired, and what to use instead (as `friend online` / `close` say). */
 const RETIRED_404 = {
@@ -268,7 +278,12 @@ export const GROUP_EXTRA_ACTIONS = {
         guard: (a) => ({ key: "group.disperse", target: { groupId: a.groupId } }),
         async run(a, { api }) {
             await api.disperseGroup(a.groupId);
-            return { success: true, groupId: a.groupId };
+            // The disperser deletes locally on the API's success, as Zalo Web does (src/core/group-exit.js).
+            return {
+                success: true,
+                groupId: a.groupId,
+                ...(await recordOwnExit({ ownId: ownOf(api), groupId: a.groupId, reason: "disbanded" })),
+            };
         },
     },
     pending: {

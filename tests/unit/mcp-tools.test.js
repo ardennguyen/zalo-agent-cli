@@ -2140,7 +2140,11 @@ describe("zalo_group", () => {
 
     it("leave passes (groupId, silent) to Zalo: loud by default, quiet only when asked", async () => {
         const ga = groupApi();
-        assert.deepEqual(payloadOf(await call(ga, { action: "leave", groupId: G, confirm: true })), {
+        const loud = payloadOf(await call(ga, { action: "leave", groupId: G, confirm: true }));
+        // localHistory: what became of the group's local copy (src/core/group-exit.js); no cache is open here.
+        assert.match(loud.localHistory?.error ?? "", /did not record it/);
+        delete loud.localHistory;
+        assert.deepEqual(loud, {
             action: "leave",
             success: true,
             groupId: G,

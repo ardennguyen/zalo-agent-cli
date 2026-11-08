@@ -63,6 +63,7 @@ import { createDeliveredReceipts } from "../zalo/receipts.js";
 import { envForAccount, resolveWebhookDelivery, resolveWebhookUrl } from "../mcp/mcp-config.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
 import { describeQuotaEvent, startStorageJobs } from "../core/storage-quota.js";
+import { applyGroupExit, describeGroupGone, setGroupGoneSink } from "../core/group-exit.js";
 import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
@@ -634,6 +635,9 @@ export function registerListenCommand(program) {
 
             // Quotas and retention (src/core/storage-quota.js): this daemon holds daemon.lock, so it purges, on its
             // timer and for `db purge` over its channel. A storage_quota event is reported like any other event.
+            // group_gone (src/core/group-exit.js): our own exit seen live, a disband found by group info, a
+            // keep -> purge switch acted on. Reported like any other event (stdout, webhook, JSONL), never gated.
+            setGroupGoneSink((event) => emitEvent(event, describeGroupGone(event)));
             const storageJobs = startStorageJobs({
                 ownId: activeAcc.ownId,
                 emit: (event) => emitEvent(event, describeQuotaEvent(event)),
@@ -1044,9 +1048,21 @@ export function registerListenCommand(program) {
                     // is what tells being removed from removing someone else
                     // -- mcp.js passes it too.
                     const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
-                    // The system line itself, as the row a sync would restore.
-                    // Stored whatever --events says: output flags never gate storage.
-                    const row = storeGroupEventRow(event);
+                    // A gone group's later events are skipped until a join names us (Zalo Web's ZGroupLeaveCache).
+                    if (gone.ignored) return;
+                    // Our own exit: purge the group's history, or keep it flagged (groups.onLeave, read now). The
+                    // group_gone event goes out through the sink set at start.
+                    if (gone.gone) {
+                        applyGroupExit({
+                            ownId: activeAcc.ownId,
+                            threadId: gone.threadId,
+                            reason: gone.reason,
+                            at: gone.at,
+                        }).catch((e) => console.error(`[listen] group exit of ${gone.threadId} failed: ${e.message}`));
+                    }
+                    // The system line itself, as the row a sync would restore (not for an exit: the delete
+                    // marker covers it). Stored whatever --events says: output flags never gate storage.
+                    const row = gone.gone ? { stored: false } : storeGroupEventRow(event);
                     if (!row.stored && row.reason && row.reason !== "not a system-line event") {
                         console.error(`[listen] group event not stored: ${row.reason}`);
                     }
@@ -1065,12 +1081,6 @@ export function registerListenCommand(program) {
                         emitEvent(
                             { event: "board_changed", threadId: board.threadId, type: event.type },
                             `Board changed in ${board.threadId} (${event.type}) — run sync-boards to refresh`,
-                        );
-                    }
-                    if (gone.gone) {
-                        emitEvent(
-                            { event: "thread_gone", threadId: gone.threadId },
-                            `No longer in ${gone.threadId} — its local history is now orphaned (see \`conv forget\`)`,
                         );
                     }
                 });

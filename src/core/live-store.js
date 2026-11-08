@@ -21,8 +21,10 @@ import {
     upsertThread,
     upsertReaction,
     markMessageRecalled,
-    markThreadGone,
     markThreadBack,
+    markGroupGone,
+    getGroupGone,
+    clearGroupGone,
     setSyncState,
     setMessageStatus,
     findMessageByClientId,
@@ -32,6 +34,7 @@ import {
 import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { resolveCurrentUserNames } from "./current-user-names.js";
 import { aliasSnapshot } from "./contact-names.js";
+import { exitReasonOf } from "./group-exit.js";
 
 /** THREAD_TYPE.User */
 const THREAD_USER = 0;
@@ -203,7 +206,8 @@ export function storeLiveMessage(msg, opts = {}) {
     // the account no longer has. An older message (a backlog replay, a late
     // delivery) leaves the marker alone.
     try {
-        markThreadBack(threadId, timestamp);
+        // A system line is not a sighting (the phone's row for our own leave is dated after the leave).
+        if (info.type !== "group_event") markThreadBack(threadId, timestamp);
     } catch {
         /* the row is stored; getOrphanThreads still sees it as newer than the marker */
     }
@@ -602,26 +606,37 @@ function departureOf(event, ownId) {
 }
 
 /**
- * Note a group event: mark the thread gone when it says we are out, and clear
- * that mark when it shows we are back.
+ * Does this `join` name us?
  *
- * Nothing is deleted here. Being removed from a group is not permission to
- * destroy the local copy of it — the thread is flagged so it shows up as an
- * orphan, and removing it stays an explicit decision (`conv forget`).
+ * @param {object} event
+ * @param {string|undefined} ownId
+ * @returns {boolean}
+ */
+function joinNamesUs(event, ownId) {
+    if (String(event?.type || "").toLowerCase() !== "join") return false;
+    const members = Array.isArray(event?.data?.updateMembers) ? event.data.updateMembers : [];
+    if (ownId) return members.some((m) => String(m?.id ?? m) === String(ownId));
+    return Boolean(event?.isSelf);
+}
+
+/**
+ * Note a group event: record our own exit, a rejoin, or a sighting.
  *
- * Every other event about the group, dated after we left, is a sighting. Zalo
- * pushes a group's events only to its members, so receiving one -- the join
- * that re-added us, or whatever the listener sees first if it missed that --
- * means the group is ours again, and `prune-orphans` must not delete its media.
- * An event with no time of its own cannot be ordered against the departure
- * and is not used.
+ * - **Our own leave, removal or block** records the exit (leftAt, goneReason, the delete marker; src/core/db.js
+ *   markGroupGone) and returns `gone` with the reason. Nothing is deleted here: the purge (or not, `groups.onLeave`)
+ *   is ./group-exit.js applyGroupExit, which the listeners run next.
+ * - **While a group is gone** (a group exit recorded and no newer chat message), every later event of it is ignored
+ *   (`ignored: true`; the caller stores no system line) until a `join` naming us, which brings it back -- Zalo Web's
+ *   ZGroupLeaveCache: a delayed or replayed control must not undo a leave.
+ * - Otherwise (a group marked gone by a conversation list or `conv delete`) any later-dated event is a sighting and
+ *   clears the gone marker, as before.
  *
- * `listen` and `mcp start` must both pass `ownId`: without it a removal cannot
- * be told from one we performed, and it is left alone rather than guessed.
+ * `listen` and `mcp start` must both pass `ownId`: without it a removal cannot be told from one we performed, and it
+ * is left alone rather than guessed.
  *
  * @param {object} event - the listener's group event
  * @param {{ownId?: string}} [opts]
- * @returns {{gone: boolean, back: boolean, threadId?: string}}
+ * @returns {{gone: boolean, back: boolean, ignored?: boolean, threadId?: string, reason?: string, at?: number}}
  */
 export function storeGroupEvent(event, opts = {}) {
     const threadId = event?.threadId;
@@ -630,9 +645,19 @@ export function storeGroupEvent(event, opts = {}) {
     const departure = departureOf(event, opts.ownId);
     const at = groupEventTime(event);
     try {
+        const exited = getGroupGone(id);
+        if (exited) {
+            if (joinNamesUs(event, opts.ownId) && (at === null || at > exited.leftAt)) {
+                clearGroupGone(id);
+                return { gone: false, back: true, threadId: id };
+            }
+            return { gone: false, back: false, ignored: true, threadId: id };
+        }
         if (departure === "ours") {
-            markThreadGone(id, at ?? Date.now());
-            return { gone: true, back: false, threadId: id };
+            const reason = exitReasonOf(event?.type);
+            const when = at ?? Date.now();
+            markGroupGone(id, { at: when, reason });
+            return { gone: true, back: false, threadId: id, reason, at: when };
         }
         if (departure === "not-ours" && at !== null && markThreadBack(id, at).changes) {
             return { gone: false, back: true, threadId: id };

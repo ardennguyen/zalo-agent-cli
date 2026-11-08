@@ -12,6 +12,47 @@ import { aliasFirst, ensureAliases, nameFor, senderNameFields } from "../core/co
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
+import { getGroupInfoWatched, recordOwnExit, describeGroupGone } from "../core/group-exit.js";
+import { initDb } from "../core/db.js";
+import { getActive } from "../core/accounts.js";
+import { getAccountDbPath } from "../core/credentials.js";
+
+/**
+ * Open the active account's cache, for a group exit to be recorded in (src/core/group-exit.js). The account id, or
+ * null when there is no account or no cache here.
+ *
+ * @returns {string|null}
+ */
+function openActiveCache() {
+    try {
+        const acc = getActive();
+        if (!acc) return null;
+        initDb(getAccountDbPath(acc.ownId));
+        return String(acc.ownId);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Our own leave or disperse went through: record the group's exit here (purge, or keep flagged: groups.onLeave),
+ * as Zalo Web does on the API's success. A listener need not be running.
+ *
+ * @param {string} groupId
+ * @param {"leave"|"disbanded"} reason
+ * @returns {Promise<{localHistory: object}>}
+ */
+async function ownExit(groupId, reason) {
+    const ownId = openActiveCache();
+    if (!ownId) return { localHistory: { error: "no local cache for this account: nothing to remove" } };
+    return recordOwnExit({ ownId, groupId, reason });
+}
+
+/** The line a person reads about what happened to the group's local history. */
+function localHistoryLine(groupId, reason, h) {
+    if (h?.error) return `Local history: ${h.error}`;
+    return describeGroupGone({ threadId: groupId, reason, mode: h.mode, purged: h.purged });
+}
 
 export function registerGroupCommands(program) {
     const group = program.command("group").description("Manage groups");
@@ -110,7 +151,7 @@ export function registerGroupCommands(program) {
         .action(async (groupId) => {
             try {
                 // getGroupInfo takes a list of group ids, as the Web's getmg-v2 does.
-                const raw = await getApi().getGroupInfo([groupId]);
+                const raw = await getGroupInfoWatched(getApi(), openActiveCache(), [String(groupId)]);
                 // Members named alias first, as Zalo's member list shows them (src/core/contact-names.js).
                 await ensureAliases(getApi());
                 const result = withMemberNames(raw);
@@ -204,6 +245,7 @@ export function registerGroupCommands(program) {
             try {
                 // Shared with zalo_get_group_members (src/core/group-members.js):
                 // the uids come out of memVerList, since memberIds is always [].
+                openActiveCache(); // a disbanded group found here is recorded (src/core/group-exit.js)
                 const { uids: memberUids, totalMember } = await groupMemberUids(getApi(), groupId);
                 output(memberUids, program.opts().json, () => {
                     if (memberUids.length === 0) {
@@ -351,7 +393,11 @@ export function registerGroupCommands(program) {
         .action(async (groupId, opts) => {
             try {
                 const result = await getApi().leaveGroup(groupId, Boolean(opts.silent));
-                output(result, program.opts().json, () => success("Left group"));
+                const exit = await ownExit(groupId, "leave");
+                output({ ...result, ...exit }, program.opts().json, () => {
+                    success("Left group");
+                    info(localHistoryLine(groupId, "leave", exit.localHistory));
+                });
             } catch (e) {
                 error(e.message);
             }
@@ -694,7 +740,11 @@ export function registerGroupCommands(program) {
         .action(async (groupId) => {
             try {
                 const result = await getApi().disperseGroup(groupId);
-                output(result, program.opts().json, () => success(`Group ${groupId} dispersed`));
+                const exit = await ownExit(groupId, "disbanded");
+                output({ ...(result ?? {}), ...exit }, program.opts().json, () => {
+                    success(`Group ${groupId} dispersed`);
+                    info(localHistoryLine(groupId, "disbanded", exit.localHistory));
+                });
             } catch (e) {
                 error(`Disperse group failed: ${e.message}`);
             }

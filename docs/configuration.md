@@ -56,7 +56,8 @@ Files and the environment are read once at start; the policy is read again on ev
 
 The policy takes `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
-`media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*` and `retention.*`.
+`media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*` and
+`groups.onLeave`.
 A key read only at start (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`, the key
 provider) and every secret (`webhookSecret`) is refused with `restartRequired`; any other key is refused as unknown.
 The files are sealed under the account's boot key (the tenants' under `<CONFIG_DIR>/tenants/keyring.json`) and carry a
@@ -123,6 +124,39 @@ The admin token: `zalo-agent policy token --rotate` makes one and shows it once;
 `<CONFIG_DIR>/admin/admin-token.json`, and a rotation retires the old one at once. Or point
 `ZALO_MCP_ADMIN_TOKEN_FILE` (`admin.tokenFile`) at a file your provider fills (a systemd credential, a KMS-decrypted
 mount). `ZALO_MCP_ADMIN_TOKEN` is for development.
+
+### Leaving a group (`groups.onLeave`)
+
+When the account **leaves** a group, is **removed** or **blocked** from it, or the group is **disbanded**, Zalo Web and
+PC delete that group's local history at once. So does this engine by default:
+
+| Value | What happens |
+|---|---|
+| `purge` (default) | At the exit: the group's messages (their row MACs and search entries with them; `secure_delete` zeroes the pages), reactions, board items (pins, notes, polls), reminders, cloud index and conversation state (pin, unread mark, read watermark) are deleted in bounded chunks that hand the event loop back, and the downloaded media no other conversation points at; media and export links into it are revoked. The group leaves `conv recent`, `zalo_list_conversations` and `zalo_search_threads`. |
+| `keep` | Nothing is deleted. The group stays readable and is listed flagged: `gone: true`, `leftAt` (epoch ms), `goneReason` (`leave`, `removed`, `blocked`, `disbanded`) in `conv recent`, `zalo_list_conversations`, `zalo_list_threads` and `zalo_search_threads`; `db export` copies the same columns of `threads`. A send to it (`msg send` and the other `msg send-*`, `zalo_send_message`) is refused with the reason and the date. Kept groups follow the normal quota/retention order. |
+
+Either way the group keeps a **delete marker** (`threads.deleteMarkerAt`, like Zalo's `deleteAllPrior` tombstone): no
+writer -- the listener, a phone restore (`sync`), `msg history`, the offline catch-up or a cloud pull -- stores a
+message of the group dated at or before it again. While a group is gone its later group events are ignored until a
+`join` that names this account (Zalo Web's rule); a chat message dated after the exit, or a restore's conversation
+list that holds the group, also proves the account is back. A rejoin never brings back what was purged.
+
+What is detected: our own `leave` / `remove_member` / `block_member` event (a running `listen` or `mcp start`); our
+own `group leave` / `group disperse` (and `zalo_group` `leave` / `disperse`) on Zalo's success, **with no listener
+running**, behind their usual confirmation (`--yes`; the MCP `confirmMode`); a disband from group info -- the group
+listed in `removedsGroup`, or answered with error 161 (or not-a-member) when asked alone (`group info`, `group members`,
+`zalo_group` `info`, `zalo_get_group_members`, the MCP thread-name cache at start, `sync`'s group fetch). Each exit is a
+`group_gone` event: `{event: "group_gone", accountId, threadId, reason, leftAt, mode, source, purged: {messages,
+reactions, boardItems, reminders, cloudItems, convState, files, filesShared, fileErrors, links}|null}` -- printed and
+written to the JSONL and webhook by `listen`, and by `mcp start` to its webhook and live buffer (a system event in
+`zalo_get_messages` / `zalo_wait_for_message`).
+
+It is a **live** runtime policy key (tenant < user < account), read at the moment of each exit, no restart. Lowest
+first: the default, `storage.json` `groups.onLeave` then `accounts.<ownId>.groups.onLeave`,
+`ZALO_GROUPS_ON_LEAVE[_<ownId>]`, then the policy. **Switching `keep` -> `purge`** purges the groups kept so far on the
+next quota/retention pass (`retention.purgeEvery`; `db purge`, or `fleet purge` for a stopped account). **Switching
+`purge` -> `keep`** changes future exits only: **purged history never comes back.** `policy set` and the admin API say
+so in their reply (`notes`).
 
 ### Users, the always-on cap and on-demand presence
 
@@ -220,6 +254,7 @@ always-on tier).
 | `ZALO_NET_PROBE` |  | what a daemon asks to learn whether the network is up while its socket is down (every 10 s): a URL, default a global search engine's lightweight page, or `off` to assume the network is always up and contact nothing but Zalo | | |
 | `ZALO_STORAGE_PROVIDER` |  | key provider that protects the saved files at rest: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Default by platform; a Linux server without a desktop keyring must set one. See [security.md](security.md) | | |
 | `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | yes | `keep` or `<N>d`: the age rules of the local cache, over `storage.json`'s `retention.messages` / `retention.media` (see [Storage quotas and retention](#storage-quotas-and-retention)) | | |
+| `ZALO_GROUPS_ON_LEAVE` | yes | `purge` (default) or `keep`: what a left, removed-from, blocked-from or disbanded group's local history becomes, over `storage.json`'s `groups.onLeave` (see [Leaving a group](#leaving-a-group-groupsonleave)) | | |
 | `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: lock everything a login does not need under the account's login `dkey` as well. Default off | | |
 | `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | the chosen provider's options (`ZALO_STORAGE_KEY`: the `env` provider's key, weak by design) | | |
 

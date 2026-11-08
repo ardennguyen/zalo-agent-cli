@@ -56,7 +56,8 @@ máy chủ đang chạy. Tệp và biến môi trường chỉ được đọc m
 
 Chính sách nhận `confirmMode`, `hiddenChats`, `allowPinArgument`, `approval.*`, `media.deliver`, `media.inlineMaxBytes`,
 `media.allowDeliver`, `media.linkTtl`, `media.tempfileTtl`, `media.linkAuth`, `media.linkRateLimit`,
-`media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*` và `retention.*`. Khóa
+`media.capability.*`, `media.autoOpen`, `webhook`, `webhookBatchSize`, `webhookMaxAge`, `quota.*`, `retention.*` và
+`groups.onLeave`. Khóa
 chỉ đọc khi khởi động (`httpPort`, `host`, `publicUrl`, `tls`, `oauth`, `trustedProxies`, `admin`, bộ cung cấp khóa) và
 mọi bí mật (`webhookSecret`) bị từ chối với `restartRequired`; khóa khác bị từ chối vì không biết. Các tệp được niêm
 phong bằng khóa boot của tài khoản (của tenant thì bằng `<CONFIG_DIR>/tenants/keyring.json`) và có số phiên bản (`rev`)
@@ -123,6 +124,40 @@ Token admin: `zalo-agent policy token --rotate` tạo một token và hiện nó
 phong trong `<CONFIG_DIR>/admin/admin-token.json`, và lần xoay mới làm token cũ hết hiệu lực ngay. Hoặc trỏ
 `ZALO_MCP_ADMIN_TOKEN_FILE` (`admin.tokenFile`) tới tệp do bộ cung cấp của bạn điền (credential của systemd, mount giải
 mã bằng KMS). `ZALO_MCP_ADMIN_TOKEN` chỉ dùng khi phát triển.
+
+### Rời nhóm (`groups.onLeave`)
+
+Khi tài khoản **rời** một nhóm, bị **xóa** hoặc bị **chặn** khỏi nhóm, hoặc nhóm bị **giải tán**, Zalo Web và PC xóa
+ngay lịch sử cục bộ của nhóm đó. Engine này cũng làm vậy theo mặc định:
+
+| Giá trị | Điều gì xảy ra |
+|---|---|
+| `purge` (mặc định) | Ngay khi rời: tin nhắn của nhóm (kèm row MAC và mục tìm kiếm; `secure_delete` ghi đè trang bằng số 0), cảm xúc, mục bảng tin (ghim, ghi chú, bình chọn), nhắc hẹn, chỉ mục cloud và trạng thái hội thoại (ghim, đánh dấu chưa đọc, mốc đã đọc) bị xóa theo từng đợt giới hạn có nhường vòng lặp sự kiện, cùng media đã tải mà không hội thoại nào khác trỏ tới; link media và link export vào nhóm bị thu hồi. Nhóm biến mất khỏi `conv recent`, `zalo_list_conversations` và `zalo_search_threads`. |
+| `keep` | Không xóa gì. Nhóm vẫn đọc được và được liệt kê kèm cờ: `gone: true`, `leftAt` (epoch ms), `goneReason` (`leave`, `removed`, `blocked`, `disbanded`) trong `conv recent`, `zalo_list_conversations`, `zalo_list_threads` và `zalo_search_threads`; `db export` chép các cột đó của `threads`. Gửi vào nhóm (`msg send` và các `msg send-*`, `zalo_send_message`) bị từ chối kèm lý do và ngày. Nhóm được giữ tuân theo thứ tự hạn mức/thời gian lưu giữ thông thường. |
+
+Trong cả hai trường hợp nhóm giữ một **mốc xóa** (`threads.deleteMarkerAt`, như tombstone `deleteAllPrior` của Zalo):
+không bên ghi nào -- listener, khôi phục từ điện thoại (`sync`), `msg history`, đồng bộ bù khi offline hay kéo từ cloud --
+lưu lại tin nhắn của nhóm có thời điểm bằng hoặc trước mốc đó. Khi nhóm đã rời, các sự kiện nhóm sau đó bị bỏ qua cho
+đến khi có một `join` nêu tên tài khoản này (quy tắc của Zalo Web); một tin nhắn chat có thời điểm sau khi rời, hoặc danh
+sách hội thoại của một lần khôi phục có chứa nhóm, cũng chứng tỏ tài khoản đã quay lại. Vào lại nhóm không bao giờ mang
+về những gì đã xóa.
+
+Những gì được phát hiện: sự kiện `leave` / `remove_member` / `block_member` của chính mình (khi `listen` hoặc `mcp start`
+đang chạy); `group leave` / `group disperse` của chính mình (và `zalo_group` `leave` / `disperse`) khi Zalo báo thành
+công, **không cần listener đang chạy**, vẫn sau bước xác nhận thường lệ (`--yes`; `confirmMode` của MCP); nhóm bị giải
+tán theo thông tin nhóm -- nhóm nằm trong `removedsGroup`, hoặc bị trả lỗi 161 (hoặc không phải thành viên) khi hỏi riêng
+(`group info`, `group members`, `zalo_group` `info`, `zalo_get_group_members`, bộ nhớ tên hội thoại của MCP lúc khởi
+động, bước lấy nhóm của `sync`). Mỗi lần rời là một sự kiện `group_gone`: `{event: "group_gone", accountId, threadId,
+reason, leftAt, mode, source, purged: {messages, reactions, boardItems, reminders, cloudItems, convState, files,
+filesShared, fileErrors, links}|null}` -- `listen` in ra và ghi vào JSONL và webhook, `mcp start` gửi tới webhook và bộ
+đệm trực tiếp (một sự kiện hệ thống trong `zalo_get_messages` / `zalo_wait_for_message`).
+
+Đây là khóa chính sách runtime **áp dụng ngay** (tenant < user < account), được đọc tại thời điểm mỗi lần rời nhóm,
+không cần khởi động lại. Thấp nhất trước: mặc định, `storage.json` `groups.onLeave` rồi `accounts.<ownId>.groups.onLeave`,
+`ZALO_GROUPS_ON_LEAVE[_<ownId>]`, rồi chính sách. **Chuyển `keep` -> `purge`** sẽ xóa các nhóm đã giữ tới nay ở lần kiểm
+tra hạn mức/thời gian lưu giữ kế tiếp (`retention.purgeEvery`; `db purge`, hoặc `fleet purge` cho tài khoản đang dừng).
+**Chuyển `purge` -> `keep`** chỉ áp dụng cho các lần rời nhóm sau này: **lịch sử đã xóa không bao giờ quay lại.**
+`policy set` và admin API nói rõ điều này trong phản hồi (`notes`).
 
 ### Người dùng, giới hạn luôn-kết-nối và hiện diện theo nhu cầu
 
@@ -220,6 +255,7 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_NET_PROBE` |  | thứ daemon hỏi để biết mạng còn hoạt động hay không khi socket đang đứt (mỗi 10 giây): một URL, mặc định là một trang nhẹ của công cụ tìm kiếm toàn cầu, hoặc `off` để coi như mạng luôn hoạt động và không liên hệ nơi nào ngoài Zalo | | |
 | `ZALO_STORAGE_PROVIDER` |  | bộ cung cấp khóa bảo vệ các file đã lưu trên đĩa: `dpapi`, `keychain`, `secret-service`, `systemd-creds`, `kms`, `passphrase`, `env`. Mặc định theo nền tảng; server Linux không có desktop keyring phải đặt. Xem [security.vi.md](security.vi.md) | | |
 | `ZALO_RETENTION_MESSAGES`, `ZALO_RETENTION_MEDIA` | có | `keep` hoặc `<N>d`: quy tắc theo tuổi của bộ nhớ đệm, đè lên `retention.messages` / `retention.media` của `storage.json` (xem mục Hạn mức dung lượng và thời gian lưu giữ) | | |
+| `ZALO_GROUPS_ON_LEAVE` | có | `purge` (mặc định) hoặc `keep`: lịch sử cục bộ của nhóm đã rời, bị xóa, bị chặn hoặc bị giải tán sẽ ra sao, đè lên `groups.onLeave` của `storage.json` (xem mục Rời nhóm) | | |
 | `ZALO_STORAGE_DKEY_LAYER` |  | `1` / `0`: khóa thêm mọi thứ không cần cho việc đăng nhập bằng `dkey` của lần đăng nhập. Mặc định tắt | | |
 | `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` |  | tùy chọn của bộ cung cấp khóa đã chọn (`ZALO_STORAGE_KEY`: khóa của bộ `env`, yếu theo thiết kế) | | |
 

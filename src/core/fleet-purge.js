@@ -26,6 +26,8 @@ export function purgeSummary(report) {
         mediaFiles: (r.retention?.media?.files ?? 0) + (r.quota?.media?.files ?? 0),
         messages: (r.retention?.messages?.rows ?? 0) + (r.quota?.messages?.rows ?? 0),
         outboxDead: r.retention?.outboxDead ?? 0,
+        goneGroups: r.goneGroups?.groups ?? 0,
+        goneGroupMessages: r.goneGroups?.messages ?? 0,
         usedBefore: r.usageBefore?.total ?? null,
         usedAfter: r.dryRun ? null : (r.state?.usage?.total ?? null),
         events: (r.events ?? []).map((e) => e.level),

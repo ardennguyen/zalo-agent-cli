@@ -7,6 +7,7 @@
 
 import { getRecentThreads } from "./db.js";
 import { dmTitle } from "./contact-names.js";
+import { goneFields, goneGroupMap } from "./group-exit.js";
 
 /**
  * The most recently active cached conversations, newest first.
@@ -25,7 +26,10 @@ import { dmTitle } from "./contact-names.js";
  * @returns {object[]} `threads` rows (`threadId`, `type`, `name`, `lastUpdate`, …)
  */
 export function recentConversations(limit, kind = "all", { excludeThreadIds } = {}) {
+    // A gone group (src/core/group-exit.js): flagged while its history is kept, left out once it was purged.
+    const gone = goneGroupMap();
     const excluded = new Set([...(excludeThreadIds ?? [])].map(String));
+    for (const [id, g] of gone) if (!g.messages) excluded.add(id);
     const of = (k) => {
         if (!excluded.size) return getRecentThreads(limit, k);
         return getRecentThreads(limit + excluded.size, k)
@@ -33,7 +37,11 @@ export function recentConversations(limit, kind = "all", { excludeThreadIds } = 
             .slice(0, limit);
     };
     // A 1-1 is titled by the owner's alias, as it is now (the stored title can be from before an alias change).
-    const titled = (rows) => rows.map((t) => (t.type === "dm" ? { ...t, name: dmTitle(t.threadId, t.name) } : t));
+    const titled = (rows) =>
+        rows.map((t) => ({
+            ...(t.type === "dm" ? { ...t, name: dmTitle(t.threadId, t.name) } : t),
+            ...goneFields(gone.get(String(t.threadId)) ?? null),
+        }));
     if (kind === "dm" || kind === "group") return titled(of(kind));
     return titled([...of("dm"), ...of("group")].sort((a, b) => (b.lastUpdate || 0) - (a.lastUpdate || 0)));
 }

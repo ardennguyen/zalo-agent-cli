@@ -7,5 +7,6 @@
     },
     "rowMac": { "verifyOnRead": "actions" },
     "retention": { "messages": "90d", "media": "30d", "outboxDead": "7d", "purgeEvery": "1h" },
-    "quota": { "account": { "limit": null }, "graceDays": 45, "warnAt": 0.8, "purgeOrder": "media-first" }
+    "quota": { "account": { "limit": null }, "graceDays": 45, "warnAt": 0.8, "purgeOrder": "media-first" },
+    "groups": { "onLeave": "purge" }
 }

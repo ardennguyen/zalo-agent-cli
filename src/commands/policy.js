@@ -155,6 +155,7 @@ export function registerPolicyCommands(program) {
             output(r, jsonMode, () => {
                 if (!r.changed.length) info(`${r.target} is already so (rev ${r.rev}).`);
                 else success(`${r.target} rev ${r.rev}: ${r.changed.join(", ")}`);
+                for (const n of r.notes ?? []) info(n);
                 for (const d of r.demoted ?? [])
                     warning(`always-on cap (${d.scope}, ${d.cap}): account ${d.accountId} is now on-demand`);
                 if (r.via === "file") info("No daemon runs for this account: the next start reads it.");
@@ -181,6 +182,7 @@ export function registerPolicyCommands(program) {
             output(r, jsonMode, () => {
                 if (!r.changed.length) info(`${key} is not set in ${r.target} (rev ${r.rev}).`);
                 else success(`${r.target} rev ${r.rev}: removed ${r.changed.join(", ")}`);
+                for (const n of r.notes ?? []) info(n);
             });
         });
 

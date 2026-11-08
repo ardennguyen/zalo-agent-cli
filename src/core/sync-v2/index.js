@@ -19,6 +19,7 @@
  *
  * See tests/HANDOFF.md / agent/work/transfer-sync-v2 for the protocol notes.
  */
+import { getGroupInfoWatched } from "../group-exit.js";
 import zlib from "node:zlib";
 import crypto from "node:crypto";
 import { resolve } from "node:path";
@@ -517,7 +518,9 @@ export class SyncV2 {
             const gridVer = groups?.gridVerMap || groups?.data?.gridVerMap || {};
             const gids = Object.keys(gridVer);
             for (let i = 0; i < gids.length; i += 50) {
-                const info = await this.api.getGroupInfo(gids.slice(i, i + 50)).catch(() => ({}));
+                // Watched: a group the fetch lists as removed was disbanded (src/core/group-exit.js).
+                const own = /^[1-9][0-9]*$/.test(String(this.accountName || "")) ? String(this.accountName) : null;
+                const info = await getGroupInfoWatched(this.api, own, gids.slice(i, i + 50)).catch(() => ({}));
                 const gi = info?.gridInfoMap || info?.data?.gridInfoMap || {};
                 for (const g of Object.values(gi))
                     if (g.globalId) map.set(g.globalId, { id: String(g.groupId), name: g.name || "", type: "group" });

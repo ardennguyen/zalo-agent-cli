@@ -71,6 +71,7 @@ import { undoPayload } from "../zalo/custom/group-visibility.js";
 import { pinMessage, unpinMessage, textPinParams } from "../zalo/custom/pin.js";
 import { coverageReport } from "../core/coverage.js";
 import { groupMemberUids, fetchMemberNames } from "../core/group-members.js";
+import { getGroupInfoWatched, recordOwnExit, goneFields, goneGroupMap, sendRefusal } from "../core/group-exit.js";
 import { recentConversations } from "../core/recent-conversations.js";
 import { callRead, describeReads, READ_NAMES, ReadUsageError } from "../zalo/reads.js";
 import "../core/local-reads.js";
@@ -984,6 +985,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return err(thread.error);
             }
             const { threadId, threadType } = thread;
+            // A group this account left or lost (src/core/group-exit.js): refused here, not at the server.
+            const goneRefusal = sendRefusal(threadId);
+            if (goneRefusal) return err(goneRefusal);
             // The reply every non-text send shares: the new message's ids, as a text send reports them.
             const sentReply = (kind, result, more = {}) => {
                 const msgId = result?.msgId ?? result?.message?.msgId ?? null;
@@ -1341,6 +1345,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                     stats.map((t) => String(t.threadId)),
                 );
                 // Enrich each stat entry with threadType, thread name and read state
+                const gone = goneGroupMap();
                 const enriched = stats.map((t) => {
                     const threadType = buffer.getThreadType(t.threadId) ?? "unknown";
                     const cached = nameCache?.get(t.threadId);
@@ -1350,6 +1355,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         name: dmNames.get(String(t.threadId))?.name ?? cached?.name ?? null,
                         ...(cached?.memberCount !== undefined && { memberCount: cached.memberCount }),
                         readState: describeReadState(reads.get(String(t.threadId))),
+                        // Left, removed, blocked or disbanded (src/core/group-exit.js); sends to it are refused.
+                        ...goneFields(gone.get(String(t.threadId)) ?? null),
                     };
                 });
                 const filtered = type === "all" ? enriched : enriched.filter((t) => t.threadType === type);
@@ -2058,6 +2065,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         lastActivity: ts,
                         lastActivityAt: ts ? new Date(ts).toISOString() : null,
                         readState: describeReadState(reads.get(String(t.threadId))),
+                        // A group this account left or lost, kept by groups.onLeave "keep" (src/core/group-exit.js).
+                        ...(t.gone && { gone: true, leftAt: t.leftAt, goneReason: t.goneReason }),
                     };
                 });
                 return ok({
@@ -3888,7 +3897,10 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             try {
                 switch (action) {
                     case "info": {
-                        const info = groupInfoFrom(await api.getGroupInfo([gid]), gid);
+                        const info = groupInfoFrom(
+                            await getGroupInfoWatched(api, ownIdOf(api) || null, [String(gid)]),
+                            gid,
+                        );
                         if (!info) {
                             return err(
                                 `Zalo's answer does not include group ${gid}: this account is not in it, or it is not ` +
@@ -3946,12 +3958,16 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         const quiet = silent === true;
                         const res = await api.leaveGroup(gid, quiet);
                         const memberError = Array.isArray(res?.memberError) ? res.memberError : [];
+                        // As Zalo Web on the API's success: the group's local history goes now (or is kept flagged,
+                        // groups.onLeave), whether or not a listener sees the echo.
+                        const exit = await recordOwnExit({ ownId: ownIdOf(api), groupId: gid, reason: "leave" });
                         return ok({
                             action,
                             success: true,
                             groupId: gid,
                             silent: quiet,
                             ...(memberError.length > 0 && { memberError }),
+                            ...exit,
                         });
                     }
                     default:

@@ -480,7 +480,12 @@ describe("storage samples", () => {
             for (const key of ["graceDays", "warnAt", "purgeOrder"])
                 assert.ok(key in (cfg.quota ?? {}), `quota.${key} is set`);
             assert.ok("limit" in (cfg.quota?.account ?? {}), "quota.account.limit is set (null: no limit)");
-            const v = validatePolicy({ retention: cfg.retention, quota: cfg.quota }, { allowNull: true });
+            // What a left, removed-from, blocked-from or disbanded group's history becomes: set, at its default.
+            assert.equal(cfg.groups?.onLeave, "purge", "groups.onLeave is set");
+            const v = validatePolicy(
+                { retention: cfg.retention, quota: cfg.quota, groups: cfg.groups },
+                { allowNull: true },
+            );
             assert.deepEqual(v.errors, [], JSON.stringify(v.errors));
         });
     }

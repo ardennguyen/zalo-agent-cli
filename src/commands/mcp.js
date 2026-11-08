@@ -104,6 +104,7 @@ import { createAdminApi, resolveAdminCredentials } from "../core/admin-api.js";
 import { createExportApi } from "../core/data-export.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
 import { describeQuotaEvent, describeStorage, quotaSystemEvent, startStorageJobs } from "../core/storage-quota.js";
+import { applyGroupExit, describeGroupGone, groupGoneSystemEvent, setGroupGoneSink } from "../core/group-exit.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
 import { deviceSinceOf } from "../core/device-since.js";
 import { describeQueueOverflow, queueOverflowSystemEvent } from "../core/overflow-repair.js";
@@ -671,7 +672,7 @@ export function registerMCPCommands(program) {
             // Build thread name cache (groups + friends → in-memory index)
             const nameCache = new ThreadNameCache();
             try {
-                await nameCache.init(getApi());
+                await nameCache.init(getApi(), { ownId: activeAcc.ownId });
             } catch (e) {
                 console.error("[mcp] Thread name cache init failed (non-fatal):", e.message);
             }
@@ -1033,6 +1034,16 @@ export function registerMCPCommands(program) {
             // that purges, on its timer (retention.purgeEvery) and for `db purge` over its channel. Over a limit,
             // caching goes on; the storage_quota events go to the webhook and, as system events, to the live buffer that
             // zalo_get_messages / zalo_wait_for_message read (not every MCP client is an agent: a person sees their usage).
+            // group_gone (src/core/group-exit.js): to the log, the webhook and the live buffer, like storage_quota;
+            // the thread-name cache drops a purged group and flags a kept one (zalo_search_threads).
+            setGroupGoneSink((event) => {
+                console.error(`[mcp] ${describeGroupGone(event)}`);
+                webhookDelivery?.enqueue(null, event);
+                buffer.pushSystem(groupGoneSystemEvent(event));
+                if (event.mode === "keep") {
+                    nameCache?.set?.(event.threadId, { gone: true, leftAt: event.leftAt, goneReason: event.reason });
+                } else nameCache?.drop?.(event.threadId);
+            });
             const storageJobs = startStorageJobs({
                 ownId: activeAcc.ownId,
                 mediaRoot: MEDIA_DIR || config.media?.downloadDir || null,
@@ -1392,6 +1403,20 @@ export function registerMCPCommands(program) {
 
                 api.listener.on("group_event", (event) => {
                     noteBoardChange(event);
+                    // Same call as `listen`: our uid tells being removed from removing someone else. A gone group's
+                    // later events are skipped until a join names us (Zalo Web's ZGroupLeaveCache).
+                    const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
+                    if (gone.ignored) return;
+                    if (gone.gone) {
+                        // Purge or keep (groups.onLeave, read now); the group_gone event goes through the sink.
+                        applyGroupExit({
+                            ownId: activeAcc.ownId,
+                            threadId: gone.threadId,
+                            reason: gone.reason,
+                            at: gone.at,
+                        }).catch((e) => console.error(`[mcp] group exit of ${gone.threadId} failed: ${e.message}`));
+                        return;
+                    }
                     storeGroupEventRow(event);
                     const groupName = typeof event?.data?.groupName === "string" ? event.data.groupName.trim() : "";
                     if (groupName && event?.threadId !== undefined && event?.threadId !== null) {
@@ -1400,10 +1425,6 @@ export function registerMCPCommands(program) {
                             nameCache?.set(tid, { name: groupName, type: "group" });
                         }
                     }
-                    // Same call as `listen`: our uid tells being removed from
-                    // removing someone else, and a later event clears the flag.
-                    const gone = storeGroupEvent(event, { ownId: activeAcc.ownId });
-                    if (gone.gone) console.error(`[mcp] no longer in ${gone.threadId} — local history orphaned`);
                 });
 
                 api.listener.on("connected", () => {

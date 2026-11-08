@@ -447,6 +447,12 @@ export function initDb(dbPath) {
             db.exec("UPDATE threads SET deleteMarkerAt = leftAt WHERE leftAt IS NOT NULL");
         })();
     }
+    // Why a group stopped being ours (./group-exit.js): leave, removed, blocked or disbanded. Set with leftAt by a
+    // group exit only; a conversation list or `conv delete` leaves it null. While it is set, only a `join` naming us
+    // (or a message dated after leftAt) brings the group back, as Zalo Web's ZGroupLeaveCache rules.
+    try {
+        db.exec("ALTER TABLE threads ADD COLUMN goneReason TEXT");
+    } catch {}
     // The read watermark: the newest message this account has read in the
     // conversation, on any device, as the server reports it (./read-state.js).
     // Nullable: nothing is known until the listener sees a report.
@@ -487,6 +493,21 @@ export function initDb(dbPath) {
 function belowFloor(msg) {
     const ts = Number(msg?.timestamp);
     return retentionFloor > 0 && Number.isFinite(ts) && ts > 0 && ts <= retentionFloor;
+}
+
+/**
+ * True when a message is at or before its conversation's delete marker (threads.deleteMarkerAt): `conv delete` or a
+ * group exit removed everything up to it, and no writer -- the listener, a phone restore, a history or cloud fetch --
+ * stores one there again (Zalo's per-conversation `deleteAllPrior` tombstone). Read from the table on every write, not
+ * cached: another process (`group leave` beside a daemon) may have just set it.
+ */
+function belowDeleteMarker(threadId, timestamp) {
+    const ts = Number(timestamp);
+    if (threadId === undefined || threadId === null || !Number.isFinite(ts) || ts <= 0) return false;
+    const at = Number(
+        db.prepare("SELECT deleteMarkerAt FROM threads WHERE threadId = ?").get(String(threadId))?.deleteMarkerAt,
+    );
+    return Number.isFinite(at) && at > 0 && ts <= at;
 }
 
 /**
@@ -843,6 +864,8 @@ export function insertMessage(msg) {
     if (!db) throw new Error("Database not initialized");
     // Purged by quota or retention: never stored again (the listener, sync and history alike).
     if (belowFloor(msg)) return { changes: 0, belowRetentionFloor: true };
+    // Deleted or left: nothing up to the conversation's delete marker comes back.
+    if (belowDeleteMarker(msg?.threadId, msg?.timestamp)) return { changes: 0, belowDeleteMarker: true };
 
     // A replay may resolve an opaque sender from an older sync. Never let an
     // unresolved replay replace a canonical live UID, or a different numeric
@@ -968,6 +991,7 @@ export function insertMessage(msg) {
 export function insertMessageIfAbsent(msg) {
     if (!db) throw new Error("Database not initialized");
     if (belowFloor(msg)) return { changes: 0, belowRetentionFloor: true };
+    if (belowDeleteMarker(msg?.threadId, msg?.timestamp)) return { changes: 0, belowDeleteMarker: true };
 
     const stmt = db.prepare(`
     INSERT INTO messages (msgId, threadId, senderId, senderName, text, text_norm, timestamp, type, raw_data, localPath, has_attachment, msgStatus)
@@ -1789,7 +1813,9 @@ export function recordConversationList({ present, clearBefore, markBefore, markK
     return db.transaction(() => {
         const cleared = db
             .prepare(
-                "UPDATE threads SET leftAt = NULL WHERE leftAt IS NOT NULL AND leftAt < @clearBefore " +
+                // A listed group is one the account is in now (the list was mapped through the CURRENT group list):
+                // like a join naming us, it ends a group exit too. Events of a gone group never do (./group-exit.js).
+                "UPDATE threads SET leftAt = NULL, goneReason = NULL WHERE leftAt IS NOT NULL AND leftAt < @clearBefore " +
                     "AND threadId IN (SELECT value FROM json_each(@present)) RETURNING threadId",
             )
             .all(params)
@@ -1896,6 +1922,202 @@ export function markThreadGone(threadId, at = Date.now()) {
         .run({ at: Number(at), threadId: String(threadId) });
 }
 
+/** Why a group stopped being ours (threads.goneReason). */
+export const GONE_REASONS = Object.freeze(["leave", "removed", "blocked", "disbanded"]);
+
+/**
+ * Record a group exit (./group-exit.js): the gone marker, the delete marker and why. Unlike
+ * {@link markThreadGone}, a group never cached gets a row, so the delete marker holds for a restore that brings
+ * the group's history in later.
+ *
+ * @param {string} threadId
+ * @param {{at?: number, reason: string}} opts - `at`: the exit's time (epoch ms)
+ * @returns {{leftAt: number, deleteMarkerAt: number, reason: string}}
+ */
+export function markGroupGone(threadId, { at = Date.now(), reason }) {
+    if (!db) throw new Error("Database not initialized");
+    if (!GONE_REASONS.includes(reason)) throw new Error(`not a group exit reason: ${reason}`);
+    const id = String(threadId);
+    const when = Number(at);
+    return db.transaction(() => {
+        db.prepare(
+            "INSERT INTO threads (threadId, type, lastUpdate) VALUES (?, 'group', 0) ON CONFLICT DO NOTHING",
+        ).run(id);
+        db.prepare(
+            "UPDATE threads SET leftAt = @at, goneReason = @reason, " +
+                "deleteMarkerAt = MAX(COALESCE(deleteMarkerAt, 0), @at) WHERE threadId = @id",
+        ).run({ at: when, reason, id });
+        const row = db.prepare("SELECT leftAt, deleteMarkerAt FROM threads WHERE threadId = ?").get(id);
+        return { leftAt: Number(row.leftAt), deleteMarkerAt: Number(row.deleteMarkerAt), reason };
+    })();
+}
+
+/**
+ * Raise a conversation's delete marker (never lowers it).
+ *
+ * @param {string} threadId
+ * @param {number} at - epoch ms
+ */
+export function raiseDeleteMarker(threadId, at) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare("UPDATE threads SET deleteMarkerAt = MAX(COALESCE(deleteMarkerAt, 0), ?) WHERE threadId = ?")
+        .run(Number(at), String(threadId));
+}
+
+/** A group is gone while leftAt is set and no chat message is newer (the rule {@link getOrphanThreads} reads). */
+const STILL_GONE =
+    "t.leftAt IS NOT NULL AND t.goneReason IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m " +
+    "WHERE m.threadId = t.threadId AND m.timestamp > t.leftAt AND COALESCE(m.type, '') <> 'group_event')";
+
+/**
+ * A group this account left, was removed or blocked from, or that was disbanded -- or null while it is ours.
+ *
+ * @param {string} threadId
+ * @returns {{threadId: string, leftAt: number, goneReason: string, deleteMarkerAt: number|null, messages: number}|null}
+ */
+export function getGroupGone(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    const row = db
+        .prepare(
+            `SELECT t.threadId, t.leftAt, t.goneReason, t.deleteMarkerAt,
+               (SELECT COUNT(*) FROM messages m WHERE m.threadId = t.threadId) AS messages
+             FROM threads t WHERE t.threadId = ? AND ${STILL_GONE}`,
+        )
+        .get(String(threadId));
+    if (!row) return null;
+    return {
+        threadId: String(row.threadId),
+        leftAt: Number(row.leftAt),
+        goneReason: row.goneReason,
+        deleteMarkerAt: Number(row.deleteMarkerAt) || null,
+        messages: Number(row.messages) || 0,
+    };
+}
+
+/**
+ * Every gone group (see {@link getGroupGone}), with what is still cached of it.
+ *
+ * @returns {Array<{threadId: string, name: string|null, leftAt: number, goneReason: string, deleteMarkerAt: number|null, messages: number}>}
+ */
+export function listGoneGroups() {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare(
+            `SELECT t.threadId, t.name, t.leftAt, t.goneReason, t.deleteMarkerAt,
+               (SELECT COUNT(*) FROM messages m WHERE m.threadId = t.threadId) AS messages
+             FROM threads t WHERE ${STILL_GONE}`,
+        )
+        .all()
+        .map((r) => ({
+            threadId: String(r.threadId),
+            name: r.name ?? null,
+            leftAt: Number(r.leftAt),
+            goneReason: r.goneReason,
+            deleteMarkerAt: Number(r.deleteMarkerAt) || null,
+            messages: Number(r.messages) || 0,
+        }));
+}
+
+/**
+ * A `join` naming us: the group is ours again. Clears the gone marker and the reason; the delete marker stays, so
+ * what was purged stays purged.
+ *
+ * @param {string} threadId
+ * @returns {{changes: number}}
+ */
+export function clearGroupGone(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    return db
+        .prepare(
+            "UPDATE threads SET leftAt = NULL, goneReason = NULL WHERE threadId = ? AND " +
+                "(leftAt IS NOT NULL OR goneReason IS NOT NULL)",
+        )
+        .run(String(threadId));
+}
+
+/**
+ * Delete one bounded chunk of a conversation's messages (their reactions with them; the row MACs and search entries
+ * go through their triggers), in one transaction. The purge of a gone group calls it until it returns no rows,
+ * handing the event loop back between chunks (./group-exit.js).
+ *
+ * @param {string} threadId
+ * @param {number} [limit=500]
+ * @returns {{rows: number, reactions: number, files: string[], newest: number}} `files`: the media paths the rows
+ *   held; `newest`: the latest timestamp deleted (0 when none)
+ */
+export function purgeThreadMessagesChunk(threadId, limit = 500) {
+    if (!db) throw new Error("Database not initialized");
+    const id = String(threadId);
+    return db.transaction(() => {
+        const rows = db
+            .prepare("SELECT msgId, localPath, timestamp FROM messages WHERE threadId = ? LIMIT ?")
+            .all(id, Math.max(1, Math.floor(limit)));
+        if (!rows.length) return { rows: 0, reactions: 0, files: [], newest: 0 };
+        const ids = JSON.stringify(rows.map((r) => String(r.msgId)));
+        const reactions = db
+            .prepare("DELETE FROM reactions WHERE msgId IN (SELECT value FROM json_each(?))")
+            .run(ids).changes;
+        const deleted = db
+            .prepare("DELETE FROM messages WHERE threadId = ? AND msgId IN (SELECT value FROM json_each(?))")
+            .run(id, ids).changes;
+        return {
+            rows: deleted,
+            reactions,
+            files: rows.map((r) => r.localPath).filter(Boolean),
+            newest: rows.reduce((m, r) => Math.max(m, Number(r.timestamp) || 0), 0),
+        };
+    })();
+}
+
+/**
+ * Delete what else a conversation holds besides its messages: reactions, board items (pins, notes, polls),
+ * reminders, the cloud index and the conversation state (pin, unread mark, read watermark). The thread row stays: it
+ * carries the delete marker.
+ *
+ * @param {string} threadId
+ * @returns {{reactions: number, boardItems: number, reminders: number, cloudItems: number, convState: number, files: string[]}}
+ *   `files`: the cloud index's local copies, for the caller to delete when nothing else holds them
+ */
+export function purgeThreadSideRows(threadId) {
+    if (!db) throw new Error("Database not initialized");
+    const id = String(threadId);
+    return db.transaction(() => {
+        const files = db
+            .prepare("SELECT localPath FROM cloud_items WHERE threadId = ? AND localPath IS NOT NULL")
+            .all(id)
+            .map((r) => r.localPath);
+        const run = (sql) => db.prepare(sql).run(id).changes;
+        return {
+            reactions: run("DELETE FROM reactions WHERE threadId = ?"),
+            boardItems: run("DELETE FROM board_items WHERE threadId = ?"),
+            reminders: run("DELETE FROM reminders WHERE threadId = ?"),
+            cloudItems: run("DELETE FROM cloud_items WHERE threadId = ?"),
+            convState: run("DELETE FROM conv_state WHERE threadId = ?"),
+            files,
+        };
+    })();
+}
+
+/**
+ * The media paths of `files` that a cached row still points at (a message or a cloud item of another conversation).
+ *
+ * @param {string[]} files
+ * @returns {Set<string>}
+ */
+export function referencedMediaPaths(files) {
+    if (!db) throw new Error("Database not initialized");
+    if (!files.length) return new Set();
+    const list = JSON.stringify([...new Set(files.map(String))]);
+    const rows = db
+        .prepare(
+            "SELECT localPath FROM messages WHERE localPath IS NOT NULL AND localPath IN (SELECT value FROM json_each(?)) " +
+                "UNION SELECT localPath FROM cloud_items WHERE localPath IN (SELECT value FROM json_each(?))",
+        )
+        .all(list, list);
+    return new Set(rows.map((r) => String(r.localPath)));
+}
+
 /**
  * Record that the account was seen in a conversation: clear its gone marker,
  * if that marker predates the sighting.
@@ -1915,7 +2137,9 @@ export function markThreadBack(threadId, seenAt) {
     const at = Number(seenAt);
     if (!Number.isFinite(at)) return { changes: 0 };
     return db
-        .prepare("UPDATE threads SET leftAt = NULL WHERE threadId = ? AND leftAt IS NOT NULL AND leftAt < ?")
+        .prepare(
+            "UPDATE threads SET leftAt = NULL, goneReason = NULL WHERE threadId = ? AND leftAt IS NOT NULL AND leftAt < ?",
+        )
         .run(String(threadId), at);
 }
 
@@ -2097,6 +2321,8 @@ export function getReminders(threadId = null) {
  */
 export function upsertCloudItem(item) {
     if (!db) throw new Error("Database not initialized");
+    // A cloud pull respects the delete marker as the message writers do.
+    if (belowDeleteMarker(item?.threadId, item?.timestamp)) return { changes: 0, belowDeleteMarker: true };
     return db
         .prepare(
             `INSERT INTO cloud_items

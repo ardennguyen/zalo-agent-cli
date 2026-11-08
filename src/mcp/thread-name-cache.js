@@ -1,5 +1,6 @@
 import { readUserAliases, resolveCurrentUserNames } from "../core/current-user-names.js";
 import { rememberFriends } from "../core/typing.js";
+import { goneGroupMap, noteGroupInfo } from "../core/group-exit.js";
 
 /**
  * In-memory cache mapping threadId → {name, type, memberCount}.
@@ -33,8 +34,9 @@ export class ThreadNameCache {
      * Initialize cache by fetching all groups and friends from Zalo API.
      * Batches group info requests (50 per batch) to avoid rate limits.
      * @param {object} api - session object
+     * @param {{ownId?: string}} [opts] - the account: a group its info lists as removed is disbanded (group_gone)
      */
-    async init(api) {
+    async init(api, { ownId } = {}) {
         const start = Date.now();
         let groupCount = 0;
         let friendCount = 0;
@@ -50,6 +52,11 @@ export class ThreadNameCache {
                 const batch = groupIds.slice(i, i + batchSize);
                 try {
                     const info = await api.getGroupInfo(batch);
+                    // Disbanded: the group fetch lists it in removedsGroup (Zalo Web's version-map rule).
+                    if (ownId && info?.removedsGroup?.length) {
+                        for (const e of await noteGroupInfo({ ownId, result: info, groupIds: batch }))
+                            this._cache.delete(e.threadId);
+                    }
                     const map = info?.gridInfoMap || {};
                     for (const [gid, g] of Object.entries(map)) {
                         this._cache.set(gid, {
@@ -90,9 +97,35 @@ export class ThreadNameCache {
         }
 
         await this.refreshUsers(api, friendProfiles);
+        this.applyGone();
         this._ready = true;
         const elapsed = Date.now() - start;
         console.error(`[thread-name-cache] Ready: ${groupCount} groups, ${friendCount} friends (${elapsed}ms)`);
+    }
+
+    /**
+     * Bring the cache in line with the groups the local cache records as gone (src/core/group-exit.js): one whose
+     * history is kept is listed flagged (`gone`, `leftAt`, `goneReason`), one whose history was purged is left out.
+     *
+     * @param {Map<string, object>} [gone] - pin the gone groups (tests)
+     */
+    applyGone(gone = goneGroupMap()) {
+        for (const [id, g] of gone) {
+            if (g.messages > 0) {
+                this.set(id, { name: g.name || this._cache.get(id)?.name || "?", type: "group" });
+                this.set(id, { gone: true, leftAt: g.leftAt, goneReason: g.goneReason });
+            } else this._cache.delete(id);
+        }
+    }
+
+    /**
+     * Forget one thread (a gone group whose history was purged).
+     *
+     * @param {string} threadId
+     * @returns {boolean}
+     */
+    drop(threadId) {
+        return this._cache.delete(String(threadId));
     }
 
     /**

@@ -417,7 +417,12 @@ export function registerDbCommands(program) {
                         `; used ${mib(r.usageBefore.total)}${dryRun ? "" : ` -> ${mib(r.usageAfter.total)}`}`,
                 );
                 for (const e of r.events ?? []) info(describeQuotaEvent({ accountId: ownId, ...e }));
-                if (!media && !msgs)
+                if (r.goneGroups?.groups)
+                    info(
+                        `${verb} ${r.goneGroups.messages} message(s) of ${r.goneGroups.groups} gone group(s) ` +
+                            "kept until groups.onLeave became purge",
+                    );
+                if (!media && !msgs && !r.goneGroups?.groups)
                     info("Nothing is due: no age rule removes anything and no grace period has ended.");
             });
         });

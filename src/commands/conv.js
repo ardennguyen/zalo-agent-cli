@@ -155,6 +155,8 @@ export function registerConvCommands(program, deps = {}) {
                         typeFlag: t.type === "group" ? 1 : 0,
                         lastActive: t.lastUpdate ? new Date(t.lastUpdate).toLocaleString() : "?",
                         readState: describeReadState(reads.get(String(t.threadId))),
+                        // A group this account left or lost, kept by groups.onLeave "keep" (src/core/group-exit.js).
+                        ...(t.gone && { gone: true, leftAt: t.leftAt, goneReason: t.goneReason }),
                     }));
 
                     output(conversations, jsonMode, () => {
@@ -165,7 +167,8 @@ export function registerConvCommands(program, deps = {}) {
                         for (const c of conversations) {
                             const id = c.threadId.padEnd(22);
                             const read = readStateLabel(c.readState).padEnd(18);
-                            console.log(`  ${id}  ${c.type.padEnd(12)}  ${read}  ${c.name}`);
+                            const gone = c.gone ? `  [gone: ${c.goneReason}]` : "";
+                            console.log(`  ${id}  ${c.type.padEnd(12)}  ${read}  ${c.name}${gone}`);
                         }
                         console.log();
                         info("Use thread_id with messaging commands:");

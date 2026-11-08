@@ -8,7 +8,7 @@
  * entry points now build one of these (AGENTS.md section 13: they must not differ) and expose it:
  *
  *   - `mcp start --http`: `GET /health` (liveness, unchanged shape plus the socket), `GET /ready`
- *     (200 only while the socket is up), and, behind the bearer token, `GET /status` (everything)
+ *     (200 while the socket is up, or parked idle by on-demand presence), and, behind the bearer token, `GET /status` (everything)
  *     and `GET /metrics` (Prometheus text).
  *   - both: `POST /status` on the loopback channel, which `listen --status` / `mcp start --status`
  *     print, so a `listen` daemon with no HTTP port is just as visible.
@@ -58,7 +58,7 @@ const ageSec = (since, now) => (typeof since === "number" ? Math.max(0, Math.rou
  *   noteParked: () => void,
  *   noteSocketState: (state: string) => void,
  *   noteEvent: (kind: string, info?: {self?: boolean}) => void,
- *   setSource: (name: 'webhook'|'buffer'|'gaps'|'stage', fn: () => any) => void,
+ *   setSource: (name: 'webhook'|'buffer'|'gaps'|'stage'|'session'|'presence'|'accountState', fn: () => any) => void,
  *   snapshot: () => object,
  *   ready: () => {ready: boolean, socket: string},
  *   stop: () => void,
@@ -167,7 +167,8 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
 
         /** @returns {{ready: boolean, socket: string}} */
         ready() {
-            return { ready: socketState === "up", socket: socketState };
+            // Idle (a parked socket, on-demand presence) is ready too: the process serves, and wakes on demand.
+            return { ready: socketState === "up" || socketState === "idle", socket: socketState };
         },
 
         /** @returns {object} Everything, JSON-safe */
@@ -182,6 +183,8 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
             const gaps = read("gaps");
             const stage = read("stage");
             const session = read("session");
+            const presence = read("presence");
+            const accountState = read("accountState");
             const mem = process.memoryUsage();
             const p99Ms = lag.count ? lag.percentile(99) / 1e6 : 0;
             const maxMs = lag.count ? lag.max / 1e6 : 0;
@@ -218,7 +221,7 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
                 startedAt: iso(startedAt),
                 uptimeSec: Math.round((t - startedAt) / 1000),
                 status: warnings.length ? "degraded" : "ok",
-                ready: socketState === "up",
+                ready: socketState === "up" || socketState === "idle",
                 warnings,
                 socket: {
                     state: socketState,
@@ -241,6 +244,8 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
                 },
                 coverage: { pendingGaps: gaps ?? 0 },
                 session,
+                presence,
+                accountState,
                 stage: stage ? { running: stage.stage, forSec: ageSec(stage.startedAt, t) } : null,
                 webhook,
                 buffer,
@@ -287,7 +292,15 @@ export function renderPrometheus(s) {
     metric("zalo_info", "gauge", "Daemon build and kind; the value is always 1.", [
         [`kind="${esc(s.kind)}",version="${esc(s.version)}"`, 1],
     ]);
-    metric("zalo_up", "gauge", "1 while the Zalo socket is connected, else 0.", one(s.ready ? 1 : 0));
+    metric("zalo_up", "gauge", "1 while the Zalo socket is connected, else 0.", one(s.socket.state === "up" ? 1 : 0));
+    if (s.accountState?.state) {
+        metric(
+            "zalo_presence_state",
+            "gauge",
+            "1 for the account's current state (idle, connecting, connected, kicked, login_needed, maintenance).",
+            [[`state="${esc(s.accountState.state)}",mode="${esc(s.presence?.mode ?? "always-on")}"`, 1]],
+        );
+    }
     metric(
         "zalo_socket_state_age_seconds",
         "gauge",

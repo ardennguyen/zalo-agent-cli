@@ -67,6 +67,7 @@ import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
 import { alarmingGapCount } from "../core/listener-lifecycle.js";
+import { createAccountStateTracker, describeAccountState } from "../core/account-state.js";
 import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 
@@ -636,6 +637,13 @@ export function registerListenCommand(program) {
                 log: (l) => console.error(`[listen] ${l}`),
                 purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
             });
+            // account_state (src/core/account-state.js): one word per change, reported like any other event (stdout,
+            // webhook, JSONL) and in /status, the same as `mcp start`. WP3 wiring point: detail.presence.
+            const accountState = createAccountStateTracker({
+                accountId: activeAcc.ownId,
+                emit: (event) => emitEvent(event, describeAccountState(event)),
+                detail: () => ({ presence: "always-on" }),
+            });
 
             /** Whether --events, --filter or --no-self keep a message off stdout, the webhook and the JSONL. */
             function isMuted(msg) {
@@ -714,6 +722,7 @@ export function registerListenCommand(program) {
             // Planned idle windows (on-demand presence) are not worth a warning; everything else is.
             health.setSource("gaps", () => alarmingGapCount(getPendingSyncGaps()));
             health.setSource("stage", () => stageLock.current());
+            health.setSource("accountState", () => accountState.current());
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
             health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
             const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
@@ -1145,7 +1154,12 @@ export function registerListenCommand(program) {
             const socketHost = createSocketHost({
                 log: (level, message) =>
                     level === "error" ? error(message) : level === "warn" ? warning(message) : info(message),
-                health,
+                health: {
+                    noteSocketState: (state) => {
+                        health.noteSocketState(state);
+                        accountState.noteSocketState(state);
+                    },
+                },
                 isStopping: () => stopping,
                 anomalyFile: join(accountDir, "sock-anomaly.json"),
                 kickFile: kickFile(accountDir),
@@ -1160,11 +1174,14 @@ export function registerListenCommand(program) {
                     return newApi;
                 },
                 onKicked: () => {
+                    // Said before the exit: the account is not coming back by itself.
+                    accountState.note("kicked", { exitCode: EXIT_CODE.KICKED });
                     mediaLinks.revokeAll("the session ended");
                     dropLock();
                     process.exit(EXIT_CODE.KICKED);
                 },
                 onRevoked: (e) => {
+                    accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
                     mediaLinks.revokeAll("the session ended");
                     error(`Zalo keeps refusing the saved login (${e?.message ?? e}). Run \`zalo-agent login\` again.`);
                     dropLock();

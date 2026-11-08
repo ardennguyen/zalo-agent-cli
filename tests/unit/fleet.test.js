@@ -179,10 +179,21 @@ describe("classifyAccount", () => {
     it("lists every state it can say, worst last, and restarts only what a restart can mend", () => {
         assert.deepEqual(
             [...STATES],
-            ["ok", "degraded", "starting", "maintenance", "relogin", "kicked", "down", "unresponsive", "stopped"],
+            [
+                "ok",
+                "idle",
+                "degraded",
+                "starting",
+                "maintenance",
+                "relogin",
+                "kicked",
+                "down",
+                "unresponsive",
+                "stopped",
+            ],
         );
         // kicked is deliberate: a restart would take the account back from the session that took it.
-        assert.deepEqual(["maintenance", "relogin", "kicked"].map(needsRestart), [false, false, false]);
+        assert.deepEqual(["idle", "maintenance", "relogin", "kicked"].map(needsRestart), [false, false, false, false]);
     });
 
     it("how long a socket may be down is the caller's to choose", () => {

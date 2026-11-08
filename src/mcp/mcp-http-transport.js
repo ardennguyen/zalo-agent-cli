@@ -730,8 +730,9 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         });
     });
 
-    // Readiness — no auth required: 200 only while the Zalo socket is connected, so a load balancer or a
-    // supervisor can stop sending work to a daemon whose account is offline.
+    // Readiness — no auth required: 200 while the Zalo socket is connected or parked idle (on-demand presence: the
+    // process serves, and wakes on demand), so a load balancer or a supervisor can stop sending work to a daemon whose
+    // account is offline.
     app.get("/ready", (req, res) => {
         const r = deps.health ? deps.health.ready() : { ready: true, socket: "unknown" };
         res.status(r.ready ? 200 : 503).json(r);

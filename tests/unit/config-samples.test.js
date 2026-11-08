@@ -401,6 +401,7 @@ describe("monitoring samples", () => {
         }));
         health.setSource("buffer", () => ({ threads: 1, messages: 1 }));
         health.setSource("stage", () => ({ stage: "messages", startedAt: Date.now() }));
+        health.setSource("accountState", () => ({ state: "connected", since: null }));
         const text = renderPrometheus(health.snapshot());
         health.stop();
         return new Set(text.match(/^zalo_[a-z_]+/gm));

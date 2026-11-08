@@ -116,6 +116,7 @@ export function assignPorts(ownIds, { basePort } = {}) {
 /** The states `fleet status` reports, worst last. */
 export const STATES = Object.freeze([
     "ok",
+    "idle",
     "degraded",
     "starting",
     "maintenance",
@@ -140,6 +141,7 @@ const HELD = new Set(["maintenance", "relogin", "kicked"]);
  *  - `relogin`: it answers, and Zalo refused its session, so it is logging in again (transient)
  *  - `kicked`: it answers, and another session took the account, so it will not reconnect (see the log; restarting it
  *    would only evict the other session in turn)
+ *  - `idle`: it answers, and its socket is parked by on-demand presence (it wakes on demand): never `down`
  *  - `starting`: it answers, and its socket is not up yet (or has not been down long enough to count)
  *  - `degraded`: the socket is up but it has warnings (a webhook backlog, dead letters, open gaps)
  *  - `ok`
@@ -147,13 +149,14 @@ const HELD = new Set(["maintenance", "relogin", "kicked"]);
  * @param {{ running: boolean, health: object|null, kicked?: object|null }} a - `health` is null when the daemon did
  *   not answer; `kicked` is the account's kick marker, if any
  * @param {{ downForSec?: number }} [o]
- * @returns {"ok"|"degraded"|"starting"|"maintenance"|"relogin"|"kicked"|"down"|"unresponsive"|"stopped"}
+ * @returns {"ok"|"idle"|"degraded"|"starting"|"maintenance"|"relogin"|"kicked"|"down"|"unresponsive"|"stopped"}
  */
 export function classifyAccount({ running, health, kicked = null }, { downForSec = 180 } = {}) {
     if (!running) return kicked ? "kicked" : "stopped";
     if (!health) return "unresponsive";
     const socket = health.socket ?? {};
     if (HELD.has(socket.state)) return socket.state;
+    if (socket.state === "idle") return "idle";
     if (socket.state === "down" && (socket.forSec ?? 0) >= downForSec) return "down";
     if (socket.state !== "up") return "starting";
     return health.warnings?.length ? "degraded" : "ok";

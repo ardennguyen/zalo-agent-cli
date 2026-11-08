@@ -64,6 +64,7 @@ import { readControls } from "../zalo/queues/control-queue.js";
 import { dbUsedBytes, initDb, getMessageById, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
 import { alarmingGapCount, createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
+import { accountStateSystemEvent, createAccountStateTracker, describeAccountState } from "../core/account-state.js";
 import {
     storeLiveMessage,
     refreshLiveMessageIdentities,
@@ -1027,6 +1028,18 @@ export function registerMCPCommands(program) {
                 log: (l) => console.error(`[mcp] ${l}`),
                 purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
             });
+            // account_state (src/core/account-state.js): one word per change, to the webhook, the live buffer and
+            // /status, the same as `listen`. WP3 wiring point: detail.presence becomes the resolved mode.
+            const accountState = createAccountStateTracker({
+                accountId: activeAcc.ownId,
+                emit: (event) => {
+                    console.error(`[mcp] ${describeAccountState(event)}`);
+                    webhookDelivery?.enqueue(null, event);
+                    buffer.pushSystem(accountStateSystemEvent(event));
+                },
+                detail: () => ({ presence: "always-on" }),
+            });
+            health.setSource("accountState", () => accountState.current());
             // A policy change (admin API, `policy set`, a file drop) counts from the next tool call: the per-call readers
             // (confirm mode, approval, delivery modes) read the live policy themselves; what was set up at start is set
             // up again here.
@@ -1432,7 +1445,12 @@ export function registerMCPCommands(program) {
             // The one place that keeps the socket alive, shared with `listen`.
             const socketHost = createSocketHost({
                 log: (_level, message) => console.error(`[mcp] ${message}`),
-                health,
+                health: {
+                    noteSocketState: (state) => {
+                        health.noteSocketState(state);
+                        accountState.noteSocketState(state);
+                    },
+                },
                 isStopping: () => lifecycle.isStopping(),
                 anomalyFile: join(accountDir, "sock-anomaly.json"),
                 kickFile: kickFile(accountDir),
@@ -1444,12 +1462,15 @@ export function registerMCPCommands(program) {
                     return newApi;
                 },
                 onKicked: () => {
+                    // Said before the exit: the account is not coming back by itself.
+                    accountState.note("kicked", { exitCode: EXIT_CODE.KICKED });
                     // The session ended: no media link may outlive it, even for the moments before the exit.
                     mediaLinks.revokeAll("the session ended");
                     dropLock();
                     process.exit(EXIT_CODE.KICKED);
                 },
                 onRevoked: (e) => {
+                    accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
                     mediaLinks.revokeAll("the session ended");
                     console.error(
                         `[mcp] Zalo keeps refusing the saved login (${e?.message ?? e}). Run \`zalo-agent login\` again.`,

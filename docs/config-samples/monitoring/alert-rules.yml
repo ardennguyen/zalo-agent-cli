@@ -11,7 +11,8 @@ groups:
           summary: "{{ $labels.job }}: the daemon does not answer (crashed, stopped, or the host is down)"
 
       - alert: ZaloSocketDown
-        expr: zalo_up == 0
+        # A socket parked by on-demand presence (state idle) is not down: it wakes on demand.
+        expr: zalo_up == 0 unless on(account) zalo_presence_state{state="idle"} == 1
         for: 3m
         labels: { severity: page }
         annotations:

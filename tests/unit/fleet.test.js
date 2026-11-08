@@ -31,15 +31,29 @@ import {
     renderStatusTable,
 } from "../../src/core/fleet.js";
 import {
+    BACKUP_TIMER_TEMPLATE,
+    CHECK_TIMER_TEMPLATE,
     COMMON_ENV_TEMPLATE,
     FLEET_DEFAULTS,
+    KEYED_UNITS,
     PURGE_SERVICE_TEMPLATE,
     PURGE_TIMER_TEMPLATE,
     UNIT_TEMPLATE,
+    renderBackupService,
     renderCaddyfile,
+    renderCheckService,
+    renderCredentialsDropin,
+    renderHomeEnv,
+    renderLogrotate,
+    renderPolkitRule,
     renderPurgeService,
+    renderStorageJson,
     renderUnit,
+    renderZa,
 } from "../../src/core/fleet-templates.js";
+import { parseEnv } from "node:util";
+import { resolvePublicUrl, resolveTrustedProxies } from "../../src/core/deploy-policy.js";
+import { PROVIDER_NAMES } from "../../src/core/keystore/config.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -325,7 +339,7 @@ describe("the files fleet generate writes", () => {
             (a) => /^ZALO_MCP_AUTH_TOKEN=(.+)$/m.exec(readFileSync(join(out, "accounts", `${a.ownId}.env`), "utf8"))[1],
         );
 
-    it("writes the unit, the purge service and timer, the common env, one env file per account and the port table", () => {
+    it("writes the units, timers, drop-in, env files, provider file, wrapper, rules and the port table", () => {
         const r = generateFleetFiles({ outDir: out, accounts });
         assert.deepEqual(
             r.written.sort(),
@@ -333,10 +347,20 @@ describe("the files fleet generate writes", () => {
                 join("accounts", "1001.env"),
                 join("accounts", "1002.env"),
                 "common.env",
+                "credentials.conf",
+                "home.env",
                 "ports.json",
+                "storage.json",
+                "za",
+                "zalo-backup.service",
+                "zalo-backup.timer",
+                "zalo-fleet-check.service",
+                "zalo-fleet-check.timer",
+                "zalo-fleet-polkit.rules",
                 "zalo-mcp@.service",
                 "zalo-mcp-purge.service",
                 "zalo-mcp-purge.timer",
+                "zalo-policy-audit.logrotate",
             ].sort(),
         );
         assert.match(
@@ -359,8 +383,9 @@ describe("the files fleet generate writes", () => {
         assert.match(b, /^[0-9a-f]{64}$/);
         assert.notEqual(a, b);
         if (process.platform !== "win32") {
-            for (const f of ["accounts/1001.env", "accounts/1002.env", "common.env"])
+            for (const f of ["accounts/1001.env", "accounts/1002.env", "common.env", "home.env"])
                 assert.equal(statSync(join(out, f)).mode & 0o777, 0o600, f);
+            assert.equal(statSync(join(out, "za")).mode & 0o777, 0o755, "za is a program");
         }
         const everything =
             JSON.stringify(r) +
@@ -375,7 +400,7 @@ describe("the files fleet generate writes", () => {
         writeFileSync(join(out, "common.env"), "mine\n");
         const second = generateFleetFiles({ outDir: out, accounts });
         assert.deepEqual(second.written, ["ports.json"], "only the port table, which is derived");
-        assert.equal(second.kept.length, 6, "the unit, the purge service and timer, common.env, two account envs");
+        assert.equal(second.kept.length, 16, "every file but the port table: 14 machine files, two account envs");
         assert.equal(readFileSync(join(out, "common.env"), "utf8"), "mine\n");
         const forced = generateFleetFiles({ outDir: out, accounts, force: true });
         assert.ok(forced.written.includes("common.env"));
@@ -403,10 +428,118 @@ describe("the files fleet generate writes", () => {
             );
         }
         assert.equal(
-            (caddy.match(/@internal path \/metrics \/status/g) || []).length,
+            (
+                caddy.match(
+                    /@internal path \/metrics \/status \/zalo\/admin \/zalo\/admin\/\*\n\t\trespond @internal 404/g,
+                ) || []
+            ).length,
             2,
-            "each account's /metrics and /status stay inside",
+            "each account's /metrics, /status and admin API stay inside",
         );
+    });
+
+    // G1: the data a daemon writes must be writable under its sandbox, and the CLI run by hand must find it.
+    it("every path the env files set is under the units' ReadWritePaths, and only the home .env sets one", () => {
+        const rwOf = (text) => /^ReadWritePaths=(.+)$/m.exec(text)[1].split(" ");
+        const pathsIn = (text) =>
+            Object.entries(parseEnv(text))
+                .filter(([k]) => /_DIR$/.test(k))
+                .map(([, v]) => v);
+        for (const paths of [{}, { dataDir: "/srv/zalo/accounts", mediaDir: "/srv/zalo/media" }]) {
+            const dir = mkdtempSync(join(tmpdir(), "zalo-fleet-rw-"));
+            try {
+                generateFleetFiles({ outDir: dir, accounts, paths });
+                const read = (f) => readFileSync(join(dir, f), "utf8");
+                assert.deepEqual(
+                    pathsIn(read("common.env")),
+                    [],
+                    "common.env sets no machine path (the CLI never reads it)",
+                );
+                const home = pathsIn(read("home.env"));
+                assert.equal(home.length, paths.dataDir ? 2 : 0);
+                for (const unit of ["zalo-mcp@.service", "zalo-mcp-purge.service", "zalo-backup.service"]) {
+                    const rw = rwOf(read(unit));
+                    assert.ok(rw.includes("/home/zalo/.zalo-agent-cli"), `${unit}: the config dir`);
+                    for (const p of home)
+                        assert.ok(
+                            rw.some((w) => p === w || p.startsWith(`${w}/`)),
+                            `${unit}: ${p} is writable`,
+                        );
+                }
+                assert.ok(rwOf(read("zalo-backup.service")).includes("/var/backups/zalo"));
+                if (paths.dataDir) {
+                    assert.match(read("zalo-backup.service"), /for d in \/srv\/zalo\/accounts\/\*\//);
+                }
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        }
+    });
+
+    // G2: a stock Ubuntu VPS has no default provider; the generated set wires the passphrase through systemd.
+    it("the passphrase provider is wired end to end: storage.json, the drop-in for every keyed unit, and za", () => {
+        generateFleetFiles({ outDir: out, accounts, paths: { etcDir: "/opt/zalo/etc" } });
+        const storage = JSON.parse(readFileSync(join(out, "storage.json"), "utf8"));
+        assert.equal(storage.provider, "passphrase");
+        assert.equal(storage.passphrase, undefined, "no file: the provider reads $CREDENTIALS_DIRECTORY itself");
+        const line = "LoadCredentialEncrypted=zalo-storage-passphrase:/opt/zalo/etc/storage-passphrase.cred";
+        assert.match(readFileSync(join(out, "credentials.conf"), "utf8"), new RegExp(`^\\[Service\\]\\n${line}$`, "m"));
+        assert.ok(readFileSync(join(out, "za"), "utf8").includes(`--property=${line} `));
+        assert.deepEqual(KEYED_UNITS, ["zalo-mcp@.service", "zalo-mcp-purge.service", "zalo-backup.service"]);
+        assert.ok(
+            !readFileSync(join(out, "zalo-mcp@.service"), "utf8").includes("LoadCredential"),
+            "a drop-in, not the unit",
+        );
+    });
+
+    it("another provider gets its storage.json and no credential; none leaves both to the operator", () => {
+        for (const provider of ["systemd-creds", "kms", "none"]) {
+            const dir = mkdtempSync(join(tmpdir(), "zalo-fleet-prov-"));
+            try {
+                const r = generateFleetFiles({ outDir: dir, accounts, provider });
+                assert.ok(!r.written.includes("credentials.conf"), provider);
+                assert.doesNotMatch(
+                    readFileSync(join(dir, "za"), "utf8"),
+                    /LoadCredential|storage passphrase/,
+                    provider,
+                );
+                if (provider === "none") assert.ok(!r.written.includes("storage.json"));
+                else assert.equal(JSON.parse(readFileSync(join(dir, "storage.json"), "utf8")).provider, provider);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        }
+        // The systemd-creds variant must run as the service user: only with --user (systemd 256 or later).
+        assert.equal(JSON.parse(renderStorageJson("systemd-creds")).systemdCreds.user, true);
+        for (const p of ["passphrase", "systemd-creds", "kms"])
+            assert.ok(PROVIDER_NAMES.includes(JSON.parse(renderStorageJson(p)).provider));
+    });
+
+    // G4: behind the path-prefix proxy, each account's links must come back through its own block.
+    it("--domain gives each account its public URL under its prefix, and common.env trusts the local proxy", () => {
+        generateFleetFiles({ outDir: out, accounts, domain: "zalo.example.com" });
+        for (const a of accounts) {
+            const env = parseEnv(readFileSync(join(out, "accounts", `${a.ownId}.env`), "utf8"));
+            assert.deepEqual(
+                resolvePublicUrl({ env, config: {}, aliases: false }).publicUrl,
+                `https://zalo.example.com/a/${a.ownId}`,
+            );
+        }
+        const common = parseEnv(readFileSync(join(out, "common.env"), "utf8"));
+        assert.deepEqual(resolveTrustedProxies({ config: {}, env: common }), ["127.0.0.1"]);
+        assert.equal(common.ZALO_FLEET_SUPERVISOR, "systemd");
+        const caddy = readFileSync(join(out, "Caddyfile"), "utf8");
+        assert.match(caddy, /handle \/zalo\/qr\/\* \{\s*reverse_proxy 127\.0\.0\.1:18927/);
+
+        const plain = mkdtempSync(join(tmpdir(), "zalo-fleet-plain-"));
+        try {
+            generateFleetFiles({ outDir: plain, accounts });
+            const env = parseEnv(readFileSync(join(plain, "accounts", "1001.env"), "utf8"));
+            assert.equal(env.ZALO_MCP_PUBLIC_URL, undefined, "no proxy: no public URL");
+            assert.equal(parseEnv(readFileSync(join(plain, "common.env"), "utf8")).ZALO_MCP_TRUSTED_PROXIES, undefined);
+        } finally {
+            rmSync(plain, { recursive: true, force: true });
+        }
     });
 
     it("the unit takes the caller's user, home and binary, and nothing of the default is left behind", () => {
@@ -420,13 +553,24 @@ describe("the files fleet generate writes", () => {
         assert.match(unit, /^Group=bot$/m);
         assert.match(unit, /^WorkingDirectory=\/srv\/bot$/m);
         assert.match(unit, /^ExecStart=\/opt\/zalo\/bin\/zalo-agent mcp start --account %i$/m);
-        assert.match(unit, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli /m);
+        assert.match(unit, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli$/m);
         assert.doesNotMatch(unit, /\/home\/zalo|User=zalo|\/usr\/bin\/zalo-agent /);
         const purge = readFileSync(join(out, "zalo-mcp-purge.service"), "utf8");
         assert.match(purge, /^User=bot$/m);
         assert.match(purge, /^ExecStart=\/opt\/zalo\/bin\/zalo-agent fleet purge --yes$/m);
-        assert.match(purge, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli /m);
+        assert.match(purge, /^ReadWritePaths=\/srv\/bot\/\.zalo-agent-cli$/m);
         assert.doesNotMatch(purge, /\/home\/zalo|User=zalo|\/usr\/bin\/zalo-agent |  zalo  /);
+        for (const f of [
+            "zalo-fleet-check.service",
+            "zalo-backup.service",
+            "za",
+            "zalo-fleet-polkit.rules",
+            "zalo-policy-audit.logrotate",
+            "home.env",
+        ]) {
+            const text = readFileSync(join(out, f), "utf8");
+            assert.doesNotMatch(text, /\/home\/zalo|User=zalo|\/usr\/bin\/zalo-agent |"zalo"| zalo zalo|as zalo\b/, f);
+        }
     });
 });
 
@@ -441,6 +585,22 @@ describe("the embedded templates are the documented samples", () => {
         assert.equal(renderPurgeService(), sample("systemd", "zalo-mcp-purge.service"));
         assert.equal(PURGE_SERVICE_TEMPLATE, sample("systemd", "zalo-mcp-purge.service"));
         assert.equal(PURGE_TIMER_TEMPLATE, sample("systemd", "zalo-mcp-purge.timer"));
+    });
+    it("the credential drop-in, the check and backup units and timers, the polkit rule, za, home.env, logrotate", () => {
+        assert.equal(renderCredentialsDropin(), sample("systemd", "credentials.conf"));
+        assert.equal(renderCheckService(), sample("systemd", "zalo-fleet-check.service"));
+        assert.equal(CHECK_TIMER_TEMPLATE, sample("systemd", "zalo-fleet-check.timer"));
+        assert.equal(renderBackupService(), sample("systemd", "zalo-backup.service"));
+        assert.equal(BACKUP_TIMER_TEMPLATE, sample("systemd", "zalo-backup.timer"));
+        assert.equal(renderPolkitRule(), sample("systemd", "zalo-fleet-polkit.rules"));
+        assert.equal(renderZa(), sample("systemd", "za"));
+        assert.equal(renderHomeEnv(), sample("systemd", "home.env"));
+        assert.equal(renderLogrotate(), sample("systemd", "zalo-policy-audit.logrotate"));
+    });
+    it("the provider files", () => {
+        assert.equal(renderStorageJson("passphrase"), sample("storage", "linux-vps-passphrase.json"));
+        assert.equal(renderStorageJson("systemd-creds"), sample("storage", "linux-server.json"));
+        assert.equal(renderStorageJson("kms"), sample("storage", "saas-kms.json"));
     });
     it("the multi-account Caddyfile", () => {
         assert.equal(

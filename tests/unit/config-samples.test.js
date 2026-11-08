@@ -188,7 +188,11 @@ describe("env samples", () => {
         [...text.matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=(.*)$/gm)].map((m) => ({ name: m[1], value: m[2].trim() }));
     const base = (name) => name.replace(/_[1-9][0-9]{8,}$/, "");
 
-    const files = [...list("env", ".env").map((f) => join("env", f)), join("systemd", "common.env")];
+    const files = [
+        ...list("env", ".env").map((f) => join("env", f)),
+        join("systemd", "common.env"),
+        join("systemd", "home.env"),
+    ];
     for (const file of files) {
         it(`${file}: every variable is one the engine reads`, () => {
             const found = assignments(read(file));
@@ -268,6 +272,28 @@ describe("systemd unit and proxy samples", () => {
         assert.match(media, /gzip off;/);
         assert.match(media, /proxy_buffering off;/);
         assert.match(media, /proxy_set_header X-Forwarded-For \$remote_addr;/);
+    });
+
+    // G5: the admin API (runtime policy, usage, export) and the Prometheus endpoints never answer from the internet.
+    it("every internet proxy answers 404 for /zalo/admin/*, /metrics and /status", () => {
+        for (const f of ["Caddyfile.internet", "Caddyfile.multi-account"]) {
+            const text = read("proxy", f);
+            const blocks = text.split(/reverse_proxy 127\.0\.0\.1:39|reverse_proxy 127\.0\.0\.1:3847/).length - 1;
+            assert.ok(blocks >= 1, f);
+            assert.equal(
+                (
+                    text.match(
+                        /@internal path \/metrics \/status \/zalo\/admin \/zalo\/admin\/\*\n\t+respond @internal 404/g,
+                    ) || []
+                ).length,
+                blocks,
+                `${f}: every MCP upstream keeps the admin API and metrics inside`,
+            );
+        }
+        const nginx = read("proxy", "nginx.internet.conf");
+        assert.match(nginx, /location \/zalo\/admin \{ return 404; \}/);
+        assert.match(nginx, /location = \/metrics +\{ return 404; \}/);
+        assert.match(nginx, /location = \/status +\{ return 404; \}/);
     });
 
     it("the internet proxies route the one-time QR link to the login's QR port, and the rest to the MCP server", () => {

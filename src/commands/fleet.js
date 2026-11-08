@@ -32,7 +32,14 @@ import {
     releasePorts,
     renderStatusTable,
 } from "../core/fleet.js";
-import { createSpawnDriver, createSystemdDriver, detectSupervisor } from "../core/fleet-supervisor.js";
+import {
+    createSpawnDriver,
+    createSystemdDriver,
+    detectSupervisor,
+    supervisorOf,
+    unitName,
+} from "../core/fleet-supervisor.js";
+import { FLEET_DEFAULTS, FLEET_PROVIDERS, KEYED_UNITS, writablePaths } from "../core/fleet-templates.js";
 import { createFleetController } from "../core/fleet-controller.js";
 import {
     DEFAULT_CONTROLLER_PORT,
@@ -45,7 +52,7 @@ import {
 } from "../core/fleet-serve.js";
 import { DEFAULT_QR_FLOWS, createQrFlows } from "../core/fleet-qr.js";
 import { applyPolicy, effectivePolicy, ownerOf } from "../core/policy-store.js";
-import { resolvePublicUrl } from "../core/deploy-policy.js";
+import { resolvePublicUrl, validatePublicUrl } from "../core/deploy-policy.js";
 import { kickFile, readKickMarker } from "../core/kick-marker.js";
 import { fleetPurge } from "../core/fleet-purge.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
@@ -88,6 +95,12 @@ function pickAccounts(ids) {
     const all = listAccounts();
     if (!all.length) {
         error("No accounts are registered. Log in first: zalo-agent login");
+        if (existsSync(join(FLEET_DEFAULTS.etcDir, "accounts"))) {
+            info(
+                `This machine runs a fleet as its service user: run the command as that user, e.g. \`za fleet status\` ` +
+                    `(docs/config-samples/use-cases/c-vps-few-accounts), or \`sudo -u ${FLEET_DEFAULTS.user} -H zalo-agent ...\`.`,
+            );
+        }
         process.exit(1);
     }
     if (!ids.length) return all;
@@ -177,24 +190,60 @@ function envFromDir(dir, ownId) {
     }
 }
 
+/** What to do when systemctl is refused for the service user. */
+const SYSTEMCTL_HINT =
+    "as root: sudo systemctl <verb> zalo-mcp@<id>; or let the service user do it with the polkit rule (zalo-fleet-polkit.rules)";
+
+/** @param {string} verb @param {string} id */
+const systemctlHint = (verb, id) => SYSTEMCTL_HINT.replace("<verb>", verb).replace("<id>", id);
+
+/** Each account's supervisor (systemd unit or spawn), asked once per command. */
+async function supervisorsOf(ids) {
+    const out = {};
+    await mapLimit(ids, 8, async (id) => {
+        out[id] = await supervisorOf(id);
+    });
+    return out;
+}
+
 /**
- * Start daemons in shuffled batches, a pause between batches.
+ * Start (or, for a systemd unit, restart) daemons in shuffled batches, a pause between batches. An account its
+ * zalo-mcp@<id> unit runs goes through systemctl; any other is spawned.
  *
- * @param {Array<{ ownId: string, kind: "mcp"|"listen", port: number }>} targets
- * @param {{ batch: number, staggerSec: number, envDir: string|null, dryRun: boolean, log: (m: string) => void }} o
- * @returns {Promise<Array<{ accountId: string, ok: boolean, detail: string }>>}
+ * @param {Array<{ ownId: string, kind: "mcp"|"listen", port: number, supervisor: "systemd"|"spawn" }>} targets
+ * @param {{ batch: number, staggerSec: number, envDir: string|null, dryRun: boolean, log: (m: string) => void,
+ *   verb?: "start"|"restart", systemd?: object }} o
+ * @returns {Promise<Array<{ accountId: string, ok: boolean, detail: string, supervisor: string }>>}
  */
-async function startInBatches(targets, { batch, staggerSec, envDir, dryRun, log }) {
+async function startInBatches(
+    targets,
+    { batch, staggerSec, envDir, dryRun, log, verb = "start", systemd = createSystemdDriver() },
+) {
     const batches = planBatches(targets, { size: batch });
     const results = [];
     for (let b = 0; b < batches.length; b++) {
         log(`batch ${b + 1}/${batches.length}: ${batches[b].map((t) => t.ownId).join(", ")}`);
         const done = await Promise.all(
             batches[b].map(async (t) => {
+                if (t.supervisor === "systemd") {
+                    const unit = unitName(t.ownId);
+                    if (dryRun)
+                        return { accountId: t.ownId, ok: true, supervisor: "systemd", detail: `would ${verb} ${unit}` };
+                    const r = await systemd[verb](t.ownId);
+                    return {
+                        accountId: t.ownId,
+                        ok: r.ok,
+                        supervisor: "systemd",
+                        detail: r.ok
+                            ? `${verb === "start" ? "started" : "restarted"} ${unit}`
+                            : `${r.detail} (${systemctlHint(verb, t.ownId)})`,
+                    };
+                }
                 if (dryRun)
                     return {
                         accountId: t.ownId,
                         ok: true,
+                        supervisor: "spawn",
                         detail: `would start (${t.kind}${t.kind === "mcp" ? `, port ${t.port}` : ""})`,
                     };
                 const env = envFromDir(envDir, t.ownId);
@@ -212,12 +261,14 @@ async function startInBatches(targets, { batch, staggerSec, envDir, dryRun, log 
                     return {
                         accountId: t.ownId,
                         ok: true,
+                        supervisor: "spawn",
                         detail: `started (pid ${spawned.pid}${t.kind === "mcp" ? `, port ${t.port}` : ""})`,
                     };
                 }
                 return {
                     accountId: t.ownId,
                     ok: Boolean(spawned.alreadyRunning),
+                    supervisor: "spawn",
                     detail: spawned.alreadyRunning
                         ? `already running (pid ${spawned.pid})`
                         : `failed: ${spawned.error} (log: ${spawned.logPath})`,
@@ -324,16 +375,24 @@ export function registerFleetCommands(program) {
         .option("--listen", "Start `listen` daemons (webhook only, no HTTP port) instead of MCP servers")
         .option("--batch <n>", "Accounts started at once (default 5)", "5")
         .option("--stagger <seconds>", "Pause between batches (default 15)", "15")
-        .option("--env-dir <dir>", "Read <dir>/<ownId>.env into each daemon's environment (its token, port, webhook)")
+        .option(
+            "--env-dir <dir>",
+            "Read <dir>/<ownId>.env into each spawned daemon's environment (its token, port, webhook); a unit reads its own",
+        )
         .option("--dry-run", "Print the plan and start nothing")
         .action(async (ids, opts) => {
             const batch = intOption("--batch", opts.batch, 1, 100);
             const staggerSec = intOption("--stagger", opts.stagger, 0, 3600);
             const accounts = pickAccounts(ids);
             const ports = portsFor(accounts);
-            const targets = accounts
-                .filter((a) => !getDaemonStatus(getAccountDir(a.ownId)).running)
-                .map((a) => ({ ownId: a.ownId, kind: opts.listen ? "listen" : "mcp", port: ports[a.ownId] }));
+            const idle = accounts.filter((a) => !getDaemonStatus(getAccountDir(a.ownId)).running);
+            const sup = await supervisorsOf(idle.map((a) => a.ownId));
+            const targets = idle.map((a) => ({
+                ownId: a.ownId,
+                kind: opts.listen ? "listen" : "mcp",
+                port: ports[a.ownId],
+                supervisor: sup[a.ownId],
+            }));
             const skipped = accounts.length - targets.length;
             const log = (m) => (json() ? console.error(`  ● ${m}`) : info(m));
             if (skipped) log(`${skipped} account(s) already have a daemon running and are left alone`);
@@ -354,20 +413,47 @@ export function registerFleetCommands(program) {
     fleet
         .command("stop [accounts...]")
         .description(
-            "Stop the daemons of these accounts (all of them if none are named), each with its graceful shutdown",
+            "Stop the daemons of these accounts (all of them if none are named), each with its graceful shutdown; a systemd unit through systemctl",
         )
         .action(async (ids) => {
             const accounts = pickAccounts(ids);
+            const sup = await supervisorsOf(accounts.map((a) => a.ownId));
+            const systemd = createSystemdDriver();
             const results = await mapLimit(accounts, 8, async (a) => {
+                if (sup[a.ownId] === "systemd") {
+                    // Stopping the process would be undone by the unit's Restart=always 15 s later: stop the unit.
+                    const r = await systemd.stop(a.ownId);
+                    return {
+                        accountId: a.ownId,
+                        supervisor: "systemd",
+                        stopped: r.ok,
+                        ok: r.ok,
+                        detail: r.ok
+                            ? `stopped ${unitName(a.ownId)}`
+                            : `${r.detail} (${systemctlHint("stop", a.ownId)})`,
+                    };
+                }
                 const res = await stopDaemon(getAccountDir(a.ownId));
-                return { accountId: a.ownId, stopped: res.stopped, graceful: res.graceful, pid: res.pid };
+                return {
+                    accountId: a.ownId,
+                    supervisor: "spawn",
+                    stopped: res.stopped,
+                    ok: true,
+                    graceful: res.graceful,
+                    pid: res.pid,
+                    detail: res.stopped
+                        ? `stopped (pid ${res.pid}${res.graceful ? "" : ", forced"})`
+                        : "no daemon was running",
+                };
             });
             output({ stopped: results }, json(), () => {
                 for (const r of results) {
-                    if (r.stopped) success(`${r.accountId}: stopped (pid ${r.pid}${r.graceful ? "" : ", forced"})`);
-                    else info(`${r.accountId}: no daemon was running`);
+                    if (!r.ok) error(`${r.accountId}: ${r.detail}`);
+                    else if (r.stopped) success(`${r.accountId}: ${r.detail}`);
+                    else info(`${r.accountId}: ${r.detail}`);
                 }
             });
+            if (results.some((r) => !r.ok)) process.exit(1);
         });
 
     fleet
@@ -387,7 +473,7 @@ export function registerFleetCommands(program) {
         )
         .option("--batch <n>", "Accounts restarted at once (default 5)", "5")
         .option("--stagger <seconds>", "Pause between batches (default 15)", "15")
-        .option("--env-dir <dir>", "Read <dir>/<ownId>.env into each daemon's environment")
+        .option("--env-dir <dir>", "Read <dir>/<ownId>.env into each spawned daemon's environment")
         .option("--dry-run", "Print the plan and change nothing")
         .action(async (ids, opts) => {
             if (!ids.length && !opts.unhealthy && !opts.all) {
@@ -413,13 +499,17 @@ export function registerFleetCommands(program) {
             log(
                 `restarting ${chosen.length} of ${rows.length} account(s): ${chosen.map((r) => `${r.accountId} (${r.state})`).join(", ")}`,
             );
+            const sup = await supervisorsOf(chosen.map((r) => r.accountId));
             if (!opts.dryRun) {
-                await mapLimit(chosen, 8, (r) => stopDaemon(getAccountDir(r.accountId)));
+                // A unit restarts in its batch (systemctl restart); only a spawned daemon is stopped here first.
+                const spawned = chosen.filter((r) => sup[r.accountId] !== "systemd");
+                await mapLimit(spawned, 8, (r) => stopDaemon(getAccountDir(r.accountId)));
             }
             const targets = chosen.map((r) => ({
                 ownId: r.accountId,
                 kind: r.health?.kind ?? (opts.listen ? "listen" : "mcp"),
                 port: ports[r.accountId],
+                supervisor: sup[r.accountId],
             }));
             const results = await startInBatches(targets, {
                 batch,
@@ -427,6 +517,7 @@ export function registerFleetCommands(program) {
                 envDir: opts.envDir ?? null,
                 dryRun: Boolean(opts.dryRun),
                 log,
+                verb: "restart",
             });
             output({ restarted: results, dryRun: Boolean(opts.dryRun) }, json(), () => {
                 for (const r of results) (r.ok ? success : error)(`${r.accountId}: ${r.detail}`);
@@ -464,54 +555,120 @@ export function registerFleetCommands(program) {
         });
 
     fleet
-        .command("generate")
+        .command("generate [accounts...]")
         .description(
-            "Write the systemd unit, per-account env files (with generated tokens), the port table and, optionally, a Caddyfile",
+            "Write the systemd units (daemon, purge, health check, backup) and timers, env files with generated tokens, the key provider's storage.json and credential drop-in, the za wrapper and, optionally, a Caddyfile",
         )
         .requiredOption("--out <dir>", "Directory to write into")
         .option("--base-port <port>", `First port of a new table (default ${DEFAULT_BASE_PORT})`)
-        .option("--user <name>", "Unix user the units run as (default zalo)")
-        .option("--home <dir>", "That user's home directory (default /home/zalo)")
-        .option("--bin <path>", "Path of the zalo-agent binary (default /usr/bin/zalo-agent)")
-        .option("--domain <host>", "Also write a Caddyfile that serves every account under https://<host>/a/<ownId>/")
+        .option("--user <name>", `Unix user the units run as (default ${FLEET_DEFAULTS.user})`)
+        .option("--home <dir>", `That user's home directory (default ${FLEET_DEFAULTS.home})`)
+        .option("--bin <path>", `Path of the zalo-agent binary (default ${FLEET_DEFAULTS.bin})`)
+        .option("--etc-dir <dir>", `Where the env files and the credential go (default ${FLEET_DEFAULTS.etcDir})`)
+        .option("--backup-dir <dir>", `Where the nightly backup writes (default ${FLEET_DEFAULTS.backupDir})`)
+        .option(
+            "--provider <name>",
+            `Key provider to wire: ${FLEET_PROVIDERS.join(", ")} (default ${FLEET_DEFAULTS.provider}: its passphrase through LoadCredentialEncrypted=)`,
+        )
+        .option(
+            "--domain <host>",
+            "Also write a Caddyfile that serves every account under https://<host>/a/<ownId>/, and each account's public URL",
+        )
         .option("--force", "Overwrite files that already exist (account env files keep their token)")
         .option("--rotate-tokens", "Give every account a new token, replacing the ones in existing env files")
-        .action((opts) => {
+        .action((ids, opts) => {
             const base = opts.basePort === undefined ? undefined : intOption("--base-port", opts.basePort, 1, 65535);
-            const accounts = listAccounts();
-            if (!accounts.length) {
-                error("No accounts are registered. Log in first: zalo-agent login");
+            const accounts = pickAccounts(ids);
+            // The data and media dirs are this run's own (the global --data-dir / --media-dir, or ZALO_DATA_DIR /
+            // ZALO_MEDIA_DIR from the home .env `za` reads): the files then give the units the same ones.
+            const g = program.opts();
+            const dataDir = g.dataDir ?? process.env.ZALO_DATA_DIR ?? undefined;
+            const mediaDir = g.mediaDir ?? process.env.ZALO_MEDIA_DIR ?? undefined;
+            const provider = opts.provider ?? FLEET_DEFAULTS.provider;
+            if (!FLEET_PROVIDERS.includes(provider)) {
+                error(`Invalid --provider "${provider}": one of ${FLEET_PROVIDERS.join(", ")}.`);
                 process.exit(1);
+            }
+            for (const [flag, dir] of [
+                ["--home", opts.home],
+                ["--etc-dir", opts.etcDir],
+                ["--data-dir", dataDir],
+                ["--media-dir", mediaDir],
+                ["--backup-dir", opts.backupDir],
+                ["--bin", opts.bin],
+            ]) {
+                if (dir !== undefined && !/^\/[^\s'"$`\\]*[^/\s'"$`\\]$/.test(dir)) {
+                    error(`Invalid ${flag} "${dir}": an absolute Linux path with no spaces, quotes or trailing slash.`);
+                    process.exit(1);
+                }
+            }
+            if (opts.user !== undefined && !/^[a-z_][a-z0-9_-]{0,31}$/.test(opts.user)) {
+                error(`Invalid --user "${opts.user}": a Unix user name.`);
+                process.exit(1);
+            }
+            if (opts.domain !== undefined) {
+                const v = validatePublicUrl(`https://${opts.domain}`);
+                if (v.error || !/^[a-z0-9.-]+$/i.test(opts.domain)) {
+                    error(`Invalid --domain "${opts.domain}": a host name only (zalo.example.com).`);
+                    process.exit(1);
+                }
             }
             const ports = portsFor(accounts, base);
             const paths = Object.fromEntries(
-                Object.entries({ user: opts.user, home: opts.home, bin: opts.bin }).filter(([, v]) => v !== undefined),
+                Object.entries({
+                    user: opts.user,
+                    home: opts.home,
+                    bin: opts.bin,
+                    etcDir: opts.etcDir,
+                    dataDir,
+                    mediaDir,
+                    backupDir: opts.backupDir,
+                }).filter(([, v]) => v !== undefined),
             );
             const result = generateFleetFiles({
                 outDir: opts.out,
                 accounts: accounts.map((a) => ({ ownId: a.ownId, port: ports[a.ownId] })),
                 paths,
                 domain: opts.domain ?? null,
+                provider,
                 force: Boolean(opts.force),
                 rotateTokens: Boolean(opts.rotateTokens),
             });
-            output({ outDir: opts.out, accounts: accounts.length, ...result }, json(), () => {
-                success(`${result.written.length} file(s) written to ${opts.out} for ${accounts.length} account(s)`);
+            const v = { ...FLEET_DEFAULTS, ...paths, provider };
+            const out = opts.out;
+            const cfg = `${v.home}/.zalo-agent-cli`;
+            const own = `-o ${v.user} -g ${v.user}`;
+            const dirs = [v.backupDir, ...writablePaths(v).slice(1)];
+            const steps = [
+                `sudo install -d -m 750 ${v.etcDir}/accounts && sudo install -m 600 ${out}/common.env ${v.etcDir}/ && sudo install -m 600 ${out}/accounts/*.env ${v.etcDir}/accounts/`,
+                `sudo install -m 644 ${out}/zalo-mcp@.service ${out}/zalo-mcp-purge.service ${out}/zalo-mcp-purge.timer ${out}/zalo-fleet-check.service ${out}/zalo-fleet-check.timer ${out}/zalo-backup.service ${out}/zalo-backup.timer /etc/systemd/system/`,
+                ...(provider === "passphrase"
+                    ? [
+                          KEYED_UNITS.map(
+                              (u) =>
+                                  `sudo install -D -m 644 ${out}/credentials.conf /etc/systemd/system/${u}.d/credentials.conf`,
+                          ).join(" && "),
+                          `sudo -v && systemd-ask-password -n "Storage passphrase:" | sudo systemd-creds encrypt --with-key=host --name=zalo-storage-passphrase - ${v.etcDir}/storage-passphrase.cred   (keep the passphrase in your password manager)`,
+                      ]
+                    : []),
+                `sudo install -m 600 ${own} ${out}/home.env ${cfg}/.env${result.written.includes("storage.json") || result.kept.includes("storage.json") ? ` && sudo install -m 600 ${own} ${out}/storage.json ${cfg}/storage.json   (merge into files you already have)` : ""}`,
+                `sudo install -m 755 ${out}/za /usr/local/bin/za && sudo install -m 644 ${out}/zalo-fleet-polkit.rules /etc/polkit-1/rules.d/50-zalo-fleet.rules && sudo install -m 644 ${out}/zalo-policy-audit.logrotate /etc/logrotate.d/zalo-policy-audit`,
+                `sudo install -d -m 700 ${own} ${dirs.join(" ")}`,
+                ...(opts.domain
+                    ? [`sudo install -m 644 ${out}/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy`]
+                    : []),
+                `sudo systemctl daemon-reload && sudo systemctl enable --now ${accounts.map((a) => `zalo-mcp@${a.ownId}`).join(" ")} zalo-mcp-purge.timer zalo-fleet-check.timer zalo-backup.timer`,
+            ];
+            output({ outDir: out, accounts: accounts.length, provider, install: steps, ...result }, json(), () => {
+                success(`${result.written.length} file(s) written to ${out} for ${accounts.length} account(s)`);
                 for (const f of result.written) info(`wrote  ${f}`);
                 for (const f of result.kept)
                     info(`kept   ${f} (already there; --force overwrites, --rotate-tokens renews tokens)`);
                 info("Tokens are in accounts/<id>.env (mode 600) and are not printed here.");
+                info("Install, as an admin (docs/config-samples/use-cases/c-vps-few-accounts/README.md):");
+                steps.forEach((step, i) => info(`  ${i + 1}. ${step}`));
                 info(
-                    `Install: sudo install -d /etc/zalo-mcp/accounts && sudo install -m 600 ${opts.out}/common.env /etc/zalo-mcp/ && sudo install -m 600 ${opts.out}/accounts/*.env /etc/zalo-mcp/accounts/`,
-                );
-                info(
-                    `Then:    sudo install -m 644 ${opts.out}/zalo-mcp@.service /etc/systemd/system/ && sudo systemctl daemon-reload`,
-                );
-                info(
-                    "Start:   systemctl enable --now zalo-mcp@<ownId>   (or: zalo-agent fleet start --env-dir /etc/zalo-mcp/accounts)",
-                );
-                info(
-                    `Purge:   sudo install -m 644 ${opts.out}/zalo-mcp-purge.service ${opts.out}/zalo-mcp-purge.timer /etc/systemd/system/ && sudo systemctl enable --now zalo-mcp-purge.timer`,
+                    `Then run every CLI step as the service user with \`za ...\`, and start, stop or restart an account with systemctl (or \`za fleet start|stop|restart\`), never \`fleet start --env-dir\` beside a unit.`,
                 );
             });
         });

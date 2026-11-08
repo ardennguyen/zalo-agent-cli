@@ -6,9 +6,12 @@
 # Each instance reads /etc/zalo-mcp/common.env, then /etc/zalo-mcp/accounts/<id>.env
 # (`zalo-agent fleet generate` writes both). The account's token and port come from
 # that file, so neither appears on the command line (`ps` shows only `mcp start --account <id>`).
+# The key provider's passphrase comes from the drop-in zalo-mcp@.service.d/credentials.conf.
+# Stop, start and restart an account with systemctl (or `za fleet stop|start|restart`, which
+# drives systemctl for an account that runs here): a daemon started beside its unit fights it.
 [Unit]
 Description=Zalo MCP server for account %i
-Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/configuration.md
+Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/deployment.md
 After=network-online.target
 Wants=network-online.target
 # A duplicate-session exit (exit code 3) means another web session took the
@@ -29,10 +32,9 @@ Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
 
 # Refuse to start with no token (an empty one would serve unauthenticated).
 ExecStartPre=/usr/bin/test -n "${ZALO_MCP_AUTH_TOKEN}"
-# Spread the start-up of many instances over 30 seconds: every start logs in and
-# loads the account's friend and group lists, and a whole fleet restarting at once
-# is the heaviest moment of its life (see docs/deployment.md §1.4).
-ExecStartPre=/bin/bash -c 'sleep $((RANDOM % 30))'
+# A fleet starting together is the heaviest moment of its life (every start logs in and loads
+# the account's friend and group lists): ZALO_START_JITTER and ZALO_LOGIN_SLOTS in common.env
+# spread it inside the daemon (see docs/deployment.md §1.4).
 ExecStart=/usr/bin/zalo-agent mcp start --account %i
 
 # SIGINT is the shutdown signal mcp start handles; with the default SIGTERM the
@@ -54,7 +56,11 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/zalo/.zalo-agent-cli /var/lib/zalo-media
+# Every path the daemon writes, and nothing else. The data lives under the config dir unless
+# ZALO_DATA_DIR / ZALO_MEDIA_DIR in /home/zalo/.zalo-agent-cli/.env move it; then the new
+# folder goes here too (`fleet generate --data-dir / --media-dir` writes both). A folder named
+# here must exist, or the unit fails to start (status 226/NAMESPACE).
+ReadWritePaths=/home/zalo/.zalo-agent-cli
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes

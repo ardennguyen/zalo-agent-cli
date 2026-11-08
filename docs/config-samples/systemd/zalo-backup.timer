@@ -1,0 +1,14 @@
+# /etc/systemd/system/zalo-backup.timer
+# Runs zalo-backup.service every night between 03:00 and 03:30, and once after a boot that missed it.
+#   systemctl enable --now zalo-backup.timer
+#   systemctl list-timers zalo-backup.timer
+[Unit]
+Description=Nightly Zalo MCP backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

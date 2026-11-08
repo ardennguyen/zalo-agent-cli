@@ -10,7 +10,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { createSpawnDriver, createSystemdDriver, detectSupervisor, unitName } from "../../src/core/fleet-supervisor.js";
+import {
+    createSpawnDriver,
+    createSystemdDriver,
+    detectSupervisor,
+    supervisorOf,
+    unitName,
+} from "../../src/core/fleet-supervisor.js";
 import { CONFIRM_TTL_MS, createFleetController } from "../../src/core/fleet-controller.js";
 import { adminWebhook, buildControllerApp } from "../../src/core/fleet-serve.js";
 
@@ -64,6 +70,41 @@ describe("supervisor drivers", () => {
         assert.equal(detectSupervisor({ env: { ZALO_FLEET_SUPERVISOR: "spawn" }, exists: () => true }), "spawn");
         assert.equal(detectSupervisor({ env: {}, exists: () => true }), "systemd");
         assert.equal(detectSupervisor({ env: {}, exists: () => false }), "spawn");
+    });
+
+    // G3: `fleet stop` of a unit's daemon must stop the unit (Restart=always undoes a plain stop), and `fleet
+    // restart` must not spawn a second daemon beside it; an account with no unit stays a spawn.
+    it("supervisorOf: per account, by its unit's state; the variable wins; no systemd means spawn", async () => {
+        const calls = [];
+        const show = (props) => async (args) => {
+            calls.push(args);
+            return { code: 0, stdout: props, stderr: "" };
+        };
+        const on = { env: {}, exists: () => true };
+        const of = (props) => supervisorOf(A, { ...on, run: show(props) });
+        assert.equal(await of("LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n"), "systemd");
+        assert.equal(await of("LoadState=loaded\nActiveState=failed\nUnitFileState=disabled\n"), "systemd");
+        assert.equal(await of("LoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\n"), "systemd");
+        assert.equal(
+            await of("LoadState=loaded\nActiveState=inactive\nUnitFileState=disabled\n"),
+            "spawn",
+            "a template installed but never used for this account",
+        );
+        assert.equal(await of("LoadState=not-found\nActiveState=inactive\nUnitFileState=\n"), "spawn");
+        assert.deepEqual(calls[0], ["show", `zalo-mcp@${A}.service`, "--property=LoadState,ActiveState,UnitFileState"]);
+        const failing = async () => ({ code: 1, stdout: "", stderr: "Failed to connect to bus" });
+        assert.equal(await supervisorOf(A, { ...on, run: failing }), "spawn");
+        const never = async () => assert.fail("systemctl is not asked");
+        assert.equal(await supervisorOf(A, { env: {}, exists: () => false, run: never }), "spawn");
+        assert.equal(
+            await supervisorOf(A, { env: { ZALO_FLEET_SUPERVISOR: "systemd" }, exists: () => false, run: never }),
+            "systemd",
+        );
+        assert.equal(
+            await supervisorOf(A, { env: { ZALO_FLEET_SUPERVISOR: "spawn" }, exists: () => true, run: never }),
+            "spawn",
+        );
+        await assert.rejects(supervisorOf("x; rm -rf /", { ...on, run: never }), /not an account id/);
     });
 
     it("spawn: start, stop, restart and status through the daemon helpers", async () => {

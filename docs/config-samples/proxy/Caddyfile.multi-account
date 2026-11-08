@@ -1,20 +1,27 @@
 # Caddyfile: several accounts behind one hostname, one path prefix per account.
 # Each account is its own zalo-mcp@<id> instance on its own loopback port. Bearer-token auth per
 # account; OAuth issuer URLs are awkward behind a path prefix, so use tokens here.
-# /metrics and /status are for Prometheus inside your network, so each block answers 404 for them
-# (only /mcp and /events/wait are meant for outside clients).
-# Give each account its public address with the prefix as a base path, so the links to its
-# one-time pages (/zalo/secure/<token>) come back through its own block:
-#   ZALO_MCP_PUBLIC_URL_1000000000000000001=https://zalo.example.com/a/1000000000000000001
-# (or "publicUrl" in that account's block of mcp-config.json). handle_path strips the prefix.
+# Only /mcp, /events/wait and the one-time pages and links are meant for outside clients. Each block
+# answers 404 for /metrics and /status (Prometheus, inside your network) and for /zalo/admin/* (the
+# admin API: reach it on loopback, e.g. `ssh -L 3901:127.0.0.1:3901 <host>`, or a VPN, never here).
+# Each account's env file gives it its public address with the prefix as a base path, so the links
+# to its one-time pages (/zalo/secure/<token>) come back through its own block:
+#   ZALO_MCP_PUBLIC_URL=https://zalo.example.com/a/1000000000000000001
+# (`fleet generate --domain` writes it). handle_path strips the prefix. common.env trusts this proxy:
+#   ZALO_MCP_TRUSTED_PROXIES=127.0.0.1
 zalo.example.com {
 	# Media links (/a/<id>/zalo/media/<token>) are never compressed: it breaks byte ranges.
-	# Set trustedProxies: ["127.0.0.1"] in mcp-config.json so their per-client limit counts clients.
 	@compress not path /a/*/zalo/media/*
 	encode @compress zstd gzip
 
+	# The QR page of `za login --public-url https://zalo.example.com`: one-time token, answered only while
+	# that login runs (port 18927 unless --qr-port). The SSH tunnel to 127.0.0.1:18927 is the safer way.
+	handle /zalo/qr/* {
+		reverse_proxy 127.0.0.1:18927
+	}
+
 	handle_path /a/1000000000000000001/* {
-		@internal path /metrics /status
+		@internal path /metrics /status /zalo/admin /zalo/admin/*
 		respond @internal 404
 
 		reverse_proxy 127.0.0.1:3901 {
@@ -26,7 +33,7 @@ zalo.example.com {
 	}
 
 	handle_path /a/1000000000000000002/* {
-		@internal path /metrics /status
+		@internal path /metrics /status /zalo/admin /zalo/admin/*
 		respond @internal 404
 
 		reverse_proxy 127.0.0.1:3902 {

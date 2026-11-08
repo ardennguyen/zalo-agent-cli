@@ -12,7 +12,9 @@
  *   kicked or refused account down until a person starts it.
  * - **spawn**: `spawnDaemonProcess` / `stopDaemon` (./daemon-channel.js), as `fleet start` / `fleet stop` do.
  *
- * `ZALO_FLEET_SUPERVISOR=systemd|spawn` picks one; unset: systemd when `/run/systemd/system` exists, else spawn.
+ * `ZALO_FLEET_SUPERVISOR=systemd|spawn` picks one; unset: systemd when `/run/systemd/system` exists, else spawn
+ * ({@link detectSupervisor}, for the controller), or per account by its unit's state ({@link supervisorOf}, for
+ * `fleet start|stop|restart`, which must not start a daemon beside a unit or stop one its unit restarts).
  * The runner is injectable, so tests drive a fake `systemctl`.
  */
 import { execFile } from "node:child_process";
@@ -63,6 +65,41 @@ export function detectSupervisor({ env = process.env, exists = existsSync } = {}
         .toLowerCase();
     if (asked === "systemd" || asked === "spawn") return asked;
     return exists("/run/systemd/system") ? "systemd" : "spawn";
+}
+
+/** Unit states in which systemd owns the account's daemon (running, starting, stopping, or kept down). */
+const UNIT_OWNS = new Set(["active", "activating", "deactivating", "reloading", "failed"]);
+
+/**
+ * Who runs this one account's daemon: systemd when its `zalo-mcp@<ownId>` unit is loaded and either running
+ * (or starting, stopping, kept down as `failed`) or enabled; else a plain spawn. `ZALO_FLEET_SUPERVISOR`
+ * decides for every account when set. A daemon started beside a running unit races the unit for `daemon.lock`
+ * (the unit then loops to its start limit), and a spawn-stopped one is restarted by `Restart=always`: so
+ * `fleet start|stop|restart` ask this per account, and go through systemctl for a unit.
+ *
+ * @param {string} ownId
+ * @param {{env?: NodeJS.ProcessEnv, exists?: (p: string) => boolean, run?: typeof runSystemctl}} [o]
+ * @returns {Promise<"systemd"|"spawn">}
+ */
+export async function supervisorOf(ownId, { env = process.env, exists = existsSync, run = runSystemctl } = {}) {
+    const asked = String(env.ZALO_FLEET_SUPERVISOR ?? "")
+        .trim()
+        .toLowerCase();
+    if (asked === "systemd" || asked === "spawn") return asked;
+    if (!exists("/run/systemd/system")) return "spawn";
+    const r = await run(["show", unitName(ownId), "--property=LoadState,ActiveState,UnitFileState"], {
+        timeoutMs: 15_000,
+    });
+    if (r.code !== 0) return "spawn";
+    const p = Object.fromEntries(
+        r.stdout
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l.includes("="))
+            .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    );
+    if (p.LoadState !== "loaded") return "spawn";
+    return UNIT_OWNS.has(p.ActiveState) || p.UnitFileState === "enabled" ? "systemd" : "spawn";
 }
 
 /**

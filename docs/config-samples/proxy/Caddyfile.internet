@@ -9,6 +9,13 @@ zalo.example.com {
 	@compress not path /zalo/media/*
 	encode @compress zstd gzip
 
+	# Never from the internet: the admin API (/zalo/admin/*: runtime policy,
+	# usage, export) and the Prometheus endpoints. Reach the admin API on
+	# loopback (ssh -L 3847:127.0.0.1:3847 <host>), over a VPN, or through a
+	# separate admin host that only your console's address may reach.
+	@internal path /metrics /status /zalo/admin /zalo/admin/*
+	respond @internal 404
+
 	# Optional: only your office or CRM addresses may connect at all.
 	# @blocked not remote_ip 203.0.113.0/24 198.51.100.7
 	# respond @blocked 403

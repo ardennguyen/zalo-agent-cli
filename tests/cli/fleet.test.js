@@ -213,6 +213,41 @@ describe("fleet stop", () => {
     });
 });
 
+// G3: an account its zalo-mcp@<id> unit runs is started, stopped and restarted through systemctl, never by a
+// daemon spawned beside the unit or a stop its Restart=always undoes.
+describe("fleet under systemd", () => {
+    const sd = { ...options, env: { ZALO_FLEET_SUPERVISOR: "systemd" } };
+    const sdJson = async (...args) => {
+        const r = await runCli(["--json", "fleet", ...args], sd);
+        const text = stripAnsi(r.stdout);
+        return { code: r.code, json: JSON.parse(text.slice(text.indexOf("{"))), all: r.all };
+    };
+
+    it("start and restart plan the unit, not a spawn", async () => {
+        const start = await sdJson("start", "501", "502", "--dry-run", "--stagger", "0");
+        assert.equal(start.code, 0, start.all);
+        assert.deepEqual(start.json.started.map((s) => [s.accountId, s.supervisor, s.detail]).sort(), [
+            ["501", "systemd", "would start zalo-mcp@501.service"],
+            ["502", "systemd", "would start zalo-mcp@502.service"],
+        ]);
+        const restart = await sdJson("restart", "503", "--dry-run");
+        assert.deepEqual(
+            restart.json.restarted.map((s) => [s.supervisor, s.detail]),
+            [["systemd", "would restart zalo-mcp@503.service"]],
+        );
+    });
+
+    it("stop goes to systemctl, and a refused systemctl is a failure that says how to do it", async () => {
+        // Here systemctl is missing (Windows, macOS) or refuses an unprivileged stop of an unknown unit (Linux CI).
+        const r = await runCli(["fleet", "stop", "501"], sd);
+        assert.equal(r.code, 1, r.all);
+        const text = stripAnsi(r.all);
+        assert.match(text, /systemctl stop zalo-mcp@501\.service failed/);
+        assert.match(text, /sudo systemctl stop zalo-mcp@501/);
+        assert.doesNotMatch(text, /no daemon was running/, "the spawn path was not taken");
+    });
+});
+
 describe("fleet purge", () => {
     it("asks first: without --yes or --dry-run it does nothing and exits 2", async () => {
         const r = await fleet("purge");
@@ -299,6 +334,62 @@ describe("fleet generate", () => {
         const caddy = readFileSync(join(out, "Caddyfile"), "utf8");
         assert.match(caddy, /^crm\.example\.com \{/m);
         assert.equal((caddy.match(/handle_path \/a\/50\d\//g) || []).length, 5);
+    });
+
+    it("--domain gives each named account its public URL; the steps are printed with the paths used", async () => {
+        const r = await runCli(
+            [
+                "--json",
+                "fleet",
+                "generate",
+                "502",
+                "501",
+                "--out",
+                out,
+                "--domain",
+                "zalo.example.com",
+                "--etc-dir",
+                "/opt/zalo/etc",
+                "--data-dir",
+                "/srv/zalo/accounts",
+            ],
+            options,
+        );
+        assert.equal(r.code, 0, r.all);
+        const json = JSON.parse(stripAnsi(r.stdout).slice(stripAnsi(r.stdout).indexOf("{")));
+        assert.deepEqual(readdirSync(join(out, "accounts")).sort(), ["501.env", "502.env"], "only the named accounts");
+        for (const id of ["501", "502"]) {
+            const env = readFileSync(join(out, "accounts", `${id}.env`), "utf8");
+            assert.match(env, new RegExp(`^ZALO_MCP_PUBLIC_URL=https://zalo\\.example\\.com/a/${id}$`, "m"));
+        }
+        assert.match(readFileSync(join(out, "common.env"), "utf8"), /^ZALO_MCP_TRUSTED_PROXIES=127\.0\.0\.1$/m);
+        assert.match(readFileSync(join(out, "home.env"), "utf8"), /^ZALO_DATA_DIR=\/srv\/zalo\/accounts$/m);
+        assert.match(
+            readFileSync(join(out, "zalo-mcp@.service"), "utf8"),
+            /^ReadWritePaths=\/home\/zalo\/\.zalo-agent-cli \/srv\/zalo\/accounts$/m,
+        );
+        assert.equal(json.provider, "passphrase");
+        const steps = json.install.join("\n");
+        assert.match(steps, /\/opt\/zalo\/etc\/storage-passphrase\.cred/);
+        assert.match(steps, /zalo-mcp@\.service\.d\/credentials\.conf/);
+        assert.match(steps, /enable --now zalo-mcp@502 zalo-mcp@501 /);
+        assert.doesNotMatch(steps, /\/etc\/zalo-mcp\b/, "no hard-coded /etc dir");
+        assert.doesNotMatch(steps, /fleet start --env-dir/, "never a spawn beside the units");
+    });
+
+    it("refuses an unknown provider, a relative path, a bad domain or user, and writes nothing", async () => {
+        for (const args of [
+            ["--provider", "plaintext"],
+            ["--data-dir", "relative/dir"],
+            ["--etc-dir", "/etc/zalo mcp"],
+            ["--domain", "https://zalo.example.com/"],
+            ["--user", "Bad User"],
+        ]) {
+            const r = await gen(...args);
+            assert.equal(r.code, 1, args.join(" "));
+            assert.match(stripAnsi(r.all), /Invalid --(provider|data-dir|etc-dir|domain|user)/, args.join(" "));
+        }
+        assert.deepEqual(readdirSync(out), [], "nothing was written");
     });
 
     it("needs --out, and a sane --base-port", async () => {

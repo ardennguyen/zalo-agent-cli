@@ -23,12 +23,22 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
 import { withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import {
-    COMMON_ENV_TEMPLATE,
+    BACKUP_TIMER_TEMPLATE,
+    CHECK_TIMER_TEMPLATE,
     PURGE_TIMER_TEMPLATE,
     renderAccountEnv,
+    renderBackupService,
     renderCaddyfile,
+    renderCheckService,
+    renderCommonEnv,
+    renderCredentialsDropin,
+    renderHomeEnv,
+    renderLogrotate,
+    renderPolkitRule,
     renderPurgeService,
+    renderStorageJson,
     renderUnit,
+    renderZa,
 } from "./fleet-templates.js";
 
 export const DEFAULT_BASE_PORT = 3900;
@@ -253,16 +263,19 @@ export function renderStatusTable(rows) {
 }
 
 /**
- * Write the files that supervise a fleet: the systemd unit, env files (with a generated bearer token per
- * account), the port table, and optionally a Caddyfile. An existing file is never overwritten unless `force`;
- * an existing account env file keeps its token even then unless `rotateTokens`.
+ * Write the files that supervise a fleet: the systemd unit and its credential drop-in, the maintenance units
+ * (purge, health check, backup) and their timers, the env files (with a generated bearer token per account),
+ * the home `.env` and `storage.json`, the polkit rule, the `za` wrapper, a logrotate rule, the port table and,
+ * with a domain, a Caddyfile. An existing file is never overwritten unless `force`; an existing account env
+ * file keeps its token even then unless `rotateTokens`.
  *
  * @param {object} args
  * @param {string} args.outDir
  * @param {Array<{ ownId: string, port: number }>} args.accounts
- * @param {{ user?: string, home?: string, bin?: string, mediaDir?: string, etcDir?: string }} [args.paths] -
- *   for the unit
- * @param {string|null} [args.domain] - Also write a Caddyfile for this hostname
+ * @param {{ user?: string, home?: string, bin?: string, etcDir?: string, dataDir?: string, mediaDir?: string,
+ *   backupDir?: string }} [args.paths]
+ * @param {string|null} [args.domain] - Also write a Caddyfile for this hostname, and each account's public URL
+ * @param {"passphrase"|"systemd-creds"|"kms"|"none"} [args.provider] - The key provider to wire (passphrase)
  * @param {boolean} [args.force]
  * @param {boolean} [args.rotateTokens]
  * @param {() => string} [args.makeToken]
@@ -273,27 +286,40 @@ export function generateFleetFiles({
     accounts,
     paths = {},
     domain = null,
+    provider = "passphrase",
     force = false,
     rotateTokens = false,
     makeToken = () => randomBytes(32).toString("hex"),
 }) {
     const written = [];
     const kept = [];
-    const put = (rel, text, { secret = false, overwrite = force } = {}) => {
+    const put = (rel, text, { secret = false, overwrite = force, mode } = {}) => {
         const file = join(outDir, rel);
         if (existsSync(file) && !overwrite) {
             kept.push(rel);
             return false;
         }
-        writeFileAtomic(file, text, { mode: secret ? 0o600 : 0o644 });
+        writeFileAtomic(file, text, { mode: mode ?? (secret ? 0o600 : 0o644) });
         written.push(rel);
         return true;
     };
+    const o = { ...paths, provider };
 
-    put("zalo-mcp@.service", renderUnit(paths));
-    put("zalo-mcp-purge.service", renderPurgeService(paths));
+    put("zalo-mcp@.service", renderUnit(o));
+    if (provider === "passphrase") put("credentials.conf", renderCredentialsDropin(o));
+    put("zalo-mcp-purge.service", renderPurgeService(o));
     put("zalo-mcp-purge.timer", PURGE_TIMER_TEMPLATE);
-    put("common.env", COMMON_ENV_TEMPLATE, { secret: true });
+    put("zalo-fleet-check.service", renderCheckService(o));
+    put("zalo-fleet-check.timer", CHECK_TIMER_TEMPLATE);
+    put("zalo-backup.service", renderBackupService(o));
+    put("zalo-backup.timer", BACKUP_TIMER_TEMPLATE);
+    put("zalo-fleet-polkit.rules", renderPolkitRule(o));
+    put("za", renderZa(o), { mode: 0o755 });
+    put("zalo-policy-audit.logrotate", renderLogrotate(o));
+    put("common.env", renderCommonEnv({ proxied: Boolean(domain) }), { secret: true });
+    put("home.env", renderHomeEnv(o), { secret: true });
+    const storage = renderStorageJson(provider);
+    if (storage) put("storage.json", storage);
     for (const { ownId, port } of accounts) {
         const rel = join("accounts", `${ownId}.env`);
         const file = join(outDir, rel);
@@ -302,7 +328,11 @@ export function generateFleetFiles({
             kept.push(rel);
             continue;
         }
-        put(rel, renderAccountEnv({ ownId, port, token: makeToken() }), { secret: true, overwrite: true });
+        const publicUrl = domain ? `https://${domain}/a/${ownId}` : null;
+        put(rel, renderAccountEnv({ ownId, port, token: makeToken(), publicUrl, etcDir: paths.etcDir }), {
+            secret: true,
+            overwrite: true,
+        });
     }
     put("ports.json", JSON.stringify(Object.fromEntries(accounts.map((a) => [a.ownId, a.port])), null, 2) + "\n", {
         overwrite: true,

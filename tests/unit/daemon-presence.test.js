@@ -9,16 +9,17 @@ import { assertSandboxed, SANDBOX_CONFIG_DIR } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { createSocketHost } from "../../src/core/socket-host.js";
 import { createGapTracker, IDLE_GAP_REASON, PARKED_AT_KEY } from "../../src/core/listener-lifecycle.js";
 import {
     NO_SELF_HEAL_REFUSAL,
     PresenceRefusal,
     createDaemonPresence,
+    presenceConfigFiles,
     presenceTransport,
     resolveDaemonPresence,
 } from "../../src/core/daemon-presence.js";
@@ -385,6 +386,30 @@ describe("daemon presence: signed out (Zalo refuses the saved login)", () => {
         assert.equal(d.made.length, 1);
     });
 
+    it("ZALO_EXIT_ON_SIGNED_OUT_<ownId> is the per-account form: it wins over the global one, either way", async () => {
+        const d = daemon({
+            env: { ZALO_EXIT_ON_SIGNED_OUT: "0", [`ZALO_EXIT_ON_SIGNED_OUT_${OWN}`]: "1" },
+            relogin: [refused(), refused(), refused()],
+        });
+        d.dp.start({ id: 1 });
+        (await d.dp.admit()).release();
+        d.made[0].up();
+        d.made[0].emit("session-invalid", { kind: "session-invalid", code: 102 });
+        await until(() => d.ended.length, "the exit");
+        assert.deepEqual(d.ended, ["revoked"]);
+
+        const stay = daemon({
+            env: { ZALO_EXIT_ON_SIGNED_OUT: "1", [`ZALO_EXIT_ON_SIGNED_OUT_${OWN}`]: "off" },
+            relogin: [refused(), refused(), refused()],
+        });
+        stay.dp.start({ id: 1 });
+        (await stay.dp.admit()).release();
+        stay.made[0].up();
+        stay.made[0].emit("session-invalid", { kind: "session-invalid", code: 102 });
+        await until(() => stay.dp.presence.state === "signed-out", "signed-out");
+        assert.deepEqual(stay.ended, [], "the per-account off beats the global on: no exit 4");
+    });
+
     it("ZALO_EXIT_ON_SIGNED_OUT=1 keeps the old ending (exit 4)", async () => {
         const d = daemon({ env: { ZALO_EXIT_ON_SIGNED_OUT: "1" }, relogin: [refused(), refused(), refused()] });
         d.dp.start({ id: 1 });
@@ -653,5 +678,69 @@ describe("health and account_state know yielded and signed-out", () => {
         } finally {
             health.stop();
         }
+    });
+});
+
+describe("daemon presence: listen reads mcp-config.json like mcp start", () => {
+    const file = () => join(CONFIG_DIR, "mcp-config.json");
+    const accountFile = () => join(getAccountDir(OWN), "mcp-config.json");
+    afterEach(() => {
+        rmSync(file(), { force: true });
+        rmSync(accountFile(), { force: true });
+    });
+
+    it("the presence block, accounts.<ownId>.presence and <accountDir>/mcp-config.json reach a background listen", () => {
+        const accountDir = getAccountDir(OWN);
+        mkdirSync(accountDir, { recursive: true });
+        writeFileSync(
+            file(),
+            JSON.stringify({
+                presence: { mode: "always-on", idleTimeout: "7m" },
+                accounts: { [OWN]: { presence: { idleTimeout: "8m" } } },
+            }),
+        );
+        const transport = presenceTransport({ command: "listen", background: true });
+        let files = presenceConfigFiles({ ownId: OWN, accountDir });
+        assert.equal(files.problem, null);
+        let r = resolveDaemonPresence({ config: files.config, ownId: OWN, transport, env: {} });
+        assert.equal(r.settings.mode, "always-on", "a webhook listener honours the file, not the on-demand default");
+        assert.equal(r.settings.idleTimeoutMs, 8 * MIN, "the account block wins over the top-level one");
+        // --no-self-heal is accepted when the file says always-on (it used to be refused: the file was never read).
+        assert.equal(
+            resolveDaemonPresence({ config: files.config, ownId: OWN, transport, selfHeal: false, env: {} }).problem,
+            null,
+        );
+        // The environment still beats the files.
+        r = resolveDaemonPresence({
+            config: files.config,
+            ownId: OWN,
+            transport,
+            env: { ZALO_PRESENCE_MODE: "on-demand" },
+        });
+        assert.equal(r.settings.mode, "on-demand");
+        // The per-account file is merged on top, as `mcp start` merges it.
+        writeFileSync(accountFile(), JSON.stringify({ presence: { mode: "on-demand" } }));
+        files = presenceConfigFiles({ ownId: OWN, accountDir });
+        r = resolveDaemonPresence({ config: files.config, ownId: OWN, transport, env: {} });
+        assert.equal(r.settings.mode, "on-demand");
+        // A foreground listen stays always-on whatever the files say.
+        r = resolveDaemonPresence({ config: files.config, ownId: OWN, transport: "stdout", env: {} });
+        assert.equal(r.settings.mode, "always-on");
+    });
+
+    it("both daemons hand the files to the resolver and to the daemon's presence (no listen without a config)", () => {
+        const src = readFileSync(join(import.meta.dirname, "..", "..", "src", "commands", "listen.js"), "utf8");
+        assert.match(src, /presenceConfigFiles\(\{ ownId: activeAcc\.ownId, accountDir \}\)/);
+        for (const call of ["resolveDaemonPresence({", "createDaemonPresence({"]) {
+            const at = src.indexOf(call);
+            assert.ok(at > 0, call);
+            assert.match(src.slice(at, at + 200), /config: presenceConfig,/, `listen's ${call} gets the files`);
+        }
+    });
+
+    it("an unreadable mcp-config.json is a problem, not the defaults; no file at all is fine", () => {
+        assert.equal(presenceConfigFiles({ ownId: OWN, accountDir: getAccountDir(OWN) }).problem, null);
+        writeFileSync(file(), "{not json");
+        assert.match(presenceConfigFiles({ ownId: OWN, accountDir: getAccountDir(OWN) }).problem, /not valid JSON/);
     });
 });

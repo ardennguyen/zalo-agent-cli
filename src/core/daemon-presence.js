@@ -10,7 +10,7 @@
  *    the coming close as planned (`lifecycle.noteParking`, health `idle`) before the supervisor stops.
  *  - **States.** The supervisor's states feed presence, health and `account_state`; a kick on an on-demand daemon ends
  *    in `yielded` (the daemon stays up), a login Zalo keeps refusing ends in `signed-out` (the daemon stays up; exit 4
- *    only with `ZALO_EXIT_ON_SIGNED_OUT=1`).
+ *    only with `ZALO_EXIT_ON_SIGNED_OUT[_<ownId>]=1`).
  *  - **Demand.** `admit()` is the one door for every request that needs the account: an MCP tool call (by its class,
  *    src/mcp/tool-presence.js), a wait, a CLI request over the daemon channel. It refuses while yielded (`YIELDED`) or
  *    signed out (`SIGNED_OUT`), opens a hold, and for `fresh` / `socket` requests waits up to `presence.warmWait` for
@@ -18,6 +18,7 @@
  *  - **The routes.** The daemon channel's `/presence` (`presence status|wake|park|resume`), the CRM leases
  *    (./presence-leases.js) and `/status`'s `presence` block.
  */
+import { readMCPConfig, resolveAccountMCPConfig, envForAccount } from "../mcp/mcp-config.js";
 import { resolvePresenceSettings } from "./presence-config.js";
 import { createPresence } from "./presence.js";
 import { createLeaseRoutes, createLeaseStore } from "./presence-leases.js";
@@ -56,10 +57,26 @@ export const NO_SELF_HEAL_REFUSAL =
     '"always-on" (policy, mcp-config.json, or ZALO_PRESENCE_MODE).';
 
 /**
+ * The config files a `listen` daemon's presence reads: the same `mcp-config.json` (its `presence` block and
+ * `accounts.<ownId>.presence`) and `<accountDir>/mcp-config.json` that `mcp start` merges, so one presence setting
+ * covers both daemons. `listen` has no `--config`, so the default file is the one read. A file that cannot be used is
+ * a `problem` (the caller decides: a background `listen` refuses, as `mcp start` does; a foreground one is always-on
+ * and needs no file).
+ *
+ * @param {{ownId: string, accountDir?: string}} o
+ * @returns {{config: object, problem: string|null}}
+ */
+export function presenceConfigFiles({ ownId, accountDir }) {
+    const base = readMCPConfig();
+    if (base.problem) return base;
+    return resolveAccountMCPConfig(base.config, { accountId: ownId, accountDir });
+}
+
+/**
  * The settings a daemon starts with, and whether it may start with them.
  *
  * @param {object} o
- * @param {object} [o.config] - the merged MCP config (`listen` has none)
+ * @param {object} [o.config] - the merged MCP config (`listen` reads it through `presenceConfigFiles`)
  * @param {string} o.ownId
  * @param {"stdio"|"http"|"stdout"|"webhook"} o.transport
  * @param {boolean} [o.selfHeal]
@@ -115,10 +132,9 @@ export function createDaemonPresence({
 }) {
     let resolved = resolveDaemonPresence({ config, ownId, transport, selfHeal, env });
     if (resolved.problem) throw new Error(resolved.problem);
+    // ZALO_EXIT_ON_SIGNED_OUT[_<ownId>]: the per-account form wins, like every per-account variable.
     const exitOnSignedOut = ["1", "true", "yes", "on"].includes(
-        String(env.ZALO_EXIT_ON_SIGNED_OUT ?? "")
-            .trim()
-            .toLowerCase(),
+        String(envForAccount("ZALO_EXIT_ON_SIGNED_OUT", ownId, env) ?? "").toLowerCase(),
     );
 
     // Wakes across the machine (ZALO_CONNECT_SLOTS): a slot from the wake to its first catch-up, at most 60 s.
@@ -361,7 +377,7 @@ export function createDaemonPresence({
         },
 
         /**
-         * Zalo keeps refusing the saved login. Unless `ZALO_EXIT_ON_SIGNED_OUT=1`, the daemon stays up in `signed-out`
+         * Zalo keeps refusing the saved login. Unless `ZALO_EXIT_ON_SIGNED_OUT[_<ownId>]=1`, the daemon stays up in `signed-out`
          * (the socket is let go for good, requests are refused) and this returns true; false: end it with exit 4.
          *
          * @returns {boolean}

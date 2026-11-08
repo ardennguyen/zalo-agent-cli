@@ -76,7 +76,12 @@ import {
     PARKED_AT_KEY,
     startupGapReason,
 } from "../core/listener-lifecycle.js";
-import { createDaemonPresence, presenceTransport, resolveDaemonPresence } from "../core/daemon-presence.js";
+import {
+    createDaemonPresence,
+    presenceConfigFiles,
+    presenceTransport,
+    resolveDaemonPresence,
+} from "../core/daemon-presence.js";
 import { createAccountStateTracker, describeAccountState } from "../core/account-state.js";
 import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
@@ -240,7 +245,17 @@ export function registerListenCommand(program) {
                 command: "listen",
                 background: Boolean(opts.daemon || process.env.ZALO_DAEMON_CHILD),
             });
+            // The settings come from the same layers as `mcp start`: mcp-config.json (`presence`,
+            // `accounts.<ownId>.presence`, `<accountDir>/mcp-config.json`) < env < policy. A file a background
+            // listener cannot use is refused, as `mcp start` refuses it: the defaults would silently run on-demand.
+            const presenceFiles = presenceConfigFiles({ ownId: activeAcc.ownId, accountDir });
+            if (presenceFiles.problem && presenceRole !== "stdout") {
+                error(`Refusing to start: ${presenceFiles.problem} (its presence settings would be ignored).`);
+                process.exit(1);
+            }
+            const presenceConfig = presenceFiles.config;
             const presenceCheck = resolveDaemonPresence({
+                config: presenceConfig,
                 ownId: activeAcc.ownId,
                 transport: presenceRole,
                 selfHeal: opts.selfHeal !== false,
@@ -793,6 +808,7 @@ export function registerListenCommand(program) {
             try {
                 daemonPresence = createDaemonPresence({
                     ownId: activeAcc.ownId,
+                    config: presenceConfig,
                     transport: presenceRole,
                     selfHeal: opts.selfHeal !== false,
                     configDir: CONFIG_DIR,
@@ -1294,7 +1310,7 @@ export function registerListenCommand(program) {
                             "the web login. Add the account again by QR (`zalo-agent login`).",
                     );
                     // Signed out: the daemon stays up (status, a QR re-add) and refuses requests; exit 4 only with
-                    // ZALO_EXIT_ON_SIGNED_OUT=1.
+                    // ZALO_EXIT_ON_SIGNED_OUT[_<ownId>]=1.
                     if (daemonPresence.signOut(e)) return;
                     accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
                     dropLock();

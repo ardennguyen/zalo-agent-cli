@@ -363,7 +363,13 @@ export function createAdminApi({
             return send(
                 res,
                 200,
-                { ...docReply(target, doc), changed: r.changed, ...(r.demoted?.length ? { demoted: r.demoted } : {}) },
+                {
+                    ...docReply(target, doc),
+                    changed: r.changed,
+                    ...(r.demoted?.length ? { demoted: r.demoted } : {}),
+                    // What a change means beyond its value (a groups.onLeave switch), the text `policy set` prints.
+                    ...(r.notes?.length ? { notes: r.notes } : {}),
+                },
                 { ETag: `"${doc.rev}"` },
             );
         } catch (e) {

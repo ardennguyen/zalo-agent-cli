@@ -1632,7 +1632,7 @@ export function registerMCPCommands(program) {
                             "took the web login. Add the account again by QR (`zalo-agent login`).",
                     );
                     // Signed out: the daemon stays up (status, API, a QR re-add) and refuses requests; exit 4 only with
-                    // ZALO_EXIT_ON_SIGNED_OUT=1.
+                    // ZALO_EXIT_ON_SIGNED_OUT[_<ownId>]=1.
                     if (daemonPresence.signOut(e)) return;
                     accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
                     dropLock();

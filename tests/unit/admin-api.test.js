@@ -21,6 +21,7 @@ import {
 } from "../../src/core/admin-api.js";
 import { policyAuditFile } from "../../src/core/policy-store.js";
 import { resolveConfirmMode } from "../../src/core/confirm-guard.js";
+import { onLeaveChangeNote } from "../../src/core/group-exit.js";
 import { resolveMediaLinkAuth } from "../../src/core/deploy-policy.js";
 
 const OWN = "1000000000000000801";
@@ -178,6 +179,20 @@ describe("admin API: reading and changing the policy", () => {
             resolveMediaLinkAuth({ env: { ZALO_MCP_MEDIA_LINK_AUTH: "capability" }, accountId: OWN }).linkAuth,
             "bearer",
         );
+    });
+
+    it("a groups.onLeave switch carries the same notes `policy set` prints; other changes carry none", async () => {
+        const base = await start();
+        const patch = (body) => call(base, "/policy", { token: ADMIN_TOKEN, method: "PATCH", body });
+        const keep = await patch({ groups: { onLeave: "keep" } });
+        assert.equal(keep.status, 200, JSON.stringify(keep.body));
+        assert.deepEqual(keep.body.notes, [onLeaveChangeNote("keep")]);
+        const purge = await patch({ groups: { onLeave: "purge" } });
+        assert.deepEqual(purge.body.notes, [onLeaveChangeNote("purge")]);
+        assert.notEqual(purge.body.notes[0], keep.body.notes[0]);
+        const other = await patch({ hiddenChats: "include" });
+        assert.equal(other.status, 200);
+        assert.equal(other.body.notes, undefined);
     });
 
     it("If-Match with a stale rev is 412 and changes nothing", async () => {

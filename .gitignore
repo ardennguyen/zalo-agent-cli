@@ -6,6 +6,8 @@ accounts.json
 .env
 .env.*
 !.env.example
+# The use-case sample sets ship a commented .env with placeholders only (tests/unit/config-samples.test.js).
+!docs/config-samples/use-cases/**/.env
 qr.png
 test_qr.png
 confirm_payload.json

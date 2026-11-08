@@ -79,6 +79,7 @@ import {
 import {
     createDaemonPresence,
     presenceConfigFiles,
+    describeSocketPolicy,
     presenceTransport,
     resolveDaemonPresence,
 } from "../core/daemon-presence.js";
@@ -116,7 +117,7 @@ export function registerListenCommand(program) {
             parseAccountId,
         )
         .description(
-            "Listen for all Zalo events (messages, friend requests, group events) via one WebSocket. Auto-reconnect enabled.",
+            "Listen for all Zalo events (messages, friend requests, group events) via one WebSocket. In the foreground it stays connected; with --daemon it follows the presence settings (on-demand by default: parks when idle, wakes on demand).",
         )
         .option(
             "-e, --events <types>",
@@ -835,6 +836,7 @@ export function registerListenCommand(program) {
                               `never within ${Math.round(p.minConnectedMs / 1000)}s of a connect`
                             : ""),
                 );
+                info(describeSocketPolicy(p, { exitOnSignedOut: daemonPresence.exitOnSignedOut }));
             }
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
             // Read state other devices report -- a conversation read on the
@@ -1329,7 +1331,6 @@ export function registerListenCommand(program) {
 
                 info("Listening for Zalo events... Press Ctrl+C to stop.");
                 info(`Events: ${opts.events}`);
-                info("Auto-reconnect enabled.");
                 if (opts.filter !== "all") info(`Message filter: ${opts.filter}`);
                 if (webhookUrl) info(`Webhook: ${webhookUrl}${webhookSecret ? " (signed)" : ""}`);
                 if (saveDir) info(`Save dir: ${saveDir} (JSONL per thread)`);

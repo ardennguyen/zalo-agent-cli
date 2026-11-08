@@ -52,7 +52,7 @@
         "access": "public"
     },
     "engines": {
-        "node": ">=22"
+        "node": ">=22.19.0"
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.32.1",

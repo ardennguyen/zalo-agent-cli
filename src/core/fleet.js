@@ -157,7 +157,9 @@ export const STATES = Object.freeze([
     "starting",
     "maintenance",
     "relogin",
+    "yielded",
     "kicked",
+    "signed_out",
     "down",
     "unresponsive",
     "stopped",
@@ -177,6 +179,10 @@ const HELD = new Set(["maintenance", "relogin", "kicked"]);
  *  - `relogin`: it answers, and Zalo refused its session, so it is logging in again (transient)
  *  - `kicked`: it answers, and another session took the account, so it will not reconnect (see the log; restarting it
  *    would only evict the other session in turn)
+ *  - `yielded`: it answers, and (on-demand) another session of the same login took the socket; it stays up and refuses
+ *    requests until a person confirms `presence resume`
+ *  - `signed_out`: it answers, and Zalo keeps refusing the saved login; it stays up and refuses requests until the
+ *    account is added again by QR
  *  - `idle`: it answers, and its socket is parked by on-demand presence (it wakes on demand): never `down`
  *  - `starting`: it answers, and its socket is not up yet (or has not been down long enough to count)
  *  - `degraded`: the socket is up but it has warnings (a webhook backlog, dead letters, open gaps)
@@ -185,17 +191,55 @@ const HELD = new Set(["maintenance", "relogin", "kicked"]);
  * @param {{ running: boolean, health: object|null, kicked?: object|null }} a - `health` is null when the daemon did
  *   not answer; `kicked` is the account's kick marker, if any
  * @param {{ downForSec?: number }} [o]
- * @returns {"ok"|"idle"|"degraded"|"starting"|"maintenance"|"relogin"|"kicked"|"down"|"unresponsive"|"stopped"}
+ * @returns {"ok"|"idle"|"degraded"|"starting"|"maintenance"|"relogin"|"yielded"|"kicked"|"signed_out"|"down"|"unresponsive"|"stopped"}
  */
 export function classifyAccount({ running, health, kicked = null }, { downForSec = 180 } = {}) {
     if (!running) return kicked ? "kicked" : "stopped";
     if (!health) return "unresponsive";
     const socket = health.socket ?? {};
+    // The daemon says yielded / signed out in its socket state; its account state and presence block say it too.
+    const held = [socket.state, health.accountState?.state, health.presence?.state];
+    if (held.includes("yielded")) return "yielded";
+    if (held.some((s) => s === "signed-out" || s === "signed_out")) return "signed_out";
     if (HELD.has(socket.state)) return socket.state;
     if (socket.state === "idle") return "idle";
     if (socket.state === "down" && (socket.forSec ?? 0) >= downForSec) return "down";
     if (socket.state !== "up") return "starting";
     return health.warnings?.length ? "degraded" : "ok";
+}
+
+/** The states `fleet status --check` passes: the account serves, or wakes on demand. */
+export const CHECK_PASSES = Object.freeze(["ok", "idle", "degraded"]);
+
+/** What a person does about each state `fleet status --check` fails, one line each. */
+export const STATE_ADVICE = Object.freeze({
+    starting: "its socket is not up yet; if this stays, read the daemon log",
+    maintenance: "Zalo is in maintenance; the daemon reconnects by itself when it ends",
+    relogin: "Zalo refused the session and the daemon is logging in again; if this stays, read the daemon log",
+    yielded:
+        "another session of this login took the account; close it, then confirm `zalo-agent presence resume --yes` " +
+        "(requests are refused until then; a restart does not help)",
+    kicked:
+        "another session took the account and the daemon will not reconnect; close the other session, then start it " +
+        "again",
+    signed_out:
+        "Zalo keeps refusing the saved login (another browser or device took the web login); add the account again by " +
+        "QR (requests are refused until then; a restart does not help)",
+    down: "its Zalo socket has been down for a while; `fleet restart --unhealthy` restarts it",
+    unresponsive: "the daemon holds its lock but does not answer; `fleet restart --unhealthy` restarts it",
+    stopped: "no daemon runs for it; `fleet start` starts it",
+});
+
+/**
+ * The lines `fleet status --check` prints for the accounts that fail it: one per account, its state and what to do.
+ *
+ * @param {Array<{ accountId: string, state: string }>} rows
+ * @returns {string[]}
+ */
+export function checkFailures(rows) {
+    return rows
+        .filter((r) => !CHECK_PASSES.includes(r.state))
+        .map((r) => `${r.accountId}: ${r.state}${STATE_ADVICE[r.state] ? ` - ${STATE_ADVICE[r.state]}` : ""}`);
 }
 
 /** True for the states a restart can help: the account is not serving. */

@@ -116,7 +116,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **30** containers — 21 top-level + 7 OA subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5790** as of 2026-11-09 (5781 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5797** as of 2026-11-09 (5788 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1245,7 +1245,7 @@ and links again as the same device (a relink id, no secret in the QR) instead of
 (`-21`) clears it and the login is run again. The page's own relink case was seen in the capture (second login, no new keys).
 The device list is stored as the server sent it; its signature is not verified here (the phone and the server do).
 
-**What each way out does with the identity (decision D19, 2026-10-28, owner ratified the companion device).** `logout` and `logout --delete-history` keep `trusted-device.json` (a history delete removes `zalo.db` and `media/` only), so the next QR login relinks as the same companion; `logout --purge` and `account remove` remove the account's folder with it, and say that Zalo still lists the entry on the phone until it is removed there (`describeTrustedDevice`, `src/core/logout.js`). `account devices` marks which entry is this CLI by matching the saved `companionId`. Seen live 2026-10-28: after two QR logins on one account the list holds one CLI entry, not two.
+**What each way out does with the identity (decision D19, 2026-10-28, owner ratified the companion device).** `logout` and `logout --delete-history` keep `trusted-device.json` (a history delete removes `zalo.db` and `media/` only), so the next QR login keeps the same device id (and with it Zalo's offline queue for this device); `logout --purge` and `account remove` remove the account's folder with it, and say that Zalo still lists the entry on the phone until it is removed there (`describeTrustedDevice`, `src/core/logout.js`). `account devices` marks which entry is this CLI by matching the saved `companionId`. Seen live 2026-10-28: after two QR logins on one account the list holds one CLI entry, not two. Measured again 2026-11-09: each QR login adds a new entry to the phone's device list and logs the older entry out; the device id is kept, so the offline queue carries over. `describeTrustedDevice` says so.
 
 **Status.** Offline, everything above is covered: the fake `id.zalo.me` follows the captured sequence whole (the replay
 harness reports no difference), the module's calls run in tests on the real wasm when `ZALO_TRUST_WASM` points at a copy,
@@ -1691,7 +1691,7 @@ call site was not read.
 
 ## Writes: the web client's state-changing endpoints (v3.0, 2026-10-26)
 
-**What it is.** `src/zalo/writes.js` is a table of 27 writes (33 until the todo writes were removed on 2026-10-28; 24 after P7a; the closing sweep added nine) on the same request path as the reads (`src/zalo/web-call.js`, which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`. The owner approved building all four groups of plan 6.2; the first version was written and tested offline, and P7a (2026-10-27) then ran them on a disposable group ("Việc riêng - AI test", whose members are the owner's accounts) and on the owner's Arden Companion account. **14 of the 24 were seen to work; 10 were not, for reasons recorded in each entry's `note`.** Two more (`profile/mode`, `closefr/update`) answered 404 and were removed. Guards: each entry has a `risk` (`private`, `visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted; `write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); tests keep the `verified` set exact and keep the table's endpoints and names disjoint from the reads, which a test holds to reads only.
+**What it is.** `src/zalo/writes.js` is a table of 27 writes (33 until the todo writes were removed on 2026-10-28; 24 after P7a; the closing sweep added nine) on the same request path as the reads (`src/zalo/web-call.js`, which `reads.js` and `writes.js` share), each with the host, path, command id and body taken from the web API module's method of the same purpose. Surfaces: `write list` and `write run` (`src/commands/write.js`) and the MCP tool `zalo_write`. The owner approved building all four groups of plan 6.2; the first version was written and tested offline, and P7a (2026-10-27) then ran them on a disposable group ("Việc riêng - AI test", whose members are the owner's accounts) and on the owner's companion account. **14 of the 24 were seen to work; 10 were not, for reasons recorded in each entry's `note`.** Two more (`profile/mode`, `closefr/update`) answered 404 and were removed. Guards: each entry has a `risk` (`private`, `visible`, `destructive`); `callWrite` takes `dryRun` and then sends nothing and returns the request with its body decrypted; `write run` refuses without `--yes` (or `--dry-run`) and `zalo_write` without `confirm: true` (or `dryRun: true`); tests keep the `verified` set exact and keep the table's endpoints and names disjoint from the reads, which a test holds to reads only.
 
 **Built, with what the body is.** The multi-recall (`multi_undo`, `multi_undomsg`) sends, per message, a fresh client id,
 the original's client id (`cliMsgIdUndo`) and its global id. The group note and reminder writes (`topic/createv2`,
@@ -1734,7 +1734,7 @@ back). `sync_action/media` accepts an empty list. The todos answer `-69` (featur
 ## P7: the live verification sweep and the hardening (v3.0, 2026-10-27)
 
 **P7a, what was run live** (test account, a disposable group "Việc riêng - AI test" whose other members are the owner's own
-accounts, and the owner's Arden Companion account as the target of anything that touches a friend; ids are never written
+accounts, and the owner's companion account as the target of anything that touches a friend; ids are never written
 down). Reads and writes are in the sections above; the rest:
 
 - **Board and message writes** all worked as recorded in the Writes section, after three corrections the live run forced

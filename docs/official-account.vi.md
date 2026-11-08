@@ -232,7 +232,7 @@ ngrok http 3000
 ### Với VPS (khuyến nghị cho production)
 
 ```bash
-# Install trên VPS (cần Node.js 22+)
+# Install trên VPS (cần Node.js 22.19+)
 npm install -g @ardennguyen/zalo-agent-cli
 
 # Login từ VPS

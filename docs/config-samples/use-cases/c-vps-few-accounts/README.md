@@ -2,7 +2,7 @@
 
 [Tiếng Việt](README.vi.md) · Moving accounts from a Windows 2.5.9 home: [MIGRATE.md](MIGRATE.md) · Background: [docs/deployment.md](../../../deployment.md)
 
-One Ubuntu 24.04 VPS (Node 22, Caddy, ufw), one service user `zalo`, one admin who logs in over SSH, and two Zalo accounts (here `1000000000000000001`, the main one, and `1000000000000000002`, a companion; use your own ids). One hostname, `zalo.example.com`, with a path prefix per account: `https://zalo.example.com/a/<ownId>/mcp`. Keys at rest come from a **storage passphrase** that systemd hands to the service (`LoadCredentialEncrypted=`), so a backup opens on a new machine with that passphrase.
+One Ubuntu 24.04 VPS (Node 22.19+, Caddy, ufw), one service user `zalo`, one admin who logs in over SSH, and two Zalo accounts (here `1000000000000000001`, the main one, and `1000000000000000002`, a companion; use your own ids). One hostname, `zalo.example.com`, with a path prefix per account: `https://zalo.example.com/a/<ownId>/mcp`. Keys at rest come from a **storage passphrase** that systemd hands to the service (`LoadCredentialEncrypted=`), so a backup opens on a new machine with that passphrase.
 
 Every file here is what `za fleet generate --base-port 3901 --domain zalo.example.com` writes for these two accounts (the test `tests/unit/config-samples.test.js` holds them byte for byte), plus `mcp-config.json`, `journald.conf.d/zalo.conf` and `ufw.sh`.
 
@@ -49,7 +49,7 @@ timers: zalo-fleet-check (5 min) · zalo-mcp-purge (hourly) · zalo-backup (nigh
 
 Run as your admin user over SSH. `<ver>` is the exact engine version you deploy (`npm view @ardennguyen/zalo-agent-cli versions`).
 
-1. **Host.** Ubuntu 24.04, Node 22 from NodeSource, `sudo apt install caddy polkitd`, then the service user and the engine (pinned, never `@latest`):
+1. **Host.** Ubuntu 24.04, Node 22 (22.19 or later) from NodeSource, `sudo apt install caddy polkitd`, then the service user and the engine (pinned, never `@latest`):
    ```bash
    sudo adduser --system --group --home /home/zalo zalo
    sudo npm install -g @ardennguyen/zalo-agent-cli@<ver>

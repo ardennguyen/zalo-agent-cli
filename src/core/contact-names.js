@@ -2,7 +2,7 @@
  * The one way this client names a person: the account owner's alias first, as Zalo Web and PC show it.
  *
  * Zalo Web keeps one record per user (`dName`): the owner's alias when one is set, else the phonebook name, else the
- * user's own name (`zaloName || dName`: the Zalo name, then the display name); a friend the owner saved as "Arden AI" is "Arden AI" in the chat header, the group member
+ * user's own name (`zaloName || dName`: the Zalo name, then the display name); a friend the owner saved as "Minh Sales" is "Minh Sales" in the chat header, the group member
  * list, a group message's sender line, a mention, a reaction and a quote alike. Web refetches its alias list when the
  * server sends an `alias` control (cmd 601), when its polling is warned, and when the server's alias version is newer
  * than the one it holds. This module is that record for the CLI, `listen` and `mcp start`:

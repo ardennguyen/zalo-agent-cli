@@ -130,7 +130,7 @@ export async function resolveCurrentUserNames(api, uids, { aliases, profiles = n
  * Decorate copied messages with current labels. `senderName` is the name to show, alias first: the owner's alias
  * when one is set, else the name the message carried, else the current profile name. `senderZaloName` keeps the
  * name the message carried (the stored snapshot, never rewritten), `senderAlias` the alias or null, and
- * `senderDisplayName`/`senderDisplayNameSource` the current label (alias, display name, Zalo name or UID).
+ * `senderDisplayName`/`senderDisplayNameSource` the current label (alias, phonebook name, Zalo name, display name or UID).
  * DM titles use the peer's UID, including for an outgoing message from self.
  * @param {object} api - current authenticated API
  * @param {object[]} messages - cached or live rows

@@ -19,6 +19,7 @@ import {
     NO_SELF_HEAL_REFUSAL,
     PresenceRefusal,
     createDaemonPresence,
+    describeSocketPolicy,
     presenceConfigFiles,
     presenceTransport,
     resolveDaemonPresence,
@@ -742,5 +743,42 @@ describe("daemon presence: listen reads mcp-config.json like mcp start", () => {
         assert.equal(presenceConfigFiles({ ownId: OWN, accountDir: getAccountDir(OWN) }).problem, null);
         writeFileSync(file(), "{not json");
         assert.match(presenceConfigFiles({ ownId: OWN, accountDir: getAccountDir(OWN) }).problem, /not valid JSON/);
+    });
+});
+
+describe("daemon presence: the start-up socket line says what really happens (no blanket auto-reconnect)", () => {
+    it("on-demand: parks when idle, nothing reconnects while parked, a kick yields", () => {
+        const line = describeSocketPolicy({
+            mode: "on-demand",
+            idleTimeoutMs: 300_000,
+            minConnectedMs: 60_000,
+            onKick: "yield",
+        });
+        assert.match(line, /^Socket: on-demand/);
+        assert.match(line, /parks after 300s/);
+        assert.match(line, /never within 60s of a connect/);
+        assert.match(line, /while parked nothing reconnects/);
+        assert.match(line, /yields .* until `presence resume`/);
+        assert.match(line, /stays? up, signed out|leaves the daemon up, signed out/);
+        assert.doesNotMatch(line, /Auto-reconnect/i);
+    });
+
+    it("always-on: stays connected, a kick exits 3; ZALO_EXIT_ON_SIGNED_OUT makes a refused login exit 4", () => {
+        const line = describeSocketPolicy({ mode: "always-on" }, { exitOnSignedOut: true });
+        assert.match(line, /^Socket: always-on: the socket stays connected/);
+        assert.match(line, /exits with code 3/);
+        assert.match(line, /exits with code 4/);
+        assert.doesNotMatch(line, /parks|yields/);
+    });
+
+    it("on-demand with onKick exit says the daemon exits on a kick", () => {
+        const line = describeSocketPolicy({
+            mode: "on-demand",
+            idleTimeoutMs: 60_000,
+            minConnectedMs: 0,
+            onKick: "exit",
+        });
+        assert.match(line, /exits with code 3/);
+        assert.doesNotMatch(line, /yields/);
     });
 });

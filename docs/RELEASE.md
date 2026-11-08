@@ -31,7 +31,9 @@ On the active version branch (`v2.5-dev` for 2.5.x, `v3.0-dev` for 3.0):
    `CHANGELOG.md`, the docs from step 2) and push the version branch.
 6. **(user)** Open and merge the pull request `vX.Y-dev → main`. The merge is the release decision.
    `.github/workflows/prepare-release.yml` can do the `npm version` part of step 4 as a PR (manifests only, not the CHANGELOG); it
-   defaults to `v2.5-dev`, so for a 3.x release pass `branch: v3.0-dev`.
+   defaults to `v3.0-dev`, so for a 2.5.x release pass `branch: v2.5-dev`. Run in the wrapper's repository, it sets the
+   wrapper's engine range to `^N.0.0` for the newest published engine major (`^3.0.0` once 3.0.0 is out), or to the
+   `engine_range` input when one is given.
 7. Wait for `ci.yml` (Ubuntu, Node 22) to pass on the merge commit — the offline suite has failed on
    Linux after passing on Windows — then tag the merge commit and push the tag: `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z`.
    The tag is the only name a release has; never create a branch named after it.

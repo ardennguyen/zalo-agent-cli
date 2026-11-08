@@ -89,6 +89,35 @@ export function resolveDaemonPresence({ config = {}, ownId, transport, selfHeal 
     return { ...r, problem };
 }
 
+/**
+ * What a daemon does about its socket, in one line for the start-up banner: the mode, when it parks, and what
+ * happens after a drop, a kick (another session took the socket) and a login Zalo refuses. The supervisor
+ * (`src/core/socket-host.js`) owns every retry; nothing here reconnects.
+ *
+ * @param {{mode: string, idleTimeoutMs?: number, minConnectedMs?: number, onKick?: string}} settings
+ * @param {{exitOnSignedOut?: boolean}} [o]
+ * @returns {string}
+ */
+export function describeSocketPolicy(settings, { exitOnSignedOut = false } = {}) {
+    const onDemand = settings.mode === "on-demand";
+    const sec = (ms) => `${Math.round((Number(ms) || 0) / 1000)}s`;
+    const parts = [
+        onDemand
+            ? `on-demand: the socket opens on demand and parks after ${sec(settings.idleTimeoutMs)} with none ` +
+              `(never within ${sec(settings.minConnectedMs)} of a connect); while parked nothing reconnects, ` +
+              "the next demand wakes it and the self-heal catches up"
+            : "always-on: the socket stays connected",
+        "a drop while connected is retried by Zalo's own reconnect table",
+        onDemand && settings.onKick !== "exit"
+            ? "if another session takes the account the daemon yields (stays up, refuses requests) until `presence resume`"
+            : "if another session takes the account the daemon exits with code 3",
+        exitOnSignedOut
+            ? "a login Zalo keeps refusing exits with code 4"
+            : "a login Zalo keeps refusing leaves the daemon up, signed out, until a QR login",
+    ];
+    return `Socket: ${parts.join("; ")}.`;
+}
+
 /** Whether a policy change touches the presence keys. */
 const touchesPresence = (changed) => (changed ?? []).some((k) => k === "presence" || String(k).startsWith("presence."));
 
@@ -323,6 +352,10 @@ export function createDaemonPresence({
         },
         get forced() {
             return resolved.forced;
+        },
+        /** Whether a refused login exits 4 (`ZALO_EXIT_ON_SIGNED_OUT[_<ownId>]`) instead of staying up signed out. */
+        get exitOnSignedOut() {
+            return exitOnSignedOut;
         },
         exitOnSignedOut,
         snapshot,

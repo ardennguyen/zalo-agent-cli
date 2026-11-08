@@ -2,7 +2,7 @@
 
 [English](README.md) · Chuyển tài khoản từ thư mục home Windows 2.5.9: [MIGRATE.md](MIGRATE.md) · Nền tảng: [docs/deployment.md](../../../deployment.md)
 
-Một VPS Ubuntu 24.04 (Node 22, Caddy, ufw), một người dùng dịch vụ `zalo`, một quản trị viên đăng nhập qua SSH, và hai tài khoản Zalo (ở đây là `1000000000000000001`, tài khoản chính, và `1000000000000000002`, tài khoản phụ; hãy dùng ID của bạn). Một tên miền, `zalo.example.com`, với tiền tố đường dẫn cho mỗi tài khoản: `https://zalo.example.com/a/<ownId>/mcp`. Khóa lưu trên đĩa được dẫn xuất từ một **mật khẩu lưu trữ** mà systemd trao cho service (`LoadCredentialEncrypted=`), nên bản sao lưu mở được trên máy mới chỉ với mật khẩu đó.
+Một VPS Ubuntu 24.04 (Node 22.19+, Caddy, ufw), một người dùng dịch vụ `zalo`, một quản trị viên đăng nhập qua SSH, và hai tài khoản Zalo (ở đây là `1000000000000000001`, tài khoản chính, và `1000000000000000002`, tài khoản phụ; hãy dùng ID của bạn). Một tên miền, `zalo.example.com`, với tiền tố đường dẫn cho mỗi tài khoản: `https://zalo.example.com/a/<ownId>/mcp`. Khóa lưu trên đĩa được dẫn xuất từ một **mật khẩu lưu trữ** mà systemd trao cho service (`LoadCredentialEncrypted=`), nên bản sao lưu mở được trên máy mới chỉ với mật khẩu đó.
 
 Mọi tệp ở đây là đúng những gì `za fleet generate --base-port 3901 --domain zalo.example.com` ghi ra cho hai tài khoản này (bài test `tests/unit/config-samples.test.js` giữ chúng đúng từng byte), cộng thêm `mcp-config.json`, `journald.conf.d/zalo.conf` và `ufw.sh`.
 
@@ -49,7 +49,7 @@ timers: zalo-fleet-check (5 min) · zalo-mcp-purge (hourly) · zalo-backup (nigh
 
 Chạy bằng người dùng quản trị của bạn qua SSH. `<ver>` là phiên bản engine chính xác bạn triển khai (`npm view @ardennguyen/zalo-agent-cli versions`).
 
-1. **Máy chủ.** Ubuntu 24.04, Node 22 từ NodeSource, `sudo apt install caddy polkitd`, rồi tạo người dùng dịch vụ và cài engine (ghim phiên bản, không bao giờ `@latest`):
+1. **Máy chủ.** Ubuntu 24.04, Node 22 (22.19 trở lên) từ NodeSource, `sudo apt install caddy polkitd`, rồi tạo người dùng dịch vụ và cài engine (ghim phiên bản, không bao giờ `@latest`):
    ```bash
    sudo adduser --system --group --home /home/zalo zalo
    sudo npm install -g @ardennguyen/zalo-agent-cli@<ver>

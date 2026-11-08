@@ -16,6 +16,11 @@ import { SERVER_INSTRUCTIONS } from "../../src/mcp/instructions.js";
 import { newMcpServer } from "../../src/mcp/new-server.js";
 import { createHTTPServer } from "../../src/mcp/mcp-http-transport.js";
 import { tool } from "./support/mcp-send-harness.js";
+import { accountStateSystemEvent } from "../../src/core/account-state.js";
+import { pickName } from "../../src/core/contact-names.js";
+import { groupGoneSystemEvent } from "../../src/core/group-exit.js";
+import { queueOverflowSystemEvent } from "../../src/core/overflow-repair.js";
+import { quotaSystemEvent } from "../../src/core/storage-quota.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -135,6 +140,61 @@ describe("the server instructions", () => {
             assert.equal(JSON.parse(data).result.instructions, SERVER_INSTRUCTIONS);
         } finally {
             http.close();
+        }
+    });
+});
+
+describe("the read and wait tools describe what the buffer really carries", () => {
+    // The system events src/commands/mcp.js pushes into the buffer, by the builders it pushes them with.
+    const systemTypes = [
+        accountStateSystemEvent({ accountId: "1", state: "connected" }).type,
+        groupGoneSystemEvent({ threadId: "2", reason: "leave", mode: "keep" }).type,
+        queueOverflowSystemEvent({ fromTs: 0, toTs: 1, queues: ["user"], pending: false }).type,
+        quotaSystemEvent({ accountId: "1", level: "ok" }).type,
+    ];
+
+    it("name every system event type, not only storage_quota", () => {
+        assert.deepEqual([...systemTypes].sort(), ["account_state", "group_gone", "queue_overflow", "storage_quota"]);
+        for (const name of ["zalo_get_messages", "zalo_wait_for_message"]) {
+            const d = tools.get(name).meta.description;
+            for (const type of systemTypes) assert.ok(d.includes(`\`${type}\``), `${name}: ${type}`);
+        }
+    });
+
+    it("give senderDisplayName's fallbacks in the order the code picks them", () => {
+        // The code's order, read off pickName by taking away the winner each time.
+        const fields = { alias: "a", pbName: "p", zaloName: "z", displayName: "d" };
+        const order = [];
+        for (;;) {
+            const { source } = pickName("1", fields);
+            order.push(source);
+            if (source === "uid") break;
+            delete fields[{ alias: "alias", phonebook: "pbName", zalo: "zaloName", display: "displayName" }[source]];
+            if (source === "alias") fields.alias = null;
+        }
+        assert.deepEqual(order, ["alias", "phonebook", "zalo", "display", "uid"]);
+        const words = {
+            alias: "alias",
+            phonebook: "phonebook name",
+            zalo: "Zalo name",
+            display: "display name",
+            uid: "uid",
+        };
+        for (const name of ["zalo_get_messages", "zalo_get_history"]) {
+            const d = tools.get(name).meta.description;
+            const at = d.indexOf("`senderDisplayName`");
+            assert.ok(at >= 0, name);
+            const tail = d.slice(at);
+            const positions = order.map((s) => tail.indexOf(words[s]));
+            assert.ok(
+                positions.every((p) => p >= 0),
+                `${name}: ${positions}`,
+            );
+            assert.deepEqual(
+                [...positions].sort((x, y) => x - y),
+                positions,
+                `${name}: fallbacks out of order`,
+            );
         }
     });
 });

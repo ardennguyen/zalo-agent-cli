@@ -166,16 +166,16 @@ describe("msg search", () => {
 
     it("names a sender by the owner's alias, keeping the name the message carried", async () => {
         // The alias snapshot a daemon keeps in the account's db (src/core/contact-names.js).
-        replaceUserAliases(new Map([["u2", "Arden AI"]]));
+        replaceUserAliases(new Map([["u2", "Minh Sales"]]));
         try {
             const r = await runCli(["--json", "msg", "search", "hen gap"], options);
             assert.equal(r.code, 0, r.all);
             const hit = json(r).hits.find((h) => h.msgId === "a1");
-            assert.equal(hit.senderName, "Arden AI");
-            assert.equal(hit.senderAlias, "Arden AI");
+            assert.equal(hit.senderName, "Minh Sales");
+            assert.equal(hit.senderAlias, "Minh Sales");
             assert.equal(hit.senderZaloName, "Anh Minh");
             const human = stripAnsi((await runCli(["msg", "search", "hen gap"], options)).all);
-            assert.match(human, /Arden AI/);
+            assert.match(human, /Minh Sales/);
         } finally {
             replaceUserAliases(new Map());
         }

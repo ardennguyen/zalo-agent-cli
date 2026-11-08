@@ -25,6 +25,7 @@ import {
     FleetError,
     assignPorts,
     classifyAccount,
+    checkFailures,
     generateFleetFiles,
     loadPortTable,
     needsRestart,
@@ -354,7 +355,10 @@ export function registerFleetCommands(program) {
         .description(
             "One table for every account: daemon, socket, last event, webhook backlog, gaps, memory, and a state",
         )
-        .option("--check", "Exit 1 unless every account is ok, idle or degraded (for monitoring scripts)")
+        .option(
+            "--check",
+            "Exit 1 unless every account is ok, idle or degraded, and say what to do about each one that is not (for monitoring scripts)",
+        )
         .option(
             "--down-for <seconds>",
             "How long a socket may be down before the account counts as `down` (default 180)",
@@ -375,7 +379,13 @@ export function registerFleetCommands(program) {
                         .join(", "),
                 );
             });
-            if (opts.check && rows.some((r) => !["ok", "idle", "degraded"].includes(r.state))) process.exit(1);
+            if (opts.check) {
+                const failures = checkFailures(rows);
+                if (failures.length) {
+                    for (const line of failures) warning(line);
+                    process.exit(1);
+                }
+            }
         });
 
     fleet

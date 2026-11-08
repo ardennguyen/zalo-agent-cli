@@ -51,7 +51,7 @@ beforeEach(() => {
 });
 
 /** A session whose alias list and profiles the test changes. */
-function fakeApi(aliases = { [FRIEND]: "Arden AI" }) {
+function fakeApi(aliases = { [FRIEND]: "Minh Sales" }) {
     const state = { aliases: { ...aliases }, reads: 0, profile: "Zalo Profile" };
     return {
         state,
@@ -93,11 +93,11 @@ describe("pickName", () => {
     });
 
     it("looks the alias up in the held snapshot when none is given", () => {
-        noteAliasSnapshot(new Map([[FRIEND, "Arden AI"]]));
-        assert.equal(pickName(FRIEND, { zaloName: "Raw" }).name, "Arden AI");
+        noteAliasSnapshot(new Map([[FRIEND, "Minh Sales"]]));
+        assert.equal(pickName(FRIEND, { zaloName: "Raw" }).name, "Minh Sales");
         assert.deepEqual(personNameFields(FRIEND, { zaloName: "Raw" }), {
-            displayName: "Arden AI",
-            alias: "Arden AI",
+            displayName: "Minh Sales",
+            alias: "Minh Sales",
             zaloName: "Raw",
         });
         assert.deepEqual(personNameFields(OTHER, { zaloName: "Raw" }), {
@@ -106,13 +106,13 @@ describe("pickName", () => {
             zaloName: "Raw",
         });
         assert.equal(nameFor(OTHER, "Carried"), "Carried");
-        assert.equal(personLabel(FRIEND, "Raw"), `Arden AI (${FRIEND})`);
+        assert.equal(personLabel(FRIEND, "Raw"), `Minh Sales (${FRIEND})`);
         assert.equal(personLabel(OTHER), OTHER);
         assert.deepEqual(aliasFirst({ userId: FRIEND, displayName: "Raw", zaloName: "Raw" }), {
             userId: FRIEND,
-            displayName: "Arden AI",
+            displayName: "Minh Sales",
             zaloName: "Raw",
-            alias: "Arden AI",
+            alias: "Minh Sales",
         });
     });
 });
@@ -122,8 +122,8 @@ describe("the account's alias snapshot", () => {
         const dbA = join(SANDBOX_CONFIG_DIR, `contact-names-${process.pid}-${seq++}.sqlite`);
         initDb(dbA);
         setAliasPersistence(true);
-        noteAliasSnapshot(new Map([[FRIEND, "Arden AI"]]));
-        assert.deepEqual([...getUserAliases()], [[FRIEND, "Arden AI"]]);
+        noteAliasSnapshot(new Map([[FRIEND, "Minh Sales"]]));
+        assert.deepEqual([...getUserAliases()], [[FRIEND, "Minh Sales"]]);
         upsertThread({ threadId: FRIEND, type: "dm", name: "Old Title", lastUpdate: 2 });
         upsertThread({ threadId: GROUP, type: "group", name: "Team", lastUpdate: 1 });
 
@@ -131,12 +131,12 @@ describe("the account's alias snapshot", () => {
         closeDb();
         resetAliasBook();
         initDb(dbA);
-        assert.equal(aliasFor(FRIEND), "Arden AI");
-        assert.equal(getThreadNames().get(FRIEND).name, "Arden AI", "a 1-1 is titled by the alias at display time");
+        assert.equal(aliasFor(FRIEND), "Minh Sales");
+        assert.equal(getThreadNames().get(FRIEND).name, "Minh Sales", "a 1-1 is titled by the alias at display time");
         assert.equal(getThreadNames().get(GROUP).name, "Team", "a group is never retitled by an alias");
-        assert.equal(recentConversations(10, "dm")[0].name, "Arden AI");
+        assert.equal(recentConversations(10, "dm")[0].name, "Minh Sales");
         assert.equal(getRecentThreads(10, "dm")[0].name, "Old Title", "the stored title is not rewritten by a read");
-        assert.equal(getDisplayName(FRIEND), "Arden AI", "a mention uses the alias");
+        assert.equal(getDisplayName(FRIEND), "Minh Sales", "a mention uses the alias");
 
         // Another account's database holds none of it.
         closeDb();
@@ -173,20 +173,20 @@ describe("a live alias change", () => {
         try {
             daemon.attach(listener);
             assert.equal(await daemon.refreshNow("start"), true);
-            assert.equal(senderNameFields(FRIEND, "Zalo Profile").senderName, "Arden AI");
-            await until(() => getRecentThreads(10, "dm")[0].name === "Arden AI");
+            assert.equal(senderNameFields(FRIEND, "Zalo Profile").senderName, "Minh Sales");
+            await until(() => getRecentThreads(10, "dm")[0].name === "Minh Sales");
 
             // Renamed on the phone: the server sends `alias`, the daemon rereads.
-            api.state.aliases[FRIEND] = "Arden Renamed";
+            api.state.aliases[FRIEND] = "Minh Support";
             listener.handlers.alias_change({ act: "update" });
-            await until(() => aliasFor(FRIEND) === "Arden Renamed");
-            await until(() => getRecentThreads(10, "dm")[0].name === "Arden Renamed");
+            await until(() => aliasFor(FRIEND) === "Minh Support");
+            await until(() => getRecentThreads(10, "dm")[0].name === "Minh Support");
             assert.deepEqual(senderNameFields(FRIEND, "Zalo Profile"), {
-                senderName: "Arden Renamed",
-                senderAlias: "Arden Renamed",
+                senderName: "Minh Support",
+                senderAlias: "Minh Support",
                 senderZaloName: "Zalo Profile",
             });
-            assert.deepEqual([...getUserAliases()], [[FRIEND, "Arden Renamed"]], "persisted for one-shot commands");
+            assert.deepEqual([...getUserAliases()], [[FRIEND, "Minh Support"]], "persisted for one-shot commands");
 
             // Removed: the stored title goes back to the profile name, read for just that user.
             delete api.state.aliases[FRIEND];
@@ -208,7 +208,7 @@ describe("a live alias change", () => {
                 throw new Error("offline");
             };
             assert.equal(await daemon.refreshNow(), false);
-            assert.equal(aliasFor(FRIEND), "Arden AI", "a failed read is not 'every alias removed'");
+            assert.equal(aliasFor(FRIEND), "Minh Sales", "a failed read is not 'every alias removed'");
         } finally {
             daemon.stop();
         }
@@ -224,14 +224,14 @@ describe("group messages and payloads", () => {
     });
 
     it("name an aliased friend's group message by the alias, keeping the name Zalo sent", () => {
-        noteAliasSnapshot(new Map([[FRIEND, "Arden AI"]]));
+        noteAliasSnapshot(new Map([[FRIEND, "Minh Sales"]]));
         const m = normalizeMessage(groupMessage());
         assert.equal(m.threadType, "group");
-        assert.equal(m.senderName, "Arden AI");
-        assert.equal(m.senderAlias, "Arden AI");
+        assert.equal(m.senderName, "Minh Sales");
+        assert.equal(m.senderAlias, "Minh Sales");
         assert.equal(m.senderZaloName, "Zalo Profile");
         const payload = buildMCPWebhookPayload(m, { accountId: "1" });
-        assert.equal(payload.senderName, "Arden AI");
+        assert.equal(payload.senderName, "Minh Sales");
         assert.equal(payload.senderZaloName, "Zalo Profile");
     });
 
@@ -242,7 +242,7 @@ describe("group messages and payloads", () => {
     });
 
     it("name a group event's members and actor alias first, on a copy", () => {
-        noteAliasSnapshot(new Map([[FRIEND, "Arden AI"]]));
+        noteAliasSnapshot(new Map([[FRIEND, "Minh Sales"]]));
         const data = {
             sourceId: FRIEND,
             updateMembers: [
@@ -251,11 +251,11 @@ describe("group messages and payloads", () => {
             ],
         };
         const named = groupEventNames(data);
-        assert.equal(named.sourceName, "Arden AI");
+        assert.equal(named.sourceName, "Minh Sales");
         assert.deepEqual(named.updateMembers[0], {
             id: FRIEND,
-            dName: "Arden AI",
-            alias: "Arden AI",
+            dName: "Minh Sales",
+            alias: "Minh Sales",
             zaloName: "Zalo Profile",
         });
         assert.equal(named.updateMembers[1].dName, "Someone");
@@ -265,9 +265,9 @@ describe("group messages and payloads", () => {
 
 describe("what Zalo Web also names alias first", () => {
     it("a quoted message's author, keeping the name the quote carried", () => {
-        noteAliasSnapshot(new Map([[FRIEND, "Arden AI"]]));
+        noteAliasSnapshot(new Map([[FRIEND, "Minh Sales"]]));
         const reply = quotedReply({ globalMsgId: "5", ownerId: FRIEND, fromD: "Zalo Profile", msg: "x" });
-        assert.equal(reply.senderName, "Arden AI");
+        assert.equal(reply.senderName, "Minh Sales");
         assert.equal(reply.senderZaloName, "Zalo Profile");
         assert.equal(quotedReply({ globalMsgId: "5", ownerId: OTHER, fromD: "Other" }).senderName, "Other");
     });

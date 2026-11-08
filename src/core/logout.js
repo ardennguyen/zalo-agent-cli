@@ -85,8 +85,9 @@ export function deleteLocalHistory(ownId) {
  * here (decision D19, 2026-10-28). The official QR login makes this CLI a trusted companion device of the account;
  * the identity that proves it lives in `accounts/<ownId>/trusted-device.json`.
  *
- * - `logout` (also `--delete-history`) keeps it, with the account's other data: the next QR login links again as the
- *   SAME companion entry instead of adding one.
+ * - `logout` (also `--delete-history`) keeps it, with the account's other data. Measured 2026-11-09: the next QR
+ *   login still adds a NEW entry to the phone's device list and logs the older entry out, but it keeps the device id,
+ *   so Zalo's offline queue for this device carries over.
  * - `logout --purge` and `account remove` delete it with the account's folder. Zalo still lists the entry on the phone
  *   until it is removed there (Settings, linked devices; `account devices` shows it), and a later QR login adds a
  *   new one.
@@ -100,7 +101,7 @@ export function deleteLocalHistory(ownId) {
 export function describeTrustedDevice(ownId, what) {
     if (!existsSync(join(getAccountDir(ownId), TRUST_FILE))) return null;
     return what === "kept"
-        ? "This CLI stays a linked companion device of the account: its identity is kept, so the next QR login links as the same entry. `logout --purge` deletes it."
+        ? "This CLI keeps its companion-device identity: the next QR login adds a new entry to the phone's device list and logs the older one out, but keeps the device id, so messages Zalo queued for this device while it was away are still delivered. `logout --purge` deletes it."
         : "This CLI's companion-device identity was deleted. Zalo still lists it as a linked device until you remove it on your phone (`account devices` shows the list); a later QR login adds a new entry.";
 }
 

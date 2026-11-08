@@ -55,7 +55,8 @@ Current display labels are now separate from message snapshots:
   profile observed during restoration; this does not reconstruct past names.
 - `senderDisplayName` is resolved at read time by UID: this account's explicit
   alias, then the profile's `zaloName`, then UID. `senderDisplayNameSource` was
-  `alias`, `zalo`, or `uid` (3.0 adds `phonebook` and `display`). The ambiguous API `displayName` is not a substitute
+  `alias`, `zalo`, or `uid` (3.0: alias, phonebook name, `zaloName`, display name, UID, with the sources
+  `alias`, `phonebook`, `zalo`, `display`, `uid`). The ambiguous API `displayName` is not a substitute
   for `zaloName` in this hierarchy.
 - MCP buffered/history reads and CLI message history expose these additive
   fields. CLI human-readable history prints the current label. Display reads

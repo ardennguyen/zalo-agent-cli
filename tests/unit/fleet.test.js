@@ -20,8 +20,11 @@ import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     FleetError,
+    CHECK_PASSES,
     STATES,
+    STATE_ADVICE,
     assignPorts,
+    checkFailures,
     classifyAccount,
     fleetFile,
     generateFleetFiles,
@@ -200,7 +203,9 @@ describe("classifyAccount", () => {
                 "starting",
                 "maintenance",
                 "relogin",
+                "yielded",
                 "kicked",
+                "signed_out",
                 "down",
                 "unresponsive",
                 "stopped",
@@ -208,6 +213,40 @@ describe("classifyAccount", () => {
         );
         // kicked is deliberate: a restart would take the account back from the session that took it.
         assert.deepEqual(["idle", "maintenance", "relogin", "kicked"].map(needsRestart), [false, false, false, false]);
+        // So are yielded and signed out: a person confirms the resume, or adds the account again by QR.
+        assert.deepEqual(["yielded", "signed_out"].map(needsRestart), [false, false]);
+    });
+
+    it("names a yielded or signed-out daemon instead of calling it starting", () => {
+        const h = (state, extra = {}) => ({ socket: { state, forSec: 5_000 }, warnings: [], ...extra });
+        assert.equal(classifyAccount({ running: true, health: h("yielded") }), "yielded");
+        assert.equal(classifyAccount({ running: true, health: h("signed-out") }), "signed_out");
+        // A long yield or sign-out is not "down": the daemon says why its socket is not up.
+        assert.equal(classifyAccount({ running: true, health: h("yielded") }, { downForSec: 60 }), "yielded");
+        // The account state and the presence block say it too (a daemon whose socket line lags behind).
+        assert.equal(
+            classifyAccount({ running: true, health: h("down", { accountState: { state: "signed_out" } }) }),
+            "signed_out",
+        );
+        assert.equal(
+            classifyAccount({ running: true, health: h("idle", { presence: { state: "yielded" } }) }),
+            "yielded",
+        );
+    });
+
+    it("--check fails yielded and signed_out with what to do, and passes only ok, idle and degraded", () => {
+        assert.deepEqual([...CHECK_PASSES], ["ok", "idle", "degraded"]);
+        for (const s of STATES.filter((x) => !CHECK_PASSES.includes(x))) assert.ok(STATE_ADVICE[s], `advice for ${s}`);
+        const lines = checkFailures([
+            { accountId: "501", state: "ok" },
+            { accountId: "502", state: "yielded" },
+            { accountId: "503", state: "signed_out" },
+            { accountId: "504", state: "idle" },
+        ]);
+        assert.equal(lines.length, 2);
+        assert.match(lines[0], /^502: yielded - .*presence resume --yes/);
+        assert.match(lines[1], /^503: signed_out - .*again by QR/);
+        assert.match(lines.join(" "), /a restart does not help/);
     });
 
     it("how long a socket may be down is the caller's to choose", () => {

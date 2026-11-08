@@ -82,7 +82,7 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 2. Exclude self → `--no-self`
 3. Webhook URL → `--webhook http://n8n.local/webhook/zalo`
 4. Construct → `zalo-agent listen --filter user --no-self --webhook http://n8n.local/webhook/zalo`
-5. Mention auto-reconnect, suggest pm2 for production
+5. Mention that a foreground `listen` stays connected and retries drops by Zalo's own rules (a duplicate session ends it with exit code 3), suggest `--daemon` or pm2 for production
 
 **Must include:** `listen`, `--filter user`, `--webhook`
 **Must NOT:** Forget filter, suggest polling
@@ -550,14 +550,14 @@ media hàng loạt, board, cloud và trạng thái hội thoại vẫn dùng CLI
 
 ## E33: Names — Alias First
 
-**Prompt:** "Who wrote the last message in the project group?" (the sender is a friend the owner saved as "Arden AI"; their Zalo name is different)
+**Prompt:** "Who wrote the last message in the project group?" (the sender is a friend the owner saved as "Minh Sales"; their Zalo name is different)
 
 **Expected reasoning:**
 1. Read the message (`zalo_get_messages` or `zalo_get_history`)
 2. Name the sender by `senderName`, which carries the owner's alias first, exactly as the owner sees them in Zalo
 3. Use `senderZaloName` only if the user asks what the person calls themselves
 
-**Must include:** "Arden AI" as the sender's name
+**Must include:** "Minh Sales" as the sender's name
 **Must NOT:** Present the Zalo name as the sender's name when an alias is set, or rename anyone in stored data
 
 ---

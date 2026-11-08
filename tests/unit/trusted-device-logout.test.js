@@ -26,7 +26,7 @@ describe("the trusted-device identity at logout, purge and removal", () => {
         saveCredentials(OWN, { imei: "i", cookie: [], userAgent: "ua" });
     });
 
-    it("a logout keeps the identity, with or without the chat history, so the next login links as the same entry", () => {
+    it("a logout keeps the identity, with or without the chat history, so the next login keeps the device id", () => {
         finishLocalLogout(OWN, { deleteHistory: false });
         assert.ok(existsSync(trustFile()));
         saveCredentials(OWN, { imei: "i", cookie: [], userAgent: "ua" });
@@ -47,7 +47,10 @@ describe("the trusted-device identity at logout, purge and removal", () => {
     });
 
     it("tells the person what happened to it, and what is left on the phone", () => {
-        assert.match(describeTrustedDevice(OWN, "kept"), /stays a linked companion device.*same entry/s);
+        const kept = describeTrustedDevice(OWN, "kept");
+        assert.match(kept, /adds a new entry to the phone's device list and logs the older one out/);
+        assert.match(kept, /keeps the device id/);
+        assert.doesNotMatch(kept, /same entry/);
         const gone = describeTrustedDevice(OWN, "deleted");
         assert.match(gone, /still lists it as a linked device until you remove it on your phone/);
         assert.match(gone, /account devices/);

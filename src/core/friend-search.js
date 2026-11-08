@@ -5,7 +5,7 @@
  * (`displayName`), the name they gave themselves (`zaloName`), and the alias
  * the account owner set for them. The alias lives in a separate list
  * (`getAliasList`), so `getAllFriends` alone never contains it, and a search
- * on the first two names cannot find a friend the owner saved as "Arden AI".
+ * on the first two names cannot find a friend the owner saved as "Minh Sales".
  * `zalo_search_threads` already honors aliases through the thread-name cache;
  * this gives the CLI the same reach.
  *

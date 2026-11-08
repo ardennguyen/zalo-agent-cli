@@ -52,7 +52,7 @@ Danh sách đầy đủ trong [CHANGELOG](CHANGELOG.md).
 
 ## Yêu cầu hệ thống
 
-- **Node.js** 22.19 trở lên (trường `engines` của CLI yêu cầu 22+; hai thư viện phụ thuộc `undici` và `commander` cần 22.19 và 22.12)
+- **Node.js** 22.19 trở lên (trường `engines` của CLI yêu cầu `>=22.19.0`, mức sàn do hai thư viện phụ thuộc `undici` và `commander` đặt ra ở 22.19 và 22.12)
 - **Git**
 
 ---

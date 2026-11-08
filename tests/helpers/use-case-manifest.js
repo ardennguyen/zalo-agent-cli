@@ -77,7 +77,7 @@ export const USE_CASES = {
         "home/.zalo-agent-cli/storage.macos.json": { sample: "storage/macos.json" },
         "home/.zalo-agent-cli/.env": { sample: "env/config-dir.env" },
         "server-loopback.env": { sample: "env/loopback-server.env" },
-        "server-lan.env": { sample: "env/lan-server.env" },
+        "server-lan.env": null,
         "windows/zalo-mcp-service.xml": null,
         "macos/com.example.zalo-mcp.plist": null,
         "clients/claude-code-http-lan.json": { sample: "clients/claude-code-http-lan.json" },

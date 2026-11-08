@@ -52,7 +52,7 @@ The full list is in the [CHANGELOG](CHANGELOG.md).
 
 ## Prerequisites
 
-- **Node.js** 22.19 or later (the CLI's `engines` field asks for 22+; its dependencies `undici` and `commander` need 22.19 and 22.12)
+- **Node.js** 22.19 or later (the CLI's `engines` field asks for `>=22.19.0`, the floor its dependencies `undici` and `commander` set at 22.19 and 22.12)
 - **Git**
 
 ---

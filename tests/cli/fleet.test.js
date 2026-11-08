@@ -117,8 +117,10 @@ describe("fleet status", () => {
         assert.match(stripAnsi(r.all), /Account 999 is not registered/);
     });
 
-    it("--check exits 1 unless every account is serving", async () => {
-        assert.equal((await fleet("status", "--check")).code, 1);
+    it("--check exits 1 unless every account is serving, and says what to do about each", async () => {
+        const r = await fleet("status", "--check");
+        assert.equal(r.code, 1);
+        assert.match(stripAnsi(r.all), /501: stopped - no daemon runs for it; `fleet start` starts it/);
         assert.equal((await fleet("status")).code, 0);
     });
 

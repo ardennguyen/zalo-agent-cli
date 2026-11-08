@@ -232,7 +232,7 @@ ngrok http 3000
 ### With a VPS (recommended for production)
 
 ```bash
-# Install on VPS (requires Node.js 22+)
+# Install on VPS (requires Node.js 22.19+)
 npm install -g @ardennguyen/zalo-agent-cli
 
 # Login from VPS

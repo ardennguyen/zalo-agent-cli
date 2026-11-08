@@ -615,7 +615,11 @@ function cacheHistory(threadId, limit, before, nameCache) {
 
 /** What zalo_get_messages and zalo_wait_for_message say about the system events in their list. */
 const SYSTEM_EVENTS_NOTE =
-    "A system event arrives in the same list with `system: true` and `threadId` null, only to a read or wait that names no `threadId`: `type` \"storage_quota\" says this account's storage on the server is near or over its quota, or was purged, or is back within it (`level` warn, over, grace_ending, purged or ok; `usedBytes`, `limitBytes`, `purgeAt`, and `text` to show a person). zalo_profile 'usage' reads the current usage. ";
+    "A system event arrives in the same list with `system: true` and `msgId` null, only to a read or wait that names no `threadId`; each has a `type` and a `text` to show a person. " +
+    "`account_state`: the account's connection state changed (`state` idle, connecting, connected, kicked, yielded, login_needed, signed_out or maintenance, `previous`, `detail`); yielded and signed_out refuse every call until a person acts, as `text` says. " +
+    "`group_gone`: the account left, was removed or blocked from, or saw the disbanding of the group in `threadId` (`reason`, `leftAt`, `mode` purge or keep, `purged` counts). " +
+    "`queue_overflow`: Zalo's offline queue overflowed and messages from `fromTs` to `toTs` were dropped (`queues`, `groups` repair counts, `pending`; when pending, `command` is the sync the owner runs, which taps the phone). " +
+    "`storage_quota`: this account's storage on the server is near or over its quota, or was purged, or is back within it (`level` warn, over, grace_ending, purged or ok; `usedBytes`, `limitBytes`, `purgeAt`); zalo_profile 'usage' reads the current usage. ";
 
 /**
  * Register all Zalo MCP tools on the server.
@@ -737,7 +741,7 @@ export function registerTools(
             description:
                 "Read the new incoming Zalo messages (DMs and groups) from the live buffer, in order. It returns the messages this consumer has not yet marked read; when you have handled them, call zalo_mark_read with the reply's `cursor`. " +
                 "To continue exactly after the last reply, pass its `cursor` as `since`. To wait for the next message instead of polling, use zalo_wait_for_message. " +
-                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderName` (the name to show: your alias for the sender when you set one, else the name the message carried), `senderAlias` (your alias, or null), `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the Zalo display name, else the Zalo name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
+                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderName` (the name to show: your alias for the sender when you set one, else the name the message carried), `senderAlias` (your alias, or null), `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which: alias, phonebook, zalo, display or uid), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
                 "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (phone or Zalo Web), and null when that is unknown; zalo_mark_read does not change it. " +
                 'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. ' +
                 SYSTEM_EVENTS_NOTE +
@@ -771,7 +775,7 @@ export function registerTools(
                 // An explicit cursor is honored as given; 0 starts after what this consumer marked read.
                 const from = since > 0 ? since : buffer.readCursor(consumer);
                 const result = buffer.read(threadId, from, limit);
-                // A system event (storage_quota) belongs to no conversation: it is passed on as it is.
+                // A system event (account_state, group_gone, queue_overflow, storage_quota) is passed on as it is.
                 const order = result.messages;
                 const system = new Map(order.filter((m) => m?.system).map((m) => [m._cursor, m]));
                 result.messages = order.filter((m) => !m?.system);
@@ -1460,7 +1464,7 @@ export function registerTools(
             description:
                 "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread. " +
                 "Page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
-                "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name, alias first; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
+                "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
                 "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, up to `limit` (here up to 1000) per page, with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
                 "Start with a small `limit` and page; a large one costs memory and time. To find messages by their text, use zalo_search_messages.",
             inputSchema: z.object({

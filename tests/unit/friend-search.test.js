@@ -3,7 +3,7 @@
  *
  * The command matched `displayName` and `zaloName` only. The alias is not in
  * `getAllFriends`; it comes from a separate list (`getAliasList`), so a friend
- * saved as "Arden AI" could not be found by that name. These run the pure
+ * saved as "Minh Sales" could not be found by that name. These run the pure
  * matcher, then the real command over the session's HTTP seam with a friend
  * list and an alias list.
  */
@@ -27,13 +27,13 @@ const FRIENDS = [
 ];
 
 describe("searchFriends", () => {
-    const aliases = new Map([[A, "Arden AI"]]);
+    const aliases = new Map([[A, "Minh Sales"]]);
 
     it("finds a friend by the owner's alias, and says which alias it was", () => {
-        const m = searchFriends(FRIENDS, aliases, "arden ai");
+        const m = searchFriends(FRIENDS, aliases, "minh sales");
         assert.deepEqual(
             m.map((f) => [f.userId, f.alias]),
-            [[A, "Arden AI"]],
+            [[A, "Minh Sales"]],
         );
     });
 
@@ -68,7 +68,7 @@ describe("searchFriends", () => {
 
     it("does not mutate the friend list, ignores an alias for someone who is not a friend, and survives no aliases", () => {
         const before = JSON.stringify(FRIENDS);
-        searchFriends(FRIENDS, aliases, "arden");
+        searchFriends(FRIENDS, aliases, "minh");
         assert.equal(JSON.stringify(FRIENDS), before);
         assert.deepEqual(searchFriends(FRIENDS, new Map([["9100000000000000099", "Ghost"]]), "ghost"), []);
         assert.deepEqual(searchFriends(FRIENDS, undefined, "someone").length, 1);
@@ -93,16 +93,16 @@ describe("friend search over the wire", () => {
         fake.requests.length = 0;
         fake.clearRoutes();
         fake.route("/api/social/friend/getfriends", () => FRIENDS);
-        fake.route("/api/alias/list", () => ({ items: [{ userId: A, alias: "Arden AI" }] }));
+        fake.route("/api/alias/list", () => ({ items: [{ userId: A, alias: "Minh Sales" }] }));
     });
 
     it("finds a friend by alias and reports the alias", async () => {
-        const r = await runCommand(registerFriendCommands, ["--json", "friend", "search", "Arden AI"]);
+        const r = await runCommand(registerFriendCommands, ["--json", "friend", "search", "Minh Sales"]);
         assert.equal(r.exitCode, null, `search failed: ${r.stdout} ${r.stderr}`);
         const out = JSON.parse(r.stdout);
         assert.deepEqual(
             out.map((f) => [f.userId, f.alias]),
-            [[A, "Arden AI"]],
+            [[A, "Minh Sales"]],
         );
         // Red if the command goes back to matching names only: the alias list is never asked for.
         assert.equal(fake.calls("/api/alias/list").length, 1);

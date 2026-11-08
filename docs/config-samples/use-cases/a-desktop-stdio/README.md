@@ -19,7 +19,7 @@ Claude Desktop's file: Windows `%APPDATA%\Claude\claude_desktop_config.json`, ma
 
 ## 2. Steps
 
-1. Install Node 22 and the engine: `npm install -g @ardennguyen/zalo-agent-cli` (or the `zalo-mcp` wrapper's installer, [INSTALLATION.md](../../../../INSTALLATION.md)).
+1. Install Node 22.19 or later and the engine: `npm install -g @ardennguyen/zalo-agent-cli` (or the `zalo-mcp` wrapper's installer, [INSTALLATION.md](../../../../INSTALLATION.md)).
 2. Log in from a normal terminal (never an Administrator or `sudo` shell): `zalo-agent login`, scan the QR with the Zalo app, then `zalo-agent account list` for the account id.
 3. Optional: copy `mcp-config.json`, the `storage.*.json` for your system (renamed `storage.json`) and `.env` into `~/.zalo-agent-cli/`.
 4. Put the client file in place with your account id instead of `1000000000000000001`. On macOS, Claude Desktop does not see your shell's PATH: give `command` the full path `command -v zalo-agent` prints (for example `/opt/homebrew/bin/zalo-agent`).

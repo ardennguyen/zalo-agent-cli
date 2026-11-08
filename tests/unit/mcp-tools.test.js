@@ -1337,7 +1337,7 @@ describe("Tier 1 & Tier 2 MCP tools", () => {
         assert.equal(phoneOut.mode, "phone");
         assert.equal(phoneOut.userId, "u_phone");
 
-        const userOut = payloadOf(await server.call("zalo_lookup_user", { username: "arden" }));
+        const userOut = payloadOf(await server.call("zalo_lookup_user", { username: "minh.sales" }));
         assert.equal(userOut.mode, "username");
         assert.equal(userOut.userId, "u_name");
 

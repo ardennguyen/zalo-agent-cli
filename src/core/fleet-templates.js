@@ -249,8 +249,9 @@ export function renderPurgeService(o = {}) {
 
 export const CHECK_SERVICE_TEMPLATE = `# /etc/systemd/system/zalo-fleet-check.service
 # The health check of every account on this machine, run by zalo-fleet-check.timer every 5 minutes:
-# \`fleet status --check\` exits 1 unless every account is ok, idle or degraded, and the unit then
-# shows in \`systemctl --failed\`. Add OnFailure= to be told: a unit of yours that mails, posts to
+# \`fleet status --check\` exits 1 unless every account is ok, idle or degraded (a yielded or
+# signed_out account fails it too: a person has to act), logs one line per failing account with
+# what to do, and the unit then shows in \`systemctl --failed\`. Add OnFailure= to be told: a unit of yours that mails, posts to
 # ntfy or calls a webhook (it gets the failed unit's name as %i).
 #   systemctl enable --now zalo-fleet-check.timer
 #   journalctl -u zalo-fleet-check        (the last table)
@@ -641,7 +642,7 @@ ZALO_MCP_TRUSTED_PROXIES=${trustedProxies}`
 # Presence: on-demand (the server default) closes the Zalo socket after 5 idle minutes and opens it
 # again on the next tool call, wait or CRM lease; what arrived meanwhile comes in on that reconnect
 # (webhooks flagged catchUp). always-on keeps it open for real-time webhooks (the paid tier; one per
-# user). The daemons follow it once on-demand presence is switched on; until then they stay connected.
+# user). The daemons run on-demand unless this is set.
 # ZALO_PRESENCE_MODE=always-on
 
 # Where this account's incoming messages are POSTed, and the secret that signs them:

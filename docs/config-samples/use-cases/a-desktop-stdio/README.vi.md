@@ -19,7 +19,7 @@ Tệp của Claude Desktop: Windows `%APPDATA%\Claude\claude_desktop_config.json
 
 ## 2. Các bước
 
-1. Cài Node 22 và engine: `npm install -g @ardennguyen/zalo-agent-cli` (hoặc trình cài đặt của wrapper `zalo-mcp`, [INSTALLATION.md](../../../../INSTALLATION.md)).
+1. Cài Node 22.19 trở lên và engine: `npm install -g @ardennguyen/zalo-agent-cli` (hoặc trình cài đặt của wrapper `zalo-mcp`, [INSTALLATION.md](../../../../INSTALLATION.md)).
 2. Đăng nhập từ một terminal thường (không bao giờ dùng shell Administrator hay `sudo`): `zalo-agent login`, quét mã QR bằng ứng dụng Zalo, rồi `zalo-agent account list` để lấy ID tài khoản.
 3. Tùy chọn: sao chép `mcp-config.json`, tệp `storage.*.json` ứng với hệ điều hành của bạn (đổi tên thành `storage.json`) và `.env` vào `~/.zalo-agent-cli/`.
 4. Đặt tệp client vào đúng chỗ, thay `1000000000000000001` bằng ID tài khoản của bạn. Trên macOS, Claude Desktop không thấy PATH của shell: hãy đặt cho `command` đường dẫn đầy đủ mà `command -v zalo-agent` in ra (ví dụ `/opt/homebrew/bin/zalo-agent`).

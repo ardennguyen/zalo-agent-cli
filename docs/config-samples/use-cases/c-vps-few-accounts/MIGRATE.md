@@ -65,7 +65,7 @@ Then continue with step 6 of [README.md](README.md) (`za fleet generate`, instal
   zalo-agent logout --no-remote --account 1000000000000000002
   ```
   Then delete the encrypted archive and, once the VPS has run a few days, the old Windows folders.
-- **Zalo may challenge a login that moves** from a home address to a datacenter one. If a unit ends with exit 4 (`journalctl -u zalo-mcp@<id>` says the login was refused), log that account in again on the VPS with `za login` (QR over the SSH tunnel); its history stays.
+- **Zalo may challenge a login that moves** from a home address to a datacenter one. If an account goes `signed_out` (`za presence status` or `journalctl -u zalo-mcp@<id>` says the login was refused; the daemon stays up and refuses requests), log that account in again on the VPS with `za login` (QR over the SSH tunnel); its history stays.
 - **Keep using the phone or Zalo PC** next to the server. Logging the account into **Zalo Web** signs the server out (one web login per account).
 
 ## 6. Other ways, and why not

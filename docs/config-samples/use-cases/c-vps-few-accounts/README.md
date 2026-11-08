@@ -121,9 +121,9 @@ systemctl list-timers 'zalo-*'                                      # the three 
 
 ## 6. The phone, Zalo PC and Zalo Web
 
-Zalo keeps **one web login per account**. The server is that web login. If someone logs the same account into **Zalo Web** (chat.zalo.me) with a QR code, Zalo signs the server out: its next login is refused (exit 4) and the account needs a new `za login`. The **phone** and the **Zalo PC app** are separate logins and work beside the server. So: use the phone or Zalo PC next to the server, never Zalo Web.
+Zalo keeps **one web login per account**. The server is that web login. If someone logs the same account into **Zalo Web** (chat.zalo.me) with a QR code, Zalo signs the server out: its login is refused, the daemon stays up as `signed_out` (refusing requests; `ZALO_EXIT_ON_SIGNED_OUT=1` makes it exit 4 instead) and the account needs a new `za login`. The **phone** and the **Zalo PC app** are separate logins and work beside the server. So: use the phone or Zalo PC next to the server, never Zalo Web.
 
-Two copies of the **same** saved login (this VPS and the machine you moved it from) kick each other off (exit 3). Run each account in one place only.
+Two copies of the **same** saved login (this VPS and the machine you moved it from) kick each other off (exit 3; an on-demand daemon yields instead and refuses requests until `za presence resume --yes`). Run each account in one place only.
 
 ## 7. What still needs a live check on the VPS
 

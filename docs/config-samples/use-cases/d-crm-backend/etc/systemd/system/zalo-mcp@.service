@@ -43,9 +43,12 @@ KillSignal=SIGINT
 TimeoutStopSec=30
 Restart=always
 RestartSec=15
-# Exit 3 means another session took the account; exit 4 means Zalo keeps refusing the saved
-# login. A restart fixes neither (it would evict the other session again, or be refused
-# again), so the unit stays down and enters `failed` for your alert to catch.
+# Exit 3 means another session took an always-on account (an on-demand one yields and stays
+# up, refusing requests until `presence resume`); exit 4 means Zalo keeps refusing the saved
+# login, and comes only with ZALO_EXIT_ON_SIGNED_OUT=1 (by default the daemon stays up,
+# signed_out, until the account is added again by QR). A restart fixes neither (it would
+# evict the other session again, or be refused again), so the unit stays down and enters
+# `failed` for your alert to catch.
 RestartPreventExitStatus=3 4
 
 StandardOutput=journal

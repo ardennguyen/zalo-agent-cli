@@ -181,7 +181,7 @@ The `presence` keys (in `mcp-config.json` `presence`, `accounts.<ownId>.presence
 | `presence.catchUpEvery` | `off` | a periodic catch-up while parked (e.g. `6h`); off until the offline queue's retention is measured |
 | `presence.maxLeases`, `presence.leaseTtl`, `presence.leaseTtlMax` | `64`, `90s`, `600s` | CRM leases per account |
 | `presence.waitHoldsSocket` | `true` | a pending `zalo_wait_for_message` / `/events/wait` holds the socket (a tier may turn it off; held time is metered) |
-| `presence.onKick` | `yield` | on-demand only: when another session (the user's own Zalo Web) takes the account, let it go until someone asks (`yield`), or end the daemon with exit 3 (`exit`) |
+| `presence.onKick` | `yield` | on-demand only: when another session **of the same login** (a second copy of these credentials, a second tab of one browser) takes the socket, let it go and refuse every request until the user confirms `presence resume` (`yield`), or end the daemon with exit 3 (`exit`) |
 | `presence.alwaysOn.maxPerUser` | `1` | tenant or user policy: always-on accounts per user |
 | `presence.alwaysOn.maxPerTenant` | none | tenant policy: always-on accounts per tenant |
 
@@ -197,10 +197,39 @@ Admin API (its own credential): `GET|PUT|PATCH /zalo/admin/policy/users/<userId>
 tenant, against the caps). CLI: `zalo-agent policy get|set|unset ... --user <userId>`; the membership is set with
 `policy set tenant <tenantId> --user <id>` and `policy set accounts <ownId,ownId> --user <id>`.
 
-**Not switched on yet:** `listen` and `mcp start` still hold the socket all the time. The presence core, park/wake, the
-CRM lease routes (`/zalo/presence/leases`) and these settings are in place; a later release turns on-demand on for HTTP
-and backend daemons (webhooks and waits then arrive after the next connect, flagged `catchUp: true`; real time is the
-always-on tier).
+**Who runs on-demand.** `mcp start --http` and `listen --daemon` follow `presence.mode` (on-demand by default);
+stdio MCP and a foreground `listen` printing to stdout are always-on whatever it says. A parked socket wakes for an MCP
+tool call, a `zalo_wait_for_message` / `GET /events/wait`, a CRM lease (`/zalo/presence/leases`), a CLI request routed to
+the daemon (an upload, a `sync` stage, `mcp wait`) and `presence wake`; after `idleTimeout` with none of them it parks
+again. What arrives while parked comes back from Zalo's offline queue on the next connect, flagged `catchUp: true`
+(webhooks too): real time is the always-on tier. `--no-self-heal` with on-demand is refused at start (the catch-up is how
+a parked window comes back). A policy change of a `presence.*` key applies at once.
+
+**Tools while waking.** Each MCP tool has a class: `none` (sends, lookups) runs at once beside the wake; `fresh` (cache
+reads: `zalo_get_messages`, `zalo_get_history`, `zalo_search_messages`, `zalo_list_conversations`, `zalo_coverage`)
+waits up to `warmWait` for the connect and its catch-up, then answers with a `presence: {state, catchUp,
+coveredUntil}` block; `socket` (`zalo_sync`, `zalo_forward_message`, a send with a file) waits up to `warmWait`, then
+fails with the retryable `WARMING` (`retryAfterSec`).
+
+**Yielded and signed out.** Zalo keeps one web login per account: a QR login on any browser revokes the previous one,
+while the phone and Zalo PC coexist with the server. So there are two states nothing recovers from on its own, and in
+both the daemon **stays up** (status, the admin API, a QR re-add keep working) and **refuses** every tool call, lease,
+wait and CLI request:
+
+| State (`account_state`) | When | Refusal | Ends with |
+|---|---|---|---|
+| `yielded` | on-demand, `onKick: "yield"`: another session of the same login took the socket (close 3000) | `YIELDED` | the user closes that session and confirms: `zalo-agent presence resume --yes`, `POST /zalo/admin/presence/resume`, the fleet controller's `POST /zalo/admin/accounts/<ownId>/presence/resume`, or MCP `zalo_profile` `presence_resume` (confirmMode applies) |
+| `signed_out` (presence `signed-out`) | any mode: Zalo refuses the saved login three times (another browser QR-logged into Zalo Web) | `SIGNED_OUT` | adding the account again by QR (`zalo-agent login`, or the fleet controller's QR add, which restarts the daemon) |
+
+Both go to the webhook, the MCP buffer, `/status` (`socket.state` `yielded` / `signed-out`, a warning), `/metrics` and
+`presence status`. A signed-out daemon used to end with exit 4; `ZALO_EXIT_ON_SIGNED_OUT=1` keeps that ending (the
+systemd unit's `RestartPreventExitStatus=3 4` still keeps such a unit down). Always-on keeps exit 3 on a kick.
+
+**Many accounts waking at once.** `ZALO_CONNECT_SLOTS` (default `0`, no cap; fleet samples `16`) caps how many daemons
+on the machine are waking at once: a wake takes a slot (`<CONFIG_DIR>/connect-slots/`) until its first catch-up ends,
+at most 60 s; `ZALO_CONNECT_SLOT_WAIT` (seconds, default `120`) is how long a wake waits for one before going ahead.
+Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `lastCatchUpMs`
+(`zalo_presence_last_wake_seconds`, `zalo_presence_last_catch_up_seconds`) and the metered connected time.
 
 ---
 
@@ -245,6 +274,8 @@ always-on tier).
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | non-friend DM names one sync restore may look up. Default 500 | | |
 | `ZALO_START_JITTER` | yes | wait a random time up to this many seconds (0–600, default 0) before logging in, so a fleet restarting together does not log in together | | |
 | `ZALO_LOGIN_SLOTS` | yes | at most this many daemons on the machine logging in and loading their lists at once (0–64; default 0, no cap); the rest wait for a slot. `ZALO_LOGIN_SLOT_WAIT` (seconds, default 900) is how long one waits before going ahead anyway | | |
+| `ZALO_CONNECT_SLOTS` | yes | at most this many daemons on the machine waking their parked socket at once (on-demand presence; 0–64, default 0, no cap; fleet samples 16): a wake holds its slot until its first catch-up ends, at most 60 s. `ZALO_CONNECT_SLOT_WAIT` (seconds, default 120) is how long one waits before going ahead anyway | | |
+| `ZALO_EXIT_ON_SIGNED_OUT` | yes | `1`: a login Zalo keeps refusing ends the daemon with exit 4, as before 3.0. Default: the daemon stays up in `signed_out` and refuses requests until the account is added again by QR | | |
 | `ZALO_LOG_LEVEL` | yes | `error`, `warn`, `info` (default) or `debug` (adds a line per HTTP request and per message) | `--log-level` | |
 | `ZALO_LOG_FORMAT` |  | `text` (default, timestamped lines) or `json` (one object per line) | | |
 | `ZALO_LOG_MAX_SIZE`, `ZALO_LOG_KEEP` |  | rotate `daemon.log` at this size (default `50m`, at least `4k`) and keep this many files (default 3) | | |

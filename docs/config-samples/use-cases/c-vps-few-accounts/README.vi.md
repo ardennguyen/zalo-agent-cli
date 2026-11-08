@@ -121,9 +121,9 @@ systemctl list-timers 'zalo-*'                                      # ba timer
 
 ## 6. Điện thoại, Zalo PC và Zalo Web
 
-Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**. Máy chủ chính là phiên web đó. Nếu ai đó đăng nhập cùng tài khoản vào **Zalo Web** (chat.zalo.me) bằng mã QR, Zalo sẽ đăng xuất máy chủ: lần đăng nhập tiếp theo bị từ chối (mã thoát 4) và tài khoản cần `za login` lại. **Điện thoại** và **ứng dụng Zalo PC** là các phiên đăng nhập riêng và hoạt động song song với máy chủ. Vì vậy: dùng điện thoại hoặc Zalo PC bên cạnh máy chủ, không bao giờ dùng Zalo Web.
+Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**. Máy chủ chính là phiên web đó. Nếu ai đó đăng nhập cùng tài khoản vào **Zalo Web** (chat.zalo.me) bằng mã QR, Zalo sẽ đăng xuất máy chủ: lần đăng nhập bị từ chối, daemon vẫn chạy ở trạng thái `signed_out` (từ chối yêu cầu; `ZALO_EXIT_ON_SIGNED_OUT=1` cho nó thoát với mã 4 như trước) và tài khoản cần `za login` lại. **Điện thoại** và **ứng dụng Zalo PC** là các phiên đăng nhập riêng và hoạt động song song với máy chủ. Vì vậy: dùng điện thoại hoặc Zalo PC bên cạnh máy chủ, không bao giờ dùng Zalo Web.
 
-Hai bản sao của **cùng** một phiên đăng nhập đã lưu (VPS này và máy bạn chuyển nó từ đó sang) sẽ đá nhau ra (mã thoát 3). Mỗi tài khoản chỉ chạy ở một nơi.
+Hai bản sao của **cùng** một phiên đăng nhập đã lưu (VPS này và máy bạn chuyển nó từ đó sang) sẽ đá nhau ra (mã thoát 3; daemon on-demand thì nhường lại và từ chối yêu cầu cho đến khi `za presence resume --yes`). Mỗi tài khoản chỉ chạy ở một nơi.
 
 ## 7. Những gì vẫn cần kiểm tra thực tế trên VPS
 

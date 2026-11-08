@@ -182,7 +182,7 @@ Các khóa `presence` (trong `mcp-config.json` `presence`, `accounts.<ownId>.pre
 | `presence.catchUpEvery` | `off` | bắt kịp định kỳ khi đang tạm nghỉ (vd. `6h`); tắt cho đến khi đo được thời gian Zalo giữ hàng đợi offline |
 | `presence.maxLeases`, `presence.leaseTtl`, `presence.leaseTtlMax` | `64`, `90s`, `600s` | lease của CRM cho mỗi tài khoản |
 | `presence.waitHoldsSocket` | `true` | một `zalo_wait_for_message` / `/events/wait` đang chờ giữ socket (một gói có thể tắt; thời gian giữ được tính) |
-| `presence.onKick` | `yield` | chỉ on-demand: khi một phiên khác (Zalo Web của chính người dùng) lấy tài khoản, nhường cho đến khi có người cần (`yield`), hoặc dừng daemon với mã 3 (`exit`) |
+| `presence.onKick` | `yield` | chỉ on-demand: khi một phiên khác **của cùng lần đăng nhập** (một bản sao khác của thông tin đăng nhập này, một tab thứ hai của cùng trình duyệt) lấy socket, nhường lại và từ chối mọi yêu cầu cho đến khi người dùng xác nhận `presence resume` (`yield`), hoặc dừng daemon với mã 3 (`exit`) |
 | `presence.alwaysOn.maxPerUser` | `1` | chính sách tenant hoặc người dùng: số tài khoản luôn-kết-nối mỗi người dùng |
 | `presence.alwaysOn.maxPerTenant` | không | chính sách tenant: số tài khoản luôn-kết-nối mỗi tenant |
 
@@ -199,9 +199,39 @@ Admin API (thông tin xác thực riêng): `GET|PUT|PATCH /zalo/admin/policy/use
 tenant có giới hạn, so với giới hạn). CLI: `zalo-agent policy get|set|unset ... --user <userId>`; thành viên được đặt
 bằng `policy set tenant <tenantId> --user <id>` và `policy set accounts <ownId,ownId> --user <id>`.
 
-**Chưa bật:** `listen` và `mcp start` vẫn giữ socket liên tục. Lõi hiện diện, tạm nghỉ/thức, các route lease của CRM
-(`/zalo/presence/leases`) và các thiết lập này đã có; một bản phát hành sau sẽ bật on-demand cho daemon HTTP và backend
-(webhook và lệnh chờ khi đó đến sau lần kết nối kế tiếp, gắn `catchUp: true`; thời gian thực là gói always-on).
+**Ai chạy on-demand.** `mcp start --http` và `listen --daemon` theo `presence.mode` (mặc định on-demand); MCP stdio và
+`listen` chạy tiền cảnh in ra stdout luôn là always-on dù khóa nói gì. Socket đang tạm nghỉ thức dậy khi có một lệnh gọi
+công cụ MCP, một `zalo_wait_for_message` / `GET /events/wait`, một lease của CRM (`/zalo/presence/leases`), một yêu cầu
+CLI chuyển qua daemon (gửi tệp, một bước `sync`, `mcp wait`) và `presence wake`; sau `idleTimeout` không có gì thì lại tạm
+nghỉ. Những gì đến khi đang tạm nghỉ được lấy lại từ hàng đợi offline của Zalo ở lần kết nối kế tiếp, gắn `catchUp: true`
+(cả webhook): thời gian thực là gói always-on. `--no-self-heal` cùng on-demand bị từ chối khi khởi động (bắt kịp là cách
+khoảng tạm nghỉ quay lại). Thay đổi chính sách của một khóa `presence.*` áp dụng ngay.
+
+**Công cụ khi đang thức.** Mỗi công cụ MCP có một lớp: `none` (gửi, tra cứu) chạy ngay bên cạnh lần thức; `fresh` (đọc
+cache: `zalo_get_messages`, `zalo_get_history`, `zalo_search_messages`, `zalo_list_conversations`, `zalo_coverage`) chờ
+tối đa `warmWait` cho kết nối và lần bắt kịp, rồi trả lời kèm khối `presence: {state, catchUp, coveredUntil}`; `socket`
+(`zalo_sync`, `zalo_forward_message`, gửi kèm tệp) chờ tối đa `warmWait`, rồi báo lỗi có thể thử lại `WARMING`
+(`retryAfterSec`).
+
+**Đã nhường (yielded) và đã bị đăng xuất (signed out).** Zalo chỉ giữ một lần đăng nhập web cho mỗi tài khoản: đăng nhập
+QR trên bất kỳ trình duyệt nào sẽ thu hồi lần trước, còn điện thoại và Zalo PC chạy song song với máy chủ được. Vì vậy có
+hai trạng thái không tự hồi phục, và trong cả hai daemon **vẫn chạy** (trạng thái, admin API, thêm lại bằng QR vẫn hoạt
+động) và **từ chối** mọi lệnh gọi công cụ, lease, lệnh chờ và yêu cầu CLI:
+
+| Trạng thái (`account_state`) | Khi nào | Từ chối | Kết thúc bằng |
+|---|---|---|---|
+| `yielded` | on-demand, `onKick: "yield"`: một phiên khác của cùng lần đăng nhập lấy socket (đóng 3000) | `YIELDED` | người dùng đóng phiên đó và xác nhận: `zalo-agent presence resume --yes`, `POST /zalo/admin/presence/resume`, `POST /zalo/admin/accounts/<ownId>/presence/resume` của fleet controller, hoặc MCP `zalo_profile` `presence_resume` (theo confirmMode) |
+| `signed_out` (presence `signed-out`) | mọi chế độ: Zalo từ chối lần đăng nhập đã lưu ba lần (một trình duyệt khác đăng nhập Zalo Web bằng QR) | `SIGNED_OUT` | thêm lại tài khoản bằng QR (`zalo-agent login`, hoặc thêm bằng QR qua fleet controller, sẽ khởi động lại daemon) |
+
+Cả hai được gửi tới webhook, bộ đệm MCP, `/status` (`socket.state` `yielded` / `signed-out`, kèm cảnh báo), `/metrics`
+và `presence status`. Trước đây daemon bị đăng xuất dừng với mã 4; `ZALO_EXIT_ON_SIGNED_OUT=1` giữ cách dừng đó (unit
+systemd với `RestartPreventExitStatus=3 4` vẫn giữ unit ở trạng thái dừng). Always-on vẫn dừng với mã 3 khi bị đá.
+
+**Nhiều tài khoản thức cùng lúc.** `ZALO_CONNECT_SLOTS` (mặc định `0`, không giới hạn; mẫu fleet `16`) giới hạn số daemon
+trên máy đang thức cùng lúc: một lần thức giữ một suất (`<CONFIG_DIR>/connect-slots/`) cho đến khi lần bắt kịp đầu tiên
+xong, tối đa 60 giây; `ZALO_CONNECT_SLOT_WAIT` (giây, mặc định `120`) là thời gian một lần thức chờ suất trước khi cứ
+tiếp tục. Cả hai có dạng `_<ownId>`. `/status` và `/metrics` có `lastWakeMs` / `lastCatchUpMs`
+(`zalo_presence_last_wake_seconds`, `zalo_presence_last_catch_up_seconds`) và thời gian kết nối được tính.
 
 ---
 
@@ -245,6 +275,8 @@ Dấu "có" ở cột `_<ownId>` nghĩa là tên đó còn tồn tại với id 
 | `ZALO_MCP_GROUP_CONFIRM` |  | đã lỗi thời: `0` nghĩa là chế độ `off`, `1` là `agent`; chế độ xác nhận đặt rõ được ưu tiên | | `groupConfirm` |
 | `ZALO_SYNC_NAME_REFRESH_MAX` |  | số tên DM không phải bạn bè mà một lần restore được tra. Mặc định 500 | | |
 | `ZALO_START_JITTER` | có | chờ một khoảng ngẫu nhiên tối đa chừng này giây (0–600, mặc định 0) trước khi đăng nhập, để một đội daemon khởi động lại cùng lúc không đăng nhập cùng lúc | | |
+| `ZALO_CONNECT_SLOTS` | có | tối đa chừng này daemon trên máy cùng đánh thức socket đang tạm nghỉ một lúc (hiện diện on-demand; 0–64, mặc định 0, không giới hạn; mẫu fleet 16): một lần thức giữ suất cho đến khi lần bắt kịp đầu tiên xong, tối đa 60 giây. `ZALO_CONNECT_SLOT_WAIT` (giây, mặc định 120) là thời gian chờ tối đa trước khi cứ tiếp tục | | |
+| `ZALO_EXIT_ON_SIGNED_OUT` | có | `1`: lần đăng nhập Zalo liên tục từ chối sẽ dừng daemon với mã 4, như trước 3.0. Mặc định: daemon vẫn chạy ở trạng thái `signed_out` và từ chối yêu cầu cho đến khi tài khoản được thêm lại bằng QR | | |
 | `ZALO_LOGIN_SLOTS` | có | tối đa chừng này daemon trên máy cùng đăng nhập và nạp danh sách một lúc (0–64; mặc định 0, không giới hạn); phần còn lại chờ một slot. `ZALO_LOGIN_SLOT_WAIT` (giây, mặc định 900) là thời gian chờ tối đa trước khi cứ tiếp tục | | |
 | `ZALO_LOG_LEVEL` | có | `error`, `warn`, `info` (mặc định) hoặc `debug` (thêm một dòng cho mỗi HTTP request và mỗi tin nhắn) | `--log-level` | |
 | `ZALO_LOG_FORMAT` |  | `text` (mặc định, mỗi dòng có thời gian) hoặc `json` (mỗi dòng một đối tượng) | | |

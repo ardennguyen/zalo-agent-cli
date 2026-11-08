@@ -65,7 +65,7 @@ Sau đó tiếp tục với bước 6 của [README.md](README.md) (`za fleet ge
   zalo-agent logout --no-remote --account 1000000000000000002
   ```
   Sau đó xóa tệp nén đã mã hóa và, khi VPS đã chạy được vài ngày, xóa các thư mục cũ trên Windows.
-- **Zalo có thể yêu cầu xác minh một phiên đăng nhập di chuyển** từ địa chỉ gia đình sang địa chỉ datacenter. Nếu một unit kết thúc với mã thoát 4 (`journalctl -u zalo-mcp@<id>` báo phiên đăng nhập bị từ chối), hãy đăng nhập lại tài khoản đó trên VPS bằng `za login` (QR qua đường hầm SSH); lịch sử của nó vẫn còn.
+- **Zalo có thể yêu cầu xác minh một phiên đăng nhập di chuyển** từ địa chỉ gia đình sang địa chỉ datacenter. Nếu một tài khoản chuyển sang `signed_out` (`za presence status` hoặc `journalctl -u zalo-mcp@<id>` báo phiên đăng nhập bị từ chối; daemon vẫn chạy và từ chối yêu cầu), hãy đăng nhập lại tài khoản đó trên VPS bằng `za login` (QR qua đường hầm SSH); lịch sử của nó vẫn còn.
 - **Tiếp tục dùng điện thoại hoặc Zalo PC** bên cạnh máy chủ. Đăng nhập tài khoản vào **Zalo Web** sẽ đăng xuất máy chủ (một phiên đăng nhập web cho mỗi tài khoản).
 
 ## 6. Các cách khác, và vì sao không dùng

@@ -109,9 +109,12 @@ KillSignal=SIGINT
 TimeoutStopSec=30
 Restart=always
 RestartSec=15
-# Exit 3 means another session took the account; exit 4 means Zalo keeps refusing the saved
-# login. A restart fixes neither (it would evict the other session again, or be refused
-# again), so the unit stays down and enters \`failed\` for your alert to catch.
+# Exit 3 means another session took an always-on account (an on-demand one yields and stays
+# up, refusing requests until \`presence resume\`); exit 4 means Zalo keeps refusing the saved
+# login, and comes only with ZALO_EXIT_ON_SIGNED_OUT=1 (by default the daemon stays up,
+# signed_out, until the account is added again by QR). A restart fixes neither (it would
+# evict the other session again, or be refused again), so the unit stays down and enters
+# \`failed\` for your alert to catch.
 RestartPreventExitStatus=3 4
 
 StandardOutput=journal
@@ -491,6 +494,9 @@ ZALO_LOG_LEVEL=info
 # this many daemons on the machine be logging in at once (the rest wait for a slot).
 ZALO_START_JITTER=30
 # ZALO_LOGIN_SLOTS=3
+# On-demand presence: at most this many daemons on the machine wake a parked socket at once (a wake
+# holds its slot until its first catch-up, at most 60 s; the rest wait, then go ahead anyway).
+ZALO_CONNECT_SLOTS=16
 
 # The admin console's credential for /zalo/admin/* (the runtime policy, usage, export): its own
 # token, never an agent's. A file only the service user reads (install -m 600 -o zalo), or the

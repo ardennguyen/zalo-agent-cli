@@ -311,6 +311,12 @@ export function initDb(dbPath) {
     try {
         db.exec("ALTER TABLE messages ADD COLUMN mediaPrunedAt INTEGER");
     } catch {}
+    // The rows that point at a downloaded file, a few hundred of several hundred thousand: what the media migration
+    // (media-store.js referencedMedia) and the retention purge (getDownloadedMediaBefore) read, on a daemon's own
+    // thread. Without it each was a walk of the whole table, which on the encrypted database (every page decrypted and
+    // checked) MEASURED 1.8 s and 2.5 s on 436,000 rows: an event-loop stall the socket felt. Built once (about 2 s on
+    // that database, here at the start, before any socket is open).
+    db.exec("CREATE INDEX IF NOT EXISTS idx_messages_localpath ON messages(timestamp) WHERE localPath IS NOT NULL");
     // The text a search matches: `text` folded the way Zalo's own clients fold it (lowercase, Vietnamese vowels to
     // bare letters, đ to d; src/utils/vn-text.js). Kept by the message writers below. Rows written before the column
     // existed are filled in, and the indexes a search wants are built, the first time a search runs

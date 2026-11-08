@@ -601,6 +601,14 @@ export const leftoverTarget = (name) =>
 
 /** Overwrite with zeros, flush, remove: best effort (an SSD or a copy-on-write filesystem may keep the blocks). */
 function shred(file) {
+    const steps = shredSteps(file);
+    while (!steps.next().done) {
+        /* all at once */
+    }
+}
+
+/** {@link shred}, a step per MiB overwritten. */
+function* shredSteps(file) {
     let fd;
     try {
         fd = openSync(file, "r+");
@@ -613,6 +621,7 @@ function shred(file) {
         const zeros = Buffer.alloc(Math.min(size, 1 << 20));
         for (let off = 0; off < size; off += zeros.length) {
             writeSync(fd, zeros, 0, Math.min(zeros.length, size - off), off);
+            yield;
         }
         fsyncSync(fd);
     } finally {
@@ -635,6 +644,25 @@ function shred(file) {
  * @returns {"absent"|"already-sealed"|"sealed"}
  */
 export function sealMediaFileInPlace(file, scope, meta = {}, hooks = {}) {
+    const steps = sealMediaFileInPlaceSteps(file, scope, meta, hooks);
+    for (;;) {
+        const step = steps.next();
+        if (step.done) return step.value;
+    }
+}
+
+/**
+ * {@link sealMediaFileInPlace} as steps, one per 64 KiB chunk sealed and per MiB of plaintext overwritten, so a daemon
+ * can hand its event loop back inside a large file (media-store.js `migrateMediaSliced`). Run it to the end: a run
+ * left part way holds the file open, with the `.sealing` copy beside it (which {@link recoverMediaFile} undoes).
+ *
+ * @param {string} file
+ * @param {string|{id: string, dir: string}} scope
+ * @param {object} [meta] - as {@link sealMediaFileInPlace}
+ * @param {object} [hooks] - as {@link sealMediaFileInPlace}
+ * @returns {Generator<undefined, "sealed"|"already-sealed"|"absent">}
+ */
+export function* sealMediaFileInPlaceSteps(file, scope, meta = {}, hooks = {}) {
     const s = asScope(scope);
     recoverMediaFile(file);
     const state = mediaFileState(file);
@@ -652,6 +680,7 @@ export function sealMediaFileInPlace(file, scope, meta = {}, hooks = {}) {
         for (let i = 0; i < n; i++) {
             const plain = readAt(src, Math.min(MEDIA_CHUNK, size - i * MEDIA_CHUNK), i * MEDIA_CHUNK);
             writeSync(out, encryptChunk(h.dek, h.staticHash, i, i === n - 1, plain));
+            yield;
         }
         fsyncSync(out);
         closeSync(out);
@@ -677,6 +706,6 @@ export function sealMediaFileInPlace(file, scope, meta = {}, hooks = {}) {
     hooks.afterMoveAside?.();
     renameSync(tmp, file);
     hooks.afterSwap?.();
-    shred(file + PLAINTEXT_OLD);
+    yield* shredSteps(file + PLAINTEXT_OLD);
     return "sealed";
 }

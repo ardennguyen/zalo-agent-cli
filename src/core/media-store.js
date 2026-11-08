@@ -11,6 +11,7 @@
  */
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { MEDIA_DIR, getAccountDbPath, getAccountDir } from "./credentials.js";
 import { KeystoreError, SealError } from "./keystore/container.js";
 import {
@@ -20,7 +21,7 @@ import {
     readMediaHeader,
     recoverMediaFile,
     rewrapMediaFile,
-    sealMediaFileInPlace,
+    sealMediaFileInPlaceSteps,
 } from "./keystore/media-seal.js";
 import { readKeyring, scopeOfDir } from "./keystore/keyring.js";
 import { dbFileState, openDatabase } from "./sqlite.js";
@@ -102,6 +103,9 @@ export function* walkMedia(root) {
     }
 }
 
+/** The rows that point at a file; answered from db.js's partial index `idx_messages_localpath`, not a table walk. */
+export const REFERENCED_MEDIA_SQL = "SELECT msgId, localPath FROM messages WHERE localPath IS NOT NULL";
+
 /**
  * The files this account's message rows point at (`localPath` → `msgId`), read-only. Empty when there is no database
  * yet, or it is still plaintext (a migration encrypts it first).
@@ -117,7 +121,7 @@ export function referencedMedia(ownId) {
     try {
         const hasColumn = db.prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name = 'localPath'").get();
         if (!hasColumn) return map; // no message table yet: no row points at a file
-        for (const r of db.prepare("SELECT msgId, localPath FROM messages WHERE localPath IS NOT NULL").iterate()) {
+        for (const r of db.prepare(REFERENCED_MEDIA_SQL).iterate()) {
             map.set(resolve(r.localPath), String(r.msgId));
         }
     } finally {
@@ -230,35 +234,99 @@ export function mediaStatus(ownId) {
  *   bytes: number}}
  */
 export function migrateMedia(ownId, { limit = Infinity, log } = {}) {
-    const started = Date.now();
-    const scope = scopeOfAccount(ownId);
-    const refs = referencedMedia(ownId);
-    const res = { sealed: 0, failed: 0, more: false, errors: [], ms: 0, bytes: 0 };
-    const keys = new Map(); // derived keys, for this run only
-    for (const f of accountFiles(ownId, refs)) {
-        if (f.state !== "plaintext") continue;
-        if (res.sealed + res.failed >= limit) {
-            res.more = true;
+    const run = migrationRun(ownId, { limit });
+    while (!run.steps.next().done) {
+        /* every file at once: a command, which serves no socket */
+    }
+    return run.finish(log);
+}
+
+/**
+ * {@link migrateMedia} for a daemon: the same run, handing the event loop back every `sliceMs` (and between any two
+ * files that took longer). One batch of 50 photos sealed in one go MEASURED 3.3 s on the thread that serves the
+ * socket (`event loop was blocked for 3.1s`, every 30 s while a 2.x install's media was sealed); sliced, the longest
+ * stretch is a file's open, verify and flush, a 64 KiB chunk or the scan of the rows that point at files.
+ *
+ * @param {string} ownId
+ * @param {{limit?: number, log?: (line: string) => void, sliceMs?: number, pause?: () => Promise<void>,
+ *   stopped?: () => boolean}} [opts] - `pause`: how the loop is handed back (tests); `stopped`: end the run early
+ * @returns {Promise<ReturnType<typeof migrateMedia>>}
+ */
+export async function migrateMediaSliced(
+    ownId,
+    { limit = Infinity, log, sliceMs = 25, pause = yieldToLoop, stopped = () => false } = {},
+) {
+    const run = migrationRun(ownId, { limit });
+    let sliceStart = performance.now();
+    for (let step = run.steps.next(); !step.done; step = run.steps.next()) {
+        // A stop between two files only: a file part way through is finished first.
+        if (step.value === FILE_DONE && stopped()) {
+            run.res.more = true;
             break;
         }
-        try {
-            const done = sealMediaFileInPlace(f.file, scope, { msgId: refs.get(f.file) ?? null }, { keys });
-            if (done === "sealed") {
-                res.sealed++;
-                res.bytes += readMediaHeader(f.file).meta.size;
+        if (performance.now() - sliceStart < sliceMs) continue;
+        await pause();
+        sliceStart = performance.now();
+    }
+    return run.finish(log);
+}
+
+/** Let timers and socket reads run before the next slice (setImmediate: after the I/O that is waiting). */
+const yieldToLoop = () => new Promise((resolve) => setImmediate(resolve));
+
+/** What a migration step yields between two files (inside one it yields nothing). */
+const FILE_DONE = "file";
+
+/** One migration run: `steps` yields after every file it looks at and every chunk it seals; `finish` logs. */
+function migrationRun(ownId, { limit }) {
+    const started = Date.now();
+    const res = { sealed: 0, failed: 0, more: false, errors: [], ms: 0, bytes: 0 };
+    function* steps() {
+        const scope = scopeOfAccount(ownId);
+        const refs = referencedMedia(ownId);
+        yield FILE_DONE;
+        const keys = new Map(); // derived keys, for this run only
+        for (const f of accountFiles(ownId, refs)) {
+            if (f.state !== "plaintext") {
+                yield FILE_DONE;
+                continue;
             }
-        } catch (e) {
-            // A key that cannot be had stops the run: every other file would fail the same way.
-            if (e instanceof KeystoreError) throw e;
-            res.failed++;
-            if (res.errors.length < 20) res.errors.push({ file: f.file, error: e.message });
+            if (res.sealed + res.failed >= limit) {
+                res.more = true;
+                return;
+            }
+            try {
+                // A step per chunk: a 100 MB video is not one stretch of the daemon's thread.
+                const done = yield* sealMediaFileInPlaceSteps(
+                    f.file,
+                    scope,
+                    { msgId: refs.get(f.file) ?? null },
+                    { keys },
+                );
+                if (done === "sealed") {
+                    res.sealed++;
+                    res.bytes += readMediaHeader(f.file).meta.size;
+                }
+            } catch (e) {
+                // A key that cannot be had stops the run: every other file would fail the same way.
+                if (e instanceof KeystoreError) throw e;
+                res.failed++;
+                if (res.errors.length < 20) res.errors.push({ file: f.file, error: e.message });
+            }
+            yield FILE_DONE;
         }
     }
-    res.ms = Date.now() - started;
-    if (log && res.sealed) {
-        log(`[media] sealed ${res.sealed} file(s) (${(res.bytes / 1e6).toFixed(1)} MB) in ${res.ms} ms`);
-    }
-    return res;
+    return {
+        res,
+        steps: steps(),
+        finish(log) {
+            res.ms = Date.now() - started;
+            if (log && res.sealed) {
+                log(`[media] sealed ${res.sealed} file(s) (${(res.bytes / 1e6).toFixed(1)} MB) in ${res.ms} ms`);
+            }
+            return res;
+        },
+    };
 }
 
 /**
@@ -294,30 +362,36 @@ export function rekeyMedia(ownId) {
 
 /**
  * The daemon's background migration: seal `batch` plaintext files every `intervalMs` until none is left, at low
- * priority (the timer never keeps the process alive). A key that cannot be had, or anything unexpected, stops it with
- * one log line; the next daemon start tries again.
+ * priority (the timer never keeps the process alive), in slices that hand the event loop back
+ * ({@link migrateMediaSliced}): the daemon serves its socket on the same thread. A key that cannot be had, or anything
+ * unexpected, stops it with one log line; the next daemon start tries again.
  *
  * @param {string} ownId
- * @param {{batch?: number, intervalMs?: number, firstDelayMs?: number, log?: (line: string) => void}} [opts]
+ * @param {{batch?: number, intervalMs?: number, firstDelayMs?: number, sliceMs?: number,
+ *   log?: (line: string) => void}} [opts]
  * @returns {() => void} stop
  */
-export function startMediaMigration(ownId, { batch = 50, intervalMs = 30_000, firstDelayMs = 60_000, log } = {}) {
+export function startMediaMigration(
+    ownId,
+    { batch = 50, intervalMs = 30_000, firstDelayMs = 60_000, sliceMs = 25, log } = {},
+) {
     let timer = null;
     let stopped = false;
     let total = 0;
     const say = log ?? ((l) => console.error(l));
-    const tick = () => {
+    const tick = async () => {
         timer = null;
         if (stopped) return;
         let res;
         try {
-            res = migrateMedia(ownId, { limit: batch });
+            res = await migrateMediaSliced(ownId, { limit: batch, sliceMs, stopped: () => stopped });
         } catch (e) {
             say(`[media] background sealing stopped: ${e.message}`);
             return;
         }
         total += res.sealed;
         if (res.failed) say(`[media] ${res.failed} file(s) could not be sealed (first: ${res.errors[0]?.error})`);
+        if (stopped) return;
         if (res.more && res.sealed > 0) {
             timer = setTimeout(tick, intervalMs);
             timer.unref?.();

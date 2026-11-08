@@ -20,6 +20,7 @@ import {
     setAliasPersistence,
     startDaemonAliases,
     noteAliasSnapshot,
+    onAliasChange,
 } from "../../src/core/contact-names.js";
 import {
     closeDb,
@@ -308,5 +309,32 @@ describe("what Zalo Web also names alias first", () => {
         const frame = (act_type, act) => ({ actions: [{ act_type, act, data: "{}" }] });
         assert.equal(acts.observe(602, frame("profile", "online_status")), 0);
         assert.equal(acts.observe(602, frame("profile", "something_new")), 1, "another profile act still is");
+    });
+});
+
+describe("the first alias snapshot is a load, not a change", () => {
+    it("tells its listeners first: true once, then first: false for a real change", () => {
+        const seen = [];
+        const off = onAliasChange((ids, _aliases, info) => seen.push([ids.length, info?.first]));
+        try {
+            noteAliasSnapshot(
+                new Map([
+                    ["1000000000000000801", "Ana"],
+                    ["1000000000000000802", "Ben"],
+                ]),
+            );
+            noteAliasSnapshot(
+                new Map([
+                    ["1000000000000000801", "Ana"],
+                    ["1000000000000000802", "Benny"],
+                ]),
+            );
+        } finally {
+            off();
+        }
+        assert.deepEqual(seen, [
+            [2, true],
+            [1, false],
+        ]);
     });
 });

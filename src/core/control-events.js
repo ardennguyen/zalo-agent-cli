@@ -192,6 +192,9 @@ export function applyControlEvents({
     say = () => {},
 }) {
     const out = [];
+    // One frame (a control replay can carry many) says "the device list changed" once, with a count.
+    let deviceChanges = 0;
+    let lastDevices = null;
     for (const c of readControls(data)) {
         if (c.handler !== "control-events") continue;
         if (c.actionId) {
@@ -205,11 +208,8 @@ export function applyControlEvents({
             out.push(settingsEvent(c));
         } else if (c.kind === "devices") {
             const ev = devicesEvent(c);
-            say(
-                "the account's device list changed (a device signed in or out" +
-                    (ev.companions === null ? "" : `; ${ev.companions} companion device(s) now`) +
-                    "); `zalo-agent account devices` lists them",
-            );
+            deviceChanges++;
+            lastDevices = ev;
             out.push(ev);
         } else if (c.kind === "reminder" && c.act !== "remove_reminder11") {
             const d = c.data || {};
@@ -264,6 +264,15 @@ export function applyControlEvents({
                 control: c.data,
             });
         }
+    }
+    if (deviceChanges) {
+        say(
+            "the account's device list changed" +
+                (deviceChanges > 1 ? ` (${deviceChanges} controls)` : "") +
+                " (a device signed in or out" +
+                (lastDevices.companions === null ? "" : `; ${lastDevices.companions} companion device(s) now`) +
+                "); `zalo-agent account devices` lists them",
+        );
     }
     return out;
 }

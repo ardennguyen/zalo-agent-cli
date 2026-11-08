@@ -294,6 +294,8 @@ export async function ensureAliases(api) {
 export function noteAliasSnapshot(aliases) {
     if (!(aliases instanceof Map)) return [];
     const b = current();
+    // Nothing held yet and no snapshot taken: this one is a first load, not a change.
+    const first = b.aliases.size === 0 && !b.fresh;
     const changed = [];
     for (const [id, alias] of aliases) if (b.aliases.get(id) !== alias) changed.push(id);
     for (const id of b.aliases.keys()) if (!aliases.has(id)) changed.push(id);
@@ -307,7 +309,7 @@ export function noteAliasSnapshot(aliases) {
             /* the in-memory snapshot still serves this process */
         }
     }
-    if (changed.length) for (const fn of listeners) safe(() => fn(changed, b.aliases));
+    if (changed.length) for (const fn of listeners) safe(() => fn(changed, b.aliases, { first }));
     return changed;
 }
 
@@ -468,8 +470,8 @@ function safe(fn) {
 export function startDaemonAliases({ getApi, log = () => {}, onRetitled, onOwnName, intervalMs, debounceMs } = {}) {
     setAliasPersistence(true);
     const refresher = startAliasRefresh({ getApi, log, intervalMs, debounceMs });
-    const off = onAliasChange((ids) => {
-        log(`aliases: ${ids.length} changed`);
+    const off = onAliasChange((ids, _aliases, { first = false } = {}) => {
+        log(first ? `aliases: loaded ${ids.length}` : `aliases: ${ids.length} changed`);
         let api = null;
         try {
             api = getApi?.() ?? null;

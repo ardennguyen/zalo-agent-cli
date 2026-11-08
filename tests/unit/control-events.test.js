@@ -290,6 +290,23 @@ describe("the device list changed", () => {
         assert.ok(lines.some((l) => /device list changed/.test(l)));
     });
 
+    it("a replay of several device-list controls in one frame is one log line with a count", () => {
+        const lines = [];
+        const data = { devices: { masterId: 1, companions: [{ id: 7 }] } };
+        const events = applyControlEvents({
+            data: frameData(
+                ["5", "user_devices", "update_user_devices", data],
+                ["6", "user_devices", "update_user_devices", data],
+                ["7", "user_devices", "update_user_devices", data],
+            ),
+            say: (l) => lines.push(l),
+        });
+        assert.equal(events.length, 3, "every control is still reported");
+        const said = lines.filter((l) => /device list changed/.test(l));
+        assert.equal(said.length, 1);
+        assert.match(said[0], /\(3 controls\)/);
+    });
+
     it("withoutSecrets copies, leaving the original alone", () => {
         const o = { a: [{ encAccSign: 1, b: 2 }] };
         assert.deepEqual(withoutSecrets(o), { a: [{ b: 2 }] });

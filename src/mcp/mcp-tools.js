@@ -24,6 +24,7 @@ import {
     getMessageById,
     getMessageForAction,
     getDisplayName,
+    getStoredName,
     setContactName,
     getThreadType,
     getThreadNames,
@@ -111,6 +112,7 @@ import { hiddenChatsFor, hiddenEventView, readThreadIds, withoutHidden } from ".
 export { readThreadIds } from "../core/hidden-chats.js";
 import { resolveHiddenChats, resolveMediaDelivery } from "../core/deploy-policy.js";
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
+import { aliasFor, noteAliasSet, personNameFields, senderNameFields } from "../core/contact-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
@@ -349,6 +351,19 @@ function rememberContactName(uid, name) {
 function cachedDisplayName(uid) {
     try {
         return getDisplayName(uid);
+    } catch {
+        return aliasFor(uid); // no db in this process: the owner's alias, when the daemon holds one
+    }
+}
+
+/**
+ * The name the cache holds for a user without the owner's alias (`db.getStoredName`), or null.
+ * @param {string} uid
+ * @returns {string|null}
+ */
+function cachedStoredName(uid) {
+    try {
+        return getStoredName(uid);
     } catch {
         return null; // no db in this process
     }
@@ -703,7 +718,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Read the new incoming Zalo messages (DMs and groups) from the live buffer, in order. It returns the messages this consumer has not yet marked read; when you have handled them, call zalo_mark_read with the reply's `cursor`. " +
                 "To continue exactly after the last reply, pass its `cursor` as `since`. To wait for the next message instead of polling, use zalo_wait_for_message. " +
-                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when the message was first seen), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
+                "Each message has `msgId` (pass it as `msgId` or `quoteMsgId` to other tools), `threadId`, `threadType` (dm or group), `senderId`, `senderName` (the name to show: your alias for the sender when you set one, else the name the message carried), `senderAlias` (your alias, or null), `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the Zalo display name, else the Zalo name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` (epoch ms), `type`, `threadName` and `readOnZalo`. " +
                 "`readOnZalo` is true or false when the account owner has or has not read the message on Zalo (phone or Zalo Web), and null when that is unknown; zalo_mark_read does not change it. " +
                 'A recall arrives in the same list with `type` "undo": its `msgId` is the recalled message (null when only its `cliMsgId` is known), its `text` is empty, and the earlier message is gone from the cache. ' +
                 SYSTEM_EVENTS_NOTE +
@@ -1420,7 +1435,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
             description:
                 "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread. " +
                 "Page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
-                "Each message has `msgId`, `senderId`, `senderDisplayName` (the current name: your alias, else the Zalo profile name, else the uid; `senderDisplayNameSource` says which), `senderName` (the name when first seen), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
+                "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name, alias first; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
                 "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, up to `limit` (here up to 1000) per page, with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
                 "Start with a small `limit` and page; a large one costs memory and time. To find messages by their text, use zalo_search_messages.",
             inputSchema: z.object({
@@ -1555,7 +1570,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         cliMsgId: d.cliMsgId ? String(d.cliMsgId) : undefined,
                         threadId: f.threadId,
                         senderId: d.uidFrom || null,
-                        senderName: d.dName || null,
+                        ...senderNameFields(d.uidFrom, d.dName),
                         text: isText ? rawContent : extractMessageText(rawContent, d.msgType),
                         timestamp: d.ts ? Number(d.ts) : null,
                         type: isText ? "text" : d.msgType || "attachment",
@@ -1941,7 +1956,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         {
             title: "List Zalo Group Members",
             description:
-                "List the members of a group: each member's `userId` and `displayName` (from the cache, or from Zalo for members the cache cannot name), and `totalMember`, Zalo's own count (it can be larger than the members listed). Use a `userId` as `@[userId]` in zalo_send_message to mention that member.",
+                "List the members of a group: each member's `userId`, `displayName` (your alias for them when you set one, else their name from the cache, or from Zalo for members the cache cannot name), `alias` and `zaloName`, and `totalMember`, Zalo's own count (it can be larger than the members listed). Use a `userId` as `@[userId]` in zalo_send_message to mention that member.",
             inputSchema: z.object({
                 groupId: z
                     .string()
@@ -1962,12 +1977,13 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 // The cache first, as a mention is named; one batched lookup
                 // (the one `msg send` uses) for the members it cannot name.
                 // Nothing is written back: zalo.db has three writers.
+                // `names` holds the name each member goes by on Zalo; the owner's alias is applied below.
                 const names = new Map();
                 const unnamed = [];
                 for (const uid of group.uids) {
-                    const name = cachedDisplayName(uid);
+                    const name = cachedStoredName(uid);
                     if (name) names.set(uid, name);
-                    else unnamed.push(uid);
+                    else if (!aliasFor(uid)) unnamed.push(uid);
                 }
                 const warnings = [];
                 if (unnamed.length > 0) {
@@ -1980,7 +1996,12 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 }
                 for (const w of warnings) console.error("[mcp-tools] zalo_get_group_members warning:", w);
 
-                const members = group.uids.map((uid) => ({ userId: uid, displayName: names.get(uid) ?? null }));
+                // `displayName` alias first, as Zalo's member list shows them; `alias` and `zaloName` beside it.
+                const members = group.uids.map((uid) => {
+                    const alias = aliasFor(uid);
+                    const zaloName = names.get(uid) ?? null;
+                    return { userId: uid, displayName: alias ?? zaloName, alias, zaloName };
+                });
                 return ok({
                     groupId,
                     name: group.name,
@@ -2325,7 +2346,7 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 const lite = (m) => ({
                     msgId: m.msgId,
                     senderId: m.senderId,
-                    senderName: m.senderName || null,
+                    ...senderNameFields(m.senderId, m.senderName),
                     text: m.text,
                     timestamp: m.timestamp,
                     type: m.type,
@@ -2344,7 +2365,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         threadName:
                             threadNames.get(String(r.threadId))?.name ?? nameCache?.get(r.threadId)?.name ?? null,
                         senderId: r.senderId,
-                        senderName: r.senderDisplayName || r.senderName || null,
+                        // Alias first (src/core/contact-names.js); `senderZaloName` is the name the message carried.
+                        ...senderNameFields(r.senderId, r.senderName),
                         text: r.text,
                         snippet,
                         timestamp: r.timestamp,
@@ -2426,8 +2448,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         mode: "phone",
                         query: phoneNumber,
                         userId: user?.uid || user?.userId || null,
-                        displayName: user?.display_name || user?.zalo_name || null,
-                        zaloName: user?.zalo_name || null,
+                        // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
+                        ...personNameFields(user?.uid || user?.userId, user),
                         avatar: user?.avatar || null,
                         user: user || null,
                     });
@@ -2438,8 +2460,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                         mode: "username",
                         query: username,
                         userId: user?.uid || user?.userId || null,
-                        displayName: user?.display_name || user?.zalo_name || null,
-                        zaloName: user?.zalo_name || null,
+                        // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
+                        ...personNameFields(user?.uid || user?.userId, user),
                         avatar: user?.avatar || null,
                         user: user || null,
                     });
@@ -2449,8 +2471,9 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                 return ok({
                     mode: "userId",
                     userId,
-                    displayName: changed?.displayName || changed?.zaloName || cachedDisplayName(userId) || null,
-                    zaloName: changed?.zaloName || null,
+                    // Alias first, as Zalo shows the person to this account (src/core/contact-names.js).
+                    ...personNameFields(userId, changed),
+                    displayName: personNameFields(userId, changed).displayName ?? (cachedDisplayName(userId) || null),
                     avatar: changed?.avatar || null,
                     profile: changed || info || null,
                 });
@@ -3681,9 +3704,11 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
                             // `contacts.name` is what senderDisplayName and mentions read (db.getDisplayName);
                             // the nickname is the name Zalo will show from now on, so it is written there at once.
                             rememberContactName(target, nick);
+                            noteAliasSet(target, nick);
                             return ok({ action, success: true, userId: target, alias: nick });
                         }
                         await api.removeFriendAlias(target);
+                        noteAliasSet(target, null);
                         // Without the nickname the contact is shown by their profile name again; fetch it so the
                         // cached name does not stay the removed nickname. Best effort: the removal already stuck.
                         try {

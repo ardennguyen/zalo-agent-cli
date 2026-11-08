@@ -4,6 +4,13 @@
 
 Historical: this change shipped in 2.x through [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2). The page is kept as the reference for how sender names are resolved; the command reference is current where the two differ.
 
+
+> **3.0: alias first everywhere.** Since 3.0 the existing name field of every output carries the account owner's
+> alias first (`senderName` on a message, `displayName` on a person), with `senderAlias`/`alias` and
+> `senderZaloName`/`zaloName` beside it; the fallback is the Zalo name, then the display name, then the uid
+> (Zalo Web's order). Stored rows still keep the name each message carried. The rules below about `senderName`
+> describe 2.x; the command reference is current.
+
 ## Current change
 
 Phone-restored messages previously stored opaque sender IDs and empty names.

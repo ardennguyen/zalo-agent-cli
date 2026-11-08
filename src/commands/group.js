@@ -8,6 +8,7 @@ import { getApi } from "../core/zalo-client.js";
 import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
 import { getGroupHistory } from "../zalo/custom/group-history.js";
 import { groupMemberUids } from "../core/group-members.js";
+import { aliasFirst, ensureAliases, nameFor, senderNameFields } from "../core/contact-names.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
@@ -109,7 +110,10 @@ export function registerGroupCommands(program) {
         .action(async (groupId) => {
             try {
                 // getGroupInfo takes a list of group ids, as the Web's getmg-v2 does.
-                const result = await getApi().getGroupInfo([groupId]);
+                const raw = await getApi().getGroupInfo([groupId]);
+                // Members named alias first, as Zalo's member list shows them (src/core/contact-names.js).
+                await ensureAliases(getApi());
+                const result = withMemberNames(raw);
                 output(result, program.opts().json);
             } catch (e) {
                 error(e.message);
@@ -128,6 +132,7 @@ export function registerGroupCommands(program) {
                 // /api/group/history, which Zalo answers with 404.
                 const result = await getGroupHistory(getApi(), groupId, count);
                 const msgs = result?.groupMsgs || [];
+                if (msgs.length) await ensureAliases(getApi());
 
                 // Normalize messages into clean, storage-friendly JSON
                 const normalized = msgs.map((m) => {
@@ -138,6 +143,8 @@ export function registerGroupCommands(program) {
                         msgId: d.msgId,
                         cliMsgId: d.cliMsgId,
                         fromUid: d.uidFrom,
+                        // Alias first, as Zalo shows the sender (src/core/contact-names.js).
+                        ...senderNameFields(d.uidFrom, d.dName),
                         groupId: d.idTo,
                         msgType: d.msgType,
                         content: typeof content === "string" ? content : content,
@@ -182,7 +189,7 @@ export function registerGroupCommands(program) {
                         const dir = m.isSelf ? "→" : "←";
                         const text =
                             typeof m.content === "string" ? m.content.slice(0, 80) : `[${m.msgType || "attachment"}]`;
-                        console.log(`  ${time} ${dir} ${m.fromUid}: ${text}`);
+                        console.log(`  ${time} ${dir} ${m.senderName || m.fromUid}: ${text}`);
                     }
                 });
             } catch (e) {
@@ -204,7 +211,8 @@ export function registerGroupCommands(program) {
                         return;
                     }
                     info(`${totalMember} member(s):`);
-                    memberUids.forEach((uid) => console.log(`  ${uid}`));
+                    // The owner's alias beside each uid, when one is set (no request).
+                    memberUids.forEach((uid) => console.log(`  ${uid}${nameFor(uid) ? `  ${nameFor(uid)}` : ""}`));
                 });
             } catch (e) {
                 error(e.message);
@@ -369,7 +377,19 @@ export function registerGroupCommands(program) {
         .description("Get detailed info for group members by user IDs")
         .action(async (userIds) => {
             try {
-                const result = await getApi().getGroupMembersInfo(userIds);
+                const raw = await getApi().getGroupMembersInfo(userIds);
+                await ensureAliases(getApi());
+                const result = raw?.profiles
+                    ? {
+                          ...raw,
+                          profiles: Object.fromEntries(
+                              Object.entries(raw.profiles).map(([key, p]) => [
+                                  key,
+                                  aliasFirst(p, String(key).replace(/_0$/, "")),
+                              ]),
+                          ),
+                      }
+                    : raw;
                 output(result, program.opts().json, () => {
                     const profiles = result?.profiles || {};
                     const entries = Object.entries(profiles);
@@ -461,7 +481,9 @@ export function registerGroupCommands(program) {
         .description("List pending group member requests (admin only)")
         .action(async (groupId) => {
             try {
-                const result = await getApi().getPendingGroupMembers(groupId);
+                const raw = await getApi().getPendingGroupMembers(groupId);
+                if (raw?.users?.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw?.users) ? { ...raw, users: raw.users.map((u) => withDpn(u)) } : raw;
                 output(result, program.opts().json, () => {
                     const users = result?.users || [];
                     info(`${users.length} pending member(s)`);
@@ -554,7 +576,11 @@ export function registerGroupCommands(program) {
         .option("-p, --page <n>", "Page number", parseIntOption, 1)
         .action(async (groupId, opts) => {
             try {
-                const result = await getApi().getGroupBlockedMember({ page: opts.page, count: opts.count }, groupId);
+                const raw = await getApi().getGroupBlockedMember({ page: opts.page, count: opts.count }, groupId);
+                if (raw?.blocked_members?.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw?.blocked_members)
+                    ? { ...raw, blocked_members: raw.blocked_members.map((m) => aliasFirst(m)) }
+                    : raw;
                 output(result, program.opts().json, () => {
                     const members = result?.blocked_members || [];
                     info(`${members.length} blocked member(s)`);
@@ -599,7 +625,16 @@ export function registerGroupCommands(program) {
         .description("List pending group invitations received")
         .action(async () => {
             try {
-                const result = await getApi().getGroupInviteBoxList();
+                const raw = await getApi().getGroupInviteBoxList();
+                if (raw?.invitations?.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw?.invitations)
+                    ? {
+                          ...raw,
+                          invitations: raw.invitations.map((inv) =>
+                              inv?.inviterInfo ? { ...inv, inviterInfo: aliasFirst(inv.inviterInfo) } : inv,
+                          ),
+                      }
+                    : raw;
                 output(result, program.opts().json, () => {
                     const invites = result?.invitations || [];
                     info(`${invites.length} invitation(s) (total: ${result?.total || 0})`);
@@ -722,4 +757,32 @@ export function registerGroupCommands(program) {
         target: (groupId, opts) => ({ groupId, approvalOff: opts.joinAppr === false }),
         when: (target) => target.approvalOff,
     });
+}
+
+/**
+ * A `getGroupInfo` answer with each group's `currentMems` named alias first (src/core/contact-names.js).
+ *
+ * @param {object} res
+ * @returns {object}
+ */
+function withMemberNames(res) {
+    const map = res?.gridInfoMap;
+    if (!map || typeof map !== "object") return res;
+    const out = {};
+    for (const [gid, g] of Object.entries(map)) {
+        out[gid] = Array.isArray(g?.currentMems) ? { ...g, currentMems: g.currentMems.map((m) => aliasFirst(m)) } : g;
+    }
+    return { ...res, gridInfoMap: out };
+}
+
+/**
+ * A pending member (`{uid, dpn}`) with `dpn` alias first, `alias` and `zaloName` beside it.
+ *
+ * @param {object} u
+ * @returns {object}
+ */
+function withDpn(u) {
+    if (!u || typeof u !== "object") return u;
+    const named = aliasFirst({ uid: u.uid, displayName: u.dpn ?? null });
+    return { ...u, dpn: named.displayName ?? u.dpn ?? null, alias: named.alias, zaloName: named.zaloName };
 }

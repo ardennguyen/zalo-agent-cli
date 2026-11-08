@@ -4,6 +4,7 @@
  * action runner; each row makes the call its CLI command makes.
  */
 
+import { nameFor, personNameFields } from "../core/contact-names.js";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
@@ -72,7 +73,7 @@ export const FRIEND_EXTRA_ACTIONS = {
             const res = await api.getCloseFriends();
             const friends = (Array.isArray(res) ? res : []).map((f) => ({
                 userId: String(f.userId || f.uid || ""),
-                displayName: f.displayName || f.zaloName || null,
+                ...personNameFields(f.userId || f.uid, f),
             }));
             return { count: friends.length, friends };
         },
@@ -85,7 +86,7 @@ export const FRIEND_EXTRA_ACTIONS = {
             const users = Object.entries(res).map(([phone, u]) => ({
                 phone,
                 userId: u?.uid ? String(u.uid) : null,
-                displayName: u?.displayName || u?.zaloName || null,
+                ...personNameFields(u?.uid, u),
             }));
             return { count: users.length, users };
         },
@@ -230,7 +231,7 @@ export const GROUP_EXTRA_ACTIONS = {
             const res = await api.getGroupBlockedMember({ page: a.page ?? 1, count: a.limit ?? 50 }, a.groupId);
             const members = (res?.blocked_members ?? []).map((m) => ({
                 userId: String(m.id),
-                displayName: m.dName || m.zaloName || null,
+                ...personNameFields(m.id, m),
             }));
             return { groupId: a.groupId, count: members.length, members, hasMore: Boolean(res?.has_more) };
         },
@@ -274,7 +275,7 @@ export const GROUP_EXTRA_ACTIONS = {
         needs: ["groupId"],
         async run(a, { api }) {
             const res = await api.getPendingGroupMembers(a.groupId);
-            const users = (res?.users ?? []).map((u) => ({ userId: String(u.uid), displayName: u.dpn || null }));
+            const users = (res?.users ?? []).map((u) => ({ userId: String(u.uid), ...personNameFields(u.uid, u) }));
             return { groupId: a.groupId, count: users.length, users };
         },
     },
@@ -340,7 +341,8 @@ export const GROUP_EXTRA_ACTIONS = {
             const invitations = (res?.invitations ?? []).map((inv) => ({
                 groupId: inv.groupInfo?.groupId ? String(inv.groupInfo.groupId) : null,
                 name: inv.groupInfo?.name ?? null,
-                inviterName: inv.inviterInfo?.dName ?? null,
+                // Alias first, as Zalo shows the inviter (src/core/contact-names.js).
+                inviterName: nameFor(inv.inviterInfo?.id ?? inv.inviterInfo?.uid, inv.inviterInfo?.dName),
             }));
             return { count: invitations.length, total: res?.total ?? invitations.length, invitations };
         },
@@ -380,8 +382,7 @@ export const GROUP_EXTRA_ACTIONS = {
             const res = await api.getGroupMembersInfo(a.userIds);
             const members = Object.entries(res?.profiles ?? {}).map(([userId, p]) => ({
                 userId,
-                displayName: p?.displayName || p?.zaloName || null,
-                zaloName: p?.zaloName ?? null,
+                ...personNameFields(userId, p),
                 avatar: p?.avatar ?? null,
             }));
             return { count: members.length, members };

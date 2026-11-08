@@ -6,6 +6,7 @@
  */
 
 import { getRecentThreads } from "./db.js";
+import { dmTitle } from "./contact-names.js";
 
 /**
  * The most recently active cached conversations, newest first.
@@ -31,6 +32,8 @@ export function recentConversations(limit, kind = "all", { excludeThreadIds } = 
             .filter((t) => !excluded.has(String(t.threadId)))
             .slice(0, limit);
     };
-    if (kind === "dm" || kind === "group") return of(kind);
-    return [...of("dm"), ...of("group")].sort((a, b) => (b.lastUpdate || 0) - (a.lastUpdate || 0));
+    // A 1-1 is titled by the owner's alias, as it is now (the stored title can be from before an alias change).
+    const titled = (rows) => rows.map((t) => (t.type === "dm" ? { ...t, name: dmTitle(t.threadId, t.name) } : t));
+    if (kind === "dm" || kind === "group") return titled(of(kind));
+    return titled([...of("dm"), ...of("group")].sort((a, b) => (b.lastUpdate || 0) - (a.lastUpdate || 0)));
 }

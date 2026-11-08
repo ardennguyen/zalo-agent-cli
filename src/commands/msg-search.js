@@ -9,6 +9,7 @@ import { getActive } from "../core/accounts.js";
 import { getAccountDbPath, getAccountDir } from "../core/credentials.js";
 import { hiddenChatsFor } from "../core/hidden-chats.js";
 import { configureSearchIndex, getThreadNames, initDb } from "../core/db.js";
+import { senderNameFields } from "../core/contact-names.js";
 import { MAX_CONTEXT, MAX_PAGE, searchPage } from "../core/search.js";
 import { parseDateBound, parsePeriod } from "../utils/date-range.js";
 import { error, info, output } from "../utils/output.js";
@@ -74,7 +75,7 @@ export function hitToJson(hit, threadNames) {
     const lite = (m) => ({
         msgId: m.msgId,
         senderId: m.senderId,
-        senderName: m.senderName || null,
+        ...senderNameFields(m.senderId, m.senderName),
         text: m.text,
         timestamp: m.timestamp,
         type: m.type,
@@ -84,7 +85,8 @@ export function hitToJson(hit, threadNames) {
         threadId: r.threadId,
         threadName: threadNames.get(String(r.threadId))?.name ?? null,
         senderId: r.senderId,
-        senderName: r.senderName || null,
+        // Alias first (src/core/contact-names.js); `senderZaloName` is the name the message carried.
+        ...senderNameFields(r.senderId, r.senderName),
         text: r.text,
         snippet: hit.snippet,
         timestamp: r.timestamp,

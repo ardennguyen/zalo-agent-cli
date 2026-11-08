@@ -13,7 +13,7 @@
  *   closed (code, reason)              right after `disconnected`, for every close
  *   error (err)                        a socket error, or a frame (or one item of it) that could not be read
  *   message, undo, reaction, old_messages, old_reactions, group_event, friend_event, typing, upload_attachment,
- *   delivered_messages, seen_messages  see ./dispatch.js
+ *   delivered_messages, seen_messages, alias_change, profile_change  see ./dispatch.js
  *
  * What it does as Web does, where the previous engine did otherwise (each pinned by tests/unit/wire-listener.test.js
  * and its golden records):

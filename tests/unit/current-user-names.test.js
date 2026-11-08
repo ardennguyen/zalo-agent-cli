@@ -65,7 +65,11 @@ describe("current user labels", () => {
         const [first, second] = await Promise.all([withCurrentSenderNames(a, [row]), withCurrentSenderNames(b, [row])]);
         assert.equal(first[0].senderDisplayName, "My Alias");
         assert.equal(second[0].senderDisplayName, "Other Account Alias");
-        assert.equal(first[0].senderName, "Historical Name");
+        // The name shown is the owner's alias; the name the message carried stays beside it.
+        assert.equal(first[0].senderName, "My Alias");
+        assert.equal(second[0].senderName, "Other Account Alias");
+        assert.equal(first[0].senderAlias, "My Alias");
+        assert.equal(first[0].senderZaloName, "Historical Name");
         assert.equal(row.senderDisplayName, undefined);
         assert.equal(row.senderName, "Historical Name");
     });
@@ -116,7 +120,7 @@ describe("current user labels", () => {
         assert.equal(messages[0].senderName, "Historical Name");
     });
 
-    it("does not mistake an ambiguous displayName for a verified Zalo profile name", async () => {
+    it("falls back to a profile's displayName only when it has no Zalo name (Web's zaloName || dName)", async () => {
         const names = await resolveCurrentUserNames(
             {
                 getUserInfo: async () => ({
@@ -127,7 +131,7 @@ describe("current user labels", () => {
             },
             ["101"],
         );
-        assert.deepEqual(names.get("101"), { name: "101", source: "uid" });
+        assert.deepEqual(names.get("101"), { name: "Possibly An Old Alias", source: "display" });
     });
 
     it("reads alias pages and deduplicates profile requests in batches of 100", async () => {
@@ -286,7 +290,10 @@ describe("current DM names and immutable message snapshots", () => {
         api.state.zaloName = "Renamed Profile";
         const message = await read();
         assert.equal(message.senderDisplayName, "Renamed Profile");
+        // No alias: the name shown is the one the message carried.
         assert.equal(message.senderName, "Historical Name");
+        assert.equal(message.senderAlias, null);
+        assert.equal(message.senderZaloName, "Historical Name");
         assert.equal(getMessages("202", 10)[0].senderName, "Historical Name");
     });
 
@@ -329,7 +336,8 @@ describe("current DM names and immutable message snapshots", () => {
         const response = await handlers.get("zalo_get_messages")({ since: 0, limit: 10 });
         const row = JSON.parse(response.content[0].text).messages[0];
         assert.equal(row.senderDisplayName, "My Alias");
-        assert.equal(row.senderName, "Historical Name");
+        assert.equal(row.senderName, "My Alias");
+        assert.equal(row.senderZaloName, "Historical Name");
         assert.equal(original.senderDisplayName, undefined);
         assert.equal(original.senderName, "Historical Name");
     });

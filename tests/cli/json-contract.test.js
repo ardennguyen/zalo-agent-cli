@@ -462,6 +462,16 @@ describe("--json contract: every personal command against a fake session", { tim
         assert.equal(listViolations("conv pin", out({ success: true }), "null").length, 0, "not a list command");
     });
 
+    it("names a person by the owner's alias first, with the alias and the Zalo name beside it", async () => {
+        const r = await runReal(["--json", "friend", "list"], "normal");
+        assert.equal(r.code, 0, r.stdout);
+        const [friend] = JSON.parse(r.stdout);
+        // Red if the name field kept the Zalo name, or the raw values were dropped.
+        assert.equal(friend.displayName, "Fake Alias");
+        assert.equal(friend.alias, "Fake Alias");
+        assert.equal(friend.zaloName, "Fake Friend");
+    });
+
     for (const [walk, mode] of ["normal", ...EMPTY_MODES].entries()) {
         it(`holds for every command when Zalo answers ${mode === "normal" ? "plausibly" : mode}`, async () => {
             seedMessages(walk);

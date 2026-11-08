@@ -269,6 +269,12 @@ function controlSteps(uid, control) {
         const ev = friendControlEvent(uid, content);
         return ev ? [{ emit: "friend_event", args: [ev] }] : [];
     }
+    // The owner set, changed or removed an alias (on any device). It names no alias: Zalo Web refetches its alias
+    // list on it (`_processProfileCtrl`, `forceRequestAlias(UPDATE_SIGNAL)`), and so does the engine.
+    if (actType === "alias") return [{ emit: "alias_change", args: [{ act: content.act ?? null }] }];
+    // The account's own profile changed on another device (`update`: name or avatar; `update_status`, `phonebook`,
+    // `mode`, `biz`): Zalo Web's `_processProfileCtrl` refetches its own profile on `update`.
+    if (actType === "profile") return [{ emit: "profile_change", args: [{ act: content.act ?? null }] }];
     return [];
 }
 

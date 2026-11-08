@@ -41,6 +41,7 @@ import { attachUnknownActs } from "../core/unknown-acts.js";
 import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { attachLastOnline } from "../core/last-online.js";
+import { groupEventNames, nameFor, personLabel, senderNameFields, startDaemonAliases } from "../core/contact-names.js";
 import { attachControlEvents } from "../core/control-events.js";
 import { initDb, getMessageById, getPendingSyncGaps } from "../core/db.js";
 import {
@@ -658,6 +659,15 @@ export function registerListenCommand(program) {
                 return !enabledEvents.has("message") || filteredOut || (!opts.self && msg.isSelf);
             }
 
+            /** " (Name, Name)" for a group event's members, alias first; "" when it names none. */
+            function groupEventWho(data) {
+                const named =
+                    groupEventNames(data)
+                        ?.updateMembers?.map((m) => m?.dName || m?.id)
+                        .filter(Boolean) ?? [];
+                return named.length ? ` (${named.join(", ")})` : "";
+            }
+
             /**
              * A message as `listen` reports it: the event object, and its one-line human form.
              *
@@ -669,6 +679,7 @@ export function registerListenCommand(program) {
                 const rawContent = msg.data.content;
                 const isText = typeof rawContent === "string";
                 const msgType = msg.data.msgType || null;
+                const sender = senderNameFields(msg.data.uidFrom, msg.data.dName);
                 // Build readable display: show type + title/href for non-text
                 let displayContent;
                 if (isText) {
@@ -689,7 +700,10 @@ export function registerListenCommand(program) {
                     type: msg.type,
                     isSelf: msg.isSelf,
                     uidFrom: msg.data.uidFrom || null,
-                    dName: msg.data.dName || null,
+                    // The sender as Zalo shows them to this account: the owner's alias first (src/core/contact-names.js);
+                    // `senderZaloName` is the name the message carried.
+                    dName: sender.senderName,
+                    ...sender,
                     msgType,
                     content: rawContent,
                     ...extra,
@@ -697,9 +711,10 @@ export function registerListenCommand(program) {
                 const dir = msg.isSelf ? "→" : "←";
                 const typeLabel = msg.type === THREAD_USER ? "DM" : "GR";
                 const tag = extra.catchUp ? " [catch-up]" : "";
+                const who = !msg.isSelf && sender.senderName ? `${sender.senderName}: ` : "";
                 return {
                     data,
-                    human: `${dir} [${typeLabel}]${tag} [${msg.threadId}] ${displayContent}  (msgId: ${msg.data.msgId})`,
+                    human: `${dir} [${typeLabel}]${tag} [${msg.threadId}] ${who}${displayContent}  (msgId: ${msg.data.msgId})`,
                 };
             }
 
@@ -719,6 +734,13 @@ export function registerListenCommand(program) {
             });
             const socketContext = createSocketContext({ lock: stageLock, monitor: loopMonitor });
             setUserInfoLogger(daemonLog);
+            // The owner's aliases, which every line and payload names people by: read at start, on an `alias`
+            // control and every 30 minutes, kept in the account's db. Same in `mcp start` (src/core/contact-names.js).
+            const daemonAliases = startDaemonAliases({
+                getApi,
+                log: daemonLog,
+                onOwnName: (name) => updateAccountName(activeAcc.ownId, name),
+            });
             // Same health object `mcp start` builds (src/core/daemon-health.js): `listen --status` prints it.
             const health = createDaemonHealth({ kind: "listen", accountId: activeAcc.ownId, version: PKG_VERSION });
             // Planned idle windows (on-demand presence) are not worth a warning; everything else is.
@@ -839,6 +861,7 @@ export function registerListenCommand(program) {
             /** Attach ALL handlers (data + lifecycle) to current API listener */
             function attachAllHandlers(api) {
                 health.attach(api.listener);
+                daemonAliases.attach(api.listener);
                 // --- Message events ---
                 // Registered unconditionally. --events, --filter and --no-self
                 // decide what is PRINTED, forwarded and saved as JSONL -- never
@@ -948,11 +971,13 @@ export function registerListenCommand(program) {
                             threadId: event.threadId,
                             isSelf: event.isSelf,
                             data: event.data,
+                            // Alias first, as Zalo shows the person (src/core/contact-names.js).
+                            name: nameFor(event.threadId, event.data?.dName ?? event.data?.displayName ?? null),
                         };
                         const humanMsg =
                             event.type === FRIEND_REQUEST_TYPE
-                                ? `Friend request from ${event.data.fromUid}: "${event.data.message || ""}"`
-                                : `${label} — ${event.threadId}`;
+                                ? `Friend request from ${personLabel(event.data.fromUid, event.data.dName ?? event.data.displayName)}: "${event.data.message || ""}"`
+                                : `${label} — ${personLabel(event.threadId)}`;
                         emitEvent(data, humanMsg);
 
                         // Auto-accept incoming friend requests
@@ -983,11 +1008,12 @@ export function registerListenCommand(program) {
                                 threadId: t.threadId,
                                 isGroup: t.type === THREAD_GROUP,
                                 uid: t.data?.uid ?? null,
+                                name: nameFor(t.data?.uid),
                                 isSelf: Boolean(t.isSelf),
                                 isPC: Boolean(t.data?.isPC),
                                 data: t.data,
                             },
-                            `${t.action === "fsending" ? "Sending a file" : "Typing"}: ${t.data?.uid ?? "?"} in ${t.threadId}`,
+                            `${t.action === "fsending" ? "Sending a file" : "Typing"}: ${personLabel(t.data?.uid)} in ${t.threadId}`,
                         );
                     });
                 }
@@ -1030,9 +1056,10 @@ export function registerListenCommand(program) {
                             event: `group_${event.type}`,
                             threadId: event.threadId,
                             isSelf: event.isSelf,
-                            data: event.data,
+                            // Members and actor named alias first; the stored system line keeps what Zalo sent.
+                            data: groupEventNames(event.data),
                         },
-                        `Group: ${event.type} — ${event.threadId}`,
+                        `Group: ${event.type} — ${event.threadId}${groupEventWho(event.data)}`,
                     );
                     if (board.stale) {
                         emitEvent(
@@ -1075,9 +1102,11 @@ export function registerListenCommand(program) {
                             isGroup: reaction.isGroup,
                             removing: r.removing ?? null,
                             changed: r.changed ?? null,
+                            // Who reacted, alias first (src/core/contact-names.js).
+                            ...senderNameFields(reaction.data?.uidFrom, reaction.data?.dName),
                             data: reaction.data,
                         },
-                        `${what} in ${reaction.threadId}`,
+                        `${what} in ${reaction.threadId}${reaction.data?.uidFrom ? ` by ${personLabel(reaction.data.uidFrom, reaction.data.dName)}` : ""}`,
                     );
                 });
 
@@ -1201,6 +1230,7 @@ export function registerListenCommand(program) {
                 const api = getApi();
                 attachAllHandlers(api);
                 socketHost.start(api);
+                daemonAliases.refreshNow("start").catch(() => {});
 
                 info("Listening for Zalo events... Press Ctrl+C to stop.");
                 info(`Events: ${opts.events}`);

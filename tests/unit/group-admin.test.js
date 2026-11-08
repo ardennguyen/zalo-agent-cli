@@ -6,6 +6,7 @@
  * group-details reshape that deliberately leaves the member list to
  * `zalo_get_group_members`.
  */
+import "../helpers/sandbox.js"; // first: the name helpers now reach the account db (src/core/contact-names.js)
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {

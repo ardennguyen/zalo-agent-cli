@@ -6,6 +6,7 @@
  * feature. These pin it, the timestamp-unit handling (not yet measured on a
  * live account) and the error wording shared with `friend add`.
  */
+import "../helpers/sandbox.js"; // first: the name helpers now reach the account db (src/core/contact-names.js)
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -75,8 +76,15 @@ describe("sentRequestsFrom", () => {
             u2: { displayName: "D" },
         });
         assert.deepEqual(out, [
-            { userId: "u1", displayName: "Z", message: "hello", requestedAt: "2026-09-21T14:13:20.000Z" },
-            { userId: "u2", displayName: "D", message: "", requestedAt: null },
+            {
+                userId: "u1",
+                displayName: "Z",
+                alias: null,
+                zaloName: "Z",
+                message: "hello",
+                requestedAt: "2026-09-21T14:13:20.000Z",
+            },
+            { userId: "u2", displayName: "D", alias: null, zaloName: "D", message: "", requestedAt: null },
         ]);
         assert.deepEqual(sentRequestsFrom(null), []);
     });

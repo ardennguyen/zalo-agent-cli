@@ -31,6 +31,7 @@ import {
 } from "./db.js";
 import { classifyLiveMessage } from "../zalo/transfer-sync/message-types.js";
 import { resolveCurrentUserNames } from "./current-user-names.js";
+import { aliasSnapshot } from "./contact-names.js";
 
 /** THREAD_TYPE.User */
 const THREAD_USER = 0;
@@ -244,7 +245,12 @@ export async function refreshLiveMessageIdentities(api, msg, opts = {}) {
     if (msg?.type === THREAD_USER && msg.threadId !== undefined && msg.threadId !== null) {
         const peerId = String(msg.threadId);
         try {
-            const names = await resolveCurrentUserNames(api, [peerId], { log: opts.log });
+            // The daemon's held alias snapshot (./contact-names.js), when it has one: a full alias-list read per
+            // incoming DM is what this used to cost. An aliased peer needs no request at all.
+            const aliases = aliasSnapshot() ?? undefined;
+            const names = aliases?.has(peerId)
+                ? new Map([[peerId, { name: aliases.get(peerId), source: "alias" }]])
+                : await resolveCurrentUserNames(api, [peerId], { aliases, log: opts.log });
             const current = names.get(peerId);
             if (current && current.source !== "uid" && current.name) {
                 dmName = current.name;

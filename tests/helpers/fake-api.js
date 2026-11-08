@@ -53,6 +53,8 @@ export const NORMAL_REPLIES = {
     // no other command's conversation is left out.
     getHiddenConversations: { pin: "81dc9bdb52d04dc20036dbd8313ed055", threads: [] },
     getAllFriends: [profile(FAKE_PEER_ID, "Fake Friend")],
+    // The owner saved the fake friend under a nickname: every command names them by it (src/core/contact-names.js).
+    getAliasList: { items: [{ userId: FAKE_PEER_ID, alias: "Fake Alias" }], hasMore: false },
     getAllGroups: { version: "1", gridVerMap: { [FAKE_GROUP_ID]: "1" } },
     getGroupInfo: {
         gridInfoMap: {

@@ -130,9 +130,9 @@ describe("zalo_get_group_members", () => {
         assert.deepEqual(api.nameCalls, [[B, C]]);
         // Red if a "_version" suffix survives in a uid, or "_0" in a name key.
         assert.deepEqual(out.members, [
-            { userId: A, displayName: "Chị Lan" },
-            { userId: B, displayName: "Anh Minh" },
-            { userId: C, displayName: "Bích Ngọc" },
+            { userId: A, displayName: "Chị Lan", alias: null, zaloName: "Chị Lan" },
+            { userId: B, displayName: "Anh Minh", alias: null, zaloName: "Anh Minh" },
+            { userId: C, displayName: "Bích Ngọc", alias: null, zaloName: "Bích Ngọc" },
         ]);
         assert.equal(out.groupId, GROUP);
         assert.equal(out.name, "Nhóm thử");
@@ -178,8 +178,8 @@ describe("zalo_get_group_members", () => {
         assert.equal(r.isError, undefined, "the member list does not depend on the names");
         const out = payloadOf(r);
         assert.deepEqual(out.members, [
-            { userId: A, displayName: null },
-            { userId: B, displayName: null },
+            { userId: A, displayName: null, alias: null, zaloName: null },
+            { userId: B, displayName: null, alias: null, zaloName: null },
         ]);
         assert.match(out.warnings[0], /did not name 2 member\(s\): HTTP 414/);
     });

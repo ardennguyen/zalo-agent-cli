@@ -13,6 +13,7 @@
  * code is read from the error's `.code`, never out of its message.
  */
 import { errorCodeOf } from "../zalo/errors.js";
+import { personNameFields } from "./contact-names.js";
 
 /** The recommendations feed's item type for a request someone sent us. */
 export const RECEIVED_FRIEND_REQUEST = 2;
@@ -125,18 +126,19 @@ export function toIso(ts) {
     return new Date(n < 1e11 ? n * 1000 : n).toISOString();
 }
 
-const name = (u) => u?.displayName || u?.zaloName || null;
+/** `displayName` alias first (the owner's alias, as Zalo shows the person), with `alias` and `zaloName` beside it. */
+const names = (uid, u) => personNameFields(uid, u);
 
 /**
  * Requests we sent, from `getSentFriendRequest()` (an object keyed by userId).
  *
  * @param {Record<string, object>|null|undefined} res
- * @returns {Array<{userId: string, displayName: string|null, message: string, requestedAt: string|null}>}
+ * @returns {Array<{userId: string, displayName: string|null, alias: string|null, zaloName: string|null, message: string, requestedAt: string|null}>}
  */
 export function sentRequestsFrom(res) {
     return Object.entries(res && typeof res === "object" ? res : {}).map(([userId, r]) => ({
         userId: String(r?.userId ?? userId),
-        displayName: name(r),
+        ...names(r?.userId ?? userId, r),
         message: r?.fReqInfo?.message ?? "",
         requestedAt: toIso(r?.fReqInfo?.time),
     }));
@@ -147,7 +149,7 @@ export function sentRequestsFrom(res) {
  * "received friend request", newest first. Suggestions are left out.
  *
  * @param {{recommItems?: Array<{dataInfo?: object}>}|null|undefined} res
- * @returns {Array<{userId: string, displayName: string|null, message: string, receivedAt: string|null, seen: boolean}>}
+ * @returns {Array<{userId: string, displayName: string|null, alias: string|null, zaloName: string|null, message: string, receivedAt: string|null, seen: boolean}>}
  */
 export function receivedRequestsFrom(res) {
     const items = Array.isArray(res?.recommItems) ? res.recommItems : [];
@@ -156,7 +158,7 @@ export function receivedRequestsFrom(res) {
         .filter((d) => d && Number(d.recommType) === RECEIVED_FRIEND_REQUEST && d.userId)
         .map((d) => ({
             userId: String(d.userId),
-            displayName: name(d),
+            ...names(d.userId, d),
             message: d.recommInfo?.message ?? "",
             receivedAt: toIso(d.recommTime),
             seen: Boolean(d.isSeenFriendReq),
@@ -188,7 +190,7 @@ export function friendStatusFrom(res, userId) {
  *
  * @param {Array<object>|null|undefined} list - `getAllFriends()`
  * @param {number} limit
- * @returns {{total: number, friends: Array<{userId: string, displayName: string|null, lastActionTime: number|null}>}}
+ * @returns {{total: number, friends: Array<{userId: string, displayName: string|null, alias: string|null, zaloName: string|null, lastActionTime: number|null}>}}
  */
 export function friendsFrom(list, limit) {
     const all = Array.isArray(list) ? list : [];
@@ -197,7 +199,7 @@ export function friendsFrom(list, limit) {
         total: all.length,
         friends: sorted.slice(0, limit).map((f) => ({
             userId: String(f.userId),
-            displayName: name(f),
+            ...names(f.userId, f),
             lastActionTime: f.lastActionTime || null,
         })),
     };

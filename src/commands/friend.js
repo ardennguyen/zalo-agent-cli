@@ -8,6 +8,7 @@ import { parseIntOption } from "../utils/parse-options.js";
 import { describeFriendUndoError, friendAddFailure, readSentRequests } from "../core/friend-requests.js";
 import { errorCodeOf } from "../zalo/errors.js";
 import { readUserAliases } from "../core/current-user-names.js";
+import { aliasFirst, ensureAliases } from "../core/contact-names.js";
 import { searchFriends } from "../core/friend-search.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { lastOnlineStatus } from "../core/last-online.js";
@@ -23,7 +24,10 @@ export function registerFriendCommands(program) {
         .description("List all friends")
         .action(async () => {
             try {
-                const result = await getApi().getAllFriends();
+                // Names alias first, as Zalo shows them (src/core/contact-names.js): one alias-list read.
+                const raw = await getApi().getAllFriends();
+                await ensureAliases(getApi());
+                const result = Array.isArray(raw) ? raw.map((f) => aliasFirst(f)) : raw;
                 output(result, program.opts().json, () => {
                     const friends = Array.isArray(result) ? result : [];
 
@@ -76,7 +80,7 @@ export function registerFriendCommands(program) {
                 const friends = Array.isArray(result) ? result : [];
                 // The alias you set for a friend is not in the friend list; it comes from the alias list.
                 const aliases = await readUserAliases(getApi(), (m) => info(`${m}; matching names only`));
-                const matches = searchFriends(friends, aliases, name);
+                const matches = searchFriends(friends, aliases, name).map((f) => aliasFirst(f));
                 output(matches, program.opts().json, () => {
                     if (matches.length === 0) {
                         error(`No friends matching "${name}". Use "friend list" to see all.`);
@@ -85,8 +89,10 @@ export function registerFriendCommands(program) {
                     info(`${matches.length} friend(s) matching "${name}":`);
                     console.log();
                     for (const f of matches) {
+                        // Alias first; the Zalo name beside it when the owner renamed them.
                         const display = f.displayName || f.zaloName || "?";
-                        const aka = f.alias && f.alias !== display ? `  (alias: ${f.alias})` : "";
+                        const aka =
+                            f.alias && f.zaloName && f.zaloName !== display ? `  (Zalo name: ${f.zaloName})` : "";
                         console.log(`  ${f.userId}  ${display}${aka}`);
                     }
                     console.log();
@@ -103,13 +109,15 @@ export function registerFriendCommands(program) {
         .description("Find user by phone number or Zalo ID")
         .action(async (query) => {
             try {
-                const result = await getApi().findUser(query);
-                if (!result || (!result.uid && !result?.data?.uid)) {
+                const found = await getApi().findUser(query);
+                if (!found || (!found.uid && !found?.data?.uid)) {
                     error(
                         `No Zalo user found for "${query}". User may not exist, has disabled phone search, or phone is not registered on Zalo.`,
                     );
                     return;
                 }
+                await ensureAliases(getApi());
+                const result = found?.uid ? aliasFirst(found) : { ...found, data: aliasFirst(found.data) };
                 output(result, program.opts().json, () => {
                     const u = result?.uid ? result : result?.data || result;
                     info(`User ID: ${u.uid || "?"}`);
@@ -125,7 +133,9 @@ export function registerFriendCommands(program) {
         .description("Get user profile information")
         .action(async (userId) => {
             try {
-                const result = await getApi().getUserInfo(userId);
+                const raw = await getApi().getUserInfo(userId);
+                await ensureAliases(getApi());
+                const result = withProfileNames(raw);
                 output(result, program.opts().json, () => {
                     const profiles = result?.changed_profiles || {};
                     const p = profiles[userId] || {};
@@ -244,7 +254,9 @@ export function registerFriendCommands(program) {
         .description("Find a user by their Zalo username")
         .action(async (username) => {
             try {
-                const result = await getApi().findUserByUsername(username);
+                const found = await getApi().findUserByUsername(username);
+                if (found) await ensureAliases(getApi());
+                const result = found ? aliasFirst(found) : found;
                 output(result, program.opts().json, () => {
                     if (!result) {
                         error(`No user found for username "${username}"`);
@@ -335,7 +347,11 @@ export function registerFriendCommands(program) {
         .action(async () => {
             try {
                 // Zalo's "none sent" (112) arrives as `{}`.
-                const result = await readSentRequests(getApi());
+                const sent = await readSentRequests(getApi());
+                if (Object.keys(sent || {}).length) await ensureAliases(getApi());
+                const result = Object.fromEntries(
+                    Object.entries(sent || {}).map(([uid, r]) => [uid, aliasFirst(r, uid)]),
+                );
                 output(result, program.opts().json, () => {
                     const entries = Object.entries(result);
                     if (!entries.length) {
@@ -373,7 +389,9 @@ export function registerFriendCommands(program) {
         .description("List close friends")
         .action(async () => {
             try {
-                const result = await getApi().getCloseFriends();
+                const raw = await getApi().getCloseFriends();
+                if (Array.isArray(raw) && raw.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw) ? raw.map((f) => aliasFirst(f)) : raw;
                 output(result, program.opts().json, () => {
                     const friends = Array.isArray(result) ? result : [];
                     info(`${friends.length} close friend(s)`);
@@ -396,7 +414,16 @@ export function registerFriendCommands(program) {
         .description("Get friend recommendations and received requests")
         .action(async () => {
             try {
-                const result = await getApi().getFriendRecommendations();
+                const raw = await getApi().getFriendRecommendations();
+                if (raw?.recommItems?.length) await ensureAliases(getApi());
+                const result = Array.isArray(raw?.recommItems)
+                    ? {
+                          ...raw,
+                          recommItems: raw.recommItems.map((i) =>
+                              i?.dataInfo ? { ...i, dataInfo: aliasFirst(i.dataInfo) } : i,
+                          ),
+                      }
+                    : raw;
                 output(result, program.opts().json, () => {
                     const items = result?.recommItems || [];
                     info(`${items.length} recommendation(s)`);
@@ -416,7 +443,11 @@ export function registerFriendCommands(program) {
         .description("Find users by phone numbers")
         .action(async (phones) => {
             try {
-                const result = await getApi().getMultiUsersByPhones(phones);
+                const raw = await getApi().getMultiUsersByPhones(phones);
+                if (Object.keys(raw || {}).length) await ensureAliases(getApi());
+                const result = Object.fromEntries(
+                    Object.entries(raw || {}).map(([phone, u]) => [phone, aliasFirst(u)]),
+                );
                 output(result, program.opts().json, () => {
                     const entries = Object.entries(result || {});
                     info(`${entries.length} user(s) found`);
@@ -489,4 +520,21 @@ export function registerFriendCommands(program) {
     guardSubcommand(friend, "block", "friend.block", { target: (userId) => ({ userId }) });
     guardSubcommand(friend, "reject", "friend.reject", { target: (userId) => ({ userId }) });
     guardSubcommand(friend, "undo-request", "friend.undoRequest", { target: (userId) => ({ userId }) });
+}
+
+/**
+ * A `getUserInfo` answer with each profile named alias first (src/core/contact-names.js `aliasFirst`).
+ *
+ * @param {object} res
+ * @returns {object}
+ */
+function withProfileNames(res) {
+    if (!res || typeof res !== "object") return res;
+    const out = { ...res };
+    for (const key of ["changed_profiles", "unchanged_profiles"]) {
+        if (res[key] && typeof res[key] === "object") {
+            out[key] = Object.fromEntries(Object.entries(res[key]).map(([uid, p]) => [uid, aliasFirst(p, uid)]));
+        }
+    }
+    return out;
 }

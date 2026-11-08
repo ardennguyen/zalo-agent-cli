@@ -79,10 +79,10 @@ zalo-agent listen --webhook http://n8n.local/webhook/zalo --no-self
 
 Each event is queued on disk (`accounts/<ownId>/webhook-outbox.db`) and delivered from there, in order and at least once: a receiver that is down or slow costs a backlog, not events. Retries wait 1 s, doubling to 5 min, and survive a restart; a payload the receiver refuses (400, 413, 422) or an event older than `ZALO_WEBHOOK_MAX_AGE` (24h) is dead-lettered, never dropped. Watch it with `zalo-agent mcp webhook status`, look with `mcp webhook list --dead`, put events back with `mcp webhook retry`. `ZALO_WEBHOOK_BATCH_SIZE=10` sends up to ten events per POST as `{"event":"batch","accountId":…,"count":N,"events":[…]}` (signed over the whole body); a lone event is always the plain payload. Every POST has `X-Zalo-Delivery` and `X-Zalo-Attempt` headers, and the receiver answers 2xx at once and de-duplicates on the message id.
 
-Each event = 1 JSON body:
+Each event = 1 JSON body. A person is named by **the alias you set for them first** (as Zalo Web shows them), then their own name: `dName`/`senderName` carry it, `senderAlias` and `senderZaloName` (the name the message carried) sit beside it; a reaction adds the reactor's `senderName`, typing adds `name`, a group event's `updateMembers[].dName` is alias first with `alias` and `zaloName`. The human lines name the sender too (`← [GR] [threadId] Arden AI: Hello`). Renaming someone on the phone takes effect within seconds (the daemon rereads its alias list on Zalo's `alias` control).
 ```json
-{"event":"message","msgId":"...","threadId":"...","content":"Hello","isSelf":false}
-{"event":"friend_request","threadId":"...","data":{"fromUid":"...","message":"Hi"}}
+{"event":"message","msgId":"...","threadId":"...","uidFrom":"...","dName":"Arden AI","senderName":"Arden AI","senderAlias":"Arden AI","senderZaloName":"<their Zalo name>","content":"Hello","isSelf":false}
+{"event":"friend_request","threadId":"...","name":null,"data":{"fromUid":"...","message":"Hi"}}
 {"event":"group_join","threadId":"...","data":{...}}
 {"event":"reaction","threadId":"...","data":{...}}
 {"event":"undo","threadId":"...","msgId":"<the RECALLED message>","isSelf":false,"applied":true}

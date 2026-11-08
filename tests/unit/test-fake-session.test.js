@@ -79,6 +79,8 @@ describe("the test-only fake session", () => {
             env: { ZALO_TEST_FAKE_API: FAKE_API },
         });
         assert.equal(r.code, 0, r.all);
-        assert.equal(JSON.parse(r.stdout)[0].displayName, "Fake Friend");
+        // The fake's friend, named by the fake's alias for them (src/core/contact-names.js), its Zalo name beside it.
+        assert.equal(JSON.parse(r.stdout)[0].zaloName, "Fake Friend");
+        assert.equal(JSON.parse(r.stdout)[0].displayName, "Fake Alias");
     });
 });

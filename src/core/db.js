@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { openDatabase } from "./sqlite.js";
 import { stripVietnamese } from "../utils/vn-text.js";
+import { aliasFor, dmTitle } from "./contact-names.js";
 import { deriveDataKey, readKeyring, scopeOfDir } from "./keystore/keyring.js";
 import { readStorageFile } from "./keystore/config.js";
 import {
@@ -25,6 +26,8 @@ let searchReady = false;
  * otherwise bring back what was purged.
  */
 let retentionFloor = 0;
+/** Bumped whenever a database is opened or closed, so per-account caches elsewhere know to reload. */
+let dbGeneration = 0;
 /** How long one search may spend building the index before it answers by scanning. */
 let searchBudgetMs = 2000;
 /** Told how the first search's preparation is going (a command shows it; nothing else needs to). */
@@ -71,6 +74,7 @@ export function initDb(dbPath) {
     // Encrypted at rest (SQLCipher, keyed from the account's data key; src/core/sqlite.js). A plaintext database from
     // 2.x is encrypted here, once, before anything reads it. WAL and secure_delete are set by the opener.
     db = openDatabase(dbPath);
+    dbGeneration++;
     // Row MACs (./row-mac.js): the triggers that keep them call this function, so it is registered before any
     // statement below that could fire one.
     rowMacKeys = rowMacKeysFor(dbPath);
@@ -466,6 +470,11 @@ export function initDb(dbPath) {
     db.exec(
         "CREATE TABLE IF NOT EXISTS last_online (userId TEXT PRIMARY KEY, lastOnline INTEGER, updatedAt INTEGER, source TEXT)",
     );
+    // The account owner's aliases for other users, as the last complete alias-list read gave them
+    // (./contact-names.js). A snapshot: a row absent from it means no alias. Read by every command that names a person.
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS user_aliases (userId TEXT PRIMARY KEY, alias TEXT NOT NULL, updatedAt INTEGER)",
+    );
     // Last, after the repairs above: the MAC table and triggers, and (once per database) the MACs of the rows written
     // before they existed.
     installRowMac(db, rowMacKeys.current, { log: (l) => console.error(l) });
@@ -607,6 +616,7 @@ function rowMacKeysFor(dbPath) {
 export function closeDb() {
     if (db?.open) db.close();
     db = undefined;
+    dbGeneration++;
     rowMacKeys = null;
     searchReady = false;
     retentionFloor = 0;
@@ -1570,7 +1580,9 @@ export function getThreadNames(limit = 5000) {
     const map = new Map();
     try {
         for (const t of getRecentThreads(limit)) {
-            map.set(String(t.threadId), { name: t.name || String(t.threadId), type: t.type });
+            // A 1-1 is titled by the owner's alias as it is now (./contact-names.js); the stored title can predate it.
+            const name = t.type === "dm" ? dmTitle(t.threadId, t.name) : t.name;
+            map.set(String(t.threadId), { name: name || String(t.threadId), type: t.type });
         }
     } catch {
         /* an empty or unopened cache just means folders fall back to thread ids */
@@ -2514,6 +2526,49 @@ export function getLastOnline(userId) {
     return db.prepare("SELECT * FROM last_online WHERE userId = ?").get(String(userId)) || null;
 }
 
+/**
+ * Replace the stored alias snapshot with a complete one (a missing user means the owner removed that alias).
+ *
+ * @param {Map<string, string>} aliases - userId -> the owner's alias
+ * @returns {boolean} whether the stored snapshot changed
+ */
+export function replaceUserAliases(aliases) {
+    if (!db) throw new Error("Database not initialized");
+    const now = Date.now();
+    const current = getUserAliases();
+    let changed = current.size !== aliases.size;
+    if (!changed) for (const [id, alias] of aliases) if (current.get(id) !== alias) changed = true;
+    if (!changed) return false;
+    const insert = db.prepare("INSERT INTO user_aliases (userId, alias, updatedAt) VALUES (?, ?, ?)");
+    db.transaction(() => {
+        db.prepare("DELETE FROM user_aliases").run();
+        for (const [id, alias] of aliases) insert.run(String(id), String(alias), now);
+    })();
+    return true;
+}
+
+/**
+ * The stored alias snapshot. Small (one row per alias the owner set), read once per process and kept in memory.
+ *
+ * @returns {Map<string, string>} userId -> the owner's alias
+ */
+export function getUserAliases() {
+    if (!db) throw new Error("Database not initialized");
+    const map = new Map();
+    for (const r of db.prepare("SELECT userId, alias FROM user_aliases").all()) map.set(String(r.userId), r.alias);
+    return map;
+}
+
+/** Whether a database is open in this process (for display code that also runs before one is). */
+export function isDbOpen() {
+    return Boolean(db?.open);
+}
+
+/** A number that changes whenever a database is opened or closed (per-account caches key on it). */
+export function getDbGeneration() {
+    return dbGeneration;
+}
+
 /** Conversation state for one thread, or every thread that has any. */
 export function getConvState(threadId = null) {
     if (!db) throw new Error("Database not initialized");
@@ -2635,8 +2690,8 @@ export function upsertContact(contact) {
 /**
  * The display name this account has seen for a user id, or null.
  *
- * Used to turn a `@[uid]` mention token into "@Display Name". Two sources,
- * in order:
+ * Used to turn a `@[uid]` mention token into "@Display Name". The owner's
+ * alias for the user wins; then two sources, in order:
  *
  *   1. `contacts` — authoritative, and the only source that can name someone
  *      who has never posted. `msg send` fills it in: any uid it has to look
@@ -2656,7 +2711,21 @@ export function getDisplayName(userId) {
     if (!db) throw new Error("Database not initialized");
     if (userId === undefined || userId === null || userId === "") return null;
     const id = String(userId);
+    // The owner's alias first, as Zalo shows the person everywhere (./contact-names.js).
+    return aliasFor(id) ?? getStoredName(id);
+}
 
+/**
+ * The name this cache holds for a user without the owner's alias: `contacts`, else the newest `senderName` (the name
+ * a message carried). Null when the uid has never been seen.
+ *
+ * @param {string|number} userId
+ * @returns {string|null}
+ */
+export function getStoredName(userId) {
+    if (!db) throw new Error("Database not initialized");
+    if (userId === undefined || userId === null || userId === "") return null;
+    const id = String(userId);
     const contact = db.prepare("SELECT name FROM contacts WHERE userId = ?").get(id);
     if (contact?.name) return contact.name;
 

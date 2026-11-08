@@ -13,6 +13,7 @@
  */
 
 import { findMessageByClientId, getMessageForAction } from "./db.js";
+import { senderNameFields } from "./contact-names.js";
 
 /**
  * `raw_data` as an object, whatever shape its writer used.
@@ -68,7 +69,7 @@ const USER_ID = /^\d+$/;
  *
  * @param {object|null|undefined} quote
  * @returns {{msgId: string|null, cliMsgId: string|null, senderId: string|null, senderName: string|null,
- *   text: string, timestamp: number|null, hasAttachment: boolean}|null}
+ *   senderAlias: string|null, senderZaloName: string|null, text: string, timestamp: number|null, hasAttachment: boolean}|null}
  */
 export function quotedReply(quote) {
     if (!quote || typeof quote !== "object") return null;
@@ -77,12 +78,15 @@ export function quotedReply(quote) {
     const cliMsgId = id(quote.cliMsgId);
     if (!msgId && !cliMsgId) return null;
     const owner = id(quote.ownerId);
+    const senderId = owner && USER_ID.test(owner) ? owner : null;
     const attach = typeof quote.attach === "string" ? quote.attach.trim() : quote.attach;
     return {
         msgId,
         cliMsgId,
-        senderId: owner && USER_ID.test(owner) ? owner : null,
-        senderName: typeof quote.fromD === "string" && quote.fromD ? quote.fromD : null,
+        senderId,
+        // The quoted author as Zalo Web shows them: it renames the quote's `fromD` at render with the owner's alias
+        // (src/core/contact-names.js). `senderZaloName` keeps the name the quote carried.
+        ...senderNameFields(senderId, typeof quote.fromD === "string" && quote.fromD ? quote.fromD : null),
         text: typeof quote.msg === "string" ? quote.msg : "",
         timestamp: Number(quote.ts) || null,
         hasAttachment: Boolean(attach) && attach !== "{}",

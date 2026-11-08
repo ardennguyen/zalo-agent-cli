@@ -1843,6 +1843,8 @@ describe("zalo_friend", () => {
         assert.deepEqual(out.requests[0], {
             userId: U,
             displayName: "A",
+            alias: null,
+            zaloName: "A",
             message: "hi",
             requestedAt: new Date(1790000000 * 1000).toISOString(),
         });

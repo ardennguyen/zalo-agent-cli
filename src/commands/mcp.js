@@ -108,6 +108,7 @@ import { ZaloNotifier } from "../mcp/notifier.js";
 import { deviceSinceOf } from "../core/device-since.js";
 import { describeQueueOverflow, queueOverflowSystemEvent } from "../core/overflow-repair.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
+import { senderNameFields, startDaemonAliases } from "../core/contact-names.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
@@ -141,7 +142,8 @@ export function normalizeMessage(msg, info = null) {
         threadId: msg.threadId,
         threadType: msg.type === 0 ? "dm" : "group",
         senderId: data.uidFrom || null,
-        senderName: data.dName || null,
+        // Alias first, as Zalo shows the sender to this account; `senderZaloName` is the name the message carried.
+        ...senderNameFields(data.uidFrom, data.dName),
         text: cls.text,
         // The message's own timestamp, not the moment we happened to process
         // it: buffer eviction is age-based, and Date.now() made every message
@@ -184,7 +186,8 @@ export function normalizeUndo(undo) {
         threadId: undo.threadId,
         threadType: undo.type === 0 ? "dm" : "group",
         senderId: data.uidFrom || null,
-        senderName: data.dName || null,
+        // Alias first, as Zalo shows the sender to this account; `senderZaloName` is the name the message carried.
+        ...senderNameFields(data.uidFrom, data.dName),
         text: "",
         timestamp: data.ts ? Number(data.ts) : Date.now(),
         type: "undo",
@@ -654,6 +657,17 @@ export function registerMCPCommands(program) {
             const buffer = MessageBuffer.forSession(maxSize, maxAge);
             const filter = new ThreadFilter(config);
 
+            // The owner's aliases, which every reply, buffer line and webhook names people by: kept in the account's
+            // db, reread on an `alias` control and every 30 minutes (src/core/contact-names.js); the name cache's
+            // init below is the read at start. Same in `listen`.
+            const daemonAliases = startDaemonAliases({
+                getApi,
+                log: (line) => console.error(`[mcp] ${line}`),
+                onOwnName: (name) => updateAccountName(activeAcc.ownId, name),
+                onRetitled: (titles) => {
+                    for (const [id, name] of titles) nameCache.set(id, { name, type: "dm" });
+                },
+            });
             // Build thread name cache (groups + friends → in-memory index)
             const nameCache = new ThreadNameCache();
             try {
@@ -1286,6 +1300,7 @@ export function registerMCPCommands(program) {
              */
             function attachListenerHandlers(api) {
                 health.attach(api.listener);
+                daemonAliases.attach(api.listener);
                 api.listener.on("message", (msg) => {
                     // A message Zalo re-sent (534) that is already stored was buffered when it was stored; self-heal
                     // owns re-pushes, so it is not buffered or posted twice.

@@ -36,6 +36,12 @@ const KNOWN = new Map([
     ["photo_success", { kind: "upload", handler: "listener" }],
     ["group", { kind: "group-event", handler: "listener" }],
     ["fr", { kind: "friend-event", handler: "listener" }],
+    // The owner's alias for someone set, changed or removed: the listener's `alias_change`; the app rereads its alias
+    // list (src/core/contact-names.js), as Zalo Web does.
+    ["alias", { kind: "alias", handler: "listener" }],
+    // The account's own profile changed on another device: the listener's `profile_change`; on `update` the app
+    // rereads its own profile name (src/core/contact-names.js).
+    ["profile", { kind: "profile", handler: "listener" }],
     ["voice2text", { kind: "transcript", handler: "voice-text" }],
     // A product or catalog added, edited or deleted on another device (the whole `prod_catalog` family), a DM
     // reminder created, edited or deleted, the account's device list changed: src/core/control-events.js. Only the

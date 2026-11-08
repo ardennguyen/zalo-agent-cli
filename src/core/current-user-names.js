@@ -1,5 +1,6 @@
 import { runPacedBatches, userInfoLog } from "../zalo/custom/user-info.js";
 import { readAllAliases } from "../zalo/api/people.js";
+import { noteAliasSnapshot, pickName } from "./contact-names.js";
 
 /** Aliases asked per page. */
 const ALIAS_PAGE_SIZE = 100;
@@ -19,9 +20,23 @@ const NO_LOG = () => {};
  * @returns {Promise<Map<string, string>>} UID -> account-owned alias
  */
 export async function readUserAliases(api, log = () => {}) {
+    const aliases = await readUserAliasSnapshot(api);
+    if (aliases) return aliases;
+    log("current aliases unavailable; falling back to profile names or UIDs");
+    return new Map();
+}
+
+/**
+ * Like {@link readUserAliases}, but null when the snapshot could not be read completely, so a caller that keeps a
+ * snapshot (./contact-names.js) never mistakes a failed read for "the owner removed every alias". A complete read is
+ * also handed to the account's alias book, so every later display in this process sees it.
+ * @param {object} api - current authenticated API
+ * @returns {Promise<Map<string, string>|null>} UID -> account-owned alias, or null
+ */
+export async function readUserAliasSnapshot(api) {
     const aliases = new Map();
     try {
-        if (typeof api?.getAliasList !== "function") return aliases;
+        if (typeof api?.getAliasList !== "function") return null;
         // readAllAliases pages the way Zalo Web does (`hasMore`, a full page, 212 past page 1). This wrapper keeps
         // this function's own contract on top: a malformed page, a page that repeats ids already read, or running
         // past the page cap fails the whole read instead of handing back part of the list.
@@ -43,28 +58,25 @@ export async function readUserAliases(api, log = () => {}) {
                 aliases.set(String(item.userId), item.alias);
             }
         }
-        return aliases;
     } catch {
-        log("current aliases unavailable; falling back to profile names or UIDs");
-        return new Map();
+        return null;
     }
+    noteAliasSnapshot(aliases);
+    return aliases;
 }
 
 /**
- * Select a current label independently of any per-message historical name.
+ * Select a current label independently of any per-message historical name: the owner's alias, then the profile's
+ * Zalo name, then its display name, then the UID (./contact-names.js `pickName`, the one precedence every output uses).
  * @param {string} uid - canonical user ID
  * @param {object} [profile] - fresh Zalo profile
  * @param {Map<string, string>} [aliases] - account-owned aliases
- * @returns {{name: string, source: string}} label and provenance
+ * @returns {{name: string, source: string}} label and provenance (`alias`, `display`, `zalo` or `uid`)
  */
 export function currentUserName(uid, profile, aliases = new Map()) {
     const id = String(uid || "");
-    const alias = aliases.get(id);
-    if (alias) return { name: alias, source: "alias" };
-    // displayName can itself be an alias. Only zaloName establishes the
-    // profile-name fallback independently of the owner's alias snapshot.
-    const name = profile?.zaloName;
-    return name ? { name, source: "zalo" } : { name: id, source: "uid" };
+    const picked = pickName(id, { ...profile, alias: aliases.get(id) ?? null });
+    return { name: picked.name ?? id, source: picked.source };
 }
 
 /**
@@ -115,7 +127,10 @@ export async function resolveCurrentUserNames(api, uids, { aliases, profiles = n
 }
 
 /**
- * Decorate copied messages with current labels; senderName stays historical.
+ * Decorate copied messages with current labels. `senderName` is the name to show, alias first: the owner's alias
+ * when one is set, else the name the message carried, else the current profile name. `senderZaloName` keeps the
+ * name the message carried (the stored snapshot, never rewritten), `senderAlias` the alias or null, and
+ * `senderDisplayName`/`senderDisplayNameSource` the current label (alias, display name, Zalo name or UID).
  * DM titles use the peer's UID, including for an outgoing message from self.
  * @param {object} api - current authenticated API
  * @param {object[]} messages - cached or live rows
@@ -128,8 +143,13 @@ export async function withCurrentSenderNames(api, messages, dmThreadIds = []) {
     return messages.map((m) => {
         const sender = names.get(String(m.senderId)) || { name: null, source: "uid" };
         const peer = peers.has(String(m.threadId)) && names.get(String(m.threadId));
+        const raw = "senderZaloName" in m ? m.senderZaloName || null : m.senderName || null;
+        const alias = sender.source === "alias" ? sender.name : null;
         return {
             ...m,
+            senderName: alias ?? raw ?? (sender.source !== "uid" ? sender.name : null),
+            senderAlias: alias,
+            senderZaloName: raw,
             senderDisplayName: sender.name,
             senderDisplayNameSource: sender.source,
             ...(peer && { threadName: peer.name }),

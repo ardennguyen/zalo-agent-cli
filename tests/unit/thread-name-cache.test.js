@@ -1,3 +1,4 @@
+import "../helpers/sandbox.js"; // first: the name helpers now reach the account db (src/core/contact-names.js)
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { ThreadNameCache } from "../../src/mcp/thread-name-cache.js";

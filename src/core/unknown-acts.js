@@ -21,8 +21,8 @@ export const CMD_PUSH_ACTIONS = 602;
 /** The control push whose `controls[]` this also reads. */
 export const CMD_PUSH_CONTROLS = 601;
 
-/** 602 actions a handler of this client or the listener already reads. */
-const KNOWN_ACTIONS = new Set(["typing"]);
+/** 602 actions a handler of this client or the listener already reads: by `act_type`, or by `act_type/act`. */
+const KNOWN_ACTIONS = new Set(["typing", "profile/online_status"]);
 
 /**
  * The socket commands this client handles or names on purpose (the offline queues, messages, receipts, reactions, the
@@ -169,7 +169,7 @@ export function createUnknownActs({ file, now = Date.now, log = () => {} }) {
             try {
                 if (cmd === CMD_PUSH_ACTIONS) {
                     for (const a of readActions(data)) {
-                        if (KNOWN_ACTIONS.has(a.actType)) continue;
+                        if (KNOWN_ACTIONS.has(a.actType) || KNOWN_ACTIONS.has(`${a.actType}/${a.act}`)) continue;
                         if (note(cmd, a.actType, a.act, a.keys)) fresh++;
                     }
                 } else if (cmd === CMD_PUSH_CONTROLS) {

@@ -4,6 +4,13 @@
 
 Tài liệu lịch sử: thay đổi này đã phát hành trong bản 2.x qua [PR #2](https://github.com/ardennguyen/zalo-agent-cli/pull/2). Trang được giữ lại làm tài liệu tham khảo về cách xác định tên người gửi; khi hai bên khác nhau, command reference là bản đúng.
 
+
+> **3.0: alias trước tiên ở mọi nơi.** Từ 3.0, trường tên sẵn có của mọi đầu ra mang alias chủ tài khoản đặt trước
+> (`senderName` trên tin nhắn, `displayName` trên một người), kèm `senderAlias`/`alias` và
+> `senderZaloName`/`zaloName`; không có alias thì dùng tên Zalo, rồi tên hiển thị, rồi UID (thứ tự của Zalo Web).
+> Dòng đã lưu vẫn giữ tên mà mỗi tin mang theo. Các quy tắc về `senderName` bên dưới mô tả bản 2.x; command
+> reference là bản hiện hành.
+
 ## Thay đổi hiện tại
 
 Tin nhắn khôi phục từ điện thoại trước đây lưu ID người gửi dạng mã hóa và tên

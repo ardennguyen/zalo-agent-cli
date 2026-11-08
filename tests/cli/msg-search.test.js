@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR, getAccountDbPath } from "../../src/core/credentials.js";
-import { initDb, insertMessage, upsertThread } from "../../src/core/db.js";
+import { initDb, insertMessage, replaceUserAliases, upsertThread } from "../../src/core/db.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
 import { indexProgressReporter } from "../../src/commands/msg-search.js";
 
@@ -162,6 +162,23 @@ describe("msg search", () => {
         assert.match(text, /More: add --cursor /);
         assert.match(text, /Matches by type: text 3 · file 1/);
         assert.match(text, /Searched the local cache only/);
+    });
+
+    it("names a sender by the owner's alias, keeping the name the message carried", async () => {
+        // The alias snapshot a daemon keeps in the account's db (src/core/contact-names.js).
+        replaceUserAliases(new Map([["u2", "Arden AI"]]));
+        try {
+            const r = await runCli(["--json", "msg", "search", "hen gap"], options);
+            assert.equal(r.code, 0, r.all);
+            const hit = json(r).hits.find((h) => h.msgId === "a1");
+            assert.equal(hit.senderName, "Arden AI");
+            assert.equal(hit.senderAlias, "Arden AI");
+            assert.equal(hit.senderZaloName, "Anh Minh");
+            const human = stripAnsi((await runCli(["msg", "search", "hen gap"], options)).all);
+            assert.match(human, /Arden AI/);
+        } finally {
+            replaceUserAliases(new Map());
+        }
     });
 
     it("refuses what cannot be searched, with a message and a failing exit", async () => {

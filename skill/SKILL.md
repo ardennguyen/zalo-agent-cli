@@ -259,11 +259,11 @@ zalo-agent mcp start --http <port>                  # HTTP transport (for VPS/re
 zalo-agent mcp start --http <port> -d               # Start HTTP MCP server detached in background (logs to <accountDir>/daemon.log)
 zalo-agent mcp start --status                       # Check background daemon status (PID, channel port, log path)
 zalo-agent mcp start --stop                         # Gracefully stop the background daemon
-zalo-agent mcp start --http <port> --auth <token>   # Bearer token auth (HTTP mode)
+ZALO_MCP_AUTH_TOKEN=<token> zalo-agent mcp start --http <port>   # Bearer token auth (HTTP mode; never --auth on a command line: ps shows it)
 zalo-agent mcp start --http <port> --cert <pem> --key <pem>  # Native HTTPS (+ auto-443 listener when port != 443)
 zalo-agent mcp start --http <port> --client-id <id> --client-secret <sec>  # Built-in OAuth 2.0 / 2.1 server
 zalo-agent mcp start -w <url> --webhook-secret <sec>         # Signed outbound webhook on every watched message
-zalo-agent mcp start --http <port> --host 0.0.0.0   # Bind address (default 127.0.0.1)
+zalo-agent mcp start --http <port> --host <LAN address>   # Bind address (default 127.0.0.1; a server stays on loopback behind a TLS proxy)
 zalo-agent mcp start --config <path>                # Custom config (default ~/.zalo-agent-cli/mcp-config.json)
 zalo-agent mcp wait [since] -t <ID> --timeout 55 -n 50 -c <bot> --json  # Zero-polling wait on the running MCP daemon's buffer (-n: up to 50 messages per call)
 zalo-agent mcp mark-read <cursor> -c <bot> --json   # Advance consumer read cursor in the running MCP daemon's buffer

@@ -29,7 +29,7 @@ Because the wrapper is a pass-through, **the MCP tool surface is defined entirel
 Engine 3.0.0 replaces zca-js with the project's own implementation of the Zalo Web protocol; wrapper `zalo-mcp` 2.1.0 requires it. Run `update` as usual, then check these breaking changes:
 
 - **Destructive CLI commands need `--yes`** (`msg undo`, `group leave`, `logout`, …): without it they send nothing and exit 2; `--dry-run` previews.
-- **Guarded MCP actions need `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` in `mcp-config.json` (or `ZALO_MCP_CONFIRM_MODE`) decides who confirms: `agent` (default), `human` (the server asks the user through MCP elicitation; stdio only) or `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` still work as deprecated aliases for `off`.
+- **Guarded MCP actions need `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` in `mcp-config.json` (or `ZALO_MCP_CONFIRM_MODE`) decides who confirms: `agent` (default), `human` (the server asks the user: by MCP elicitation under stdio, otherwise on a one-time approve page whose link is in the reply, which works over HTTP too) or `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` still work as deprecated aliases for `off`.
 - **MCP names:** `msgId` (not `id`/`messageId`), `userId` (not `uid`), `threadType` `"dm"` or `"group"` (a number is refused), and every id is a string.
 - **Saved files and the message database are encrypted at rest.** Before the first 3.0.0 command, stop every 2.x process that uses the same `~/.zalo-agent-cli` and back that folder up: the first command encrypts each account's `zalo.db` (about 1 s per 20 MB) and 2.x cannot read it afterwards. A bot that opened `zalo.db` directly gets `file is not a database`; move it to the MCP tools. See [docs/security.md](docs/security.md).
 - **`ZALO_QR_FLOW=legacy` is removed**; delete it from `.env`.
@@ -164,8 +164,9 @@ If you installed the CLI globally without the wrapper, point at the CLI directly
 
 ```bash
 zalo-mcp --http 3847                                 # port from arg, or ZALO_MCP_HTTP_PORT
-zalo-mcp --http 3847 --auth <token> --host 0.0.0.0   # remote access with bearer token
-zalo-mcp --http 3847 --auth <token> --host 0.0.0.0 --cert /path/to/fullchain.pem --key /path/to/privkey.pem
+ZALO_MCP_AUTH_TOKEN=<token> zalo-mcp --http 3847 --host 192.168.1.20   # LAN: the LAN address, the token in the environment
+ZALO_MCP_AUTH_TOKEN=<token> zalo-mcp --http 3847 --host 192.168.1.20 --cert /path/to/fullchain.pem --key /path/to/privkey.pem
+# Internet / VPS: keep 127.0.0.1 behind a TLS reverse proxy, see docs/config-samples/use-cases/c-vps-few-accounts/README.md
 ```
 
 Under the hood this runs `zalo-agent mcp start --http <port> [--auth <token>] [--host <addr>] [--cert <path> --key <path>]`. All `mcp start` flags are supported identically via `zalo-mcp` and `zalo-agent mcp start`:
@@ -240,8 +241,8 @@ Each registered personal account has its own isolated SQLite database (`<DATA_DI
    ```
 3. **Multiple HTTP MCP servers on a VPS (one port per account):**
    ```bash
-   zalo-mcp --account 101 --http 3847 --auth <token-a> --host 0.0.0.0
-   zalo-mcp --account 202 --http 3848 --auth <token-b> --host 0.0.0.0
+   # one systemd unit per account, its token in its own env file: docs/config-samples/use-cases/c-vps-few-accounts
+   za fleet generate --out /tmp/fleet --base-port 3901 --domain zalo.example.com
    ```
 4. **Concurrent CLI commands per account (without touching `accounts.json`):**
    ```bash
@@ -454,7 +455,7 @@ See [`.env.example`](.env.example) for a template.
 | `Another Zalo session took this account` (the daemon stops) | Only one WebSocket per account. Close Zalo Web in the browser, and don't run `listen` and `mcp start` for the same account at once |
 | `logout` (any form) / `account remove` refuses with a PID | A `listen` or `mcp start` daemon holds `daemon.lock` for that account. Stop it first |
 | `Thread name cache not initialized yet` from `zalo_search_threads` | The cache builds at MCP startup by fetching all groups + friends. Retry after a few seconds |
-| HTTP MCP server unreachable from another machine | By default `--http` binds `127.0.0.1` (loopback only). Pass `--host 0.0.0.0 --auth <token>` (supported on both `zalo-mcp` and `zalo-agent mcp start`) |
+| HTTP MCP server unreachable from another machine | By default `--http` binds `127.0.0.1` (loopback only). On a LAN, set `ZALO_MCP_HOST` to the LAN address and `ZALO_MCP_AUTH_TOKEN` in the environment (never `--auth` on a command line); on the internet, keep loopback behind a TLS reverse proxy (docs/config-samples/use-cases) (supported on both `zalo-mcp` and `zalo-agent mcp start`) |
 | `zalo_view_media` saves somewhere other than `accounts/<ownId>/media/<threadId>/` | Only when `--media-dir` / `ZALO_MEDIA_DIR` is set, or `media.downloadDir` is set in `mcp-config.json`. Unset, the server uses the same per-account folder as every other command |
 | `sync-mobile` reports nothing and your phone never prompted | You passed `--socket`, which asks the server-side probe instead of your phone; it normally returns empty. Drop the flag. |
 | OA call fails with `-216` | Access token expired → `npx zalo-agent oa refresh` |

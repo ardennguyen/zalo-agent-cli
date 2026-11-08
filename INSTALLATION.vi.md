@@ -29,7 +29,7 @@ Vì wrapper hoạt động theo cơ chế chuyển tiếp nguyên vẹn (pass-th
 Engine 3.0.0 thay zca-js bằng phần cài đặt giao thức Zalo Web của chính dự án; wrapper `zalo-mcp` 2.1.0 cần bản này. Chạy `update` như thường lệ, rồi kiểm tra các thay đổi phá vỡ tương thích:
 
 - **Lệnh CLI phá hủy cần `--yes`** (`msg undo`, `group leave`, `logout`, …): thiếu `--yes` thì không gửi gì và thoát với mã 2; `--dry-run` cho xem trước.
-- **Thao tác MCP được bảo vệ cần `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` trong `mcp-config.json` (hoặc `ZALO_MCP_CONFIRM_MODE`) quyết định ai xác nhận: `agent` (mặc định), `human` (máy chủ hỏi người dùng qua MCP elicitation; chỉ stdio) hoặc `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` vẫn dùng được như bí danh cũ của `off`.
+- **Thao tác MCP được bảo vệ cần `confirm: true`** (`zalo_undo`, `zalo_delete_message`, `zalo_group` `leave`, …). `confirmMode` trong `mcp-config.json` (hoặc `ZALO_MCP_CONFIRM_MODE`) quyết định ai xác nhận: `agent` (mặc định), `human` (máy chủ hỏi người dùng: qua MCP elicitation khi chạy stdio, hoặc qua trang duyệt dùng một lần có link trong kết quả, dùng được cả qua HTTP) hoặc `off`. `groupConfirm` / `ZALO_MCP_GROUP_CONFIRM` vẫn dùng được như bí danh cũ của `off`.
 - **Tên trong MCP:** `msgId` (không còn `id`/`messageId`), `userId` (không còn `uid`), `threadType` là `"dm"` hoặc `"group"` (số bị từ chối), và mọi id là chuỗi.
 - **File đã lưu và cơ sở dữ liệu tin nhắn được mã hóa trên đĩa.** Trước lệnh 3.0.0 đầu tiên, hãy dừng mọi tiến trình 2.x dùng chung `~/.zalo-agent-cli` và sao lưu thư mục đó: lệnh đầu tiên mã hóa `zalo.db` của từng tài khoản (khoảng 1 giây cho mỗi 20 MB) và 2.x không đọc được nữa. Bot nào mở trực tiếp `zalo.db` sẽ gặp `file is not a database`; hãy chuyển sang công cụ MCP. Xem [docs/security.vi.md](docs/security.vi.md).
 - **`ZALO_QR_FLOW=legacy` đã bị bỏ**; xóa khỏi `.env`.
@@ -164,8 +164,9 @@ Nếu bạn cài CLI toàn cục mà không dùng wrapper, trỏ trực tiếp v
 
 ```bash
 zalo-mcp --http 3847                                 # cổng từ tham số, hoặc ZALO_MCP_HTTP_PORT
-zalo-mcp --http 3847 --auth <token> --host 0.0.0.0   # truy cập từ xa kèm bearer token
-zalo-mcp --http 3847 --auth <token> --host 0.0.0.0 --cert /path/to/fullchain.pem --key /path/to/privkey.pem
+ZALO_MCP_AUTH_TOKEN=<token> zalo-mcp --http 3847 --host 192.168.1.20   # LAN: địa chỉ LAN, token qua biến môi trường
+ZALO_MCP_AUTH_TOKEN=<token> zalo-mcp --http 3847 --host 192.168.1.20 --cert /path/to/fullchain.pem --key /path/to/privkey.pem
+# Internet / VPS: giữ 127.0.0.1 sau một reverse proxy TLS, xem docs/config-samples/use-cases/c-vps-few-accounts/README.vi.md
 ```
 
 Bên dưới, lệnh này chạy `zalo-agent mcp start --http <port> [--auth <token>] [--host <addr>] [--cert <path> --key <path>]`. Toàn bộ các flag của `mcp start` đều được hỗ trợ giống hệt nhau qua cả `zalo-mcp` lẫn `zalo-agent mcp start`:
@@ -240,8 +241,8 @@ Mỗi tài khoản cá nhân đã đăng ký có cơ sở dữ liệu SQLite (`<
    ```
 3. **Chạy nhiều HTTP MCP server trên VPS (mỗi tài khoản một cổng):**
    ```bash
-   zalo-mcp --account 101 --http 3847 --auth <token-a> --host 0.0.0.0
-   zalo-mcp --account 202 --http 3848 --auth <token-b> --host 0.0.0.0
+   # mỗi tài khoản một unit systemd, token trong file env của nó: docs/config-samples/use-cases/c-vps-few-accounts
+   za fleet generate --out /tmp/fleet --base-port 3901 --domain zalo.example.com
    ```
 4. **Gọi lệnh CLI song song theo từng tài khoản (không làm thay đổi `accounts.json`):**
    ```bash
@@ -452,7 +453,7 @@ Xem file mẫu tại [`.env.example`](.env.example).
 | `Another Zalo session took this account` (daemon dừng lại) | Zalo chỉ cho phép 1 WebSocket trên mỗi tài khoản. Hãy đóng tab Zalo Web trên trình duyệt và không chạy `listen` cùng lúc với `mcp start` trên cùng một tài khoản |
 | `logout` / `account remove` từ chối kèm số PID | Một tiến trình daemon `listen` hoặc `mcp start` đang giữ `daemon.lock` của tài khoản đó. Hãy dừng daemon trước (`--stop`) |
 | `Thread name cache not initialized yet` khi gọi `zalo_search_threads` | Bộ nhớ đệm tên hội thoại đang được xây dựng lúc khởi động MCP bằng cách tải danh sách nhóm + bạn bè. Thử lại sau vài giây |
-| Không kết nối được tới HTTP MCP server từ máy khác | Mặc định `--http` chỉ bind vào `127.0.0.1` (loopback). Hãy truyền `--host 0.0.0.0 --auth <token>` (hỗ trợ trên cả `zalo-mcp` và `zalo-agent mcp start`) |
+| Không kết nối được tới HTTP MCP server từ máy khác | Mặc định `--http` chỉ bind vào `127.0.0.1` (loopback). Trên LAN, đặt `ZALO_MCP_HOST` là địa chỉ LAN và `ZALO_MCP_AUTH_TOKEN` trong môi trường (không bao giờ `--auth` trên dòng lệnh); trên internet, giữ loopback sau reverse proxy TLS (docs/config-samples/use-cases) (hỗ trợ trên cả `zalo-mcp` và `zalo-agent mcp start`) |
 | `zalo_view_media` lưu file ở nơi khác ngoài `accounts/<ownId>/media/<threadId>/` | Xảy ra khi đã đặt `--media-dir` / `ZALO_MEDIA_DIR`, hoặc đặt `media.downloadDir` trong `mcp-config.json`. Nếu để trống, server dùng chung thư mục theo tài khoản với mọi lệnh khác |
 | `sync-mobile` không trả về tin nào và điện thoại không hiện thông báo xác nhận | Bạn đã truyền `--socket` (chỉ hỏi vùng đệm phía server thay vì hỏi điện thoại). Hãy bỏ flag `--socket` |
 | Lệnh OA báo lỗi `-216` | Access token đã hết hạn → chạy `npx zalo-agent oa refresh` |

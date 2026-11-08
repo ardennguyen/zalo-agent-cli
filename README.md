@@ -48,7 +48,7 @@ Engine do dự án tự viết theo giao thức mà Zalo Web dùng (từ 3.0, kh
 > ```bash
 > zalo-agent mcp start                                  # stdio (local Claude Code)
 > zalo-agent mcp start --account <ID>                   # Ghim tài khoản (chạy nhiều tài khoản live cùng lúc)
-> zalo-agent mcp start --http 3847 --auth your-secret   # HTTP (VPS)
+> ZALO_MCP_AUTH_TOKEN=<token> zalo-agent mcp start --http 3847   # HTTP; token qua biến môi trường, không đặt trên dòng lệnh
 > zalo-agent mcp wait -c my-bot --timeout 55 --json     # Zero-polling chờ tin nhắn mới qua CLI
 > zalo-agent mcp mark-read <cursor> -c my-bot --json    # Đánh dấu đã đọc tới cursor qua CLI
 > ```
@@ -240,7 +240,7 @@ Its engine is this project's own implementation of the protocol Zalo Web uses (s
 > ```bash
 > zalo-agent mcp start                                  # stdio (local Claude Code)
 > zalo-agent mcp start --account <ID>                   # Pin account (run multiple live accounts at once)
-> zalo-agent mcp start --http 3847 --auth your-secret   # HTTP (VPS)
+> ZALO_MCP_AUTH_TOKEN=<token> zalo-agent mcp start --http 3847   # HTTP; token in the environment, never on the command line
 > zalo-agent mcp wait -c my-bot --timeout 55 --json     # Zero-polling wait for next message via CLI
 > zalo-agent mcp mark-read <cursor> -c my-bot --json    # Advance consumer read cursor via CLI
 > ```

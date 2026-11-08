@@ -10,6 +10,16 @@
 - Owner-requested MCP sync (`zalo_sync` & `zalo_sync_status`): [English](mcp-sync.md) / [Tiếng Việt](mcp-sync.vi.md).
 - Multi-account pinning (`--account <ID>` / `ZALO_ACCOUNT`): [English](account-pinning.md) / [Tiếng Việt](account-pinning.vi.md).
 
+**Start from a use case.** Each folder in [`config-samples/use-cases/`](config-samples/use-cases/) is a complete file set, held byte for byte to the building blocks and to `fleet generate` by `tests/unit/config-samples.test.js`, with a runnable README in English and Vietnamese:
+
+| Use case | Folder |
+|---|---|
+| a. One person on a desktop, stdio MCP (Claude Desktop, Claude Code) | [a-desktop-stdio](config-samples/use-cases/a-desktop-stdio/README.md) |
+| b. An HTTP MCP server on a desktop or LAN, as a Windows service or a launchd agent | [b-desktop-lan-http](config-samples/use-cases/b-desktop-lan-http/README.md) |
+| c. One Linux VPS, one admin, a few accounts (systemd, Caddy, the passphrase provider, `za`) | [c-vps-few-accounts](config-samples/use-cases/c-vps-few-accounts/README.md); moving accounts from a Windows 2.5.9 home: [MIGRATE.md](config-samples/use-cases/c-vps-few-accounts/MIGRATE.md) |
+| d. Accounts as the backend of a CRM (webhooks, approvals, admin API, fleet controller) | [d-crm-backend](config-samples/use-cases/d-crm-backend/README.md) |
+| e. A SaaS host with a KMS key per tenant (a design to start from) | [e-saas-kms](config-samples/use-cases/e-saas-kms/README.md) |
+
 Every architectural claim below is traced to a file in `src/`, or, for the command surface, to [`skill/references/command-reference.md`](../skill/references/command-reference.md), which wins whenever two docs disagree. Line numbers refer to `9e47020` (a few commits before the `2.0.0` tag) and will drift; the function and handler names next to them will not. Numbers come from `package.json`, the lockfile, the code, the npm registry, or one account directory measured once (labeled where it is used). The [Appendix](#appendix--re-measure-everything-yourself) has the commands to measure your own. Where a sentence is an assessment rather than something the code shows (the sizing tables, and all of §6), it says so. On this codebase the general answer about "how messaging bots usually work" is often wrong, so this document avoids it.
 
 Two conventions used throughout:
@@ -24,9 +34,9 @@ Two conventions used throughout:
 
 ## 0. The short version
 
-**Topology.** Run exactly **one** socket-holding process per Zalo account: `zalo-agent mcp start --http <port> --auth <token>`. That process owns the account's one permitted WebSocket, holds `daemon.lock`, publishes `daemon-channel.json`, and is the only process that adds message rows to `zalo.db` while it runs: live traffic, its own catch-up from Zalo's offline queue, a `zalo-agent sync` restore and a `msg history` fetch all run inside it. Every bot workload is a **client** of that process: MCP clients over `POST /mcp` (the HTTP transport is stateless, so concurrent clients work, and each bot keeps its own read cursor by passing a `consumer` name), and CLI one-shots that hand anything needing the socket to the daemon over its loopback channel. No bot opens its own WebSocket.
+**Topology.** Run exactly **one** socket-holding process per Zalo account: `zalo-agent mcp start --account <ownId>`, its port and bearer token read from its environment (never `--auth <token>` on a command line, where `ps` shows it). That process owns the account's one permitted WebSocket, holds `daemon.lock`, publishes `daemon-channel.json`, and is the only process that adds message rows to `zalo.db` while it runs: live traffic, its own catch-up from Zalo's offline queue, a `zalo-agent sync` restore and a `msg history` fetch all run inside it. Every bot workload is a **client** of that process: MCP clients over `POST /mcp` (the HTTP transport is stateless, so concurrent clients work, and each bot keeps its own read cursor by passing a `consumer` name), and CLI one-shots that hand anything needing the socket to the daemon over its loopback channel. No bot opens its own WebSocket.
 
-**Biggest constraint.** Zalo permits one web session per account; a duplicate is closed with code `3000`, and both `listen` and `mcp start` treat that as final: they release the lock and exit with code `3`, and do not reconnect, because two clients that each reconnect evict each other forever. A login Zalo keeps refusing (three refused logins in a row) ends the daemon with code `4`. A browser tab running Zalo Web counts. This is not a tunable.
+**Biggest constraint.** Zalo permits one web session per account; a duplicate is closed with code `3000`, and both `listen` and `mcp start` treat that as final: they release the lock and exit with code `3`, and do not reconnect, because two clients that each reconnect evict each other forever. A login Zalo keeps refusing (three refused logins in a row) ends the daemon with code `4`. A browser tab running Zalo Web counts. This is not a tunable. Zalo also keeps **one web login per account**, and the server is that login: a QR login into Zalo Web signs the server out (its next login is refused, exit `4`), while the **phone and the Zalo PC app are separate logins that coexist with it**. Tell users to keep the phone or Zalo PC beside the server, never Zalo Web.
 
 **What several bots get today.** They can share one server safely for reading as well as sending: `zalo_mark_read` moves only the calling consumer's cursor and deletes nothing. What does not exist: push delivery of inbound events (bots poll), any per-bot identity or scope (one bearer token, self-declared consumer names, one thread filter per process), and any limit on outbound sends. See §1.4.
 
@@ -371,109 +381,52 @@ Headless alternative: on a machine that is already logged in, `zalo-agent accoun
 
 ### 4.2 systemd — the socket holder
 
-`/etc/systemd/system/zalo-mcp.service`:
+There is one unit, for one account or a hundred: the template `zalo-mcp@.service` that `zalo-agent fleet generate` writes, one instance per account, the instance name being the account id ([`config-samples/systemd/zalo-mcp@.service`](config-samples/systemd/zalo-mcp@.service); the whole set, installed and explained step by step, is use case [c](config-samples/use-cases/c-vps-few-accounts/README.md)). Generate it on the server, as the service user, for the accounts that machine runs:
 
-```ini
-[Unit]
-Description=Zalo MCP server (socket holder for one Zalo account)
-Documentation=https://github.com/ardennguyen/zalo-agent-cli
-After=network-online.target
-Wants=network-online.target
-# A duplicate-session exit (exit code 3) means another web session took the
-# account. A restart takes it back and evicts that session, which evicts this one
-# again if it reconnects. Exit 3 is that case and exit 4 is a login Zalo keeps
-# refusing; RestartPreventExitStatus below keeps both down, and the unit enters
-# `failed` for your alert to catch.
-# These two keys belong in [Unit] (systemd.unit(5)), not in [Service].
-StartLimitIntervalSec=600
-StartLimitBurst=5
-
-[Service]
-Type=simple
-User=zalo
-Group=zalo
-WorkingDirectory=/home/zalo
-# The code chmods only accounts.json, the credential files,
-# daemon-channel.json, trusted-device.json, dr-config.json and sock-anomaly.json to 0600. zalo.db, its WAL/SHM and every media file are
-# created with the process umask, and they hold the account's messages.
-UMask=0077
-
-# EnvironmentFile keeps the token out of `systemctl cat`, out of git and out of
-# the process's argv: mcp start reads ZALO_MCP_AUTH_TOKEN from its environment.
-EnvironmentFile=/etc/zalo-agent/mcp.env
-# Express's final error handler sends a stack trace in error responses unless
-# NODE_ENV=production, and express.json() runs before the bearer check
-# (src/mcp/mcp-http-transport.js), so an unauthenticated malformed body gets one.
-Environment=NODE_ENV=production
-# The update check already skips when stdout is not a TTY; this makes it explicit.
-Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
-
-# An unset or empty ZALO_MCP_AUTH_TOKEN would serve /mcp with no auth at all,
-# and the log says only `WARNING: no --auth token`; this check fails the unit
-# instead.
-ExecStartPre=/usr/bin/test -n "${ZALO_MCP_AUTH_TOKEN}"
-# Adjust the path to what `command -v zalo-agent` printed.
-ExecStart=/usr/bin/zalo-agent mcp start --http ${ZALO_MCP_HTTP_PORT} --host 127.0.0.1
-
-# LOAD-BEARING. SIGINT is the only shutdown signal `mcp start` and `listen`
-# handle (process.on("SIGINT") in src/commands/mcp.js and listen.js; only
-# `oa listen` also handles SIGTERM). Under systemd's default KillSignal=SIGTERM,
-# Node exits without running that path: lastConnectedAt is not stamped, so the
-# next start files its startup gap from the last 60 s heartbeat instead of from
-# the moment of the stop; daemon.lock and daemon-channel.json are left for the
-# liveness checks to reclaim; a pending owner notification is not flushed.
-KillSignal=SIGINT
-TimeoutStopSec=30
-
-Restart=always
-RestartSec=15
-# Exit 3: another session took the account. Exit 4: Zalo keeps refusing the saved login.
-# A restart fixes neither, so keep the unit down.
-RestartPreventExitStatus=3 4
-
-# mcp start writes every diagnostic with console.error() and reassigns
-# console.log to console.error, because stdout is the stdio JSON-RPC channel.
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=zalo-mcp
-
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=read-only
-# Add media.downloadDir here as well if mcp-config.json sets one.
-ReadWritePaths=/home/zalo/.zalo-agent-cli
-ProtectKernelTunables=yes
-ProtectControlGroups=yes
-RestrictSUIDSGID=yes
-LockPersonality=yes
-
-[Install]
-WantedBy=multi-user.target
+```bash
+za fleet generate --out /tmp/fleet --base-port 3901 --domain zalo.example.com
 ```
 
-`/etc/zalo-agent/mcp.env` (root-owned, `0600`; systemd reads it before dropping privileges):
+It prints the install commands with the paths it used. What the unit does, and why:
 
+- **One instance per account.** `systemctl enable --now zalo-mcp@<ownId>`. `EnvironmentFile=/etc/zalo-mcp/common.env`, then `/etc/zalo-mcp/accounts/<ownId>.env` (root, `0600`; systemd reads them before dropping privileges) give the port and the **token**, so `ps` shows only `mcp start --account <ownId>`. `ExecStartPre=/usr/bin/test -n "${ZALO_MCP_AUTH_TOKEN}"` fails the unit instead of serving `/mcp` with no auth.
+- **`UMask=0077`.** The code chmods only the registry, the credential files and a few side files to `0600`; `zalo.db`, its WAL/SHM and every media file follow the umask.
+- **`Environment=NODE_ENV=production`.** Express's final error handler sends a stack trace in error responses unless it is set, and `express.json()` runs before the bearer check.
+- **`KillSignal=SIGINT`, `TimeoutStopSec=30`.** SIGINT is the shutdown path that stamps `lastConnectedAt` (so the next start files its startup gap from the moment of the stop), flushes delivered receipts and releases `daemon.lock` and `daemon-channel.json`.
+- **`Restart=always`, `RestartPreventExitStatus=3 4`, `StartLimitBurst=5` in 600 s.** Exit 3 is a kick (another session took the account) and exit 4 a login Zalo keeps refusing: a restart fixes neither, so the unit stays down and shows in `systemctl --failed`.
+- **The sandbox writes one tree.** `ProtectSystem=strict`, `ProtectHome=read-only`, and `ReadWritePaths=/home/zalo/.zalo-agent-cli`: everything the daemon writes lives there. A data or media folder elsewhere (`ZALO_DATA_DIR`, `ZALO_MEDIA_DIR`) is set in the service user's `~/.zalo-agent-cli/.env`, which every command reads, never in `common.env`, which only the units read; `fleet generate` run with `--data-dir`/`--media-dir` writes it there **and** adds it to `ReadWritePaths`. A folder named in `ReadWritePaths` must exist, or the unit fails with `226/NAMESPACE`. The same goes for `media.downloadDir` in `mcp-config.json`.
+- **`MemoryMax=600M`.** One instance is about 100 MB at rest.
+- **Start-up spreading** is inside the daemon (`ZALO_START_JITTER=30` in `common.env`, `ZALO_LOGIN_SLOTS`, §4.8), for any supervisor.
+
+**The key provider on a VPS.** Since 3.0.0 every secret file is sealed and `zalo.db` is encrypted under the account's keyring, which a key provider wraps ([security.md](security.md)). Linux has no default provider, so a stock VPS daemon refuses to start until one is set. On a plain VPS with no TPM, use the **passphrase** provider, handed over by systemd:
+
+```bash
+sudo -v && systemd-ask-password -n "Storage passphrase:" \
+  | sudo systemd-creds encrypt --with-key=host --name=zalo-storage-passphrase - /etc/zalo-mcp/storage-passphrase.cred
 ```
-ZALO_MCP_HTTP_PORT=3847
-ZALO_MCP_AUTH_TOKEN=<64 hex characters, from: openssl rand -hex 32>
-```
+
+`storage.json` says `"provider": "passphrase"`, and the drop-in `zalo-mcp@.service.d/credentials.conf` (also for the purge and backup units) says `LoadCredentialEncrypted=zalo-storage-passphrase:/etc/zalo-mcp/storage-passphrase.cred`. At each start systemd (root) decrypts it into `$CREDENTIALS_DIRECTORY/zalo-storage-passphrase`, a file only that service reads, where the provider finds it with no setting. This works for `User=zalo` on systemd 250 and later. The `systemd-creds` **provider** does not fit this layout on Ubuntu 24.04: it runs `systemd-creds` as the service user, and with systemd 255 only root can use the host key (`systemd-creds --user` arrived in 256). The passphrase also makes the data **portable**: keep it in a password manager, and a backup opens on a new machine.
+
+**Run the CLI as the service user: `za`.** A command run as root, as yourself or with another `HOME` opens another config dir and finds no account. `za` (`/usr/local/bin/za`, written by `fleet generate`) runs `zalo-agent` through `sudo systemd-run` as `zalo`, with the units' home, `common.env` and the same `LoadCredentialEncrypted=` line: `za login`, `za account list`, `za fleet status`, `za db backup --out …`. Without it, `sudo -u zalo -H zalo-agent …` also works, and asks for the passphrase at the terminal.
+
+**Start, stop and restart through systemd.** `systemctl restart zalo-mcp@<ownId>`, or `za fleet start|stop|restart <ownId>`, which calls `systemctl` for an account its unit runs (the polkit rule `zalo-fleet-polkit.rules` lets `zalo` do that for `zalo-mcp@*.service` only). Never start a daemon beside its unit (`mcp start`, `fleet start --env-dir`): it races the unit for `daemon.lock`, and a plain stop is undone by `Restart=always` 15 s later.
 
 > [!WARNING]
-> **Pass the bearer token in the environment, never as `--auth <token>`.** A flag is part of the daemon's argv, so `ps`, `/proc/<pid>/cmdline` and the process list that `systemctl status zalo-mcp` prints show it to every local user. `ZALO_MCP_AUTH_TOKEN` (or `ZALO_MCP_AUTH_TOKEN_<ownId>` for one account) is read from the process environment, which only the service user and root can see. If you must use the flag, mount `/proc` with `hidepid=2`, or give the daemon a host of its own. A ready-made unit per account is in [`config-samples/systemd/`](config-samples/systemd/) (see [`configuration.md`](configuration.md) §3.6).
+> **Pass the bearer token in the environment, never as `--auth <token>`.** A flag is part of the daemon's argv, so `ps`, `/proc/<pid>/cmdline` and `systemctl status` show it to every local user. `ZALO_MCP_AUTH_TOKEN` (or `ZALO_MCP_AUTH_TOKEN_<ownId>` for one account) is read from the process environment, which only the service user and root can see.
 
 > [!CAUTION]
 > **There is no second unit.** Do not also enable a `listen` unit for the same account. It would fail on `daemon.lock` at best, and race for the Zalo socket at worst. One account, one unit. If you want `listen`'s webhook or JSONL archive, run `listen` **instead of** `mcp start` and give up the MCP tools (§1.1). Gap tracking and self-heal are the same in both, so they are no longer a reason to choose.
 
-**Windows equivalent.** Use a service wrapper whose stop action sends Ctrl+C, which Node delivers as SIGINT; Task Scheduler's "End task" is a hard kill and skips the same shutdown path SIGTERM does. Note the platform traps from `AGENTS.md` §5: Git Bash `kill` reports success against native Windows PIDs while the process runs on, so verify with `Get-Process` and stop with `Stop-Process -Id <pid> -Force`; and `Start-Process` does not inherit `$env:X` set in an earlier command, so pass the token through the service's own environment, not a parent shell. The config directory follows `USERPROFILE` there (`CONFIG_DIR` is `join(homedir(), ".zalo-agent-cli")`).
+**Windows and macOS.** Use case [b](config-samples/use-cases/b-desktop-lan-http/README.md) has a WinSW service (its stop sends Ctrl+C; Task Scheduler's "End task" is a hard kill) and a launchd agent. Run them as your own user, never LocalSystem or root: the keys are DPAPI CurrentUser keys or the login keychain. Note the platform traps from `AGENTS.md` §5: Git Bash `kill` reports success against native Windows PIDs while the process runs on, so verify with `Get-Process` and stop with `Stop-Process -Id <pid> -Force`; and `Start-Process` does not inherit `$env:X` set in an earlier command, so pass the token through the service's own environment, not a parent shell.
 
 ### 4.3 Logs
 
-- Everything goes to stderr, and from there to the journal: `journalctl -u zalo-mcp -f`.
+- Everything goes to stderr, and from there to the journal: `journalctl -u zalo-mcp@<ownId> -f` (`-u 'zalo-mcp@*'` for all). `common.env` sets `ZALO_LOG_LEVEL=info`.
 - **Levels.** `--log-level` / `ZALO_LOG_LEVEL[_<ownId>]` is `error`, `warn`, `info` (the default) or `debug`. `debug` adds the lines that grow with traffic: one per HTTP request (with the caller's address and user agent), one per message the daemon handles (`[mcp] Buffered …`; in `listen`, every event line, which carries the message text). At `info` they are not written, so a busy daemon's log stays about state changes, and private message text stays out of it. The other lines are classed by their wording (a failure or refusal is `error`, `WARNING` / `⚠` is `warn`); that is a filter on free text, not a promise about each line. A background daemon writes through this filter into `daemon.log`; a foreground run filters its stderr only when a level or format is asked for. The process that merely *launches* `-d` is never filtered.
 - **Timestamps, JSON.** Each line of `daemon.log` starts with an ISO timestamp. `ZALO_LOG_FORMAT=json` writes one JSON object per line instead (`{"ts","level","account","msg"}`) for a log shipper.
 - **Rotation.** `daemon.log` rotates by size, `daemon.log` → `daemon.log.1` → … → `daemon.log.<keep>`: `ZALO_LOG_MAX_SIZE` (default `50m`, at least `4k`) and `ZALO_LOG_KEEP` (default 3; 0 just starts over). A new file begins with a `log rotated` line. On Windows a rename can be refused while something (a `tail`, an editor) has the file open; the daemon then keeps appending and tries again after another megabyte.
-- Cap it: `SystemMaxUse=2G` in `/etc/systemd/journald.conf`, or `RuntimeMaxUse=` for a volatile journal.
+- Cap it with a drop-in, as use case c's [`journald.conf.d/zalo.conf`](config-samples/use-cases/c-vps-few-accounts/etc/systemd/journald.conf.d/zalo.conf) does (`SystemMaxUse=500M`, a month), or `RuntimeMaxUse=` for a volatile journal.
+- **`policy-audit.log`** (one line per policy change or refusal, keys and revisions only) is never rotated by the engine: `fleet generate` writes `zalo-policy-audit.logrotate` (weekly, a year kept, `copytruncate`) for `/etc/logrotate.d/`.
 - **Lines that mean something is wrong right now** (as `mcp start` prints them; `listen` reports the same events with a `[listen]` prefix or none, and in places different words):
 
 | Log line | Meaning | Action |
@@ -498,31 +451,15 @@ ZALO_MCP_AUTH_TOKEN=<64 hex characters, from: openssl rand -hex 32>
 
 ### 4.4 Scheduled maintenance
 
-Media prune: `/etc/systemd/system/zalo-media-prune.service` + `.timer`:
+`fleet generate` writes three timers beside the unit; enable them with `systemctl enable --now zalo-mcp-purge.timer zalo-fleet-check.timer zalo-backup.timer`:
 
-```ini
-# zalo-media-prune.service
-[Service]
-Type=oneshot
-User=zalo
-UMask=0077
-Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
-ExecStart=/usr/bin/zalo-agent sync-media --prune 90
-```
+| Timer | Runs | Why |
+|---|---|---|
+| `zalo-mcp-purge.timer` (hourly, random minute, `Persistent=true`) | `fleet purge --yes` | Quota and retention for an account whose daemon is stopped (a running daemon purges on its own every `retention.purgeEvery`, and is asked when it is behind). Delete-only, under the account's `daemon.lock` |
+| `zalo-fleet-check.timer` (every 5 minutes) | `fleet status --check` | Exit 1 unless every account is `ok`, `idle` or `degraded`: the unit then shows in `systemctl --failed`. Add `OnFailure=` to be told (mail, ntfy, a webhook) |
+| `zalo-backup.timer` (nightly, 03:00 to 03:30) | per account `db backup` and its `keyring.json`, then the config dir without databases, media and runtime files, into `/var/backups/zalo` (14 days kept) | §4.6 |
 
-```ini
-# zalo-media-prune.timer
-[Timer]
-OnCalendar=Sun 03:00
-Persistent=true
-[Install]
-WantedBy=timers.target
-```
-
-`runMediaPrune` in `src/commands/sync.js` takes **no lock and opens no socket**: it deletes files and stamps `mediaPrunedAt`, so it runs alongside the daemon. Like every command outside the auto-login skip list (the `preAction` hook in `src/index.js`), it still logs in over REST before it runs, so it needs the saved credentials and network access.
-
-> [!WARNING]
-> It is nonetheless a **second writer to `zalo.db`** (`initDb()`, then one `UPDATE` per file through `clearMessageLocalPath`), which is the §1.5 hazard in miniature. Its writes are short and bounded, so in practice it is fine, but schedule it at your quietest hour, not during peak traffic, and do not generalize "prune runs alongside the daemon" into "any job can write to `zalo.db` alongside the daemon". Run it by hand with `--dry-run` first and read the count.
+**Media and message age** are rules, not a prune job: `retention.media` / `retention.messages` (`keep` or `<N>d`) in the runtime policy (`za --account <id> policy set retention.media 180d`) or `storage.json`, applied by the daemon and the purge timer. The old `sync-media --prune` timer is not needed, and was a second writer to `zalo.db` beside the daemon (§1.5).
 
 ### 4.5 Restarting without losing messages
 
@@ -565,10 +502,17 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
 ├── accounts.json.lock             # runtime, only while a change is in progress; exclude
 ├── credentials/cred_<ownId>.json  # saved login: imei, cookie, user agent; sealed (0600)
 ├── storage.json                   # key provider + dkey layer settings (optional, no secret)
-├── mcp-config.json                # MCP config (optional)
+├── mcp-config.json                # MCP config (optional; may hold a webhook or OAuth secret)
+├── .env                           # machine settings every command reads (0600)
+├── fleet.json                     # the fleet's port table
+├── tenants/  users/               # tenant and user policies (sealed) and their keyring
+├── admin/admin-token.json         # the admin token's hash (sealed)
+├── policy-audit.log               # who changed which policy key, when (no values)
 ├── qr.png                         # last login QR; transient, exclude
+├── login-slots/  qr-flows/  tmp/  # runtime; exclude
 └── accounts/<ownId>/
     ├── keyring.json                        # the account's keys, wrapped by the key provider; back up WITH the credentials
+    ├── policy.json                         # the account's runtime policy (sealed)
     ├── zalo.db  zalo.db-wal  zalo.db-shm   # back up as one unit
     ├── media/                              # the large part (unless media.downloadDir moves it)
     ├── sync/                               # regenerable: zproto-cache/
@@ -584,6 +528,7 @@ Back up **`~/.zalo-agent-cli/` in full**, and restore it in full.
 - **Quiesce the database, or snapshot it correctly.** Copying `zalo.db` while the daemon writes gives you a torn file. Stop the unit (the self-heal then pulls the window back, §4.5), or take a filesystem snapshot of the whole directory. Since 3.0.0 `sqlite3 zalo.db ".backup …"` cannot open the encrypted file and the driver's backup API refuses it; **`zalo-agent db backup --out <file>`** writes an online, encrypted, verified copy (a consistent snapshot while the daemon runs; it never overwrites a file). **A copied or backed-up `zalo.db` opens only together with its `keyring.json` and the same key provider** ([security.md](security.md) §7).
 - **A restored `zalo.db` brings its bookkeeping with it.** The next start files a startup gap from the snapshot's `lastConnectedAt` (clamped to 14 days), and the self-heal asks the offline queue from the snapshot's cursors; whatever the queue no longer holds stays pending for `sync`.
 - **Encrypt the backup at rest.** It contains the account's saved login and the full message history. See §5.2.
+- **On a fleet host the backup timer does this nightly** (§4.4): `<id>-<time>.db` (an online `db backup`), `<id>-<time>.keyring.json`, and `config-<time>.tgz` (the tree above without `zalo.db*`, `webhook-outbox.db*`, media and the runtime files), into `/var/backups/zalo`, 14 days kept. Copy them off the machine. **The storage passphrase is not in the backup**: keep it in a password manager; with it, the backup opens on a new machine (use case c, "Backups").
 - **Test the restore without contacting Zalo.** Restore into a scratch `HOME` (`USERPROFILE` on Windows), then run `zalo-agent account list` and `zalo-agent account security status` (the `account` group skips auto-login, in the `preAction` hook of `src/index.js`). The second opens the restored `zalo.db` with the restored keyring and must say `encrypted` for it; anything else means the keyring or the provider did not come back with it. Then `zalo-agent --json db query "select count(*) as n from messages"` and `zalo-agent db verify` (both local, no login) read the restored rows and check their row MACs. Do not use `status` for this: it is outside the skip list, so it logs in over REST with the restored credentials first.
 
 ### 4.7 Monitoring
@@ -615,7 +560,7 @@ Prometheus scrape and alert rules are in [`config-samples/monitoring/`](config-s
 > [!WARNING]
 > **A running daemon is not necessarily a healthy account.** The routes above cover the socket, the webhook and the gaps. Alert on these as well:
 >
-> 1. `systemctl is-active zalo-mcp`: catches the fatal exits.
+> 1. `systemctl is-active zalo-mcp@<ownId>` (or the check timer, §4.4): catches the fatal exits.
 > 2. `uptime` resetting: catches restart loops the unit's `StartLimitBurst` has not yet failed.
 > 3. Journal matches on `Another Zalo session took this account`, `The login was refused`, `Daemon channel unavailable`, `message not stored`, and the self-heal's `stays pending`, `not finished` and `dropped part of`.
 > 4. **`threads` stuck at a constant, or the newest `timestamp` in `zalo.db` going stale.** This is the only signal that distinguishes "connected and quiet" from "silently not receiving". A read-only query is the best liveness probe you have:
@@ -642,18 +587,31 @@ One account is one daemon (§1), so a hundred accounts are a hundred of them, ea
 
 | Command | What it does |
 |---|---|
-| `fleet generate --out <dir> [--base-port N] [--domain <host>] [--user --home --bin]` | Writes the systemd template unit, `common.env`, one `accounts/<id>.env` per account with its port and a **generated 256-bit token** (mode `600`, never printed), the port table, and with `--domain` a Caddyfile that serves every account under `/a/<id>/` and answers 404 for `/metrics` and `/status`. An existing file is never overwritten (`--force` replaces the plain ones; a token in use is kept unless `--rotate-tokens`). The same files as `docs/config-samples/`; a test holds the two together. |
+| `fleet generate [accounts…] --out <dir> [--base-port N] [--domain <host>] [--provider passphrase\|systemd-creds\|kms\|none] [--etc-dir --backup-dir --user --home --bin]` | Writes the systemd template unit and, for the passphrase provider (the default), its `LoadCredentialEncrypted=` drop-in; the purge, health-check and backup units and timers; `common.env` (units only) and `home.env` (the service user's `~/.zalo-agent-cli/.env`, read by every command: machine paths); one `accounts/<id>.env` per account with its port, a **generated 256-bit token** (mode `600`, never printed) and with `--domain` its `ZALO_MCP_PUBLIC_URL=https://<host>/a/<id>`; `storage.json`; `za`; the polkit rule; a logrotate rule; the port table; and with `--domain` a Caddyfile that serves every account under `/a/<id>/` and answers 404 for `/metrics`, `/status` and `/zalo/admin/*`. It prints the install steps with the paths it used. An existing file is never overwritten (`--force` replaces the plain ones; a token in use is kept unless `--rotate-tokens`). The same files as `docs/config-samples/`; a test holds the two together. |
 | `fleet purge [accounts…] [--dry-run] [--yes]` | The quota/retention purge for every account here: an account with no daemon is purged in place under its `daemon.lock`; a daemon whose last check is older than `retention.purgeEvery` × 2 is asked to run it; the rest are left alone. For a timer: `fleet generate` writes `zalo-mcp-purge.service` + `.timer` (hourly). Guarded: exit 2 without `--yes`. |
 | `fleet serve [--http <port>] [--host <addr>] [--env-dir <dir>] [--listen] [--public-url <url>]` | The fleet controller: one account-lifecycle admin API for the host, under `/zalo/admin`, admin credential only (an agent token is refused). Lists accounts with their `account_state`, starts/stops/restarts them (systemd units through the polkit rule, or spawned daemons), relays presence wake/park, runs a **guarded** logout or removal (409 with a single-use `confirmToken` first, then `X-Confirm`), streams `account_state` as SSE (`GET /events`), and adds an account by QR (`POST /accounts/qr`). Holds no account lock and no Zalo socket. |
 | `fleet ports [--base N]` | The port of each account, kept in `fleet.json`. A port is assigned once and never moves; a new account takes the lowest free one. |
 | `fleet status [accounts…] [--check] [--json]` | One table for every account, asked over each daemon's loopback channel (no port or token needed): state, pid, socket and its age, last event, webhook queue and dead letters, gaps, memory. States: `ok`, `idle` (the socket is parked by on-demand presence; it wakes on demand, never `down`), `degraded` (warnings: a backlog, dead letters, gaps), `starting`, `maintenance` (the daemon waits for Zalo to come back), `relogin` (a login being redone after a refused session), `kicked` (another session took the account: restarting would only evict that session in turn; also shown for a daemon that has already exited on a kick, from the `kicked.json` it leaves in the account folder until it connects again or the account logs in again, with `kicked.via` and Zalo's reason in `--json`), `down` (socket down 3 minutes or more, `--down-for`), `unresponsive` (a daemon holds the lock but does not answer), `stopped`. `--check` exits 1 unless every account is `ok`, `idle` or `degraded`. |
-| `fleet start [accounts…] [--batch 5] [--stagger 15] [--env-dir <dir>] [--listen] [--dry-run]` | Starts the daemons that are not running, **in shuffled batches** with a pause between them, so accounts set up together do not log in together. `--env-dir` gives each daemon its own `<id>.env` (token, webhook) without putting a secret on a command line. |
-| `fleet restart [accounts…] [--unhealthy] [--all]` | Stops and starts the named accounts, or with `--unhealthy` only the ones that are `down` or `unresponsive` (a restart does not fix a webhook receiver, so a backlog is left alone). A bare `fleet restart` restarts nothing. |
-| `fleet stop [accounts…]` | Each daemon's graceful shutdown. |
+| `fleet start [accounts…] [--batch 5] [--stagger 15] [--env-dir <dir>] [--listen] [--dry-run]` | Starts the daemons that are not running, **in shuffled batches** with a pause between them, so accounts set up together do not log in together. An account its `zalo-mcp@<id>` unit runs is started with `systemctl start`; any other is spawned, `--env-dir` giving it its own `<id>.env` (token, webhook) without a secret on a command line. |
+| `fleet restart [accounts…] [--unhealthy] [--all]` | Restarts the named accounts, or with `--unhealthy` only the ones that are `down` or `unresponsive` (a restart does not fix a webhook receiver, so a backlog is left alone): `systemctl restart` for a unit, stop and spawn otherwise. A bare `fleet restart` restarts nothing. |
+| `fleet stop [accounts…]` | Each daemon's graceful shutdown; `systemctl stop` for a unit (a plain stop would be undone by `Restart=always`). |
 
 **Start-up spreading inside the daemon.** Every start logs in and loads the friend and group lists, so a fleet restarting together does all of it at once. `ZALO_START_JITTER=30` makes a daemon wait a random 0–30 s before logging in, and `ZALO_LOGIN_SLOTS=3` lets at most three daemons on the machine be between "about to log in" and "lists loaded" (slots are files in `<config dir>/login-slots/`; a daemon over the cap waits, and goes ahead anyway after `ZALO_LOGIN_SLOT_WAIT`, 900 s by default, so a stuck slot never keeps an account offline; a slot whose daemon died is reclaimed). Both are off by default and work under any supervisor. The daemon log says `start-up jitter: waiting …`, `waiting for a login slot` and `got login slot …`.
 
-Under systemd the unit already spreads start-up (`sleep $((RANDOM % 30))`) and restarts a dead daemon; `fleet start`/`restart` are for hosts without it (a Windows server, a container, a laptop) and for a deliberate restart of part of the fleet. `fleet status --check` suits a cron job; Prometheus (§4.7) suits alerting.
+**Which supervisor.** For each account `fleet start|stop|restart` asks systemd whether its `zalo-mcp@<id>` unit is loaded and running, starting, stopping, `failed` or enabled; then it goes through `systemctl`, otherwise it spawns. `ZALO_FLEET_SUPERVISOR=systemd|spawn` (the generated `common.env` sets `systemd`) decides for every account. Run as the service user (`za fleet …`), `systemctl` needs the polkit rule; a refused `systemctl` is reported with the `sudo systemctl` line and exits 1. `fleet status --check` suits the check timer or cron; Prometheus (§4.7) suits alerting.
+
+### 4.9 Moving an account to another machine
+
+The data of an account moves with its folder only when the new machine can open its keyring:
+
+| From | How | History | Device |
+|---|---|---|---|
+| A 2.5.x home (plaintext) | copy `accounts.json`, `credentials/cred_<id>.json` and `accounts/<id>/` **before any 3.0 command runs there**, then `account security migrate --all` on the new machine | kept | same |
+| A 3.0 home under DPAPI, the keychain or systemd-creds | first `account security provider passphrase --passphrase-file <f>` on the old machine (the passphrase of the new one), then copy | kept | same |
+| A 3.0 home under the passphrase or a KMS key the new machine reaches | copy as it is | kept | same |
+| Anywhere | `account export` there, `login --credentials <file>` here | **not kept** (a phone-tapped `sync` restores far less) | same |
+
+Whatever the way: stop every daemon and client of the account on the old machine first, and never start one there again. **Two copies of the same saved login kick each other off** (exit 3, again and again). On the old machine, `logout --no-remote` drops the saved login without ending the session the new machine now uses. Step by step, Windows 2.5.9 to a VPS: [MIGRATE.md](config-samples/use-cases/c-vps-few-accounts/MIGRATE.md).
 
 ---
 
@@ -706,7 +664,7 @@ Therefore:
 ### 5.4 Binding, and the `--host` trap
 
 ```bash
-zalo-agent mcp start --http 3847 --auth "$TOKEN" --host 127.0.0.1   # 127.0.0.1 is the default, and what you want
+ZALO_MCP_AUTH_TOKEN="$TOKEN" zalo-agent mcp start --http 3847 --host 127.0.0.1   # 127.0.0.1 is the default, and what you want
 ```
 
 > [!CAUTION]

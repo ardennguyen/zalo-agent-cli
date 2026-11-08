@@ -186,6 +186,10 @@ const CLI_ONLY = {
     "fleet restart": "manages several daemons on the machine",
     "fleet generate": "writes service files on the machine",
     "fleet purge": "a machine's timer job across every account, beside their daemons",
+    "fleet serve": "the host's account-lifecycle admin API: an operator's or a console's, behind the admin credential",
+    "presence status": "the daemon's socket presence on the machine: an operator's view",
+    "presence wake": "opens the daemon's socket on purpose: an operator's override, never an agent's",
+    "presence park": "closes the daemon's socket on purpose: an operator's override, never an agent's",
     update: "updates the installed package",
     "cloud get":
         "needs the account's cloud key (a secret derived from the owner's PIN), which must never pass through an agent or a tool input",

@@ -426,6 +426,18 @@ Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-q
 
 ---
 
+## On-demand presence — `presence` (3 commands)
+
+The socket of the active (or `--account`) account's running daemon under on-demand presence (`presence.*` in the policy, `mcp-config.json` or `ZALO_PRESENCE_MODE`; docs/configuration.md). Each command goes to the daemon over its loopback channel (`POST /presence`); the CLI never opens a socket itself. A daemon that does not run on-demand presence keeps its socket connected: `status` says so (`onDemand: false`, from its health) and `wake` / `park` exit 1. No daemon: `status` says `running: false`, `wake` / `park` exit 1. CLI-only.
+
+| Command | Description |
+|---------|-------------|
+| `status` | `mode` (`on-demand`/`always-on`), `state` (`parked`, `waking`, `connected`, `parking`, `yielded`), open `holds` by kind (counts only), `idleAt` (when it parks next), `wakesLastHour`, `lastWakeMs`, `lastCatchUpMs` and the metered `connectedMs` / `waitHeldMs`. `--json`: `{accountId, running, onDemand, mode, state, holds, ...}`. |
+| `wake` | Open the socket now (a manual hold for `presence.minConnected`; it parks again after the idle timeout). A yielded account (another session took it) is taken back. |
+| `park` | Close the socket now: not sooner than `presence.minConnected` after it connected, nor while a hold is open (then exit 1 with the reason). |
+
+---
+
 ## MCP Server — `mcp` (AI agent integration)
 
 | Command | Description |
@@ -444,6 +456,7 @@ Your saved bank accounts and the bank directory. `msg send-bank` and `msg send-q
 | `fleet stop [accounts...]` | Stop these accounts' daemons (all of them if none are named), each with its graceful shutdown. |
 | `fleet restart [accounts...] [--unhealthy] [--all] [--down-for <seconds>] [--listen] [--batch <n>] [--stagger <seconds>] [--env-dir <dir>] [--dry-run]` | Stop and start daemons in batches. Name the accounts, or pass `--unhealthy` (only those `down` or `unresponsive`: a restart does not fix a webhook receiver, so a backlog is left alone) or `--all`; a bare `fleet restart` restarts nothing. Each account comes back as the kind it was (`mcp start` or `listen`, read from its health snapshot; `--listen` decides for one that did not answer). |
 | `fleet purge [accounts...] [--dry-run] [-y, --yes]` | The quota/retention purge (`db purge`) for every registered account on this machine (or the ones named), for a systemd timer or cron. An account **with no daemon** gets the same pass here, under its `daemon.lock` (taken and released; one held by another process is a failure): only what its rules make due goes (an age rule, a quota whose grace period has ended), and the pass is recorded (`lastPass` in `quota-state.json`), so a stopped account's grace period runs out too. An account **whose daemon runs** is left to it while its last pass is within `retention.purgeEvery` × 2; a daemon behind that (or that never recorded one) is asked over its channel to run it now; one that does not answer is a failure, never purged beside. Guarded like `db purge`: without `--yes` nothing happens and it exits 2; `--dry-run` counts (no lock, nothing recorded). `--json`: `{purge: [{accountId, action: "purged"\|"counted"\|"asked-daemon"\|"skipped"\|"failed", via: "local"\|"daemon"\|null, detail, summary?: {mediaFiles, messages, outboxDead, usedBefore, usedAfter, events}, error?}], dryRun}`; exit 1 when any account failed. `fleet generate` writes `zalo-mcp-purge.service` and `zalo-mcp-purge.timer` (hourly) to run it. |
+| `fleet serve [--http <port>] [--host <addr>] [--env-dir <dir>] [--listen] [--public-url <url>]` | The fleet controller: the account-lifecycle admin API for this host, under `/zalo/admin` behind the **admin credential** (an admin token or `ZALO_MCP_ADMIN_CLIENT_CA`; an agent token from `--env-dir` is refused). It holds no account lock and no Zalo socket. `GET /accounts` (state, port, owning user, presence mode, pid), `POST /accounts/<ownId>/start|stop|restart` (systemd `zalo-mcp@<ownId>.service` when `ZALO_FLEET_SUPERVISOR=systemd` or `/run/systemd/system` exists, else spawned daemons as `fleet start`; a start after a kick is logged as a takeover), `POST /accounts/<ownId>/presence/wake|park` (relayed to the daemon's channel), `POST /accounts/<ownId>/logout` and `DELETE /accounts/<ownId>` (**guarded**: the first call answers `409 {confirmToken, expiresAt, effect}`, the second with `X-Confirm: <token>` runs it; the token is single-use and lives 2 minutes; remove = stop, `account remove`, free its port, its env file and its user's entry), `GET /events` (SSE: a `snapshot`, then `account_state` per change, polled from every daemon every 5 s; `stopped` for no process), the QR add flow (`POST /accounts/qr`, see `docs/deployment.md`), and the host-level policy (`/policy/users/<id>`, `/policy/tenants/<id>`, `/policy/<ownId>`, `/presence/always-on`). Every event also goes to `ZALO_FLEET_WEBHOOK` (signed with `ZALO_FLEET_WEBHOOK_SECRET` like the daemons' webhooks). Port: `--http`, else `ZALO_FLEET_CONTROLLER_PORT`, else 3899; binds 127.0.0.1 unless `--host`. Runs until SIGINT/SIGTERM. |
 | `fleet generate --out <dir> [--base-port <port>] [--user <name>] [--home <dir>] [--bin <path>] [--domain <host>] [--force] [--rotate-tokens]` | Write the files that supervise a fleet: the systemd template unit `zalo-mcp@.service` (the instance name is the account id), `zalo-mcp-purge.service` and `zalo-mcp-purge.timer` (`fleet purge --yes` every hour at a random minute, `Persistent=true`), `common.env`, `accounts/<ownId>.env` per registered account with its port and a generated 256-bit bearer token (mode 600; never printed), `ports.json`, and with `--domain` a Caddyfile that serves every account under `/a/<ownId>/` and answers 404 for `/metrics` and `/status`. An existing file is kept; `--force` replaces the ones with no secret, an account env file keeps its token unless `--rotate-tokens`. Identical to the samples in `docs/config-samples/`. |
 
 **Via the `zalo-mcp` wrapper (`v2.0.0+`):** `zalo-mcp` (or `node mcp-server.js`) forwards **all** `mcp start` flags (`--account`, `--http`, `--auth`, `--host`, `--cert`, `--key`, `--client-id`, `--client-secret`, `--issuer-url`, `-w`/`--webhook`, `--webhook-secret`, `--config`, `--no-delivered-receipts`, `--no-self-heal`, `-d`/`--daemon`, `--stop`, `--status`), all global storage/`.env` flags (`--env-file`, `--config-dir`, `--credentials-dir`, `--data-dir`, `--media-dir`, `--oa-dir`), and any CLI subcommand (`zalo-mcp --account <id> msg send ...`). (Older `zalo-mcp` `1.x` releases forwarded only `--http` and `--auth`.) The wrapper runs the `@ardennguyen/zalo-agent-cli` version installed in its `node_modules/`.
@@ -629,11 +642,12 @@ Completely independent from the personal (unofficial-API) account: separate OAut
 | `bank` | 5 |
 | `db` | 6 (`query`, `backup`, `export`, `verify`, `usage`, `purge`) |
 | `policy` | 4 (`get`, `set`, `unset`, `token`) |
+| `presence` | 3 (`status`, `wake`, `park`) |
 | `listen` | 1 |
 | `mcp` | 7 (`start`, `wait`, `mark-read`, and `webhook status` / `list` / `retry` / `purge` — exposing 36 MCP tools) |
-| `fleet` | 7 (`ports`, `status`, `start`, `stop`, `restart`, `purge`, `generate`) |
+| `fleet` | 8 (`ports`, `status`, `start`, `stop`, `restart`, `purge`, `generate`, `serve`) |
 | `oa` (all subgroups) | 32 |
-| **Total** | **254 CLI commands** + 36 MCP tools |
+| **Total** | **258 CLI commands** + 36 MCP tools |
 
 ## Provenance
 

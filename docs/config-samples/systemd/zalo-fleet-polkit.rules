@@ -1,0 +1,12 @@
+// /etc/polkit-1/rules.d/50-zalo-fleet.rules
+// Lets the service user "zalo" (the fleet controller) start, stop and restart the zalo-mcp@<id>
+// units, and nothing else: no other unit, no enable/disable, no daemon-reload.
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "zalo") return polkit.Result.NOT_HANDLED;
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    if (/^zalo-mcp@[1-9][0-9]{0,30}\.service$/.test(unit) && (verb === "start" || verb === "stop" || verb === "restart")) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

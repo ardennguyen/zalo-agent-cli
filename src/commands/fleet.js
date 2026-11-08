@@ -7,13 +7,19 @@
  * once, and write the systemd unit, env files and proxy config that supervise them. See src/core/fleet.js.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
 import { parseAccountId } from "../core/daemon-account.js";
 import { listAccounts } from "../core/accounts.js";
 import { getAccountDir } from "../core/credentials.js";
-import { getDaemonStatus, spawnDaemonProcess, statusViaDaemon, stopDaemon } from "../core/daemon-channel.js";
+import {
+    callViaDaemon,
+    getDaemonStatus,
+    spawnDaemonProcess,
+    statusViaDaemon,
+    stopDaemon,
+} from "../core/daemon-channel.js";
 import {
     DEFAULT_BASE_PORT,
     FleetError,
@@ -23,12 +29,24 @@ import {
     loadPortTable,
     needsRestart,
     planBatches,
+    releasePorts,
     renderStatusTable,
 } from "../core/fleet.js";
+import { createSpawnDriver, createSystemdDriver, detectSupervisor } from "../core/fleet-supervisor.js";
+import { createFleetController } from "../core/fleet-controller.js";
+import {
+    DEFAULT_CONTROLLER_PORT,
+    adminWebhook,
+    agentTokenHashes,
+    buildControllerApp,
+    runSelf,
+} from "../core/fleet-serve.js";
+import { applyPolicy, effectivePolicy, ownerOf } from "../core/policy-store.js";
+import { resolvePublicUrl } from "../core/deploy-policy.js";
 import { kickFile, readKickMarker } from "../core/kick-marker.js";
 import { fleetPurge } from "../core/fleet-purge.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
-import { envForAccount } from "../mcp/mcp-config.js";
+import { envForAccount, loadMCPConfig } from "../mcp/mcp-config.js";
 import { error, info, output, success, warning } from "../utils/output.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -210,6 +228,27 @@ async function startInBatches(targets, { batch, staggerSec, envDir, dryRun, log 
         }
     }
     return results;
+}
+
+/**
+ * Drop a removed account from this host's fleet bookkeeping: its port, its env file, its owning user's list.
+ *
+ * @param {string} ownId
+ * @param {string|null} envDir
+ */
+function forgetAccount(ownId, envDir) {
+    releasePorts([ownId]);
+    if (envDir) rmSync(join(envDir, `${ownId}.env`), { force: true });
+    const owner = ownerOf(ownId);
+    if (owner) {
+        applyPolicy({
+            target: { kind: "user", id: owner.id },
+            op: "patch",
+            policy: {},
+            accounts: owner.accounts.filter((a) => a !== ownId),
+            actor: "fleet-controller",
+        });
+    }
 }
 
 /**
@@ -472,6 +511,108 @@ export function registerFleetCommands(program) {
                     `Purge:   sudo install -m 644 ${opts.out}/zalo-mcp-purge.service ${opts.out}/zalo-mcp-purge.timer /etc/systemd/system/ && sudo systemctl enable --now zalo-mcp-purge.timer`,
                 );
             });
+        });
+
+    fleet
+        .command("serve")
+        .description(
+            "The account-lifecycle admin API for this host (start/stop/restart, guarded logout and remove, QR add, account_state SSE); admin credential only",
+        )
+        .option("--http <port>", `Port (default ZALO_FLEET_CONTROLLER_PORT, else ${DEFAULT_CONTROLLER_PORT})`)
+        .option("--host <addr>", "Address to bind (default 127.0.0.1; put a TLS proxy in front for another machine)")
+        .option(
+            "--env-dir <dir>",
+            "Per-account env files (<dir>/<ownId>.env): daemon environment, and where a QR add writes",
+        )
+        .option("--listen", "Spawned daemons are `listen` (webhook only) instead of `mcp start --http`")
+        .option(
+            "--public-url <url>",
+            "The address a CRM reaches this controller at (QR page links); or ZALO_MCP_PUBLIC_URL",
+        )
+        .action(async (opts) => {
+            const port = intOption(
+                "--http",
+                opts.http ?? process.env.ZALO_FLEET_CONTROLLER_PORT ?? String(DEFAULT_CONTROLLER_PORT),
+                1,
+                65535,
+            );
+            const host = opts.host || "127.0.0.1";
+            const envDir = opts.envDir ?? null;
+            const config = loadMCPConfig();
+            const kind = detectSupervisor();
+            const driver =
+                kind === "systemd"
+                    ? createSystemdDriver()
+                    : createSpawnDriver({
+                          spawnDaemon: spawnDaemonProcess,
+                          stopDaemon,
+                          daemonStatus: getDaemonStatus,
+                          accountDir: getAccountDir,
+                          argsFor: (id) =>
+                              opts.listen
+                                  ? [process.argv[1], "listen", "--account", id]
+                                  : [
+                                        process.argv[1],
+                                        "mcp",
+                                        "start",
+                                        "--account",
+                                        id,
+                                        "--http",
+                                        String(portsFor([{ ownId: id }])[id]),
+                                    ],
+                          envFor: (id) => envFromDir(envDir, id),
+                      });
+            const pub = resolvePublicUrl({ flag: opts.publicUrl, env: process.env, config, aliases: false });
+            if (pub.error) {
+                error(pub.error);
+                process.exit(1);
+            }
+            const webhook = adminWebhook(
+                process.env.ZALO_FLEET_WEBHOOK || null,
+                process.env.ZALO_FLEET_WEBHOOK_SECRET || null,
+            );
+            const log = (l) => console.error(l);
+            const controller = createFleetController({
+                driver,
+                listAccounts: () => listAccounts().map((a) => ({ ownId: a.ownId })),
+                probe: async (ownId) => {
+                    const dir = getAccountDir(ownId);
+                    const daemon = getDaemonStatus(dir);
+                    const reply = daemon.running ? await statusViaDaemon(dir) : null;
+                    return {
+                        running: daemon.running,
+                        pid: daemon.pid,
+                        health: reply?.ok ? reply.health : null,
+                        kicked: !daemon.running && Boolean(readKickMarker(kickFile(dir))),
+                    };
+                },
+                relay: (ownId, path, params) => callViaDaemon(getAccountDir(ownId), path, params),
+                runCli: (args) => runSelf(args),
+                describe: (ownId) => ({
+                    port: readPorts()[ownId] ?? null,
+                    userId: ownerOf(ownId)?.id ?? null,
+                    presence: effectivePolicy(ownId)?.presence?.mode ?? null,
+                }),
+                forget: (ownId) => forgetAccount(ownId, envDir),
+                webhook,
+                log,
+            });
+            const { app } = buildControllerApp({ controller, config, agentHashes: agentTokenHashes(envDir), log });
+            const server = app.listen(port, host, () => {
+                info(`Fleet controller on http://${host}:${port}/zalo/admin (supervisor: ${driver.kind})`);
+            });
+            server.on("error", (e) => {
+                error(`Cannot listen on ${host}:${port}: ${e.message}`);
+                process.exit(1);
+            });
+            controller.start();
+            const stop = () => {
+                controller.stop();
+                server.close();
+                process.exit(0);
+            };
+            process.on("SIGINT", stop);
+            process.on("SIGTERM", stop);
         });
 
     // A purge deletes for good: --yes to run it, --dry-run (its own: it counts) to preview, exit 2 without either.

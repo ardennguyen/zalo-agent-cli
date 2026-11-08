@@ -77,6 +77,7 @@ export const EXCLUDED = {
     "fleet start": "starts daemon processes",
     "fleet restart": "stops and starts daemon processes",
     "fleet stop": "signals daemon processes",
+    "fleet serve": "daemon: the fleet controller runs until stopped",
     sync: "phone-backed restore: waits for a tap on the phone",
     "sync-mobile": "phone-backed restore: waits for a tap on the phone",
 };
@@ -91,6 +92,8 @@ export const FAILS_OFFLINE = {
     "msg media": "needs a downloaded, encrypted media file in the cache (tests/cli/msg-media.test.js has one)",
     "mcp wait": "asks a running `mcp start` server",
     "mcp mark-read": "asks a running `mcp start` server",
+    "presence wake": "asks a running daemon's channel",
+    "presence park": "asks a running daemon's channel",
     "sync-cloud": "needs the account's zCloud viewer key, which only a real zCloud subscription hands out",
     "conv unhide": "needs the hidden-chat PIN typed by a person (no terminal and no --pin-stdin here: exit 2)",
     "conv hidden-pin": "needs the hidden-chat PINs typed by a person (no terminal and no --pin-stdin here: exit 2)",

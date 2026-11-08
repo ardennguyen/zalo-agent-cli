@@ -186,6 +186,9 @@ const STATUS = { INVALID: 400, NOT_FOUND: 404, MEMBERSHIP: 409, CONFLICT: 412, R
  * @param {string|null} [args.publicUrl]
  * @param {{handle: (req: object, res: object, ctx: object) => Promise<void>}|null} [args.exportApi] - the export
  *   routes (src/core/data-export.js createExportApi)
+ * @param {((req: object, res: object, ctx: {who: string, ip: string, path: string}) => Promise<boolean>)|null}
+ *   [args.routes] - more routes behind the same credential (the fleet controller's `/accounts...` and `/events`);
+ *   false: not one of them (404)
  * @param {(line: string) => void} [args.log]
  * @returns {{enabled: () => boolean, handle: (req: object, res: object) => void}}
  */
@@ -199,6 +202,7 @@ export function createAdminApi({
     effectiveExtra,
     publicUrl = null,
     exportApi = null,
+    routes = null,
     log = (l) => console.error(l),
 }) {
     const enabled = () => mtls || hashes.length > 0 || Boolean(sealedHash());
@@ -281,6 +285,17 @@ export function createAdminApi({
                 log(`[admin] ${req.method} ${path} failed: ${e.message}`);
                 if (!res.headersSent) send(res, 500, { error: e.message });
             });
+            return;
+        }
+        if (routes && (path === "/events" || path === "/accounts" || path.startsWith("/accounts/"))) {
+            Promise.resolve(routes(req, res, { who, ip, path }))
+                .then((handled) => {
+                    if (!handled && !res.headersSent) send(res, 404, { error: "not found" });
+                })
+                .catch((e) => {
+                    log(`[admin] ${req.method} ${path} failed: ${e.message}`);
+                    if (!res.headersSent) send(res, 500, { error: e.message });
+                });
             return;
         }
         if (path === "/presence/always-on") {

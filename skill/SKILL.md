@@ -13,7 +13,7 @@ Automate Zalo messaging, groups, contacts, payments, and real-time events via `z
 Handles: login/logout, messaging (text/image/file/sticker/voice/video/link), reactions, mentions, recall, message history, friends, groups, conversations, profile, polls, reminders, auto-reply, quick messages, labels, catalogs, listen (WebSocket), webhooks, local SQLite cache + mobile sync, bank cards, VietQR, multi-account with proxy, **Official Account (OA) API v3.0** (OAuth login, OA messaging, followers, tags, articles, store, webhook listener), **MCP Server** (Model Context Protocol for Claude Code and MCP clients).
 Does NOT handle: Zalo Mini App, Zalo Ads, ZNS templates, non-Zalo platforms.
 
-Surface: **254 CLI commands** across 30 command containers (21 top-level groups + 7 OA subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
+Surface: **258 CLI commands** across 31 command containers (22 top-level groups + 7 OA subgroups + `mcp webhook` + `account security`) + **36 MCP tools**. The exhaustive list is `references/command-reference.md` — that file is generated from source and is authoritative whenever this file is less specific.
 
 ## Prerequisites
 
@@ -163,6 +163,8 @@ zalo-agent db backup --out backup.db                  # Encrypted, verified copy
 zalo-agent db export --out plain.db --plaintext --yes # Decrypted copy for other SQLite tools (asks first: exit 2 without --yes); hidden chats only with --include-hidden + PIN
 zalo-agent db export --out mine.zaexport --password   # Encrypted under a password you type (asked twice; or --password-stdin); opens anywhere with it
 zalo-agent fleet purge --dry-run                      # Every account here: the purge for stopped daemons, or a nudge to one that is behind (--yes runs it)
+zalo-agent fleet serve --http 3899 --env-dir /etc/zalo-mcp/accounts   # The host's account-lifecycle admin API (admin credential): start/stop, guarded logout/remove, QR add, account_state SSE
+zalo-agent presence status                            # The daemon's socket under on-demand presence (wake / park to override)
 zalo-agent db verify                                  # Row MAC check of every cached message (tamper evidence); exit 1 on a finding
 zalo-agent db usage                                   # Storage on this machine, quota state (ok/warn/over, purge date), retention rules (MCP: zalo_profile usage)
 zalo-agent db purge --dry-run | --yes                 # Quota/retention purge now (delete-only; through the daemon when one runs)
@@ -388,7 +390,7 @@ Every write changes something. 26 of the 27 have been answered by a live account
 
 | File | Contents |
 |------|----------|
-| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 254 commands + 36 MCP tools) |
+| `references/command-reference.md` | **Authoritative** exhaustive reference — every command, subcommand, flag, and default (all 258 commands + 36 MCP tools) |
 | `references/mcp-guide.md` | MCP tools, parameters, return shapes, `mcp-config.json`, architecture (Vietnamese) |
 | `references/oa-command-reference.md` | Official Account quick reference, error codes, webhook checklist |
 | `references/login-flow.md` | QR login, headless credentials login, multi-account, proxy formats, troubleshooting |

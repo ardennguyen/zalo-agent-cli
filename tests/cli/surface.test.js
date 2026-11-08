@@ -180,7 +180,8 @@ const COMMAND_SURFACE = {
         "register",
     ],
     mcp: ["start", "wait", "mark-read", "webhook", "approver"],
-    fleet: ["ports", "status", "start", "stop", "restart", "generate"],
+    fleet: ["ports", "status", "start", "stop", "restart", "generate", "serve"],
+    presence: ["status", "wake", "park"],
     oa: [
         "login",
         "refresh",

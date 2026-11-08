@@ -113,6 +113,31 @@ export function assignPorts(ownIds, { basePort } = {}) {
     });
 }
 
+/**
+ * Free the ports of removed accounts (the fleet controller's `DELETE /accounts/<ownId>`). Other ports never move.
+ *
+ * @param {string[]} ownIds
+ * @returns {{released: string[]}}
+ */
+export function releasePorts(ownIds) {
+    if (!existsSync(fleetFile())) return { released: [] };
+    return withFileLock(`${fleetFile()}.lock`, () => {
+        const table = loadPortTable();
+        const released = ownIds.filter((id) => table.ports[id] !== undefined);
+        for (const id of released) delete table.ports[id];
+        if (released.length) {
+            writeFileAtomic(
+                fleetFile(),
+                JSON.stringify({ version: 1, basePort: table.basePort, ports: table.ports }, null, 2),
+                {
+                    mode: 0o644,
+                },
+            );
+        }
+        return { released };
+    });
+}
+
 /** The states `fleet status` reports, worst last. */
 export const STATES = Object.freeze([
     "ok",

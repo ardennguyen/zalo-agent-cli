@@ -308,6 +308,9 @@ function readJsonBody(req, reply) {
  *   (`POST /policy`), applied in this daemon so the change counts at once; the body lives in ./policy-store.js.
  * @param {(params: object) => object|Promise<object>} [args.onPurge] - a quota/retention purge from `db purge`
  *   (`POST /purge`), run by this daemon, the account's one writer; the body lives in ./storage-quota.js.
+ * @param {(params: {action: "status"|"wake"|"park"}) => object|Promise<object>} [args.onPresence] - on-demand
+ *   presence (`presence status|wake|park`, the fleet controller's relay; `POST /presence`). WP3 wiring point: a daemon
+ *   that runs presence passes it; without it the route answers 503 and the CLI says the socket stays connected.
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -323,6 +326,7 @@ export function startDaemonChannel({
     onMediaLink = null,
     onPolicy = null,
     onPurge = null,
+    onPresence = null,
 }) {
     const token = randomBytes(24).toString("hex");
     // The stage that is running, and the controller its runner was given: `POST /sync/cancel` aborts it.
@@ -559,6 +563,7 @@ export function startDaemonChannel({
             req.url !== "/media-link" &&
             req.url !== "/policy" &&
             req.url !== "/purge" &&
+            req.url !== "/presence" &&
             !stage
         ) {
             return reply(404, { error: "not found" });
@@ -574,6 +579,7 @@ export function startDaemonChannel({
         if (req.url === "/media-link") return serveMediaLink(body, reply);
         if (req.url === "/policy") return serveCall(onPolicy, "policy", body, reply);
         if (req.url === "/purge") return serveCall(onPurge, "purge", body, reply);
+        if (req.url === "/presence") return serveCall(onPresence, "presence", body, reply);
         return stage ? serveStage(stage, body, res, reply) : serveAttachments(body, reply);
     });
 

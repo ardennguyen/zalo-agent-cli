@@ -1,0 +1,38 @@
+# /etc/systemd/system/zalo-fleet-check.service
+# The health check of every account on this machine, run by zalo-fleet-check.timer every 5 minutes:
+# `fleet status --check` exits 1 unless every account is ok, idle or degraded, and the unit then
+# shows in `systemctl --failed`. Add OnFailure= to be told: a unit of yours that mails, posts to
+# ntfy or calls a webhook (it gets the failed unit's name as %i).
+#   systemctl enable --now zalo-fleet-check.timer
+#   journalctl -u zalo-fleet-check        (the last table)
+# It reads the registry and asks each daemon over its loopback channel: no key, no Zalo traffic.
+[Unit]
+Description=Zalo MCP fleet health check (fleet status --check)
+Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/deployment.md
+# OnFailure=notify-admin@%n.service
+
+[Service]
+Type=oneshot
+User=zalo
+Group=zalo
+WorkingDirectory=/home/zalo
+UMask=0077
+EnvironmentFile=/etc/zalo-mcp/common.env
+Environment=NODE_ENV=production
+Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
+ExecStart=/usr/bin/zalo-agent fleet status --check
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zalo-fleet-check
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/zalo/.zalo-agent-cli
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=300M

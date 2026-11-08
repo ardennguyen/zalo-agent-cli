@@ -1,0 +1,39 @@
+<!--
+  zalo-mcp-service.xml: the MCP HTTP server as a Windows service, with WinSW
+  (https://github.com/winsw/winsw, v2.12 or later). Put WinSW-x64.exe next to this
+  file, renamed zalo-mcp-service.exe, then from an Administrator PowerShell:
+      .\zalo-mcp-service.exe install
+      .\zalo-mcp-service.exe start
+  The service runs as YOUR user (<serviceaccount> below), never LocalSystem: the
+  account's keys are DPAPI CurrentUser keys and the files live in your profile.
+  Log in first, from a normal (not elevated) shell:  zalo-agent login
+  Stop is graceful: WinSW sends Ctrl+C first and waits <stoptimeout>, the same
+  shutdown as Ctrl+C in a terminal (a Task Scheduler "End" kills it instead).
+-->
+<service>
+  <id>zalo-mcp</id>
+  <name>Zalo MCP server</name>
+  <description>zalo-agent mcp start over HTTP for this machine's AI clients</description>
+  <executable>%AppData%\npm\zalo-agent.cmd</executable>
+  <!-- The token and port come from server.env, never from this command line. -->
+  <arguments>--env-file "%USERPROFILE%\.zalo-agent-cli\server.env" mcp start --account 1000000000000000001</arguments>
+  <workingdirectory>%USERPROFILE%</workingdirectory>
+  <serviceaccount>
+    <username>.\CHANGE_ME_WINDOWS_USER</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+  <env name="ZALO_AGENT_NO_UPDATE_CHECK" value="1"/>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>30 sec</stoptimeout>
+  <!-- WinSW cannot tell exit codes apart. Exit 3 (another session took the account) and 4
+       (Zalo refuses the saved login) are not fixed by a restart, so this restarts once after
+       a failure and then leaves it stopped: read the log before starting it again. -->
+  <onfailure action="restart" delay="60 sec"/>
+  <onfailure action="none"/>
+  <resetfailure>1 hour</resetfailure>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+</service>

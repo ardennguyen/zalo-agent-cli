@@ -63,4 +63,6 @@ class Hook(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not SECRET:
         raise SystemExit("set WEBHOOK_SECRET")
-    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), Hook).serve_forever()
+    # HOST: the address to bind (default loopback, behind your TLS proxy); set it to an interface
+    # address to take the webhook directly.
+    HTTPServer((os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", "8080"))), Hook).serve_forever()

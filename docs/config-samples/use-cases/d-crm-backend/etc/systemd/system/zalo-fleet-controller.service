@@ -1,0 +1,46 @@
+# /etc/systemd/system/zalo-fleet-controller.service
+# The fleet controller: the account-lifecycle admin API for this host (zalo-agent fleet serve).
+# It holds no account lock and no Zalo socket; it starts and stops zalo-mcp@<id> units through
+# systemctl, which the polkit rule zalo-fleet-polkit.rules allows for zalo-mcp@*.service only.
+# Admin credential: ZALO_MCP_ADMIN_TOKEN_FILE in common.env (or zalo-agent policy token --rotate).
+#   sudo install -m 644 zalo-fleet-polkit.rules /etc/polkit-1/rules.d/50-zalo-fleet.rules
+#   systemctl enable --now zalo-fleet-controller
+#   journalctl -u zalo-fleet-controller
+[Unit]
+Description=Zalo MCP fleet controller (account lifecycle API)
+Documentation=https://github.com/ardennguyen/zalo-agent-cli/blob/main/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zalo
+Group=zalo
+WorkingDirectory=/home/zalo
+UMask=0077
+EnvironmentFile=/etc/zalo-mcp/common.env
+Environment=NODE_ENV=production
+Environment=ZALO_AGENT_NO_UPDATE_CHECK=1
+Environment=ZALO_FLEET_SUPERVISOR=systemd
+ExecStart=/usr/bin/zalo-agent fleet serve --env-dir /etc/zalo-mcp/accounts
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zalo-fleet-controller
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# A QR add writes the new account's env file (the folder must be owned by the service user).
+ReadWritePaths=/home/zalo/.zalo-agent-cli /etc/zalo-mcp/accounts
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

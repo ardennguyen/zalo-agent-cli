@@ -1,0 +1,54 @@
+{
+    "watchThreads": ["dm:*", "group:*"],
+    "triggerKeywords": ["@bot"],
+    "limits": {
+        "maxMessagesPerPoll": 20,
+        "autoDigestThreshold": 50,
+        "bufferMaxAge": "2h",
+        "bufferMaxSize": 500
+    },
+    "media": {
+        "downloadDir": null,
+        "autoOpen": true,
+        "deliver": {"photo": "inline", "gif": "inline", "doodle": "inline", "sticker": "inline", "voice": "inline", "audio": "inline", "video": "link", "file": "link"},
+        "inlineMaxBytes": 5242880,
+        "allowDeliver": ["inline", "link", "tempfile"],
+        "linkTtl": "10m",
+        "tempfileTtl": "10m",
+        "linkAuth": "capability",
+        "linkRateLimit": 60,
+        "capability": { "maxClients": 3, "ttl": "15m" }
+    },
+    "notify": {
+        "enabled": false,
+        "thread": null,
+        "on": ["dm"],
+        "cooldown": "5m"
+    },
+    "confirmMode": "agent",
+    "hiddenChats": "exclude",
+    "allowPinArgument": false,
+    "publicUrl": null,
+    "approval": {
+        "secret": "auto",
+        "deliver": "result"
+    },
+    "admin": {
+        "tokenFile": null,
+        "clientCa": null
+    },
+    "presence": {
+        "mode": "always-on",
+        "idleTimeout": "5m",
+        "minConnected": "60s",
+        "maxWakesPerHour": 12,
+        "warmWait": "10s",
+        "connectOnStart": true,
+        "catchUpEvery": "off",
+        "maxLeases": 64,
+        "leaseTtl": "90s",
+        "leaseTtlMax": "600s",
+        "waitHoldsSocket": true,
+        "onKick": "yield"
+    }
+}

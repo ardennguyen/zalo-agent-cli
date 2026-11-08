@@ -1,0 +1,19 @@
+#!/bin/sh
+# /usr/local/bin/za -- run zalo-agent as the service user "zalo", the way the units run it: the same
+# home (/home/zalo/.zalo-agent-cli and its .env), the same /etc/zalo-mcp/common.env, and the storage
+# passphrase systemd decrypts from /etc/zalo-mcp/storage-passphrase.cred. A command run any other
+# way (as root, as you, or with another HOME) opens another config dir, or none, and finds no account.
+#   sudo install -m 755 za /usr/local/bin/za
+#   za account list      za login      za fleet status      za db backup --out /var/backups/zalo/x.db
+# It asks for sudo (systemd-run starts a one-off service as zalo). Give paths absolute: the command
+# runs in /home/zalo, a file it reads must be readable by zalo, and a file it writes is owned by zalo.
+# Never `za mcp start` for an account whose unit runs: two copies of one login kick each other.
+set -eu
+if [ -t 0 ] && [ -t 1 ]; then io=--pty; else io=--pipe; fi
+exec sudo systemd-run --quiet --wait --collect "$io" \
+    --property=User=zalo --property=Group=zalo \
+    --property=WorkingDirectory=/home/zalo --property=UMask=0077 \
+    --property=EnvironmentFile=-/etc/zalo-mcp/common.env \
+    --property=LoadCredentialEncrypted=zalo-storage-passphrase:/etc/zalo-mcp/storage-passphrase.cred \
+    --setenv=NODE_ENV=production --setenv=ZALO_AGENT_NO_UPDATE_CHECK=1 \
+    /usr/bin/zalo-agent "$@"

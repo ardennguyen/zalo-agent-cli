@@ -1,0 +1,76 @@
+# Caddyfile for a CRM backend: the accounts' public endpoints on one host, and the admin APIs
+# (each daemon's /zalo/admin/* and the fleet controller's) on a second host that only the
+# CRM's egress address can reach. Neither admin API is ever served on the public host.
+#   sudo install -m 644 Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+
+# The public host: what agents, the CRM's MCP calls and the people who scan a QR reach.
+zalo.example.com {
+	# Media links (/a/<id>/zalo/media/<token>) are never compressed: it breaks byte ranges.
+	@compress not path /a/*/zalo/media/*
+	encode @compress zstd gzip
+
+	# The QR pages of a CRM's QR add (POST /zalo/admin/accounts/qr on the controller): one-time
+	# tokens, served by the fleet controller while the flow runs.
+	handle /zalo/qr/* {
+		reverse_proxy 127.0.0.1:3899
+	}
+
+	handle_path /a/1000000000000000001/* {
+		@internal path /metrics /status /zalo/admin /zalo/admin/*
+		respond @internal 404
+
+		reverse_proxy 127.0.0.1:3901 {
+			flush_interval -1
+			transport http {
+				read_timeout 310s
+			}
+		}
+	}
+
+	handle_path /a/1000000000000000002/* {
+		@internal path /metrics /status /zalo/admin /zalo/admin/*
+		respond @internal 404
+
+		reverse_proxy 127.0.0.1:3902 {
+			flush_interval -1
+			transport http {
+				read_timeout 310s
+			}
+		}
+	}
+
+	respond 404
+}
+
+# The admin host: the CRM's console only. 198.51.100.7 stands for the CRM's egress address;
+# everything else gets 404. Each daemon's admin API under /a/<id>/zalo/admin/*, the fleet
+# controller's under /fleet/zalo/admin/*. Nothing but /zalo/admin/* is served here.
+admin.zalo.example.com {
+	# route keeps the written order: the address check first, then the paths.
+	route {
+		@outsider not remote_ip 198.51.100.7
+		respond @outsider 404
+
+		handle_path /fleet/* {
+			@other not path /zalo/admin /zalo/admin/*
+			respond @other 404
+			reverse_proxy 127.0.0.1:3899 {
+				flush_interval -1
+			}
+		}
+
+		handle_path /a/1000000000000000001/* {
+			@other not path /zalo/admin /zalo/admin/*
+			respond @other 404
+			reverse_proxy 127.0.0.1:3901
+		}
+
+		handle_path /a/1000000000000000002/* {
+			@other not path /zalo/admin /zalo/admin/*
+			respond @other 404
+			reverse_proxy 127.0.0.1:3902
+		}
+
+		respond 404
+	}
+}

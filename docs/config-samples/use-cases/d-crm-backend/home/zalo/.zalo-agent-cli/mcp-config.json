@@ -1,0 +1,56 @@
+{
+    "watchThreads": ["dm:*", "group:*"],
+    "host": "127.0.0.1",
+    "limits": {
+        "maxMessagesPerPoll": 50,
+        "bufferMaxAge": "6h",
+        "bufferMaxSize": 1000
+    },
+    "media": {
+        "downloadDir": null,
+        "autoOpen": false,
+        "deliver": {"photo": "inline", "gif": "inline", "doodle": "inline", "sticker": "inline", "voice": "inline", "audio": "inline", "video": "link", "file": "link"},
+        "inlineMaxBytes": 5242880,
+        "allowDeliver": ["inline", "link"],
+        "linkTtl": "10m",
+        "tempfileTtl": "10m",
+        "linkAuth": "bearer",
+        "linkRateLimit": 60,
+        "capability": { "maxClients": 3, "ttl": "15m" }
+    },
+    "confirmMode": "agent",
+    "hiddenChats": "exclude",
+    "allowPinArgument": false,
+    "trustedProxies": ["127.0.0.1"],
+    "publicUrl": null,
+    "approval": {
+        "secret": "auto",
+        "deliver": "webhook"
+    },
+    "admin": {
+        "tokenFile": "/etc/zalo-mcp/admin-token",
+        "clientCa": null
+    },
+    "presence": {
+        "mode": "on-demand",
+        "idleTimeout": "5m",
+        "minConnected": "60s",
+        "maxWakesPerHour": 12,
+        "warmWait": "10s",
+        "connectOnStart": true,
+        "catchUpEvery": "off",
+        "maxLeases": 64,
+        "leaseTtl": "90s",
+        "leaseTtlMax": "600s",
+        "waitHoldsSocket": true,
+        "onKick": "yield"
+    },
+    "accounts": {
+        "1000000000000000001": {
+            "presence": { "mode": "always-on" }
+        },
+        "1000000000000000002": {
+            "watchThreads": ["dm:*"]
+        }
+    }
+}

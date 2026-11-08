@@ -1,0 +1,14 @@
+# /etc/systemd/system/zalo-mcp-purge.timer
+# Runs zalo-mcp-purge.service every hour at a random minute, and once after a boot that missed a run.
+#   systemctl enable --now zalo-mcp-purge.timer
+#   systemctl list-timers zalo-mcp-purge.timer
+[Unit]
+Description=Hourly Zalo MCP quota and retention purge
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+# /etc/systemd/system/zalo-fleet-check.timer
+# Runs zalo-fleet-check.service 5 minutes after boot, then every 5 minutes.
+#   systemctl enable --now zalo-fleet-check.timer
+#   systemctl list-timers zalo-fleet-check.timer
+[Unit]
+Description=Zalo MCP fleet health check every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

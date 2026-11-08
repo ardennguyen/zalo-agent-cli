@@ -1,0 +1,14 @@
+{
+    "policy": {
+        "quota": {
+            "tenant": { "limit": "50GB" },
+            "graceDays": 45,
+            "warnAt": 0.8
+        },
+        "presence": {
+            "mode": "on-demand",
+            "alwaysOn": { "maxPerUser": 1, "maxPerTenant": null }
+        },
+        "retention": { "messages": "90d", "media": "30d" }
+    }
+}

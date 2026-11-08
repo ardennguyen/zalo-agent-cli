@@ -142,6 +142,22 @@ export async function probeSavedLogin(creds, proxyUrl = null, { ownId = null } =
 }
 
 /**
+ * The device id and user agent an account's saved login uses, or null (none saved, unreadable, or incomplete).
+ *
+ * @param {string} ownId
+ * @returns {{imei: string, userAgent: string}|null}
+ */
+function savedDeviceOf(ownId) {
+    try {
+        const creds = loadCredentials(ownId);
+        if (typeof creds?.imei !== "string" || !creds.imei || typeof creds?.userAgent !== "string") return null;
+        return { imei: creds.imei, userAgent: creds.userAgent };
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Login via QR code with optional proxy: the official Web sequence (src/zalo/qr-login.js), then our own login with
  * the session it produced. `ZALO_QR_FLOW=legacy` (the previous engine's flow) was removed in 3.0.0 and is refused here,
  * before any request.
@@ -160,16 +176,26 @@ export async function loginWithQR(proxyUrl = null, onQrEvent = null) {
     // "Thiết bị" device label on the phone's QR-confirm screen. A varied, coherent User-Agent is picked once, at
     // the initial QR login; the hints are derived from it (src/zalo/headers.js), and it persists for this account
     // afterward via the saved credentials' userAgent field (extractCredentials()/loginWithCredentials()).
-    const fingerprint = generateDeviceFingerprint();
-    const platform = secChUaFor(fingerprint.userAgent)?.secChUaPlatform ?? "unknown";
-    info(`Using device fingerprint: Chrome (${platform.replace(/"/g, "")})`);
+    //
+    // Zalo Web keeps one device id (imei) per browser across logout and login, and Zalo keeps the offline queue per
+    // device. So a re-login of the active account presents the same browser again (its saved user agent), and an
+    // account that confirms the QR with a device id saved for that browser logs in with it again: its queue survives
+    // the re-login. Any other account gets a new device id (src/zalo/qr-login.js `deviceImeiFor`).
+    const active = getActive();
+    const candidate = active ? savedDeviceOf(active.ownId) : null;
+    const userAgent = candidate?.userAgent ?? generateDeviceFingerprint().userAgent;
+    const platform = secChUaFor(userAgent)?.secChUaPlatform ?? "unknown";
+    info(
+        `Using device fingerprint: Chrome (${platform.replace(/"/g, "")})${candidate ? ", as at this account's last login" : ""}`,
+    );
 
     const api = await openQrSession({
         zaloOptions,
-        userAgent: fingerprint.userAgent,
+        userAgent,
         onEvent: onQrEvent,
         trustStore: createTrustStore(getAccountDir),
         drStoreFor,
+        deviceFor: savedDeviceOf,
     });
     const ownId = api.getOwnId?.() || null;
     setSession(api, ownId);

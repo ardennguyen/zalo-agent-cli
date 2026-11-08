@@ -10,14 +10,22 @@
 import { SANDBOX_CONFIG_DIR, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { CONFIG_DIR, deleteCredentials, saveCredentials } from "../../src/core/credentials.js";
+import { addAccount, removeAccount } from "../../src/core/accounts.js";
 import { QrLoginAborted, QrLoginDeclined } from "../../src/zalo/errors.js";
 import { QR_EVENT } from "../../src/zalo/enums.js";
 import { newJar } from "../../src/zalo/kernel/cookies.js";
 import { createSession } from "../../src/zalo/kernel/session.js";
 import { clearSession, loginWithQR } from "../../src/core/zalo-client.js";
 import { QR_FLOW_INVALID, resolveQrFlow } from "../../src/zalo/profile.js";
-import { buildOf, loadTrustFromPage, qrLogin, scriptUrlOf, wantsSecondQr } from "../../src/zalo/qr-login.js";
+import {
+    buildOf,
+    deviceImeiFor,
+    loadTrustFromPage,
+    qrLogin,
+    scriptUrlOf,
+    wantsSecondQr,
+} from "../../src/zalo/qr-login.js";
 import { diffSequence } from "../helpers/replay/replay.js";
 import { WEB_QR_LOGIN, WEB_QR_LOGIN_FORBIDDEN } from "../helpers/replay/shapes.js";
 import { FAKE, SECOND_QR_ASKED, SECOND_QR_SCANNED, installFakeZalo, serveQrLogin } from "./fake-zalo-session.js";
@@ -648,6 +656,96 @@ describe("the QR login", () => {
                 (e) => e.code === QR_FLOW_INVALID,
             );
             assert.equal(fake.requests.length, 0);
+        });
+    });
+
+    describe("the device id (imei): reused on a re-login, as Zalo Web keeps one per browser", () => {
+        const SAVED_IMEI = "11111111-2222-4333-8444-555555555555-0123456789abcdef0123456789abcdef";
+        const OTHER_UA = CHROME_UA.replace("Windows NT 10.0; Win64; x64", "Macintosh; Intel Mac OS X 10_15_7");
+
+        it("an account that confirms with a device id saved for this user agent logs in with it again", async () => {
+            serveQrLogin(fake, { confirmData: { chatUid: FAKE.ownId } });
+            const asked = [];
+            const result = await qrLogin({
+                ...BASE,
+                deviceFor: (uid) => {
+                    asked.push(uid);
+                    return { imei: SAVED_IMEI, userAgent: CHROME_UA };
+                },
+            });
+            assert.deepEqual(asked, [FAKE.ownId], "asked for the account the confirm answer names");
+            assert.equal(result.imei, SAVED_IMEI);
+            assert.equal(result.uid, FAKE.ownId);
+            assert.equal(result.deviceReused, true);
+        });
+
+        it("a saved device id of another user agent is not reused: an imei pairs with its user agent", async () => {
+            serveQrLogin(fake, { confirmData: { chatUid: FAKE.ownId } });
+            const result = await qrLogin({
+                ...BASE,
+                deviceFor: () => ({ imei: SAVED_IMEI, userAgent: OTHER_UA }),
+            });
+            assert.notEqual(result.imei, SAVED_IMEI);
+            assert.match(result.imei, /^[0-9a-f-]{36}-[0-9a-f]{32}$/);
+            assert.equal(result.deviceReused, false);
+        });
+
+        it("a first login (nothing saved), or a confirm that names no account, gets a new device id", async () => {
+            serveQrLogin(fake, { confirmData: { chatUid: FAKE.ownId } });
+            const first = await qrLogin({ ...BASE, deviceFor: () => null });
+            assert.equal(first.deviceReused, false);
+            fake.uninstall();
+            fake = installFakeZalo();
+            serveQrLogin(fake);
+            const unnamed = await qrLogin({ ...BASE, deviceFor: () => ({ imei: SAVED_IMEI, userAgent: CHROME_UA }) });
+            assert.equal(unnamed.uid, null);
+            assert.notEqual(unnamed.imei, SAVED_IMEI, "never guess whose device id to reuse");
+            assert.equal(unnamed.deviceReused, false);
+        });
+
+        it("an account with a trusted device is named by its scan", async () => {
+            serveQrLogin(fake, { second: true });
+            const asked = [];
+            const result = await qrLogin({
+                ...BASE,
+                loadTrust: fakeTrust().load,
+                trustStore: fakeStore(),
+                deviceFor: (uid) => {
+                    asked.push(uid);
+                    return { imei: SAVED_IMEI, userAgent: CHROME_UA };
+                },
+            });
+            assert.deepEqual(asked, [SECOND_QR_ASKED.chatUid]);
+            assert.equal(result.imei, SAVED_IMEI);
+        });
+
+        it("deviceImeiFor survives a throwing lookup", () => {
+            assert.equal(
+                deviceImeiFor("1", CHROME_UA, () => {
+                    throw new Error("unreadable");
+                }),
+                null,
+            );
+            assert.equal(
+                deviceImeiFor(null, CHROME_UA, () => ({ imei: SAVED_IMEI, userAgent: CHROME_UA })),
+                null,
+            );
+        });
+
+        it("loginWithQR re-logs the active account in with its saved device id and user agent", async () => {
+            addAccount(FAKE.ownId, "Offline test account");
+            saveCredentials(FAKE.ownId, { imei: SAVED_IMEI, cookie: [], userAgent: CHROME_UA, language: "vi" });
+            try {
+                serveQrLogin(fake, { confirmData: { chatUid: FAKE.ownId } });
+                const { api } = await loginWithQR(null, () => {});
+                assert.equal(api.getContext().imei, SAVED_IMEI, "the session logs in with the saved imei");
+                assert.equal(api.getContext().userAgent, CHROME_UA);
+                const page = fake.requests.find((r) => r.path === "/account");
+                assert.equal(page.headers["user-agent"], CHROME_UA, "the QR page is asked by the same browser");
+            } finally {
+                deleteCredentials(FAKE.ownId);
+                removeAccount(FAKE.ownId);
+            }
         });
     });
 });

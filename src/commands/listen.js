@@ -70,6 +70,8 @@ import { alarmingGapCount } from "../core/listener-lifecycle.js";
 import { createAccountStateTracker, describeAccountState } from "../core/account-state.js";
 import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
+import { deviceSinceOf } from "../core/device-since.js";
+import { describeQueueOverflow } from "../core/overflow-repair.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
 
@@ -818,6 +820,11 @@ export function registerListenCommand(program) {
                 lock: stageLock,
                 enabled: opts.selfHeal !== false,
                 log: (line) => console.error(`[listen] ${line}`),
+                // Coverage never spans a device change (src/core/device-since.js): read on each run, so a
+                // re-login's new device id counts from the next handshake. Same in `mcp start`.
+                deviceSince: () => deviceSinceOf(activeAcc.ownId, getApi()),
+                // Zalo dropped part of a queue: reported like any other event (stdout, webhook, JSONL).
+                onNotice: (event) => emitEvent(event, describeQueueOverflow(event)),
                 // A message recovered after a drop reaches stdout, the JSONL and
                 // the webhook as a live one would, marked so a consumer can tell.
                 onRecovered: (items) => {

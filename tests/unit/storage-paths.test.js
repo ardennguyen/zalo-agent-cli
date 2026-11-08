@@ -30,6 +30,14 @@ import { mediaFileState } from "../../src/core/keystore/media-seal.js";
 import { SyncV2 } from "../../src/core/sync-v2/index.js";
 import { runJson } from "../helpers/cli.js";
 
+/** A saved login without the device stamp saveCredentials adds (src/core/credentials.js `deviceSinceFor`). */
+const unstamped = (creds) => {
+    if (!creds) return creds;
+    const rest = { ...creds };
+    delete rest.deviceSince;
+    return rest;
+};
+
 const TEST_UID = "user-test-1001";
 const TEST_THREAD = "thread-test-2002";
 
@@ -108,7 +116,7 @@ describe("separated storage paths (unit + CLI)", () => {
         assert.equal(credFile, join(customCreds, `cred_${TEST_UID}.json`));
         assert.equal(existsSync(credFile), true);
         assert.equal(existsSync(join(customConfig, "credentials")), false);
-        assert.deepEqual(loadCredentials(TEST_UID), { imei: "imei-1", cookie: [], userAgent: "ua" });
+        assert.deepEqual(unstamped(loadCredentials(TEST_UID)), { imei: "imei-1", cookie: [], userAgent: "ua" });
 
         // 2. Account registry goes to customConfig/accounts.json
         addAccount(TEST_UID, "Prod Bot", null);

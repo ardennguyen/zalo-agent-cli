@@ -13,7 +13,8 @@ import {
     autoLogin,
     isLoggedIn,
 } from "../core/zalo-client.js";
-import { saveCredentials, loadCredentials, getAccountDir } from "../core/credentials.js";
+import { saveCredentials, loadCredentials, getAccountDir, readSavedDevice } from "../core/credentials.js";
+import { describeLoginDevice, loginDeviceChange } from "../core/device-since.js";
 import { initDb, summarizeCloudItems } from "../core/db.js";
 import { describeAccountStatus, readAccountStatus } from "../core/account-status.js";
 import { describeDevices, summarizeCompanion } from "../core/account-devices.js";
@@ -96,6 +97,7 @@ export function registerAccountCommands(program) {
                 } catch {}
 
                 const creds = extractCredentials();
+                const device = loginDeviceChange(readSavedDevice(ownId), creds.imei);
                 saveCredentials(ownId, creds);
                 // A new login ends a kick: `fleet status` stops saying `kicked` before the daemon is back.
                 clearKickMarker(kickFile(getAccountDir(ownId)));
@@ -103,6 +105,7 @@ export function registerAccountCommands(program) {
                 success(
                     `Account logged in: ${displayName} (${ownId})${opts.proxy ? ` via ${maskProxy(opts.proxy)}` : ""}`,
                 );
+                info(describeLoginDevice(device, Date.now()));
                 await login.finish("done");
             } catch (e) {
                 error(`Login failed: ${e.message}`);

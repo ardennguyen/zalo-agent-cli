@@ -36,8 +36,21 @@ Firewall must allow at least one of these ports for remote access.
 | second QR | on an account with a trusted device: after the first scan the QR is replaced by a new one to scan once more (`event: "qr"` with `layer: 2` in `--json`; the browser page says so too) |
 | expired | With `--json` or no terminal: a fresh QR at once, up to 5 codes, then `login_error` (`Login timed out: …`). At a terminal: waits for Enter or the page's "Get a new code", up to 5 minutes |
 
-### Auto sync at login (`--sync`)
-Tick **auto sync** on the phone's QR confirmation screen, and run `zalo-agent login --sync` (add `--sync-days <n>` for a recent window). The phone sends a short-lived key with the login; the restore starts at once with it and the phone does **not** ask for the "ĐỒNG BỘ NGAY" tap. If auto sync was not ticked, or the key is more than two minutes old, nothing is started: run `zalo-agent sync` as usual. `--sync` is never started by a daemon on its own.
+### Auto sync at login ("sync messages to this device")
+After every QR login, `zalo-agent login` reads the phone's answer once and says whether **sync messages** was ticked on the QR confirmation screen:
+
+| Phone | What `login` does |
+|-------|-------------------|
+| Ticked | Restores the history at once with the short-lived key the phone sent; the phone does **not** ask for the "ĐỒNG BỘ NGAY" tap (`--sync-days <n>` for a recent window; `--no-sync` only reports) |
+| Not ticked | Starts nothing. On a new device id it prints the run that restores what this login does not have: `zalo-agent sync --from <date>` (asks for a tap) |
+| Ticked, but the key is over two minutes old by the time the socket is up | Same as not ticked (`late`) |
+| An offer for the Zalo PC app only | Same as not ticked (`other-client`) |
+| A `listen`/`mcp` daemon holds the account | Reads nothing (a second socket would fight the daemon); prints the `sync` command |
+
+`--sync` is the older spelling of the default, kept for scripts. No daemon ever starts this restore on its own.
+
+### Device id across re-logins
+Zalo keeps the offline queue (what arrives while no client is connected) **per device id**. Zalo Web keeps one per browser across logout and login; `zalo-agent login` does the same for an account whose saved login is still on this machine: the line after "Logged in" says `Device: the same device id ...`. A first login here, a login after `logout` (it deletes the saved login), or an unreadable saved login gets a **new device id** (`Device: a new device id ...`): nothing from before that login can come from Zalo's queue, so the next `listen`/`mcp` start keeps that window as a pending `new-device` gap and names the `zalo-agent sync --from <date>` run that closes it. Tick "sync messages" at the QR to avoid the extra step.
 
 ### Troubleshooting
 | Issue | Fix |
@@ -48,6 +61,9 @@ Tick **auto sync** on the phone's QR confirmation screen, and run `zalo-agent lo
 | Already logged in | `zalo-agent logout` first |
 | Wrong QR scanner | Must use **Zalo app → QR Scanner**, NOT phone camera |
 | Declined on phone | Login exits immediately with "Login declined on phone" (does not hang until the QR expires); the page says "Login failed" too — just re-run `zalo-agent login --qr-url &` |
+| `Device: a new device id ...` after a re-login | Expected after `logout`, on a first login here, or when the saved login could not be read. Messages from before the login are not in Zalo's queue for this device: tick "sync messages" at the QR next time, or run the `zalo-agent sync --from <date>` it printed (tap on the phone) |
+| Daemon log: `pending (new-device)` | The daemon started on a device id newer than its last stored message; run the printed `zalo-agent sync --from <date>` |
+| Daemon log or webhook: `queue_overflow` | Zalo dropped part of its offline queue while the account was away. Groups are repaired from Zalo's group store without a tap when possible; 1-1 messages need `zalo-agent sync --from <date>` (tap on the phone) |
 
 ## Method 2: Headless (Credentials File)
 No human interaction. For automation, CI, server migration.

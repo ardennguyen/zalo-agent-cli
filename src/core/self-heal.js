@@ -46,6 +46,19 @@
  * - **A gap resolves only where it was covered.** A pending gap overlapping the
  *   covered window is resolved, and its uncovered remainder is recorded again
  *   as a pending gap, named with the `zalo-agent sync` command that closes it.
+ * - **Coverage never spans a device change.** Zalo keeps the offline queue per
+ *   device (imei): a new device's queue starts at its login, and a cursor from an
+ *   earlier device is answered with what the new queue holds -- often nothing,
+ *   `more: 0`, no `evict`. So coverage never starts before the time this device id
+ *   came into use (`deviceSince`, ./device-since.js), unless a phone-backed restore
+ *   finished after it and reached back past it. What lies before stays pending as
+ *   `new-device`, with the `zalo-agent sync --from` advice.
+ * - **Overflow repairs groups, and reports the rest.** A queue that reports
+ *   `evict` (or a reset) dropped messages. For the group queue the groups' cloud
+ *   store is read back to the loss (./overflow-repair.js, bounded) and, when that
+ *   reached every group, the group loss is closed without a tap. A 1-1 loss stays
+ *   pending. Either way a `queue_overflow` notice goes out (`onNotice`). A drain of
+ *   0 rows with no `evict` is a quiet queue, never an overflow.
  *
  * - **Items are acknowledged after the write, never before** (Y10, D7). Zalo wants to be told which queue
  *   items a client holds (a `532`, see ../zalo/queues/queue-verify.js), and repairs what it was not told about. A live push
@@ -89,6 +102,7 @@ import { CMD_AUTHEN } from "../zalo/listener/socket-tap.js";
 import { CMD_VERIFY, createQueueVerifier, idsOf } from "../zalo/queues/queue-verify.js";
 import { controlCursorsOf, readControls } from "../zalo/queues/control-queue.js";
 import { describeGap } from "./sync-v2/gap-advice.js";
+import { queueOverflowEvent, repairGroupsFromCloud } from "./overflow-repair.js";
 
 /** THREAD_TYPE.Group; anything else is a 1-1. */
 const THREAD_GROUP = 1;
@@ -114,6 +128,12 @@ const AWAIT_MAX = 500;
 
 /** recordGap's own floor: shorter than this is not a gap worth naming. */
 const MIN_GAP_MS = 1000;
+
+/** The reason of a window before this device's login, which the device's queue cannot reach (./device-since.js). */
+export const NEW_DEVICE_REASON = "new-device";
+
+/** The message queue of 1-1 messages and of group messages, by the cmd their name starts with. */
+const isGroupQueue = (queueName) => String(queueName).startsWith("511");
 
 /**
  * The sync_state key holding one queue's cursor, `{id, ts}` as JSON.
@@ -169,6 +189,12 @@ const uncoveredReason = (reason, cause = null) =>
  * @param {boolean} [args.acks=true] - acknowledge stored queue items to Zalo (`532`); false sends nothing of the kind
  * @param {(undo: Undo) => {stored: boolean}} [args.storeUndo] - writes a recall found on a queue page; the live
  *   store's by default. A seam for tests: the recall's thread type does not reach zalo.db.
+ * @param {() => (number|{ts: number, source?: string}|null)} [args.deviceSince] - since when this account's device id
+ *   is in use (./device-since.js `deviceSinceOf`); coverage never starts before it. Null or absent: no floor.
+ * @param {(event: object) => void} [args.onNotice] - a `queue_overflow` event (./overflow-repair.js) for the daemon's
+ *   log, webhook and MCP buffer
+ * @param {object} [args.groupRepair] - options for ./overflow-repair.js `repairGroupsFromCloud` (tests: its seams);
+ *   `false` turns the group repair off
  * @returns {{attach: (listener: object) => void, run: (reason?: string) => Promise<object>,
  *   settled: () => Promise<void>, noteDelivered: (msg: object) => void,
  *   isRepeatedRepush: (msg: object) => boolean,
@@ -186,6 +212,9 @@ export function createSelfHeal({
     maxPages = DEFAULT_MAX_PAGES,
     acks = true,
     storeUndo = storeLiveUndo,
+    deviceSince = null,
+    onNotice = () => {},
+    groupRepair = {},
 } = {}) {
     const cursors = new Map();
     // Tells Zalo which queue items are safely stored (Y10). Nothing is handed to it before the commit.
@@ -205,6 +234,8 @@ export function createSelfHeal({
     let running = null;
     let again = false;
     let lastResult = null;
+    /** The repair a live overflow started, so they run one at a time. */
+    let overflowRun = Promise.resolve();
 
     const say = (line) => {
         try {
@@ -213,6 +244,43 @@ export function createSelfHeal({
             /* a broken logger must not break the daemon */
         }
     };
+
+    /**
+     * The coverage floor: this device's login, lowered to where a phone-backed restore reached back when that restore
+     * finished after it (the restore then covers the window the device's queue cannot).
+     */
+    function coverageFloor() {
+        let floor = null;
+        let source = null;
+        try {
+            const v = typeof deviceSince === "function" ? deviceSince() : deviceSince;
+            const ts = typeof v === "object" && v !== null ? Number(v.ts) : Number(v);
+            if (Number.isFinite(ts) && ts > 0) {
+                floor = ts;
+                source = typeof v === "object" && v !== null ? v.source || null : null;
+            }
+        } catch (e) {
+            say(`could not read when this device logged in: ${e?.message || e}`);
+            return { ts: now(), source: "unknown" };
+        }
+        if (floor === null) return null;
+        try {
+            const okAt = Number(getSyncState("lastSyncOkAt"));
+            const okFrom = Number(getSyncState("lastSyncOkFrom"));
+            if (
+                getSyncState("lastSyncOkKind") === "transfer" &&
+                Number.isFinite(okAt) &&
+                Number.isFinite(okFrom) &&
+                okAt >= floor &&
+                okFrom <= floor
+            ) {
+                return { ts: okFrom, source: "restore", deviceTs: floor };
+            }
+        } catch {
+            /* no restore on record: the device's login stays the floor */
+        }
+        return { ts: floor, source, deviceTs: floor };
+    }
 
     function readCursor(queueName) {
         if (cursors.has(queueName)) return cursors.get(queueName);
@@ -318,16 +386,36 @@ export function createSelfHeal({
             const evicted = Object.entries(d.queueStatus || {}).some(
                 ([q, st]) => q.startsWith(push.queueName.slice(0, 4)) && Number(st?.evict) === 1,
             );
-            if (evicted && cur) recordLoss(cur.ts, oldest, `queue-evicted:${push.queueName}`);
+            const lost = [];
+            if (evicted && cur && recordLoss(cur.ts, oldest, `queue-evicted:${push.queueName}`)) {
+                lost.push({ queueName: push.queueName, fromTs: cur.ts });
+            }
             const reset = d.resetLastActionId;
             if (isId(reset) && String(reset) !== "0") {
-                if (cur) recordLoss(cur.ts, now(), `queue-reset:${push.queueName}`);
+                if (cur && recordLoss(cur.ts, now(), `queue-reset:${push.queueName}`)) {
+                    lost.push({ queueName: push.queueName, fromTs: cur.ts });
+                }
                 writeCursor(push.queueName, { id: String(reset), ts: now() });
             }
+            if (lost.length) scheduleOverflow(lost);
             trackPush(push.queueName, d, push.rows);
         } catch (e) {
             say(`could not read a live queue status: ${e?.message || e}`);
         }
+    }
+
+    /** A live push reported a loss: repair and report it under the stage lock, after whatever runs now. */
+    function scheduleOverflow(lost) {
+        overflowRun = overflowRun
+            .then(async () => {
+                const release = lock ? await lock.acquire("self-heal") : () => {};
+                try {
+                    await handleOverflow(getApi?.(), lost);
+                } finally {
+                    release();
+                }
+            })
+            .catch((e) => say(`overflow repair failed: ${e?.message || e}`));
     }
 
     /** Write one page's rows as the listener would have, had it seen them live. */
@@ -479,7 +567,7 @@ export function createSelfHeal({
             }
         }
 
-        // Coverage: every queue drained, each from a known point.
+        // Coverage: every queue drained, each from a known point -- and never from before this device's login.
         let coverage = null;
         if (results.every((r) => r.complete)) {
             let from = -Infinity;
@@ -495,6 +583,16 @@ export function createSelfHeal({
                     cause = r.evicted ? `queue-evicted:${r.queue.queueName}` : null;
                 }
             }
+            const floor = from !== null && Number.isFinite(from) ? coverageFloor() : null;
+            if (floor && floor.ts > from) {
+                say(
+                    `this device logged in at ${iso(floor.deviceTs ?? floor.ts)}, after the queue position ` +
+                        `(${iso(from)}): Zalo keeps the offline queue per device, so nothing before that can come ` +
+                        "from it, however empty its answer was",
+                );
+                from = floor.ts;
+                cause = NEW_DEVICE_REASON;
+            }
             if (from !== null && Number.isFinite(from)) coverage = { from, to: now(), cause };
         }
 
@@ -502,17 +600,21 @@ export function createSelfHeal({
 
         // What the server says it lost is a gap even with nothing pending over it.
         const losses = [];
+        const overflowed = [];
         for (const r of results) {
             if (!r.cursor) continue;
             if (r.evicted) {
                 const l = recordLoss(r.cursor.ts, r.oldestTs ?? now(), `queue-evicted:${r.queue.queueName}`);
                 if (l) losses.push(l);
+                overflowed.push({ queueName: r.queue.queueName, fromTs: r.cursor.ts });
             }
             if (r.resetTo) {
                 const l = recordLoss(r.cursor.ts, now(), `queue-reset:${r.queue.queueName}`);
                 if (l) losses.push(l);
+                overflowed.push({ queueName: r.queue.queueName, fromTs: r.cursor.ts });
             }
         }
+        const overflow = overflowed.length ? await handleOverflow(api, overflowed) : null;
 
         const untouched = results.reduce((n, r) => n + (r.untouched || 0), 0);
         const removals = results.reduce((n, r) => n + (r.removals || 0), 0);
@@ -562,6 +664,7 @@ export function createSelfHeal({
             resolved: done.resolved,
             remainders: done.remainders,
             losses,
+            overflow,
             queues: results.map((r) => ({
                 queueName: r.queue.queueName,
                 lastId: r.cursor?.id ?? null,
@@ -572,6 +675,66 @@ export function createSelfHeal({
                 added: r.added?.length ?? 0,
             })),
         };
+    }
+
+    /**
+     * Zalo dropped (evict) or reset message queues. Groups: read back from the groups' cloud store, and the group loss
+     * closed when every group was reached. 1-1: stays pending. Then one `queue_overflow` notice.
+     *
+     * @param {object} api
+     * @param {Array<{queueName: string, fromTs: number}>} overflowed
+     */
+    async function handleOverflow(api, overflowed) {
+        const fromTs = Math.min(...overflowed.map((o) => o.fromTs));
+        const toTs = now();
+        const queues = [...new Set(overflowed.map((o) => o.queueName))];
+        const direct = queues.some((q) => !isGroupQueue(q));
+        let groups = null;
+        if (queues.some(isGroupQueue) && groupRepair !== false) {
+            say(`the group queue overflowed: reading the groups' cloud store back to ${iso(fromTs)} (no phone)`);
+            let repair;
+            try {
+                repair = await repairGroupsFromCloud({ api, fromTs, ...(groupRepair || {}) });
+            } catch (e) {
+                repair = { checked: 0, active: 0, added: [], complete: false, incomplete: [String(e?.message || e)] };
+            }
+            groups = { checked: repair.checked, active: repair.active, added: repair.added.length };
+            groups.complete = repair.complete;
+            if (repair.added.length) {
+                try {
+                    onRecovered(repair.added);
+                } catch (e) {
+                    say(`handing recovered messages on failed: ${e?.message || e}`);
+                }
+            }
+            if (repair.complete) {
+                // Every group was read back to the loss: the group queue's loss is covered.
+                const closing = getPendingSyncGaps().filter(
+                    (g) => /^queue-(evicted|reset):511/.test(String(g.reason)) && Number(g.fromTs) >= fromTs,
+                );
+                runInTransaction(() => {
+                    for (const g of closing) resolveSyncGap(g.id);
+                });
+                say(
+                    `groups repaired from the cloud store: ${repair.added.length} message(s) added from ` +
+                        `${repair.active} active group(s) of ${repair.checked}; closed ${closing.length} group gap(s)`,
+                );
+            } else {
+                say(
+                    `groups partly repaired from the cloud store (${repair.added.length} message(s) added, ` +
+                        `${repair.checked} group(s) read): ${repair.incomplete.join("; ")}; the group gap stays pending`,
+                );
+            }
+        }
+        const pending = getPendingSyncGaps().some((g) => Number(g.toTs) > fromTs && Number(g.fromTs) < toTs);
+        const ownId = String(api?.getOwnId?.() ?? api?.getContext?.()?.uid ?? "") || null;
+        const event = queueOverflowEvent({ accountId: ownId, fromTs, toTs, queues, direct, groups, pending });
+        try {
+            onNotice(event);
+        } catch (e) {
+            say(`the overflow notice failed: ${e?.message || e}`);
+        }
+        return event;
     }
 
     /**
@@ -772,7 +935,7 @@ export function createSelfHeal({
             return lastResult;
         },
         settled() {
-            return running ? running.then(() => {}) : Promise.resolve();
+            return Promise.all([running ?? Promise.resolve(), overflowRun]).then(() => {});
         },
         noteDelivered,
         isRepeatedRepush,

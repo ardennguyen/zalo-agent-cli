@@ -240,7 +240,17 @@ const TOP_LEVEL = [
 
 /** Flags whose absence would silently change behavior. */
 const FLAG_CONTRACT = {
-    login: ["--proxy", "--name", "--qr-url", "--qr-port", "--public-url", "--credentials", "--sync", "--sync-days"],
+    login: [
+        "--proxy",
+        "--name",
+        "--qr-url",
+        "--qr-port",
+        "--public-url",
+        "--credentials",
+        "--sync",
+        "--no-sync",
+        "--sync-days",
+    ],
     logout: ["--purge", "--delete-history", "--no-remote"],
     "sync-mobile": [
         "--transfer",

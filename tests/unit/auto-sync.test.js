@@ -6,7 +6,12 @@ import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { AUTO_SYNC_MAX_AGE_MS, autoSyncAfterLogin, pickTransferAfterLogin } from "../../src/core/sync-v2/auto-sync.js";
+import {
+    AUTO_SYNC_MAX_AGE_MS,
+    autoSyncAfterLogin,
+    classifyLoginOffer,
+    pickTransferAfterLogin,
+} from "../../src/core/sync-v2/auto-sync.js";
 import { SyncV2 } from "../../src/core/sync-v2/index.js";
 import { FAKE, installQueuePulls, startFakeZalo } from "../helpers/fake-zalo/index.js";
 import { fakeCodecs, installFakePhone } from "../helpers/fake-zalo/phone.js";
@@ -77,6 +82,41 @@ describe("pickTransferAfterLogin", () => {
     });
 });
 
+describe("classifyLoginOffer: what `login` says about the phone's 'sync messages' box", () => {
+    it("ticked: a fresh offer for the web, with its key and age", () => {
+        assert.deepEqual(classifyLoginOffer([control({ temp_key: KEY, imei: "x", pc: 0 })], { now: NOW }), {
+            status: "ticked",
+            tempKey: KEY,
+            ageMs: 1000,
+        });
+    });
+
+    it("late: the offer for the web is older than the limit (the phone would ask for a tap again)", () => {
+        const old = control({ temp_key: KEY, pc: 0 }, { ts: NOW - AUTO_SYNC_MAX_AGE_MS - 5000 });
+        assert.deepEqual(classifyLoginOffer([old], { now: NOW }), {
+            status: "late",
+            ageMs: AUTO_SYNC_MAX_AGE_MS + 5000,
+        });
+    });
+
+    it("other-client: only an offer for the PC app (pc 1), which this client must not use", () => {
+        assert.deepEqual(classifyLoginOffer([control({ temp_key: KEY, pc: 1 })], { now: NOW }), {
+            status: "other-client",
+        });
+        // A web offer next to it wins.
+        const both = [control({ temp_key: KEY, pc: 1 }), control({ temp_key: KEY, pc: 0 })];
+        assert.equal(classifyLoginOffer(both, { now: NOW }).status, "ticked");
+    });
+
+    it("none: no offer, or one with no key: the box was not ticked", () => {
+        assert.deepEqual(classifyLoginOffer([], { now: NOW }), { status: "none" });
+        assert.deepEqual(classifyLoginOffer([control({ pc: 0 }), control({ temp_key: "", pc: 0 })], { now: NOW }), {
+            status: "none",
+        });
+        assert.deepEqual(classifyLoginOffer(undefined, { now: NOW }), { status: "none" });
+    });
+});
+
 describe("autoSyncAfterLogin against the fake phone", () => {
     let zalo = null;
     let api = null;
@@ -101,7 +141,7 @@ describe("autoSyncAfterLogin against the fake phone", () => {
     ];
 
     /** Log in to the fake, with the given 603 backlog, and run the auto sync with the real restore on fake codecs. */
-    async function run(backlog) {
+    async function run(backlog, extra = {}) {
         zalo = await startFakeZalo();
         installQueuePulls(zalo.sock, backlog === null ? {} : { "603/1": { controls: backlog } });
         const phone = installFakePhone(zalo, { conversations: CONVS });
@@ -117,6 +157,7 @@ describe("autoSyncAfterLogin against the fake phone", () => {
                     pollMs: 20,
                     waitMs: 30_000,
                 }),
+            ...extra,
         });
         return { out, phone };
     }
@@ -129,6 +170,7 @@ describe("autoSyncAfterLogin against the fake phone", () => {
     it("reads the key from the control queue and sends it with the conversation request, and no other", async () => {
         const { out, phone } = await run([control({ temp_key: KEY, imei: null, pc: 0 }, { ts: Date.now() - 500 })]);
         assert.equal(out.offered, true);
+        assert.equal(out.status, "ticked");
         assert.equal(out.result.reason, "complete");
         assert.equal(out.result.messagesSaved, 1);
         const [conv, ...messages] = phone.requests;
@@ -144,14 +186,34 @@ describe("autoSyncAfterLogin against the fake phone", () => {
     it("starts nothing when the phone offered no key (auto sync not ticked)", async () => {
         const { out, phone } = await run(null);
         assert.equal(out.offered, false);
-        assert.match(out.reason, /no auto sync key/);
+        assert.equal(out.status, "none");
+        assert.match(out.reason, /not ticked/);
         assert.equal(phone.requests.length, 0, "no sync request went out");
     });
 
-    it("starts nothing for a key that is too old", async () => {
+    it("starts nothing for a key that is too old, and says it came late", async () => {
         const { out, phone } = await run([control({ temp_key: KEY, pc: 0 }, { ts: Date.now() - 10 * 60_000 })]);
         assert.equal(out.offered, false);
+        assert.equal(out.status, "late");
+        assert.match(out.reason, /too long ago/);
         assert.equal(phone.requests.length, 0);
+    });
+
+    it("starts nothing for an offer meant for the PC app", async () => {
+        const { out, phone } = await run([control({ temp_key: KEY, pc: 1 }, { ts: Date.now() - 500 })]);
+        assert.equal(out.offered, false);
+        assert.equal(out.status, "other-client");
+        assert.equal(phone.requests.length, 0);
+    });
+
+    it("--no-sync: a ticked offer is reported, and nothing is restored", async () => {
+        const { out, phone } = await run([control({ temp_key: KEY, pc: 0 }, { ts: Date.now() - 500 })], {
+            restoreWhenTicked: false,
+        });
+        assert.equal(out.offered, false);
+        assert.equal(out.status, "ticked");
+        assert.match(out.reason, /--no-sync/);
+        assert.equal(phone.requests.length, 0, "no sync request went out");
     });
 
     it("lets go of the socket when it is done", async () => {

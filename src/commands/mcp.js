@@ -105,6 +105,8 @@ import { createExportApi } from "../core/data-export.js";
 import { servePolicyRequest, startPolicyRuntime, touches } from "../core/policy-store.js";
 import { describeQuotaEvent, describeStorage, quotaSystemEvent, startStorageJobs } from "../core/storage-quota.js";
 import { ZaloNotifier } from "../mcp/notifier.js";
+import { deviceSinceOf } from "../core/device-since.js";
+import { describeQueueOverflow, queueOverflowSystemEvent } from "../core/overflow-repair.js";
 import { ThreadNameCache } from "../mcp/thread-name-cache.js";
 
 const PKG_VERSION = JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "package.json"), "utf8")).version;
@@ -1234,6 +1236,14 @@ export function registerMCPCommands(program) {
                 lock: stageLock,
                 enabled: opts.selfHeal !== false,
                 log: (line) => console.error(`[mcp] ${line}`),
+                // Coverage never spans a device change (src/core/device-since.js). Same in `listen`.
+                deviceSince: () => deviceSinceOf(activeAcc.ownId, getApi()),
+                // Zalo dropped part of a queue: the log, the webhook and the live buffer, like the other notices.
+                onNotice: (event) => {
+                    console.error(`[mcp] ${describeQueueOverflow(event)}`);
+                    webhookDelivery?.enqueue(null, event);
+                    buffer.pushSystem(queueOverflowSystemEvent(event));
+                },
                 // A bot must see what arrived while the socket was down, as it
                 // would have seen it live -- same filters, flagged as catch-up.
                 onRecovered: (items) => {

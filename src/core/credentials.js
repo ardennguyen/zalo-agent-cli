@@ -11,7 +11,7 @@
  * account's boot key (src/core/keystore/): a copied file is unreadable without the key provider of this machine.
  */
 
-import { readFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, unlinkSync, existsSync, mkdirSync, statSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import { parseEnv } from "node:util";
@@ -173,17 +173,77 @@ function credPath(ownId) {
 const CRED_SPEC = { kind: "credentials", use: "boot" };
 
 /**
- * Save credentials for a specific account, sealed.
+ * What this machine last saved for an account's device: the imei, when that device id was first used here
+ * (`deviceSince`, ms), and when the file was last written (`mtime`, ms).
+ *
+ * Zalo keeps the offline queue per device (imei): a new device's queue starts at its login, so the time a device id
+ * was first used bounds what Zalo's queue can give back (agent research: offline-queue retention §4). Never throws.
+ *
+ * @param {string} ownId
+ * @returns {{state: "none"|"unreadable"|"ok", imei?: string|null, deviceSince?: number|null, mtime?: number|null}}
+ *   `none` when nothing is saved, `unreadable` when a file exists but cannot be opened or parsed
+ */
+export function readSavedDevice(ownId) {
+    const target = credPath(ownId);
+    if (!existsSync(target)) return { state: "none" };
+    try {
+        const mtime = statSync(target).mtimeMs;
+        const bytes = openFile(target, String(ownId), CRED_SPEC);
+        if (bytes === null) return { state: "none" };
+        const creds = JSON.parse(bytes.toString("utf8"));
+        const since = Number(creds?.deviceSince);
+        return {
+            state: "ok",
+            imei: typeof creds?.imei === "string" && creds.imei ? creds.imei : null,
+            deviceSince: Number.isFinite(since) && since > 0 ? since : null,
+            mtime: Number.isFinite(mtime) ? Math.floor(mtime) : null,
+        };
+    } catch {
+        return { state: "unreadable" };
+    }
+}
+
+/**
+ * The `deviceSince` a save should carry: the time this device id was first used for the account here.
+ *
+ * - Same imei as the saved login: the saved stamp. A login saved before stamps existed has none; its file's last write
+ *   is used instead. That is never earlier than the imei's first use (every save rewrites the file), so coverage is
+ *   never claimed from before the device existed.
+ * - Nothing saved, and the new credentials carry their own stamp (an exported login, with its imei): that stamp.
+ * - Anything else (a new or changed imei, or a saved login that cannot be read): now. A new device.
+ *
+ * @param {{state: string, imei?: string|null, deviceSince?: number|null, mtime?: number|null}} prev - readSavedDevice()
+ * @param {{imei?: string, deviceSince?: number}} creds - what is being saved
+ * @param {number} now
+ * @returns {number}
+ */
+export function deviceSinceFor(prev, creds, now) {
+    const imei = typeof creds?.imei === "string" && creds.imei ? creds.imei : null;
+    if (prev?.state === "ok" && imei && prev.imei === imei) {
+        if (Number.isFinite(prev.deviceSince) && prev.deviceSince > 0) return Math.min(prev.deviceSince, now);
+        if (Number.isFinite(prev.mtime) && prev.mtime > 0) return Math.min(prev.mtime, now);
+        return now;
+    }
+    const carried = Number(creds?.deviceSince);
+    if (prev?.state === "none" && imei && Number.isFinite(carried) && carried > 0 && carried <= now) return carried;
+    return now;
+}
+
+/**
+ * Save credentials for a specific account, sealed. Stamps `deviceSince` (see {@link deviceSinceFor}): kept while
+ * the imei stays the same, set to now when it changes. Every login path saves through here.
  * @param {string} ownId
  * @param {object} creds - {imei, cookie, userAgent, language?}
+ * @param {{now?: number}} [opts]
  * @returns {string} File path
  * @throws {Error} a KeystoreError when no key can be had: the login is then not saved at all, never in the clear
  */
-export function saveCredentials(ownId, creds) {
+export function saveCredentials(ownId, creds, { now = Date.now() } = {}) {
     ensureDirs();
     const target = credPath(ownId);
+    const deviceSince = deviceSinceFor(readSavedDevice(ownId), creds, now);
     // Sealed, atomic and created at 0600: a login is never left half written, and never readable by others.
-    sealFile(target, String(ownId), CRED_SPEC, JSON.stringify(creds, null, 2));
+    sealFile(target, String(ownId), CRED_SPEC, JSON.stringify({ ...creds, deviceSince }, null, 2));
     return target;
 }
 

@@ -495,12 +495,14 @@ export const SECOND_QR_SCANNED = {
  * @param {Array<number|"hang">} [opts.scan] - answers of successive waiting-scan calls: an `error_code`
  *   (8 = not yet, 0 = scanned) or `"hang"` (never answers until aborted); the last one repeats
  * @param {Array<number|"hang">} [opts.confirm] - the same for waiting-confirm (0 = confirmed, -13 = declined)
+ * @param {object} [opts.confirmData] - fields added to the confirm answer's data, e.g. `{chatUid}` as the captured
+ *   Web logins carry it
  * @param {boolean|object} [opts.second] - the account has a trusted device: the first scan is answered with the
  *   request for a second QR ({@link SECOND_QR_ASKED}) and the long poll on the new code with the name and link data
  *   ({@link SECOND_QR_SCANNED}). An object overrides `asked`, `scanned` and `scan` (the second poll's answers).
  * @returns {{generated: number}} how many QR codes were generated
  */
-export function serveQrLogin(fake, { scan = [8, 0], confirm = [0], second = false } = {}) {
+export function serveQrLogin(fake, { scan = [8, 0], confirm = [0], second = false, confirmData = {} } = {}) {
     const state = { generated: 0 };
     const layered = second ? { asked: SECOND_QR_ASKED, scanned: SECOND_QR_SCANNED, scan: [0], ...second } : null;
     const json = (body) =>
@@ -547,7 +549,10 @@ export function serveQrLogin(fake, { scan = [8, 0], confirm = [0], second = fals
         "POST",
         "id.zalo.me",
         "/account/authen/qr/waiting-confirm",
-        poll(confirm, layered ? { devices: { masterId: layered.asked.master_id, companions: [] } } : {}),
+        poll(confirm, {
+            ...(layered ? { devices: { masterId: layered.asked.master_id, companions: [] } } : {}),
+            ...confirmData,
+        }),
     );
     route("GET", "id.zalo.me", "/account/checksession", () =>
         redirect("https://jr.zaloapp.com/jr/syncsession?token=fake-t1&continue=https%3A%2F%2Fchat.zalo.me%2F"),

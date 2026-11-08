@@ -28,6 +28,7 @@ import {
     getPendingSyncGaps,
     getSyncState,
     recordSyncGap,
+    setSyncState,
     setMessageLocalPath,
     setMessageStatus,
 } from "../../src/core/db.js";
@@ -132,8 +133,11 @@ function daemon({
     store = storeLiveMessage,
     acks,
     storeUndo,
+    deviceSince,
+    groupRepair,
 } = {}) {
     const listener = fakeListener({ respond });
+    const notices = [];
     const tap = createSocketTap();
     const logs = [];
     const recovered = [];
@@ -150,12 +154,15 @@ function daemon({
         now,
         acks,
         storeUndo,
+        deviceSince,
+        groupRepair,
+        onNotice: (e) => notices.push(e),
     });
     listener.on("message", (m) => store(m));
     tap.attach(listener);
     heal.attach(listener);
     listener.emit("connected");
-    return { listener, tap, heal, logs, recovered, lock, api };
+    return { listener, tap, heal, logs, recovered, lock, api, notices };
 }
 
 /** A `storeUndo` that notes each recall's `[type, isGroup, threadId]`, then stores it as the daemon does. */
@@ -879,5 +886,203 @@ describe("self-heal: the recall it builds from a queue page", () => {
     it("a row from the group queue is a group recall in the group's thread", () => {
         const g = new Undo(OWN, recall(true), true);
         assert.deepEqual([g.type, g.isGroup, g.threadId], [1, true, GROUP]);
+    });
+});
+
+describe("coverage never spans a device change (Zalo keeps the offline queue per device)", () => {
+    before(() => assertSandboxed(CONFIG_DIR));
+
+    /** A daemon whose device logged in at `since`, with a startup gap from just after its last stored message. */
+    async function startAfterRelogin({ since, ...opts }) {
+        const g1 = nextId();
+        const d = daemon({ deviceSince: since, ...opts });
+        live(d.listener, row(g1));
+        const gapFrom = tsOf(g1) + 1_000;
+        recordSyncGap(gapFrom, Date.now(), "startup-gap");
+        await connectAndSettle(d);
+        return { d, g1, gapFrom };
+    }
+
+    it("a 0-row drain from a cursor older than the device's login does not close the window before the login", async () => {
+        // The live bug of 2026-11-08: a QR re-login made a new imei, the old cursor drained 0 rows with no evict, and
+        // the whole startup gap was closed ("covered since <29 h ago>").
+        const since = Date.now() - 3_600_000;
+        const { d, gapFrom } = await startAfterRelogin({ since: () => ({ ts: since, source: "credentials" }) });
+
+        // Red without the floor: the gap is closed and nothing stays pending.
+        assert.deepEqual(pending(), [{ fromTs: gapFrom, toTs: since, reason: "new-device" }]);
+        assert.ok(d.logs.some((l) => /logged in at/.test(l) && /per device/.test(l)));
+        assert.ok(d.logs.some((l) => /new-device/.test(l) && /zalo-agent sync --from/.test(l)));
+        assert.ok(!d.logs.some((l) => /covered since/.test(l) && l.includes(new Date(gapFrom).toISOString())));
+        assert.deepEqual(d.notices, [], "an empty answer with no evict is not an overflow");
+    });
+
+    it("a device older than the cursor changes nothing: the drain covers from the cursor", async () => {
+        const { d } = await startAfterRelogin({ since: () => T0 - 60_000 });
+        assert.deepEqual(pending(), []);
+        assert.deepEqual(d.notices, []);
+    });
+
+    it("a phone-backed restore that finished after the login and reached past the gap lifts the floor", async () => {
+        const since = Date.now() - 3_600_000;
+        setSyncState("lastSyncOkKind", "transfer");
+        setSyncState("lastSyncOkFrom", String(T0 - 86_400_000));
+        setSyncState("lastSyncOkAt", String(since + 60_000));
+        await startAfterRelogin({ since: () => since });
+        assert.deepEqual(pending(), []);
+    });
+
+    it("a restore from before the login does not lift it", async () => {
+        const since = Date.now() - 3_600_000;
+        setSyncState("lastSyncOkKind", "transfer");
+        setSyncState("lastSyncOkFrom", String(T0 - 86_400_000));
+        setSyncState("lastSyncOkAt", String(since - 60_000));
+        const { gapFrom } = await startAfterRelogin({ since: () => since });
+        assert.deepEqual(pending(), [{ fromTs: gapFrom, toTs: since, reason: "new-device" }]);
+    });
+
+    it("a device login time that cannot be read claims nothing: the gap stays exactly as it was", async () => {
+        const g1 = nextId();
+        const d = daemon({
+            deviceSince: () => {
+                throw new Error("unreadable");
+            },
+        });
+        live(d.listener, row(g1));
+        recordSyncGap(tsOf(g1) + 1_000, Date.now() - 1_000, "startup-gap");
+        const before = pending();
+        await connectAndSettle(d);
+        assert.deepEqual(pending(), before);
+    });
+});
+
+describe("queue overflow (evict): groups repaired from their cloud store, 1-1 left pending, one notice", () => {
+    before(() => assertSandboxed(CONFIG_DIR));
+
+    const OTHER = "7302";
+    /** A group's cloud store, newest first, as getGroupHistory answers. */
+    const cloudStore = (byGroup) => {
+        const calls = [];
+        return {
+            calls,
+            fetchGroup: async (_api, groupId, count) => {
+                calls.push([groupId, count]);
+                const rows = (byGroup[groupId] || []).map((r) => new GroupMessage(OWN, { ...r }));
+                rows.sort((a, b) => Number(b.data.ts) - Number(a.data.ts));
+                return { groupMsgs: rows.slice(0, count), more: 0, pages: 1, filtered: false };
+            },
+        };
+    };
+
+    async function overflowOn511({ maxGroups = 50 } = {}) {
+        const quiet = nextId(); // the other group's last message, from before the loss
+        const g1 = nextId();
+        const missed = nextId(); // dropped from the queue, still in the group's cloud store
+        const survivor = nextId();
+        const cloud = cloudStore({
+            [GROUP]: [row(g1), row(missed), row(survivor)],
+            [OTHER]: [row(quiet, { idTo: OTHER })],
+        });
+        const d = daemon({
+            respond: scripted({ 511: [page(511, [row(survivor)], { evict: 1 })] }),
+            groupRepair: {
+                listGroups: async () => [GROUP, OTHER],
+                recentGroups: () => [GROUP],
+                fetchGroup: cloud.fetchGroup,
+                delayMs: 0,
+                maxGroups,
+            },
+        });
+        live(d.listener, row(g1));
+        await connectAndSettle(d);
+        return { d, g1, missed, survivor, cloud };
+    }
+
+    it("the group loss is repaired without a tap when every group was read back to it", async () => {
+        const { d, missed, cloud } = await overflowOn511();
+        assert.ok(getMessageById(missed), "the dropped group message came back from the cloud store");
+        assert.equal(JSON.parse(getMessageById(missed).raw_data).src, "group-cloud");
+        assert.deepEqual(pending(), [], "the group gap is closed");
+        assert.deepEqual(
+            cloud.calls.map(([g]) => g),
+            [GROUP, OTHER],
+            "each group is read once; the quiet one costs one request",
+        );
+        assert.equal(d.notices.length, 1);
+        const n = d.notices[0];
+        assert.equal(n.event, "queue_overflow");
+        assert.deepEqual(n.queues, ["511_1"]);
+        assert.equal(n.direct, false);
+        assert.deepEqual(n.groups, { checked: 2, active: 1, added: 1, complete: true });
+        assert.equal(n.pending, false);
+        assert.equal(n.command, null);
+        assert.ok(
+            d.recovered.some((r) => r.msg.data.msgId === missed),
+            "a bot is shown the repaired message",
+        );
+    });
+
+    it("bounded: groups past the cap are not read, and the group gap stays pending with the restore command", async () => {
+        const { d, g1, survivor, cloud } = await overflowOn511({ maxGroups: 1 });
+        assert.deepEqual(
+            cloud.calls.map(([g]) => g),
+            [GROUP],
+            "the most recently active group first, then stop",
+        );
+        assert.deepEqual(pending(), [{ fromTs: tsOf(g1), toTs: tsOf(survivor), reason: "queue-evicted:511_1" }]);
+        const [n] = d.notices;
+        assert.equal(n.groups.complete, false);
+        assert.equal(n.pending, true);
+        assert.match(n.command, /^zalo-agent sync --from \d{4}-\d{2}-\d{2}$/);
+    });
+
+    it("a 1-1 overflow stays pending, reads no group store, and says the phone must restore it", async () => {
+        const dm = nextId();
+        const survivor = nextId();
+        const cloud = cloudStore({});
+        const d = daemon({
+            respond: scripted({ 510: [page(510, [row(survivor, { group: false })], { evict: 1 })] }),
+            groupRepair: { listGroups: async () => [GROUP], fetchGroup: cloud.fetchGroup, delayMs: 0 },
+        });
+        live(d.listener, row(dm, { group: false }), false);
+        await connectAndSettle(d);
+
+        assert.deepEqual(cloud.calls, []);
+        assert.deepEqual(pending(), [{ fromTs: tsOf(dm), toTs: tsOf(survivor), reason: "queue-evicted:510_1" }]);
+        assert.equal(d.notices.length, 1);
+        assert.equal(d.notices[0].direct, true);
+        assert.equal(d.notices[0].groups, null);
+        assert.equal(d.notices[0].pending, true);
+        assert.match(d.notices[0].command, /zalo-agent sync --from/);
+    });
+
+    it("a 0-row drain with no evict is not an overflow", async () => {
+        const cloud = cloudStore({});
+        const d = daemon({ groupRepair: { listGroups: async () => [GROUP], fetchGroup: cloud.fetchGroup } });
+        live(d.listener, row(nextId()));
+        await connectAndSettle(d);
+        assert.deepEqual(d.notices, []);
+        assert.deepEqual(cloud.calls, []);
+        assert.deepEqual(pending(), []);
+    });
+
+    it("a live push reporting evict starts the same repair and notice", async () => {
+        const g1 = nextId();
+        const missed = nextId();
+        const after = nextId();
+        const cloud = cloudStore({ [GROUP]: [row(g1), row(missed), row(after)] });
+        const d = daemon({
+            groupRepair: { listGroups: async () => [GROUP], recentGroups: () => [], fetchGroup: cloud.fetchGroup },
+        });
+        live(d.listener, row(g1));
+        await connectAndSettle(d);
+        d.listener.push(521, 0, page(511, [row(after)], { evict: 1 }));
+        await sleep(0);
+        await d.heal.settled();
+
+        assert.ok(getMessageById(missed));
+        assert.deepEqual(pending(), []);
+        assert.equal(d.notices.length, 1);
+        assert.equal(d.notices[0].groups.complete, true);
     });
 });

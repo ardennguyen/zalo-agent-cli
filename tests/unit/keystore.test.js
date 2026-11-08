@@ -32,6 +32,14 @@ import { currentKey, lockAll, readKeyring } from "../../src/core/keystore/keyrin
 import { createTrustStore } from "../../src/zalo/trust-store.js";
 import { loadTranscripts, voiceTextFile } from "../../src/core/voice-text.js";
 
+/** A saved login without the device stamp saveCredentials adds (src/core/credentials.js `deviceSinceFor`). */
+const unstamped = (creds) => {
+    if (!creds) return creds;
+    const rest = { ...creds };
+    delete rest.deviceSince;
+    return rest;
+};
+
 assertSandboxed(CONFIG_DIR);
 
 const CREDS = { imei: "fake-imei-0001", cookie: [{ key: "zpw_sek", value: "fake-cookie-value" }], userAgent: "ua" };
@@ -499,7 +507,7 @@ describe("sealed credentials and the keyring", () => {
         const bytes = readFileSync(file);
         assert.ok(isSealed(bytes));
         assert.ok(!bytes.includes(Buffer.from("fake-cookie-value")));
-        assert.deepEqual(loadCredentials(id), CREDS);
+        assert.deepEqual(unstamped(loadCredentials(id)), CREDS);
         const ring = readFileSync(join(getAccountDir(id), "keyring.json"), "utf8");
         const scope = scopeOf(id);
         for (const use of ["boot", "data"]) {
@@ -514,10 +522,10 @@ describe("sealed credentials and the keyring", () => {
         const file = join(CONFIG_DIR, "credentials", `cred_${id}.json`);
         mkdirSync(join(CONFIG_DIR, "credentials"), { recursive: true });
         writeFileSync(file, JSON.stringify(CREDS));
-        assert.deepEqual(loadCredentials(id), CREDS);
+        assert.deepEqual(unstamped(loadCredentials(id)), CREDS);
         assert.ok(isSealed(readFileSync(file)));
         const once = readFileSync(file);
-        assert.deepEqual(loadCredentials(id), CREDS);
+        assert.deepEqual(unstamped(loadCredentials(id)), CREDS);
         assert.deepEqual(readFileSync(file), once, "a second read changes nothing");
         assert.deepEqual(
             readdirSync(join(CONFIG_DIR, "credentials")).filter((f) => f.includes(".sealing")),
@@ -652,7 +660,7 @@ describe("the dkey layer", () => {
             () => loadTranscripts(vt) && sealBuffer(id, { kind: "voice-text", use: "data" }, "x"),
             (e) => e.code === "LOCKED",
         ); // a new process: provider still there, no login yet
-        assert.deepEqual(loadCredentials(id), CREDS, "the saved login opens before any login");
+        assert.deepEqual(unstamped(loadCredentials(id)), CREDS, "the saved login opens before any login");
         const box = sealBufferAfterAttach(id);
         lockAll();
         assert.throws(
@@ -720,7 +728,7 @@ describe("rekey, provider change, phase-2 subkeys, and logs", () => {
         assert.equal(ring.retired.length, 0);
         assert.ok(ring.keys.every((k) => !before.includes(k.id)));
         lockAll();
-        assert.deepEqual(loadCredentials(id), CREDS);
+        assert.deepEqual(unstamped(loadCredentials(id)), CREDS);
         assert.equal(loadTranscripts(vt).a.text, "t");
         assert.ok(
             securityStatus(id)
@@ -739,7 +747,7 @@ describe("rekey, provider change, phase-2 subkeys, and logs", () => {
         try {
             assert.deepEqual(changeProvider(id, "env"), { from: "test", to: "env" });
             lockAll();
-            assert.deepEqual(loadCredentials(id), CREDS);
+            assert.deepEqual(unstamped(loadCredentials(id)), CREDS);
         } finally {
             console.error = orig;
         }

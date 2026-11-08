@@ -364,11 +364,35 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
         };
         trustStore?.save(trusted);
     }
+    // Whose login this is: the trusted-device scan names it, and the confirm answer carries it (`chatUid`).
+    const uid = link?.uid ?? confirmed.data?.chatUid ?? null;
     return {
         cookies: saveJar(ctx.cookie).cookies,
+        uid: uid === null || uid === undefined || uid === "" ? null : String(uid),
         displayName: scanned.data.display_name ?? null,
         trusted: trusted ? { uid: trusted.uid, masterId: trusted.masterId, companionId: trusted.companionId } : null,
     };
+}
+
+/**
+ * The saved imei to log in with again, or null for a new one: only for a known account whose saved device id was made
+ * with this same user agent (an imei ends with the hash of its user agent, so the two must stay a pair).
+ *
+ * @param {string|null} uid
+ * @param {string} userAgent
+ * @param {((uid: string) => ({imei: string, userAgent: string}|null))|null} deviceFor
+ * @returns {string|null}
+ */
+export function deviceImeiFor(uid, userAgent, deviceFor) {
+    if (!uid || typeof deviceFor !== "function") return null;
+    let saved = null;
+    try {
+        saved = deviceFor(String(uid));
+    } catch {
+        return null;
+    }
+    if (typeof saved?.imei !== "string" || !saved.imei || saved.userAgent !== userAgent) return null;
+    return saved.imei;
 }
 
 /**
@@ -384,7 +408,12 @@ async function attempt(ctx, { controller, emit, actions, qrPath, lifetimeMs, sta
  * @param {number} [p.lifetimeMs] - how long a QR is shown before it expires
  * @param {Function} [p.loadTrust] - `(ctx, scriptUrl, signal) => trust module`, the page's by default
  * @param {{load: Function, save: Function, clear: Function}|null} [p.trustStore] - where the device identity is kept
- * @returns {Promise<{cookies: object[], imei: string, userAgent: string, language: string, trusted: object|null}>}
+ * @param {(uid: string) => ({imei: string, userAgent: string}|null)} [p.deviceFor] - the device id this machine
+ *   already uses for an account, if any. Zalo Web keeps one imei per browser across logout and login, and Zalo keeps
+ *   the offline queue per device: an account that confirms the QR and has a saved device id with this same user agent
+ *   logs in with that imei again, so its queue survives the re-login. Anything else gets a new imei.
+ * @returns {Promise<{cookies: object[], imei: string, userAgent: string, language: string, trusted: object|null,
+ *   uid: string|null, deviceReused: boolean}>}
  * @throws {QrLoginDeclined|QrLoginAborted|ZaloApiError}
  */
 export function qrLogin({
@@ -397,6 +426,7 @@ export function qrLogin({
     lifetimeMs = QR_LIFETIME_MS,
     loadTrust = loadTrustFromPage,
     trustStore = null,
+    deviceFor = null,
 }) {
     return new Promise((resolve, reject) => {
         let current = null;
@@ -431,7 +461,9 @@ export function qrLogin({
                 (result) => {
                     clearTimeout(mine.state.timer);
                     if (mine.superseded) return;
-                    const imei = makeImei(userAgent);
+                    const reused = deviceImeiFor(result.uid, userAgent, deviceFor);
+                    const imei = reused ?? makeImei(userAgent);
+                    const deviceReused = reused !== null;
                     onEvent?.({
                         type: QR_EVENT.GOT_LOGIN_INFO,
                         data: { cookie: result.cookies, imei, userAgent },
@@ -443,6 +475,8 @@ export function qrLogin({
                         userAgent,
                         language: "vi",
                         trusted: result.trusted,
+                        uid: result.uid,
+                        deviceReused,
                     });
                 },
                 (error) => {

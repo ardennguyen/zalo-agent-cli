@@ -36,6 +36,14 @@ import {
 } from "../../src/core/accounts.js";
 import { sleepSync, sweepStaleTemps, withFileLock, writeFileAtomic } from "../../src/zalo/kernel/atomic-file.js";
 
+/** A saved login without the device stamp saveCredentials adds (src/core/credentials.js `deviceSinceFor`). */
+const unstamped = (creds) => {
+    if (!creds) return creds;
+    const rest = { ...creds };
+    delete rest.deviceSince;
+    return rest;
+};
+
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
 });
@@ -494,7 +502,7 @@ describe("credentials are written atomically and never readable by others", () =
     it("saveCredentials leaves exactly the file, mode 0600, and it loads back", () => {
         const creds = { imei: "i", cookie: {}, userAgent: "UA", language: "vi" };
         const p = saveCredentials("1000", creds);
-        assert.deepEqual(loadCredentials("1000"), creds);
+        assert.deepEqual(unstamped(loadCredentials("1000")), creds);
         assert.deepEqual(
             readdirSync(CREDENTIALS_DIR).filter((f) => f.includes(".tmp")),
             [],

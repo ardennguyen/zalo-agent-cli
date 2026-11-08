@@ -166,9 +166,18 @@ export function openSession(creds, { zaloOptions, ownId = null, drStoreFor = nul
  * @param {object} opts.trustStore - where the companion-device identity is kept (`createTrustStore` of
  *   ./trust-store.js)
  * @param {((ownId: string|null) => object|null)|null} [opts.drStoreFor] - see {@link openSession}
+ * @param {((uid: string) => ({imei: string, userAgent: string}|null))|null} [opts.deviceFor] - the device id already
+ *   used here for an account, to log in with again (see `qrLogin`)
  * @returns {Promise<object>} the session object
  */
-export async function openQrSession({ zaloOptions, userAgent, onEvent = null, trustStore, drStoreFor = null }) {
+export async function openQrSession({
+    zaloOptions,
+    userAgent,
+    onEvent = null,
+    trustStore,
+    drStoreFor = null,
+    deviceFor = null,
+}) {
     const session = await qrLogin({
         userAgent,
         zaloOptions,
@@ -176,6 +185,7 @@ export async function openQrSession({ zaloOptions, userAgent, onEvent = null, tr
         apiVersion: zaloOptions.apiVersion,
         onEvent,
         trustStore,
+        deviceFor,
     });
     return loginWithSession(
         { imei: session.imei, cookie: session.cookies, userAgent: session.userAgent, language: session.language },

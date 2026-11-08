@@ -11,7 +11,8 @@ import {
     getApi,
     getOwnId,
 } from "../core/zalo-client.js";
-import { saveCredentials, loadCredentials, getAccountDir } from "../core/credentials.js";
+import { saveCredentials, loadCredentials, getAccountDir, readSavedDevice } from "../core/credentials.js";
+import { describeLoginDevice, loginDeviceChange } from "../core/device-since.js";
 import { addAccount, getActive, removeAccount, updateAccountName } from "../core/accounts.js";
 import { getDaemonStatus } from "../core/daemon-channel.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
@@ -26,40 +27,114 @@ import { clearKickMarker, kickFile } from "../core/kick-marker.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 
 /**
- * `login --sync`: restore the history at once with the key the phone offers when "auto sync" is ticked at the QR
- * confirmation. No tap is needed; without the key (not ticked, or too old) nothing is started and the person is told
- * to run `sync`.
+ * The newest time this account was known connected, from its local cache, or null (no cache yet, or unreadable).
+ * Read only; a cache that does not exist is not created.
  *
  * @param {string} ownId
- * @param {{syncDays?: number}} opts
+ * @returns {Promise<number|null>}
  */
-async function runAutoSync(ownId, opts) {
+async function lastConnectedAtOf(ownId) {
+    try {
+        const { existsSync } = await import("fs");
+        const { getAccountDbPath } = await import("../core/credentials.js");
+        if (!existsSync(getAccountDbPath(ownId))) return null;
+        const { SyncManager } = await import("../core/sync.js");
+        return new SyncManager(getApi(), ownId).getLastConnectedAt();
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The command that restores what a new device does not have: from the last time the account was seen connected here,
+ * or the whole history when nothing was ever cached here.
+ *
+ * @param {string} ownId
+ * @returns {Promise<string>}
+ */
+async function restoreAdvice(ownId) {
+    const since = await lastConnectedAtOf(ownId);
+    if (!since) return "zalo-agent sync";
+    const { syncFromDate } = await import("../core/sync-v2/gap-advice.js");
+    return `zalo-agent sync --from ${syncFromDate(since)}`;
+}
+
+/**
+ * After a QR login: look for the phone's "sync messages to this device" offer and say whether it was ticked. Ticked:
+ * restore at once with the key the phone offered (no tap; the tick is the consent), unless `--no-sync`. Not ticked, or
+ * too late to use: say which `sync` command restores what this login does not have.
+ *
+ * With a `listen`/`mcp` daemon holding the account nothing is opened: a second socket would fight it. The offer is
+ * then not read, and the advice is printed instead.
+ *
+ * @param {string} ownId
+ * @param {{sync?: boolean, syncDays?: number}} opts - `sync` false: `--no-sync`
+ * @param {{newDevice: boolean, jsonMode: boolean}} ctx
+ */
+async function watchLoginOffer(ownId, opts, { newDevice, jsonMode }) {
     const { autoSyncAfterLogin } = await import("../core/sync-v2/auto-sync.js");
     const { resolveSyncWindow } = await import("../core/sync-v2/index.js");
     const { reportRestore } = await import("./sync.js");
     const accountDir = getAccountDir(ownId);
+    const say = (status, line, extra = {}) => {
+        if (jsonMode) console.log(JSON.stringify({ event: "login_auto_sync", status, ...extra }));
+        else if (line) (status === "restored" || status === "same-device" ? info : warning)(line);
+    };
     if (!acquireLock(accountDir)) {
-        warning("Auto sync skipped: a listen daemon holds this account. Run `zalo-agent sync` instead.");
+        const advice = await restoreAdvice(ownId);
+        say(
+            "daemon-running",
+            "A listen/mcp daemon holds this account, so the phone's auto sync offer was not read. " +
+                `To restore what this login does not have: \`${advice}\` (it runs on the daemon's socket).`,
+            { command: advice },
+        );
         return;
     }
     try {
         const win = resolveSyncWindow(opts.syncDays, Date.now());
         const startedAt = Date.now();
-        info(`Auto sync: restoring ${win.label} with the phone's login key (no tap needed).`);
+        if (!jsonMode) info("Checking whether 'sync messages' was ticked on the phone...");
         const out = await autoSyncAfterLogin(getApi(), ownId, {
             days: opts.syncDays ?? null,
+            restoreWhenTicked: opts.sync !== false,
             onStatus: ({ phase, detail }) => {
+                if (jsonMode) return;
                 if (phase === "confirm") warning(detail);
                 else if (detail) info(`  ${detail}`);
             },
         });
-        if (!out.offered) {
-            warning(`No auto sync: ${out.reason}. Run \`zalo-agent sync\` to restore.`);
+        if (out.offered) {
+            if (!jsonMode) info(`Auto sync was ticked on the phone: restored ${win.label} with its key (no tap).`);
+            if (jsonMode) say("restored", null, { ageMs: out.ageMs, reason: out.result?.reason ?? null });
+            else reportRestore(out.result, win, { startedAt, keep: [ownId] });
             return;
         }
-        reportRestore(out.result, win, { startedAt, keep: [ownId] });
+        const advice = await restoreAdvice(ownId);
+        if (out.status === "ticked") {
+            say("declined", `Auto sync was ticked on the phone; not restored (--no-sync). Later: \`${advice}\`.`, {
+                command: advice,
+            });
+        } else if (out.status === "no-socket") {
+            say("unknown", `Could not check the phone's auto sync offer: ${out.reason}. To restore: \`${advice}\`.`, {
+                command: advice,
+            });
+        } else if (!newDevice) {
+            say(
+                "same-device",
+                `Auto sync was not ticked (${out.reason}). This login kept its device id, so nothing needs restoring ` +
+                    `unless the next listen/mcp start reports a gap.`,
+                { offer: out.status },
+            );
+        } else {
+            say(
+                out.status,
+                `No auto sync: ${out.reason}. History from before this login is not on this device; ` +
+                    `restore it with: \`${advice}\` (it asks for a tap on the phone).`,
+                { command: advice },
+            );
+        }
     } catch (e) {
-        warning(`Auto sync failed: ${e.message}. Run \`zalo-agent sync\` to restore.`);
+        say("failed", `Auto sync failed: ${e.message}. Run \`zalo-agent sync\` to restore.`);
     } finally {
         releaseLock(accountDir);
     }
@@ -80,9 +155,13 @@ export function registerLoginCommands(program) {
         .option("--credentials <path>", "Login from exported credentials file (skip QR)")
         .option(
             "--sync",
-            "After the QR login, restore message history at once with the key the phone offers when 'auto sync' is ticked (no tap)",
+            "After the QR login, restore message history at once when 'sync messages' was ticked on the phone (no tap). The default since 3.0.0; kept for scripts",
         )
-        .option("--sync-days <n>", "With --sync: restore only the last N days", parseIntAtLeast(1))
+        .option(
+            "--no-sync",
+            "Only report whether 'sync messages' was ticked on the phone; restore nothing (later: zalo-agent sync)",
+        )
+        .option("--sync-days <n>", "When restoring after the login: only the last N days", parseIntAtLeast(1))
         .action(async (opts) => {
             // Credential-based login (headless/CI)
             if (opts.credentials) {
@@ -100,11 +179,13 @@ export function registerLoginCommands(program) {
                     } catch {}
 
                     const creds = extractCredentials();
+                    const device = loginDeviceChange(readSavedDevice(ownId), creds.imei);
                     saveCredentials(ownId, creds);
                     // A new login ends a kick: `fleet status` stops saying `kicked` before the daemon is back.
                     clearKickMarker(kickFile(getAccountDir(ownId)));
                     addAccount(ownId, displayName, proxy);
                     success(`Logged in as ${displayName} (${ownId})`);
+                    info(describeLoginDevice(device, Date.now()));
                 } catch (e) {
                     error(`Login from credentials failed: ${e.message}`);
                     process.exit(1);
@@ -141,18 +222,30 @@ export function registerLoginCommands(program) {
                 } catch {}
 
                 const creds = extractCredentials();
-                saveCredentials(ownId, creds);
+                const loginAt = Date.now();
+                // Taken before the save: whether this login kept the account's device id (src/core/device-since.js).
+                const device = loginDeviceChange(readSavedDevice(ownId), creds.imei);
+                saveCredentials(ownId, creds, { now: loginAt });
                 clearKickMarker(kickFile(getAccountDir(ownId)));
                 addAccount(ownId, displayName, opts.proxy);
 
                 if (jsonMode) {
-                    console.log(JSON.stringify({ event: "login_success", ownId, name: displayName }));
+                    console.log(
+                        JSON.stringify({
+                            event: "login_success",
+                            ownId,
+                            name: displayName,
+                            newDevice: device.newDevice,
+                            device: device.reason,
+                        }),
+                    );
                 } else {
                     success(`Logged in as ${displayName} (${ownId})`);
+                    info(describeLoginDevice(device, loginAt));
                 }
                 // The QR page says so too, and closes once it has.
                 await login.finish("done");
-                if (opts.sync) await runAutoSync(ownId, opts);
+                await watchLoginOffer(ownId, opts, { newDevice: device.newDevice, jsonMode });
             } catch (e) {
                 if (jsonMode) {
                     console.log(JSON.stringify({ event: "login_error", message: e.message }));

@@ -53,8 +53,9 @@ Every `logout` and `account remove` refuse, changing nothing, while a `listen`/`
 # QR (interactive — human scan required, temporary local server, auto-closes after scan/timeout)
 zalo-agent login --qr-url &
 
-# QR, then restore the history at once with the key the phone offers when "auto sync" is ticked at the QR (no tap; --sync-days <n> limits it)
-zalo-agent login --sync
+# QR. Tick "sync messages" on the phone at the confirm: the history is restored at once, no tap (--sync-days <n> limits it;
+# --no-sync only reports). Not ticked on a new device id: it prints the `zalo-agent sync --from <date>` to run
+zalo-agent login
 
 # Headless (re-use previously exported credentials)
 zalo-agent login --credentials ./creds.json
@@ -406,6 +407,7 @@ When any of these disagree, `references/command-reference.md` wins — it is gen
 - `cliMsgId` required for: react, undo, and rebuilding a `--quote` payload → get from `--json send` (the real wire id, not a guess) or `--json listen`; `msg delete`/`msg undo` also find it in the local cache on their own
 - Mentions only in groups (`-t 1`)
 - QR login requires human scan — not automatable. A decline on the phone fails fast instead of waiting for the code to expire
+- **Zalo's offline queue is per device id.** A re-login keeps the device id while the saved login is on this machine; after `logout`, or on a first login, it is a new device and nothing from before the login comes from the queue: the login and the next daemon start print the `zalo-agent sync --from <date>` to run (or tick "sync messages" on the phone at the QR). A `queue_overflow` event means Zalo dropped part of the queue: groups are repaired without a tap, 1-1 needs that `sync`
 - `sync-mobile` is the real history restore and is now the default path; it deliberately prompts the phone once (that is the data source). `--socket` does not restore history and never prompts. The old `--legacy` flag is gone: passing it is an unknown-option error.
 - `sync-mobile` restores full history by default. Suggest `--days <n>` when the user only needs recent messages — on a busy account that is the difference between ~50 message rounds and a handful
 - 1 proxy per account recommended (shared proxies risk a ban)

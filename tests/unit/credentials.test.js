@@ -18,6 +18,14 @@ import {
     deleteCredentials,
 } from "../../src/core/credentials.js";
 
+/** A saved login without the device stamp saveCredentials adds (src/core/credentials.js `deviceSinceFor`). */
+const unstamped = (creds) => {
+    if (!creds) return creds;
+    const rest = { ...creds };
+    delete rest.deviceSince;
+    return rest;
+};
+
 const OWN_ID = "1000000000000000001";
 const CREDS = { imei: "test-imei-0001", cookie: { cookies: [] }, userAgent: "TestAgent/1.0", language: "vi" };
 
@@ -43,7 +51,7 @@ describe("saveCredentials / loadCredentials / deleteCredentials", () => {
     it("returns the written path and round-trips the payload", () => {
         const p = saveCredentials(OWN_ID, CREDS);
         assert.equal(p, join(CREDENTIALS_DIR, `cred_${OWN_ID}.json`));
-        assert.deepEqual(loadCredentials(OWN_ID), CREDS);
+        assert.deepEqual(unstamped(loadCredentials(OWN_ID)), CREDS);
     });
 
     it("writes the login sealed: the file carries no imei and no cookie (src/core/keystore/)", () => {
@@ -51,7 +59,7 @@ describe("saveCredentials / loadCredentials / deleteCredentials", () => {
         const bytes = readFileSync(join(CREDENTIALS_DIR, `cred_${OWN_ID}.json`));
         assert.ok(bytes.subarray(0, 7).equals(Buffer.from("ZACSEAL")));
         assert.ok(!bytes.includes(Buffer.from(CREDS.imei)));
-        assert.deepEqual(loadCredentials(OWN_ID), CREDS);
+        assert.deepEqual(unstamped(loadCredentials(OWN_ID)), CREDS);
     });
 
     it("overwrites an existing credential rather than appending", () => {

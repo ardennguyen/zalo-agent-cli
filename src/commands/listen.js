@@ -66,6 +66,7 @@ import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbo
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
+import { alarmingGapCount } from "../core/listener-lifecycle.js";
 import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
 
@@ -710,7 +711,8 @@ export function registerListenCommand(program) {
             setUserInfoLogger(daemonLog);
             // Same health object `mcp start` builds (src/core/daemon-health.js): `listen --status` prints it.
             const health = createDaemonHealth({ kind: "listen", accountId: activeAcc.ownId, version: PKG_VERSION });
-            health.setSource("gaps", () => getPendingSyncGaps().length);
+            // Planned idle windows (on-demand presence) are not worth a warning; everything else is.
+            health.setSource("gaps", () => alarmingGapCount(getPendingSyncGaps()));
             health.setSource("stage", () => stageLock.current());
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
             health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
@@ -1113,6 +1115,8 @@ export function registerListenCommand(program) {
 
                 api.listener.on("disconnected", (code, _reason) => {
                     if (stopping) return;
+                    // A park's close (on-demand presence) is planned, like a shutdown's.
+                    if (socketHost.isParking() || socketHost.isParked()) return;
                     // After a kick the socket host has already said why it is not reconnecting.
                     if (socketHost.kicked()) return;
                     warning(`Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);

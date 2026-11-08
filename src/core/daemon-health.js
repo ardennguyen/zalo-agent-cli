@@ -55,6 +55,7 @@ const ageSec = (since, now) => (typeof since === "number" ? Math.max(0, Math.rou
  *   noteUp: () => void,
  *   noteDown: (code?: number|string|null) => void,
  *   noteStopping: () => void,
+ *   noteParked: () => void,
  *   noteSocketState: (state: string) => void,
  *   noteEvent: (kind: string, info?: {self?: boolean}) => void,
  *   setSource: (name: 'webhook'|'buffer'|'gaps'|'stage', fn: () => any) => void,
@@ -104,12 +105,21 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
             setState("up");
         },
         noteDown(code = null) {
-            if (socketState === "stopping") return;
+            // A parked socket closed on purpose (on-demand presence): that close is not a drop.
+            if (socketState === "stopping" || socketState === "idle") return;
             lastClose = { code: code ?? null, at: now() };
             setState("down");
         },
         noteStopping() {
             setState("stopping");
+        },
+        /**
+         * On-demand presence parked the socket: `idle`, not `down`. It wakes on demand; a wake shows as `connecting`
+         * until the socket is up.
+         */
+        noteParked() {
+            if (socketState === "stopping") return;
+            setState("idle");
         },
         /**
          * What the socket supervisor says it is doing (src/zalo/socket.js). Up and down are still decided by
@@ -122,6 +132,9 @@ export function createDaemonHealth({ kind, accountId, version, now = Date.now })
             if (socketState === "stopping") return;
             const named = { maintenance: "maintenance", kicked: "kicked", "session-invalid": "relogin" }[state];
             if (named) return setState(named);
+            // A wake from idle: a new supervisor is connecting.
+            if (socketState === "idle" && ["connecting", "retrying", "offline"].includes(state))
+                return setState("connecting");
             // Any other supervisor state ends a hold, but leaves up and down to the listener's events.
             if (["maintenance", "kicked", "relogin"].includes(socketState)) setState("down");
         },

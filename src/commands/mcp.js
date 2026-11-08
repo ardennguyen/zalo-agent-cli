@@ -63,7 +63,7 @@ import { getQrPage } from "../utils/qr-http-server.js";
 import { readControls } from "../zalo/queues/control-queue.js";
 import { dbUsedBytes, initDb, getMessageById, getPendingSyncGaps, getThreadNames } from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
-import { createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
+import { alarmingGapCount, createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
 import {
     storeLiveMessage,
     refreshLiveMessageIdentities,
@@ -777,7 +777,8 @@ export function registerMCPCommands(program) {
                 const stats = buffer.getStats();
                 return { threads: stats.length, messages: stats.reduce((n, t) => n + t.total, 0) };
             });
-            health.setSource("gaps", () => getPendingSyncGaps().length);
+            // Planned idle windows (on-demand presence) are not worth a warning; everything else is.
+            health.setSource("gaps", () => alarmingGapCount(getPendingSyncGaps()));
             health.setSource("stage", () => stageLock.current());
             health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
             const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
@@ -1377,6 +1378,8 @@ export function registerMCPCommands(program) {
 
                 api.listener.on("disconnected", (code) => {
                     if (lifecycle.isStopping()) return;
+                    // A park's close (on-demand presence) is planned, like a shutdown's.
+                    if (socketHost.isParking() || socketHost.isParked()) return;
                     // After a kick the socket host has already said why it is not reconnecting.
                     if (socketHost.kicked()) return;
                     console.error(`[mcp] Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);

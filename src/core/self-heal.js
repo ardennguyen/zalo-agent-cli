@@ -76,6 +76,7 @@ import {
     setSyncState,
 } from "./db.js";
 import { isRemovalMessage, storeHistoryMessage, storeLiveDelete, storeLiveUndo } from "./live-store.js";
+import { IDLE_EVICTED_REASON, IDLE_GAP_REASON } from "./listener-lifecycle.js";
 import {
     DEFAULT_MAX_PAGES,
     DEFAULT_PAGE_TIMEOUT_MS,
@@ -137,6 +138,15 @@ const iso = (ts) => new Date(ts).toISOString();
 
 /** "uncovered:uncovered:startup-gap" helps nobody; keep the original cause. */
 const baseReason = (reason) => String(reason || "gap").replace(/^(uncovered:)+/, "");
+
+/**
+ * What an uncovered part of a gap is called. A planned idle window (on-demand presence) that the queue no longer
+ * covers becomes `idle-evicted`: a real gap, alarmed on, closed by `sync --from`.
+ */
+const uncoveredReason = (reason, cause = null) =>
+    baseReason(reason) === IDLE_GAP_REASON || baseReason(reason) === IDLE_EVICTED_REASON
+        ? IDLE_EVICTED_REASON
+        : cause || `uncovered:${baseReason(reason)}`;
 
 /**
  * Build a daemon's self-heal. `listen` and `mcp start` each build exactly one.
@@ -383,11 +393,11 @@ export function createSelfHeal({
                 left.push({
                     fromTs: f,
                     toTs: coverage.from,
-                    reason: coverage.cause || `uncovered:${baseReason(g.reason)}`,
+                    reason: uncoveredReason(g.reason, coverage.cause),
                 });
             }
             if (t - coverage.to >= MIN_GAP_MS) {
-                left.push({ fromTs: coverage.to, toTs: t, reason: `uncovered:${baseReason(g.reason)}` });
+                left.push({ fromTs: coverage.to, toTs: t, reason: uncoveredReason(g.reason) });
             }
             runInTransaction(() => {
                 resolveSyncGap(g.id);
@@ -519,6 +529,16 @@ export function createSelfHeal({
             }
         } else {
             const failed = results.filter((r) => !r.complete).map((r) => `${r.queue.queueName} (${r.reason})`);
+            // A planned idle window this run could not cover (a timeout, the page cap) is no longer planned.
+            const idle = getPendingSyncGaps().filter((g) => g.reason === IDLE_GAP_REASON);
+            if (idle.length) {
+                runInTransaction(() => {
+                    for (const g of idle) {
+                        resolveSyncGap(g.id);
+                        recordSyncGap(Number(g.fromTs), Number(g.toTs), IDLE_EVICTED_REASON);
+                    }
+                });
+            }
             const pendingGaps = getPendingSyncGaps();
             let hint = "";
             if (pendingGaps.length) {

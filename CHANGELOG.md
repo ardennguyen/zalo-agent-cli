@@ -12,6 +12,7 @@ commit; the GitHub Release body is a copy of that section (see `docs/RELEASE.md`
 ### On-demand presence (groundwork; the daemons are not switched yet)
 
 - The presence core (`src/core/presence.js`): holds (a tool call, a wait, a CRM lease, a CLI request, a stage, the start-up catch-up), the park/wake state machine, the idle timeout (`5m`, never before `minConnected` `60s`), hysteresis (over `12` wakes an hour the idle timeout doubles per wake, up to an hour), always-on as one permanent hold, the catch-up pulse (**off** by default) with a per-account offset, metered connected time and wait time. `listen` and `mcp start` still stay connected all the time: switching them to on-demand is a later, separate change.
+- Park and wake in the socket host: a park closes the socket on purpose (a requested close: the supervisor retries nothing, no relogin) and keeps the session, lock, HTTP port and daemon channel; a wake starts a new supervisor on the same session (a dead one goes the existing relogin way; a kick still ends the daemon unless presence yields, below). The parked window is a **planned** coverage gap (`idle`) that self-heal closes from Zalo's offline queue on the next handshake; what the queue no longer holds becomes a real gap, `idle-evicted`, with the `sync --from` advice. Health and `fleet status` do not warn about `idle` gaps, and a parked socket shows as `idle`, never `down`.
 
 ### fleet purge for a timer
 

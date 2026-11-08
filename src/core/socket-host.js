@@ -106,8 +106,13 @@ const sleepFor = (ms, signal) =>
  * @param {(keys: {bkt?: number, sptMtn?: number}) => Promise<{state: string, code: number|null}>} [opts.checkGate] -
  *   the maintenance question, given the disaster-recovery numbers the last session's login learned
  * @param {number} [opts.kickReasonWaitMs] - how long a kick waits for its reason before `onKicked`
+ * @param {(info: {via: string, reason: unknown}) => boolean} [opts.yieldOnKick] - on-demand presence
+ *   (./presence.js `noteKicked`): true lets the socket go and keeps the daemon up (`yielded`) instead of `onKicked`
+ * @param {() => void} [opts.onParking] - called once a park is past the point of no return, before the supervisor
+ *   stops: the daemon marks the coming close as planned (`lifecycle.noteParking()`, health `idle`)
  * @returns {{start: (api: object) => object, stop: () => Promise<void>, current: () => object|null,
- *   reloginNow: (why: string) => Promise<void>}}
+ *   reloginNow: (why: string) => Promise<void>, park: Function, wake: Function, isParked: () => boolean,
+ *   isParking: () => boolean}}
  */
 export function createSocketHost({
     log,
@@ -123,8 +128,15 @@ export function createSocketHost({
     sleep = sleepFor,
     checkGate = (keys, fetchFn) => checkMaintenance({ ...keys, fetchFn }),
     kickReasonWaitMs = KICK_REASON_WAIT_MS,
+    yieldOnKick = null,
+    onParking = null,
 }) {
     let supervisor = null;
+    // The session the last supervisor ran on: a wake starts the next one on it (a relogin replaces it).
+    let currentApi = null;
+    // On-demand presence: no supervisor on purpose (parked, or yielded to another session after a kick).
+    let parked = false;
+    let parking = false;
     // What the last session's login learned about maintenance; the question carries it, as the official client's does.
     let gateKeys = {};
     // The account's own fetch (its proxy, when it has one): the gate's question leaves the way the account's traffic does.
@@ -163,6 +175,7 @@ export function createSocketHost({
             );
             const end = (info) => {
                 if (kickFile) writeKickMarker(kickFile, { via, reason: info ?? null });
+                if (yieldTo({ via, reason: info ?? null }, sup)) return;
                 onKicked();
             };
             if (!reason) return end(null);
@@ -204,8 +217,35 @@ export function createSocketHost({
         sup.on("resume", () => log("info", "The machine woke up; checking the socket."));
     }
 
+    /**
+     * On-demand: let the socket go after a kick instead of ending the daemon, when presence says so. The kicked
+     * supervisor is disposed (it never retries a kick anyway); nothing reconnects until a wake.
+     *
+     * @returns {boolean} whether the daemon yielded (false: the caller ends it as always)
+     */
+    function yieldTo(info, sup) {
+        let yielded = false;
+        try {
+            yielded = Boolean(yieldOnKick?.(info));
+        } catch (e) {
+            log("warn", `The presence hook failed on a kick (${e?.message ?? e}); ending as always.`);
+        }
+        if (!yielded) return false;
+        if (supervisor === sup) supervisor = null;
+        sup?.dispose?.();
+        parked = true;
+        log(
+            "warn",
+            "Yielded the account to the other session. The socket stays closed until someone asks for it " +
+                "(a tool call, a lease, a CLI request); that request takes the account back.",
+        );
+        return true;
+    }
+
     /** Take over a (new) API: replace the old supervisor and start the new one. */
     function start(api) {
+        currentApi = api;
+        parked = false;
         const old = supervisor;
         if (old) {
             // The old session's socket is closed, not just forgotten: a socket left open beside the
@@ -257,6 +297,7 @@ export function createSocketHost({
                     const kind = classifyLoginFailure(err);
                     if (kind === "kicked") {
                         log("error", "Zalo answered the login with a kick: another session holds the account.");
+                        if (yieldTo({ via: "login", reason: null }, null)) return;
                         onKicked();
                         return;
                     }
@@ -293,9 +334,59 @@ export function createSocketHost({
         }
     }
 
+    /**
+     * Park (on-demand presence): close the socket on purpose and keep everything else (session, lock, HTTP port,
+     * daemon channel, timers). The close is a requested one, so the supervisor goes to `stopped` and retries nothing.
+     *
+     * @param {object} [o]
+     * @param {() => boolean} [o.aborted] - a hold arrived: give up before the point of no return
+     * @param {() => Promise<void>|void} [o.prepare] - flush the delivered receipts, wait for a running stage, stamp
+     *   coverage (the daemon's part, step 2 and 4 of the plan's appendix A)
+     * @returns {Promise<boolean>} whether the socket is parked now
+     */
+    async function park({ aborted = () => false, prepare } = {}) {
+        if (parked) return true;
+        if (parking || reloginRunning || isStopping() || !supervisor) return false;
+        parking = true;
+        try {
+            await prepare?.();
+            if (aborted() || isStopping() || !supervisor) return false;
+            onParking?.();
+            const sup = supervisor;
+            supervisor = null;
+            parked = true;
+            try {
+                await sup.stop();
+            } finally {
+                sup.dispose();
+            }
+            log("info", "Parked: the socket is closed until something needs it.");
+            return true;
+        } finally {
+            parking = false;
+        }
+    }
+
+    /**
+     * Wake (on-demand presence): a new supervisor on the current session, with the same anomaly history and kick
+     * wiring. A dead session is found by that supervisor and goes the existing way (session-invalid, relogin).
+     *
+     * @returns {object|null} the running supervisor
+     */
+    function wake() {
+        if (isStopping()) return null;
+        if (!parked && supervisor) return supervisor;
+        if (!currentApi) return null;
+        return start(currentApi);
+    }
+
     return {
         start,
         reloginNow,
+        park,
+        wake,
+        isParked: () => parked,
+        isParking: () => parking,
         current: () => supervisor,
         /** Whether another session took the account: the close that follows a kick is not a drop to retry. */
         kicked: () => Boolean(supervisor?.status?.().kickedVia),

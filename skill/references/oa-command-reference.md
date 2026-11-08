@@ -4,7 +4,7 @@ Zalo OA API v3.0 — official API, separate from personal account. **32 commands
 
 - Every `oa` command accepts `--oa-id <id>` (default `"default"`) for multi-OA, and `--json`.
 - `oa` commands skip the unofficial-API disclaimer and skip the personal-account auto-login — they manage their own OAuth token.
-- Credentials live in `~/.zalo-agent/oa-credentials.json` — a **different directory** from the personal account's `~/.zalo-agent-cli/`.
+- Credentials live in `~/.zalo-agent/oa-credentials.json` — a **different directory** from the personal account's `~/.zalo-agent-cli/` (moved with the global `--oa-dir <dir>` or `ZALO_OA_DIR`).
 - **No OA command is exposed as an MCP tool.** Agents connected over MCP must shell out: `zalo-agent --json oa <command>`.
 
 ## Setup
@@ -65,7 +65,7 @@ OAuth times out after 2 minutes.
 
 ## Messaging
 
-Message types: `cs` (customer service), `transaction`, `promotion`.
+`-m, --msg-type <type>` (default `cs`) on `msg text`, `image`, `file` and `list`: `cs` (customer service), `transaction`, `promotion`; anything else is refused before a request.
 
 ```bash
 zalo-agent oa msg text <user-id> "message" [-m cs]
@@ -171,7 +171,7 @@ zalo-agent oa msg text <uid> "Hi" --oa-id shop2
 
 ## Credentials
 
-Stored: `~/.zalo-agent/oa-credentials.json` (chmod 600)
+Stored: `~/.zalo-agent/oa-credentials.json` (chmod 600; `--oa-dir` / `ZALO_OA_DIR` moves it). Unlike the personal account's files it is **not** sealed by 3.0's at-rest encryption (docs/security.md §1).
 
 Contains: appId, secretKey, accessToken, refreshToken, expiresIn, webhookUrl, verifyCode
 

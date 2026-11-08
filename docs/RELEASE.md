@@ -18,7 +18,8 @@ On the active version branch (`v2.5-dev` for 2.5.x, `v3.0-dev` for 3.0):
 
 1. Make sure every change since the last tag has a line under `## [Unreleased]` in `CHANGELOG.md`.
    Write the lines as the release notes a user reads: what changed, what to do differently, the
-   commit link.
+   commit link. A major version also needs its breaking changes marked and an upgrade section
+   (for 3.0: back up the 2.x home before the first 3.0 command, because sealing it is one-way — docs/security.md §6).
 2. Re-measure the numbers that docs quote — `node scripts/count-surface.mjs --tests` — and fix every
    doc that quotes a stale one (AGENTS.md §10 lists them).
 3. Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it,
@@ -29,7 +30,10 @@ On the active version branch (`v2.5-dev` for 2.5.x, `v3.0-dev` for 3.0):
 5. Commit as `chore: bump version to X.Y.Z` (stage by path: `package.json`, `package-lock.json`,
    `CHANGELOG.md`, the docs from step 2) and push the version branch.
 6. **(user)** Open and merge the pull request `vX.Y-dev → main`. The merge is the release decision.
-7. Tag the merge commit and push the tag: `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z`.
+   `.github/workflows/prepare-release.yml` can do the `npm version` part of step 4 as a PR (manifests only, not the CHANGELOG); it
+   defaults to `v2.5-dev`, so for a 3.x release pass `branch: v3.0-dev`.
+7. Wait for `ci.yml` (Ubuntu, Node 22) to pass on the merge commit — the offline suite has failed on
+   Linux after passing on Windows — then tag the merge commit and push the tag: `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z`.
    The tag is the only name a release has; never create a branch named after it.
 8. Create the GitHub Release from the tag with the CHANGELOG section as its body
    (`gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <section>`). Publishing the Release

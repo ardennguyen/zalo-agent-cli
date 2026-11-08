@@ -292,6 +292,7 @@ zalo-agent oa whoami --oa-id shop2
 - Webhook body size limit: tối đa 1MB
 - OAuth callback: bind `127.0.0.1` (local) hoặc `0.0.0.0` (VPS mode)
 - Không hardcode secret — tất cả lấy từ CLI flag hoặc file credential
+- Không được niêm phong: mã hóa trên đĩa mà 3.0 áp dụng cho các file của tài khoản cá nhân ([security.vi.md](security.vi.md)) không bao gồm `oa-credentials.json`. Hãy để thư mục OA trên ổ đã mã hóa và chỉ cho tài khoản dịch vụ đọc.
 
 ---
 

@@ -292,6 +292,7 @@ zalo-agent oa whoami --oa-id shop2
 - Webhook body size limit: 1 MB max
 - OAuth callback: binds `127.0.0.1` (local) or `0.0.0.0` (VPS mode)
 - No hardcoded secrets — all secrets come from CLI flags or the credential file
+- Not sealed: the at-rest encryption 3.0 brought to the personal account's files ([security.md](security.md)) does not cover `oa-credentials.json`. Keep the OA directory on an encrypted disk and readable by the service account only.
 
 ---
 

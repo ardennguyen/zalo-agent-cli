@@ -1,6 +1,6 @@
 # Test fixtures
 
-Real sample media, committed on purpose. ~15 KB total.
+Real sample media, committed on purpose. ~44 KB total.
 
 | File                                                | What it covers                                                                |
 | --------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -9,6 +9,8 @@ Real sample media, committed on purpose. ~15 KB total.
 | `image-200x120.jpg`                                 | A second JPEG, so a hard-coded 64×48 cannot pass by accident                  |
 | `image-64x48.gif`                                   | GIF branch (little-endian dims) **and** the engine's separate GIF upload path |
 | `image-1x1.webp`                                    | WebP branch, lossy `VP8 ` variant                                             |
+| `image-200x120-rot90.jpg`                           | JPEG with EXIF orientation 6: displayed 120×200, guards the orientation swap  |
+| `image-64x48.bmp` `image-64x48.tiff`                | Not inline formats for Zalo (sent as a file attachment); size read must work  |
 | `notes.txt` `data.csv` `document.pdf` `archive.zip` | The `"others"` upload path — the one that needs a live WebSocket listener     |
 
 `VP8L` and `VP8X` WebP variants are covered by synthetic headers built inside

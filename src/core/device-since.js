@@ -110,7 +110,7 @@ export function describeLoginDevice(change, loginAt) {
         );
     }
     const why = {
-        "first-login": "the first login of this account on this machine",
+        "first-login": "no saved login for this account here: a first login, or one after `logout`",
         unreadable: "the saved login could not be read",
         "no-device-id": "the saved login had no device id",
         "device-changed": "the saved login had another device id",

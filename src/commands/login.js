@@ -60,6 +60,65 @@ async function restoreAdvice(ownId) {
 }
 
 /**
+ * The saved cursors of this account's control queues, read from its local cache, as `listen` keeps them
+ * (src/core/self-heal.js `cursorKey`). A login that kept its device id reads its control queue from there, as Zalo Web
+ * does: the phone's offer is at the end of that queue. No cache, or an unreadable one: no cursor (the queue is then
+ * read from its start). Read only.
+ *
+ * @param {string} ownId
+ * @returns {Promise<(queueName: string) => string|null>}
+ */
+async function controlCursorsOf(ownId) {
+    const none = () => null;
+    try {
+        const { existsSync } = await import("fs");
+        const { getAccountDbPath } = await import("../core/credentials.js");
+        const path = getAccountDbPath(ownId);
+        if (!existsSync(path)) return none;
+        const { initDb, getSyncState } = await import("../core/db.js");
+        const { cursorKey } = await import("../core/self-heal.js");
+        initDb(path);
+        return (queueName) => {
+            try {
+                const saved = JSON.parse(getSyncState(cursorKey(queueName)) ?? "null");
+                return /^\d+$/.test(String(saved?.id ?? "")) ? String(saved.id) : null;
+            } catch {
+                return null;
+            }
+        };
+    } catch {
+        return none;
+    }
+}
+
+/**
+ * The `--verbose` lines of a look for the phone's offer: which control queues were read and from where, and every
+ * control that arrived (queue, act type, act, `pc`, whether it had a key, age). Never the key.
+ *
+ * @param {{pulls?: object[], controls?: object[]}} out - what autoSyncAfterLogin returned
+ * @returns {string[]}
+ */
+export function describeOfferCheck(out) {
+    const lines = [];
+    const pulls = out?.pulls ?? [];
+    lines.push(
+        pulls.length
+            ? `Control queues read: ${pulls.map((p) => `${p.queue} from ${p.from} (${p.pages} page(s), ${p.reason})`).join("; ")}`
+            : "Control queues read: none",
+    );
+    const controls = out?.controls ?? [];
+    lines.push(`Controls seen: ${controls.length}`);
+    for (const c of controls) {
+        const age = c.ageMs === null || c.ageMs === undefined ? "?" : `${Math.round(c.ageMs / 1000)} s`;
+        lines.push(
+            `  ${c.queue} #${c.actionId ?? "?"}: act_type=${c.actType ?? "-"} act=${c.act ?? "-"} pc=${c.pc ?? "-"} ` +
+                `key=${c.hasKey ? "yes" : "no"} age=${age}`,
+        );
+    }
+    return lines;
+}
+
+/**
  * After a QR login: look for the phone's "sync messages to this device" offer and say whether it was ticked. Ticked:
  * restore at once with the key the phone offered (no tap; the tick is the consent), unless `--no-sync`. Not ticked, or
  * too late to use: say which `sync` command restores what this login does not have.
@@ -68,7 +127,8 @@ async function restoreAdvice(ownId) {
  * then not read, and the advice is printed instead.
  *
  * @param {string} ownId
- * @param {{sync?: boolean, syncDays?: number}} opts - `sync` false: `--no-sync`
+ * @param {{sync?: boolean, syncDays?: number, verbose?: boolean}} opts - `sync` false: `--no-sync`; `verbose`: list
+ *   the control queues read and every control seen (`--json`: `pulls` and `controls` in the event)
  * @param {{newDevice: boolean, jsonMode: boolean}} ctx
  */
 async function watchLoginOffer(ownId, opts, { newDevice, jsonMode }) {
@@ -76,8 +136,9 @@ async function watchLoginOffer(ownId, opts, { newDevice, jsonMode }) {
     const { resolveSyncWindow } = await import("../core/sync-v2/index.js");
     const { reportRestore } = await import("./sync.js");
     const accountDir = getAccountDir(ownId);
+    let diag = {};
     const say = (status, line, extra = {}) => {
-        if (jsonMode) console.log(JSON.stringify({ event: "login_auto_sync", status, ...extra }));
+        if (jsonMode) console.log(JSON.stringify({ event: "login_auto_sync", status, ...extra, ...diag }));
         else if (line) (status === "restored" || status === "same-device" ? info : warning)(line);
     };
     if (!acquireLock(accountDir)) {
@@ -96,6 +157,7 @@ async function watchLoginOffer(ownId, opts, { newDevice, jsonMode }) {
         if (!jsonMode) info("Checking whether 'sync messages' was ticked on the phone...");
         const out = await autoSyncAfterLogin(getApi(), ownId, {
             days: opts.syncDays ?? null,
+            cursorOf: await controlCursorsOf(ownId),
             restoreWhenTicked: opts.sync !== false,
             onStatus: ({ phase, detail }) => {
                 if (jsonMode) return;
@@ -103,6 +165,10 @@ async function watchLoginOffer(ownId, opts, { newDevice, jsonMode }) {
                 else if (detail) info(`  ${detail}`);
             },
         });
+        if (opts.verbose) {
+            if (jsonMode) diag = { pulls: out.pulls ?? [], controls: out.controls ?? [] };
+            else for (const line of describeOfferCheck(out)) info(line);
+        }
         if (out.offered) {
             if (!jsonMode) info(`Auto sync was ticked on the phone: restored ${win.label} with its key (no tap).`);
             if (jsonMode) say("restored", null, { ageMs: out.ageMs, reason: out.result?.reason ?? null });
@@ -162,6 +228,10 @@ export function registerLoginCommands(program) {
             "Only report whether 'sync messages' was ticked on the phone; restore nothing (later: zalo-agent sync)",
         )
         .option("--sync-days <n>", "When restoring after the login: only the last N days", parseIntAtLeast(1))
+        .option(
+            "--verbose",
+            "After a QR login, list the control queues read for the 'sync messages' offer and every control seen (never its key)",
+        )
         .action(async (opts) => {
             // Credential-based login (headless/CI)
             if (opts.credentials) {

@@ -250,6 +250,7 @@ const FLAG_CONTRACT = {
         "--sync",
         "--no-sync",
         "--sync-days",
+        "--verbose",
     ],
     logout: ["--purge", "--delete-history", "--no-remote"],
     "sync-mobile": [

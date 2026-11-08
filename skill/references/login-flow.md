@@ -37,7 +37,7 @@ Firewall must allow at least one of these ports for remote access.
 | expired | With `--json` or no terminal: a fresh QR at once, up to 5 codes, then `login_error` (`Login timed out: …`). At a terminal: waits for Enter or the page's "Get a new code", up to 5 minutes |
 
 ### Auto sync at login ("sync messages to this device")
-After every QR login, `zalo-agent login` reads the phone's answer once and says whether **sync messages** was ticked on the QR confirmation screen:
+After every QR login, `zalo-agent login` reads the phone's answer and says whether **sync messages** was ticked on the QR confirmation screen. The answer is a control in the account's control queues (`603_1`, `603_0`); they are read as Zalo Web reads them, from the cursor `listen` saved and page by page, then from the start, because a re-login that keeps the device id keeps the queue and the answer is at its end. `--verbose` lists the queues read and every control seen (never the key):
 
 | Phone | What `login` does |
 |-------|-------------------|

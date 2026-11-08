@@ -10,10 +10,11 @@ import {
     AUTO_SYNC_MAX_AGE_MS,
     autoSyncAfterLogin,
     classifyLoginOffer,
+    describeLoginControls,
     pickTransferAfterLogin,
 } from "../../src/core/sync-v2/auto-sync.js";
 import { SyncV2 } from "../../src/core/sync-v2/index.js";
-import { FAKE, installQueuePulls, startFakeZalo } from "../helpers/fake-zalo/index.js";
+import { FAKE, installQueuePulls, ok, startFakeZalo } from "../helpers/fake-zalo/index.js";
 import { fakeCodecs, installFakePhone } from "../helpers/fake-zalo/phone.js";
 
 const NOW = Date.UTC(2026, 9, 26, 7, 43, 33);
@@ -144,11 +145,18 @@ describe("autoSyncAfterLogin against the fake phone", () => {
     async function run(backlog, extra = {}) {
         zalo = await startFakeZalo();
         installQueuePulls(zalo.sock, backlog === null ? {} : { "603/1": { controls: backlog } });
+        // The fake answers 603/1 only; 603/0 is answered empty here so a run does not wait out a page timeout.
+        zalo.sock.respond(603, 0, (frame) => ok({ controls: [], more: 0, reqId: frame.data?.reqId }));
+        if (extra.respond603) zalo.sock.respond(603, 1, extra.respond603);
         const phone = installFakePhone(zalo, { conversations: CONVS });
         api = await zalo.login();
         const account = `${FAKE.ownId}${++n}`;
+        const opts = { ...extra };
+        delete opts.respond603;
         const out = await autoSyncAfterLogin(api, account, {
             pullWaitMs: 60,
+            pageTimeoutMs: 2000,
+            authWaitMs: 500,
             restore: (o) =>
                 new SyncV2(api, account).restore({
                     ...o,
@@ -157,7 +165,7 @@ describe("autoSyncAfterLogin against the fake phone", () => {
                     pollMs: 20,
                     waitMs: 30_000,
                 }),
-            ...extra,
+            ...opts,
         });
         return { out, phone };
     }
@@ -219,5 +227,164 @@ describe("autoSyncAfterLogin against the fake phone", () => {
     it("lets go of the socket when it is done", async () => {
         await run([control({ temp_key: KEY, pc: 0 }, { ts: Date.now() })]);
         assert.ok(!api.listener.ws, "the socket is closed");
+    });
+
+    /**
+     * A control queue kept by a re-login that kept the device id: `old` controls from before, then the offer, served
+     * in pages of 50 from the cursor a request names (the start when it names none), as the server does.
+     */
+    function keptQueue(old, offerTs) {
+        const items = [];
+        for (let i = 1; i <= old; i++) {
+            items.push(
+                control({ status: 1 }, { act: "transfer_status", actionId: String(i), ts: Date.now() - 86_400_000 }),
+            );
+        }
+        items.push(control({ temp_key: KEY, imei: null, pc: 0 }, { actionId: String(old + 1), ts: offerTs }));
+        const asked = [];
+        const respond = (frame) => {
+            const lastId = frame.data?.lastId ?? null;
+            asked.push(lastId);
+            const from = lastId === null ? 0 : items.findIndex((c) => c.actionId === String(lastId)) + 1;
+            const page = items.slice(from, from + 50);
+            const more = from + 50 < items.length ? 1 : 0;
+            return ok({
+                controls: page,
+                more,
+                lastActionId: page.at(-1)?.actionId ?? lastId,
+                reqId: frame.data?.reqId,
+            });
+        };
+        return { respond, asked };
+    }
+
+    it("finds the offer at the end of a kept device's queue, page by page from its start (red with one page)", async () => {
+        const q = keptQueue(120, Date.now() - 500);
+        const { out, phone } = await run(null, { respond603: q.respond });
+        assert.equal(out.status, "ticked", "the offer on the third page was found");
+        assert.equal(out.offered, true);
+        assert.equal(phone.requests[0].raw.tempKey, KEY);
+        assert.deepEqual(q.asked, [null, "50", "100"], "paged on `more` from the answer's lastActionId");
+        assert.deepEqual(out.pulls, [{ queue: "603_1", from: "start", pages: 3, reason: "found" }]);
+    });
+
+    it("reads from the saved control cursor first, as Zalo Web does, and finds the offer after it", async () => {
+        const q = keptQueue(120, Date.now() - 500);
+        const cursors = [];
+        const { out } = await run(null, {
+            respond603: q.respond,
+            restoreWhenTicked: false,
+            cursorOf: (name) => {
+                cursors.push(name);
+                return name === "603_1" ? { id: "110", ts: 1 } : null;
+            },
+        });
+        assert.equal(out.status, "ticked");
+        assert.deepEqual(q.asked, ["110"], "one page from the cursor, not the whole queue");
+        assert.deepEqual(out.pulls, [{ queue: "603_1", from: "cursor", pages: 1, reason: "found" }]);
+        assert.deepEqual(cursors, ["603_1"]);
+    });
+
+    it("falls back to the start of the queue when the cursor finds nothing", async () => {
+        const q = keptQueue(10, Date.now() - 500);
+        const { out } = await run(null, {
+            respond603: (frame) =>
+                frame.data?.lastId === "999"
+                    ? ok({ controls: [], more: 0, reqId: frame.data?.reqId })
+                    : q.respond(frame),
+            restoreWhenTicked: false,
+            cursorOf: (name) => (name === "603_1" ? "999" : null),
+        });
+        assert.equal(out.status, "ticked");
+        assert.deepEqual(out.pulls, [
+            { queue: "603_1", from: "cursor", pages: 1, reason: "drained" },
+            { queue: "603_1", from: "start", pages: 1, reason: "found" },
+        ]);
+    });
+
+    it("says what it saw when nothing was ticked: every control, its act and pc, never a key", async () => {
+        const stale = control({ temp_key: KEY, pc: 0 }, { actionId: "7", ts: Date.now() - 10 * 60_000 });
+        const pc = control({ temp_key: KEY, pc: 1 }, { actionId: "8", ts: Date.now() - 500 });
+        const { out } = await run([stale, pc]);
+        assert.equal(out.status, "late");
+        assert.equal(out.controls.length, 2);
+        assert.deepEqual(
+            out.controls.map((c) => [c.queue, c.actType, c.act, c.pc, c.hasKey]),
+            [
+                ["603_1", "transfer_sync2", "transfer_after_login", 0, true],
+                ["603_1", "transfer_sync2", "transfer_after_login", 1, true],
+            ],
+        );
+        assert.ok(out.controls[0].ageMs >= 10 * 60_000);
+        assert.ok(!JSON.stringify(out).includes(KEY), "the key is in no part of the answer");
+        assert.deepEqual(
+            out.pulls.map((p) => [p.queue, p.from, p.reason]),
+            [
+                ["603_1", "start", "drained"],
+                ["603_0", "start", "drained"],
+            ],
+        );
+    });
+});
+
+describe("describeLoginControls", () => {
+    it("one line per control (repeats by queue and id dropped), with no key in it", () => {
+        const c = control({ temp_key: KEY, imei: null, pc: 0 }, { actionId: "3", ts: NOW - 2000 });
+        const odd = { actionId: "4", content: { act_type: "group", act: "join", data: "not json" } };
+        const got = describeLoginControls(
+            [
+                { queue: "603_1", control: c },
+                { queue: "603_1", control: c },
+                { queue: "601_0", control: c },
+                { queue: "603_0", control: odd },
+                { queue: "603_0", control: null },
+            ],
+            NOW,
+        );
+        assert.deepEqual(got, [
+            {
+                queue: "603_1",
+                actionId: "3",
+                actType: "transfer_sync2",
+                act: "transfer_after_login",
+                pc: 0,
+                hasKey: true,
+                ageMs: 2000,
+            },
+            {
+                queue: "601_0",
+                actionId: "3",
+                actType: "transfer_sync2",
+                act: "transfer_after_login",
+                pc: 0,
+                hasKey: true,
+                ageMs: 2000,
+            },
+            { queue: "603_0", actionId: "4", actType: "group", act: "join", pc: null, hasKey: false, ageMs: null },
+        ]);
+        assert.ok(!JSON.stringify(got).includes(KEY));
+        assert.deepEqual(describeLoginControls(undefined, NOW), []);
+    });
+});
+
+describe("login --verbose: the lines that say what the offer check saw", () => {
+    it("names each queue read and each control, never the key", async () => {
+        const { describeOfferCheck } = await import("../../src/commands/login.js");
+        const lines = describeOfferCheck({
+            pulls: [
+                { queue: "603_1", from: "cursor", pages: 1, reason: "drained" },
+                { queue: "603_1", from: "start", pages: 3, reason: "found" },
+            ],
+            controls: describeLoginControls(
+                [{ queue: "603_1", control: control({ temp_key: KEY, pc: 0 }, { actionId: "9", ts: NOW - 4000 }) }],
+                NOW,
+            ),
+        });
+        assert.deepEqual(lines, [
+            "Control queues read: 603_1 from cursor (1 page(s), drained); 603_1 from start (3 page(s), found)",
+            "Controls seen: 1",
+            "  603_1 #9: act_type=transfer_sync2 act=transfer_after_login pc=0 key=yes age=4 s",
+        ]);
+        assert.deepEqual(describeOfferCheck({}), ["Control queues read: none", "Controls seen: 0"]);
     });
 });

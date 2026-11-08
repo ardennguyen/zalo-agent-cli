@@ -20,7 +20,10 @@ import { info } from "./output.js";
  * device is asked to scan), who scanned it, whether it expired (and what asks for a new one), and how the login
  * ended. Set by the login as the events arrive.
  */
-const qrState = { layer: 1, scanned: null, expired: false, refresh: null, outcome: null, message: "" };
+const newQrState = () => ({ layer: 1, scanned: null, expired: false, refresh: null, outcome: null, message: "" });
+// The process's own login (`login`, `account login`, a login inside `mcp start --http`); a fleet controller's flows
+// each have their own (QrPage `state`), so two at once never share a "scanned" or an outcome.
+const qrState = newQrState();
 
 /**
  * Note which QR the page should say it is showing. A new code is never expired.
@@ -313,7 +316,8 @@ const DATA_HEADERS = Object.freeze({
  * @param {{qrImagePath: string, paths: {image: string, status: string, refresh: string}, method?: string,
  *   onOutcomeRead?: () => void}} ctx
  */
-async function answerQr(res, what, { qrImagePath, paths, method = "GET", onOutcomeRead }) {
+async function answerQr(res, what, { qrImagePath, paths, method = "GET", onOutcomeRead, state = qrState }) {
+    const qrState = state;
     if (what === "page") {
         const nonce = randomBytes(16).toString("base64");
         res.writeHead(200, pageHeaders(nonce));
@@ -437,9 +441,10 @@ export function maskQrPath(url) {
  * dies `QR_LINK_TTL_MS` after the last code appeared (`extend`), or when the login ends.
  */
 export class QrPage {
-    /** @param {{now?: () => number}} [opts] */
-    constructor({ now = Date.now } = {}) {
+    /** @param {{now?: () => number, state?: object}} [opts] - `state`: the page's own login state (default: a new one) */
+    constructor({ now = Date.now, state = newQrState() } = {}) {
         this.now = now;
+        this.state = state;
         this.publicUrl = null;
         this.localBaseUrl = null;
         /** True when an HTTP server serves this page (`mcp start --http`), so a login there needs no server of its own. */
@@ -499,6 +504,44 @@ export class QrPage {
         if (this.token) this.expiresAt = Math.max(this.expiresAt, this.now() + ms);
     }
 
+    /** This page's login state, as the module's note* functions set the process's. */
+    noteLayer(layer = 1) {
+        this.state.layer = layer;
+        this.state.expired = false;
+        this.state.refresh = null;
+        if (layer === 1) this.state.scanned = null;
+    }
+
+    noteScanned(name = "") {
+        this.state.scanned = String(name || "");
+    }
+
+    noteExpired(refresh) {
+        this.state.expired = true;
+        this.state.scanned = null;
+        this.state.refresh = typeof refresh === "function" ? refresh : null;
+    }
+
+    noteOutcome(outcome, message = "") {
+        this.state.outcome = outcome;
+        this.state.message = String(message || "");
+        this.state.expired = false;
+        this.state.refresh = null;
+    }
+
+    /**
+     * Whether a request path names this page's live token (several pages share one server: a fleet controller's flows).
+     * @param {string} url
+     * @returns {boolean}
+     */
+    owns(url) {
+        const m = QR_PATH_SHAPE.exec(String(url ?? "").split("?")[0]);
+        if (!m || !this.token || !QR_TOKEN_SHAPE.test(m[1])) return false;
+        const a = Buffer.from(m[1]);
+        const b = Buffer.from(this.token);
+        return a.length === b.length && timingSafeEqual(a, b);
+    }
+
     /** End the link. */
     revoke() {
         this.token = null;
@@ -551,6 +594,7 @@ export class QrPage {
             paths: { image: `${rel}qr.png`, status: `${rel}status`, refresh: `${rel}refresh` },
             method: req.method,
             onOutcomeRead: () => watch?.outcomeRead(),
+            state: this.state,
         });
         return true;
     }
@@ -563,7 +607,7 @@ let currentQrPage = null;
  * @returns {QrPage}
  */
 export function getQrPage() {
-    if (!currentQrPage) currentQrPage = new QrPage();
+    if (!currentQrPage) currentQrPage = new QrPage({ state: qrState });
     return currentQrPage;
 }
 

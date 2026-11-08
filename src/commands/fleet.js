@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { parseEnv } from "node:util";
 import { parseAccountId } from "../core/daemon-account.js";
 import { listAccounts } from "../core/accounts.js";
-import { getAccountDir } from "../core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../core/credentials.js";
 import {
     callViaDaemon,
     getDaemonStatus,
@@ -39,8 +39,11 @@ import {
     adminWebhook,
     agentTokenHashes,
     buildControllerApp,
+    finishQrAdd,
     runSelf,
+    spawnLoginChild,
 } from "../core/fleet-serve.js";
+import { DEFAULT_QR_FLOWS, createQrFlows } from "../core/fleet-qr.js";
 import { applyPolicy, effectivePolicy, ownerOf } from "../core/policy-store.js";
 import { resolvePublicUrl } from "../core/deploy-policy.js";
 import { kickFile, readKickMarker } from "../core/kick-marker.js";
@@ -572,6 +575,18 @@ export function registerFleetCommands(program) {
                 process.env.ZALO_FLEET_WEBHOOK_SECRET || null,
             );
             const log = (l) => console.error(l);
+            // The QR add (src/core/fleet-qr.js): one child login per flow, at most ZALO_FLEET_QR_FLOWS at once.
+            const qr = createQrFlows({
+                spawnLogin: spawnLoginChild,
+                finish: (o) => finishQrAdd({ ...o, envDir, driver }),
+                isRunning: (id) => getDaemonStatus(getAccountDir(id)).running,
+                dir: join(CONFIG_DIR, "qr-flows"),
+                publicUrl: pub.publicUrl,
+                localBaseUrl: `http://${host}:${port}`,
+                maxFlows: Number(process.env.ZALO_FLEET_QR_FLOWS) || DEFAULT_QR_FLOWS,
+                webhook,
+                log,
+            });
             const controller = createFleetController({
                 driver,
                 listAccounts: () => listAccounts().map((a) => ({ ownId: a.ownId })),
@@ -594,10 +609,17 @@ export function registerFleetCommands(program) {
                     presence: effectivePolicy(ownId)?.presence?.mode ?? null,
                 }),
                 forget: (ownId) => forgetAccount(ownId, envDir),
+                qr,
                 webhook,
                 log,
             });
-            const { app } = buildControllerApp({ controller, config, agentHashes: agentTokenHashes(envDir), log });
+            const { app } = buildControllerApp({
+                controller,
+                config,
+                agentHashes: agentTokenHashes(envDir),
+                qrPages: qr,
+                log,
+            });
             const server = app.listen(port, host, () => {
                 info(`Fleet controller on http://${host}:${port}/zalo/admin (supervisor: ${driver.kind})`);
             });
@@ -607,6 +629,7 @@ export function registerFleetCommands(program) {
             });
             controller.start();
             const stop = () => {
+                qr.stop();
                 controller.stop();
                 server.close();
                 process.exit(0);

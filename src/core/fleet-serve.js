@@ -7,12 +7,18 @@
  * TLS in front (`publicUrl`) for a CRM on another machine.
  */
 import express from "express";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { createServer } from "node:net";
+import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
 import { createAdminApi, resolveAdminCredentials } from "./admin-api.js";
+import { assignPorts } from "./fleet.js";
+import { renderAccountEnv } from "./fleet-templates.js";
+import { applyPolicy, getPolicy } from "./policy-store.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
 /** The default port of the controller. */
 export const DEFAULT_CONTROLLER_PORT = 3899;
@@ -134,4 +140,139 @@ export function buildControllerApp({
     app.use("/zalo/admin", (req, res) => admin.handle(req, res));
     app.get("/health", (_req, res) => res.json({ status: "ok", kind: "fleet-controller" }));
     return { app, admin };
+}
+
+/** A free loopback port (the child login's own page; never offered, but it must not collide). */
+function freePort() {
+    return new Promise((resolve) => {
+        const srv = createServer();
+        srv.listen(0, "127.0.0.1", () => {
+            const { port } = srv.address();
+            srv.close(() => resolve(port));
+        });
+        srv.on("error", () => resolve(0));
+    });
+}
+
+/**
+ * One QR login as a child process (`zalo-agent --json login`), for ./fleet-qr.js: its JSON lines, a kill, its exit.
+ * The child is the same `login` a person runs (credentials saved, account registered); a QR login is HTTP and opens no
+ * chat socket.
+ *
+ * @param {{proxy?: string|null}} [o]
+ * @returns {{onLine: (fn: (line: string) => void) => void, kill: () => void, exited: Promise<number>}}
+ */
+export function spawnLoginChild({ proxy = null } = {}) {
+    const lines = [];
+    const subscribers = [];
+    let child = null;
+    let killed = false;
+    const exited = freePort().then(
+        (port) =>
+            new Promise((resolve) => {
+                if (killed) return resolve(1);
+                child = spawn(
+                    process.execPath,
+                    [
+                        process.argv[1],
+                        "--json",
+                        "login",
+                        ...(port ? ["--qr-port", String(port)] : []),
+                        ...(proxy ? ["--proxy", proxy] : []),
+                    ],
+                    {
+                        env: { ...process.env, ZALO_JSON_MODE: "1" },
+                        stdio: ["ignore", "pipe", "pipe"],
+                        windowsHide: true,
+                    },
+                );
+                const rl = createInterface({ input: child.stdout });
+                rl.on("line", (l) => {
+                    lines.push(l);
+                    for (const fn of subscribers) fn(l);
+                });
+                child.stderr.resume();
+                child.on("error", () => resolve(1));
+                child.on("exit", (code) => resolve(code ?? 1));
+            }),
+    );
+    return {
+        onLine: (fn) => {
+            subscribers.push(fn);
+            for (const l of lines) fn(l);
+        },
+        kill: () => {
+            killed = true;
+            child?.kill();
+        },
+        exited,
+    };
+}
+
+/**
+ * The QR add's finish steps, after the child login registered the account: a port, the env file with a generated
+ * token, the user's membership, the presence mode, and the start (or a deliberate restart of a daemon the new login
+ * kicked).
+ *
+ * @param {object} o
+ * @param {string} o.ownId
+ * @param {string} o.userId
+ * @param {"on-demand"|"always-on"|null} o.presence
+ * @param {boolean} o.start
+ * @param {boolean} o.wasRunning
+ * @param {string|null} o.envDir
+ * @param {{start: Function, restart: Function}} o.driver
+ * @param {() => string} [o.makeToken]
+ * @returns {Promise<object>} what the `done` event carries
+ */
+export async function finishQrAdd({
+    ownId,
+    userId,
+    presence,
+    start,
+    wasRunning,
+    envDir,
+    driver,
+    makeToken = () => randomBytes(32).toString("hex"),
+}) {
+    const port = assignPorts([ownId]).ports[ownId];
+    let envWritten = false;
+    if (envDir) {
+        const file = join(envDir, `${ownId}.env`);
+        if (!existsSync(file)) {
+            mkdirSync(envDir, { recursive: true });
+            writeFileAtomic(file, renderAccountEnv({ ownId, port, token: makeToken() }), { mode: 0o600 });
+            envWritten = true;
+        }
+    }
+    const user = getPolicy({ kind: "user", id: userId });
+    if (!user.accounts.includes(ownId)) {
+        applyPolicy({
+            target: { kind: "user", id: userId },
+            op: "patch",
+            policy: {},
+            accounts: [...user.accounts, ownId],
+            actor: "fleet-controller qr",
+        });
+    }
+    let demoted = [];
+    if (presence) {
+        demoted = applyPolicy({
+            target: { kind: "account", id: ownId },
+            op: "patch",
+            policy: { presence: { mode: presence } },
+            actor: "fleet-controller qr",
+        }).demoted;
+    }
+    const out = { port, envWritten, userId, ...(demoted.length ? { demoted } : {}) };
+    if (wasRunning) {
+        // The new login took the session from the running daemon (it exits 3): bring it back on purpose.
+        const r = await driver.restart(ownId);
+        return { ...out, restarted: "relogin", started: r.ok };
+    }
+    if (start) {
+        const r = await driver.start(ownId);
+        return { ...out, started: r.ok };
+    }
+    return { ...out, started: false };
 }

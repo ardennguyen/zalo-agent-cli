@@ -27,6 +27,8 @@ zalo-agent status
 QR HTTP server auto-tries: 18927 → 8080 → 3000 → 9000. First available wins. Override the first choice with `-q, --qr-port <port>`.
 Firewall must allow at least one of these ports for remote access.
 
+**Behind a reverse proxy:** `--public-url <url>` (or `ZALO_MCP_PUBLIC_URL` / `publicUrl` in `mcp-config.json`) prints the page as `<url>/zalo/qr/<one-time token>` instead of an IP and port; the proxy routes `/zalo/qr/` to the QR port (https, or http on localhost). The `fleet generate --domain` Caddyfile already does. Each login gets its own page and token.
+
 ### QR events surfaced during login
 | Event | What the CLI does |
 |-------|-------------------|
@@ -49,8 +51,28 @@ After every QR login, `zalo-agent login` reads the phone's answer and says wheth
 
 `--sync` is the older spelling of the default, kept for scripts. No daemon ever starts this restore on its own.
 
+With `--json` the outcome is one line, `{"event": "login_auto_sync", "status": ...}`, where `status` is one of:
+
+| `status` | Meaning |
+|----------|---------|
+| `restored` | Ticked; restored with the phone's key (`ageMs`, `reason`) |
+| `declined` | Ticked, but `--no-sync` was given (`command`: the restore to run later) |
+| `none` | Not ticked, on a new device id (`command`) |
+| `late` | Ticked too long ago to use the key (`command`) |
+| `other-client` | The offer was for the Zalo PC app (`command`) |
+| `same-device` | Not ticked, but the login kept its device id: nothing needs restoring unless the next daemon start reports a gap (`offer`) |
+| `daemon-running` | A `listen`/`mcp` daemon holds the account; nothing read (`command`) |
+| `unknown` | The offer could not be checked (no socket) (`command`) |
+| `failed` | The restore started and failed |
+
+With `--verbose --json` the same line also carries `pulls` (the control queues read: queue, start point, pages, why) and `controls` (act type, act, `pc`, whether it carried a key, its age; never the key itself).
+
 ### Device id across re-logins
-Zalo keeps the offline queue (what arrives while no client is connected) **per device id**. Zalo Web keeps one per browser across logout and login; `zalo-agent login` does the same for an account whose saved login is still on this machine: the line after "Logged in" says `Device: the same device id ...`. A first login here, a login after `logout` (it deletes the saved login), or an unreadable saved login gets a **new device id** (`Device: a new device id ...`): nothing from before that login can come from Zalo's queue, so the next `listen`/`mcp` start keeps that window as a pending `new-device` gap and names the `zalo-agent sync --from <date>` run that closes it. Tick "sync messages" at the QR to avoid the extra step.
+Zalo keeps the offline queue (what arrives while no client is connected) **per device id** (imei). Zalo Web keeps one per browser across logout and login; `zalo-agent login` (and `account login`) does the same for an account whose saved login is still on this machine: it presents the saved user agent again, and when the account that confirms the QR has a device id saved here, it logs in with that imei. The line after "Logged in" says `Device: the same device id ...` (`--json`: `newDevice: false` and `device` in `login_success`). A first login here, a login after `logout` (it deletes the saved login), an unreadable saved login, or a different account gets a **new device id** (`Device: a new device id ... (no saved login for this account here: ...)`).
+
+The saved credentials record **`deviceSince`**: when this device id came into use (stamped whenever the imei changes, by every login path; a login saved before 3.0 uses its file's last write time). Zalo's own `first_time_login_device`, when the login settings carry it, counts too (the later of the two). A daemon's coverage never starts before that time: nothing from before it can come from Zalo's queue for this device, so the next `listen`/`mcp` start keeps that window as a pending **`new-device`** gap and names the `zalo-agent sync --from <date>` run that closes it, unless a phone-backed restore that finished after the login already reached back past it. Tick "sync messages" at the QR to avoid the extra step.
+
+**What the phone shows (measured):** each QR login adds a new entry to the phone's list of logged-in devices, and the older entries of this CLI are logged out. That is expected: the offline queue survives a re-login because the device id is kept, not because the list entry is.
 
 ### Troubleshooting
 | Issue | Fix |
@@ -64,6 +86,9 @@ Zalo keeps the offline queue (what arrives while no client is connected) **per d
 | `Device: a new device id ...` after a re-login | Expected after `logout`, on a first login here, or when the saved login could not be read. Messages from before the login are not in Zalo's queue for this device: tick "sync messages" at the QR next time, or run the `zalo-agent sync --from <date>` it printed (tap on the phone) |
 | Daemon log: `pending (new-device)` | The daemon started on a device id newer than its last stored message; run the printed `zalo-agent sync --from <date>` |
 | Daemon log or webhook: `queue_overflow` | Zalo dropped part of its offline queue while the account was away. Groups are repaired from Zalo's group store without a tap when possible; 1-1 messages need `zalo-agent sync --from <date>` (tap on the phone) |
+| `login` says "not ticked" although it was | Run `zalo-agent login --verbose` (or `--verbose --json`) to see the control queues read and every control found; a `listen`/`mcp` daemon holding the account means nothing was read |
+| Daemon refuses everything with `SIGNED_OUT`; `account_state` `signed_out` | Zalo revoked the login, usually because someone logged into **Zalo Web** with this account (one web login per account, below). The daemon stays up and never retries: add the account again by QR (`zalo-agent login`, or the fleet controller's QR add), and use the phone or Zalo PC instead of Zalo Web from then on |
+| Daemon refuses everything with `YIELDED`; `account_state` `yielded` | On-demand daemon: another session of the **same saved login** took the socket (a second copy of these credentials running elsewhere; close 3000). Stop the other copy, then `zalo-agent presence resume --yes` |
 
 ## Method 2: Headless (Credentials File)
 No human interaction. For automation, CI, server migration.
@@ -130,7 +155,7 @@ Pick by how much you want gone. All four are distinct:
 - `logout` (every form) and `account remove` **refuse before changing anything** while a `listen`/`mcp` daemon holds that account's `daemon.lock`, naming the PID. Stop the daemon first.
 - `zalo-agent account devices` lists the sessions Zalo currently has linked to the active account (read-only). After a default logout, check that this session is gone; a `--keep-session` logout leaves it listed until it is removed from the phone.
 
-- **The companion-device identity.** The official QR login makes this CLI a trusted companion device of the account (the phone's linked-device list shows it; `account devices` marks the entry `<- this CLI`). Its identity is `accounts/<ownerId>/trusted-device.json` (0600, a secret). `logout` and `logout --delete-history` **keep** it, so the next QR login links as the same entry instead of adding one; `logout --purge` and `account remove` **delete** it with the account's folder, and both say so. Zalo keeps listing the entry on the phone until it is removed there, and a later QR login adds a new one.
+- **The companion-device identity.** The official QR login makes this CLI a trusted companion device of the account (the phone's linked-device list shows it; `account devices` marks the entry `<- this CLI`). Its identity is `accounts/<ownerId>/trusted-device.json` (0600, a secret). `logout` and `logout --delete-history` **keep** it; `logout --purge` and `account remove` **delete** it with the account's folder, and both say so. Zalo keeps listing a deleted identity's entry on the phone until it is removed there. Measured in 3.0: each QR login still shows as a new entry in the phone's list, with the CLI's older entries logged out (see "Device id across re-logins" above).
 
 After a purge, `~/.zalo-agent-cli/credentials/` is empty, `accounts.json` is `[]`, and `accounts/<ownId>/` is gone.
 
@@ -138,10 +163,11 @@ After a purge, `~/.zalo-agent-cli/credentials/` is empty, `accounts.json` is `[]
 
 ## One web session per account
 
-Zalo allows a single web session per account, and this CLI occupies it (measured 2026-09-20):
+Zalo keeps **one web login per account**, and this CLI occupies it (measured 2026-09-20, rechecked for 3.0):
 
-- Signing into Zalo Web, or another PC client, **revokes the CLI's session server-side instantly** — even with no CLI process running. The next API call fails with `Đăng nhập thất bại`.
+- **A QR login into Zalo Web logs the server out.** It revokes the CLI's login server-side at once, even with no CLI process running; the next API call fails with `Đăng nhập thất bại`. **Use the phone or Zalo PC beside the server, never Zalo Web.**
 - The reverse also holds: `zalo-agent login` signs Zalo Web out.
-- The **phone app is unaffected** — it is a separate session type.
+- The **phone app and Zalo PC are unaffected**: they are separate session types and coexist with the CLI.
 - Revocation is server-side, so the credential file on disk is unchanged. `status` is a local check and will still report `loggedIn: true` against a dead session — use `whoami` to probe liveness.
-- This is also why `listen`, `mcp start`, and `sync-mobile` cannot run concurrently on one account. A duplicate closes the socket with code 3000, which is fatal by design.
+- **A running daemon whose login is revoked stays up `signed_out`** (3.0): it lets the socket go, never retries, emits an `account_state` event with `state: "signed_out"`, refuses every request with `SIGNED_OUT` ("add the account again by QR"), and keeps its HTTP API, `/status` and the fleet controller's QR re-add working. `ZALO_EXIT_ON_SIGNED_OUT=1` restores the 2.x behavior (exit 4). This applies to both `listen` and `mcp start`, on-demand or always-on.
+- One login also means **one socket**: `listen`, `mcp start` and `sync-mobile` cannot run side by side on one account (a running daemon serves uploads, `sync` stages and history on its own socket). When a second copy of the same saved login takes the socket (close code 3000), an on-demand daemon **yields**: it stays up, refuses requests with `YIELDED`, and takes the account back only on `zalo-agent presence resume --yes`. An always-on daemon (or `presence.onKick: "exit"`) exits 3 and leaves `kicked.json`.

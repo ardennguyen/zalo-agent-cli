@@ -5,7 +5,7 @@
  *     {
  *       "provider": "dpapi",                         // ZALO_STORAGE_PROVIDER
  *       "dkeyLayer": false,                          // ZALO_STORAGE_DKEY_LAYER=1|0
- *       "accounts": { "<ownId>": { "dkeyLayer": true } },
+ *       "accounts": { "<ownId>": { "dkeyLayer": true, "kms": { "key": "…" } } },   // one account apart
  *       "dpapi": { "scope": "CurrentUser" },         // or "LocalMachine"; ZALO_DPAPI_SCOPE
  *       "systemdCreds": { "withKey": "auto" },       // host | tpm2 | host+tpm2 | auto; ZALO_SYSTEMD_CREDS_WITH_KEY
  *       "kms": { "backend": "aws", "key": "…" },     // aws | gcp | azure | vault; ZALO_KMS_BACKEND, ZALO_KMS_KEY
@@ -13,6 +13,11 @@
  *       "env": { "variable": "ZALO_STORAGE_KEY" },   // the variable that holds the key (base64, 32 bytes)
  *       "rowMac": { "verifyOnRead": "actions" }      // or "off": actions check a cached row's MAC (../row-mac.js)
  *     }
+ *
+ * A provider section under `accounts.<ownId>` (a tenant's KMS key) is the most specific setting: it beats the top level
+ * and the environment for that account, so every process (the daemon, `za`, the purge and backup units) picks the same
+ * key without reading the account's env file. A keyring also records the key that wraps it, and that one opens it
+ * (./keyring.js), whatever the default is now.
  *
  * mcp-config.json is the MCP server's own file; the key layer serves every command, so it has its own. The file holds
  * no secret: only names of providers, key ids and paths.
@@ -116,6 +121,32 @@ export function loadStorageConfig(env = process.env) {
     }
     const accounts = file.accounts && typeof file.accounts === "object" ? file.accounts : {};
     return { provider, dkeyLayer, accounts, options, envOverride: env.ZALO_STORAGE_DKEY_LAYER };
+}
+
+/** The `storage.json` section name of each provider's options (top level and under `accounts.<ownId>`). */
+export const PROVIDER_SECTIONS = Object.freeze({
+    dpapi: "dpapi",
+    "systemd-creds": "systemdCreds",
+    kms: "kms",
+    passphrase: "passphrase",
+    env: "env",
+    keychain: "keychain",
+    "secret-service": "secretService",
+});
+
+/**
+ * A provider's options for one account: the top level (file, then environment), then the account's own section.
+ *
+ * @param {ReturnType<typeof loadStorageConfig>} config
+ * @param {string} name - the provider
+ * @param {string|null} [ownId]
+ * @returns {object}
+ */
+export function providerOptionsFor(config, name, ownId = null) {
+    const base = { ...(config.options?.[name] ?? {}) };
+    const section = PROVIDER_SECTIONS[name];
+    const own = ownId !== null && ownId !== undefined && section ? config.accounts?.[String(ownId)]?.[section] : null;
+    return own && typeof own === "object" && !Array.isArray(own) ? { ...base, ...own } : base;
 }
 
 /**

@@ -27,6 +27,7 @@ import {
     CHECK_TIMER_TEMPLATE,
     PURGE_TIMER_TEMPLATE,
     renderAccountEnv,
+    accountPublicUrl,
     renderBackupService,
     renderCaddyfile,
     renderCheckService,
@@ -328,7 +329,7 @@ export function generateFleetFiles({
             kept.push(rel);
             continue;
         }
-        const publicUrl = domain ? `https://${domain}/a/${ownId}` : null;
+        const publicUrl = domain ? accountPublicUrl(domain, ownId) : null;
         put(rel, renderAccountEnv({ ownId, port, token: makeToken(), publicUrl, etcDir: paths.etcDir }), {
             secret: true,
             overwrite: true,

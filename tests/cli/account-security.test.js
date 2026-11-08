@@ -7,7 +7,7 @@
 import { SANDBOX_HOME, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { Database, dbFileState } from "../../src/core/sqlite.js";
@@ -117,6 +117,39 @@ describe("account security", () => {
         const p = await json(["account", "security", "provider", "test"]);
         assert.equal(p.code, 0, p.all);
         assert.deepEqual(p.value.accounts, [{ ownId: OWN, from: "test", to: "test" }]);
+    });
+
+    it("provider kms <ownId> --key keeps a tenant's key for that account only; every later command opens it", async () => {
+        const file = join(CONFIG_DIR, "storage.json");
+        try {
+            const p = await json([
+                "account",
+                "security",
+                "provider",
+                "kms",
+                OWN,
+                "--backend",
+                "test",
+                "--key",
+                "tenant-a",
+            ]);
+            assert.equal(p.code, 0, p.all);
+            const settings = JSON.parse(readFileSync(file, "utf8"));
+            assert.equal(settings.provider, "kms");
+            assert.equal(settings.kms, undefined, "the default is not the tenant's key");
+            assert.deepEqual(settings.accounts[OWN].kms, { backend: "test", key: "tenant-a" });
+            // A process whose default names another key (a purge or backup unit, `za`) still opens the account.
+            const s = await json(["account", "security", "status"], { ZALO_KMS_KEY: "another-tenant" });
+            assert.equal(s.code, 0, s.all);
+            assert.equal(s.value.provider.name, "kms");
+            assert.equal(s.value.provider.key, "tenant-a");
+            const r = await json(["account", "security", "rekey"], { ZALO_KMS_KEY: "another-tenant" });
+            assert.equal(r.code, 0, r.all);
+            const back = await json(["account", "security", "provider", "test", OWN]);
+            assert.equal(back.code, 0, back.all);
+        } finally {
+            rmSync(file, { force: true });
+        }
     });
 
     it("account export still writes the login out in plaintext, as it always did", async () => {

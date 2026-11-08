@@ -23,7 +23,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { withFileLock, writeFileAtomic } from "../../zalo/kernel/atomic-file.js";
 import { KeystoreError, unwrapKey, wrapKey } from "./container.js";
-import { dkeyLayerWanted, loadStorageConfig } from "./config.js";
+import { dkeyLayerWanted, loadStorageConfig, providerOptionsFor } from "./config.js";
 import { createProviders, defaultProvider } from "./providers.js";
 
 export const KEYRING_FILE = "keyring.json";
@@ -120,9 +120,10 @@ const newId = () => randomBytes(8).toString("hex");
  *
  * @param {string|null} [name] - a provider asked for by name; else the configured one, else the platform default
  * @param {object} [config]
+ * @param {string|null} [ownId] - the account, for its own section in storage.json (`accounts.<ownId>.kms`)
  * @returns {{name: string, provider: object, options: object}}
  */
-export function resolveProvider(name = null, config = loadStorageConfig()) {
+export function resolveProvider(name = null, config = loadStorageConfig(), ownId = null) {
     let chosen = name ?? config.provider;
     if (!chosen) {
         const d = defaultProvider({ providers });
@@ -131,10 +132,34 @@ export function resolveProvider(name = null, config = loadStorageConfig()) {
     }
     const provider = providers[chosen];
     if (!provider) throw new KeystoreError(`unknown key provider "${chosen}"`, "CONFIG");
-    const options = { ...(config.options?.[chosen] ?? {}) };
+    const options = providerOptionsFor(config, chosen, ownId);
     const why = provider.check(options);
     if (why) throw new KeystoreError(`the "${chosen}" key provider cannot be used here: ${why}`, "UNAVAILABLE");
     return { name: chosen, provider, options };
+}
+
+/**
+ * The options that name the key a keyring was wrapped with. They come from the keyring, never from today's settings:
+ * a KMS key is part of the wrapped blob, so a process whose default (storage.json, ZALO_KMS_KEY) names another tenant's
+ * key would ask the wrong key and fail. The purge and backup units and `za` read no account env file: this is what
+ * lets them open an account wrapped under its tenant's key.
+ */
+const PINNED_OPTIONS = Object.freeze({ kms: ["backend", "key"] });
+
+/**
+ * The options to unwrap (or re-wrap, in a rekey) an existing keyring with: today's settings for the account over what
+ * the keyring recorded, except the key's identity, which stays the recorded one.
+ *
+ * @param {object} ring
+ * @param {object} config
+ * @returns {object}
+ */
+function ringOptions(ring, config) {
+    const name = ring.provider.name;
+    const recorded = ring.provider.options ?? {};
+    const options = { ...recorded, ...providerOptionsFor(config, name, ring.account) };
+    for (const k of PINNED_OPTIONS[name] ?? []) if (recorded[k] !== undefined) options[k] = recorded[k];
+    return options;
 }
 
 function entryOf(c) {
@@ -160,8 +185,7 @@ function masterKey(scope, ring) {
     const name = ring.provider.name;
     const provider = providers[name];
     if (!provider) throw new KeystoreError(`the keyring uses the unknown provider "${name}"`, "CONFIG");
-    const config = loadStorageConfig();
-    const options = { ...(ring.provider.options ?? {}), ...(config.options?.[name] ?? {}) };
+    const options = ringOptions(ring, loadStorageConfig());
     const why = provider.check(options);
     if (why) {
         throw new KeystoreError(
@@ -249,7 +273,7 @@ export function ensureKeyring(scope) {
     const existing = readKeyring(scope.dir);
     if (existing) return existing;
     const config = loadStorageConfig();
-    const { name, provider, options } = resolveProvider(null, config);
+    const { name, provider, options } = resolveProvider(null, config, scope.id);
     const mk = randomBytes(32);
     const ref = newId() + newId();
     const { wrapped, state } = provider.wrap(mk, { account: scope.id, ref, options, state: {} });
@@ -416,7 +440,7 @@ export function beginRekey(scope) {
     const config = loadStorageConfig();
     const name = ring.provider.name;
     const provider = providers[name];
-    const options = { ...(ring.provider.options ?? {}), ...(config.options?.[name] ?? {}) };
+    const options = ringOptions(ring, config);
     const mk = randomBytes(32);
     const { wrapped, state } = provider.wrap(mk, { account: ring.account, ref: ring.ref, options, state: {} });
     const next = { ...ring, provider: { ...ring.provider, state, wrapped }, keys: [], retired: [] };
@@ -461,7 +485,8 @@ export function rewrapProvider(scope, name, extraOptions = {}) {
     const ring = readKeyring(scope.dir);
     if (!ring) throw new KeystoreError(`account ${scope.id} has no keyring yet`, "NO_KEYRING");
     const config = loadStorageConfig();
-    config.options[name] = { ...(config.options[name] ?? {}), ...extraOptions };
+    // The command line's options over the account's own section over the top level.
+    config.options[name] = { ...providerOptionsFor(config, name, scope.id), ...extraOptions };
     const target = resolveProvider(name, config);
     const mk = masterKey(scope, ring);
     const { wrapped, state } = target.provider.wrap(mk, {

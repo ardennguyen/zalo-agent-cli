@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { parseEnv } from "node:util";
 import { createAdminApi, resolveAdminCredentials } from "./admin-api.js";
 import { assignPorts } from "./fleet.js";
-import { renderAccountEnv } from "./fleet-templates.js";
+import { LOCAL_PROXY, accountPublicUrl, renderAccountEnv } from "./fleet-templates.js";
 import { applyPolicy, getPolicy } from "./policy-store.js";
 import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 
@@ -211,8 +211,8 @@ export function spawnLoginChild({ proxy = null } = {}) {
 
 /**
  * The QR add's finish steps, after the child login registered the account: a port, the env file with a generated
- * token, the user's membership, the presence mode, and the start (or a deliberate restart of a daemon the new login
- * kicked).
+ * token (and, with a `domain`, the account's public URL as `fleet generate --domain` writes it), the user's
+ * membership, the presence mode, and the start (or a deliberate restart of a daemon the new login kicked).
  *
  * @param {object} o
  * @param {string} o.ownId
@@ -221,6 +221,8 @@ export function spawnLoginChild({ proxy = null } = {}) {
  * @param {boolean} o.start
  * @param {boolean} o.wasRunning
  * @param {string|null} o.envDir
+ * @param {string|null} [o.domain] - the proxy layout's host: the env file gets `ZALO_MCP_PUBLIC_URL=https://<domain>/a/<id>`
+ * @param {boolean} [o.trustProxy] - also `ZALO_MCP_TRUSTED_PROXIES=127.0.0.1` (the shared env does not trust the proxy)
  * @param {{start: Function, restart: Function}} o.driver
  * @param {() => string} [o.makeToken]
  * @returns {Promise<object>} what the `done` event carries
@@ -232,16 +234,22 @@ export async function finishQrAdd({
     start,
     wasRunning,
     envDir,
+    domain = null,
+    trustProxy = false,
     driver,
     makeToken = () => randomBytes(32).toString("hex"),
 }) {
     const port = assignPorts([ownId]).ports[ownId];
+    const publicUrl = domain ? accountPublicUrl(domain, ownId) : null;
     let envWritten = false;
     if (envDir) {
         const file = join(envDir, `${ownId}.env`);
         if (!existsSync(file)) {
             mkdirSync(envDir, { recursive: true });
-            writeFileAtomic(file, renderAccountEnv({ ownId, port, token: makeToken() }), { mode: 0o600 });
+            const trustedProxies = publicUrl && trustProxy ? LOCAL_PROXY : null;
+            writeFileAtomic(file, renderAccountEnv({ ownId, port, token: makeToken(), publicUrl, trustedProxies }), {
+                mode: 0o600,
+            });
             envWritten = true;
         }
     }
@@ -264,7 +272,13 @@ export async function finishQrAdd({
             actor: "fleet-controller qr",
         }).demoted;
     }
-    const out = { port, envWritten, userId, ...(demoted.length ? { demoted } : {}) };
+    const out = {
+        port,
+        envWritten,
+        userId,
+        ...(envWritten && publicUrl ? { publicUrl } : {}),
+        ...(demoted.length ? { demoted } : {}),
+    };
     if (wasRunning) {
         // The new login took the session from the running daemon (it exits 3): bring it back on purpose.
         const r = await driver.restart(ownId);

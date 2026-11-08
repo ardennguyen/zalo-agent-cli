@@ -17,7 +17,7 @@ Mọi thứ từ c, cùng từng byte (bài test giữ chúng như vậy), trừ
 | `etc/systemd/system/zalo-fleet-controller.service`, `etc/systemd/system/zalo-fleet-controller.service.d/credentials.conf` | fleet controller (`fleet serve`) trên 127.0.0.1:3899, và mật khẩu lưu trữ của nó (thêm bằng QR sẽ niêm phong phiên đăng nhập mới) |
 | `etc/systemd/journald.conf.d/zalo.conf`, `etc/logrotate.d/zalo-policy-audit` | giới hạn journal, xoay vòng nhật ký audit |
 | `etc/polkit-1/rules.d/50-zalo-fleet.rules` | cho phép `zalo` (controller, `za fleet ...`) start/stop/restart `zalo-mcp@*` |
-| `etc/zalo-mcp/common.env` | **riêng**: của c, cộng thêm tệp admin token, `ZALO_MCP_APPROVAL_DELIVER=webhook`, cổng của controller, luồng QR, webhook và URL công khai |
+| `etc/zalo-mcp/common.env` | **riêng**: của c, cộng thêm tệp admin token, `ZALO_MCP_APPROVAL_DELIVER=webhook`, cổng của controller, luồng QR, webhook, URL công khai và host proxy của các tài khoản (`ZALO_FLEET_DOMAIN`) |
 | `etc/zalo-mcp/accounts/1000000000000000001.env`, `etc/zalo-mcp/accounts/1000000000000000002.env` | **riêng**: của c, cộng thêm URL webhook và secret ký riêng của mỗi tài khoản |
 | `etc/caddy/Caddyfile` | **riêng**: host công khai (MCP, media, trang QR) và host quản trị (`/a/<id>/zalo/admin/*`, `/fleet/zalo/admin/*`), host sau chỉ cho địa chỉ của CRM |
 | `home/zalo/.zalo-agent-cli/.env`, `home/zalo/.zalo-agent-cli/storage.json` | của c |
@@ -65,7 +65,7 @@ za mcp webhook status --account 1000000000000000001     # outbox: đang chờ, h
 
 - **Presence** (`mcp-config.json`, policy, hoặc `ZALO_PRESENCE_MODE` cho từng tài khoản): `on-demand` là mặc định cho máy chủ; socket đóng sau `idleTimeout` và mở lại ở lần gọi tool, lần chờ, yêu cầu CLI hoặc **CRM lease** (`POST /zalo/presence/leases`) kế tiếp. Những gì đến trong lúc đó được gửi sau khi kết nối lại, đánh dấu `catchUp: true`. `always-on` là giao nhận thời gian thực, gói trả phí: tối đa `presence.alwaysOn.maxPerUser` (1) cho mỗi người dùng, tài khoản cũ nhất bị hạ xuống khi một tài khoản mới vượt giới hạn. Các daemon làm theo thiết lập này khi presence theo yêu cầu được bật; trước đó chúng luôn giữ kết nối.
 - **Một phiên đăng nhập web cho mỗi tài khoản.** Khách hàng đăng nhập cùng tài khoản vào **Zalo Web** bằng QR sẽ đăng xuất máy chủ (unit dừng với mã thoát 4, `account_state: login_needed`): hãy thêm lại bằng QR qua controller. **Điện thoại** và **ứng dụng Zalo PC** cùng tồn tại với máy chủ. Hãy dặn người dùng: điện thoại hoặc Zalo PC, không dùng Zalo Web.
-- Tài khoản thêm bằng QR nhận tệp env, cổng và token từ controller; hãy thêm các khối `/a/<id>/` của nó vào Caddyfile (cả hai host) và `ZALO_MCP_PUBLIC_URL` vào tệp env của nó, rồi khởi động lại unit của nó.
+- Tài khoản thêm bằng QR nhận tệp env từ controller: cổng, một token mới và `ZALO_MCP_PUBLIC_URL` của nó (`https://<ZALO_FLEET_DOMAIN>/a/<id>`, đúng như `fleet generate --domain` ghi; `fleet serve --domain` cũng vậy). Hãy thêm các khối `/a/<id>/` của nó vào Caddyfile (cả hai host) và reload Caddy. `common.env` tin cậy proxy (`ZALO_MCP_TRUSTED_PROXIES`); trên host mà env chung chưa đặt, controller ghi `ZALO_MCP_TRUSTED_PROXIES=127.0.0.1` vào tệp env của tài khoản mới và báo điều đó khi khởi động.
 
 ## 5. Những gì còn đang chờ
 

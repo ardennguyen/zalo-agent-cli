@@ -17,7 +17,7 @@ Everything from c, the same bytes (the test holds them), except the files marked
 | `etc/systemd/system/zalo-fleet-controller.service`, `etc/systemd/system/zalo-fleet-controller.service.d/credentials.conf` | the fleet controller (`fleet serve`) on 127.0.0.1:3899, and its passphrase (a QR add seals the new login) |
 | `etc/systemd/journald.conf.d/zalo.conf`, `etc/logrotate.d/zalo-policy-audit` | journal cap, audit log rotation |
 | `etc/polkit-1/rules.d/50-zalo-fleet.rules` | lets `zalo` (the controller, `za fleet ...`) start/stop/restart `zalo-mcp@*` |
-| `etc/zalo-mcp/common.env` | **own**: c's, plus the admin token file, `ZALO_MCP_APPROVAL_DELIVER=webhook`, the controller's port, QR flows, webhook and public URL |
+| `etc/zalo-mcp/common.env` | **own**: c's, plus the admin token file, `ZALO_MCP_APPROVAL_DELIVER=webhook`, the controller's port, QR flows, webhook, public URL and the accounts' proxy host (`ZALO_FLEET_DOMAIN`) |
 | `etc/zalo-mcp/accounts/1000000000000000001.env`, `etc/zalo-mcp/accounts/1000000000000000002.env` | **own**: c's, plus each account's webhook URL and its own signing secret |
 | `etc/caddy/Caddyfile` | **own**: the public host (MCP, media, QR pages) and the admin host (`/a/<id>/zalo/admin/*`, `/fleet/zalo/admin/*`), the latter for the CRM's address only |
 | `home/zalo/.zalo-agent-cli/.env`, `home/zalo/.zalo-agent-cli/storage.json` | c's |
@@ -65,7 +65,7 @@ za mcp webhook status --account 1000000000000000001     # the outbox: pending, d
 
 - **Presence** (`mcp-config.json`, the policy, or `ZALO_PRESENCE_MODE` per account): `on-demand` is the default for a server; the socket closes after `idleTimeout` and opens on the next tool call, wait, CLI request or **CRM lease** (`POST /zalo/presence/leases`). What arrived meanwhile is posted after the reconnect, flagged `catchUp: true`. `always-on` is real-time delivery, the paid tier: at most `presence.alwaysOn.maxPerUser` (1) per user, the oldest demoted when a new one goes over. The daemons follow it once on-demand presence is switched on; until then they stay connected.
 - **One web login per account.** A customer who logs the same account into **Zalo Web** by QR signs the server out (the unit stops with exit 4, `account_state: login_needed`): add it again by QR through the controller. The **phone** and the **Zalo PC app** coexist with the server. Tell users: phone or Zalo PC, not Zalo Web.
-- A QR-added account gets its env file, port and token from the controller; add its `/a/<id>/` blocks to the Caddyfile (both hosts) and its `ZALO_MCP_PUBLIC_URL` to its env file, then restart its unit.
+- A QR-added account gets its env file from the controller: its port, a new token and its `ZALO_MCP_PUBLIC_URL` (`https://<ZALO_FLEET_DOMAIN>/a/<id>`, as `fleet generate --domain` writes it; `fleet serve --domain` does the same). Add its `/a/<id>/` blocks to the Caddyfile (both hosts) and reload Caddy. `common.env` trusts the proxy (`ZALO_MCP_TRUSTED_PROXIES`); on a host whose shared env does not, the controller writes `ZALO_MCP_TRUSTED_PROXIES=127.0.0.1` into the new account's env file and says so at start.
 
 ## 5. What is pending
 

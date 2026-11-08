@@ -755,6 +755,53 @@ describe("rekey, provider change, phase-2 subkeys, and logs", () => {
         assert.ok(!errs.join("\n").includes(process.env.ZALO_STORAGE_KEY));
     });
 
+    it("a tenant's KMS key: the keyring's own key opens it under any default; accounts.<id>.kms keys a new one", () => {
+        const file = join(CONFIG_DIR, "storage.json");
+        const a = freshId();
+        const b = freshId();
+        saveCredentials(a, CREDS);
+        try {
+            assert.deepEqual(changeProvider(a, "kms", { backend: "test", key: "tenant-a" }), {
+                from: "test",
+                to: "kms",
+            });
+            // What the purge and backup units and `za` see: another default, and no account env file.
+            writeFileSync(
+                file,
+                JSON.stringify({
+                    provider: "kms",
+                    kms: { backend: "test", key: "default-key" },
+                    accounts: { [b]: { kms: { key: "tenant-b" } } },
+                }),
+            );
+            process.env.ZALO_KMS_KEY = "another-tenant";
+            lockAll();
+            assert.deepEqual(unstamped(loadCredentials(a)), CREDS);
+            rekeyAccount(a);
+            assert.equal(readKeyring(getAccountDir(a)).provider.options.key, "tenant-a", "a rekey keeps the key");
+            lockAll();
+            assert.deepEqual(unstamped(loadCredentials(a)), CREDS);
+            // A new keyring for an account with its own section: that key, over the default and the environment.
+            saveCredentials(b, CREDS);
+            assert.equal(readKeyring(getAccountDir(b)).provider.options.key, "tenant-b");
+            lockAll();
+            assert.deepEqual(unstamped(loadCredentials(b)), CREDS);
+            // The key really is part of the wrap: asking another one fails, as a real KMS does.
+            const ring = readKeyring(getAccountDir(b));
+            const kms = createProviders().kms;
+            const c = { account: ring.account, ref: ring.ref, state: ring.provider.state };
+            assert.equal(kms.unwrap(ring.provider.wrapped, { ...c, options: ring.provider.options }).length, 32);
+            assert.throws(
+                () => kms.unwrap(ring.provider.wrapped, { ...c, options: { backend: "test", key: "default-key" } }),
+                (e) => e instanceof KeystoreError && e.code === "WRONG_KEY",
+            );
+        } finally {
+            delete process.env.ZALO_KMS_KEY;
+            rmSync(file, { force: true });
+            lockAll();
+        }
+    });
+
     it("phase-2 subkeys: one per purpose, stable across processes, unknown purposes refused", () => {
         const id = freshId();
         saveCredentials(id, CREDS);

@@ -45,21 +45,22 @@ function testBackend() {
             const { inTestSandbox } = await import("./providers.js");
             if (!inTestSandbox()) throw new Error("the test kms backend exists only in the offline test sandbox");
             const { wrapKey } = await import("./container.js");
-            return wrapKey(await testKey(), plain, `kms-test|${ctx.ref}`);
+            return wrapKey(await testKey(ctx.options?.key), plain, `kms-test|${ctx.ref}`);
         },
         async unwrap(blob, ctx) {
             const { inTestSandbox } = await import("./providers.js");
             if (!inTestSandbox()) throw new Error("the test kms backend exists only in the offline test sandbox");
             const { unwrapKey } = await import("./container.js");
-            return unwrapKey(await testKey(), blob, `kms-test|${ctx.ref}`);
+            return unwrapKey(await testKey(ctx.options?.key), blob, `kms-test|${ctx.ref}`);
         },
     };
 }
 
-async function testKey() {
+/** One key per seed and key id, so asking another key id fails as a real KMS does. */
+async function testKey(keyId = "") {
     const { createHash } = await import("node:crypto");
     return createHash("sha256")
-        .update(`kms-test|${process.env.ZALO_KMS_TEST_SEED ?? ""}`)
+        .update(`kms-test|${process.env.ZALO_KMS_TEST_SEED ?? ""}|${keyId}`)
         .digest();
 }
 

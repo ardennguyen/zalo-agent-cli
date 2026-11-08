@@ -30,7 +30,7 @@ import { changeProvider, hasKeyring, migrateAccount, rekeyAccount, securityStatu
 // Registers the encrypted stores' rekey handlers: a rekey without them would drop the key zalo.db is under.
 import { fullSecurityStatus, migrateStores, storesStatus } from "../core/keystore/stores.js";
 import { mediaStatus } from "../core/media-store.js";
-import { PROVIDER_NAMES, readStorageFile, writeStorageFile } from "../core/keystore/config.js";
+import { PROVIDER_NAMES, PROVIDER_SECTIONS, readStorageFile, writeStorageFile } from "../core/keystore/config.js";
 import { inTestSandbox } from "../core/keystore/providers.js";
 
 export function registerAccountCommands(program) {
@@ -517,7 +517,7 @@ function registerSecurityCommands(account, program) {
     security
         .command("provider <name> [ownerId]")
         .description(
-            `Protect the keyring with another key provider (${PROVIDER_NAMES.filter((p) => p !== "test").join(", ")}): re-wraps the keys of the account (default: every account with a keyring) and makes it the default for new ones`,
+            `Protect the keyring with another key provider (${PROVIDER_NAMES.filter((p) => p !== "test").join(", ")}): re-wraps the keys of the account (default: every account with a keyring) and makes it the default for new ones; options given for one account (a tenant's --key) are kept for that account only`,
         )
         .option("--scope <scope>", "dpapi: CurrentUser (default) or LocalMachine")
         .option("--backend <backend>", "kms: aws, gcp, azure or vault")
@@ -544,16 +544,20 @@ function registerSecurityCommands(account, program) {
                           .filter((id) => hasKeyring(id));
                 ids.forEach(refuseWhileDaemon);
                 const changed = ids.map((id) => ({ ownId: id, ...changeProvider(id, name, extra) }));
-                // New keyrings follow: the provider and its (non-secret) options go into storage.json.
+                // New keyrings follow: the provider and its (non-secret) options go into storage.json. For a named
+                // account the options go under accounts.<id> (a tenant's KMS key), so the default stays as it was.
                 const settings = readStorageFile();
-                const section = {
-                    dpapi: "dpapi",
-                    "systemd-creds": "systemdCreds",
-                    kms: "kms",
-                    passphrase: "passphrase",
-                }[name];
+                const section = PROVIDER_SECTIONS[name];
                 const next = { ...settings, provider: name };
-                if (section && Object.keys(extra).length) next[section] = { ...(settings[section] ?? {}), ...extra };
+                if (section && Object.keys(extra).length) {
+                    if (ownerId) {
+                        next.accounts = { ...(settings.accounts ?? {}) };
+                        for (const id of ids) {
+                            const own = next.accounts[id] ?? {};
+                            next.accounts[id] = { ...own, [section]: { ...(own[section] ?? {}), ...extra } };
+                        }
+                    } else next[section] = { ...(settings[section] ?? {}), ...extra };
+                }
                 writeStorageFile(next);
                 output({ provider: name, accounts: changed }, json(), () => {
                     for (const c of changed) success(`Account ${c.ownId}: keyring moved from ${c.from} to ${c.to}`);

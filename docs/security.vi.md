@@ -76,13 +76,15 @@ Mặc định được chọn theo nền tảng. Đổi trong `<config-dir>/stor
   "provider": "kms",
   "kms": { "backend": "aws", "key": "arn:aws:kms:<region>:<account>:key/<id>", "region": "<region>" },
   "dkeyLayer": false,
-  "accounts": { "<ownId>": { "dkeyLayer": true } }
+  "accounts": { "<ownId>": { "dkeyLayer": true, "kms": { "key": "arn:aws:kms:<region>:<account>:key/<tenant-key>" } } }
 }
 ```
 
+**Mỗi tenant một khóa.** Một mục của bộ cung cấp nằm dưới `accounts.<ownId>` (ở đây là khóa KMS của tenant) là thiết lập riêng của tài khoản đó: nó được ưu tiên hơn cấp trên cùng và biến môi trường, và mọi tiến trình đều đọc nó (daemon, CLI, unit purge và backup). `account security provider kms <ownId> --key <id>` ghi nó vào đó và giữ nguyên khóa mặc định. Keyring cũng ghi lại khóa KMS đã bọc nó và luôn được mở (và rekey) bằng chính khóa đó, bất kể khóa mặc định hiện là gì, nên đổi khóa mặc định không bao giờ khóa mất một tài khoản. Trường hợp [e](config-samples/use-cases/e-saas-kms/README.vi.md).
+
 `"rowMac": {"verifyOnRead": "actions"}` (mặc định) khiến các thao tác kiểm tra dòng mà chúng tác động; `"off"` bỏ qua bước đó (`db verify` vẫn tìm ra các dòng này). Các file mẫu đặt giá trị này một cách tường minh.
 
-Biến môi trường (ưu tiên hơn file, nên file env riêng của từng tài khoản trong fleet có thể đặt riêng một tài khoản): `ZALO_STORAGE_PROVIDER`, `ZALO_STORAGE_DKEY_LAYER` (`1`/`0`), `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` (chỉ cho `env`). Với Vault: `VAULT_ADDR`, `VAULT_TOKEN` (hoặc `"kms": {"tokenFile": …}`), `VAULT_NAMESPACE`.
+Biến môi trường (ưu tiên hơn cấp trên cùng của file; một mục `accounts.<ownId>` được ưu tiên hơn chúng): `ZALO_STORAGE_PROVIDER`, `ZALO_STORAGE_DKEY_LAYER` (`1`/`0`), `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` (chỉ cho `env`). Với Vault: `VAULT_ADDR`, `VAULT_TOKEN` (hoặc `"kms": {"tokenFile": …}`), `VAULT_NAMESPACE`.
 
 ## 5. Lớp dkey (tùy chọn, mặc định tắt)
 

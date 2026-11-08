@@ -18,6 +18,8 @@ import { createFleetController } from "../../src/core/fleet-controller.js";
 import { buildControllerApp, finishQrAdd } from "../../src/core/fleet-serve.js";
 import { applyPolicy, effectivePolicy, getPolicy } from "../../src/core/policy-store.js";
 import { loadPortTable } from "../../src/core/fleet.js";
+import { parseEnv } from "node:util";
+import { resolvePublicUrl, resolveTrustedProxies } from "../../src/core/deploy-policy.js";
 
 const ADMIN = "admin-token-fedcba9876543210";
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").toString("base64");
@@ -206,6 +208,53 @@ describe("finish steps", () => {
         assert.equal(again.envWritten, false, "an existing env file keeps its token");
         assert.equal(again.restarted, "relogin");
         assert.ok(existsSync(file));
+    });
+
+    it("with the proxy host, the env file carries the account's public URL as `fleet generate --domain` writes it", async () => {
+        const driver = { start: async () => ({ ok: true }), restart: async () => ({ ok: true }) };
+        const envDir = join(CONFIG_DIR, "etc-accounts-domain");
+        const add = async (ownId, trustProxy) => {
+            mkdirSync(getAccountDir(ownId), { recursive: true });
+            applyPolicy({ target: { kind: "user", id: "crmDom" }, op: "put", policy: {}, tenant: "tDom", actor: "t" });
+            const r = await finishQrAdd({
+                ownId,
+                userId: "crmDom",
+                presence: null,
+                start: false,
+                wasRunning: false,
+                envDir,
+                domain: "zalo.example.com",
+                trustProxy,
+                driver,
+            });
+            return { r, env: parseEnv(readFileSync(join(envDir, `${ownId}.env`), "utf8")) };
+        };
+        // The host's common.env trusts the proxy already: the account's file only adds its address.
+        const a = await add("1000000000000000984", false);
+        assert.equal(a.r.publicUrl, "https://zalo.example.com/a/1000000000000000984");
+        const common = { ZALO_MCP_TRUSTED_PROXIES: "127.0.0.1", ZALO_MCP_PUBLIC_URL: "https://zalo.example.com" };
+        const env = { ...common, ...a.env };
+        assert.equal(resolvePublicUrl({ env, config: {}, aliases: false }).publicUrl, a.r.publicUrl);
+        assert.equal(a.env.ZALO_MCP_TRUSTED_PROXIES, undefined);
+        // It does not: the account's own file trusts loopback, so a capability link counts clients, not the proxy.
+        const b = await add("1000000000000000985", true);
+        assert.equal(b.env.ZALO_MCP_PUBLIC_URL, "https://zalo.example.com/a/1000000000000000985");
+        assert.deepEqual(resolveTrustedProxies({ config: {}, env: b.env }), ["127.0.0.1"]);
+        // Without a proxy host nothing is guessed: the line stays a comment.
+        const c = await finishQrAdd({
+            ownId: "1000000000000000986",
+            userId: "crmDom",
+            presence: null,
+            start: false,
+            wasRunning: false,
+            envDir,
+            trustProxy: true,
+            driver,
+        });
+        const plain = parseEnv(readFileSync(join(envDir, "1000000000000000986.env"), "utf8"));
+        assert.equal(c.publicUrl, undefined);
+        assert.equal(plain.ZALO_MCP_PUBLIC_URL, undefined);
+        assert.equal(plain.ZALO_MCP_TRUSTED_PROXIES, undefined);
     });
 });
 

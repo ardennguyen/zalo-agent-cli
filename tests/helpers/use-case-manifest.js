@@ -117,9 +117,10 @@ export const USE_CASES = {
         "README.md": null,
         "README.vi.md": null,
         ...fleetBase("e", { credentials: false }),
+        // Its own: each account's tenant key under accounts.<id>.kms, read by every unit and `za`.
+        [`${HOME}/storage.json`]: null,
         "etc/zalo-mcp/common.env": { gen: "e", file: "common.env" },
-        "etc/zalo-mcp/accounts/1000000000000000001.env": null,
-        "etc/zalo-mcp/accounts/1000000000000000002.env": null,
+        ...generatedAccounts("e"),
         "etc/caddy/Caddyfile": { gen: "e", file: "Caddyfile" },
         [`${HOME}/mcp-config.json`]: { sample: "mcp-config/multi-account.json" },
         [`${HOME}/tenants/tenant-a.json`]: null,

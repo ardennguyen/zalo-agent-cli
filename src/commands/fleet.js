@@ -52,7 +52,7 @@ import {
 } from "../core/fleet-serve.js";
 import { DEFAULT_QR_FLOWS, createQrFlows } from "../core/fleet-qr.js";
 import { applyPolicy, effectivePolicy, ownerOf } from "../core/policy-store.js";
-import { resolvePublicUrl, validatePublicUrl } from "../core/deploy-policy.js";
+import { resolvePublicUrl, resolveTrustedProxies, validatePublicUrl } from "../core/deploy-policy.js";
 import { kickFile, readKickMarker } from "../core/kick-marker.js";
 import { fleetPurge } from "../core/fleet-purge.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
@@ -84,6 +84,15 @@ function intOption(label, value, min, max) {
         process.exit(1);
     }
     return n;
+}
+
+/**
+ * Whether a `--domain` value is a bare host name (zalo.example.com) that makes a valid https address.
+ * @param {string} host
+ * @returns {boolean}
+ */
+function isHostName(host) {
+    return /^[a-z0-9.-]+$/i.test(host) && !validatePublicUrl(`https://${host}`).error;
 }
 
 /**
@@ -606,12 +615,9 @@ export function registerFleetCommands(program) {
                 error(`Invalid --user "${opts.user}": a Unix user name.`);
                 process.exit(1);
             }
-            if (opts.domain !== undefined) {
-                const v = validatePublicUrl(`https://${opts.domain}`);
-                if (v.error || !/^[a-z0-9.-]+$/i.test(opts.domain)) {
-                    error(`Invalid --domain "${opts.domain}": a host name only (zalo.example.com).`);
-                    process.exit(1);
-                }
+            if (opts.domain !== undefined && !isHostName(opts.domain)) {
+                error(`Invalid --domain "${opts.domain}": a host name only (zalo.example.com).`);
+                process.exit(1);
             }
             const ports = portsFor(accounts, base);
             const paths = Object.fromEntries(
@@ -689,6 +695,10 @@ export function registerFleetCommands(program) {
             "--public-url <url>",
             "The address a CRM reaches this controller at (QR page links); or ZALO_MCP_PUBLIC_URL",
         )
+        .option(
+            "--domain <host>",
+            "The proxy host of `fleet generate --domain`: a QR-added account's env file gets ZALO_MCP_PUBLIC_URL=https://<host>/a/<ownId>; or ZALO_FLEET_DOMAIN",
+        )
         .action(async (opts) => {
             const port = intOption(
                 "--http",
@@ -727,6 +737,19 @@ export function registerFleetCommands(program) {
                 error(pub.error);
                 process.exit(1);
             }
+            const domain = opts.domain ?? (process.env.ZALO_FLEET_DOMAIN || null);
+            if (domain !== null && !isHostName(domain)) {
+                error(`Invalid --domain "${domain}" (or ZALO_FLEET_DOMAIN): a host name only (zalo.example.com).`);
+                process.exit(1);
+            }
+            // As `fleet generate --domain` does in common.env: behind the proxy its X-Forwarded-For is trusted from
+            // loopback. When this host's shared env does not say so, the new account's own env file does.
+            const trustProxy = Boolean(domain) && resolveTrustedProxies({ config, env: process.env }).length === 0;
+            if (trustProxy) {
+                warning(
+                    "ZALO_MCP_TRUSTED_PROXIES is not set (common.env): a QR-added account's env file will trust 127.0.0.1",
+                );
+            }
             const webhook = adminWebhook(
                 process.env.ZALO_FLEET_WEBHOOK || null,
                 process.env.ZALO_FLEET_WEBHOOK_SECRET || null,
@@ -735,7 +758,7 @@ export function registerFleetCommands(program) {
             // The QR add (src/core/fleet-qr.js): one child login per flow, at most ZALO_FLEET_QR_FLOWS at once.
             const qr = createQrFlows({
                 spawnLogin: spawnLoginChild,
-                finish: (o) => finishQrAdd({ ...o, envDir, driver }),
+                finish: (o) => finishQrAdd({ ...o, envDir, domain, trustProxy, driver }),
                 isRunning: (id) => getDaemonStatus(getAccountDir(id)).running,
                 dir: join(CONFIG_DIR, "qr-flows"),
                 publicUrl: pub.publicUrl,

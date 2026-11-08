@@ -76,13 +76,15 @@ The default is chosen by platform. Change it in `<config-dir>/storage.json` (or 
   "provider": "kms",
   "kms": { "backend": "aws", "key": "arn:aws:kms:<region>:<account>:key/<id>", "region": "<region>" },
   "dkeyLayer": false,
-  "accounts": { "<ownId>": { "dkeyLayer": true } }
+  "accounts": { "<ownId>": { "dkeyLayer": true, "kms": { "key": "arn:aws:kms:<region>:<account>:key/<tenant-key>" } } }
 }
 ```
 
+**A key per tenant.** A provider section under `accounts.<ownId>` (here the tenant's KMS key) is that account's own setting: it beats the top level and the environment, and every process reads it (the daemon, the CLI, the purge and backup units). `account security provider kms <ownId> --key <id>` writes it there and leaves the default alone. A keyring also records the KMS key that wraps it and is always unwrapped (and rekeyed) with that key, whatever the default says now, so changing the default never locks an account out. Use case [e](config-samples/use-cases/e-saas-kms/README.md).
+
 `"rowMac": {"verifyOnRead": "actions"}` (the default) makes the actions check the row they act on; `"off"` skips that check (`db verify` still finds the rows). The samples set it explicitly.
 
-Environment variables (they win over the file, so a fleet's per-account env file can set one account apart): `ZALO_STORAGE_PROVIDER`, `ZALO_STORAGE_DKEY_LAYER` (`1`/`0`), `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` (env provider only). For Vault: `VAULT_ADDR`, `VAULT_TOKEN` (or `"kms": {"tokenFile": …}`), `VAULT_NAMESPACE`.
+Environment variables (they win over the file's top level; an `accounts.<ownId>` section wins over them): `ZALO_STORAGE_PROVIDER`, `ZALO_STORAGE_DKEY_LAYER` (`1`/`0`), `ZALO_DPAPI_SCOPE`, `ZALO_SYSTEMD_CREDS_WITH_KEY`, `ZALO_KMS_BACKEND`, `ZALO_KMS_KEY`, `ZALO_STORAGE_PASSPHRASE_FILE`, `ZALO_STORAGE_KEY` (env provider only). For Vault: `VAULT_ADDR`, `VAULT_TOKEN` (or `"kms": {"tokenFile": …}`), `VAULT_NAMESPACE`.
 
 ## 5. The dkey layer (optional, off by default)
 

@@ -683,11 +683,17 @@ describe("use-case sample sets (docs/config-samples/use-cases/)", () => {
     it("e: the tenant file is a policy the store accepts, and each account names its own KMS key", () => {
         const doc = JSON.parse(ucRead("e-saas-kms", `${HOME}/tenants/tenant-a.json`));
         assert.deepEqual(validatePolicy(doc.policy, { scope: "tenant", allowNull: true }).errors, []);
-        const keys = ["1000000000000000001", "1000000000000000002"].map(
-            (id) => parseEnv(ucRead("e-saas-kms", `etc/zalo-mcp/accounts/${id}.env`)).ZALO_KMS_KEY,
-        );
-        assert.ok(keys.every((k) => /^arn:aws:kms:/.test(k)));
+        // In storage.json, which the daemon, `za` and the purge and backup units all read; never an account env
+        // file, which only the account's own daemon reads.
+        const storage = JSON.parse(ucRead("e-saas-kms", `${HOME}/storage.json`));
+        const ids = ["1000000000000000001", "1000000000000000002"];
+        const keys = ids.map((id) => storage.accounts[id].kms.key);
+        assert.ok(keys.every((k) => /^arn:aws:kms:/.test(k) && k !== storage.kms.key));
         assert.notEqual(keys[0], keys[1]);
+        for (const id of ids) {
+            const env = parseEnv(ucRead("e-saas-kms", `etc/zalo-mcp/accounts/${id}.env`));
+            assert.equal(env.ZALO_KMS_KEY, undefined, id);
+        }
     });
 
     it("c: MIGRATE (EN and VN) says to copy before any 3.0 command and never to run two copies of one login", () => {

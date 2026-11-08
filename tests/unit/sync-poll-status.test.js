@@ -100,10 +100,13 @@ describe("listen.js gap reporting guards", () => {
             !/30\s*\*\s*1000|30000/.test(startup),
             "a re-added 30s gate would silently drop fast-restart gaps again",
         );
+        // The reason is "startup-gap", or "idle" when the last stop or crash happened while parked (on-demand
+        // presence: a planned window); either way the report runs unconditionally.
         assert.ok(
-            /reportGap\s*\(\s*lastConnectedAt\s*,\s*["']startup-gap["']\s*\)/.test(startup),
+            /reportGap\s*\(\s*lastConnectedAt\s*,\s*(["']startup-gap["']|startupReason)\s*\)/.test(startup),
             "startup must run the gap report unconditionally",
         );
+        assert.ok(/["']startup-gap["']/.test(startup), "an ordinary restart is still a startup-gap");
         assert.ok(/markConnected\s*\(\s*\)/.test(startup), "the no-gap branch must still stamp connected");
     });
 });

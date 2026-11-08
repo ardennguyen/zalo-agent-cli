@@ -302,6 +302,14 @@ export const GUARDS = Object.freeze({
             `delete ${t.seq !== undefined ? `dead-lettered webhook event #${t.seq}` : "every dead-lettered webhook event"} ` +
             `of account ${t.account ?? "the active account"} for good`,
     },
+    "presence.resume": {
+        cli: "presence resume",
+        mcp: "zalo_profile presence_resume",
+        irreversible: false,
+        what: (t) =>
+            `take account ${t.ownerId ?? "(active)"} back from the other session of this login: its daemon opens the ` +
+            "socket again, which ends that other session's socket if it is still open",
+    },
     "write.run": {
         cli: "write run",
         mcp: "zalo_write",

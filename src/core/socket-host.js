@@ -110,9 +110,9 @@ const sleepFor = (ms, signal) =>
  *   (./presence.js `noteKicked`): true lets the socket go and keeps the daemon up (`yielded`) instead of `onKicked`
  * @param {() => void} [opts.onParking] - called once a park is past the point of no return, before the supervisor
  *   stops: the daemon marks the coming close as planned (`lifecycle.noteParking()`, health `idle`)
- * @returns {{start: (api: object) => object, stop: () => Promise<void>, current: () => object|null,
- *   reloginNow: (why: string) => Promise<void>, park: Function, wake: Function, isParked: () => boolean,
- *   isParking: () => boolean}}
+ * @returns {{start: (api: object) => object, adopt: (api: object) => void, halt: () => Promise<void>,
+ *   stop: () => Promise<void>, current: () => object|null, reloginNow: (why: string) => Promise<void>,
+ *   park: Function, wake: Function, isParked: () => boolean, isParking: () => boolean}}
  */
 export function createSocketHost({
     log,
@@ -236,8 +236,8 @@ export function createSocketHost({
         parked = true;
         log(
             "warn",
-            "Yielded the account to the other session. The socket stays closed until someone asks for it " +
-                "(a tool call, a lease, a CLI request); that request takes the account back.",
+            "Yielded the account to the other session of this login. The socket stays closed, and every request is " +
+                "refused, until you close the other session and confirm: zalo-agent presence resume --yes",
         );
         return true;
     }
@@ -346,7 +346,12 @@ export function createSocketHost({
      */
     async function park({ aborted = () => false, prepare } = {}) {
         if (parked) return true;
-        if (parking || reloginRunning || isStopping() || !supervisor) return false;
+        if (parking || reloginRunning || isStopping()) return false;
+        // No supervisor and not parked: a wake that was still waiting (a connect slot) is called off.
+        if (!supervisor) {
+            parked = true;
+            return true;
+        }
         parking = true;
         try {
             await prepare?.();
@@ -380,8 +385,41 @@ export function createSocketHost({
         return start(currentApi);
     }
 
+    /**
+     * Take the session without opening its socket (on-demand presence starts parked; the first wake opens it).
+     *
+     * @param {object} api
+     */
+    function adopt(api) {
+        currentApi = api;
+        if (!supervisor) parked = true;
+    }
+
+    /**
+     * Let the socket go for good on this session (Zalo refuses the saved login: signed out). No onParking, no
+     * retry; a wake does nothing until a new session is adopted or started.
+     *
+     * @returns {Promise<void>}
+     */
+    async function halt() {
+        const sup = supervisor;
+        supervisor = null;
+        parked = true;
+        currentApi = null;
+        if (!sup) return;
+        try {
+            await sup.stop();
+        } catch {
+            /* already closed */
+        } finally {
+            sup.dispose();
+        }
+    }
+
     return {
         start,
+        adopt,
+        halt,
         reloginNow,
         park,
         wake,

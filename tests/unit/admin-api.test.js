@@ -30,10 +30,11 @@ const ADMIN_TOKEN = "admin-token-fedcba9876543210";
 const servers = [];
 
 /** A real server on port 0 serving the admin API for OWN; the agent's bearer is AGENT_TOKEN. */
-async function start({ hashes, tls = null, mtls = false, usage } = {}) {
+async function start({ hashes, tls = null, mtls = false, usage, presence = null } = {}) {
     const admin = createAdminApi({
         ownId: OWN,
         config: {},
+        presence,
         hashes: hashes ?? resolveAdminCredentials({ env: { ZALO_MCP_ADMIN_TOKEN: ADMIN_TOKEN } }).hashes,
         mtls,
         usage: usage ?? (() => ({ accounts: [{ accountId: OWN, total: 42 }] })),
@@ -65,6 +66,41 @@ before(() => {
     mkdirSync(getAccountDir(OTHER), { recursive: true });
 });
 after(() => servers.forEach((s) => s.close()));
+
+describe("admin API: presence (status, and the resume after a yield)", () => {
+    it("GET /presence and POST /presence/resume go to the daemon's presence; a refusal is 409 with its code", async () => {
+        const asked = [];
+        let yielded = true;
+        const presence = {
+            serve: async ({ action }) => {
+                asked.push(action);
+                if (action === "resume" && !yielded) {
+                    throw Object.assign(new Error("the account is not yielded"), { code: "NOT_YIELDED" });
+                }
+                if (action === "resume") yielded = false;
+                return { mode: "on-demand", state: action === "resume" ? "waking" : "yielded" };
+            },
+        };
+        const base = await start({ presence });
+        const agent = await call(base, "/presence/resume", { method: "POST", token: AGENT_TOKEN });
+        assert.equal(agent.status, 401, "the agent's token cannot resume");
+        assert.deepEqual(asked, []);
+        assert.equal((await call(base, "/presence", { token: ADMIN_TOKEN })).body.mode, "on-demand");
+        const r = await call(base, "/presence/resume", { method: "POST", token: ADMIN_TOKEN });
+        assert.equal(r.status, 200);
+        assert.equal(r.body.state, "waking");
+        const again = await call(base, "/presence/resume", { method: "POST", token: ADMIN_TOKEN });
+        assert.equal(again.status, 409);
+        assert.equal(again.body.code, "NOT_YIELDED");
+        assert.equal((await call(base, "/presence/resume", { token: ADMIN_TOKEN })).status, 405);
+        assert.deepEqual(asked, ["status", "resume", "resume"]);
+    });
+
+    it("a server with no presence answers 404 there", async () => {
+        const base = await start();
+        assert.equal((await call(base, "/presence", { token: ADMIN_TOKEN })).status, 404);
+    });
+});
 
 describe("admin API: its own credential", () => {
     it("does not exist without an admin credential (404), whatever token is sent", async () => {

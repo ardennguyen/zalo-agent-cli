@@ -308,9 +308,12 @@ function readJsonBody(req, reply) {
  *   (`POST /policy`), applied in this daemon so the change counts at once; the body lives in ./policy-store.js.
  * @param {(params: object) => object|Promise<object>} [args.onPurge] - a quota/retention purge from `db purge`
  *   (`POST /purge`), run by this daemon, the account's one writer; the body lives in ./storage-quota.js.
- * @param {(params: {action: "status"|"wake"|"park"}) => object|Promise<object>} [args.onPresence] - on-demand
- *   presence (`presence status|wake|park`, the fleet controller's relay; `POST /presence`). WP3 wiring point: a daemon
- *   that runs presence passes it; without it the route answers 503 and the CLI says the socket stays connected.
+ * @param {(params: {action: "status"|"wake"|"park"|"resume"}) => object|Promise<object>} [args.onPresence] -
+ *   on-demand presence (`presence status|wake|park|resume`, the fleet controller's relay; `POST /presence`). Without
+ *   it the route answers 503 and the CLI says the socket stays connected.
+ * @param {(o: {kind: string, cls: "socket"|"wait"}) => Promise<{release: () => void}>} [args.presenceGate] - the
+ *   daemon's presence door (src/core/daemon-presence.js `admit`): an upload, a sync stage and a wait each hold the
+ *   socket for their duration; a refusal (`code` YIELDED, SIGNED_OUT or WARMING) is answered with that code
  * @returns {Promise<{port: number, stop: () => void}>}
  */
 export function startDaemonChannel({
@@ -327,8 +330,30 @@ export function startDaemonChannel({
     onPolicy = null,
     onPurge = null,
     onPresence = null,
+    presenceGate = null,
 }) {
     const token = randomBytes(24).toString("hex");
+
+    /**
+     * Through the daemon's presence first (on-demand: this request holds the socket); null when refused, after the
+     * refusal was answered with `status`.
+     */
+    const admitted = async (cls, reply, status) => {
+        if (typeof presenceGate !== "function") return { release: () => {} };
+        try {
+            return await presenceGate({ kind: "channel", cls });
+        } catch (e) {
+            if (!e?.code) throw e;
+            reply(status, {
+                ok: false,
+                error: e.message,
+                code: e.code,
+                ...(e.state ? { state: e.state } : {}),
+                ...(e.retryAfterSec !== undefined ? { retryAfterSec: e.retryAfterSec } : {}),
+            });
+            return null;
+        }
+    };
     // The stage that is running, and the controller its runner was given: `POST /sync/cancel` aborts it.
     let activeStage = null;
 
@@ -348,6 +373,8 @@ export function startDaemonChannel({
         const paths = Array.isArray(body.paths) ? body.paths.map(String) : [];
         if (!paths.length || !body.threadId) return reply(400, { error: "paths and threadId are required" });
 
+        const ticket = await admitted("socket", reply, 200);
+        if (!ticket) return;
         try {
             // A video send (`msg send-video` with a local file) names its options under `video`; the reply says
             // `video: true`, so a sender can tell this daemon from one that would send the file as a file.
@@ -370,6 +397,8 @@ export function startDaemonChannel({
         } catch (e) {
             // The sender decides what to do about it; the daemon stays up.
             reply(200, { ok: false, error: e?.message || String(e) });
+        } finally {
+            ticket.release();
         }
     };
 
@@ -381,8 +410,11 @@ export function startDaemonChannel({
         if (typeof run !== "function") {
             return reply(503, { error: `this daemon does not run the ${stage} stage` });
         }
+        const ticket = await admitted("socket", reply, 503);
+        if (!ticket) return;
         const release = lock.tryAcquire(stage);
         if (!release) {
+            ticket.release();
             const busy = lock.current() || {};
             return reply(409, {
                 error: `a ${busy.stage} sync is already running on this daemon`,
@@ -435,6 +467,7 @@ export function startDaemonChannel({
             clearInterval(ping);
             if (activeStage?.controller === controller) activeStage = null;
             release();
+            ticket.release();
             try {
                 res.end();
             } catch {
@@ -478,6 +511,8 @@ export function startDaemonChannel({
                 error: "this daemon does not have an MCP message buffer (run `zalo-agent mcp start` instead of `listen`)",
             });
         }
+        const ticket = await admitted("wait", reply, 200);
+        if (!ticket) return;
         const ac = new AbortController();
         res.on("close", () => ac.abort());
         try {
@@ -485,6 +520,8 @@ export function startDaemonChannel({
             if (!res.writableEnded) reply(200, { ok: true, ...result });
         } catch (e) {
             if (!res.writableEnded) reply(200, { ok: false, error: e?.message || String(e) });
+        } finally {
+            ticket.release();
         }
     };
 
@@ -824,6 +861,9 @@ export function syncViaDaemon(accountDir, { stage, params = {}, onEvent, idleTim
                             error: body.error || `the daemon refused the request (HTTP ${res.statusCode})`,
                             busyStage: body.stage,
                             busySince: body.startedAt,
+                            // On-demand presence: YIELDED, SIGNED_OUT or WARMING (retry after retryAfterSec).
+                            ...(body.code ? { code: body.code } : {}),
+                            ...(body.retryAfterSec !== undefined ? { retryAfterSec: body.retryAfterSec } : {}),
                         });
                     });
                     return;

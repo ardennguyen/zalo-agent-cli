@@ -159,7 +159,9 @@ function resolveIssuerOrigin(req, configuredIssuer, isTls) {
  *   (`health` is the daemon's ./core/daemon-health.js object: behind /health, /ready, /status and /metrics;
  *   `securePage` serves the one-time input page at /zalo/secure/<token>, src/core/secure-page.js; `qrPage` the
  *   one-time QR login page at /zalo/qr/<token>, src/utils/qr-http-server.js; `hiddenEvents`
- *   applies the hiddenChats policy to /events/wait's messages)
+ *   applies the hiddenChats policy to /events/wait's messages; `presence` is the daemon's on-demand presence,
+ *   src/core/daemon-presence.js: every tool call and every /events/wait goes through it; `leases` its CRM lease
+ *   routes under /zalo/presence)
  * @param {number} port
  * @param {string|null} authToken - Bearer token (null = no auth unless oauth.clientSecret or oauth.clients is set)
  * @param {string} [host="127.0.0.1"] - Bind address
@@ -646,6 +648,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
                 deps.accountDir,
                 deps.stageLock,
                 deps.syncJobs,
+                { presence: deps.presence ?? null },
             );
 
             const transport = new StreamableHTTPServerTransport({
@@ -672,8 +675,7 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
     });
 
     // CRM leases on the socket (src/core/presence-leases.js), behind the agent's bearer check above: a lease holds the
-    // socket, it cannot change the presence mode. WP3 wiring point: `mcp start --http` passes `deps.leases` once the
-    // daemon runs presence; until then the route does not exist.
+    // socket, it cannot change the presence mode. `mcp start --http` passes `deps.leases` (its presence's routes).
     if (deps.leases) {
         app.use(PRESENCE_PATH_PREFIX, (req, res) => deps.leases.handle(req, res));
     }
@@ -691,6 +693,21 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
         res.on("close", () => ac.abort());
 
         const { limit, settleMs } = batchParams({ limit: req.query.limit, settleMs: req.query.settle });
+
+        // On-demand presence: a wait holds the socket while it waits (refused while yielded or signed out).
+        let ticket = null;
+        if (deps.presence) {
+            try {
+                ticket = await deps.presence.admit({ cls: "wait" });
+            } catch (e) {
+                if (!e?.code) throw e;
+                return res.status(409).json({
+                    error: e.message,
+                    code: e.code,
+                    ...(e.state ? { state: e.state } : {}),
+                });
+            }
+        }
 
         try {
             const { messages, hasMore } = await deps.buffer.waitForMessages({
@@ -716,6 +733,8 @@ export function createHTTPServer(registerToolsFn, deps, port, authToken, host = 
             if (!res.headersSent) {
                 res.status(500).json({ error: err.message });
             }
+        } finally {
+            ticket?.release();
         }
     });
 

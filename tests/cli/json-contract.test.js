@@ -94,6 +94,7 @@ export const FAILS_OFFLINE = {
     "mcp mark-read": "asks a running `mcp start` server",
     "presence wake": "asks a running daemon's channel",
     "presence park": "asks a running daemon's channel",
+    "presence resume": "asks a running daemon's channel",
     "sync-cloud": "needs the account's zCloud viewer key, which only a real zCloud subscription hands out",
     "conv unhide": "needs the hidden-chat PIN typed by a person (no terminal and no --pin-stdin here: exit 2)",
     "conv hidden-pin": "needs the hidden-chat PINs typed by a person (no terminal and no --pin-stdin here: exit 2)",

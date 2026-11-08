@@ -6,8 +6,12 @@
  *   idle           the daemon runs and its socket is parked (on-demand presence): it wakes on demand
  *   connecting     a socket is being opened (a start, a wake, a drop being retried)
  *   connected      the socket is up
- *   kicked         another session took the account (said just before exit 3, or when on-demand yields)
- *   login_needed   Zalo refused the session (while the daemon logs in again, and before exit 4)
+ *   kicked         another session took the account (said just before exit 3)
+ *   yielded        on-demand: another session of the same login took the socket; the daemon stays up and refuses
+ *                  every request (YIELDED) until the user confirms `presence resume`
+ *   login_needed   Zalo refused the session (while the daemon logs in again)
+ *   signed_out     Zalo keeps refusing the saved login (another browser took the web login): the daemon stays up and
+ *                  refuses every request (SIGNED_OUT) until the account is added again by QR
  *   maintenance    Zalo is in maintenance; the daemon waits for it
  *
  * Events carry ids only, never a name: `{event: "account_state", accountId, state, previous, at, detail}`.
@@ -20,7 +24,9 @@ export const ACCOUNT_STATES = Object.freeze([
     "connecting",
     "connected",
     "kicked",
+    "yielded",
     "login_needed",
+    "signed_out",
     "maintenance",
 ]);
 
@@ -44,6 +50,8 @@ const FROM_HEALTH = Object.freeze({
     idle: "idle",
     kicked: "kicked",
     relogin: "login_needed",
+    yielded: "yielded",
+    "signed-out": "signed_out",
     maintenance: "maintenance",
     stopping: "stopped",
 });
@@ -125,5 +133,15 @@ export function accountStateSystemEvent(e) {
  */
 export function describeAccountState(e) {
     const why = e.detail?.exitCode ? ` (exit ${e.detail.exitCode})` : e.detail?.reason ? ` (${e.detail.reason})` : "";
-    return `account ${e.accountId}: ${e.previous ?? "start"} -> ${e.state}${why}`;
+    const advice = ACCOUNT_STATE_ADVICE[e.state] ? `. ${ACCOUNT_STATE_ADVICE[e.state]}` : "";
+    return `account ${e.accountId}: ${e.previous ?? "start"} -> ${e.state}${why}${advice}`;
 }
+
+/** What a person does about the two states nothing recovers from on its own. */
+export const ACCOUNT_STATE_ADVICE = Object.freeze({
+    yielded:
+        "Another session of this login holds the account; close it, then confirm with `zalo-agent presence resume " +
+        "--yes` (or the admin API / MCP). Requests are refused until then",
+    signed_out:
+        "Another browser or device took the web login; add the account again by QR. Requests are refused until then",
+});

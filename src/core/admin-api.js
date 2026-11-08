@@ -7,6 +7,9 @@
  *     GET|PUT|PATCH /zalo/admin/policy/tenants/<id>     a tenant (a group of accounts)
  *     GET|PUT|PATCH /zalo/admin/policy/users/<userId>   a user: its tenant, the accounts it owns, its policy
  *     GET           /zalo/admin/presence/always-on      always-on accounts per user and capped tenant, against the caps
+ *     GET           /zalo/admin/presence                this server's presence: mode, state, holds (counts only)
+ *     POST          /zalo/admin/presence/resume         take the account back after a yield (the user closed the other
+ *                                                       session of this login): the admin's explicit confirmation
  *     GET           /zalo/admin/usage                   storage usage of this server's account (and its tenants)
  *     POST|GET|DELETE /zalo/admin/export/<ownId>[/...]    "export my data" jobs and their download links
  *                                                         (src/core/data-export.js)
@@ -189,6 +192,8 @@ const STATUS = { INVALID: 400, NOT_FOUND: 404, MEMBERSHIP: 409, CONFLICT: 412, R
  * @param {((req: object, res: object, ctx: {who: string, ip: string, path: string}) => Promise<boolean>)|null}
  *   [args.routes] - more routes behind the same credential (the fleet controller's `/accounts...` and `/events`);
  *   false: not one of them (404)
+ * @param {{serve: (p: {action: string}) => Promise<object>}|null} [args.presence] - this server's on-demand presence
+ *   (src/core/daemon-presence.js): `/presence` and `/presence/resume`
  * @param {(line: string) => void} [args.log]
  * @returns {{enabled: () => boolean, handle: (req: object, res: object) => void}}
  */
@@ -203,6 +208,7 @@ export function createAdminApi({
     publicUrl = null,
     exportApi = null,
     routes = null,
+    presence = null,
     log = (l) => console.error(l),
 }) {
     const enabled = () => mtls || hashes.length > 0 || Boolean(sealedHash());
@@ -301,6 +307,20 @@ export function createAdminApi({
         if (path === "/presence/always-on") {
             if (req.method !== "GET") return send(res, 405, { error: "GET only" }, { Allow: "GET" });
             return send(res, 200, alwaysOnUsage());
+        }
+        // This server's on-demand presence (src/core/daemon-presence.js): its state, and the resume after a yield.
+        if (path === "/presence" || path === "/presence/resume") {
+            if (!presence) return send(res, 404, { error: "this server runs no on-demand presence" });
+            const resume = path === "/presence/resume";
+            if (req.method !== (resume ? "POST" : "GET"))
+                return send(res, 405, { error: resume ? "POST only" : "GET only" }, { Allow: resume ? "POST" : "GET" });
+            if (resume) log(`[admin] presence resume of ${ownId} (${who} ${ip})`);
+            Promise.resolve(presence.serve({ action: resume ? "resume" : "status" }))
+                .then((r) => send(res, 200, r))
+                .catch((e) =>
+                    send(res, e?.code ? 409 : 500, { error: e.message, ...(e?.code ? { code: e.code } : {}) }),
+                );
+            return;
         }
         const m = /^\/policy(?:\/tenants\/([^/]+)|\/users\/([^/]+)|\/([^/]+))?$/.exec(path);
         if (!m) return send(res, 404, { error: "not found" });

@@ -43,7 +43,7 @@ import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { attachLastOnline } from "../core/last-online.js";
 import { groupEventNames, nameFor, personLabel, senderNameFields, startDaemonAliases } from "../core/contact-names.js";
 import { attachControlEvents } from "../core/control-events.js";
-import { initDb, getMessageById, getPendingSyncGaps } from "../core/db.js";
+import { clearSyncState, initDb, getMessageById, getPendingSyncGaps, getSyncState, setSyncState } from "../core/db.js";
 import {
     storeLiveMessage,
     refreshLiveMessageIdentities,
@@ -68,7 +68,15 @@ import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbo
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
-import { alarmingGapCount } from "../core/listener-lifecycle.js";
+import {
+    alarmingGapCount,
+    createGapTracker,
+    HEARTBEAT_MS,
+    IDLE_GAP_REASON,
+    PARKED_AT_KEY,
+    startupGapReason,
+} from "../core/listener-lifecycle.js";
+import { createDaemonPresence, presenceTransport, resolveDaemonPresence } from "../core/daemon-presence.js";
 import { createAccountStateTracker, describeAccountState } from "../core/account-state.js";
 import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
@@ -225,6 +233,23 @@ export function registerListenCommand(program) {
                 process.exit(1);
             }
 
+            // On-demand presence (src/core/daemon-presence.js): a foreground `listen` prints to stdout and is always-on;
+            // a background one (`--daemon`) follows the settings. On-demand without the self-heal would lose what
+            // arrives while parked, so that pair is refused before anything starts.
+            const presenceRole = presenceTransport({
+                command: "listen",
+                background: Boolean(opts.daemon || process.env.ZALO_DAEMON_CHILD),
+            });
+            const presenceCheck = resolveDaemonPresence({
+                ownId: activeAcc.ownId,
+                transport: presenceRole,
+                selfHeal: opts.selfHeal !== false,
+            });
+            if (presenceCheck.problem) {
+                error(`Refusing to start: ${presenceCheck.problem}`);
+                process.exit(1);
+            }
+
             if (opts.daemon && !process.env.ZALO_DAEMON_CHILD) {
                 const spawned = await spawnDaemonProcess({ accountDir, args: process.argv.slice(1) });
                 if (!spawned.ok) {
@@ -358,12 +383,6 @@ export function registerListenCommand(program) {
             // connected. See reportGap() for why the daemon reports rather than
             // backfilling on its own.
             const syncManager = new SyncManager(getApi(), activeAcc.ownId);
-            const HEARTBEAT_MS = 60 * 1000;
-            let lastHeartbeatAt = 0;
-            // The one place that knows whether the socket is actually up. The
-            // `connected`/`disconnected` handlers below own it; everything else
-            // reads it. Starts null: nothing is claimed before the first connect.
-            let downSince = null;
             // Set by SIGINT before anything is torn down. listener.stop() emits
             // closed(1000), which is indistinguishable from a real drop, so
             // without this the shutdown path runs the RECOVERY path: five
@@ -372,19 +391,10 @@ export function registerListenCommand(program) {
             // daemon-channel.json already deleted. The next listen/mcp/sync then
             // took the free lock and the two sessions flapped over code 3000.
             let stopping = false;
+            // markConnected() means "coverage is good up to now"; the shared tracker stamps it on a beat only while
+            // the socket is actually up (not down, not parked), so a crash mid-outage keeps its window.
             function heartbeat() {
-                const now = Date.now();
-                if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
-                lastHeartbeatAt = now;
-                // markConnected() means "coverage is good up to now". Stamping
-                // that on a timer with no liveness check kept advancing
-                // lastConnectedAt while the socket was down -- through the socket's
-                // internal retry, the 5s re-login wait and the 30s retry wait --
-                // so a crash mid-outage made the NEXT launch compute its
-                // startup-gap from a moment we were not actually connected, and
-                // the outage vanished.
-                if (downSince !== null) return;
-                syncManager.markConnected();
+                lifecycle.heartbeat();
             }
 
             /**
@@ -434,6 +444,11 @@ export function registerListenCommand(program) {
                 const toTs = Date.now();
                 const gapId = syncManager.recordGap(fromTs, toTs, reason);
                 if (!gapId) return null; // under recordGap's 1-second floor
+                // A parked window (on-demand presence) is planned: one quiet line, the self-heal closes it.
+                if (reason === IDLE_GAP_REASON) {
+                    info(`Parked since ${new Date(fromTs).toISOString()}: catching up from Zalo's offline queue`);
+                    return gapId;
+                }
                 let pendingGaps = [];
                 try {
                     pendingGaps = getPendingSyncGaps();
@@ -498,8 +513,22 @@ export function registerListenCommand(program) {
             // Deliberate restarts stay quiet on their own merits: SIGINT stamps
             // markConnected() on the way out, so a clean stop/start reports the
             // true downtime rather than a heartbeat-rounded guess.
+            // The coverage bookkeeping `mcp start` uses (src/core/listener-lifecycle.js): down-ness observed from the
+            // listener's own events (first drop wins), a park's close planned, the parked window filed on the wake.
+            const lifecycle = createGapTracker({
+                syncManager,
+                reportGap,
+                setState: setSyncState,
+                deleteState: clearSyncState,
+            });
             const lastConnectedAt = syncManager.getLastConnectedAt();
-            if (!reportGap(lastConnectedAt, "startup-gap")) {
+            // A stop or crash while parked left lastConnectedAt at the park stamp: that window is a planned one.
+            const parkedStamp = Number(getSyncState(PARKED_AT_KEY)) || null;
+            const startupReason = parkedStamp
+                ? startupGapReason({ lastConnectedAt, parkedAt: parkedStamp })
+                : "startup-gap";
+            if (parkedStamp) clearSyncState(PARKED_AT_KEY);
+            if (!reportGap(lastConnectedAt, startupReason)) {
                 // Nothing filed -- no prior connection on record, or a gap under
                 // the floor. Either way we are caught up as of now.
                 syncManager.markConnected();
@@ -580,6 +609,8 @@ export function registerListenCommand(program) {
                 if (touches(changed, ["quota", "retention"])) storageJobs.reschedule();
                 if (touches(changed, ["webhook", "webhookBatchSize", "webhookMaxAge"]))
                     applyWebhook(resolveWebhookUrl({ accountId: activeAcc.ownId, flag: opts.webhook }));
+                // presence.*: live (a switch to always-on holds the socket now; one to on-demand starts the idle clock).
+                daemonPresence?.applyPolicy(changed);
             };
 
             /** Queue an event for the webhook — never blocks event processing */
@@ -645,11 +676,12 @@ export function registerListenCommand(program) {
                 purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
             });
             // account_state (src/core/account-state.js): one word per change, reported like any other event (stdout,
-            // webhook, JSONL) and in /status, the same as `mcp start`. WP3 wiring point: detail.presence.
+            // webhook, JSONL) and in /status, the same as `mcp start`; detail.presence is the mode presence runs in.
+            let daemonPresence = null;
             const accountState = createAccountStateTracker({
                 accountId: activeAcc.ownId,
                 emit: (event) => emitEvent(event, describeAccountState(event)),
-                detail: () => ({ presence: "always-on" }),
+                detail: () => daemonPresence?.detail() ?? { presence: presenceCheck.settings.mode },
             });
 
             /** Whether --events, --filter or --no-self keep a message off stdout, the webhook and the JSONL. */
@@ -753,8 +785,41 @@ export function registerListenCommand(program) {
             health.setSource("accountState", () => accountState.current());
             health.setSource("webhook", () => webhookDelivery?.status() ?? null);
             health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
+            health.setSource("presence", () => daemonPresence?.snapshot() ?? null);
             const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
             if (sessionLine) console.error(`[listen] ${sessionLine}`);
+            // On-demand presence: when this daemon holds the account's socket (src/core/daemon-presence.js, shared
+            // with `mcp start`). Built before the socket host, which it drives through park/wake.
+            try {
+                daemonPresence = createDaemonPresence({
+                    ownId: activeAcc.ownId,
+                    transport: presenceRole,
+                    selfHeal: opts.selfHeal !== false,
+                    configDir: CONFIG_DIR,
+                    log: (line) => console.error(`[listen] ${line}`),
+                    getSocketHost: () => socketHost,
+                    stageLock,
+                    deliveredReceipts,
+                    lifecycle,
+                    health,
+                    accountState,
+                    coveredUntil: () => syncManager.getLastConnectedAt(),
+                });
+            } catch (e) {
+                dropLock();
+                error(`Refusing to start: ${e.message}`);
+                process.exit(1);
+            }
+            {
+                const p = daemonPresence.settings;
+                info(
+                    `Presence: ${p.mode}${daemonPresence.forced ? ` (${daemonPresence.forced})` : ""}` +
+                        (p.mode === "on-demand"
+                            ? `: parks after ${Math.round(p.idleTimeoutMs / 1000)}s with no demand, ` +
+                              `never within ${Math.round(p.minConnectedMs / 1000)}s of a connect`
+                            : ""),
+                );
+            }
             const socketTap = createSocketTap({ log: (line) => console.error(`[listen] ${line}`) });
             // Read state other devices report -- a conversation read on the
             // phone, an unread mark set or cleared there -- which the listener's events
@@ -851,6 +916,8 @@ export function registerListenCommand(program) {
                 deviceSince: () => deviceSinceOf(activeAcc.ownId, getApi()),
                 // Zalo dropped part of a queue: reported like any other event (stdout, webhook, JSONL).
                 onNotice: (event) => emitEvent(event, describeQueueOverflow(event)),
+                // A catch-up finished: on-demand presence ends its start-up and pulse holds. Same in `mcp start`.
+                onRun: ({ ms }) => daemonPresence?.noteCatchUpDone({ ms }),
                 // A message recovered after a drop reaches stdout, the JSONL and
                 // the webhook as a live one would, marked so a consumer can tell.
                 onRecovered: (items) => {
@@ -1160,12 +1227,9 @@ export function registerListenCommand(program) {
                     // guard was always false: no gap was filed, and markConnected()
                     // below then asserted coverage over the whole outage. Messages
                     // lost to an ordinary reconnect were lost silently and for
-                    // good, because `sync` is driven off exactly this advice.
-                    if (downSince !== null) {
-                        reportGap(downSince, "reconnect-gap");
-                        downSince = null;
-                    }
-                    syncManager.markConnected();
+                    // good, because `sync` is driven off exactly this advice. The tracker files
+                    // the outage (reportGap from when it went down) before it claims coverage.
+                    lifecycle.noteUp();
                 });
 
                 api.listener.on("disconnected", (code, _reason) => {
@@ -1177,12 +1241,9 @@ export function registerListenCommand(program) {
                     warning(`Disconnected (code: ${code}). Auto-retrying... (${socketContext.describe()})`);
                     // First drop wins: a flapping socket that emits several
                     // `disconnected` before one `connected` is ONE outage, and the
-                    // gap must span from the start of it.
-                    if (downSince === null) {
-                        downSince = Date.now();
-                        reconnectCount++;
-                    }
-                    syncManager.markDisconnected();
+                    // gap must span from the start of it (the tracker keeps the first).
+                    if (!lifecycle.isDown()) reconnectCount++;
+                    lifecycle.noteDown();
                 });
 
                 // There is no `closed` handler on purpose. Keeping this socket alive is the socket
@@ -1200,12 +1261,12 @@ export function registerListenCommand(program) {
             const socketHost = createSocketHost({
                 log: (level, message) =>
                     level === "error" ? error(message) : level === "warn" ? warning(message) : info(message),
-                health: {
-                    noteSocketState: (state) => {
-                        health.noteSocketState(state);
-                        accountState.noteSocketState(state);
-                    },
-                },
+                // The supervisor's states reach presence, health and account_state through one place.
+                health: { noteSocketState: (state) => daemonPresence.noteSocketState(state) },
+                // On-demand: a kick by another session of this login yields (the daemon stays up, refusing requests
+                // until `presence resume`); a park marks its close as planned before the supervisor stops.
+                yieldOnKick: () => daemonPresence.yieldOnKick(),
+                onParking: () => daemonPresence.onParking(),
                 isStopping: () => stopping,
                 anomalyFile: join(accountDir, "sock-anomaly.json"),
                 kickFile: kickFile(accountDir),
@@ -1227,9 +1288,15 @@ export function registerListenCommand(program) {
                     process.exit(EXIT_CODE.KICKED);
                 },
                 onRevoked: (e) => {
-                    accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
                     mediaLinks.revokeAll("the session ended");
-                    error(`Zalo keeps refusing the saved login (${e?.message ?? e}). Run \`zalo-agent login\` again.`);
+                    error(
+                        `Zalo keeps refusing the saved login (${e?.message ?? e}): another browser or device took ` +
+                            "the web login. Add the account again by QR (`zalo-agent login`).",
+                    );
+                    // Signed out: the daemon stays up (status, a QR re-add) and refuses requests; exit 4 only with
+                    // ZALO_EXIT_ON_SIGNED_OUT=1.
+                    if (daemonPresence.signOut(e)) return;
+                    accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
                     dropLock();
                     process.exit(EXIT_CODE.SESSION_REVOKED);
                 },
@@ -1239,7 +1306,9 @@ export function registerListenCommand(program) {
             try {
                 const api = getApi();
                 attachAllHandlers(api);
-                socketHost.start(api);
+                // The host takes the session; presence opens the socket now (always-on, the start-up catch-up) or
+                // on the first demand.
+                daemonPresence.start(api);
                 daemonAliases.refreshNow("start").catch(() => {});
 
                 info("Listening for Zalo events... Press Ctrl+C to stop.");
@@ -1282,7 +1351,9 @@ export function registerListenCommand(program) {
             const shutdown = () => {
                 // First, before anything can emit a close event.
                 stopping = true;
+                lifecycle.setStopping();
                 health.noteStopping();
+                daemonPresence?.stop();
                 channel?.stop();
                 policyRuntime.stop();
                 storageJobs.stop();
@@ -1340,6 +1411,10 @@ export function registerListenCommand(program) {
                     onPolicy: servePolicyRequest,
                     // `db purge`: this daemon is the account's one writer, so the purge runs here.
                     onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
+                    // `presence status|wake|park|resume`, and the fleet controller's relay.
+                    onPresence: (p) => daemonPresence.serve(p),
+                    // An upload or a sync stage holds the socket (refused while yielded or signed out).
+                    presenceGate: (o) => daemonPresence.admit(o),
                     // `msg media --deliver link`: a link this daemon serves on 127.0.0.1 while it runs.
                     onMediaLink: ({ msgId }) =>
                         linkForCachedMessage({

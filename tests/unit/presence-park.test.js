@@ -3,7 +3,7 @@
  * same session; the coverage bookkeeping files the parked window as a planned `idle` gap; self-heal closes it from
  * Zalo's offline queue or names what the queue lost as `idle-evicted`; health says `idle`, not `down`.
  *
- * The daemons are not wired to park yet (WP3). Every id is made up.
+ * The daemons' wiring is tests/unit/daemon-presence.test.js. Every id is made up.
  */
 import { assertSandboxed, SANDBOX_CONFIG_DIR } from "../helpers/sandbox.js";
 import { describe, it, beforeEach, afterEach } from "node:test";

@@ -16,13 +16,17 @@
  *  - **Hysteresis.** More than `maxWakesPerHour` wakes in a rolling hour doubles the idle timeout per wake over the
  *    limit, up to an hour; a quiet hour brings it back.
  *  - **Always-on** is the same machine with one permanent hold, so there is one code path.
- *  - **Yielded.** In on-demand mode a kick (another session took the account: on-demand users run their own Zalo Web)
- *    can end in `yielded` instead of the daemon's exit: the socket is let go and comes back only for an action someone
- *    asked for (a tool call, a new lease, a CLI request, a manual wake), never for a background reason (a pulse, the
- *    start-up catch-up, a wait). See `presence.onKick`.
+ *  - **Yielded.** In on-demand mode a kick (another session of the SAME login took the socket: a second copy of these
+ *    credentials, or a second tab of one browser) can end in `yielded` instead of the daemon's exit: the socket is let
+ *    go and nothing takes it back on its own. Every hold is refused while yielded (`refusal()`, code `YIELDED`): a tool
+ *    call, a lease, a CLI request, a wait. Only an explicit `resume()` (the user confirmed the other session is
+ *    closed: `presence resume --yes`, the admin API, MCP) wakes it again (owner decision 2026-11-08).
+ *  - **Signed out.** Zalo refuses the saved login (the user QR-logged into Zalo Web elsewhere, which takes the one web
+ *    login): `signed-out`. Every hold is refused (code `SIGNED_OUT`), nothing retries, and the daemon stays up so its
+ *    API, its status and a QR re-add keep working. Only a new login (a restart after the QR) ends it.
  *  - **Metering.** Connected time and the time waits held the socket are counted for usage (owner decision 2).
  *
- * Wiring it into `listen` and `mcp start` is a separate step (the plan's WP3); until then both stay always connected.
+ * `listen` and `mcp start` both drive it through ./daemon-presence.js (one wiring, so the two cannot differ).
  */
 
 /** The presence modes. */
@@ -32,7 +36,33 @@ export const PRESENCE_MODES = Object.freeze(["on-demand", "always-on"]);
 export const KICK_ACTIONS = Object.freeze(["yield", "exit"]);
 
 /** The presence states. `account_state` maps them (./account-state.js). */
-export const PRESENCE_STATES = Object.freeze(["parked", "waking", "connected", "parking", "yielded", "stopped"]);
+export const PRESENCE_STATES = Object.freeze([
+    "parked",
+    "waking",
+    "connected",
+    "parking",
+    "yielded",
+    "signed-out",
+    "stopped",
+]);
+
+/** What a refused hold says, per state: the error code and the words a person reads. */
+export const REFUSALS = Object.freeze({
+    yielded: {
+        code: "YIELDED",
+        message:
+            "Another session of this login holds this account's socket (a second copy of these credentials, or a " +
+            "second tab of the same browser). Close it, then confirm with `zalo-agent presence resume --yes`, the " +
+            "admin API (POST /zalo/admin/presence/resume) or MCP (zalo_profile action presence_resume); nothing " +
+            "takes the account back on its own.",
+    },
+    "signed-out": {
+        code: "SIGNED_OUT",
+        message:
+            "Zalo refuses this account's saved login: another browser or device took the web login (a Zalo Web QR " +
+            "login elsewhere). Add the account again by QR (`zalo-agent login`, or the fleet controller's QR add).",
+    },
+});
 
 /** The shortest idle timeout a setting may ask for. */
 export const MIN_IDLE_TIMEOUT_MS = 30_000;
@@ -63,21 +93,24 @@ export const PRESENCE_DEFAULTS = Object.freeze({
 });
 
 /**
- * The hold kinds. `explicit`: an action someone asked for, which may wake a yielded socket. `metered`: its held time
- * is counted on its own (`waitHeldMs`).
+ * The hold kinds. `metered`: its held time is counted on its own (`waitHeldMs`). No kind wakes a yielded or signed-out
+ * socket: only `resume()` does (yielded), or a new login (signed out).
  */
 export const HOLD_KINDS = Object.freeze({
-    "always-on": { explicit: false },
-    tool: { explicit: true },
-    wait: { explicit: false, metered: true },
-    lease: { explicit: true },
-    channel: { explicit: true },
-    manual: { explicit: true },
-    stage: { explicit: false },
-    start: { explicit: false },
-    pulse: { explicit: false },
-    receipts: { explicit: false },
+    "always-on": {},
+    tool: {},
+    wait: { metered: true },
+    lease: {},
+    channel: {},
+    manual: {},
+    stage: {},
+    start: {},
+    pulse: {},
+    receipts: {},
 });
+
+/** A failed or aborted park is not tried again sooner than this (a host that cannot park now must not spin). */
+export const PARK_RETRY_MS = 15_000;
 
 const realClock = {
     now: () => Date.now(),
@@ -182,6 +215,12 @@ export function createPresence({
     let pulseTimer = null;
     let alwaysOnHold = null;
     let parkPromise = null;
+    // A park that failed or was aborted is not asked again before this time.
+    let parkRetryAt = 0;
+    // A wake's (or a reconnect's) catch-up has not reported done yet.
+    let catchUpPending = false;
+    // Callers waiting for the socket (waitReady), checked on every state change and catch-up.
+    const waiters = new Set();
     const meter = { connectedMs: 0, waitHeldMs: 0, wakes: 0, parks: 0, yields: 0 };
 
     const now = () => clock.now();
@@ -206,7 +245,18 @@ export function createPresence({
         } catch (e) {
             log(`presence: a state hook failed: ${e?.message ?? e}`);
         }
+        settleWaiters();
         schedule();
+    }
+
+    /** Whether the socket is up (and, when asked, its catch-up done). */
+    const isReady = (caughtUp) => state === "connected" && (!caughtUp || !catchUpPending);
+
+    function settleWaiters() {
+        for (const w of [...waiters]) {
+            if (isReady(w.caughtUp)) w.done(true);
+            else if (REFUSALS[state] || state === "stopped") w.done(false);
+        }
     }
 
     function clearIdle() {
@@ -219,7 +269,7 @@ export function createPresence({
         clearIdle();
         if (!started || holds.size > 0) return;
         if (state !== "connected" && state !== "waking") return;
-        let due = lastHoldEnd + effectiveIdleMs();
+        let due = Math.max(lastHoldEnd + effectiveIdleMs(), parkRetryAt);
         if (state === "connected" && connectedAt !== null) due = Math.max(due, connectedAt + cfg.minConnectedMs);
         idleTimer = clock.setTimeout(onIdle, Math.max(0, due - now()));
     }
@@ -227,7 +277,7 @@ export function createPresence({
     function onIdle() {
         idleTimer = null;
         if (holds.size > 0 || (state !== "connected" && state !== "waking")) return;
-        let due = lastHoldEnd + effectiveIdleMs();
+        let due = Math.max(lastHoldEnd + effectiveIdleMs(), parkRetryAt);
         if (state === "connected" && connectedAt !== null) due = Math.max(due, connectedAt + cfg.minConnectedMs);
         if (now() < due) return schedule();
         void park("idle");
@@ -247,8 +297,9 @@ export function createPresence({
                 ok = false;
             }
             parkPromise = null;
-            if (state !== "parking") return ok; // stopped, or yielded, meanwhile
+            if (state !== "parking") return ok; // stopped, yielded or signed out meanwhile
             if (!ok) {
+                parkRetryAt = now() + PARK_RETRY_MS;
                 setState(from === "connected" && socket === "connected" ? "connected" : "waking", {
                     reason: "aborted",
                 });
@@ -271,6 +322,7 @@ export function createPresence({
 
     function wake(why) {
         if (state !== "parked" && state !== "yielded") return false;
+        catchUpPending = true;
         pruneWakes();
         wakes.push(now());
         meter.wakes++;
@@ -322,16 +374,19 @@ export function createPresence({
     function hold(kind, { ttlMs = 0 } = {}) {
         if (!HOLD_KINDS[kind]) throw new Error(`unknown presence hold kind "${kind}"`);
         if (state === "stopped") return noop(kind);
+        // Yielded or signed out: nothing takes the account back on its own (owner decision 2026-11-08).
+        if (REFUSALS[state]) return { ...noop(kind), refused: REFUSALS[state].code };
         // A long-poll that does not hold the socket (a tier with waitHoldsSocket off) only waits for the next connect.
         if (kind === "wait" && !cfg.waitHoldsSocket) return noop(kind);
+        return openHold(kind, ttlMs);
+    }
+
+    function openHold(kind, ttlMs) {
         const h = { id: nextHoldId++, kind, openedAt: now(), expiresAt: null, timer: null };
         holds.set(h.id, h);
         armExpiry(h, ttlMs);
         clearIdle();
-        if (started) {
-            if (state === "parked") wake(kind);
-            else if (state === "yielded" && HOLD_KINDS[kind].explicit) wake(kind);
-        }
+        if (started && state === "parked") wake(kind);
         return {
             id: h.id,
             kind,
@@ -420,6 +475,7 @@ export function createPresence({
             if (["connecting", "retrying", "offline", "maintenance", "session-invalid"].includes(s)) {
                 if (state === "connected") {
                     wakeStartedAt = now();
+                    catchUpPending = true;
                     setState("waking", { socket: s });
                 }
             }
@@ -428,7 +484,89 @@ export function createPresence({
         /** The catch-up after a handshake is done: the start-up and pulse holds end. */
         noteCatchUpDone({ ms } = {}) {
             if (typeof ms === "number") lastCatchUpMs = ms;
+            catchUpPending = false;
             releaseKinds(["start", "pulse"]);
+            settleWaiters();
+        },
+
+        /**
+         * Wait until the socket is up (and its catch-up done, with `caughtUp`), at most `timeoutMs`.
+         *
+         * @param {{timeoutMs?: number, caughtUp?: boolean}} [o]
+         * @returns {Promise<boolean>} whether it is ready
+         */
+        waitReady({ timeoutMs = cfg.warmWaitMs, caughtUp = false } = {}) {
+            if (isReady(caughtUp)) return Promise.resolve(true);
+            if (REFUSALS[state] || state === "stopped" || !(timeoutMs > 0)) return Promise.resolve(false);
+            return new Promise((resolve) => {
+                const w = {
+                    caughtUp,
+                    timer: null,
+                    done: (ready) => {
+                        if (!waiters.delete(w)) return;
+                        clock.clearTimeout(w.timer);
+                        resolve(ready);
+                    },
+                };
+                waiters.add(w);
+                w.timer = clock.setTimeout(() => w.done(isReady(caughtUp)), timeoutMs);
+            });
+        },
+
+        /** Whether the last wake's catch-up is still running. */
+        get catchingUp() {
+            return catchUpPending;
+        },
+
+        /**
+         * Why a hold would be refused now: `{code, message, state}` while yielded (`YIELDED`) or signed out
+         * (`SIGNED_OUT`), else null.
+         *
+         * @returns {{code: string, message: string, state: string}|null}
+         */
+        refusal() {
+            return REFUSALS[state] ? { ...REFUSALS[state], state } : null;
+        },
+
+        /**
+         * The user confirmed the other session is closed: take the account back, with a short manual hold so it parks
+         * again after the idle timeout when nothing else needs it. Only from `yielded`.
+         *
+         * @param {{ttlMs?: number}} [o]
+         * @returns {{resumed: boolean, state: string, reason?: string}}
+         */
+        resume({ ttlMs = cfg.minConnectedMs || 60_000 } = {}) {
+            if (state !== "yielded") {
+                return {
+                    resumed: false,
+                    state,
+                    reason:
+                        state === "signed-out"
+                            ? REFUSALS["signed-out"].message
+                            : "the account is not yielded: there is nothing to resume",
+                };
+            }
+            log("presence: resumed on the user's confirmation");
+            openHold("manual", ttlMs);
+            wake("resume");
+            return { resumed: true, state };
+        },
+
+        /**
+         * Zalo refuses the saved login: every hold ends, nothing retries, and every new hold is refused until a new
+         * login (the daemon stays up).
+         */
+        noteSignedOut() {
+            if (state === "stopped" || state === "signed-out") return;
+            clearIdle();
+            if (pulseTimer) clock.clearTimeout(pulseTimer);
+            pulseTimer = null;
+            for (const h of holds.values()) if (h.timer) clock.clearTimeout(h.timer);
+            holds.clear();
+            alwaysOnHold = null;
+            catchUpPending = false;
+            setState("signed-out", { reason: "login refused" });
+            log("presence: signed out (Zalo refuses the saved login); waiting for a new login");
         },
 
         /**
@@ -441,10 +579,11 @@ export function createPresence({
             if (cfg.mode !== "on-demand" || cfg.onKick !== "yield" || state === "stopped") return "exit";
             meter.yields++;
             yieldedAt = now();
-            // Background holds do not bring a yielded socket back; they end here.
+            // Background holds end here; the rest stay open but wake nothing until a resume.
             releaseKinds(["start", "pulse", "stage", "receipts"]);
+            catchUpPending = false;
             setState("yielded", { reason: "kicked" });
-            log("presence: another session took the account; yielded until someone asks for the socket");
+            log("presence: another session took the account; yielded until the user confirms a resume");
             return "yield";
         },
 
@@ -461,7 +600,7 @@ export function createPresence({
         /** Wake now (a manual override): a short manual hold, released after the idle timeout's own clock. */
         wakeNow({ ttlMs = cfg.minConnectedMs || 60_000 } = {}) {
             const h = hold("manual", { ttlMs });
-            return { woke: state === "waking", hold: h };
+            return { woke: state === "waking", hold: h, ...(h.refused ? { refused: h.refused } : {}) };
         },
 
         /**
@@ -473,7 +612,7 @@ export function createPresence({
         update(next) {
             const before = cfg.mode;
             cfg = normalizePresenceSettings({ ...cfg, ...next });
-            if (started) {
+            if (started && state !== "signed-out" && state !== "stopped") {
                 applyMode();
                 if (before !== cfg.mode) log(`presence: mode ${before} -> ${cfg.mode}`);
                 armPulse(true);
@@ -489,6 +628,7 @@ export function createPresence({
             for (const h of holds.values()) if (h.timer) clock.clearTimeout(h.timer);
             holds.clear();
             setState("stopped");
+            for (const w of [...waiters]) w.done(false);
         },
 
         /** @returns {string} */
@@ -528,6 +668,7 @@ export function createPresence({
                 wakesLastHour: wakes.length,
                 parkedAt: state === "parked" && parkedAt !== null ? new Date(parkedAt).toISOString() : null,
                 yieldedAt: yieldedAt === null ? null : new Date(yieldedAt).toISOString(),
+                catchUp: catchUpPending,
                 lastWakeMs,
                 lastCatchUpMs,
                 meter: {

@@ -43,20 +43,21 @@ describe("listen: a reconnect must file a coverage gap", () => {
             /if \(reconnectCount > 0\)[\s\S]{0,900}reportGap/,
             "gap reporting must be driven by observed socket state, not by which handler ran",
         );
-        assert.match(connectedHandler, /downSince/, "the connected handler must consult observed down state");
-        assert.match(connectedHandler, /reportGap\(\s*downSince/, "the gap must span from when the socket went down");
+        // The shared tracker (src/core/listener-lifecycle.js) files the outage from when it went down, then claims
+        // coverage: the same bookkeeping `mcp start` runs, so the two cannot drift apart.
+        assert.match(connectedHandler, /lifecycle\.noteUp\(\)/, "the connected handler must go through the tracker");
     });
 
     it("marks the socket down in the path that takes it down", () => {
         // Every drop reaches us as `disconnected`: the socket supervisor does the
         // retrying, so there is no `closed` path any more (a rule below keeps it
         // that way). It must record the start of the outage or the gap is filed
-        // from null.
+        // from null; the tracker keeps the first drop (first drop wins).
         for (const handler of ["disconnected"]) {
             const body = listen.slice(listen.indexOf(`listener.on("${handler}"`));
             assert.match(
-                body.slice(0, 900),
-                /downSince === null\) \{?\s*downSince = Date\.now\(\)/,
+                body.slice(0, 1200),
+                /lifecycle\.noteDown\(\)/,
                 `the ${handler} handler must record when the outage started`,
             );
         }
@@ -66,15 +67,12 @@ describe("listen: a reconnect must file a coverage gap", () => {
         // markConnected() means "coverage is good up to now". On a bare timer it
         // kept advancing lastConnectedAt through the outage, so a crash mid-drop
         // made the NEXT launch compute its startup-gap from a moment we were not
-        // connected — and the outage disappeared.
+        // connected — and the outage disappeared. The tracker's heartbeat skips while down or parked.
         const heartbeat = listen.slice(listen.indexOf("function heartbeat()"));
-        assert.match(
-            // Generous window: the explanation above the guard is long, and a
-            // slice that clips it would fail for the wrong reason.
-            heartbeat.slice(0, 1400),
-            /if \(downSince !== null\) return;/,
-            "heartbeat must not stamp connected while down",
-        );
+        assert.match(heartbeat.slice(0, 400), /lifecycle\.heartbeat\(\)/, "heartbeat goes through the tracker");
+        const lib = read("core/listener-lifecycle.js");
+        const beat = lib.slice(lib.indexOf("heartbeat() {"));
+        assert.match(beat.slice(0, 300), /if \(stopping \|\| downSince !== null \|\| parkedAt !== null\) return;/);
     });
 });
 
@@ -134,6 +132,17 @@ describe("msg history must not open a second web session", () => {
 
 describe("listen and mcp start must track coverage the same way", () => {
     const mcp = readFileSync(join(SRC, "commands", "mcp.js"), "utf8");
+
+    it("both keep coverage through the one gap tracker, with the park stamp", () => {
+        for (const [name, src] of [
+            ["listen.js", listen],
+            ["mcp.js", mcp],
+        ]) {
+            assert.match(src, /createGapTracker\(\{[^}]*setState: setSyncState/, `${name} must stamp the park`);
+            assert.match(src, /startupGapReason\(/, `${name} must name a start-up gap that ended in a park`);
+            assert.match(src, /createDaemonPresence\(/, `${name} must run presence`);
+        }
+    });
 
     it("both construct a SyncManager", () => {
         // They are two entry points to the SAME socket, so an asymmetry is a
@@ -236,7 +245,8 @@ describe("listen and mcp start: the socket host keeps the socket alive", () => {
             ["mcp.js", mcp],
         ]) {
             assert.match(src, /createSocketHost\(/, `${name} must build the socket host`);
-            assert.match(src, /socketHost\.start\(api\)/, `${name} must start the socket through the host`);
+            // Through presence (src/core/daemon-presence.js): the host adopts the session, presence opens the socket.
+            assert.match(src, /daemonPresence\.start\(api\)/, `${name} must start the socket through presence`);
             const stopAt = src.indexOf("socketHost.stop()");
             const listenerStopAt = src.indexOf("getApi().listener.stop()");
             assert.ok(stopAt > 0 && listenerStopAt > stopAt, `${name} must stop the supervisor before the listener`);

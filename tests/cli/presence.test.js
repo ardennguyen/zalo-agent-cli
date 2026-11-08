@@ -1,6 +1,7 @@
 /**
  * The `presence` group driven as the binary, with no daemon: `status` says nothing holds the socket, `wake` and
- * `park` exit 1 and open nothing themselves (the CLI never opens a socket; AGENTS.md section 13).
+ * `park` exit 1 and open nothing themselves (the CLI never opens a socket; AGENTS.md section 13); `resume` is
+ * guarded (exit 2 without --yes).
  */
 import { SANDBOX_HOME, assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
@@ -28,6 +29,18 @@ describe("presence", () => {
         const r = await runCli(["--json", "presence", "status"], options);
         assert.equal(r.code, 0, r.all);
         assert.deepEqual(JSON.parse(stripAnsi(r.stdout)), { accountId: OWN, running: false });
+    });
+
+    it("resume is guarded: without --yes nothing is asked of the daemon (exit 2); --dry-run says what it would do", async () => {
+        const bare = await runCli(["presence", "resume"], options);
+        assert.equal(bare.code, 2, bare.all);
+        assert.match(bare.all, /take account 5353 back from the other session/);
+        const dry = await runCli(["--json", "presence", "resume", "--dry-run"], options);
+        assert.equal(dry.code, 0, dry.all);
+        assert.equal(JSON.parse(stripAnsi(dry.stdout)).action, "presence resume");
+        const yes = await runCli(["presence", "resume", "--yes"], options);
+        assert.equal(yes.code, 1, yes.all);
+        assert.match(yes.all, /No daemon runs/);
     });
 
     it("wake and park with no daemon exit 1 and say a daemon is needed", async () => {

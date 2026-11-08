@@ -195,6 +195,8 @@ const uncoveredReason = (reason, cause = null) =>
  *   log, webhook and MCP buffer
  * @param {object} [args.groupRepair] - options for ./overflow-repair.js `repairGroupsFromCloud` (tests: its seams);
  *   `false` turns the group repair off
+ * @param {(done: {reason: string, ms: number, result: object|null}) => void} [args.onRun] - a catch-up (one run, with
+ *   the runs folded into it) finished: on-demand presence ends its start-up and pulse holds here
  * @returns {{attach: (listener: object) => void, run: (reason?: string) => Promise<object>,
  *   settled: () => Promise<void>, noteDelivered: (msg: object) => void,
  *   isRepeatedRepush: (msg: object) => boolean,
@@ -215,6 +217,7 @@ export function createSelfHeal({
     deviceSince = null,
     onNotice = () => {},
     groupRepair = {},
+    onRun = () => {},
 } = {}) {
     const cursors = new Map();
     // Tells Zalo which queue items are safely stored (Y10). Nothing is handed to it before the commit.
@@ -803,6 +806,7 @@ export function createSelfHeal({
             again = true;
             return;
         }
+        const startedAt = now();
         running = (async () => {
             try {
                 let why = reason;
@@ -815,6 +819,11 @@ export function createSelfHeal({
                 say(`failed: ${e?.message || e}`);
             } finally {
                 running = null;
+                try {
+                    onRun({ reason, ms: now() - startedAt, result: lastResult ?? null });
+                } catch {
+                    /* a hook failure is not the catch-up's */
+                }
             }
         })();
     }

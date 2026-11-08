@@ -115,6 +115,7 @@ import { resolveHiddenChats, resolveMediaDelivery } from "../core/deploy-policy.
 import { resolveCurrentUserNames, withCurrentSenderNames } from "../core/current-user-names.js";
 import { aliasFor, noteAliasSet, personNameFields, senderNameFields } from "../core/contact-names.js";
 import { actionTool, confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
+import { gateToolsByPresence } from "./tool-presence.js";
 import { BIN_TO_DISPLAY, generateQrTransferImage, qrTransferCaption, resolveBankBin } from "../utils/bank-helpers.js";
 import { CONVERSATION_ACTIONS, CONVERSATION_META } from "./actions-conversation.js";
 import { PROFILE_ACTIONS, PROFILE_META } from "./actions-profile.js";
@@ -628,9 +629,24 @@ const SYSTEM_EVENTS_NOTE =
  * @param {ReturnType<import("../core/daemon-channel.js").createStageLock>} [stageLock] - the
  *   daemon's one-stage-at-a-time lock; a server-side history fetch takes it, as `listen`'s does
  * @param {object} [syncJobs] - the daemon's account-local sync job tracker
+ * @param {{presence?: object|null}} [extras] - `presence`: the daemon's on-demand presence
+ *   (src/core/daemon-presence.js); every tool goes through it by its class (./tool-presence.js)
  */
-export function registerTools(server, api, buffer, filter, config, nameCache, accountDir, stageLock, syncJobs) {
+export function registerTools(
+    server,
+    api,
+    buffer,
+    filter,
+    config,
+    nameCache,
+    accountDir,
+    stageLock,
+    syncJobs,
+    extras = {},
+) {
     const maxPerPoll = config.limits?.maxMessagesPerPoll ?? 20;
+    // On-demand presence: refused while yielded or signed out, a hold per call, warming by the tool's class.
+    gateToolsByPresence(server, extras?.presence ?? null);
 
     // Several bots can share one listener, each with its own read cursor
     // (triage M7). A bot that names none reads as "default", as before.
@@ -707,6 +723,8 @@ export function registerTools(server, api, buffer, filter, config, nameCache, ac
         threadName: (id) => nameCache?.get?.(String(id))?.name ?? null,
         // zalo_profile 'usage': the media folder this server downloads into.
         mediaRoot: config.media?.downloadDir ?? null,
+        // zalo_profile 'presence_resume': the daemon's presence (null under a server that runs none).
+        presence: extras?.presence ?? null,
     };
     const friendExtra = actionTool("zalo_friend", FRIEND_EXTRA_ACTIONS, toolCtx);
     const groupExtra = actionTool("zalo_group", GROUP_EXTRA_ACTIONS, toolCtx);

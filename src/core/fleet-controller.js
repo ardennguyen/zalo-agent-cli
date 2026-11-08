@@ -11,6 +11,8 @@
  *     GET    /accounts                              every account: state, presence, user, port, pid
  *     POST   /accounts/<ownId>/start|stop|restart   drive its unit or process
  *     POST   /accounts/<ownId>/presence/wake|park   relayed to the daemon's channel (on-demand presence)
+ *     POST   /accounts/<ownId>/presence/resume      relayed: take the account back after a yield (the user closed the
+ *                                                   other session of this login; the admin's explicit confirmation)
  *     POST   /accounts/<ownId>/logout               guarded: 409 {confirmToken} first, then X-Confirm: <token>
  *     DELETE /accounts/<ownId>                      guarded the same way: stop, `account remove` (crypto-shred)
  *     GET    /events                                SSE: `account_state` for every account
@@ -213,7 +215,10 @@ export function createFleetController({
             send(res, 200, { supervisor: driver.kind, accounts: await accountsView() });
             return true;
         }
-        const m = /^\/accounts\/([^/]+)(?:\/(start|stop|restart|logout|presence\/wake|presence\/park))?$/.exec(path);
+        const m =
+            /^\/accounts\/([^/]+)(?:\/(start|stop|restart|logout|presence\/wake|presence\/park|presence\/resume))?$/.exec(
+                path,
+            );
         if (!m) return false;
         const ownId = decodeURIComponent(m[1]);
         if (!ACCOUNT_ID.test(ownId)) return (send(res, 400, { error: "not an account id" }), true);
@@ -259,10 +264,11 @@ export function createFleetController({
             });
             return true;
         }
-        if (action === "presence/wake" || action === "presence/park") {
+        if (action === "presence/wake" || action === "presence/park" || action === "presence/resume") {
+            if (action === "presence/resume") log(`[fleet] presence resume ${ownId} (${ctx.who} ${ctx.ip})`);
             const r = await relay(ownId, "/presence", { action: action.slice(9) });
             if (!r) return (send(res, 409, { error: "no daemon runs for this account" }), true);
-            if (!r.ok) return (send(res, 409, { error: r.error }), true);
+            if (!r.ok) return (send(res, 409, { error: r.error, ...(r.code ? { code: r.code } : {}) }), true);
             send(res, 200, r);
             return true;
         }

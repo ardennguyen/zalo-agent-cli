@@ -13,6 +13,7 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import {
     CATCH_UP_HOLD_MAX_MS,
     MAX_STRETCH_MS,
+    PARK_RETRY_MS,
     PRESENCE_DEFAULTS,
     createPresence,
     normalizePresenceSettings,
@@ -321,19 +322,104 @@ describe("presence: waits, metering, yield", () => {
         assert.equal(m.parks, 1);
     });
 
-    it("on-demand kick yields: background demand does not wake, an explicit action does", async () => {
-        const { p, host } = build({ idleTimeoutMs: 30_000, minConnectedMs: 0 });
+    it("on-demand kick yields: every hold is refused, only resume() takes the account back", async () => {
+        const { p, host, clock } = build({ idleTimeoutMs: 30_000, minConnectedMs: 0 });
         p.start();
         p.hold("tool").release();
         p.noteSocketState("connected");
         assert.equal(p.noteKicked(), "yield");
         assert.equal(p.state, "yielded");
-        p.hold("wait");
-        p.hold("pulse");
-        assert.equal(p.state, "yielded", "a wait or a pulse never takes the account back");
-        p.hold("tool");
+        for (const kind of ["tool", "lease", "channel", "manual", "wait", "pulse"]) {
+            const h = p.hold(kind);
+            assert.equal(h.held, false, `${kind} holds nothing while yielded`);
+            assert.equal(h.refused, "YIELDED", `${kind} is refused`);
+        }
+        assert.equal(p.wakeNow().refused, "YIELDED");
+        assert.equal(p.state, "yielded", "no request takes the account back");
+        assert.deepEqual(p.refusal()?.code, "YIELDED");
+        assert.match(p.refusal().message, /presence resume --yes/);
+        assert.deepEqual(host.calls, ["wake:tool"]);
+        await clock.advance(10 * MIN);
+        assert.equal(p.state, "yielded", "nor does time");
+        const r = p.resume();
+        assert.equal(r.resumed, true);
         assert.equal(p.state, "waking");
-        assert.deepEqual(host.calls, ["wake:tool", "wake:tool"]);
+        assert.deepEqual(host.calls, ["wake:tool", "wake:resume"]);
+        assert.equal(p.refusal(), null);
+        p.noteSocketState("connected");
+        assert.equal(p.hold("tool").held, true, "after the resume, requests are served again");
+    });
+
+    it("resume() is refused unless yielded", () => {
+        const { p } = build();
+        p.start();
+        assert.equal(p.resume().resumed, false);
+        p.noteSignedOut();
+        const r = p.resume();
+        assert.equal(r.resumed, false);
+        assert.match(r.reason, /QR/);
+    });
+
+    it("signed out: every hold ends and every new one is refused, for good; a policy change does not revive it", async () => {
+        const { p, clock, host } = build({ mode: "always-on" });
+        p.start();
+        p.noteSocketState("connected");
+        p.hold("lease", { ttlMs: 90_000 });
+        p.noteSignedOut();
+        assert.equal(p.state, "signed-out");
+        assert.deepEqual(p.snapshot().holds, {});
+        assert.equal(p.hold("tool").refused, "SIGNED_OUT");
+        assert.equal(p.refusal().code, "SIGNED_OUT");
+        p.update({ mode: "always-on" });
+        await clock.advance(60 * MIN);
+        assert.equal(p.state, "signed-out");
+        assert.deepEqual(host.calls, ["wake:always-on"]);
+        assert.equal(clock.pending(), 0, "no timer is left running");
+    });
+
+    it("waitReady: resolves on connect (and on the catch-up when asked), false after the timeout", async () => {
+        const { p, clock } = build({ idleTimeoutMs: 5 * MIN, warmWaitMs: 10_000 });
+        p.start();
+        p.hold("tool");
+        assert.equal(p.catchingUp, true);
+        const up = p.waitReady({ timeoutMs: 10_000 });
+        const caught = p.waitReady({ timeoutMs: 10_000, caughtUp: true });
+        p.noteSocketState("connected");
+        assert.equal(await up, true);
+        p.noteCatchUpDone({ ms: 1200 });
+        assert.equal(await caught, true);
+        assert.equal(p.snapshot().lastCatchUpMs, 1200);
+        assert.equal(p.snapshot().catchUp, false);
+        p.noteSocketState("retrying");
+        const late = p.waitReady({ timeoutMs: 10_000 });
+        await clock.advance(10_000);
+        assert.equal(await late, false);
+    });
+
+    it("a park that fails is not asked again before PARK_RETRY_MS (no spin)", async () => {
+        const clock = fakeClock();
+        let parks = 0;
+        const p = createPresence({
+            ownId: "1000000000000000902",
+            clock,
+            settings: { connectOnStart: false, idleTimeoutMs: 30_000, minConnectedMs: 0 },
+            host: {
+                wake: () => {},
+                park: async () => {
+                    parks++;
+                    return false;
+                },
+            },
+        });
+        p.start();
+        p.hold("tool").release();
+        p.noteSocketState("connected");
+        await clock.advance(30_000);
+        assert.equal(parks, 1);
+        await clock.advance(PARK_RETRY_MS - 1);
+        assert.equal(parks, 1, "not before the retry delay");
+        await clock.advance(1);
+        assert.equal(parks, 2);
     });
 
     it("always-on, or onKick exit, keeps the old answer: the daemon ends", () => {

@@ -112,11 +112,11 @@ Each of these reports success, or names the wrong cause. They were all learned t
 
 | Invariant | Current | Source of truth | How to check |
 |---|---|---|---|
-| CLI commands | **258** invokable leaves (226 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
+| CLI commands | **259** invokable leaves (227 personal + 32 OA) | the live commander tree | walk it (see below) — counting strings in `tests/cli/surface.test.js` gives the wrong answer |
 | Command groups | **30** containers — 21 top-level + 7 OA subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5735** as of 2026-11-09 (5726 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5785** as of 2026-11-09 (5776 pass, 9 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1091,7 +1091,11 @@ with no retry of its own); `src/zalo/retry.js` is the arithmetic of "when do I t
 other session, which reconnected and evicted this one: the flapping §13 describes, produced by the daemon itself.
 Now the duplicate frame (`cmd 3000`), a frame with `error_code 600` or an HTTP 600 puts the supervisor in a terminal
 `kicked` state; the daemon releases its lock and exits with code **3**, and only a person taking the account back
-(`takeover()`) leaves that state. A saved login that Zalo refuses three times in a row exits with code **4**. A
+(`takeover()`) leaves that state. A saved login that Zalo refuses three times in a row exits with code **4**. (3.0
+on-demand presence: an on-demand daemon **yields** on a kick instead of exiting and refuses every request with
+`YIELDED` until the user confirms `presence resume` (owner decision 2026-11-08: no automatic take-back); a refused
+login leaves either kind of daemon up as `signed_out`, refusing with `SIGNED_OUT`, because Zalo keeps one web login
+per account and a Zalo Web QR login elsewhere is what revokes ours; `ZALO_EXIT_ON_SIGNED_OUT=1` keeps exit 4.) A
 login that fails for lack of a network is asked again, slowly, for as long as it takes. The shipped systemd unit
 has `RestartPreventExitStatus=3 4`, so neither is restarted into the same state.
 

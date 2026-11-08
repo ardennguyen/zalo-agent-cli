@@ -5,7 +5,7 @@
  * ./policy-layer.js). Presence keys are live: a daemon reads them again on a policy change.
  *
  * The role decides first: a process whose only consumer is its own stdout (stdio MCP, a foreground `listen` printing
- * events) is always-on whatever the settings say. `listen` and `mcp start` both resolve through here (WP3).
+ * events) is always-on whatever the settings say. `listen` and `mcp start` both resolve through here (./daemon-presence.js).
  */
 import { durationMs } from "./deploy-policy.js";
 import { policyFor } from "./policy-layer.js";

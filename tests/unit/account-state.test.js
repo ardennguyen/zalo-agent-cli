@@ -128,21 +128,28 @@ describe("idle is never down", () => {
 });
 
 describe("both daemons wire account_state the same way (symmetry)", () => {
+    const shared = readFileSync(join(SRC, "core/daemon-presence.js"), "utf8");
+    it("the shared presence wiring hands every supervisor state but a kick to the tracker", () => {
+        assert.match(shared, /if \(state !== "kicked"\) accountState\?\.noteSocketState\?\.\(state\)/);
+        assert.match(shared, /accountState\?\.note\?\.\("yielded"/);
+        assert.match(shared, /accountState\?\.note\?\.\("signed_out"/);
+    });
     for (const file of ["commands/mcp.js", "commands/listen.js"]) {
         const src = readFileSync(join(SRC, file), "utf8");
         it(`${file}: the tracker sees every supervisor state and the kick is said before exit 3`, () => {
             assert.match(src, /createAccountStateTracker\(/);
-            assert.match(src, /accountState\.noteSocketState\(state\)/);
+            assert.match(src, /noteSocketState: \(state\) => daemonPresence\.noteSocketState\(state\)/);
             assert.match(src, /health\.setSource\("accountState", \(\) => accountState\.current\(\)\)/);
             const kicked = src.slice(src.indexOf("onKicked: () => {"));
             const note = kicked.indexOf('accountState.note("kicked"');
             const exit = kicked.indexOf("process.exit(EXIT_CODE.KICKED)");
             assert.ok(note > 0 && exit > note, "the kicked event precedes exit 3");
+            // A refused login signs out and keeps the daemon up; exit 4 (after login_needed) only when opted out.
             const revoked = src.slice(src.indexOf("onRevoked: (e) => {"));
-            assert.ok(
-                revoked.indexOf('accountState.note("login_needed"') <
-                    revoked.indexOf("process.exit(EXIT_CODE.SESSION_REVOKED)"),
-            );
+            const signOut = revoked.indexOf("if (daemonPresence.signOut(e)) return;");
+            const note4 = revoked.indexOf('accountState.note("login_needed"');
+            const exit4 = revoked.indexOf("process.exit(EXIT_CODE.SESSION_REVOKED)");
+            assert.ok(signOut > 0 && note4 > signOut && exit4 > note4);
         });
     }
 });

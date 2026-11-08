@@ -61,9 +61,26 @@ import { resolveConfirmMode } from "../core/confirm-guard.js";
 import { getSecurePage } from "../core/secure-page.js";
 import { getQrPage } from "../utils/qr-http-server.js";
 import { readControls } from "../zalo/queues/control-queue.js";
-import { dbUsedBytes, initDb, getMessageById, getPendingSyncGaps, getThreadNames } from "../core/db.js";
+import {
+    clearSyncState,
+    dbUsedBytes,
+    initDb,
+    getMessageById,
+    getPendingSyncGaps,
+    getSyncState,
+    getThreadNames,
+    setSyncState,
+} from "../core/db.js";
 import { SyncManager } from "../core/sync.js";
-import { alarmingGapCount, createGapTracker, HEARTBEAT_MS } from "../core/listener-lifecycle.js";
+import {
+    alarmingGapCount,
+    createGapTracker,
+    HEARTBEAT_MS,
+    IDLE_GAP_REASON,
+    PARKED_AT_KEY,
+    startupGapReason,
+} from "../core/listener-lifecycle.js";
+import { createDaemonPresence, presenceTransport, resolveDaemonPresence } from "../core/daemon-presence.js";
 import { accountStateSystemEvent, createAccountStateTracker, describeAccountState } from "../core/account-state.js";
 import {
     storeLiveMessage,
@@ -497,6 +514,18 @@ export function registerMCPCommands(program) {
             const effectiveHttpPort =
                 opts.http ?? envForAccount("ZALO_MCP_HTTP_PORT", activeAcc.ownId) ?? config?.httpPort ?? null;
 
+            // On-demand presence (src/core/daemon-presence.js): stdio MCP is always-on, --http follows the settings.
+            // On-demand without the self-heal would lose what arrives while parked, so that pair is refused here,
+            // before anything logs in (and before a background daemon is spawned).
+            const presenceRole = presenceTransport({ command: "mcp", http: Boolean(effectiveHttpPort) });
+            const presenceCheck = resolveDaemonPresence({
+                config,
+                ownId: activeAcc.ownId,
+                transport: presenceRole,
+                selfHeal: opts.selfHeal !== false,
+            });
+            if (presenceCheck.problem) failStart(`Refusing to start: ${presenceCheck.problem}`);
+
             // One public address for the MCP endpoint, the OAuth issuer and every link this server hands out
             // (src/core/deploy-policy.js); --issuer-url, ZALO_MCP_ISSUER_URL and oauth.issuerUrl are its 2.x names.
             // Only the HTTP transport uses it; a value that cannot be used is refused here, before a daemon is spawned.
@@ -786,6 +815,24 @@ export function registerMCPCommands(program) {
                     "The Zalo session is logging in again after a dropped connection; try again in a few seconds.",
             });
 
+            // On-demand presence (src/core/daemon-presence.js), built below once the socket's parts exist. The tools,
+            // /events/wait and the CRM leases reach it through these doors, which the servers take now.
+            let daemonPresence = null;
+            const presenceDoor = {
+                admit: (o) =>
+                    daemonPresence ? daemonPresence.admit(o) : Promise.resolve({ release: () => {}, warming: null }),
+                serve: (p) =>
+                    daemonPresence
+                        ? daemonPresence.serve(p)
+                        : Promise.reject(new Error("presence is not running yet; try again in a moment")),
+            };
+            const leaseDoor = {
+                handle: (req, res) =>
+                    daemonPresence
+                        ? daemonPresence.leaseRoutes.handle(req, res)
+                        : res.status(503).json({ error: "the server is starting; try again in a moment" }),
+            };
+
             // Start MCP server — stdio (default) or HTTP/HTTPS
             // What this daemon can say about itself: /health, /ready, /status and /metrics over HTTP, and
             // `mcp start --status` over the loopback channel (src/core/daemon-health.js). The sources that do not
@@ -799,6 +846,7 @@ export function registerMCPCommands(program) {
             health.setSource("gaps", () => alarmingGapCount(getPendingSyncGaps()));
             health.setSource("stage", () => stageLock.current());
             health.setSource("session", () => sessionExpiryFor(activeAcc.ownId));
+            health.setSource("presence", () => daemonPresence?.snapshot() ?? null);
             const sessionLine = describeSessionExpiry(sessionExpiryFor(activeAcc.ownId));
             if (sessionLine) console.error(`[mcp] ${sessionLine}`);
 
@@ -866,6 +914,8 @@ export function registerMCPCommands(program) {
                             const st = describeStorage(id);
                             return { quota: st.quota, retention: st.retention };
                         },
+                        // GET /zalo/admin/presence, POST /zalo/admin/presence/resume (after a yield).
+                        presence: presenceDoor,
                         log: (l) => console.error(`[mcp] ${l}`),
                     });
                     if (admin.enabled())
@@ -888,6 +938,8 @@ export function registerMCPCommands(program) {
                         hiddenEvents,
                         mediaLinks,
                         trustedProxies,
+                        presence: presenceDoor,
+                        leases: leaseDoor,
                     };
                     const authToken =
                         opts.auth?.trim() ||
@@ -964,6 +1016,7 @@ export function registerMCPCommands(program) {
                         accountDir,
                         stageLock,
                         syncJobs,
+                        { presence: presenceDoor },
                     );
                 }
             } catch (e) {
@@ -1056,7 +1109,7 @@ export function registerMCPCommands(program) {
                 purgeOutboxDead: (cutoff) => purgeDeadDeliveries(accountDir, cutoff),
             });
             // account_state (src/core/account-state.js): one word per change, to the webhook, the live buffer and
-            // /status, the same as `listen`. WP3 wiring point: detail.presence becomes the resolved mode.
+            // /status, the same as `listen`; detail.presence is the mode presence runs in.
             const accountState = createAccountStateTracker({
                 accountId: activeAcc.ownId,
                 emit: (event) => {
@@ -1064,7 +1117,7 @@ export function registerMCPCommands(program) {
                     webhookDelivery?.enqueue(null, event);
                     buffer.pushSystem(accountStateSystemEvent(event));
                 },
-                detail: () => ({ presence: "always-on" }),
+                detail: () => daemonPresence?.detail() ?? { presence: presenceCheck.settings.mode },
             });
             health.setSource("accountState", () => accountState.current());
             // A policy change (admin API, `policy set`, a file drop) counts from the next tool call: the per-call readers
@@ -1111,6 +1164,8 @@ export function registerMCPCommands(program) {
                         notify: webhookDelivery ? (payload) => webhookDelivery?.enqueue(null, payload) : null,
                     });
                 }
+                // presence.*: live (a switch to always-on holds the socket now; one to on-demand starts the idle clock).
+                daemonPresence?.applyPolicy(changed);
             };
             /**
              * Queue one buffered message for the webhook, in the shape `postMCPWebhook` always sent; a message in a
@@ -1176,6 +1231,11 @@ export function registerMCPCommands(program) {
                 const gapId = syncManager.recordGap(fromTs, Date.now(), reason);
                 if (!gapId) return false;
                 const since = new Date(fromTs).toISOString();
+                // A parked window (on-demand presence) is planned: one quiet line, the self-heal closes it.
+                if (reason === IDLE_GAP_REASON) {
+                    console.error(`[mcp] Parked since ${since}: catching up from Zalo's offline queue`);
+                    return true;
+                }
                 console.error(
                     opts.selfHeal !== false
                         ? `[mcp] Coverage gap (${reason}) since ${since}: recovering it now from Zalo's offline ` +
@@ -1186,11 +1246,23 @@ export function registerMCPCommands(program) {
                 );
                 return true;
             };
-            const lifecycle = createGapTracker({ syncManager, reportGap });
+            const lifecycle = createGapTracker({
+                syncManager,
+                reportGap,
+                setState: setSyncState,
+                deleteState: clearSyncState,
+            });
 
             // Same startup check `listen` does: a window between the last
             // recorded connection and now is unobserved until something says so.
-            if (!reportGap(syncManager.getLastConnectedAt(), "startup-gap")) {
+            // One that ended in a park (a stop or crash while parked) is a planned window.
+            const lastConnectedAt = syncManager.getLastConnectedAt();
+            const parkedStamp = Number(getSyncState(PARKED_AT_KEY)) || null;
+            const startupReason = parkedStamp
+                ? startupGapReason({ lastConnectedAt, parkedAt: parkedStamp })
+                : "startup-gap";
+            if (parkedStamp) clearSyncState(PARKED_AT_KEY);
+            if (!reportGap(lastConnectedAt, startupReason)) {
                 syncManager.markConnected();
             }
             const pending = getPendingSyncGaps();
@@ -1203,6 +1275,41 @@ export function registerMCPCommands(program) {
                 );
             }
             const mcpHeartbeatTimer = setInterval(() => lifecycle.heartbeat(), HEARTBEAT_MS);
+
+            // On-demand presence: when this daemon holds the account's socket (src/core/daemon-presence.js, shared
+            // with `listen`). Built before the socket host, which it drives through park/wake.
+            try {
+                daemonPresence = createDaemonPresence({
+                    ownId: activeAcc.ownId,
+                    config,
+                    transport: presenceRole,
+                    selfHeal: opts.selfHeal !== false,
+                    configDir: CONFIG_DIR,
+                    log: (line) => console.error(`[mcp] ${line}`),
+                    getSocketHost: () => socketHost,
+                    stageLock,
+                    deliveredReceipts,
+                    lifecycle,
+                    health,
+                    accountState,
+                    coveredUntil: () => syncManager.getLastConnectedAt(),
+                });
+            } catch (e) {
+                dropLock();
+                console.error(`[mcp] Refusing to start: ${e.message}`);
+                process.exit(1);
+            }
+            {
+                const p = daemonPresence.settings;
+                console.error(
+                    `[mcp] Presence: ${p.mode}${daemonPresence.forced ? ` (${daemonPresence.forced})` : ""}` +
+                        (p.mode === "on-demand"
+                            ? `: parks after ${Math.round(p.idleTimeoutMs / 1000)}s with no demand, ` +
+                              `never within ${Math.round(p.minConnectedMs / 1000)}s of a connect` +
+                              `${p.connectOnStart ? "; catches up once at start" : ""}`
+                            : ""),
+                );
+            }
 
             // The same catch-up `listen` runs (AGENTS.md §13): one stage at a
             // time on this socket, a raw reader for the fields the listener's events drop, and
@@ -1263,6 +1370,8 @@ export function registerMCPCommands(program) {
                 log: (line) => console.error(`[mcp] ${line}`),
                 // Coverage never spans a device change (src/core/device-since.js). Same in `listen`.
                 deviceSince: () => deviceSinceOf(activeAcc.ownId, getApi()),
+                // A catch-up finished: on-demand presence ends its start-up and pulse holds. Same in `listen`.
+                onRun: ({ ms }) => daemonPresence?.noteCatchUpDone({ ms }),
                 // Zalo dropped part of a queue: the log, the webhook and the live buffer, like the other notices.
                 onNotice: (event) => {
                     console.error(`[mcp] ${describeQueueOverflow(event)}`);
@@ -1460,6 +1569,7 @@ export function registerMCPCommands(program) {
                 // for a window nothing was missed in.
                 lifecycle.setStopping();
                 health.noteStopping();
+                daemonPresence?.stop();
                 clearInterval(mcpHeartbeatTimer);
                 deliveredReceipts.stop();
                 const receipts = deliveredReceipts.stats();
@@ -1491,12 +1601,12 @@ export function registerMCPCommands(program) {
             // The one place that keeps the socket alive, shared with `listen`.
             const socketHost = createSocketHost({
                 log: (_level, message) => console.error(`[mcp] ${message}`),
-                health: {
-                    noteSocketState: (state) => {
-                        health.noteSocketState(state);
-                        accountState.noteSocketState(state);
-                    },
-                },
+                // The supervisor's states reach presence, health and account_state through one place.
+                health: { noteSocketState: (state) => daemonPresence.noteSocketState(state) },
+                // On-demand: a kick by another session of this login yields (the daemon stays up, refusing requests
+                // until `presence resume`); a park marks its close as planned before the supervisor stops.
+                yieldOnKick: () => daemonPresence.yieldOnKick(),
+                onParking: () => daemonPresence.onParking(),
                 isStopping: () => lifecycle.isStopping(),
                 anomalyFile: join(accountDir, "sock-anomaly.json"),
                 kickFile: kickFile(accountDir),
@@ -1516,11 +1626,15 @@ export function registerMCPCommands(program) {
                     process.exit(EXIT_CODE.KICKED);
                 },
                 onRevoked: (e) => {
-                    accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
                     mediaLinks.revokeAll("the session ended");
                     console.error(
-                        `[mcp] Zalo keeps refusing the saved login (${e?.message ?? e}). Run \`zalo-agent login\` again.`,
+                        `[mcp] Zalo keeps refusing the saved login (${e?.message ?? e}): another browser or device ` +
+                            "took the web login. Add the account again by QR (`zalo-agent login`).",
                     );
+                    // Signed out: the daemon stays up (status, API, a QR re-add) and refuses requests; exit 4 only with
+                    // ZALO_EXIT_ON_SIGNED_OUT=1.
+                    if (daemonPresence.signOut(e)) return;
+                    accountState.note("login_needed", { exitCode: EXIT_CODE.SESSION_REVOKED });
                     dropLock();
                     process.exit(EXIT_CODE.SESSION_REVOKED);
                 },
@@ -1530,7 +1644,9 @@ export function registerMCPCommands(program) {
             try {
                 const api = getApi();
                 attachListenerHandlers(api);
-                socketHost.start(api);
+                // The host takes the session; presence opens the socket now (always-on, the start-up catch-up) or
+                // on the first demand.
+                daemonPresence.start(api);
                 console.error("[mcp] Zalo listener started. MCP server ready.");
                 // This process holds the account's one permitted socket, so it
                 // performs the work that needs one on behalf of the CLI:
@@ -1554,6 +1670,10 @@ export function registerMCPCommands(program) {
                         onPolicy: servePolicyRequest,
                         // `db purge`: this daemon is the account's one writer, so the purge runs here.
                         onPurge: ({ dryRun }) => ({ report: storageJobs.runNow({ dryRun: dryRun !== false }) }),
+                        // `presence status|wake|park|resume`, and the fleet controller's relay.
+                        onPresence: (p) => daemonPresence.serve(p),
+                        // An upload, a sync stage, a wait: each holds the socket (refused while yielded or signed out).
+                        presenceGate: (o) => daemonPresence.admit(o),
                         // `msg media --deliver link`: a link this daemon serves (on its HTTP port, or 127.0.0.1).
                         onMediaLink: ({ msgId }) =>
                             linkForCachedMessage({

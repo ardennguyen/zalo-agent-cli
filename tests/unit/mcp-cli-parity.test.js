@@ -28,6 +28,7 @@ const MCP_FOR = {
     whoami: ["zalo_lookup_user"],
     "msg search": ["zalo_search_messages"],
     "msg send": ["zalo_send_message"],
+    "presence resume": ["zalo_profile", "presence_resume"],
     "msg send-image": ["zalo_send_message"],
     "msg send-file": ["zalo_send_message"],
     "msg send-card": ["zalo_send_message"],

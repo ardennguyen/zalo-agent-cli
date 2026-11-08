@@ -201,7 +201,7 @@ Full checklist, including the wrapper and wiki steps after an engine release: **
 
 ### Numbers quoted across many docs
 
-CLI commands (**258**), command groups (**31** containers), MCP tools (**36**), OA commands (**32**), offline tests (**5735** as of 2026-11-09). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
+CLI commands (**259**), command groups (**31** containers), MCP tools (**36**), OA commands (**32**), offline tests (**5785** as of 2026-11-09). Changing the code behind one means changing every doc that quotes it. **Re-measure with `node scripts/count-surface.mjs`; never trust a written number** — method and pitfalls: [`docs/agent-notes.md`](docs/agent-notes.md).
 
 **Every MCP tool list must match `src/mcp/mcp-tools.js`**: `zalo_get_messages`, `zalo_send_message`, `zalo_list_threads`, `zalo_search_threads`, `zalo_mark_read`, `zalo_get_history`, `zalo_view_media`, `zalo_react`, `zalo_undo`, `zalo_get_group_members`, `zalo_list_conversations`, `zalo_coverage`, `zalo_sync`, `zalo_sync_status`, `zalo_search_messages`, `zalo_lookup_user`, `zalo_forward_message`, `zalo_delete_message`, `zalo_reminder`, `zalo_note`, `zalo_poll`, `zalo_wait_for_message`, `zalo_label`, `zalo_friend`, `zalo_group`, `zalo_read`, `zalo_write`, `zalo_conversation`, `zalo_profile`, `zalo_auto_reply`, `zalo_quick_message`, `zalo_catalog`, `zalo_bank`, `zalo_cloud`, `zalo_sticker`, `zalo_link`.
 
@@ -259,7 +259,7 @@ Every entry here has its diagnosis, measurements and recovery steps in [`docs/ag
 
 - **MCP names are one vocabulary.** One concept, one name in every tool input and reply (`msgId`, `userId`, `senderId`, `threadId`, `cliMsgId`); the table is in `docs/agent-notes.md`, `tests/unit/mcp-naming.test.js` enforces it.
 - **Never run `zalo-agent login` from an elevated shell**: admin-owned credentials make `logout --purge` and `account remove` fail with `EPERM`.
-- **A kick is terminal, and the socket supervisor owns every retry.** `src/zalo/socket.js` and `src/core/socket-host.js` keep the socket by Zalo's own table; a duplicate session exits with code 3 (after logging Zalo's reason and leaving `kicked.json`), a refused login with 4. Never add a reconnect loop, or a restart on those codes, anywhere else.
+- **A kick is terminal, and the socket supervisor owns every retry.** `src/zalo/socket.js` and `src/core/socket-host.js` keep the socket by Zalo's own table; a duplicate session exits 3 (leaving `kicked.json`) or, on-demand, yields until `presence resume`; a refused login stays up signed out. Add no reconnect loop, take-back or restart on those codes.
 - **`src/zalo/` is the whole protocol layer** (kernel, endpoint modules, listener), written from Zalo Web's wire format: a request must match what Zalo Web sends, and a deliberate difference is an `allow` row with its reason (`tests/helpers/wire-diff/`). Zalo's own Web/PC code is a comparison oracle: read it, never run or copy it.
 - **Honest identity.** What identifies this client (version, type 30, device label, headers) lives only in `src/zalo/profile.js` (D3, D4).
 - **Capture findings stay local** (D11): HARs, bundles and probe output live in `agent/`; tests use hand-written shapes.

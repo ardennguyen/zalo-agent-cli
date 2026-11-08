@@ -161,6 +161,16 @@ export const PROFILE_ACTIONS = {
             return { accountId: ownId, ...describeStorage(ownId, { mediaRoot: ctx.mediaRoot ?? null, dbBytes }) };
         },
     },
+    presence_resume: {
+        // `presence resume`: take the account back after a yield (another session of this login took the socket; the
+        // daemon refuses every request until the user closes that session and confirms). The one call let through
+        // while yielded (src/mcp/tool-presence.js).
+        guard: () => ({ key: "presence.resume", target: {} }),
+        async run(_a, ctx) {
+            if (!ctx.presence) throw new Error("this server runs no on-demand presence: there is nothing to resume");
+            return await ctx.presence.serve({ action: "resume" });
+        },
+    },
 };
 
 /** zalo_profile's metadata. */
@@ -180,7 +190,10 @@ export const PROFILE_META = {
         "the devices linked to this account) and 'usage' (read-only: this account's storage on the server, its " +
         "database, media and webhook outbox in bytes, its quota and retention rules, and the quota level ok, warn or " +
         "over with the purge date, as `db usage` prints it; the server also sends `storage_quota` system events " +
-        "through zalo_get_messages and zalo_wait_for_message). Everyone who sees this account sees what changes here.",
+        "through zalo_get_messages and zalo_wait_for_message), and 'presence_resume' (after an `account_state` " +
+        '"yielded" event, when every call is refused with YIELDED: the user closed the other session of this ' +
+        "login, take the account back; asked about first: `confirm`, `dryRun`). Everyone who sees this account " +
+        "sees what changes here.",
     inputSchema: z
         .object({
             action: z

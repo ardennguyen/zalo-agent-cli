@@ -134,6 +134,12 @@ function fakeApi(answers = {}) {
 }
 
 /** The real tools on a stand-in McpServer; `call` parses the input with the tool's schema first, as the SDK does. */
+/** A daemon presence that admits every call and resumes on request (src/core/daemon-presence.js's shape). */
+const PRESENCE_DOOR = {
+    admit: async () => ({ release: () => {}, warming: null }),
+    serve: async ({ action }) => ({ resumed: action === "resume", mode: "on-demand", state: "waking" }),
+};
+
 function tools({ api, config = {}, stateless = false, elicit } = {}) {
     const map = new Map();
     const server = {
@@ -149,6 +155,10 @@ function tools({ api, config = {}, stateless = false, elicit } = {}) {
         { limits: { maxMessagesPerPoll: 20 }, ...config },
         { ready: true, get: () => null, search: () => [] },
         ROOT,
+        undefined,
+        undefined,
+        // The daemon's presence, as a door that lets every call in (zalo_profile presence_resume asks it to resume).
+        { presence: PRESENCE_DOOR },
     );
     const call = async (name, args) => {
         const { meta, handler } = map.get(name);
@@ -208,6 +218,7 @@ const HAPPY = {
         ["lang", { language: "en" }, "updateLang"],
         ["devices", {}, "getListDevice"],
         ["usage", {}, null],
+        ["presence_resume", { confirm: true }, null],
     ],
     zalo_auto_reply: [
         ["list", {}, "getAutoReplyList"],
@@ -428,7 +439,7 @@ describe("guarded actions", () => {
             .map((g) => g.mcp)
             .filter((m) => served.includes(m));
         assert.deepEqual([...tested].sort(), want.sort());
-        assert.equal(want.length, 19);
+        assert.equal(want.length, 20);
     });
 
     for (const [tool, action, args, answers, config] of GUARDED) {

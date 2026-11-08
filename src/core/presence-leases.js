@@ -15,6 +15,9 @@
  * - In memory only: a restart drops every lease, and the CRM's next renew gets 404 and creates a new one.
  * - With no presence (an always-on daemon, or one not wired to presence yet) a lease is accepted and holds nothing:
  *   the socket is connected anyway.
+ * - While the account is yielded (another session of the same login holds it) or signed out (Zalo refuses the saved
+ *   login), a create or a renew is refused: 409 with `code` YIELDED or SIGNED_OUT. Nothing takes the account back on
+ *   a lease; the user resumes it (`presence resume`) or adds it again by QR.
  */
 import { randomBytes } from "node:crypto";
 
@@ -27,11 +30,11 @@ export const LEASE_TTL = Object.freeze({ defaultSec: 90, minSec: 15, maxSec: 600
 /** Where the routes are mounted. */
 export const PRESENCE_PATH_PREFIX = "/zalo/presence";
 
-/** A lease request that cannot be served: `code` is INVALID, NOT_FOUND or TOO_MANY. */
+/** A lease request that cannot be served: `code` is INVALID, NOT_FOUND, TOO_MANY, YIELDED or SIGNED_OUT. */
 export class LeaseError extends Error {
     /**
      * @param {string} message
-     * @param {"INVALID"|"NOT_FOUND"|"TOO_MANY"} code
+     * @param {"INVALID"|"NOT_FOUND"|"TOO_MANY"|"YIELDED"|"SIGNED_OUT"} code
      */
     constructor(message, code) {
         super(message);
@@ -96,6 +99,12 @@ export function createLeaseStore({
         l.timer = clock.setTimeout(() => drop(l.id), ttlSec * 1000);
     }
 
+    /** Yielded or signed out: the account takes no lease (owner decision 2026-11-08). */
+    const refuse = () => {
+        const r = presence?.refusal?.();
+        if (r) throw new LeaseError(r.message, r.code);
+    };
+
     const view = (l) => ({
         leaseId: l.id,
         expiresAt: new Date(l.expiresAt).toISOString(),
@@ -112,6 +121,7 @@ export function createLeaseStore({
             if (!HOLDER_ID.test(holder))
                 throw new LeaseError("holder must be an opaque id (letters, digits, - and _; at most 64)", "INVALID");
             const ttlSec = ttlOf(body?.ttlSec);
+            refuse();
             if (leases.size >= maxLeases)
                 throw new LeaseError(`this account already has ${maxLeases} leases; release one first`, "TOO_MANY");
             const l = {
@@ -130,6 +140,7 @@ export function createLeaseStore({
         renew(id, body) {
             const l = leases.get(String(id));
             if (!l) throw new LeaseError("no such lease (expired or released): create a new one", "NOT_FOUND");
+            refuse();
             arm(l, ttlOf(body?.ttlSec));
             return view(l);
         },
@@ -150,7 +161,7 @@ export function createLeaseStore({
     };
 }
 
-const STATUS = { INVALID: 400, NOT_FOUND: 404, TOO_MANY: 429 };
+const STATUS = { INVALID: 400, NOT_FOUND: 404, TOO_MANY: 429, YIELDED: 409, SIGNED_OUT: 409 };
 
 /**
  * The routes under {@link PRESENCE_PATH_PREFIX}, for an express app, behind the agent's bearer check.

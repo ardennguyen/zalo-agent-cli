@@ -296,6 +296,13 @@ describe("controller routes", () => {
         assert.deepEqual(calls, [["relay", A, "/presence", "wake"]]);
     });
 
+    it("presence resume is relayed to the daemon, and its refusal keeps its code", async () => {
+        const { call, calls } = await rig();
+        const r = await call(`/accounts/${A}/presence/resume`, { method: "POST" });
+        assert.equal(r.status, 409);
+        assert.deepEqual(calls, [["relay", A, "/presence", "resume"]]);
+    });
+
     it("SSE: a snapshot first, then each change once, in order", { timeout: 15_000 }, async () => {
         const { controller, base, probes } = await rig();
         const ac = new AbortController();

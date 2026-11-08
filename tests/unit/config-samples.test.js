@@ -39,6 +39,7 @@ import {
 import { eventsOf, verifyWebhook } from "../../docs/config-samples/clients/crm-webhook-receiver.mjs";
 import { createWebhookDispatcher, openOutbox } from "../../src/core/webhook-outbox.js";
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
+import { PRESENCE_KEYS, resolvePresenceSettings } from "../../src/core/presence-config.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -73,7 +74,7 @@ describe("mcp-config samples", () => {
         it(`${file}: valid JSON that uses only keys the loader merges`, () => {
             const cfg = JSON.parse(read("mcp-config", file));
             for (const key of Object.keys(cfg)) assert.ok(known.has(key), `unknown top-level key "${key}"`);
-            for (const section of ["notify", "limits", "media", "tls", "oauth", "approval", "admin"]) {
+            for (const section of ["notify", "limits", "media", "tls", "oauth", "approval", "admin", "presence"]) {
                 for (const key of Object.keys(cfg[section] ?? {})) {
                     assert.ok(key in defaults[section], `unknown key "${key}" in "${section}"`);
                 }
@@ -145,6 +146,25 @@ describe("mcp-config samples", () => {
         const internet = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", "internet.json")));
         assert.deepEqual(resolveMediaDelivery({ config: internet, env: {} }).allowDeliver, ["inline", "link"]);
         assert.deepEqual(resolveTrustedProxies({ config: internet, env: {} }), ["127.0.0.1"]);
+    });
+
+    it("every sample sets each presence key explicitly; backends are on-demand, the local agent always-on", () => {
+        for (const file of list("mcp-config", ".json")) {
+            const cfg = mergeMCPConfigLayer(defaults, JSON.parse(read("mcp-config", file)));
+            for (const key of Object.keys(PRESENCE_KEYS)) {
+                assert.notEqual(cfg.presence[key], null, `${file}: presence.${key} is set`);
+            }
+            const r = resolvePresenceSettings({ config: cfg, env: {} });
+            assert.equal(r.settings.mode, file === "local-agent.json" ? "always-on" : "on-demand", file);
+            assert.equal(r.settings.idleTimeoutMs, 300_000);
+            assert.equal(r.settings.catchUpEveryMs, 0, `${file}: the pulse is off until L1/L2 are measured`);
+            assert.equal(r.settings.connectOnStart, true);
+            assert.equal(validatePolicy({ presence: JSON.parse(read("mcp-config", file)).presence }).errors.length, 0);
+        }
+        const env = parseEnv(read("env", "multi-account.env"));
+        const one = resolvePresenceSettings({ accountId: "1000000000000000001", env });
+        const two = resolvePresenceSettings({ accountId: "1000000000000000002", env });
+        assert.deepEqual([one.settings.mode, two.settings.mode], ["always-on", "on-demand"]);
     });
 
     it("multi-account.json: each account block overrides the shared settings for that account only", () => {

@@ -149,6 +149,14 @@ const fraction = (value) => {
     const n = typeof value === "number" ? value : Number(String(value ?? "").trim());
     return n > 0 && n <= 1 ? { value: n } : { error: "is not a fraction above 0 and at most 1 (e.g. 0.8)" };
 };
+const durationOrOff = (minMs) => (value) =>
+    String(value ?? "")
+        .trim()
+        .toLowerCase() === "off"
+        ? { value: "off" }
+        : duration(minMs)(value).error
+          ? { error: `is "off" or a duration of at least ${minMs / 60_000}m (e.g. "6h")` }
+          : duration(minMs)(value);
 const accountIds = (value) => {
     const list = Array.isArray(value) ? value : String(value ?? "").split(",");
     const ids = list.map((s) => String(s).trim()).filter(Boolean);
@@ -156,8 +164,12 @@ const accountIds = (value) => {
     return { value: [...new Set(ids)] };
 };
 
+/** The presence modes (src/core/presence.js). */
+export const PRESENCE_MODES = Object.freeze(["on-demand", "always-on"]);
+
 /**
- * Every policy key: its check, and where it may be set (`tenant`: only in a tenant's file).
+ * Every policy key: its check, and where it may be set (`tenant`: only in a tenant's file; `scopes`: only in these
+ * kinds of file). A user's file (`users/<userId>.json`) takes the account keys, minus the tenant-only ones.
  * The values are read by the same resolvers that read mcp-config.json and storage.json, with the policy on top.
  */
 export const POLICY_KEYS = Object.freeze({
@@ -192,6 +204,22 @@ export const POLICY_KEYS = Object.freeze({
             parseDays(v) ? { value: `${parseDays(v)}d` } : { error: 'is not a number of days (e.g. "30d")' },
     },
     "retention.purgeEvery": { check: duration(60_000) },
+    // On-demand presence (src/core/presence.js, src/core/presence-config.js): live, no restart.
+    "presence.mode": { check: oneOf(PRESENCE_MODES) },
+    "presence.idleTimeout": { check: duration(30_000) },
+    "presence.minConnected": { check: duration(1000) },
+    "presence.maxWakesPerHour": { check: wholeNumber(1, 1000) },
+    "presence.warmWait": { check: duration(1000) },
+    "presence.connectOnStart": { check: bool },
+    "presence.catchUpEvery": { check: durationOrOff(5 * 60_000) },
+    "presence.maxLeases": { check: wholeNumber(1, 1024) },
+    "presence.leaseTtl": { check: duration(15_000) },
+    "presence.leaseTtlMax": { check: duration(15_000) },
+    "presence.waitHoldsSocket": { check: bool },
+    "presence.onKick": { check: oneOf(["yield", "exit"]) },
+    // The always-on cap (owner decision 1: over it, the oldest always-on account is demoted to on-demand).
+    "presence.alwaysOn.maxPerUser": { check: wholeNumber(0, 10_000), scopes: ["tenant", "user"] },
+    "presence.alwaysOn.maxPerTenant": { check: wholeNumber(0, 1_000_000), scopes: ["tenant"] },
 });
 
 /**
@@ -265,7 +293,7 @@ export function nestPolicy(flat) {
  * Check a policy (nested), for an account's file or a tenant's. Values are normalized (`"BEARER"` → `"bearer"`).
  *
  * @param {unknown} policy
- * @param {{scope?: "account"|"tenant", allowNull?: boolean}} [opts] - `allowNull`: a patch, where null removes a key
+ * @param {{scope?: "account"|"user"|"tenant", allowNull?: boolean}} [opts] - `allowNull`: a patch, where null removes a key
  * @returns {{policy: object, errors: Array<{key: string, error: string}>, restartRequired: string[]}}
  */
 export function validatePolicy(policy, { scope = "account", allowNull = false } = {}) {
@@ -288,6 +316,10 @@ export function validatePolicy(policy, { scope = "account", allowNull = false } 
         }
         if (spec.tenant && scope !== "tenant") {
             errors.push({ key, error: "is set in a tenant's policy only" });
+            continue;
+        }
+        if (spec.scopes && !spec.scopes.includes(scope)) {
+            errors.push({ key, error: `is set in a ${spec.scopes.join(" or ")} policy only` });
             continue;
         }
         if (value === null) {

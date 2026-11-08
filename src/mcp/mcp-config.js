@@ -95,6 +95,22 @@ export function getDefaultConfig() {
             tokenFile: null,
             clientCa: null,
         },
+        // On-demand presence (src/core/presence.js, resolved by src/core/presence-config.js): when the daemon holds the
+        // account's one socket. Unset (null) keys take the defaults named beside them; the runtime policy beats them.
+        presence: {
+            mode: null, // "on-demand" (backends) or "always-on"; stdio MCP and a stdout listener are always-on
+            idleTimeout: null, // "5m" with no demand before the socket parks (at least "30s")
+            minConnected: null, // "60s": never parks sooner after connecting
+            maxWakesPerHour: null, // 12: over it, the idle timeout doubles per wake (up to an hour)
+            warmWait: null, // "10s": how long a cache read waits for a waking socket
+            connectOnStart: null, // true: one catch-up at start, then park
+            catchUpEvery: null, // "off": a periodic catch-up while parked ("6h" etc.)
+            maxLeases: null, // 64 CRM leases per account
+            leaseTtl: null, // "90s" when a lease names none
+            leaseTtlMax: null, // "600s"
+            waitHoldsSocket: null, // true: a pending wait holds the socket (a tier may turn it off)
+            onKick: null, // "yield" (on-demand: let the account go until someone asks) or "exit" (code 3)
+        },
         httpPort: null,
         host: null,
     };
@@ -128,6 +144,7 @@ export function mergeMCPConfigLayer(base, layer) {
         tls: { ...base.tls, ...(layer.tls || {}) },
         approval: { ...base.approval, ...(layer.approval || {}) },
         admin: { ...base.admin, ...(layer.admin || {}) },
+        presence: { ...base.presence, ...(layer.presence || {}) },
         oauth: {
             ...base.oauth,
             ...(layer.oauth || {}),

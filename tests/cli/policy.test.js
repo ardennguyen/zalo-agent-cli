@@ -66,6 +66,27 @@ describe("policy", () => {
         assert.equal(eff.policy.confirmMode, "human");
     });
 
+    it("--user sets a user's membership and policy; the account then has an owner; a bare key needs --user", async () => {
+        const tenant = await runCli(["--json", "policy", "set", "tenant", "t1", "--user", "crmU1"], options);
+        assert.equal(tenant.code, 0, tenant.all);
+        const owned = await runCli(["--json", "policy", "set", "accounts", OWN, "--user", "crmU1"], options);
+        assert.equal(owned.code, 0, owned.all);
+        assert.deepEqual(json(owned).changed, ["accounts"]);
+        const mode = await runCli(
+            ["--json", "policy", "set", "presence.idleTimeout", "20m", "--user", "crmU1"],
+            options,
+        );
+        assert.equal(mode.code, 0, mode.all);
+        const user = json(await runCli(["--json", "policy", "get", "--user", "crmU1"], options));
+        assert.deepEqual([user.tenant, user.accounts, user.policy.presence.idleTimeout], ["t1", [OWN], "20m"]);
+        const acc = json(await runCli(["--json", "policy", "get", "--effective"], options));
+        assert.equal(acc.owner, "crmU1");
+        assert.equal(acc.policy.presence.idleTimeout, "20m");
+        const bare = await runCli(["policy", "set", "tenant", "t1"], options);
+        assert.equal(bare.code, 1);
+        assert.match(bare.all, /--user/);
+    });
+
     it("token --rotate shows a token once; only its hash is kept; plain `token` says one is set", async () => {
         const r = await runCli(["--json", "policy", "token", "--rotate"], options);
         assert.equal(r.code, 0, r.all);

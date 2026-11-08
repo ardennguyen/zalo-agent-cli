@@ -234,7 +234,8 @@ function tenantQuotas(ownId) {
         .map((t) => ({
             id: t.id,
             limit: limitOf(t.policy?.quota?.tenant?.limit),
-            accounts: (t.policy?.quota?.tenant?.accounts ?? []).map(String),
+            // The tenant's whole membership: its users' accounts (quota counts toward the owner) and the legacy list.
+            accounts: (t.accounts ?? t.policy?.quota?.tenant?.accounts ?? []).map(String),
         }))
         .filter((t) => t.limit !== null);
 }

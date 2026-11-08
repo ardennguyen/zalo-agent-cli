@@ -31,5 +31,19 @@
     "admin": {
         "tokenFile": null,
         "clientCa": null
+    },
+    "presence": {
+        "mode": "on-demand",
+        "idleTimeout": "5m",
+        "minConnected": "60s",
+        "maxWakesPerHour": 12,
+        "warmWait": "10s",
+        "connectOnStart": true,
+        "catchUpEvery": "off",
+        "maxLeases": 64,
+        "leaseTtl": "90s",
+        "leaseTtlMax": "600s",
+        "waitHoldsSocket": true,
+        "onKick": "yield"
     }
 }

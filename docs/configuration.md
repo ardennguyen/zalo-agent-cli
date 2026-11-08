@@ -124,6 +124,50 @@ The admin token: `zalo-agent policy token --rotate` makes one and shows it once;
 `ZALO_MCP_ADMIN_TOKEN_FILE` (`admin.tokenFile`) at a file your provider fills (a systemd credential, a KMS-decrypted
 mount). `ZALO_MCP_ADMIN_TOKEN` is for development.
 
+### Users, the always-on cap and on-demand presence
+
+A deployment is **tenant > users > accounts**, by opaque ids the CRM gives (letters, digits, `-`, `_`; never a name or
+an email). A user lives in `<CONFIG_DIR>/users/<userId>.json` (sealed, revisioned, like a tenant's file): its tenant
+(exactly one), the accounts it owns, and its own policy. **Each account has exactly one owning user**; others reach it
+through the CRM. A write that puts an account under two users, or under two tenants (through a user, or through a
+legacy `quota.tenant.accounts` list), is refused with `409 MEMBERSHIP` (two tenants used to only warn). A tenant's
+accounts are its users' accounts plus its legacy list, so quotas count toward the owner. Precedence inside the policy:
+tenant < user < account.
+
+The `presence` keys (in `mcp-config.json` `presence`, `accounts.<ownId>.presence`, and the policy, live):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `presence.mode` | `on-demand` (`always-on` for stdio MCP and a foreground `listen` printing to stdout) | `on-demand`: hold the socket only while something needs it; `always-on`: real time |
+| `presence.idleTimeout` | `5m` (at least `30s`) | no demand for this long and the socket parks |
+| `presence.minConnected` | `60s` | never parks sooner after connecting |
+| `presence.maxWakesPerHour` | `12` | over it, the idle timeout doubles per wake (up to an hour) |
+| `presence.warmWait` | `10s` | how long a cache read waits for a waking socket |
+| `presence.connectOnStart` | `true` | one catch-up at start, then park |
+| `presence.catchUpEvery` | `off` | a periodic catch-up while parked (e.g. `6h`); off until the offline queue's retention is measured |
+| `presence.maxLeases`, `presence.leaseTtl`, `presence.leaseTtlMax` | `64`, `90s`, `600s` | CRM leases per account |
+| `presence.waitHoldsSocket` | `true` | a pending `zalo_wait_for_message` / `/events/wait` holds the socket (a tier may turn it off; held time is metered) |
+| `presence.onKick` | `yield` | on-demand only: when another session (the user's own Zalo Web) takes the account, let it go until someone asks (`yield`), or end the daemon with exit 3 (`exit`) |
+| `presence.alwaysOn.maxPerUser` | `1` | tenant or user policy: always-on accounts per user |
+| `presence.alwaysOn.maxPerTenant` | none | tenant policy: always-on accounts per tenant |
+
+`ZALO_PRESENCE_MODE[_<ownId>]` and `ZALO_PRESENCE_IDLE_TIMEOUT[_<ownId>]` sit between the files and the policy.
+
+**The cap demotes the oldest.** When a write (an account, a user or a tenant) takes a user or a tenant over its cap,
+or a cap is lowered, the account that became always-on first is set to `on-demand` (an account-level policy write by
+`presence-cap`, a `capDemoted` audit line, and `demoted: [...]` in the admin API's reply). The check runs under a host
+lock, so two concurrent writers cannot both pass it. Only the accounts on this host count.
+
+Admin API (its own credential): `GET|PUT|PATCH /zalo/admin/policy/users/<userId>` with a body
+`{tenant?, accounts?, policy?}`, and `GET /zalo/admin/presence/always-on` (always-on accounts per user and capped
+tenant, against the caps). CLI: `zalo-agent policy get|set|unset ... --user <userId>`; the membership is set with
+`policy set tenant <tenantId> --user <id>` and `policy set accounts <ownId,ownId> --user <id>`.
+
+**Not switched on yet:** `listen` and `mcp start` still hold the socket all the time. The presence core, park/wake, the
+CRM lease routes (`/zalo/presence/leases`) and these settings are in place; a later release turns on-demand on for HTTP
+and backend daemons (webhooks and waits then arrive after the next connect, flagged `catchUp: true`; real time is the
+always-on tier).
+
 ---
 
 ## 2. Reference

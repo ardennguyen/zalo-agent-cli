@@ -5,6 +5,8 @@
  *     GET|PUT|PATCH /zalo/admin/policy                  this server's account
  *     GET|PUT|PATCH /zalo/admin/policy/<ownId>          another account on this host
  *     GET|PUT|PATCH /zalo/admin/policy/tenants/<id>     a tenant (a group of accounts)
+ *     GET|PUT|PATCH /zalo/admin/policy/users/<userId>   a user: its tenant, the accounts it owns, its policy
+ *     GET           /zalo/admin/presence/always-on      always-on accounts per user and capped tenant, against the caps
  *     GET           /zalo/admin/usage                   storage usage of this server's account (and its tenants)
  *     POST|GET|DELETE /zalo/admin/export/<ownId>[/...]    "export my data" jobs and their download links
  *                                                         (src/core/data-export.js)
@@ -27,7 +29,8 @@ import { CONFIG_DIR } from "./credentials.js";
 import { readSealedJson, scopeOfDir, writeSealedJson } from "./keystore/index.js";
 import { resolveConfirmMode } from "./confirm-guard.js";
 import { resolveApproval, resolveHiddenChats, resolveMediaDelivery, resolveMediaLinkAuth } from "./deploy-policy.js";
-import { PolicyError, applyPolicy, audit, getPolicy, tenantsOf } from "./policy-store.js";
+import { PolicyError, alwaysOnUsage, applyPolicy, audit, getPolicy, ownerOf, tenantsOf } from "./policy-store.js";
+import { resolvePresenceSettings } from "./presence-config.js";
 import { envForAccount, resolveWebhookDelivery } from "../mcp/mcp-config.js";
 
 /** Where the admin API is mounted. */
@@ -161,11 +164,12 @@ export function describeEffective(ownId, config = {}, { publicUrl = null, extra 
             capability: { maxClients: auth.maxClients, ttlMs: auth.clientTtlMs },
         },
         webhook: { batchSize: webhook.batchSize, maxAgeMs: webhook.maxAgeMs },
+        presence: resolvePresenceSettings({ config, accountId: ownId }).settings,
         ...(extra ? extra(ownId) : {}),
     };
 }
 
-const STATUS = { INVALID: 400, NOT_FOUND: 404, CONFLICT: 412, RESTART_REQUIRED: 422, BUSY: 503 };
+const STATUS = { INVALID: 400, NOT_FOUND: 404, MEMBERSHIP: 409, CONFLICT: 412, RESTART_REQUIRED: 422, BUSY: 503 };
 
 /**
  * The admin API's request handler (mounted at {@link ADMIN_PATH_PREFIX}, before the MCP bearer check, after a JSON
@@ -228,9 +232,11 @@ export function createAdminApi({
         ...(target.kind === "account"
             ? {
                   tenants: tenantsOf(target.id).map((t) => t.id),
+                  owner: ownerOf(target.id)?.id ?? null,
                   effective: describeEffective(target.id, config, { publicUrl, extra: effectiveExtra }),
               }
             : {}),
+        ...(target.kind === "user" ? { tenant: doc.tenant ?? null, accounts: doc.accounts ?? [] } : {}),
     });
 
     const handle = (req, res) => {
@@ -277,11 +283,17 @@ export function createAdminApi({
             });
             return;
         }
-        const m = /^\/policy(?:\/tenants\/([^/]+)|\/([^/]+))?$/.exec(path);
+        if (path === "/presence/always-on") {
+            if (req.method !== "GET") return send(res, 405, { error: "GET only" }, { Allow: "GET" });
+            return send(res, 200, alwaysOnUsage());
+        }
+        const m = /^\/policy(?:\/tenants\/([^/]+)|\/users\/([^/]+)|\/([^/]+))?$/.exec(path);
         if (!m) return send(res, 404, { error: "not found" });
         const target = m[1]
             ? { kind: "tenant", id: decodeURIComponent(m[1]) }
-            : { kind: "account", id: m[2] ? decodeURIComponent(m[2]) : ownId };
+            : m[2]
+              ? { kind: "user", id: decodeURIComponent(m[2]) }
+              : { kind: "account", id: m[3] ? decodeURIComponent(m[3]) : ownId };
         try {
             if (req.method === "GET") {
                 const doc = getPolicy(target);
@@ -292,22 +304,33 @@ export function createAdminApi({
             const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : null;
             if (!body) return send(res, 400, { error: "the body must be a JSON object (the policy, or {policy})" });
             const keys = Object.keys(body);
-            const policy =
-                keys.length === 1 && keys[0] === "policy" && body.policy && typeof body.policy === "object"
-                    ? body.policy
-                    : body;
+            // A user's body is {tenant?, accounts?, policy?}; anyone else's is the policy, or {policy}.
+            const wrapped =
+                target.kind === "user"
+                    ? keys.every((k) => ["tenant", "accounts", "policy"].includes(k))
+                    : keys.length === 1 && keys[0] === "policy";
+            const policy = wrapped ? (body.policy && typeof body.policy === "object" ? body.policy : {}) : body;
             const r = applyPolicy({
                 target,
                 op: req.method === "PUT" ? "put" : "patch",
                 policy,
                 ifMatch: req.headers["if-match"] ?? null,
                 actor: `admin-api ${who} ${ip}`,
+                ...(target.kind === "user" && wrapped && "tenant" in body ? { tenant: body.tenant } : {}),
+                ...(target.kind === "user" && wrapped && "accounts" in body ? { accounts: body.accounts } : {}),
             });
             const doc = getPolicy(target);
             log(
                 `[admin] ${r.target} rev ${r.oldRev} -> ${r.rev}${r.changed.length ? `: ${r.changed.join(", ")}` : " (no change)"}`,
             );
-            return send(res, 200, { ...docReply(target, doc), changed: r.changed }, { ETag: `"${doc.rev}"` });
+            if (r.demoted?.length)
+                log(`[admin] always-on cap: ${r.demoted.map((d) => `${d.accountId} -> on-demand`).join(", ")}`);
+            return send(
+                res,
+                200,
+                { ...docReply(target, doc), changed: r.changed, ...(r.demoted?.length ? { demoted: r.demoted } : {}) },
+                { ETag: `"${doc.rev}"` },
+            );
         } catch (e) {
             if (!(e instanceof PolicyError)) {
                 log(`[admin] ${req.method} ${path} failed: ${e.message}`);

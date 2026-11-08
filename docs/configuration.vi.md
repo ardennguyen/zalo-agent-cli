@@ -124,6 +124,50 @@ phong trong `<CONFIG_DIR>/admin/admin-token.json`, và lần xoay mới làm tok
 `ZALO_MCP_ADMIN_TOKEN_FILE` (`admin.tokenFile`) tới tệp do bộ cung cấp của bạn điền (credential của systemd, mount giải
 mã bằng KMS). `ZALO_MCP_ADMIN_TOKEN` chỉ dùng khi phát triển.
 
+### Người dùng, giới hạn luôn-kết-nối và hiện diện theo nhu cầu
+
+Một triển khai là **tenant > người dùng > tài khoản**, bằng các id mờ do CRM cấp (chữ, số, `-`, `_`; không bao giờ là
+tên hay email). Một người dùng nằm ở `<CONFIG_DIR>/users/<userId>.json` (niêm phong, có số phiên bản, như tệp của
+tenant): tenant của họ (đúng một), các tài khoản họ sở hữu, và chính sách riêng. **Mỗi tài khoản có đúng một người dùng
+sở hữu**; người khác truy cập qua CRM. Một lần ghi đặt một tài khoản dưới hai người dùng, hoặc dưới hai tenant (qua người
+dùng, hoặc qua danh sách cũ `quota.tenant.accounts`), bị từ chối với `409 MEMBERSHIP` (trước đây hai tenant chỉ cảnh
+báo). Tài khoản của một tenant là tài khoản của các người dùng của nó cộng danh sách cũ, nên hạn mức tính cho người sở
+hữu. Thứ tự trong chính sách: tenant < người dùng < tài khoản.
+
+Các khóa `presence` (trong `mcp-config.json` `presence`, `accounts.<ownId>.presence`, và chính sách, áp dụng ngay):
+
+| Khóa | Mặc định | Ý nghĩa |
+|---|---|---|
+| `presence.mode` | `on-demand` (`always-on` với MCP stdio và `listen` chạy tiền cảnh in ra stdout) | `on-demand`: chỉ giữ socket khi có việc cần; `always-on`: thời gian thực |
+| `presence.idleTimeout` | `5m` (tối thiểu `30s`) | không có nhu cầu trong khoảng này thì socket tạm nghỉ (park) |
+| `presence.minConnected` | `60s` | không bao giờ tạm nghỉ sớm hơn sau khi kết nối |
+| `presence.maxWakesPerHour` | `12` | vượt quá thì thời gian chờ nhân đôi mỗi lần thức (tối đa một giờ) |
+| `presence.warmWait` | `10s` | một lệnh đọc cache chờ socket đang thức bao lâu |
+| `presence.connectOnStart` | `true` | bắt kịp một lần khi khởi động, rồi tạm nghỉ |
+| `presence.catchUpEvery` | `off` | bắt kịp định kỳ khi đang tạm nghỉ (vd. `6h`); tắt cho đến khi đo được thời gian Zalo giữ hàng đợi offline |
+| `presence.maxLeases`, `presence.leaseTtl`, `presence.leaseTtlMax` | `64`, `90s`, `600s` | lease của CRM cho mỗi tài khoản |
+| `presence.waitHoldsSocket` | `true` | một `zalo_wait_for_message` / `/events/wait` đang chờ giữ socket (một gói có thể tắt; thời gian giữ được tính) |
+| `presence.onKick` | `yield` | chỉ on-demand: khi một phiên khác (Zalo Web của chính người dùng) lấy tài khoản, nhường cho đến khi có người cần (`yield`), hoặc dừng daemon với mã 3 (`exit`) |
+| `presence.alwaysOn.maxPerUser` | `1` | chính sách tenant hoặc người dùng: số tài khoản luôn-kết-nối mỗi người dùng |
+| `presence.alwaysOn.maxPerTenant` | không | chính sách tenant: số tài khoản luôn-kết-nối mỗi tenant |
+
+`ZALO_PRESENCE_MODE[_<ownId>]` và `ZALO_PRESENCE_IDLE_TIMEOUT[_<ownId>]` nằm giữa các tệp và chính sách.
+
+**Giới hạn hạ tài khoản cũ nhất.** Khi một lần ghi (tài khoản, người dùng hoặc tenant) làm một người dùng hay tenant
+vượt giới hạn, hoặc giới hạn bị hạ, tài khoản trở thành luôn-kết-nối sớm nhất được đặt về `on-demand` (một lần ghi chính
+sách cấp tài khoản bởi `presence-cap`, một dòng nhật ký `capDemoted`, và `demoted: [...]` trong phản hồi của admin
+API). Việc kiểm tra chạy dưới một khóa của máy, nên hai lần ghi đồng thời không thể cùng vượt qua. Chỉ tính các tài khoản
+trên máy này.
+
+Admin API (thông tin xác thực riêng): `GET|PUT|PATCH /zalo/admin/policy/users/<userId>` với thân
+`{tenant?, accounts?, policy?}`, và `GET /zalo/admin/presence/always-on` (tài khoản luôn-kết-nối theo người dùng và
+tenant có giới hạn, so với giới hạn). CLI: `zalo-agent policy get|set|unset ... --user <userId>`; thành viên được đặt
+bằng `policy set tenant <tenantId> --user <id>` và `policy set accounts <ownId,ownId> --user <id>`.
+
+**Chưa bật:** `listen` và `mcp start` vẫn giữ socket liên tục. Lõi hiện diện, tạm nghỉ/thức, các route lease của CRM
+(`/zalo/presence/leases`) và các thiết lập này đã có; một bản phát hành sau sẽ bật on-demand cho daemon HTTP và backend
+(webhook và lệnh chờ khi đó đến sau lần kết nối kế tiếp, gắn `catchUp: true`; thời gian thực là gói always-on).
+
 ---
 
 ## 2. Tra cứu

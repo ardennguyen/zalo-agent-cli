@@ -1712,10 +1712,17 @@ export function registerMsgCommands(program) {
         });
 
     msg.command("history <threadId>")
-        .description("Fetch message history. Groups try REST API then fallback to WebSocket. DMs use WebSocket.")
+        .description(
+            "A conversation's history: everything cached, or for a group not cached yet, Zalo's group message store " +
+                "paged back until it has nothing older. A DM has no server history (as on Zalo Web and PC): the cache, " +
+                "plus the socket's old-message scan only with --scan",
+        )
         .option("-t, --type <n>", "Thread type: 0=User(DM), 1=Group", "0")
-        .option("-n, --limit <n>", "Max most-recent messages to fetch", "50")
-        .option("--scan <n>", "Max raw global messages to scan (WebSocket only)", "2000")
+        .option("-n, --limit <n>", "Only the most recent N messages (default: all of them)")
+        .option(
+            "--scan [n]",
+            "Also scan the socket's old-message stream (a DM, or a group whose store failed), at most n raw messages (default 2000)",
+        )
         .option("--from-msg-id <id>", "Anchor message ID to scan older messages from")
         .option("--timeout <ms>", "Timeout in milliseconds waiting for response", "15000")
         .option("--no-cache", "Force live fetch instead of using local cache, and amend db")
@@ -1733,9 +1740,21 @@ export function registerMsgCommands(program) {
         .action(async (threadId, opts, cmd) => {
             const jsonMode = program.opts().json;
             const threadType = Number(opts.type);
-            const limit = Number(opts.limit);
+            // No -n: everything. Given: that many of the most recent.
+            const limit = opts.limit === undefined ? Infinity : Number(opts.limit);
+            if (!(limit >= 1)) {
+                error("-n/--limit needs a number of at least 1.");
+                process.exit(1);
+            }
             const timeout = Number(opts.timeout);
-            const scanLimit = Number(opts.scan);
+            // The socket scan is opt-in: `--scan` alone bounds it at 2000 raw messages, `--scan <n>` at n.
+            const scanLimit = opts.scan === undefined ? 0 : opts.scan === true ? 2000 : Number(opts.scan);
+            if (opts.scan !== undefined && !(scanLimit >= 1)) {
+                error("--scan needs a number of at least 1.");
+                process.exit(1);
+            }
+            /** SQLite's "no limit" for the cache reads. */
+            const rowLimit = Number.isFinite(limit) ? limit : -1;
 
             // Order matters: getApi() throws when there is no session, and
             // this line sits outside any try/catch. Calling it ABOVE the
@@ -1787,8 +1806,12 @@ export function registerMsgCommands(program) {
                 dbActive = true;
 
                 if (opts.cache !== false) {
-                    localMsgs = getMessages(threadId, limit);
-                    if (localMsgs && localMsgs.length >= limit) {
+                    localMsgs = getMessages(threadId, rowLimit);
+                    // The cache answers when it holds what was asked for: -n messages, or with no -n whatever it
+                    // has. A DM always answers from the cache unless --scan asks for the socket scan: Zalo keeps no
+                    // 1-1 history a client can page.
+                    const enough = Number.isFinite(limit) ? localMsgs.length >= limit : localMsgs.length > 0;
+                    if (localMsgs && (enough || (threadType === 0 && !scanLimit))) {
                         if (!jsonMode) info(`Found ${localMsgs.length} messages in local cache.`);
                         // Fetch through the shared downloader, which writes to
                         // accounts/<ownId>/media/<threadName>/ and records the
@@ -1802,10 +1825,10 @@ export function registerMsgCommands(program) {
                                 api,
                                 accountDir,
                                 threadId,
-                                limit,
+                                limit: rowLimit,
                                 concurrency: 2,
                             });
-                            localMsgs = getMessages(threadId, limit);
+                            localMsgs = getMessages(threadId, rowLimit);
                         } catch {
                             /* showing history must not fail because media did */
                         }
@@ -1830,11 +1853,23 @@ export function registerMsgCommands(program) {
                                 threadType: threadType === 0 ? "dm" : "group",
                                 count: messages.length,
                                 source: "sqlite",
+                                ...(threadType === 0 &&
+                                    !scanLimit && {
+                                        note:
+                                            "Zalo keeps no server history for a 1-1 conversation; this is the local " +
+                                            "cache. --scan also scans the socket's old-message stream.",
+                                    }),
                                 messages,
                             },
                             jsonMode,
                             () => {
                                 success(`${messages.length} message(s) from ${threadId} (Local Cache)`);
+                                if (threadType === 0 && !scanLimit && !messages.length) {
+                                    info(
+                                        "Zalo keeps no server history for a 1-1 conversation. `--scan` also scans " +
+                                            "the socket's old-message stream; `zalo-agent sync` restores from the phone.",
+                                    );
+                                }
                                 for (const m of messages) {
                                     const date = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
                                     const name = m.senderDisplayName || m.senderId || "?";
@@ -1845,9 +1880,7 @@ export function registerMsgCommands(program) {
                         );
                         return;
                     } else if (localMsgs && localMsgs.length > 0 && !jsonMode) {
-                        info(
-                            `Found only ${localMsgs.length} messages in cache. Falling back to live fetch to reach limit of ${limit}.`,
-                        );
+                        info(`Found only ${localMsgs.length} messages in cache. Fetching live to reach ${limit}.`);
                     }
                 } else if (opts.cache === false && !jsonMode) {
                     info(`--no-cache specified. Fetching live from server and amending database.`);
@@ -1859,7 +1892,7 @@ export function registerMsgCommands(program) {
             }
 
             try {
-                if (!jsonMode && limit > 100) {
+                if (!jsonMode && Number.isFinite(limit) && limit > 100) {
                     info(`Warning: fetching up to ${limit} messages.`);
                 }
 
@@ -1869,7 +1902,13 @@ export function registerMsgCommands(program) {
                     if (e.level === "warn") warning(e.detail);
                     else info(e.detail);
                 };
-                const fetchOpts = { limit, scanLimit, timeoutMs: timeout, fromMsgId: opts.fromMsgId || null };
+                // No -n crosses the daemon channel as null: "everything". No --scan: no socket scan.
+                const fetchOpts = {
+                    limit: Number.isFinite(limit) ? limit : null,
+                    ...(scanLimit && { scanLimit }),
+                    timeoutMs: timeout,
+                    fromMsgId: opts.fromMsgId || null,
+                };
 
                 // The group store, the WebSocket global stream scanning and the
                 // cache write after them are one function, fetchAndCacheHistory,

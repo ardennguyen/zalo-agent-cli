@@ -22,10 +22,15 @@
  *
  * The fetch, in Zalo Web's order:
  *
- *   1. a group: Zalo's cloud-message store (getrecentv2, ../zalo/custom/group-history.js),
- *      what Zalo Web reads when a group is opened;
- *   2. a DM, or a group whose store failed or came back empty: the socket's
- *      old-message stream, paged account-wide and filtered to this thread.
+ *   1. a group: Zalo's cloud-message store (getrecentv2 then getoldv2,
+ *      ../zalo/custom/group-history.js), what Zalo Web reads when a group is
+ *      opened and scrolled: 50 a page, until the store has nothing older;
+ *   2. a group whose store failed or came back empty (an empty page does not
+ *      prove an empty group: Zalo gates the store on server config), and a DM
+ *      only when the caller asks (`scanLimit`, `msg history --scan`): the
+ *      socket's old-message stream, paged account-wide and filtered to this
+ *      thread, up to the scan's own bound.
+ *      Zalo Web and PC fetch no 1-1 history from the server at all.
  *
  * Every frame found then goes through storeHistoryMessage (./live-store.js):
  * insert-if-absent, as Zalo Web writes the history it fetches, so a message
@@ -95,16 +100,41 @@ async function scanOldMessages(api, threadId, threadType, { limit, scanLimit, ti
     return { frames, rawScanned };
 }
 
+/** Raw stream messages a group's fallback scan reads when the caller gave no bound. */
+export const DEFAULT_SCAN_LIMIT = 2000;
+
 /**
- * Fetch a conversation's recent history and cache what zalo.db does not hold.
+ * The number of messages a caller asked for: a positive number, or Infinity for "everything" (also what an unset
+ * limit, or one that crossed the daemon channel as JSON `null`, means).
+ *
+ * @param {unknown} v
+ * @returns {number}
+ */
+function wanted(v) {
+    const n = Number(v);
+    return v === undefined || v === null || !Number.isFinite(n) || n <= 0 ? Infinity : n;
+}
+
+/**
+ * Fetch a conversation's history and cache what zalo.db does not hold.
+ *
+ * A group: Zalo's cloud-message store, 50 messages a request, one request after the other, back until the store says
+ * it has nothing older (`hasMore: 0`) -- every message unless `limit` asks for fewer -- as Zalo Web pages a group.
+ * Each page waits for the one before and starts strictly older than it, so a walk never sends the same request twice.
+ *
+ * A DM: Zalo keeps no server copy a client can page (Zalo Web and PC show 1-1 history from the device's own store), so
+ * nothing is fetched unless the caller asks for the socket's old-message scan with `scanLimit`, its own bound. A group
+ * whose store failed or came back empty still falls back to that scan (an empty page does not prove an empty group),
+ * bounded by `scanLimit` or {@link DEFAULT_SCAN_LIMIT}.
  *
  * @param {object} api - a logged-in session. Its listener must already be
  *   running unless `opts.connect` is given; the store needs no socket at all.
  * @param {string} threadId
  * @param {number} threadType - 0 a DM, 1 a group
  * @param {object} [opts]
- * @param {number} [opts.limit=50] - most-recent messages wanted
- * @param {number} [opts.scanLimit=2000] - raw stream messages to scan, at most
+ * @param {number|null} [opts.limit] - most-recent messages wanted; unset (or null): all of them
+ * @param {number} [opts.scanLimit] - scan the socket's old-message stream, at most this many raw messages; unset: no
+ *   scan for a DM, {@link DEFAULT_SCAN_LIMIT} for a group's fallback
  * @param {number} [opts.timeoutMs=15000] - wait for each stream page
  * @param {string|null} [opts.fromMsgId=null] - start the stream scan below this message
  * @param {boolean} [opts.cache=true] - write what was fetched; false only fetches
@@ -115,25 +145,30 @@ async function scanOldMessages(api, threadId, threadType, { limit, scanLimit, ti
  * @param {(e: {phase: string, detail: string, level?: "warn"}) => void} [opts.onProgress] -
  *   one line per step, in the words `msg history` prints
  * @returns {Promise<{frames: Array<{threadId: string, type: number, data: object}>,
- *   source: "store"|"socket", rawScanned: number, cached: boolean, added: number, untouched: number,
- *   filtered: boolean}>}
+ *   source: "store"|"socket"|"none", rawScanned: number, cached: boolean, added: number, untouched: number,
+ *   filtered: boolean, more: 0|1, pages: number, stalled: boolean, scanned: boolean}>}
  *   `frames` as fetched, for display; `added` rows were new and written;
  *   `untouched` were already stored, or not storable (a removal, no content);
  *   `filtered` is true when a group's store withheld older messages; `more` is 1
- *   when the store says older messages can still be fetched
+ *   when the store says older messages can still be fetched; `source: "none"` when
+ *   nothing was asked of Zalo (a DM without `scanLimit`)
  * @throws {Error} when there is no thread id, the socket cannot be opened, or the scan fails
  */
 export async function fetchAndCacheHistory(api, threadId, threadType, opts = {}) {
     const thread = String(threadId ?? "");
     if (!thread) throw new Error("a thread id is required");
     const type = Number(threadType) === THREAD_GROUP ? THREAD_GROUP : 0;
-    const limit = Number(opts.limit) || 50;
+    const limit = wanted(opts.limit);
+    const asked = Number(opts.scanLimit) > 0 ? Number(opts.scanLimit) : 0;
+    const scanLimit = asked || (type === THREAD_GROUP ? DEFAULT_SCAN_LIMIT : 0);
     const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : () => {};
 
     let frames = [];
-    let source = "socket";
+    let source = "none";
     let filtered = false;
     let more = 0;
+    let pages = 0;
+    let stalled = false;
     if (type === THREAD_GROUP) {
         try {
             // Loaded on demand: only a group needs it.
@@ -142,12 +177,21 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
             frames = history.groupMsgs.map((m) => ({ threadId: thread, type, data: m.data }));
             filtered = history.filtered === true;
             more = history.more ? 1 : 0;
+            pages = Number(history.pages) || 0;
+            stalled = history.stalled === true;
             onProgress({
                 phase: "store",
                 detail: frames.length
-                    ? "Fetched group history from Zalo's message store."
-                    : "Zalo's message store had no messages. Falling back to WebSocket stream...",
+                    ? `Fetched ${frames.length} message(s) of group history from Zalo's message store (${pages} page(s)).`
+                    : "Zalo's message store had no messages.",
             });
+            if (stalled) {
+                onProgress({
+                    phase: "store",
+                    level: "warn",
+                    detail: "Zalo's message store said more follows but its cursor did not move; stopped there.",
+                });
+            }
             if (filtered) {
                 // Measured live 2026-09-30: the socket stream reaches no further
                 // back, so only the phone-backed restore can bring these in.
@@ -159,29 +203,36 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
                 });
             }
         } catch (e) {
-            onProgress({
-                phase: "store",
-                level: "warn",
-                detail: `REST API failed (${e.message}). Falling back to WebSocket stream...`,
-            });
+            onProgress({ phase: "store", level: "warn", detail: `REST API failed (${e.message}).` });
         }
         if (frames.length) source = "store";
     }
 
     let rawScanned = 0;
-    if (source === "socket") {
+    const scanned = source === "none" && scanLimit > 0;
+    if (scanned) {
         const scan = await scanOldMessages(api, thread, type, {
             limit,
-            scanLimit: Number(opts.scanLimit) || 2000,
+            scanLimit,
             timeoutMs: Number(opts.timeoutMs) || 15_000,
             fromMsgId: opts.fromMsgId || null,
             connect: opts.connect,
         });
         frames = scan.frames;
         rawScanned = scan.rawScanned;
+        source = "socket";
         onProgress({
             phase: "scan",
             detail: `Scanned ${rawScanned} raw WS messages to find ${frames.length} target messages.`,
+        });
+    } else if (source === "none") {
+        onProgress({
+            phase: "scan",
+            detail:
+                type === THREAD_GROUP
+                    ? "Nothing came from the group's message store; the socket scan runs only when asked (--scan)."
+                    : "Zalo keeps no server history for a 1-1 conversation: this is the local cache. " +
+                      "The socket's old-message scan runs only when asked (--scan).",
         });
     }
 
@@ -204,5 +255,8 @@ export async function fetchAndCacheHistory(api, threadId, threadType, opts = {})
         filtered,
         // The store's own "older messages can be fetched"; the socket stream says nothing like it.
         more: source === "store" ? more : 0,
+        pages,
+        stalled,
+        scanned,
     };
 }

@@ -176,6 +176,37 @@ describe("getGroupHistory", () => {
         assert.equal(res.more, 0);
     });
 
+    it("with count Infinity pages back 50 a request until the store says hasMore 0, never repeating a request", async () => {
+        // 12 pages of 50 (600 messages): far past the old count-derived page bound.
+        fake.route("/api/cm/getrecentv2", () => page(rows(0, 50), { hasMore: 1, isOld: 1, lastMsgId: msgIdAt(49) }));
+        fake.route("/api/cm/getoldv2", (req) => {
+            const from = 8300000000999 - Number(req.params.globalMsgId) + 1;
+            const last = from + 50 >= 600;
+            return page(rows(from, 50), { hasMore: last ? 0 : 1, isOld: 1, lastMsgId: msgIdAt(from + 49) });
+        });
+
+        const res = await getGroupHistory(api, GID, Infinity, { delayMs: 0 });
+
+        const calls = storeCalls();
+        assert.equal(calls.length, 12);
+        assert.ok(calls.every((c) => c.params.count === 50));
+        const anchors = calls.map((c) => c.params.globalMsgId);
+        assert.equal(new Set(anchors).size, anchors.length, "a request was sent twice");
+        assert.equal(res.groupMsgs.length, 600);
+        assert.equal(res.more, 0);
+        assert.equal(res.stalled, false);
+    });
+
+    it("stops and flags stalled when the store says more but its cursor does not move older", async () => {
+        fake.route("/api/cm/getrecentv2", () => page(rows(0, 50), { hasMore: 1, isOld: 1, lastMsgId: NEWEST }));
+
+        const res = await getGroupHistory(api, GID, Infinity, { delayMs: 0 });
+
+        assert.equal(storeCalls().length, 1);
+        assert.equal(res.stalled, true);
+        assert.equal(res.groupMsgs.length, 50);
+    });
+
     it("pages older from the returned lastMsgId, on getoldv2 when the server says isOld", async () => {
         fake.route("/api/cm/getrecentv2", () => page(rows(0, 50), { hasMore: 1, isOld: 1, lastMsgId: msgIdAt(49) }));
         fake.route("/api/cm/getoldv2", () => page(rows(50, 20), { hasMore: 0, lastMsgId: msgIdAt(69) }));

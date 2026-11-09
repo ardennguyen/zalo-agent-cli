@@ -203,7 +203,17 @@ describe("msg history writes fetched history insert-if-absent", () => {
                 ],
             ]);
             try {
-                const r = await history(threadId, "-t", String(type), "-n", "10", "--no-cache", "--timeout", "2000");
+                const r = await history(
+                    threadId,
+                    "-t",
+                    String(type),
+                    "-n",
+                    "10",
+                    "--no-cache",
+                    "--scan",
+                    "--timeout",
+                    "2000",
+                );
                 assert.equal(r.exitCode, 0, `${r.stdout} ${r.stderr}`);
             } finally {
                 socket.restore();
@@ -214,6 +224,29 @@ describe("msg history writes fetched history insert-if-absent", () => {
             assert.deepEqual(stored(keptId), before, "the socket scan modified or removed a row the listener stored");
         });
     }
+
+    it("a DM without --scan answers from the cache and never scans the socket", async () => {
+        const cachedId = freshId();
+        const unseenId = freshId();
+        listenerStoredPhoto(cachedId, PEER, 0);
+        const socket = serveOldMessages(api, [[{ threadId: PEER, type: 0, data: wire(unseenId, PEER) }]]);
+        let r;
+        try {
+            // Neither the default (no -n) nor --no-cache reaches the socket for a 1-1 conversation.
+            r = await history(PEER, "-t", "0", "--timeout", "2000");
+            const forced = await history(PEER, "-t", "0", "--no-cache", "--timeout", "2000");
+            assert.equal(forced.exitCode ?? 0, 0, `${forced.stdout} ${forced.stderr}`);
+        } finally {
+            socket.restore();
+        }
+        assert.equal(r.exitCode ?? 0, 0, `${r.stdout} ${r.stderr}`);
+        // Red under the old default, which scanned 2000 raw messages of the socket stream for a DM.
+        assert.equal(socket.requests.length, 0, "the socket was scanned without --scan");
+        assert.equal(stored(unseenId), null, "a row the socket held was written without --scan");
+        const out = JSON.parse(r.stdout);
+        assert.equal(out.source, "sqlite");
+        assert.ok(out.messages.some((m) => m.msgId === cachedId));
+    });
 
     it("skips rows older than the conversation's delete marker, keeps newer ones", async () => {
         const deletedGroup = "7000000000000000009"; // its own thread: the marker must not leak

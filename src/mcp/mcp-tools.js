@@ -21,6 +21,7 @@ import { openFile } from "../utils/open-file.js";
 import {
     getMessages,
     getMessagesInRange,
+    getAllMessagesInRange,
     getMessageById,
     getMessageForAction,
     getDisplayName,
@@ -540,22 +541,21 @@ export async function stickerPicture(api, row, buffered, fetchImpl = (...a) => f
     }
 }
 
-/** The most one page of zalo_get_history holds: without a date range, and with one. */
-export const HISTORY_PAGE_MAX = 200;
-export const HISTORY_RANGE_PAGE_MAX = 1000;
-
 /**
- * A thread's cached messages between two times, oldest first, one page of them (bug-reports #5).
+ * A thread's cached messages between two times, oldest first: every one, or one page of `limit` (bug-reports #5).
  *
  * Cache only: Zalo's server serves nothing older than this login, so a date range is the cache's question.
  *
  * @param {string} threadId
- * @param {{since: number|null, until: number|null, limit: number}} range
+ * @param {{since: number|null, until: number|null, limit: number}} range - `limit` Infinity: every message in the period
  * @param {object} [nameCache]
  * @returns {object} tool payload
  */
 function cacheHistoryRange(threadId, { since, until, limit }, nameCache) {
-    const { rows, nextSince } = getMessagesInRange(String(threadId), { since, until, limit });
+    let rows;
+    let nextSince = null;
+    if (Number.isFinite(limit)) ({ rows, nextSince } = getMessagesInRange(String(threadId), { since, until, limit }));
+    else rows = getAllMessagesInRange(String(threadId), { since, until }).rows;
     const messages = rows.map(cachedHistoryRow);
     const info = nameCache?.get(String(threadId));
     if (info) for (const m of messages) m.threadName = info.name;
@@ -584,7 +584,7 @@ function cacheHistoryRange(threadId, { since, until, limit }, nameCache) {
  * to fall back to asking Zalo.
  *
  * @param {string} threadId
- * @param {number} limit
+ * @param {number} limit - Infinity: every cached message
  * @param {number} [before] - epoch ms; return messages older than this
  * @param {object} [nameCache]
  * @returns {object|null} tool payload, or null when the cache is empty/unopened
@@ -592,7 +592,7 @@ function cacheHistoryRange(threadId, { since, until, limit }, nameCache) {
 function cacheHistory(threadId, limit, before, nameCache) {
     let rows;
     try {
-        rows = getMessages(String(threadId), limit, before);
+        rows = getMessages(String(threadId), Number.isFinite(limit) ? limit : -1, before);
     } catch {
         return null; // no db open in this process — server path it is
     }
@@ -610,7 +610,7 @@ function cacheHistory(threadId, limit, before, nameCache) {
         messages,
         // Oldest returned timestamp: pass it back as `before` for the next page.
         cursor: messages.length ? messages[0].timestamp : (before ?? null),
-        hasMore: rows.length >= limit,
+        hasMore: Number.isFinite(limit) && rows.length >= limit,
     };
 }
 
@@ -1462,11 +1462,11 @@ export function registerTools(
         {
             title: "Get Zalo Message History",
             description:
-                "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread. " +
-                "Page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
+                "Get the stored messages of one conversation (DM or group), for context older than the live buffer. It reads the local cache first (everything the listener and `zalo-agent sync` have saved, which can be the full history) and asks the Zalo server only when the cache has nothing for the thread: a group's message store, paged back until it has nothing older. A DM has no server history (Zalo Web and PC show 1-1 history from the device's own store), so for a DM only `scan` asks Zalo, by scanning the socket's old-message stream. " +
+                "Without `limit` the reply holds every message (all cached ones, or everything the group's store serves); pass `limit` to page, then page back with `before` (epoch ms: the `cursor` of the previous reply) or, on the server path, `lastMsgId` (the previous reply's `cursor`). Zalo's server serves only messages since this login: `filtered: true` in the reply means older ones exist that only `zalo-agent sync` can restore, and that needs the owner's phone. " +
                 "Each message has `msgId`, `senderId`, `senderName` (your alias for the sender when you set one, else the name the message carried), `senderAlias`, `senderZaloName` (the name the message carried), `senderDisplayName` (the current name: your alias, else the phonebook name, else the Zalo name, else the display name, else the uid; `senderDisplayNameSource` says which), `text`, `timestamp` and `type`. Reply: `{ threadId, threadType, count, messages, cursor, hasMore }`. " +
-                "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, up to `limit` (here up to 1000) per page, with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
-                "Start with a small `limit` and page; a large one costs memory and time. To find messages by their text, use zalo_search_messages.",
+                "For one period, pass `since` and/or `until` (epoch ms) or `last` (7d, 2w, 3m, 1y): the cached messages in it come oldest first, all of them, or `limit` per page with `hasMore` and `nextSince` (pass it back as `since`, same `until`) for the rest. Reply: `{ threadId, since, until, count, messages, hasMore, nextSince }`. It reads only the cache. " +
+                "A long conversation is a large reply; pass `limit` to page through it. To find messages by their text, use zalo_search_messages.",
             inputSchema: z.object({
                 threadId: z
                     .string()
@@ -1481,10 +1481,15 @@ export function registerTools(
                     .number()
                     .int()
                     .min(1)
-                    .max(HISTORY_RANGE_PAGE_MAX)
-                    .default(50)
+                    .optional()
+                    .describe("Page size: the most messages to return. Leave it out for every message."),
+                scan: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .optional()
                     .describe(
-                        "Most messages to return (default 50): up to 200, or up to 1000 with `since`, `until` or `last`.",
+                        "Server path only, when the cache has nothing: also scan the socket's old-message stream, at most this many raw messages (a DM, or a group whose store failed). Off unless given.",
                     ),
                 lastMsgId: z
                     .string()
@@ -1519,9 +1524,11 @@ export function registerTools(
                     .describe("Only the last period, ending now: 7d, 2w, 3m, 1y or 12h (replaces `since`)."),
             }),
         },
-        async ({ threadId, threadType: threadTypeIn, limit, lastMsgId, before, since, until, last }) => {
+        async ({ threadId, threadType: threadTypeIn, limit: limitIn, scan, lastMsgId, before, since, until, last }) => {
             if (isHiddenThread(threadId)) return err(HIDDEN_THREAD);
             const threadType = resolveThreadType(threadId, threadTypeIn);
+            // No limit: every message. A limit is a page.
+            const limit = limitIn ?? Infinity;
             if (since !== undefined || until !== undefined || last !== undefined) {
                 if (before !== undefined || lastMsgId) {
                     return err("Use either a period (`since`, `until`, `last`) or `before`/`lastMsgId`, not both.");
@@ -1547,8 +1554,6 @@ export function registerTools(
                     return err(`The local cache could not be read: ${e.message}`);
                 }
             }
-            // Without a period a page stays at 200, as it always was.
-            limit = Math.min(limit, HISTORY_PAGE_MAX);
             try {
                 // The cache is the better source and usually the only one that
                 // answers: Zalo returns an empty set for the socket history
@@ -1583,7 +1588,9 @@ export function registerTools(
                 let fetched;
                 try {
                     fetched = await fetchAndCacheHistory(api, threadId, threadType, {
-                        limit,
+                        limit: Number.isFinite(limit) ? limit : null,
+                        // The socket scan is opt-in, as `msg history --scan`.
+                        ...(scan && { scanLimit: scan }),
                         fromMsgId: lastMsgId || null,
                     });
                 } finally {
@@ -1634,14 +1641,21 @@ export function registerTools(
                     cursor,
                     hasMore: Boolean(fetched.more) || (fetched.source === "socket" && allMessages.length >= limit),
                     filtered: fetched.filtered === true,
-                    ...(fetched.filtered || allMessages.length === 0
+                    ...(fetched.source === "none" && threadType === THREAD_USER
                         ? {
                               note:
-                                  "Zalo serves a conversation's messages only since this login; older ones are " +
-                                  "withheld. `zalo-agent sync` restores them from the owner's phone (it asks for a " +
-                                  "tap), and zalo_get_history then reads them from the cache.",
+                                  "Nothing is cached for this conversation, and Zalo keeps no server history for a " +
+                                  "1-1 conversation. `scan` asks the socket's old-message stream; `zalo-agent sync` " +
+                                  "restores from the owner's phone (it asks for a tap).",
                           }
-                        : {}),
+                        : fetched.filtered || allMessages.length === 0
+                          ? {
+                                note:
+                                    "Zalo serves a conversation's messages only since this login; older ones are " +
+                                    "withheld. `zalo-agent sync` restores them from the owner's phone (it asks for a " +
+                                    "tap), and zalo_get_history then reads them from the cache.",
+                            }
+                          : {}),
                 });
             } catch (e) {
                 console.error("[mcp-tools] zalo_get_history error:", e.message);

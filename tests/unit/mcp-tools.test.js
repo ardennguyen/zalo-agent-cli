@@ -642,11 +642,17 @@ describe("MCP tools read the local cache", () => {
         assert.match(await call({ last: "soon" }), /Expected a period/);
     });
 
-    it("zalo_get_history keeps a page without a period at 200", async () => {
+    it("zalo_get_history returns every cached message without a limit, and a limit is a page with no cap", async () => {
         cache(Array.from({ length: 250 }, (_, i) => ({ msgId: `m${i}`, ts: 1_000 + i })));
         const { server } = register({ api: emptyServerApi() });
-        const out = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 1000 }));
-        assert.equal(out.count, 200);
+        const all = payloadOf(await server.call("zalo_get_history", { threadId: "t1" }));
+        assert.equal(all.count, 250);
+        assert.equal(all.hasMore, false);
+        const big = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 1000 }));
+        assert.equal(big.count, 250);
+        const page = payloadOf(await server.call("zalo_get_history", { threadId: "t1", limit: 100 }));
+        assert.equal(page.count, 100);
+        assert.equal(page.hasMore, true);
     });
 
     it("zalo_get_history says media is cached, never where", async () => {
@@ -661,7 +667,7 @@ describe("MCP tools read the local cache", () => {
 
     it("zalo_get_history falls back to the server when the cache is empty", async () => {
         const { server } = register({ api: emptyServerApi() });
-        const out = payloadOf(await server.call("zalo_get_history", { threadId: "nope", limit: 50 }));
+        const out = payloadOf(await server.call("zalo_get_history", { threadId: "nope", limit: 50, scan: 100 }));
         assert.equal(out.source, "server");
         assert.equal(out.count, 0);
         // An empty answer says why, so an agent does not read it as "no history".
@@ -701,7 +707,7 @@ describe("MCP tools read the local cache", () => {
             return ask(...a);
         };
         const { server } = register({ api, stageLock });
-        await server.call("zalo_get_history", { threadId: "nope", limit: 50 });
+        await server.call("zalo_get_history", { threadId: "nope", limit: 50, scan: 100 });
         assert.equal(heldDuringFetch, "history");
         assert.equal(stageLock.current(), null, "released afterwards");
     });

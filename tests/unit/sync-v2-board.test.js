@@ -295,27 +295,100 @@ describe("syncBoards", () => {
         assert.equal(api.calls.board.length, 2, "page 1 was short, page 2 empty: the end");
     });
 
-    it("respects maxPages when every page is full", async () => {
-        const full = Array.from({ length: 5 }, (_, i) => ({
-            boardType: 1,
-            data: { ...NOTE.data, id: `n${i}` },
-        }));
+    /** A group board of `total` notes served 20 a page by cursor (lastId), then an empty page. */
+    const pagedBoard = (total) => {
+        const all = Array.from({ length: total }, (_, i) => ({ boardType: 1, data: { ...NOTE.data, id: i + 1 } }));
         const api = {
             calls: { board: [] },
-            getListBoard: async (opts, groupId) => {
-                api.calls.board.push({ groupId, page: opts.page });
-                return { items: full, count: full.length };
+            getListBoard: async (opts) => {
+                api.calls.board.push({ page: opts.page, count: opts.count, lastId: opts.lastId });
+                const from = all.findIndex((it) => it.data.id > Number(opts.lastId || 0));
+                return { items: from < 0 ? [] : all.slice(from, from + opts.count) };
             },
         };
+        return api;
+    };
+
+    it("pages a board 20 at a time with no page cap until an empty page", async () => {
+        // 260 notes: 13 full pages, then the empty 14th. The old cap stopped at 10 pages.
+        const api = pagedBoard(260);
+        const stats = await syncBoards({
+            api,
+            threads: [{ threadId: "g1", type: "group" }],
+            reminders: false,
+            delayMs: 0,
+        });
+        assert.equal(api.calls.board.length, 14);
+        assert.ok(api.calls.board.every((c) => c.count === 20));
+        assert.equal(stats.boardItems, 260);
+        assert.equal(getBoardItems("g1").length, 260);
+        assert.equal(stats.stalled, 0);
+    });
+
+    it("respects an explicit maxPages", async () => {
+        const api = pagedBoard(260);
         await syncBoards({
             api,
             threads: [{ threadId: "g1", type: "group" }],
             reminders: false,
-            pageSize: 5,
             maxPages: 3,
             delayMs: 0,
         });
         assert.equal(api.calls.board.length, 3);
+    });
+
+    it("stops a board whose cursor does not advance (the same page again) and flags it", async () => {
+        const full = Array.from({ length: 5 }, (_, i) => ({ boardType: 1, data: { ...NOTE.data, id: `n${i}` } }));
+        const api = {
+            calls: { board: [] },
+            getListBoard: async (opts) => {
+                api.calls.board.push(opts.page);
+                return { items: full };
+            },
+        };
+        const stats = await syncBoards({
+            api,
+            threads: [{ threadId: "g1", type: "group" }],
+            reminders: false,
+            delayMs: 0,
+        });
+        // Page 2 repeated page 1: the loop ends there instead of running forever.
+        assert.deepEqual(api.calls.board, [1, 2]);
+        assert.equal(stats.stalled, 1);
+        assert.equal(getBoardItems("g1").length, 5);
+    });
+
+    it("stops the whole pass on 221 and says where to resume", async () => {
+        const visited = [];
+        const api = {
+            getListBoard: async (_opts, groupId) => {
+                visited.push(groupId);
+                if (groupId === "g3") throw Object.assign(new Error("Too many requests"), { code: 221 });
+                return { items: [] };
+            },
+        };
+        const threads = ["g1", "g2", "g3", "g4", "g5"].map((threadId) => ({ threadId, type: "group" }));
+        const stats = await syncBoards({ api, threads, reminders: false, concurrency: 1, delayMs: 0 });
+        assert.deepEqual(visited, ["g1", "g2", "g3"]);
+        assert.equal(stats.stoppedBy, "rate-limit");
+        assert.equal(stats.left, 3);
+        assert.equal(stats.nextThreadId, "g3");
+    });
+
+    it("never runs more than 3 threads at once", async () => {
+        let open = 0;
+        let peak = 0;
+        const api = {
+            getListBoard: async () => {
+                peak = Math.max(peak, ++open);
+                await new Promise((r) => setTimeout(r, 2));
+                open--;
+                return { items: [] };
+            },
+        };
+        const threads = Array.from({ length: 12 }, (_, i) => ({ threadId: `g${i}`, type: "group" }));
+        await syncBoards({ api, threads, reminders: false, concurrency: 8, delayMs: 0 });
+        assert.equal(peak, 3);
     });
 
     it("re-running updates rather than duplicating", async () => {

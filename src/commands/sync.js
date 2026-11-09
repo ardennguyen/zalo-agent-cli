@@ -15,7 +15,7 @@ import {
     describeDownloadReasons,
     DOWNLOADABLE_KINDS,
 } from "../core/sync-v2/media.js";
-import { syncBoards } from "../core/sync-v2/board.js";
+import { runBoardPass } from "../core/board-pass.js";
 import { drainReactions, placeUnresolvedReactions } from "../core/sync-v2/reactions.js";
 import { getCloudSettings, getCloudUsage, getMyCloudUsage, summarizeCloudQuota } from "../zalo/zcloud.js";
 import { syncCloudIndex } from "../core/sync-v2/zcloud.js";
@@ -26,12 +26,10 @@ import { cancelViaDaemon, getSyncChannel, syncViaDaemon } from "../core/daemon-c
 import { attachLiveStore } from "../core/live-store.js";
 import {
     initDb,
-    getRecentThreads,
     getThreadNames,
     countPendingAttachments,
     getSyncState,
     setSyncState,
-    clearSyncState,
     getOrphanThreads,
     recordConversationList,
 } from "../core/db.js";
@@ -319,7 +317,11 @@ export function registerSyncCommands(program) {
                 "they need this separate pass. Needs no phone confirmation",
         )
         .option("-T, --thread <threadId>", "Only this conversation")
-        .option("-n, --limit <n>", "Visit at most this many threads (most recent first)", parseIntAtLeast(1), 200)
+        .option(
+            "-n, --limit <n>",
+            "Visit at most this many threads, most recent first (default: every thread)",
+            parseIntAtLeast(1),
+        )
         .option("-c, --concurrency <n>", "Threads fetched in parallel", parseIntAtLeast(1), 3)
         .option("--no-reminders", "Skip reminders")
         .option("--no-boards", "Skip notes/pinned messages/polls")
@@ -651,48 +653,26 @@ async function runBoardSync(activeAcc, opts) {
  * @returns {Promise<{status: "ok"|"skipped", reason?: string, stats?: object}>}
  */
 async function boardPass(api, opts) {
-    const all = getRecentThreads(opts.limit);
-    const threads = (opts.thread ? all.filter((t) => String(t.threadId) === String(opts.thread)) : all).map((t) => ({
-        threadId: String(t.threadId),
-        type: t.type,
-        name: t.name,
-    }));
-    if (!threads.length) {
-        return {
-            status: "skipped",
-            reason: opts.thread ? `thread ${opts.thread} is not in the local cache` : "no threads in the local cache",
-        };
-    }
-
-    // A live board event flags its thread; those go first so a quick run after
-    // seeing "Board changed" refreshes the thing that actually moved.
-    const stale = threads.filter((t) => getSyncState(`boardStale:${t.threadId}`));
-    if (stale.length && !opts.thread) {
-        info(`${stale.length} thread(s) had a board change since the last pass — doing those first.`);
-        const rest = threads.filter((t) => !getSyncState(`boardStale:${t.threadId}`));
-        threads.length = 0;
-        threads.push(...stale, ...rest);
-    }
-
-    info(`Checking ${threads.length} thread(s) — one request each, so this is paced deliberately.`);
+    // The pass itself (which threads, stale-first order, the per-thread flag, the 221 stop and resume) is the one the
+    // MCP server runs too (src/core/board-pass.js); this only prints.
     let last = 0;
-    const stats = await syncBoards({
-        api,
-        threads,
-        boards: opts.boards !== false,
-        reminders: opts.reminders !== false,
-        concurrency: opts.concurrency,
+    let announced = false;
+    const r = await runBoardPass(api, {
+        ...opts,
+        onNote: (m) => info(`${m}.`),
         onProgress: (p) => {
-            // The flag exists to say "come back to this one". Clearing it is
-            // what makes the next run's prioritization mean anything, and it
-            // must not be cleared for a thread whose own fetch failed.
-            if (p.phase === "thread" && p.ok) clearSyncState(`boardStale:${p.threadId}`);
+            if (!announced) {
+                announced = true;
+                info(`Checking ${p.total} thread(s) — paced deliberately, at most 3 at a time.`);
+            }
             if (p.done === p.total || p.done - last >= 25) {
                 last = p.done;
                 info(`  ${p.done}/${p.total} threads`);
             }
         },
     });
+    if (r.status !== "ok") return r;
+    const stats = r.stats;
 
     success(
         `Stored ${stats.boardItems} board item(s) and ${stats.reminders} reminder(s) from ${stats.threads} thread(s).`,
@@ -701,7 +681,9 @@ async function boardPass(api, opts) {
         warning(`${stats.failed} request(s) failed (left groups and blocked peers are expected here).`);
         for (const f of stats.failures.slice(0, 5)) info(`  ${f.threadId} (${f.what}): ${f.reason}`);
     }
-    return { status: "ok", stats };
+    if (stats.stalled) info(`${stats.stalled} board(s) ended early: the server repeated a page (cursor did not move).`);
+    if (r.note) warning(r.note);
+    return r;
 }
 
 /**
@@ -2098,14 +2080,21 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
 
     if (runs("boards")) {
         try {
-            const r = await boardPass(api, { limit: 200, concurrency: 3, boards: true, reminders: true });
+            const r = await boardPass(api, { concurrency: 3, boards: true, reminders: true });
             if (r.status === "skipped") record("boards", "skipped", r.reason);
             else {
-                record("boards", r.stats.failed ? "partial" : "ok", `${r.stats.failed} request(s) failed`, {
-                    boardItems: r.stats.boardItems,
-                    reminders: r.stats.reminders,
-                    threads: r.stats.threads,
-                });
+                record(
+                    "boards",
+                    r.stats.failed || r.stats.stoppedBy ? "partial" : "ok",
+                    r.note || `${r.stats.failed} request(s) failed`,
+                    {
+                        boardItems: r.stats.boardItems,
+                        reminders: r.stats.reminders,
+                        threads: r.stats.threads,
+                        ...(r.stats.stoppedBy && { stoppedBy: r.stats.stoppedBy, left: r.stats.left }),
+                        ...(r.stats.stalled && { stalled: r.stats.stalled }),
+                    },
+                );
             }
         } catch (err) {
             warning(`Boards failed: ${err.message}`);

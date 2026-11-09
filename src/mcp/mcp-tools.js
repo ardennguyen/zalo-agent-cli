@@ -2179,7 +2179,7 @@ export function registerTools(
                         .max(10000)
                         .optional()
                         .describe(
-                            "Media: download at most this many files (the rest wait for the next run). Boards: visit at most this many threads, most recent first (default 200).",
+                            "Media: download at most this many files (the rest wait for the next run). Boards: visit at most this many threads, most recent first (default: every thread).",
                         ),
                     full: z
                         .boolean()

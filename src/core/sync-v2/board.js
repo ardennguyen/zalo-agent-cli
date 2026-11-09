@@ -21,8 +21,8 @@
  * only announcements. The objects themselves exist solely here.
  *
  * Cost shapes the design: a full account is ~1500 threads and two-plus calls
- * each, so this runs at low concurrency with a pause between calls, supports a
- * thread cap, and skips threads synced recently. It is deliberately not part
+ * each, so this runs at low concurrency (at most 3) with a pause between calls,
+ * and stops the whole pass on Zalo's 221. It is deliberately not part
  * of the phone-backed restore — no confirmation is needed and nothing here
  * touches the WebSocket.
  */
@@ -148,28 +148,6 @@ function asList(resp) {
 }
 
 /**
- * Sync board items and reminders for the given threads.
- *
- * Every per-thread call is individually guarded: one thread that 403s (a group
- * you were removed from, a DM with a blocked user) must not abort a run that
- * covers hundreds of others.
- *
- * @param {object} opts
- * @param {object} opts.api - the logged-in api
- * @param {Array<{threadId: string, type: "dm"|"group", name?: string}>} opts.threads
- * @param {boolean} [opts.boards=true] - fetch notes/pinned/polls (groups only)
- * @param {boolean} [opts.reminders=true] - fetch reminders
- * @param {number} [opts.concurrency=3] - parallel threads; Zalo rate-limits hard
- * @param {number} [opts.delayMs=120] - pause between calls within a worker
- * @param {number} [opts.pageSize=50]
- * @param {number} [opts.maxPages=10] - board pagination cap per thread
- * @param {(p: object) => void} [opts.onProgress] - one `{phase: "thread",
- *   threadId, ok}` event per finished thread, where `ok` is false if any of
- *   that thread's own calls failed. Callers that clear per-thread state must
- *   check it.
- * @returns {Promise<{threads:number, boardItems:number, reminders:number, failed:number, failures:Array<object>}>}
- */
-/**
  * A failure reason someone can act on.
  *
  * The error is built from the server's error_message, which for these
@@ -188,31 +166,97 @@ export function describeZaloError(e) {
     return text || String(e);
 }
 
+/** Board items per page: Zalo PC's MAX_REF_LOAD_TOPIC. */
+export const BOARD_PAGE_SIZE = 20;
+/** Reminders asked per page. */
+export const REMINDER_PAGE_SIZE = 50;
+/** Threads fetched at once, at most: Zalo itself opens one board at a time, so this stays low. */
+export const MAX_BOARD_CONCURRENCY = 3;
+/** Zalo's "too many requests". */
+const TOO_MANY_REQUESTS = 221;
+
+/** The id a board item or reminder is known by, for the "did the page move" check. */
+const itemKey = (item) => {
+    const d = item?.data ?? item;
+    const id = d?.poll_id ?? d?.pollId ?? d?.id ?? d?.reminderId ?? item?.reminderId;
+    return id === undefined || id === null ? null : `${item?.boardType ?? ""}:${id}`;
+};
+
+/**
+ * Sync board items and reminders for the given threads.
+ *
+ * Every per-thread call is individually guarded: one thread that 403s (a group
+ * you were removed from, a DM with a blocked user) must not abort a run that
+ * covers hundreds of others. A 221 ("too many requests") is different: it is
+ * about the account, not the thread, so the whole pass stops there and says how
+ * many threads were left (`stoppedBy: "rate-limit"`, `left`, `nextThreadId`).
+ *
+ * A board is paged the way Zalo PC pages it, 20 items a page, until a page
+ * comes back empty. There is no page cap; the runaway guard is a page that
+ * brings nothing new (the cursor did not move), which ends that board and is
+ * counted in `stalled`.
+ *
+ * @param {object} opts
+ * @param {object} opts.api - the logged-in api
+ * @param {Array<{threadId: string, type: "dm"|"group", name?: string}>} opts.threads
+ * @param {boolean} [opts.boards=true] - fetch notes/pinned/polls
+ * @param {boolean} [opts.reminders=true] - fetch reminders
+ * @param {number} [opts.concurrency=3] - parallel threads, at most 3
+ * @param {number} [opts.delayMs=120] - pause between calls within a worker
+ * @param {number} [opts.pageSize=20] - board items per page
+ * @param {number} [opts.maxPages=Infinity] - opt-in board page bound per thread
+ * @param {(p: object) => void} [opts.onProgress] - one `{phase: "thread",
+ *   threadId, ok}` event per finished thread, where `ok` is false if any of
+ *   that thread's own calls failed. Callers that clear per-thread state must
+ *   check it.
+ * @returns {Promise<{threads:number, boardItems:number, reminders:number, failed:number, failures:Array<object>,
+ *   stalled:number, stoppedBy:null|"rate-limit", left:number, nextThreadId:string|null}>}
+ */
 export async function syncBoards(opts = {}) {
     const {
         api,
         threads = [],
         boards = true,
         reminders = true,
-        concurrency = 3,
+        concurrency = MAX_BOARD_CONCURRENCY,
         delayMs = 120,
-        pageSize = 50,
-        maxPages = 10,
+        pageSize = BOARD_PAGE_SIZE,
+        maxPages = Infinity,
         onProgress = () => {},
     } = opts;
 
-    const stats = { threads: 0, boardItems: 0, reminders: 0, failed: 0, failures: [] };
+    const stats = {
+        threads: 0,
+        boardItems: 0,
+        reminders: 0,
+        failed: 0,
+        failures: [],
+        stalled: 0,
+        stoppedBy: null,
+        left: 0,
+        nextThreadId: null,
+    };
     if (!api || !threads.length) return stats;
 
     const note = (threadId, what, e) => {
         stats.failed++;
         if (stats.failures.length < 20) stats.failures.push({ threadId, what, reason: describeZaloError(e) });
     };
+    /** First thread index a rate limit left undone; the pass ends there. */
+    let stopAt = Infinity;
+    const limited = (e, index) => {
+        if (Number(e?.code) !== TOO_MANY_REQUESTS) return false;
+        stats.stoppedBy = "rate-limit";
+        stopAt = Math.min(stopAt, index);
+        return true;
+    };
 
     let cursor = 0;
     const worker = async () => {
         for (;;) {
-            const t = threads[cursor++];
+            if (stats.stoppedBy) return;
+            const index = cursor++;
+            const t = threads[index];
             if (!t) return;
             const isGroup = t.type === "group";
 
@@ -234,6 +278,7 @@ export async function syncBoards(opts = {}) {
             // past the page boundary.
             if (boards) {
                 let pageCursor = { lastId: 0, lastType: 0 };
+                const seen = new Set();
                 for (let page = 1; page <= maxPages; page++) {
                     let resp;
                     try {
@@ -241,10 +286,21 @@ export async function syncBoards(opts = {}) {
                             ? await api.getListBoard({ page, count: pageSize, ...pageCursor }, t.threadId)
                             : await listOneOneBoard(api, t.threadId, page, pageSize);
                     } catch (e) {
+                        if (limited(e, index)) return;
                         noteHere("board", e);
                         break;
                     }
                     const items = resp?.items || resp?.data?.items || [];
+                    // Only an empty page ends the board: with the cursor, Zalo can answer
+                    // a short page while more items follow, and the Web stops only when empty.
+                    if (items.length === 0) break;
+                    const keys = items.map(itemKey);
+                    if (keys.every((k) => k !== null && seen.has(k))) {
+                        // The cursor did not move: the same page again. Stop rather than loop.
+                        stats.stalled++;
+                        break;
+                    }
+                    for (const k of keys) if (k !== null) seen.add(k);
                     for (const item of items) {
                         const row = normalizeBoardItem(item, t.threadId, t.type);
                         if (!row) continue;
@@ -255,22 +311,32 @@ export async function syncBoards(opts = {}) {
                             noteHere("board-write", e);
                         }
                     }
-                    // Only an empty page ends the board: with the cursor, Zalo can answer
-                    // a short page while more items follow, and the Web stops only when empty.
-                    if (items.length === 0) break;
                     pageCursor = boardCursor(items);
                     if (delayMs) await sleep(delayMs);
                 }
             }
 
             if (reminders) {
-                try {
-                    const resp = await api.getListReminder(
-                        { page: 1, count: pageSize },
-                        t.threadId,
-                        isGroup ? THREAD_TYPE.GROUP : THREAD_TYPE.USER,
-                    );
-                    for (const r of asList(resp)) {
+                const seen = new Set();
+                for (let page = 1; ; page++) {
+                    let list;
+                    try {
+                        list = asList(
+                            await api.getListReminder(
+                                { page, count: REMINDER_PAGE_SIZE },
+                                t.threadId,
+                                isGroup ? THREAD_TYPE.GROUP : THREAD_TYPE.USER,
+                            ),
+                        );
+                    } catch (e) {
+                        if (limited(e, index)) return;
+                        noteHere("reminder", e);
+                        break;
+                    }
+                    const keys = list.map(itemKey);
+                    if (!list.length || (page > 1 && keys.every((k) => k !== null && seen.has(k)))) break;
+                    for (const k of keys) if (k !== null) seen.add(k);
+                    for (const r of list) {
                         const row = normalizeReminder(r, t.threadId, t.type);
                         if (!row) continue;
                         try {
@@ -280,8 +346,9 @@ export async function syncBoards(opts = {}) {
                             noteHere("reminder-write", e);
                         }
                     }
-                } catch (e) {
-                    noteHere("reminder", e);
+                    // A short page is the last one.
+                    if (list.length < REMINDER_PAGE_SIZE) break;
+                    if (delayMs) await sleep(delayMs);
                 }
             }
 
@@ -300,6 +367,10 @@ export async function syncBoards(opts = {}) {
         }
     };
 
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(8, concurrency)) }, worker));
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(MAX_BOARD_CONCURRENCY, concurrency)) }, worker));
+    if (stats.stoppedBy) {
+        stats.left = threads.length - stats.threads;
+        stats.nextThreadId = threads[stopAt]?.threadId ?? null;
+    }
     return stats;
 }

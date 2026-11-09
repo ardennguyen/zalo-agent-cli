@@ -443,11 +443,19 @@ describe("a restore against the fake phone", () => {
 
         it("a second run does not ask again for conversations the first one settled", async () => {
             const who = account();
-            await run({}, { account: who });
+            const first = await run({}, { account: who });
             await zalo.stop();
             zalo = null;
             const second = await run({}, { account: who });
             assert.equal(second.error, null);
+            // A skipped conversation is still listed, so still on the account: the orphan report reads this list,
+            // and leaving the skipped ones out reported them as "returned no messages".
+            assert.equal(first.result.liveThreadIds.length, CONVS.length);
+            assert.deepEqual(
+                [...second.result.liveThreadIds].sort(),
+                [...first.result.liveThreadIds].sort(),
+                "every listed conversation is accounted for, though none was asked for",
+            );
             assert.equal(second.result.reason, "complete");
             assert.equal(second.phone.asked("message").length, 0, "no message request: everything was settled");
             assert.equal(second.phone.asked("conversation").length, 1, "the conversation list is still asked for");
@@ -469,6 +477,11 @@ describe("a restore against the fake phone", () => {
                 "only CONVA, and only from the end of what was settled",
             );
             assert.equal(second.result.ranges.incremental, 1);
+            assert.equal(
+                second.result.liveThreadIds.length,
+                CONVS.length,
+                "the skipped conversation is accounted for beside the one asked for incrementally",
+            );
             const done = Object.fromEntries(getSyncRanges("done").map((r) => [r.partition, r]));
             assert.equal(done["oneone/CONVA"].fromTs, 0, "the covered window still starts where the first run's did");
             assert.equal(done["oneone/CONVA"].toTs, T + 9000);

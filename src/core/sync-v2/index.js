@@ -995,6 +995,14 @@ export class SyncV2 {
         const writeFailed = new Set();
         const mappedThreads = new Set(),
             unmappedThreads = new Set();
+        /** Account for one listed conversation (`oneone/<gid>` or `group/<gid>`) under its thread id. */
+        const noteThread = (partition) => {
+            const gid = /^(?:oneone|group)\/(.+)$/.exec(partition)?.[1];
+            const hit = gid ? threadMap.get(gid) : undefined;
+            const threadId = hit ? hit.id : partition;
+            (hit ? mappedThreads : unmappedThreads).add(threadId);
+            return { gid, hit, threadId };
+        };
         /** type name -> count, for the command's summary line. */
         const typeCounts = Object.create(null);
         let reason = "complete";
@@ -1222,6 +1230,11 @@ export class SyncV2 {
                     limit: 2147483647,
                 };
             });
+            // Every listed conversation is on the account, whether this run asks for it, asks only for what came
+            // after an earlier run, or skips it as settled. Only the ones that returned messages used to be
+            // accounted for, so a run that skipped 2,247 settled conversations reported them as "returned no
+            // messages" and could not prove anything gone.
+            for (const q of partitions) noteThread(q.partition);
             // What earlier runs settled is not asked for again, and what they got part of is asked for from
             // there (Y5): a killed run resumes, and a later run only fetches what came after the last one.
             const plan = planRanges({
@@ -1381,11 +1394,8 @@ export class SyncV2 {
                 // and a long block on the event loop.
                 runInTransaction(() => {
                     for (const part of obj.partitionsList || []) {
-                        const gid = /^(?:oneone|group)\/(.+)$/.exec(part.id)?.[1];
-                        const hit = gid && threadMap.get(gid);
+                        const { gid, hit, threadId } = noteThread(part.id);
                         const isGroup = part.id.startsWith("group/");
-                        const threadId = hit ? hit.id : part.id;
-                        (hit ? mappedThreads : unmappedThreads).add(threadId);
                         const cm = (gid && convMeta.get(gid)) || {};
                         for (const msg of part.messagesList || []) {
                             // The payload's numeric msgType + meta decide the row;

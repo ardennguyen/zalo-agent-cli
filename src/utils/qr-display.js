@@ -9,8 +9,10 @@
  * Display methods:
  * 1. iTerm2/Kitty/WezTerm inline image (renders PNG directly in terminal)
  * 2. Save PNG to config dir
- * 3. Base64 data URL (for IDE/agent preview)
- * 4. File path with platform-specific open hint
+ * 3. File path with platform-specific open hint (and the loopback page, from the login)
+ *
+ * The base64 data URL is in the --json event only (for agents). Printed to a terminal it was a screenful of text
+ * nobody could use.
  */
 
 import { resolve } from "path";
@@ -85,8 +87,6 @@ export function displayQR(event) {
         if (layer === 2) info("This account asks to confirm this device: scan this new QR code once more.");
         info(`QR image saved: ${qrPath}`);
         info(`To open: ${openCmd} "${qrPath}"`);
-        info("Copy this URL and paste in any browser to view QR:");
-        console.log(`data:image/png;base64,${imageB64}`);
     }
 }
 

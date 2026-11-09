@@ -236,7 +236,7 @@ Lấy tin nhắn đã buffer mà consumer này chưa đánh dấu đã đọc (x
 |-----|------|--------|
 | `threadId` | string (tuỳ chọn) | Lọc theo thread cụ thể. Bỏ qua để đọc tất cả thread đang watch |
 | `since` | number (mặc định 0) | Cursor từ lần gọi trước — chỉ lấy tin có cursor lớn hơn. `0` nghĩa là bắt đầu sau read cursor của consumer này |
-| `limit` | number (mặc định 20, tối đa 100) | Số tin tối đa trả về |
+| `limit` | number (tuỳ chọn) | Số tin tối đa trả về; bỏ trống là trả về mọi tin chưa đọc đang có trong buffer |
 | `consumer` | string (tuỳ chọn) | Tên bot khi nhiều bot dùng chung một server (chữ, số và `. _ : @ -`, tối đa 64 ký tự). Mỗi tên có read cursor riêng. Bỏ qua nếu chỉ có một bot (dùng consumer `"default"`) |
 
 **Kết quả mẫu:**
@@ -338,7 +338,7 @@ Tìm thread theo tên, fuzzy matching có hỗ trợ tiếng Việt (bỏ dấu,
 |-----|------|--------|
 | `query` | string | Từ khoá tìm kiếm (bắt buộc) |
 | `type` | enum "group"\|"dm"\|"all" (mặc định "all") | Lọc theo loại thread |
-| `limit` | number (mặc định 10, tối đa 50) | Số kết quả tối đa |
+| `limit` | number (tuỳ chọn) | Số kết quả tối đa; bỏ trống là trả về mọi kết quả khớp |
 
 **Kết quả mẫu:**
 ```json
@@ -497,7 +497,7 @@ Liệt kê các hội thoại có hoạt động gần nhất, mới nhất trư
 | Tên | Kiểu | Mô tả |
 |-----|------|--------|
 | `type` | enum "group"\|"dm"\|"all" (mặc định "all") | Lọc theo loại thread |
-| `limit` | number (mặc định 20, tối đa 200) | Số hội thoại tối đa **cho mỗi loại**, giống `conv recent -n`: với `all` là tối đa `limit` DM và `limit` nhóm |
+| `limit` | number (tuỳ chọn) | Số hội thoại tối đa **cho mỗi loại**, giống `conv recent -n`: với `all` là tối đa `limit` DM và `limit` nhóm; bỏ trống là trả về mọi hội thoại trong cache |
 
 **Kết quả mẫu:**
 ```json
@@ -581,7 +581,7 @@ Tìm kiếm nội dung tin nhắn trên toàn bộ cơ sở dữ liệu SQLite c
 | `last` | string (tuỳ chọn) | Chỉ lấy khoảng thời gian gần đây: `7d`, `2w`, `3m`, `1y` (thay cho `since`) |
 | `types` | string[] (tuỳ chọn) | Chỉ các loại tin: `["file","link"]`, `media` = ảnh và video; kết quả file/link khớp theo tên |
 | `accents` | `"fold"` \| `"exact"` (mặc định `fold`) | `fold`: bỏ qua dấu; `exact`: phải khớp dấu |
-| `limit` | number (mặc định 50, tối đa 200) | Số tin khớp tối đa mỗi trang |
+| `limit` | number (tuỳ chọn) | Số tin khớp tối đa mỗi trang; bỏ trống là trả về mọi tin khớp trong một lần (không phân trang) |
 | `cursor` | string (tuỳ chọn) | `nextCursor` của trang trước, giữ nguyên |
 | `context` | number (0-10, mặc định 0) | Số tin hiển thị trước và sau mỗi kết quả |
 
@@ -643,7 +643,7 @@ Tạo, liệt kê, xem chi tiết, xem danh sách phản hồi, sửa hoặc xo�
 | `time` | number\|string (tuỳ chọn) | Thời gian nhắc hẹn: epoch ms, `"YYYY-MM-DD HH:mm"`, hoặc chuỗi ISO |
 | `emoji` | string (tuỳ chọn) | Biểu tượng cảm xúc (mặc định `"⏰"` khi tạo mới) |
 | `repeat` | enum `"none"\|"daily"\|"weekly"\|"monthly"` (tuỳ chọn) | Chế độ lặp lại |
-| `page`, `count` | number (tuỳ chọn) | Phân trang cho `list` (mặc định `page: 1`, `count: 20`) |
+| `page`, `count` | number (tuỳ chọn) | Phân trang cho `list`: bỏ trống cả hai là đọc hết mọi trang (lần lượt từng trang, 20 mục một trang); có một trong hai thì chỉ đọc đúng trang đó (mặc định `page: 1`, `count: 20`) |
 
 ---
 
@@ -661,7 +661,7 @@ Tạo/sửa ghi chú nhóm, liệt kê bảng tin nhóm (ghi chú, tin ghim, bì
 | `title` | string (tuỳ chọn) | Nội dung ghi chú (bắt buộc cho `create`, `edit`) |
 | `pin` | boolean (mặc định `false`) | Ghim ghi chú lên đầu bảng tin nhóm khi `create` hoặc `edit` |
 | `msgId` | string (tuỳ chọn) | ID tin nhắn văn bản trong cache cần ghim (`pin_message`) hoặc bỏ ghim (`unpin_message`) |
-| `page`, `count` | number (tuỳ chọn) | Phân trang cho `list` (mặc định `page: 1`, `count: 20`) |
+| `page`, `count` | number (tuỳ chọn) | Phân trang cho `list`: bỏ trống cả hai là đọc hết mọi trang (lần lượt từng trang, 20 mục một trang); có một trong hai thì chỉ đọc đúng trang đó (mặc định `page: 1`, `count: 20`) |
 
 ---
 
@@ -691,7 +691,7 @@ Chờ tin nhắn mới tiếp theo trong buffer theo cơ chế long-poll (0% CPU
 | `threadId` | string (tuỳ chọn) | Chỉ chờ tin nhắn trong hội thoại này |
 | `since` | number (tuỳ chọn) | Cursor từ lần đọc trước; nếu đã có tin mới hơn `since` thì trả về ngay |
 | `timeoutSec` | number (mặc định 55, tối đa 300) | Thời gian chờ tối đa tính bằng giây trước khi trả về `status: "timeout"` |
-| `limit` | number (mặc định 1, tối đa 100) | Trả về tối đa chừng này tin trong một lần gọi, đúng thứ tự, trong `messages` (`message` là tin đầu, `cursor` là của tin cuối, `hasMore` cho biết còn tin đang chờ) |
+| `limit` | number (tuỳ chọn) | Bỏ trống thì trả về mọi tin đang chờ, đúng thứ tự, trong `messages` (`message` là tin đầu, `cursor` là của tin cuối); có `limit` thì trả về tối đa chừng đó tin và `hasMore` cho biết còn tin đang chờ. **Thay đổi không tương thích ở 3.0.0**: trước đây mặc định là 1 tin, client chỉ đọc `message` rồi đi tiếp từ `cursor` sẽ bỏ sót các tin sau tin đầu: hãy đọc `messages` (hoặc truyền `limit: 1`) |
 | `settleMs` | number (mặc định 0, tối đa 5000) | Sau tin đầu tiên, chờ thêm chừng này mili giây để gom nốt phần còn lại của một đợt tin |
 
 **Gọi trực tiếp qua CLI (không cần gọi qua MCP hay HTTP port):**
@@ -788,7 +788,7 @@ Kiểm tra, liệt kê và xử lý lời mời kết bạn, liệt kê bạn b�
 | `userId` | string (tuỳ chọn) | Zalo userId dạng số. Bắt buộc với `status`, `send`, `accept`, `reject`, `undo`, `alias`; tìm bằng `zalo_lookup_user` |
 | `message` | string (tuỳ chọn) | Lời nhắn kèm lời mời (chỉ với `send`) |
 | `alias` | string (tuỳ chọn) | Chỉ với `alias`: biệt danh hiển thị cho `userId`; chuỗi rỗng thì xóa biệt danh |
-| `limit` | number 1–1000 (tuỳ chọn) | Số mục tối đa trả về cho `list` (mặc định 200) và `alias_list` (mặc định 100); kết quả cho biết tổng số |
+| `limit` | number (tuỳ chọn) | Số mục tối đa trả về cho `list` và `alias_list`; bỏ trống là trả về tất cả (`alias_list` đọc hết mọi trang); `list` cho biết tổng số |
 
 Kết quả theo từng `action`:
 
@@ -834,7 +834,7 @@ Các lệnh `profile` và `account devices`: `avatar` (`filePath`), `bio` (đọ
 `zalo_bank` (lệnh `bank`): `banks` (ngân hàng Zalo hỗ trợ, lọc bằng `query`), `accounts` (tài khoản đã lưu, có `bankAccountId`), `add` / `update` (`bank`, `accountNumber`, `holderName`), `remove` (được bảo vệ). Gửi thẻ ngân hàng hay ảnh VietQR vào hội thoại thì dùng `zalo_send_message`.
 
 ### `zalo_cloud`, `zalo_sticker`, `zalo_link`
-`zalo_cloud` (lệnh `cloud ls` / `cloud plan` / `cloud apply`, trên chỉ mục zCloud cục bộ): `summary` (`top`) và `plan` (`threadIds`, `kinds`, `olderThanDays`, `largerThanMb`, `limit`, `onlySavedLocally`, `includeGroups`, `includeMyCloud`) chỉ đọc; `apply` (cùng bộ lọc) xóa tin nhắn chứa từng mục trong kế hoạch, với tài khoản này trên mọi thiết bị, như màn hình cloud của Zalo Web: không hoàn tác được, chưa kiểm chứng thật, được bảo vệ (`dryRun` trả về kế hoạch).
+`zalo_cloud` (lệnh `cloud ls` / `cloud plan` / `cloud apply`, trên chỉ mục zCloud cục bộ): `summary` (`top`, bỏ trống là mọi hội thoại) và `plan` (`threadIds`, `kinds`, `olderThanDays`, `largerThanMb`, `limit`, `onlySavedLocally`, `includeGroups`, `includeMyCloud`) chỉ đọc; `apply` (cùng bộ lọc) xóa tin nhắn chứa từng mục trong kế hoạch, với tài khoản này trên mọi thiết bị, như màn hình cloud của Zalo Web: không hoàn tác được, chưa kiểm chứng thật, được bảo vệ (`dryRun` trả về kế hoạch).
 `zalo_sticker`: `search` (`keyword` → `stickerIds`, như `msg sticker-list`) và `detail` (`stickerIds`, như `msg sticker-detail`). Danh mục sticker là `zalo_read` `sticker-category`.
 `zalo_link`: `preview` (tiêu đề, mô tả, nguồn, ảnh, như `msg link-preview`) và `scan` (`isSafe`, như `msg scan-url`).
 
@@ -906,7 +906,6 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
     "cooldown": "5m"
   },
   "limits": {
-    "maxMessagesPerPoll": 20,
     "autoDigestThreshold": 50,
     "bufferMaxAge": "2h",
     "bufferMaxSize": 500
@@ -977,7 +976,6 @@ File này tuỳ chọn — nếu không tồn tại, server dùng giá trị m�
 | `notify.thread` | Thread ID nhận thông báo (mặc định không đặt) |
 | `notify.on` | Loại thread kích hoạt thông báo, ví dụ `["dm"]` |
 | `notify.cooldown` | Thời gian chờ tối thiểu giữa 2 lần thông báo, ví dụ `"5m"` |
-| `limits.maxMessagesPerPoll` | Giá trị `limit` mặc định cho `zalo_get_messages` |
 | `limits.autoDigestThreshold` | Ngưỡng số tin để kích hoạt digest (nếu bật) |
 | `limits.bufferMaxAge` | Tuổi tin tối đa trong buffer trước khi bị dọn (ví dụ `"2h"`) |
 | `limits.bufferMaxSize` | Số tin tối đa giữ lại mỗi thread |

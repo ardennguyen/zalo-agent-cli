@@ -340,7 +340,7 @@ File tùy chọn tại `~/.zalo-agent-cli/mcp-config.json` — được gộp n�
 {
   "watchThreads": ["dm:*", "group:*"],
   "notify": { "enabled": false, "thread": null, "on": ["dm"], "cooldown": "5m" },
-  "limits": { "maxMessagesPerPoll": 20, "bufferMaxAge": "2h", "bufferMaxSize": 500 },
+  "limits": { "bufferMaxAge": "2h", "bufferMaxSize": 500 },
   "media": { "downloadDir": null, "autoOpen": null, "deliver": null, "linkAuth": null },
   "confirmMode": "agent",
   "hiddenChats": "exclude",

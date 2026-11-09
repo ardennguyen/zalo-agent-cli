@@ -277,7 +277,7 @@ Both take an `_<ownId>` form. `/status` and `/metrics` carry `lastWakeMs` / `las
 | `ZALO_MCP_ADMIN_CLIENT_CA` | yes | a CA certificate (PEM): a client certificate it signed admits to the admin API (mTLS). Needs `--cert`/`--key` | | `admin.clientCa` |
 | `ZALO_MCP_TRUSTED_PROXIES` | yes | comma list of reverse-proxy addresses whose `X-Forwarded-For` is believed (`127.0.0.1`, or `loopback`). Default none: the client address is the connection's peer | | `trustedProxies` |
 | `ZALO_MCP_GROUP_CONFIRM` |  | deprecated: `0` means confirm mode `off`, `1` means `agent`; an explicit confirm mode wins | | `groupConfirm` |
-| `ZALO_SYNC_NAME_REFRESH_MAX` |  | non-friend DM names one sync restore may look up. Default 500 | | |
+| `ZALO_SYNC_NAME_REFRESH_MAX` |  | opt-in cap on the non-friend DM names one sync restore looks up. Unset (default) = all of them, in requests of 500 like Zalo PC; a 221 refusal stops the refresh for that run and parks the refused ids for an hour (or until the server's `nextTs`) | | |
 | `ZALO_SEND_FORMAT` |  | `markdown` or `plain`: the default format of a text send. Unset: `msg send` sends plain (a person typed it), `zalo_send_message` converts Markdown (a model wrote it). An explicit `--md`/`--markdown` or the tool's `format` wins | | |
 | `ZALO_START_JITTER` | yes | wait a random time up to this many seconds (0–600, default 0) before logging in, so a fleet restarting together does not log in together | | |
 | `ZALO_LOGIN_SLOTS` | yes | at most this many daemons on the machine logging in and loading their lists at once (0–64; default 0, no cap); the rest wait for a slot. `ZALO_LOGIN_SLOT_WAIT` (seconds, default 900) is how long one waits before going ahead anyway | | |

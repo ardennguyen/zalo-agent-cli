@@ -46,6 +46,7 @@ import { classifySyncMessage } from "../../zalo/transfer-sync/message-types.js";
 import { resolveNonFriendDms } from "../../zalo/custom/gid.js";
 import { createSenderResolver } from "./senders.js";
 import { readUserAliases, currentUserName, resolveCurrentUserNames } from "../current-user-names.js";
+import { refreshProfiles } from "../name-refresh.js";
 import { startKeepAlive } from "../../zalo/listener/keepalive.js";
 import { DEVICE_LABEL } from "../../zalo/profile.js";
 import { decodeFrame } from "../../zalo/listener/frames.js";
@@ -543,14 +544,15 @@ export class SyncV2 {
     /**
      * Refresh existing DM peers outside the requested message window, including non-friends.
      *
-     * Every restore used to look up every non-friend DM peer in the cache: on a busy account that
-     * is thousands of ids, each restore, and Zalo answered with a limit. So the run asks for at most
-     * `maxLookups` of them (500 unless ZALO_SYNC_NAME_REFRESH_MAX says otherwise), peers whose
-     * cached title is missing or just their id first, because those are the ones a restore can
-     * actually improve. The rest keep the titles they have until a later restore reaches them.
+     * Every non-friend DM peer in the cache is looked up, the way Zalo PC refreshes profiles: up to 500 uids per
+     * request, one request at a time (../name-refresh.js). Peers whose cached title is missing or just their id go
+     * first, because those are the ones a restore can actually improve. When Zalo answers 221 (too many requests)
+     * the refresh stops for this run, the refused request's uids are parked for an hour (or until the server's
+     * `nextTs`), and the result says how many were left. ZALO_SYNC_NAME_REFRESH_MAX, when set, is an opt-in cap.
      *
      * @param {Map<string, object>} threadMap
      * @param {(message: string) => void} [log]
+     * @returns {Promise<object>} what ../name-refresh.js `refreshProfiles` reported
      */
     async _refreshDmNames(threadMap, log = () => {}) {
         const profiles = new Map(
@@ -563,24 +565,51 @@ export class SyncV2 {
         const wanted = peers.filter((t) => !profiles.has(String(t.threadId)));
         wanted.sort((a, b) => Number(unknown(b)) - Number(unknown(a)));
         const envCap = Number.parseInt(process.env.ZALO_SYNC_NAME_REFRESH_MAX ?? "", 10);
-        const maxLookups = Number.isFinite(envCap) && envCap >= 0 ? envCap : 500;
-        const chosen = wanted.slice(0, maxLookups);
+        const chosen = Number.isFinite(envCap) && envCap >= 0 ? wanted.slice(0, envCap) : wanted;
         if (wanted.length) {
             log(
                 `refreshing ${chosen.length} of ${wanted.length} non-friend DM peer name(s)` +
-                    (chosen.length < wanted.length
-                        ? ` (cap ${maxLookups}; the rest keep their cached titles until a later restore)`
-                        : ""),
+                    (chosen.length < wanted.length ? ` (ZALO_SYNC_NAME_REFRESH_MAX=${envCap})` : ""),
             );
         }
-        const names = await resolveCurrentUserNames(
-            this.api,
-            [...profiles.keys(), ...chosen.map((t) => String(t.threadId))],
-            { aliases: this.userAliases, profiles, log },
+        const chosenIds = chosen.map((t) => String(t.threadId));
+        let canLookup = false;
+        try {
+            canLookup = typeof this.api?.getUserInfo === "function";
+        } catch {
+            /* a live-API proxy throws while the session re-logs in */
+        }
+        const refresh = canLookup
+            ? await refreshProfiles(
+                  this.api,
+                  chosenIds.filter((id) => /^[1-9][0-9]*$/.test(id)),
+                  { stateFile: resolve(this.accountDir, "sync", "name-refresh-parked.json"), log },
+              )
+            : { profiles: new Map(), asked: 0, left: 0, parkedSkipped: 0, stoppedBy: null, parkedUntil: null };
+        for (const [id, profile] of refresh.profiles) profiles.set(id, profile);
+        const aliases = this.userAliases || new Map();
+        // A peer whose profile was not fetched keeps its cached title, unless the owner gave it an alias.
+        const names = new Map(
+            [...profiles.keys(), ...chosenIds.filter((id) => aliases.has(id))].map((id) => [
+                id,
+                currentUserName(id, profiles.get(id), aliases),
+            ]),
         );
+        this.nameRefresh =
+            refresh.stoppedBy || refresh.parkedSkipped
+                ? {
+                      peers: chosenIds.length,
+                      refreshed: refresh.asked,
+                      left: refresh.left,
+                      parked: refresh.parkedSkipped,
+                      stoppedBy: refresh.stoppedBy,
+                      parkedUntil: refresh.parkedUntil,
+                  }
+                : null;
         for (const [id, current] of names) {
             upsertThread({ threadId: id, type: "dm", name: current.name, lastUpdate: 0 });
         }
+        return refresh;
     }
 
     /** Refresh the active account's own display name via onSelfName if provided. */
@@ -1748,6 +1777,7 @@ export class SyncV2 {
             threadsMapped: mapped.size,
             threadsUnmapped: unmapped.size,
             reason,
+            ...(this.nameRefresh && { nameRefresh: this.nameRefresh }),
             ...extra,
         };
     }

@@ -14,7 +14,7 @@
  * this buffer) rather than as "nothing yet": skipping is silent, a repeat is not.
  */
 
-import { batchParams } from "./wait-result.js";
+import { batchParams } from "./wait-batch.js";
 
 /** Sleep `ms`, or less if `signal` aborts. */
 function sleep(ms, signal) {

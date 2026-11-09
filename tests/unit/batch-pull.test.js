@@ -18,6 +18,7 @@ import { MAX_BATCH, MAX_SETTLE_MS, batchParams, waitResult } from "../../src/mcp
 import { createHTTPServer } from "../../src/mcp/mcp-http-transport.js";
 import { registerTools } from "../../src/mcp/mcp-tools.js";
 import { startDaemonChannel, waitViaDaemon } from "../../src/core/daemon-channel.js";
+import { noteAliasSnapshot, resetAliasBook } from "../../src/core/contact-names.js";
 
 before(() => {
     assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR);
@@ -449,5 +450,41 @@ describe("mcp wait over the daemon channel", () => {
             ["x"],
         );
         rmSync(old, { recursive: true, force: true });
+    });
+});
+
+describe("a wait names the sender as of now, not as of when the message arrived", () => {
+    after(() => resetAliasBook());
+
+    it("an alias set after the message was buffered is the senderName every wait returns", () => {
+        resetAliasBook();
+        noteAliasSnapshot(new Map([["u-renamed", "Old Alias"]]));
+        // As the daemon buffered it: alias-first at the time, the carried name kept as senderZaloName.
+        const buffered = {
+            _cursor: 7,
+            msgId: "m7",
+            threadId: "t1",
+            senderId: "u-renamed",
+            senderName: "Old Alias",
+            senderAlias: "Old Alias",
+            senderZaloName: "Carried Name",
+        };
+        // The rename lands in the same catch-up, a moment after the message.
+        noteAliasSnapshot(new Map([["u-renamed", "New Alias"]]));
+        const r = waitResult({ messages: [buffered], cursorWhenEmpty: 0 });
+        assert.equal(r.messages[0].senderName, "New Alias");
+        assert.equal(r.messages[0].senderAlias, "New Alias");
+        assert.equal(r.messages[0].senderZaloName, "Carried Name", "the carried name is kept");
+        assert.equal(r.message.senderName, "New Alias", "the single-message field too");
+        // The alias removed: the carried name, not the stale alias.
+        noteAliasSnapshot(new Map());
+        const r2 = waitResult({ messages: [buffered], cursorWhenEmpty: 0 });
+        assert.equal(r2.messages[0].senderName, "Carried Name");
+        assert.equal(r2.messages[0].senderAlias, null);
+    });
+
+    it("a system event passes as it is", () => {
+        const ev = { _cursor: 8, system: true, type: "account_state", text: "x", threadId: null };
+        assert.deepEqual(waitResult({ messages: [ev], cursorWhenEmpty: 0 }).messages[0], ev);
     });
 });

@@ -11,25 +11,23 @@
  * `hasMore` are added. With `limit` 1 the reply is what it always was, plus those three fields.
  */
 
-/** Most messages one call returns. */
-export const MAX_BATCH = 100;
-/** Longest a call waits for company after the first message. */
-export const MAX_SETTLE_MS = 5000;
+import { senderNameFields } from "../core/contact-names.js";
 
 /**
- * Clamp the caller's batch settings; anything unusable is the default (one message, no settling).
+ * A buffered message with its sender named as of now: the owner's alias when one is set, else the name the message
+ * carried. The buffer keeps the name from when the message arrived, and an alias set or changed since (a rename while
+ * parked comes back in the same catch-up as the messages, and is read about two seconds after them) would otherwise
+ * show the old name, where Zalo PC and Web show the current alias.
  *
- * @param {{ limit?: unknown, settleMs?: unknown }} [raw]
- * @returns {{ limit: number, settleMs: number }}
+ * @param {object} m
+ * @returns {object}
  */
-export function batchParams({ limit, settleMs } = {}) {
-    const l = Number(limit);
-    const s = Number(settleMs);
-    return {
-        limit: Number.isFinite(l) && l >= 1 ? Math.min(MAX_BATCH, Math.floor(l)) : 1,
-        settleMs: Number.isFinite(s) && s > 0 ? Math.min(MAX_SETTLE_MS, Math.floor(s)) : 0,
-    };
+function withCurrentSender(m) {
+    if (!m || m.system || m.senderId === undefined || m.senderId === null) return m;
+    return { ...m, ...senderNameFields(m.senderId, m.senderZaloName ?? m.senderName ?? null) };
 }
+
+export { MAX_BATCH, MAX_SETTLE_MS, batchParams } from "./wait-batch.js";
 
 /**
  * @param {object} args
@@ -40,7 +38,7 @@ export function batchParams({ limit, settleMs } = {}) {
  * @returns {{ status: "message"|"timeout", message: object|null, messages: object[], count: number, hasMore: boolean, cursor: number }}
  */
 export function waitResult({ messages, hasMore = false, cursorWhenEmpty, decorate = (m) => m }) {
-    const out = messages.map(decorate);
+    const out = messages.map((m) => decorate(withCurrentSender(m)));
     return {
         status: out.length ? "message" : "timeout",
         message: out[0] ?? null,

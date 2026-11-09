@@ -14,6 +14,7 @@ import {
     accountStateOfHealth,
     accountStateSystemEvent,
     createAccountStateTracker,
+    createBufferStateFilter,
 } from "../../src/core/account-state.js";
 import { createDaemonHealth, renderPrometheus } from "../../src/core/daemon-health.js";
 import { STATES, classifyAccount } from "../../src/core/fleet.js";
@@ -22,6 +23,40 @@ import { createHTTPServer } from "../../src/mcp/mcp-http-transport.js";
 const OWN = "1000000000000000961";
 const SRC = join(import.meta.dirname, "..", "..", "src");
 before(() => assertSandboxed(CONFIG_DIR, SANDBOX_CONFIG_DIR));
+
+describe("which account_state events reach the MCP buffer a wait reads", () => {
+    const run = (states) => {
+        const keep = createBufferStateFilter();
+        return states.filter((state) => keep({ state }));
+    };
+
+    it("a park and the wake that ends it stay out: a wait is not answered by the wake it caused", () => {
+        assert.deepEqual(run(["connecting", "connected", "idle", "connecting", "connected", "idle"]), [
+            "connecting",
+            "connected",
+        ]);
+    });
+
+    it("a drop after the wake, a kick, a yield and a sign-out still go in", () => {
+        assert.deepEqual(
+            run(["connecting", "connected", "idle", "connecting", "connected", "connecting", "connected"]),
+            ["connecting", "connected", "connecting", "connected"],
+        );
+        assert.deepEqual(run(["connected", "idle", "connecting", "yielded"]), ["connected", "yielded"]);
+        assert.deepEqual(run(["connected", "idle", "connecting", "login_needed", "signed_out"]), [
+            "connected",
+            "login_needed",
+            "signed_out",
+        ]);
+        assert.deepEqual(run(["connected", "kicked"]), ["connected", "kicked"]);
+    });
+
+    it("mcp start pushes through the filter, and the CLI wait prints a system event as one", () => {
+        const src = readFileSync(join(SRC, "commands", "mcp.js"), "utf8");
+        assert.match(src, /if \(intoBuffer\(event\)\) buffer\.pushSystem\(accountStateSystemEvent\(event\)\)/);
+        assert.match(src, /if \(m\.system\) \{/);
+    });
+});
 
 describe("account_state tracker", () => {
     it("each transition is said once, in order; supervisor noise maps to the same word", () => {

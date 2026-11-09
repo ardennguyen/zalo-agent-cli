@@ -81,7 +81,12 @@ import {
     startupGapReason,
 } from "../core/listener-lifecycle.js";
 import { createDaemonPresence, presenceTransport, resolveDaemonPresence } from "../core/daemon-presence.js";
-import { accountStateSystemEvent, createAccountStateTracker, describeAccountState } from "../core/account-state.js";
+import {
+    accountStateSystemEvent,
+    createAccountStateTracker,
+    createBufferStateFilter,
+    describeAccountState,
+} from "../core/account-state.js";
 import {
     storeLiveMessage,
     refreshLiveMessageIdentities,
@@ -1110,12 +1115,14 @@ export function registerMCPCommands(program) {
             });
             // account_state (src/core/account-state.js): one word per change, to the webhook, the live buffer and
             // /status, the same as `listen`; detail.presence is the mode presence runs in.
+            // A park and its wake stay out of the buffer a wait reads (createBufferStateFilter says why).
+            const intoBuffer = createBufferStateFilter();
             const accountState = createAccountStateTracker({
                 accountId: activeAcc.ownId,
                 emit: (event) => {
                     console.error(`[mcp] ${describeAccountState(event)}`);
                     webhookDelivery?.enqueue(null, event);
-                    buffer.pushSystem(accountStateSystemEvent(event));
+                    if (intoBuffer(event)) buffer.pushSystem(accountStateSystemEvent(event));
                 },
                 detail: () => daemonPresence?.detail() ?? { presence: presenceCheck.settings.mode },
             });
@@ -1861,6 +1868,11 @@ export function registerMCPCommands(program) {
                 () => {
                     if (res.status === "message" && res.messages?.length) {
                         for (const m of res.messages) {
+                            // A system event (account_state, group_gone, queue_overflow, storage_quota) is no message.
+                            if (m.system) {
+                                info(`[cursor ${m._cursor}] ${m.type}: ${m.text ?? ""}`);
+                                continue;
+                            }
                             const label = m.threadName ? `${m.threadName} (${m.threadId})` : m.threadId;
                             success(
                                 `[cursor ${m._cursor}] ${m.senderName || m.senderId} in ${label}: ${m.text || `(${m.type})`}`,

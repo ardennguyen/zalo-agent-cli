@@ -114,6 +114,26 @@ export function createAccountStateTracker({ accountId, emit, now = Date.now, det
 }
 
 /**
+ * Which `account_state` events go into the MCP buffer that `zalo_wait_for_message` and `mcp wait` read. A park, and
+ * the wake that ends it, are on-demand presence doing its job: they still reach the webhook, the log and `/status`,
+ * but in the buffer every wait on a parked account was answered by the `connecting -> connected` of the wake it caused
+ * itself, before the catch-up had delivered a single message. A drop, a kick, a yield, a sign-out, and a wake that
+ * fails (`login_needed`) still go in.
+ *
+ * @returns {(event: {state: string}) => boolean} true: push this one
+ */
+export function createBufferStateFilter() {
+    let waking = false; // since a park, until the wake reaches connected or fails
+    return (event) => {
+        const routine =
+            event.state === "idle" || (waking && (event.state === "connecting" || event.state === "connected"));
+        if (event.state === "idle") waking = true;
+        else if (event.state !== "connecting") waking = false;
+        return !routine;
+    };
+}
+
+/**
  * One `account_state` event as the MCP buffer carries it (a system event, as `storage_quota`).
  *
  * @param {object} e

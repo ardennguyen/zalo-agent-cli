@@ -616,7 +616,7 @@ function cacheHistory(threadId, limit, before, nameCache) {
 /** What zalo_get_messages and zalo_wait_for_message say about the system events in their list. */
 const SYSTEM_EVENTS_NOTE =
     "A system event arrives in the same list with `system: true` and `msgId` null, only to a read or wait that names no `threadId`; each has a `type` and a `text` to show a person. " +
-    "`account_state`: the account's connection state changed (`state` idle, connecting, connected, kicked, yielded, login_needed, signed_out or maintenance, `previous`, `detail`); yielded and signed_out refuse every call until a person acts, as `text` says. " +
+    "`account_state`: the account's connection state changed (`state` idle, connecting, connected, kicked, yielded, login_needed, signed_out or maintenance, `previous`, `detail`); yielded and signed_out refuse every call until a person acts, as `text` says; a park and the wake that ends it are not in the buffer. " +
     "`group_gone`: the account left, was removed or blocked from, or saw the disbanding of the group in `threadId` (`reason`, `leftAt`, `mode` purge or keep, `purged` counts). " +
     "`queue_overflow`: Zalo's offline queue overflowed and messages from `fromTs` to `toTs` were dropped (`queues`, `groups` repair counts, `pending`; when pending, `command` is the sync the owner runs, which taps the phone). " +
     "`storage_quota`: this account's storage on the server is near or over its quota, or was purged, or is back within it (`level` warn, over, grace_ending, purged or ok; `usedBytes`, `limitBytes`, `purgeAt`); zalo_profile 'usage' reads the current usage. ";

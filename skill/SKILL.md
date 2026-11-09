@@ -81,10 +81,11 @@ zalo-agent msg delete <msgId> <ID>                      # Delete self only (--ev
 zalo-agent msg forward <msgId> <targetId>               # Forward (cached messages only)
 zalo-agent msg pin <msgId> [threadId]                   # Pin a cached text message
 zalo-agent msg unpin <msgId> [threadId]                 # Unpin
-zalo-agent msg history <ID> -n 50                       # History (from local cache)
+zalo-agent msg history <ID>                             # Every cached message (-n N: the N most recent)
 zalo-agent msg search duoc --last 3m --type text         # Search the local cache: no login, accents ignored (--exact to require them)
 zalo-agent msg media <msgId> --out photo.jpg             # Cached media, decrypted (default: a private copy for 10 min; --deliver link via the daemon)
-zalo-agent msg history <ID> -n 50 --no-cache            # Force live fetch; caches only what it lacked
+zalo-agent msg history <ID> -t 1 --no-cache             # Group: page Zalo's store back until done; caches only what it lacked
+zalo-agent msg history <ID> --scan                      # DM: also scan the socket's old messages (off by default: no 1-1 server history)
 ```
 Reactions: `:>` haha · `/-heart` heart · `/-strong` like · `:o` wow · `:-((` cry · `:-h` angry
 Also on `send`: `--markdown` (real Markdown: bold, italic, `#` headings, `-` bullets, `>` quotes, links — Zalo shows typed `**bold**` and `- item` as typed, so without a conversion an agent's Markdown arrives raw; `zalo_send_message` converts by default, `format: "plain"` opts out, `ZALO_SEND_FORMAT` sets the default), `--md` (the older markdown-like syntax), `--style start:len:style`, `--react <icon>` (auto-react to the message just sent), `--quote <msgId>` (quote-reply), and `@[userId]` mention tokens in the message body.
@@ -143,7 +144,7 @@ zalo-agent sync                              # EVERYTHING in one run: messages (
 zalo-agent sync --plan                       # ...show which stages would run and why; sends nothing
 zalo-agent sync --no-messages                # ...everything except the phone prompt
 zalo-agent sync-reactions                    # Reaction backlog only (cmd 610/611) — no phone needed
-zalo-agent msg history <ID> -n 50      # Reads from ~/.zalo-agent-cli/accounts/<ownId>/zalo.db
+zalo-agent msg history <ID>            # Reads from ~/.zalo-agent-cli/accounts/<ownId>/zalo.db
 zalo-agent sync-mobile --days 30             # ...only the last 30 days (default is ALL history, no date floor)
 zalo-agent sync-mobile --from 2018-01-01     # ...everything from an explicit date onward
 zalo-agent sync-mobile                       # Phone-backed history restore — prompts your phone ONCE
@@ -152,7 +153,7 @@ zalo-agent sync-mobile --force               # Skip the "already synced recently
 zalo-agent sync-mobile --messages-only       # ...history only, skip the media fetch
 zalo-agent sync-media                        # Re-run/resume the media fetch on its own — no phone needed
 zalo-agent sync-media --kind photo,video --dry-run   # ...plan the fetch without touching the network
-zalo-agent sync-boards                       # Notes, pinned messages, polls, reminders — NOT in the message stream
+zalo-agent sync-boards                       # Notes, pinned messages, polls, reminders of every conversation — NOT in the message stream
 zalo-agent sync-cloud                        # Walk the zCloud media index (records where backups live; follows removals; --full sweeps)
 zalo-agent cloud ls | cloud plan [--type video --older-than 365 --larger-than 50 --only-saved-locally]   # Reports on the local index: what a cleanup would cover. Deletes nothing
 zalo-agent cloud apply <same filters> --dry-run | --yes # Deletes the messages behind those items for this account, as Zalo Web's cloud view does (no undo; unverified)
@@ -284,7 +285,7 @@ To run **multiple Zalo accounts live at once**, launch one MCP server per accoun
 | `zalo_list_threads` | Buffered threads with unread counts, names and the account's own read state on Zalo (`readState`) | `type` (`dm`/`group`/`all`) |
 | `zalo_search_threads` | Fuzzy, Vietnamese-accent-insensitive thread lookup by name | `query`, `type`, `limit?` (omit for every match) |
 | `zalo_mark_read` | Mark buffered messages up to a cursor read for one consumer — **global, not per-thread**; deletes nothing, so bots sharing a server keep their own cursors | `cursor`, `consumer` |
-| `zalo_get_history` | Older messages from local cache (`zalo.db`) first, falling back to Zalo server; or one period from the cache, oldest first | `threadId`, `threadType?`, `limit` (default 50, max 200; max 1000 with a period), `before?`, `lastMsgId?`, `since?`/`until?` (epoch ms) or `last?` (7d…), paged by `nextSince` |
+| `zalo_get_history` | Older messages from local cache (`zalo.db`) first, falling back to Zalo server; or one period from the cache, oldest first | `threadId`, `threadType?`, `limit?` (a page; omitted = every message), `scan?` (DM socket scan, off unless given), `before?`, `lastMsgId?`, `since?`/`until?` (epoch ms) or `last?` (7d…), paged by `nextSince` |
 | `zalo_view_media` | Get a received photo, sticker, voice message, video or file: inline (image/audio content), a 10-minute link, or a private tempfile on the server (downloads first if needed) | `msgId`, `threadId?`, `deliver?`, `open?` |
 | `zalo_react` | React to a message, as `msg react` — refused, nothing sent, when the cliMsgId is neither passed nor cached | `msgId`, `threadId`, `reaction`, `threadType?`, `cliMsgId?` |
 | `zalo_undo` | Recall one of your own messages for everyone, as `msg undo`; same cliMsgId rule | `msgId`, `threadId`, `threadType?`, `cliMsgId?` |

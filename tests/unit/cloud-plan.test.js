@@ -141,6 +141,15 @@ describe("planCloudCleanup", () => {
         assert.equal(planCloudCleanup({ rows: many, ownId: OWN, filters: { limit: 2400 }, now: NOW }).listed, 2400);
     });
 
+    it("lists every conversation by size, not only the 20 largest (cloud ls, zalo_cloud summary)", () => {
+        const rows = Array.from({ length: 25 }, (_, i) =>
+            row(`c${i}`, { threadId: `10000000000000001${String(i).padStart(2, "0")}`, mediaSize: 1000 + i }),
+        );
+        const p = planCloudCleanup({ rows, ownId: OWN, now: NOW });
+        assert.equal(p.byConversation.length, 25);
+        assert.ok(p.byConversation[0].bytes >= p.byConversation[24].bytes, "largest first");
+    });
+
     it("groups the bytes by kind and by conversation, with names where it knows them", () => {
         const p = plan();
         assert.deepEqual(p.byKind.photo, { items: 1, bytes: 1_000 });

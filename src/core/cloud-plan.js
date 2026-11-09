@@ -271,7 +271,7 @@ export function planCloudCleanup({
         listed: listed.length,
         bytes,
         byKind,
-        byConversation: [...convs.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 20),
+        byConversation: [...convs.values()].sort((a, b) => b.bytes - a.bytes),
         excluded,
         risks,
     };

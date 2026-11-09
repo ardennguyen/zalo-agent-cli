@@ -142,19 +142,28 @@ async function fetchPage(api, host, { groupId, globalMsgId, src, old }) {
  *
  * @param {object} api - a logged-in session
  * @param {string} groupId - numeric group id; a leading "g" is stripped, as Zalo Web does
- * @param {number} [count=50] - how many of the newest messages to return, a whole number >= 1
+ * @param {number} [count=50] - how many of the newest messages to return, a whole number >= 1, or `Infinity` for
+ *   everything the store serves: pages of 50, one after another, until it says `hasMore: 0`, as Zalo Web pages a group
  * @param {object} [opts]
  * @param {number} [opts.delayMs=150] - pause between pages
- * @returns {Promise<{groupMsgs: Array<object>, more: 0|1, pages: number, filtered: boolean}>}
+ * @param {number} [opts.untilTs] - stop after the first page that reaches back to this time (ms): a caller that
+ *   only needs what came after it
+ * @returns {Promise<{groupMsgs: Array<object>, more: 0|1, pages: number, filtered: boolean, stalled: boolean}>}
  *   `groupMsgs` newest first; `more` is 1 when older messages can be fetched beyond those
  *   returned; `pages` is the number of requests made; `filtered` is true when Zalo withheld
  *   older messages (the page said `isFiltered`) — they exist but this store will not serve
- *   them, so `more` is 0
- * @throws {Error} when `count` is not a whole number >= 1, the session has no
+ *   them, so `more` is 0; `stalled` is true when the store said more follows but its cursor
+ *   did not move older (the walk stopped there instead of asking for the same page again)
+ * @throws {Error} when `count` is not a whole number >= 1 (or Infinity), the session has no
  *   group_cloud_message host, a request fails, or the store reports an error and returns nothing
  */
-export async function getGroupHistory(api, groupId, count = CM_PAGE_SIZE, { delayMs = PAGE_DELAY_MS } = {}) {
-    if (!Number.isInteger(count) || count < 1) {
+export async function getGroupHistory(
+    api,
+    groupId,
+    count = CM_PAGE_SIZE,
+    { delayMs = PAGE_DELAY_MS, untilTs = null } = {},
+) {
+    if (count !== Infinity && (!Number.isInteger(count) || count < 1)) {
         throw new Error(`count must be a whole number of at least 1, got ${count}`);
     }
     const host = api?.zpwServiceMap?.group_cloud_message?.[0];
@@ -167,8 +176,9 @@ export async function getGroupHistory(api, groupId, count = CM_PAGE_SIZE, { dela
 
     const gid = String(groupId).replace(/^g/, "");
     const ownId = String(api.getContext().uid ?? "");
-    // Enough for `count`, plus slack for pages thinned out by dropped events.
-    const maxPages = Math.ceil(count / CM_PAGE_SIZE) + 2;
+    // Enough for `count`, plus slack for pages thinned out by dropped events; no cap when everything is asked for.
+    const maxPages = count === Infinity ? Infinity : Math.ceil(count / CM_PAGE_SIZE) + 2;
+    let stalled = false;
 
     const kept = [];
     const seen = new Set();
@@ -218,17 +228,27 @@ export async function getGroupHistory(api, groupId, count = CM_PAGE_SIZE, { dela
             break;
         }
         if (kept.length >= count || !hasMore) break;
+        if (untilTs !== null && rows.some((d) => Number(d?.ts) <= untilTs)) break;
 
         // Zalo Web's loop: the next page starts at the lastMsgId the server
         // returned. A cursor that does not move older would ask for the same
         // page forever, so it ends the walk.
         const next = msgIdOf(page.lastMsgId);
-        if (next === null || next === 0n || next >= BigInt(cursor)) break;
+        if (next === null || next === 0n || next >= BigInt(cursor)) {
+            stalled = true;
+            break;
+        }
         cursor = next.toString();
         old = Number(page.isOld) > 0;
         src = SRC_LOAD_MORE;
     }
 
     kept.sort(newestFirst);
-    return { groupMsgs: kept.slice(0, count), more: kept.length > count || hasMore ? 1 : 0, pages, filtered };
+    return {
+        groupMsgs: count === Infinity ? kept : kept.slice(0, count),
+        more: kept.length > count || hasMore ? 1 : 0,
+        pages,
+        filtered,
+        stalled,
+    };
 }

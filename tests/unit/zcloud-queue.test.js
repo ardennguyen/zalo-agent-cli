@@ -597,13 +597,13 @@ describe("`sync-cloud` reads the plan first", () => {
         assert.equal(plan.optIn, null);
     });
 
-    it("walks up to 500 pages by default: the first sync of a 103-page queue must not end 'partial'", async () => {
+    it("has no page cap by default: --pages is an opt-in bound", async () => {
         const { Command } = await import("commander");
         const { registerSyncCommands } = await import("../../src/commands/sync.js");
         const program = new Command();
         registerSyncCommands(program);
         const cloud = program.commands.find((c) => c.name() === "sync-cloud");
-        assert.equal(cloud.options.find((o) => o.long === "--pages").defaultValue, 500);
+        assert.equal(cloud.options.find((o) => o.long === "--pages").defaultValue, undefined);
     });
 
     it("says what the plan is in one line", () => {

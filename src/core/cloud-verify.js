@@ -22,8 +22,8 @@
  * - **`forceVerify` and `forceReset` walk the whole queue from the top**, as the Web does (`verifyFromNothing`): past
  *   the 30-minute pace and the "already current" check, which the Web skips for them too, as a `--full` walk, so that
  *   once the server says it is done every item no page listed is swept (an interrupted walk sweeps nothing). Where the
- *   Web empties its store first, this keeps it until the walk has finished. A forced walk reads at most
- *   {@link FORCED_MAX_PAGES} pages, and forced walks are themselves paced at one in 30 minutes, a guard the Web has
+ *   Web empties its store first, this keeps it until the walk has finished. A walk, forced or not, has no page cap
+ *   (it reads until the server is done or its cursor stops moving); forced walks are paced at one in 30 minutes, a guard the Web has
  *   not. Still no baseline means still no walk, and the Web's report afterwards (`submit_verify_action`) is not sent.
  * - **`correctCloudKey` and `auditLocalCloudQueue` are read and left.** The first makes the Web fetch the account's
  *   cloud key again, which this client never holds (D8); the second audits its local media against the store and
@@ -40,11 +40,8 @@ export const CMD_MYCLOUD = 621;
 /** The web client acts on this event at most once per 30 minutes. */
 export const THROTTLE_MS = 30 * 60 * 1000;
 
-/** Pages one automatic walk may read; a longer queue continues on the next notice. */
-const AUTO_MAX_PAGES = 20;
-
-/** Pages a forced walk may read: the whole queue of an old account, as `sync-cloud` reads it. */
-export const FORCED_MAX_PAGES = 500;
+// No page cap: a walk, automatic or forced, reads until the server says it is done or its cursor stops moving
+// (src/core/sync-v2/zcloud.js). What bounds the work is the 30-minute pace above, as on the Web.
 
 /**
  * Read a cmd 621 frame.
@@ -145,7 +142,6 @@ export function createCloudVerifier({
                 api,
                 lastNoiseId: forced ? "" : saved,
                 full: forced,
-                maxPages: forced ? FORCED_MAX_PAGES : AUTO_MAX_PAGES,
                 onPage: (p) => setSyncState("cloudCursor", p.cursor),
             });
             if (stats.failed && !stats.items && !stats.removed) {

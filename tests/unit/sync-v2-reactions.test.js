@@ -175,8 +175,27 @@ describe("drainReactions", () => {
         };
         const l = fakeListener(pages);
         tapPages(l, pages);
-        const stats = await drainReactions({ listener: l, timeoutMs: 400, maxPages: 5 });
-        assert.ok(stats.pages <= 3, `a repeated cursor must not page forever (got ${stats.pages})`);
+        const stats = await drainReactions({ listener: l, timeoutMs: 400 });
+        // One DM page, then the group pages: the second repeats "555", which ends the drain and flags it.
+        assert.equal(stats.pages, 3, `a repeated cursor must not page forever (got ${stats.pages})`);
+        assert.equal(stats.stalled, true);
+    });
+
+    it("has no page cap by default: drains 25 group pages until more is 0", async () => {
+        const many = Array.from({ length: 25 }, (_, i) => ({
+            objs: [react("/-heart", 5, "m1", `u${i}`)],
+            more: i < 24 ? 1 : 0,
+            lastActionId: String(i + 1),
+        }));
+        const pages = { 0: [{ objs: [], more: 0 }], 1: many };
+        const l = fakeListener(pages);
+        tapPages(l, pages);
+        const stats = await drainReactions({ listener: l, timeoutMs: 400 });
+        // Past the old 20-page cap.
+        assert.equal(stats.pages, 26);
+        assert.equal(stats.received, 25);
+        assert.equal(stats.truncated, false);
+        assert.equal(stats.stalled, false);
     });
 
     it("applies un-reacts in order by default, because the backlog is an action log", async () => {

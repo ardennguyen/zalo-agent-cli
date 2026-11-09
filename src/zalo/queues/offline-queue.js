@@ -86,8 +86,9 @@ export const DEFAULT_MESSAGE_QUEUES = Object.freeze([
 /** Answer wait per page. The web's came back in ~100 ms. */
 export const DEFAULT_PAGE_TIMEOUT_MS = 10_000;
 
-/** Pages per queue: the runaway stop, as in the reaction drain. */
-export const DEFAULT_MAX_PAGES = 20;
+/** Pages per queue: none -- a queue is read until the server says no more (`more: 0`); the runaway stop is a cursor
+ * (`lastActionId`) that does not move, which ends the drain as "stalled". A caller may still pass a bound. */
+export const DEFAULT_MAX_PAGES = Infinity;
 
 /**
  * The message queues a handshake names, in its order.

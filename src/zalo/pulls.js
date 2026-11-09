@@ -83,10 +83,11 @@ export function buildActionListRequest({ lastId = 0, maxItem = 50 } = {}) {
  *   sends one request and resolves the answer's `data`, or null when none came
  * @param {object} [opts]
  * @param {number} [opts.maxItem]
- * @param {number} [opts.maxPages] - a stop against a server that never says it is done
+ * @param {number} [opts.maxPages] - an opt-in bound; by default the list is read until `hasMore` is false, and the
+ *   runaway stop is a cursor that does not move (`stalled`)
  * @returns {Promise<{actions: object[], pages: number, complete: boolean, reason: "drained"|"no-answer"|"stalled"|"page-cap"}>}
  */
-export async function pageActionList(ask, { maxItem = 50, maxPages = 20 } = {}) {
+export async function pageActionList(ask, { maxItem = 50, maxPages = Infinity } = {}) {
     const out = { actions: [], pages: 0, complete: false, reason: "page-cap" };
     let lastId = 0;
     while (out.pages < maxPages) {

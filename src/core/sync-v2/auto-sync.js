@@ -88,9 +88,10 @@ export const DEFAULT_CONTROL_QUEUES = Object.freeze([
     Object.freeze({ cmd: 603, subCmd: 0, queueName: "603_0" }),
 ]);
 
-/** Pages read from a saved cursor, and from the start of a queue (50 controls a page). */
-const CURSOR_PAGES = 20;
-const START_PAGES = 40;
+/** Pages read from a saved cursor, and from the start of a queue (50 controls a page): no cap -- a read goes on
+ * until the offer is found, the server says no more, or its cursor stops moving (`stalled`), as Zalo Web reads it. */
+const CURSOR_PAGES = Infinity;
+const START_PAGES = Infinity;
 
 /**
  * Ask a control queue for one page and wait for its answer: the answer to this request (by `reqId`), or one that

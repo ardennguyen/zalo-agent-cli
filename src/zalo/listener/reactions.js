@@ -39,8 +39,9 @@ const CMD_GROUP = 611;
 /** Default per-request deadline. A queue that has nothing to say says nothing. */
 export const DEFAULT_TIMEOUT_MS = 15000;
 
-/** Pages per thread type. The server pages with `more`; this is the runaway stop. */
-export const DEFAULT_MAX_PAGES = 20;
+/** Pages per thread type: none. The server pages with `more`; the runaway stop is an anchor (`lastActionId`) that
+ * does not move, reported as `stalled`. A caller may still pass a bound. */
+export const DEFAULT_MAX_PAGES = Infinity;
 
 /**
  * Drain the reaction backlog for both thread types and hand what comes back to `opts.store`.
@@ -53,7 +54,7 @@ export const DEFAULT_MAX_PAGES = 20;
  * @param {(reaction: object) => {stored: boolean, changed?: number, reason?: string}} opts.store - writes one
  *   reaction; `reason: "reaction target not resolvable"` puts it in `unresolved`
  * @param {number} [opts.timeoutMs=15000] - per-page deadline
- * @param {number} [opts.maxPages=20] - cap per thread type
+ * @param {number} [opts.maxPages=Infinity] - opt-in bound per thread type
  * @param {boolean} [opts.applyRemovals=true] - apply backlog entries with an empty
  *   icon (un-reacts). ON by default, because the backlog is an ordered ACTION
  *   LOG, not a snapshot of current state: it replays adds and removals in
@@ -62,7 +63,7 @@ export const DEFAULT_MAX_PAGES = 20;
  *   app showed one; replaying in order reproduced the one.
  * @param {(p: object) => void} [opts.onProgress]
  * @returns {Promise<{pages: number, received: number, stored: number, changed: number,
- *   skippedRemovals: number, byType: object, truncated: boolean, unresolved: object[]}>}
+ *   skippedRemovals: number, byType: object, truncated: boolean, stalled: boolean, unresolved: object[]}>}
  *   `unresolved` holds the reactions whose target message was not in the cache
  *   when they arrived. The backlog reaches further back than a windowed
  *   restore, and when the drain runs beside a restore its target may simply
@@ -89,6 +90,7 @@ export async function drainReactionBacklog(opts = {}) {
         skippedRemovals: 0,
         byType: { dm: 0, group: 0 },
         truncated: false,
+        stalled: false,
         unresolved: [],
     };
 
@@ -182,7 +184,13 @@ export async function drainReactionBacklog(opts = {}) {
                 });
                 // `more` is the server's own "there is another page"; without a
                 // fresh anchor we would re-request the same one forever.
-                if (!more || !lastActionId || String(lastActionId) === String(anchor)) break;
+                if (!more) break;
+                if (!lastActionId || String(lastActionId) === String(anchor)) {
+                    // More was promised but the cursor did not move: stop instead of asking for the same page forever.
+                    stats.stalled = true;
+                    onProgress({ phase: "warn", detail: `${label}: the server's cursor did not advance; stopped` });
+                    break;
+                }
                 anchor = String(lastActionId);
                 if (p === maxPages - 1) stats.truncated = true;
             }

@@ -148,7 +148,16 @@ describe("paging the action list (537)", () => {
         assert.equal(out.pages, 0);
     });
 
-    it("stops at the page cap against a server that never finishes", async () => {
+    it("has no page cap by default: reads 45 pages until hasMore is false", async () => {
+        // Past the old 20-page cap; the end is the server's own word.
+        let n = 0;
+        const out = await pageActionList(async () => page([String(++n)], n < 45));
+        assert.equal(out.pages, 45);
+        assert.equal(out.reason, "drained");
+        assert.equal(out.actions.length, 45);
+    });
+
+    it("an explicit maxPages still bounds a server that never finishes", async () => {
         let n = 0;
         const out = await pageActionList(async () => page([String(++n)], true), { maxPages: 3 });
         assert.equal(out.reason, "page-cap");

@@ -124,7 +124,8 @@ export function applyQueuePage(items, opts = {}) {
  * @param {boolean} [opts.full=false] - start from the top and sweep what no page listed
  * @param {number} [opts.pageSize=300] - consulted only when a reply carries no
  *   `hasMore`; the verify request itself has no page-size parameter
- * @param {number} [opts.maxPages=50]
+ * @param {number} [opts.maxPages=Infinity] - opt-in bound; by default the walk goes until the server says it is
+ *   done, or until its cursor stops advancing (`stalled`)
  * @param {string} [opts.ownId] - the account id; defaults to the api's
  * @param {string} [opts.selfChatId] - the self chat's id; defaults to the login's `send2me_id`
  * @param {(p: object) => void} [opts.onProgress]
@@ -135,9 +136,9 @@ export function applyQueuePage(items, opts = {}) {
  *   lastNoiseId:string|null, failed:number, failures:Array<object>, complete:boolean, skipped:Record<string, number>}>}
  */
 export async function syncCloudIndex(opts = {}) {
-    const { api, pageSize = 300, maxPages = 50, onProgress = () => {}, onPage = () => {}, full = false } = opts;
+    const { api, pageSize = 300, maxPages = Infinity, onProgress = () => {}, onPage = () => {}, full = false } = opts;
     // `complete`: the server said it had nothing further. False means the
-    // walk stopped on --pages (or on a cursor it could not advance) and
+    // walk stopped on an explicit --pages (or on a cursor it could not advance: `stalled`) and
     // lastNoiseId is where to resume.
     const stats = {
         items: 0,
@@ -203,6 +204,7 @@ export async function syncCloudIndex(opts = {}) {
             stats.lastNoiseId = cursor || null;
             stats.failed++;
             stats.failures.push({ page, reason: "zCloud reported more pages but did not advance lastNoiseId" });
+            stats.stalled = true;
             break;
         }
         if (done) {

@@ -15,13 +15,7 @@ import { walkAst } from "../helpers/api-call-sites.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getSyncState, setSyncState } from "../../src/core/db.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
-import {
-    CMD_MYCLOUD,
-    FORCED_MAX_PAGES,
-    THROTTLE_MS,
-    createCloudVerifier,
-    readCloudNotice,
-} from "../../src/core/cloud-verify.js";
+import { CMD_MYCLOUD, THROTTLE_MS, createCloudVerifier, readCloudNotice } from "../../src/core/cloud-verify.js";
 
 it("keeps Zalo Web's own pace: a cloud verify push is acted on once in 30 minutes", () => {
     assert.equal(THROTTLE_MS, 30 * 60 * 1000);
@@ -166,7 +160,8 @@ describe("when a cmd 621 notice makes the daemon walk", () => {
         assert.equal(calls.length, 1);
         assert.equal(calls[0].lastNoiseId, "my-place");
         assert.ok(!calls[0].full, "an automatic walk is never a full one");
-        assert.ok(calls[0].maxPages <= 20, "and it is bounded");
+        // No page cap: the walk reads until the server is done; the 30-minute pace is the bound.
+        assert.equal(calls[0].maxPages, undefined);
         assert.equal(getSyncState("cloudCursor"), "page-2");
     });
 
@@ -259,7 +254,7 @@ describe("when a cmd 621 notice makes the daemon walk", () => {
         const forced = calls.at(-1);
         assert.equal(forced.full, true, "a forced walk sweeps what no page listed");
         assert.equal(forced.lastNoiseId, "", "from the top, not from the saved place");
-        assert.equal(forced.maxPages, FORCED_MAX_PAGES);
+        assert.equal(forced.maxPages, undefined, "no page cap: the whole queue");
         assert.ok(
             lines.some((l) => /forced verify \(the server asked\)/.test(l)),
             lines.join("|"),

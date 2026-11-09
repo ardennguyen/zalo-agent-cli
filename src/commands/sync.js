@@ -41,10 +41,10 @@ const CLOSE_DUPLICATE = 3000;
  * Reaction-drain budget for the unified run.
  *
  * Named because the daemon path has to ask for exactly the same thing: the
- * stage runs in another process there, and a page cap that differed between
+ * stage runs in another process there, and a page bound that differed between
  * the two would make the same command truncate in one setup and not the other.
  */
-const DRAIN_PAGES = 20;
+const DRAIN_PAGES = undefined; // no page cap: until the server says no more, or its cursor stops moving
 const DRAIN_WAIT_MS = 15000;
 
 /**
@@ -223,7 +223,11 @@ export function registerSyncCommands(program) {
             "-k, --kind <kinds>",
             `Comma-separated kinds to fetch (${[...DOWNLOADABLE_KINDS].join(", ")}). Default: all of them`,
         )
-        .option("-n, --limit <n>", "Consider at most this many messages", parseIntAtLeast(1), 500)
+        .option(
+            "-n, --limit <n>",
+            "Consider at most this many messages (default: every one still missing its file)",
+            parseIntAtLeast(1),
+        )
         .option("-d, --days <n>", "Only attachments from the last N days", parseIntAtLeast(1))
         .option("-c, --concurrency <n>", "Parallel downloads", parseIntAtLeast(1), 2)
         .option(
@@ -298,7 +302,11 @@ export function registerSyncCommands(program) {
                 "them after a fresh login. Needs no phone confirmation",
         )
         .option("-w, --wait <seconds>", "Per-page deadline", parseIntAtLeast(1), 15)
-        .option("-p, --pages <n>", "Max pages per thread type", parseIntAtLeast(1), 20)
+        .option(
+            "-p, --pages <n>",
+            "Stop after this many pages per thread type (default: until the server says no more)",
+            parseIntAtLeast(1),
+        )
         .option(
             "--no-removals",
             "Do not apply un-react entries from the backlog. The default DOES apply them, because the " +
@@ -336,7 +344,11 @@ export function registerSyncCommands(program) {
                 "reconciliation Zalo Web runs when it receives a cloud verify event. Records where " +
                 "each backup lives; it does not download or decrypt cloud blobs",
         )
-        .option("-p, --pages <n>", "Maximum pages to walk", parseIntAtLeast(1), 500)
+        .option(
+            "-p, --pages <n>",
+            "Stop after this many pages (default: until the server says the walk is done)",
+            parseIntAtLeast(1),
+        )
         .option("-s, --page-size <n>", "Items per page (Zalo Web uses 300)", parseIntAtLeast(1), 300)
         .option("-r, --resume <noiseId>", "Resume from this cursor instead of the saved one")
         .option(
@@ -760,7 +772,7 @@ async function runReactionSync(activeAcc, opts) {
             reportReactionDrain(stats, opts);
             // The shape the daemon path prints (reportReactionStage), without its retry pass.
             jsonResult({
-                status: stats.truncated ? "partial" : "ok",
+                status: stats.truncated || stats.stalled ? "partial" : "ok",
                 reason: `${stats.stored} stored`,
                 stats: { received: stats.received, stored: stats.stored },
             });
@@ -837,7 +849,7 @@ function reportReactionStage(stats, placed, left, pages = DRAIN_PAGES) {
     reportReactionDrain(stats, { pages });
     if (placed) info(`Placed ${placed} reaction(s) whose message is now stored.`);
     return {
-        status: stats.truncated ? "partial" : "ok",
+        status: stats.truncated || stats.stalled ? "partial" : "ok",
         reason: `${stats.stored + placed} stored`,
         stats: { received: stats.received, stored: stats.stored + placed, unresolved: left },
     };
@@ -897,7 +909,10 @@ function reportReactionDrain(stats, opts) {
         );
     }
     if (stats.truncated) {
-        warning(`Stopped at the ${opts.pages}-page cap; re-run with a higher --pages for the rest.`);
+        warning(`Stopped at the ${opts.pages}-page bound you asked for; re-run without --pages for the rest.`);
+    }
+    if (stats.stalled) {
+        warning("Stopped early: the server said more follows but its cursor did not advance.");
     }
 }
 
@@ -1101,6 +1116,7 @@ export async function cloudPass(api, opts) {
     if (stats.removed) bits.push(`removed ${stats.removed} the cloud no longer holds`);
     if (stats.swept) bits.push(`swept ${stats.swept} no page listed`);
     success(`${bits.join(", ")}.`);
+    if (stats.stalled) warning("Stopped early: zCloud said more follows but its cursor did not advance.");
     return { status: "ok", plan, stats };
 }
 
@@ -2109,7 +2125,7 @@ async function runUnifiedSync(activeAcc, opts, jsonMode) {
     } else if (cloudRoute) {
         try {
             if (cloudRoute.via === "daemon") info("Walking the zCloud index in the running daemon.");
-            const r = await cloudPass(api, { pages: 500, pageSize: 300, walk: cloudRoute.walk });
+            const r = await cloudPass(api, { pageSize: 300, walk: cloudRoute.walk });
             if (r.status === "skipped") {
                 record("cloud", "skipped", "no zCloud plan on this account", { plan: r.plan?.plan ?? null });
             } else if (r.status === "unavailable") {

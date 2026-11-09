@@ -37,7 +37,6 @@ export function createMcpStageRunners({ getApi, accountDir, mediaRoot }) {
                 accountDir,
                 threadId: params.threadId,
                 kinds: params.kinds,
-                limit: 500,
                 since,
                 concurrency: 2,
                 maxFiles: params.limit,

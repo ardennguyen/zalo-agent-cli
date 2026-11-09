@@ -158,6 +158,46 @@ describe("replaying a control queue", () => {
         assert.equal(r.reason, "drained");
     });
 
+    it("has no page cap: reads 25 pages until more is 0, and stops on a cursor that does not advance", async () => {
+        const many = Array.from({ length: 25 }, (_, i) =>
+            ctrlPage("603_1", [control(200 + i, "fr", "add")], { more: i < 24 ? 1 : 0, lastActionId: 200 + i }),
+        );
+        const listener = fakeListener({ respond: scripted({ "603_1": many }) });
+        const tap = createSocketTap();
+        tap.attach(listener);
+        const [r] = await replayControlQueues({
+            listener,
+            tap,
+            queues: [{ cmd: 603, subCmd: 1, queueName: "603_1" }],
+            cursorOf: () => ({ id: "100" }),
+            timeoutMs: 200,
+        });
+        // Past the old 20-page cap: the end is the server's `more: 0`.
+        assert.equal(r.pages, 25);
+        assert.equal(r.reason, "drained");
+
+        const stuck = fakeListener({
+            respond: scripted({
+                "603_1": [
+                    ctrlPage("603_1", [control(300, "fr", "add")], { more: 1, lastActionId: 300 }),
+                    ctrlPage("603_1", [control(300, "fr", "add")], { more: 1, lastActionId: 300 }),
+                ],
+            }),
+        });
+        const tap2 = createSocketTap();
+        tap2.attach(stuck);
+        const [s] = await replayControlQueues({
+            listener: stuck,
+            tap: tap2,
+            queues: [{ cmd: 603, subCmd: 1, queueName: "603_1" }],
+            cursorOf: () => ({ id: "100" }),
+            timeoutMs: 200,
+        });
+        assert.equal(s.pages, 2);
+        assert.equal(s.reason, "stalled");
+        assert.equal(s.complete, false);
+    });
+
     it("never asks without a saved cursor: a first pull would replay every event the server still holds", async () => {
         const listener = fakeListener({ respond: scripted() });
         const tap = createSocketTap();

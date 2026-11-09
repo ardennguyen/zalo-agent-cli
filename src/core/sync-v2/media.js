@@ -422,7 +422,7 @@ function writeConversationIndex(mediaRoot, names, scope) {
  * @param {string[]} [opts.msgIds] - restrict to these messages: a caller after one message's media names it
  *   instead of hoping it is among the newest `limit` rows of its thread
  * @param {Set<string>|string[]} [opts.kinds] - restrict to these attachment kinds
- * @param {number} [opts.limit=500] - max messages to consider
+ * @param {number} [opts.limit=-1] - opt-in bound on the messages considered; -1 (default): every one still missing its file
  * @param {number} [opts.since] / @param {number} [opts.until] - epoch ms bounds
  * @param {number} [opts.concurrency=2] - parallel downloads. Two, not more: the CDN answers a burst with 403 and 429
  *   long before it runs short of bandwidth, and Zalo Web fetches a file only when it is opened
@@ -459,7 +459,7 @@ export async function downloadSyncedMedia(opts = {}) {
         accountDir,
         threadId,
         msgIds,
-        limit = 500,
+        limit = -1,
         since,
         until,
         concurrency = 2,

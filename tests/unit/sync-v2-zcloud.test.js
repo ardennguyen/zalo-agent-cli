@@ -145,6 +145,33 @@ describe("syncCloudIndex", () => {
         assert.ok(calls <= 2, `a repeating cursor must not loop (made ${calls} calls)`);
     });
 
+    it("walks until the server says it is done, with no page cap (CLI and MCP alike)", async () => {
+        // 620 pages: past both old caps (50 for zalo_sync cloud, 500 for sync-cloud).
+        let calls = 0;
+        const stats = await syncCloudIndex({
+            verify: async () => {
+                calls++;
+                return { items: [cloudItem({ noiseId: `n${calls}` })], lastNoiseId: `n${calls}`, hasMore: calls < 620 };
+            },
+        });
+        assert.equal(calls, 620);
+        assert.equal(stats.complete, true);
+        assert.equal(stats.stalled, undefined);
+    });
+
+    it("flags a walk whose cursor stops advancing while the server says more", async () => {
+        let calls = 0;
+        const stats = await syncCloudIndex({
+            verify: async () => {
+                calls++;
+                return { items: [cloudItem({ noiseId: "same" })], lastNoiseId: "same", hasMore: true };
+            },
+        });
+        assert.equal(calls, 2);
+        assert.equal(stats.stalled, true);
+        assert.equal(stats.complete, false);
+    });
+
     it("respects maxPages", async () => {
         let calls = 0;
         await syncCloudIndex({

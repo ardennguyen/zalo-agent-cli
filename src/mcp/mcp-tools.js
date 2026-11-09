@@ -620,6 +620,7 @@ const SYSTEM_EVENTS_NOTE =
     "`account_state`: the account's connection state changed (`state` idle, connecting, connected, kicked, yielded, login_needed, signed_out or maintenance, `previous`, `detail`); yielded and signed_out refuse every call until a person acts, as `text` says; a park and the wake that ends it are not in the buffer. " +
     "`group_gone`: the account left, was removed or blocked from, or saw the disbanding of the group in `threadId` (`reason`, `leftAt`, `mode` purge or keep, `purged` counts). " +
     "`queue_overflow`: Zalo's offline queue overflowed and messages from `fromTs` to `toTs` were dropped (`queues`, `groups` repair counts, `pending`; when pending, `command` is the sync the owner runs, which taps the phone). " +
+    "`session_expiring`: the account's saved login ends by itself on `expiresAt` (`daysLeft`, `threshold` 14, 7, 3, 1 or 0 once `expired`); the owner renews it with a QR login (`command`), and once it ends every call is refused until then. " +
     "`storage_quota`: this account's storage on the server is near or over its quota, or was purged, or is back within it (`level` warn, over, grace_ending, purged or ok; `usedBytes`, `limitBytes`, `purgeAt`); zalo_profile 'usage' reads the current usage. ";
 
 /**
@@ -774,7 +775,7 @@ export function registerTools(
                 // An explicit cursor is honored as given; 0 starts after what this consumer marked read.
                 const from = since > 0 ? since : buffer.readCursor(consumer);
                 const result = buffer.read(threadId, from, limit);
-                // A system event (account_state, group_gone, queue_overflow, storage_quota) is passed on as it is.
+                // A system event (account_state, group_gone, queue_overflow, session_expiring, storage_quota) is passed on as it is.
                 const order = result.messages;
                 const system = new Map(order.filter((m) => m?.system).map((m) => [m._cursor, m]));
                 result.messages = order.filter((m) => !m?.system);

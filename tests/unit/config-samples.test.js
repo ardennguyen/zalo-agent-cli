@@ -430,6 +430,7 @@ describe("monitoring samples", () => {
         health.setSource("buffer", () => ({ threads: 1, messages: 1 }));
         health.setSource("stage", () => ({ stage: "messages", startedAt: Date.now() }));
         health.setSource("accountState", () => ({ state: "connected", since: null }));
+        health.setSource("session", () => ({ expiresAt: "2027-01-01T00:00:00.000Z", daysLeft: 30, expired: false }));
         const text = renderPrometheus(health.snapshot());
         health.stop();
         return new Set(text.match(/^zalo_[a-z_]+/gm));
@@ -443,14 +444,25 @@ describe("monitoring samples", () => {
             assert.ok(emitted.has(name), `alert-rules.yml reads ${name}, which /metrics does not expose`);
     });
 
-    it("the ten documented alerts are all there, each with an expression, a severity and a summary", () => {
+    it("the twelve documented alerts are all there, each with an expression, a severity and a summary", () => {
         const blocks = rules.split(/^\s+- alert: /m).slice(1);
-        assert.equal(blocks.length, 10);
+        assert.equal(blocks.length, 12);
         for (const b of blocks) {
             assert.match(b, /\n\s+expr: \S/, `${b.split("\n")[0]} has no expr`);
             assert.match(b, /severity: (page|warn|info)/);
             assert.match(b, /summary: "/);
         }
+    });
+
+    it("the session's end warns from 14 days left and pages from 3", () => {
+        const block = (name) => rules.split(/^\s+- alert: /m).find((b) => b.startsWith(name));
+        assert.match(
+            block("ZaloSessionEndingSoon"),
+            /expr: zalo_session_days_left <= 14 and zalo_session_days_left > 3/,
+        );
+        assert.match(block("ZaloSessionEndingSoon"), /severity: warn/);
+        assert.match(block("ZaloSessionEndingNow"), /expr: zalo_session_days_left <= 3\n/);
+        assert.match(block("ZaloSessionEndingNow"), /severity: page/);
     });
 
     it("the scrape config sends the bearer token from a file, never inline", () => {

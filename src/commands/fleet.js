@@ -26,6 +26,7 @@ import {
     assignPorts,
     classifyAccount,
     checkFailures,
+    checkWarnings,
     generateFleetFiles,
     loadPortTable,
     needsRestart,
@@ -55,6 +56,8 @@ import { DEFAULT_QR_FLOWS, createQrFlows } from "../core/fleet-qr.js";
 import { applyPolicy, effectivePolicy, ownerOf } from "../core/policy-store.js";
 import { resolvePublicUrl, resolveTrustedProxies, validatePublicUrl } from "../core/deploy-policy.js";
 import { kickFile, readKickMarker } from "../core/kick-marker.js";
+import { sessionExpiryFor } from "../core/session-expiry.js";
+import { createSessionNotices, fileNoticeStore, sessionExpiryFromMarker } from "../core/session-notice.js";
 import { fleetPurge } from "../core/fleet-purge.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { envForAccount, loadMCPConfig } from "../mcp/mcp-config.js";
@@ -182,6 +185,9 @@ async function collect(accounts, ports, downForSec) {
             state: classifyAccount({ running: daemon.running, health, kicked }, { downForSec }),
             daemon: { running: daemon.running, pid: daemon.pid },
             health,
+            // When the saved login ends (a QR login is due): the daemon's own reading, else the marker it left in the
+            // account folder. Never the credentials file: status needs no key.
+            session: health?.session ?? sessionExpiryFromMarker(accountDir),
             ...(kicked && { kicked }),
         };
     });
@@ -357,7 +363,7 @@ export function registerFleetCommands(program) {
         )
         .option(
             "--check",
-            "Exit 1 unless every account is ok, idle or degraded, and say what to do about each one that is not (for monitoring scripts)",
+            "Exit 1 unless every account is ok, idle or degraded and its saved session has more than 7 days left, and say what to do about each one that is not (for monitoring scripts)",
         )
         .option(
             "--down-for <seconds>",
@@ -380,6 +386,8 @@ export function registerFleetCommands(program) {
                 );
             });
             if (opts.check) {
+                // A session ending within 14 days is a warning that passes; within 7 (or ended) it fails.
+                for (const line of checkWarnings(rows)) warning(line);
                 const failures = checkFailures(rows);
                 if (failures.length) {
                     for (const line of failures) warning(line);
@@ -798,6 +806,9 @@ export function registerFleetCommands(program) {
                     userId: ownerOf(ownId)?.id ?? null,
                     presence: effectivePolicy(ownId)?.presence?.mode ?? null,
                 }),
+                // The end of each saved login, and session_expiring once per threshold (kept across restarts).
+                session: (ownId) => sessionExpiryFromMarker(getAccountDir(ownId)) ?? sessionExpiryFor(ownId),
+                sessionNotices: createSessionNotices(fileNoticeStore(join(CONFIG_DIR, "fleet-session-notices.json"))),
                 forget: (ownId) => forgetAccount(ownId, envDir),
                 qr,
                 webhook,

@@ -75,3 +75,18 @@ groups:
         labels: { severity: info }
         annotations:
           summary: "{{ $labels.account }}: the daemon restarted in the last 5 minutes"
+
+      - alert: ZaloSessionEndingSoon
+        # The saved login ends by itself about 90 days after its QR login; nothing renews it.
+        expr: zalo_session_days_left <= 14 and zalo_session_days_left > 3
+        labels: { severity: warn }
+        annotations:
+          summary: "{{ $labels.account }}: the saved Zalo session ends in {{ $value }} day(s)"
+          description: "Plan a QR login before then: `zalo-agent --account <id> login` (on a fleet `za --account <id> login`, then `za fleet restart <id>`; a CRM uses the fleet controller's QR add). The login keeps the device id, so the offline queue survives."
+
+      - alert: ZaloSessionEndingNow
+        expr: zalo_session_days_left <= 3
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.account }}: the saved Zalo session ends in {{ $value }} day(s) or has ended"
+          description: "Log in again by QR now (as above). Once it ends the daemon goes signed_out and refuses every request until the account is added again."

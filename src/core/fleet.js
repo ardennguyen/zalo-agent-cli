@@ -21,6 +21,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR } from "./credentials.js";
+import { EXPIRY_FAIL_DAYS, EXPIRY_WARN_DAYS } from "./session-expiry.js";
 import { withFileLock, writeFileAtomic } from "../zalo/kernel/atomic-file.js";
 import {
     BACKUP_TIMER_TEMPLATE,
@@ -231,15 +232,69 @@ export const STATE_ADVICE = Object.freeze({
 });
 
 /**
- * The lines `fleet status --check` prints for the accounts that fail it: one per account, its state and what to do.
+ * The command that renews an account's login on a fleet host: a QR login as the service user (it keeps the device
+ * id, so the offline queue survives), then a restart of its daemon. A CRM uses the fleet controller's QR add instead.
  *
- * @param {Array<{ accountId: string, state: string }>} rows
+ * @param {string} accountId
+ * @returns {string}
+ */
+export function fleetReloginCommand(accountId) {
+    return `za --account ${accountId} login, then za fleet restart ${accountId} (or the fleet controller's QR add)`;
+}
+
+/**
+ * What an account's saved session says to `fleet status --check`: `fail` at {@link EXPIRY_FAIL_DAYS} days left or
+ * once ended, `warn` at {@link EXPIRY_WARN_DAYS}, else null; with the line to print.
+ *
+ * @param {{ accountId: string, session?: {expiresAt: string, daysLeft: number, expired: boolean}|null }} row
+ * @returns {{ level: "fail"|"warn", line: string }|null}
+ */
+export function sessionCheck(row) {
+    const s = row.session;
+    if (!s?.expiresAt) return null;
+    const date = s.expiresAt.slice(0, 10);
+    const how = fleetReloginCommand(row.accountId);
+    if (s.expired) {
+        return { level: "fail", line: `${row.accountId}: session ended on ${date} - log in again now: ${how}` };
+    }
+    if (s.daysLeft > EXPIRY_WARN_DAYS) return null;
+    return {
+        level: s.daysLeft <= EXPIRY_FAIL_DAYS ? "fail" : "warn",
+        line: `${row.accountId}: session ends ${date} (${s.daysLeft} day(s) left) - log in again by ${date}: ${how}`,
+    };
+}
+
+/**
+ * The lines `fleet status --check` prints for the accounts that fail it: one per account and cause, its state and
+ * what to do. A saved session with {@link EXPIRY_FAIL_DAYS} days or fewer left (or ended) fails too.
+ *
+ * @param {Array<{ accountId: string, state: string, session?: object|null }>} rows
  * @returns {string[]}
  */
 export function checkFailures(rows) {
+    const out = [];
+    for (const r of rows) {
+        if (!CHECK_PASSES.includes(r.state)) {
+            out.push(`${r.accountId}: ${r.state}${STATE_ADVICE[r.state] ? ` - ${STATE_ADVICE[r.state]}` : ""}`);
+        }
+        const s = sessionCheck(r);
+        if (s?.level === "fail") out.push(s.line);
+    }
+    return out;
+}
+
+/**
+ * The lines `fleet status --check` prints without failing: a saved session that ends within
+ * {@link EXPIRY_WARN_DAYS} days but more than {@link EXPIRY_FAIL_DAYS}.
+ *
+ * @param {Array<{ accountId: string, session?: object|null }>} rows
+ * @returns {string[]}
+ */
+export function checkWarnings(rows) {
     return rows
-        .filter((r) => !CHECK_PASSES.includes(r.state))
-        .map((r) => `${r.accountId}: ${r.state}${STATE_ADVICE[r.state] ? ` - ${STATE_ADVICE[r.state]}` : ""}`);
+        .map(sessionCheck)
+        .filter((s) => s?.level === "warn")
+        .map((s) => s.line);
 }
 
 /** True for the states a restart can help: the account is not serving. */
@@ -275,13 +330,37 @@ function age(sec) {
 }
 
 /**
+ * The LOGIN ENDS cell: the days the saved login has left, `!` from {@link EXPIRY_WARN_DAYS} days, `ended` once over.
+ *
+ * @param {{daysLeft: number, expired: boolean}|null|undefined} session
+ * @returns {string}
+ */
+function sessionCell(session) {
+    if (!session) return "-";
+    if (session.expired) return "ended";
+    return `${session.daysLeft}d${session.daysLeft <= EXPIRY_WARN_DAYS ? "!" : ""}`;
+}
+
+/**
  * The table `fleet status` prints, one row per account.
  *
- * @param {Array<{ accountId: string, name?: string, port?: number|null, state: string, daemon: {running: boolean, pid: number|null}, health: object|null }>} rows
+ * @param {Array<{ accountId: string, name?: string, port?: number|null, state: string, daemon: {running: boolean, pid: number|null}, health: object|null, session?: object|null }>} rows
  * @returns {string[]} Lines
  */
 export function renderStatusTable(rows) {
-    const header = ["ACCOUNT", "NAME", "PORT", "STATE", "PID", "SOCKET", "LAST EVENT", "WEBHOOK", "GAPS", "MEM"];
+    const header = [
+        "ACCOUNT",
+        "NAME",
+        "PORT",
+        "STATE",
+        "PID",
+        "SOCKET",
+        "LAST EVENT",
+        "WEBHOOK",
+        "GAPS",
+        "MEM",
+        "LOGIN ENDS",
+    ];
     const body = rows.map((r) => {
         const h = r.health;
         const w = h?.webhook;
@@ -296,6 +375,7 @@ export function renderStatusTable(rows) {
             w ? `${w.pending}q ${w.dead}d` : h ? "off" : "-",
             h ? h.coverage.pendingGaps : "-",
             h ? `${Math.round(h.process.rssBytes / 1048576)}M` : "-",
+            sessionCell(r.session),
         ].map(String);
     });
     const widths = header.map((c, i) => Math.max(c.length, ...body.map((r) => r[i].length)));

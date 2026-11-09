@@ -17,6 +17,12 @@ export const SESSION_COOKIE = "zpw_sek";
 /** From this many days before the end, a daemon's health says so. */
 export const EXPIRY_WARN_DAYS = 14;
 
+/**
+ * At this many days left (or once ended), `fleet status --check` fails the account: a QR login is due within the week.
+ * Between this and {@link EXPIRY_WARN_DAYS} it is a warning that passes.
+ */
+export const EXPIRY_FAIL_DAYS = 7;
+
 const DAY_MS = 86_400_000;
 
 /**

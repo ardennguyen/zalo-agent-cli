@@ -15,15 +15,17 @@
  *                                                   other session of this login; the admin's explicit confirmation)
  *     POST   /accounts/<ownId>/logout               guarded: 409 {confirmToken} first, then X-Confirm: <token>
  *     DELETE /accounts/<ownId>                      guarded the same way: stop, `account remove` (crypto-shred)
- *     GET    /events                                SSE: `account_state` for every account
+ *     GET    /events                                SSE: `account_state` and `session_expiring` for every account
  *     ...    /accounts/qr[...]                      the QR add flow (./fleet-qr.js)
  *     ...    /policy/..., /presence/always-on       the host-level policy (users, tenants, accounts)
  *
  * `account_state` comes from polling each daemon's channel every `pollMs` (5 s), plus `stopped` for an account with
- * no process; each change goes to the SSE clients and the admin webhook once.
+ * no process; each change goes to the SSE clients and the admin webhook once. The same poll reads when each saved
+ * login ends (`session` in the account list) and sends `session_expiring` once per threshold (./session-notice.js).
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { ACCOUNT_STATES, accountStateOfHealth } from "./account-state.js";
+import { sessionExpiringEvent } from "./session-notice.js";
 
 /** How long a guard's confirm token lives. */
 export const CONFIRM_TTL_MS = 2 * 60_000;
@@ -51,6 +53,10 @@ const ACCOUNT_ID = /^[1-9][0-9]{0,30}$/;
  * @param {(ownId: string) => Promise<void>|void} [args.forget] - drop a removed account from the port table, its env
  *   file and its user
  * @param {{handle: (req: object, res: object, ctx: object) => boolean|Promise<boolean>}|null} [args.qr] - WP8
+ * @param {(ownId: string) => ({expiresAt: string, daysLeft: number, expired: boolean}|null)} [args.session] - when the
+ *   account's saved login ends, read from its saved cookie jar (a running daemon's own reading wins)
+ * @param {{due: (ownId: string, expiry: object|null) => boolean}|null} [args.sessionNotices] - which thresholds were
+ *   sent (./session-notice.js createSessionNotices); null sends no `session_expiring`
  * @param {(event: object) => void} [args.webhook] - the admin webhook
  * @param {(line: string) => void} [args.log]
  * @param {() => number} [args.now]
@@ -66,12 +72,15 @@ export function createFleetController({
     describe = () => ({}),
     forget = () => {},
     qr = null,
+    session = () => null,
+    sessionNotices = null,
     webhook = () => {},
     log = () => {},
     now = Date.now,
     pollMs = 5000,
 }) {
     const states = new Map(); // ownId -> {state, at, pid}
+    const sessions = new Map(); // ownId -> {expiresAt, daysLeft, expired}
     const clients = new Set();
     const confirms = new Map(); // token -> {action, ownId, expiresAt}
     let timer = null;
@@ -115,6 +124,14 @@ export function createFleetController({
         });
     }
 
+    /** Keep an account's session end for the list, and publish `session_expiring` when a threshold is crossed. */
+    function noteSession(ownId, expiry) {
+        if (expiry?.expiresAt) sessions.set(ownId, expiry);
+        else sessions.delete(ownId);
+        if (expiry?.expiresAt && sessionNotices?.due(ownId, expiry))
+            publish(sessionExpiringEvent(ownId, expiry, now()));
+    }
+
     /** Ask every account where it stands; each change is published once. */
     async function poll() {
         if (polling) return polling;
@@ -127,6 +144,7 @@ export function createFleetController({
                         pid: p.pid ?? null,
                         ...(p.health?.presence ? { presence: p.health.presence.mode } : {}),
                     });
+                    noteSession(ownId, p.health?.session ?? session(ownId));
                 } catch (e) {
                     log(`[fleet] ${ownId}: ${e.message}`);
                 }
@@ -175,11 +193,13 @@ export function createFleetController({
         const out = [];
         for (const { ownId } of listAccounts()) {
             const s = states.get(ownId);
+            const sess = sessions.get(ownId);
             out.push({
                 accountId: ownId,
                 state: s?.state ?? null,
                 since: s ? new Date(s.at).toISOString() : null,
                 pid: s?.pid ?? null,
+                session: sess ? { expiresAt: sess.expiresAt, daysLeft: sess.daysLeft, expired: sess.expired } : null,
                 ...describe(ownId),
             });
         }
@@ -236,6 +256,7 @@ export function createFleetController({
             }
             await forget(ownId);
             states.delete(ownId);
+            sessions.delete(ownId);
             publish({
                 event: "account_state",
                 accountId: ownId,

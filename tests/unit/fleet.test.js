@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { EXPIRY_FAIL_DAYS, EXPIRY_WARN_DAYS } from "../../src/core/session-expiry.js";
 import {
     FleetError,
     CHECK_PASSES,
@@ -25,6 +26,8 @@ import {
     STATE_ADVICE,
     assignPorts,
     checkFailures,
+    checkWarnings,
+    sessionCheck,
     classifyAccount,
     fleetFile,
     generateFleetFiles,
@@ -249,6 +252,63 @@ describe("classifyAccount", () => {
         assert.match(lines.join(" "), /a restart does not help/);
     });
 
+    describe("the saved session's end", () => {
+        const at = (daysLeft, expired = false) => ({
+            expiresAt: "2026-12-01T00:00:00.000Z",
+            daysLeft,
+            expired,
+        });
+
+        it("fails --check at 7 days left, with the date and the command, on an account that is otherwise ok", () => {
+            const rows = [{ accountId: "601", state: "ok", session: at(7) }];
+            const lines = checkFailures(rows);
+            assert.equal(lines.length, 1);
+            assert.match(lines[0], /^601: session ends 2026-12-01 \(7 day\(s\) left\) - log in again by 2026-12-01: /);
+            assert.match(lines[0], /za --account 601 login, then za fleet restart 601/);
+            assert.deepEqual(checkWarnings(rows), [], "a failure is not also a warning");
+        });
+
+        it("passes at 10 days left with a warning, and says nothing with weeks left or no readable session", () => {
+            const rows = [{ accountId: "602", state: "ok", session: at(10) }];
+            assert.deepEqual(checkFailures(rows), []);
+            const warnings = checkWarnings(rows);
+            assert.equal(warnings.length, 1);
+            assert.match(warnings[0], /^602: session ends 2026-12-01 \(10 day\(s\) left\) - log in again by/);
+            for (const session of [at(EXPIRY_WARN_DAYS + 1), null, undefined]) {
+                const quiet = [{ accountId: "603", state: "ok", session }];
+                assert.deepEqual([...checkFailures(quiet), ...checkWarnings(quiet)], []);
+            }
+            assert.equal(sessionCheck({ accountId: "6", session: at(EXPIRY_WARN_DAYS) }).level, "warn");
+            assert.equal(sessionCheck({ accountId: "6", session: at(EXPIRY_FAIL_DAYS + 1) }).level, "warn");
+            assert.equal(sessionCheck({ accountId: "6", session: at(EXPIRY_FAIL_DAYS) }).level, "fail");
+        });
+
+        it("fails an ended session, and a failing state and an ending session are two lines", () => {
+            const lines = checkFailures([{ accountId: "604", state: "signed_out", session: at(-2, true) }]);
+            assert.equal(lines.length, 2);
+            assert.match(lines[0], /^604: signed_out - /);
+            assert.match(lines[1], /^604: session ended on 2026-12-01 - log in again now: za --account 604 login/);
+        });
+
+        it("shows the days left in the table, marked from 14 days, and `ended`", () => {
+            const row = (session) =>
+                renderStatusTable([
+                    {
+                        accountId: "1",
+                        name: "",
+                        port: null,
+                        state: "ok",
+                        daemon: { running: false },
+                        health: null,
+                        session,
+                    },
+                ])[1];
+            assert.match(row(at(45)), /\s45d$/);
+            assert.match(row(at(10)), /\s10d!$/);
+            assert.match(row(at(-1, true)), /\sended$/);
+        });
+    });
+
     it("how long a socket may be down is the caller's to choose", () => {
         const h = { socket: { state: "down", forSec: 100 }, warnings: [] };
         assert.equal(classifyAccount({ running: true, health: h }, { downForSec: 60 }), "down");
@@ -333,9 +393,12 @@ describe("renderStatusTable", () => {
             },
         ]);
         assert.equal(lines.length, 3);
-        assert.match(lines[0], /^ACCOUNT\s+NAME\s+PORT\s+STATE\s+PID\s+SOCKET\s+LAST EVENT\s+WEBHOOK\s+GAPS\s+MEM$/);
-        assert.match(lines[1], /^1001\s+Shop A\s+3901\s+degraded\s+4242\s+up 2\.0h\s+42s\s+3q 1d\s+1\s+100M$/);
-        assert.match(lines[2], /^1002\s+3902\s+stopped\s+-\s+-\s+-\s+-\s+-\s+-$/);
+        assert.match(
+            lines[0],
+            /^ACCOUNT\s+NAME\s+PORT\s+STATE\s+PID\s+SOCKET\s+LAST EVENT\s+WEBHOOK\s+GAPS\s+MEM\s+LOGIN ENDS$/,
+        );
+        assert.match(lines[1], /^1001\s+Shop A\s+3901\s+degraded\s+4242\s+up 2\.0h\s+42s\s+3q 1d\s+1\s+100M\s+-$/);
+        assert.match(lines[2], /^1002\s+3902\s+stopped\s+-\s+-\s+-\s+-\s+-\s+-\s+-$/);
         const widths = new Set(
             lines.map((l) => (l.indexOf("STATE") >= 0 ? l.indexOf("STATE") : -1)).filter((i) => i >= 0),
         );

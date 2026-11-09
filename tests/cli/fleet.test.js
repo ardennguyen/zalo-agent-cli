@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG_DIR } from "../../src/core/credentials.js";
+import { CONFIG_DIR, getAccountDir } from "../../src/core/credentials.js";
 import { runCli, stripAnsi } from "../helpers/cli.js";
 
 // Per-spawn timeout: ZALO_TEST_CLI_TIMEOUT_MS when set (a loaded box), 60 s otherwise.
@@ -101,8 +101,10 @@ describe("fleet status", () => {
             "health",
             "name",
             "port",
+            "session",
             "state",
         ]);
+        assert.equal(json.accounts[0].session, null, "no saved login, no end date");
         assert.deepEqual(json.accounts[0].daemon, { running: false, pid: null });
     });
 
@@ -122,6 +124,44 @@ describe("fleet status", () => {
         assert.equal(r.code, 1);
         assert.match(stripAnsi(r.all), /501: stopped - no daemon runs for it; `fleet start` starts it/);
         assert.equal((await fleet("status")).code, 0);
+    });
+
+    it("shows when each saved login ends: --check fails at 7 days left, warns at 10, says how to log in again", async () => {
+        const DAY = 86_400_000;
+        // What a daemon leaves in the account folder (src/core/session-notice.js): status reads it, never the
+        // credentials, so it needs no key.
+        const save = (id, days) => {
+            mkdirSync(getAccountDir(id), { recursive: true });
+            writeFileSync(
+                join(getAccountDir(id), "session-notice.json"),
+                JSON.stringify({
+                    expiresAt: new Date(Date.now() + days * DAY + 3_600_000).toISOString(),
+                    threshold: null,
+                }),
+            );
+        };
+        save("501", 7);
+        save("502", 10);
+        save("503", 60);
+        const { json } = await fleetJson("status", "501", "502", "503");
+        assert.deepEqual(
+            json.accounts.map((a) => [a.accountId, a.session?.daysLeft]),
+            [
+                ["501", 7],
+                ["502", 10],
+                ["503", 60],
+            ],
+        );
+        const table = stripAnsi((await fleet("status", "501", "502", "503")).stdout);
+        assert.match(table, /LOGIN ENDS/);
+        assert.match(table, /^501 .*\s7d!$/m);
+        assert.match(table, /^503 .*\s60d$/m);
+        const r = await fleet("status", "--check", "501", "502", "503");
+        assert.equal(r.code, 1);
+        const all = stripAnsi(r.all);
+        assert.match(all, /501: session ends \S+ \(7 day\(s\) left\) - log in again by \S+: za --account 501 login/);
+        assert.match(all, /502: session ends \S+ \(10 day\(s\) left\) - log in again by/);
+        assert.doesNotMatch(all, /503: session/);
     });
 
     it("refuses a nonsense --down-for", async () => {

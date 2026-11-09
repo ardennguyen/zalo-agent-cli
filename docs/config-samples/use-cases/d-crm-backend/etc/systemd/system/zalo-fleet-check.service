@@ -1,8 +1,10 @@
 # /etc/systemd/system/zalo-fleet-check.service
 # The health check of every account on this machine, run by zalo-fleet-check.timer every 5 minutes:
 # `fleet status --check` exits 1 unless every account is ok, idle or degraded (a yielded or
-# signed_out account fails it too: a person has to act), logs one line per failing account with
-# what to do, and the unit then shows in `systemctl --failed`. Add OnFailure= to be told: a unit of yours that mails, posts to
+# signed_out account fails it too: a person has to act) and its saved login has more than 7 days
+# left (a login ends by itself about 90 days after its QR scan: "log in again by <date>: za
+# --account <id> login"; from 14 days it is a warning line that passes), logs one line per failing
+# account with what to do, and the unit then shows in `systemctl --failed`. Add OnFailure= to be told: a unit of yours that mails, posts to
 # ntfy or calls a webhook (it gets the failed unit's name as %i).
 #   systemctl enable --now zalo-fleet-check.timer
 #   journalctl -u zalo-fleet-check        (the last table)

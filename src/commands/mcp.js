@@ -114,6 +114,11 @@ import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbo
 import { batchParams, waitResult, MAX_SETTLE_MS } from "../mcp/wait-result.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
+import {
+    describeSessionExpiring,
+    sessionExpiringSystemEvent,
+    startSessionExpiryWatch,
+} from "../core/session-notice.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
 import { kickFile } from "../core/kick-marker.js";
 import { DEBUG_MARK, LOG_LEVELS } from "../core/log-sink.js";
@@ -1127,6 +1132,17 @@ export function registerMCPCommands(program) {
                 detail: () => daemonPresence?.detail() ?? { presence: presenceCheck.settings.mode },
             });
             health.setSource("accountState", () => accountState.current());
+            // session_expiring (src/core/session-notice.js): the saved login ends by itself; once per threshold (14, 7,
+            // 3, 1 days, ended) to the log, the webhook and the live buffer, the same as `listen`.
+            const sessionWatch = startSessionExpiryWatch({
+                ownId: activeAcc.ownId,
+                accountDir,
+                emit: (event) => {
+                    console.error(`[mcp] ${describeSessionExpiring(event)}`);
+                    webhookDelivery?.enqueue(null, event);
+                    buffer.pushSystem(sessionExpiringSystemEvent(event));
+                },
+            });
             // A policy change (admin API, `policy set`, a file drop) counts from the next tool call: the per-call readers
             // (confirm mode, approval, delivery modes) read the live policy themselves; what was set up at start is set
             // up again here.
@@ -1598,6 +1614,7 @@ export function registerMCPCommands(program) {
                 notifier?.destroy();
                 policyRuntime.stop();
                 storageJobs.stop();
+                sessionWatch.stop();
                 webhookDelivery?.stop();
                 mediaLinks.revokeAll("the server stopped");
                 httpServer?.close();
@@ -1867,7 +1884,7 @@ export function registerMCPCommands(program) {
                 () => {
                     if (res.status === "message" && res.messages?.length) {
                         for (const m of res.messages) {
-                            // A system event (account_state, group_gone, queue_overflow, storage_quota) is no message.
+                            // A system event (account_state, group_gone, queue_overflow, session_expiring, storage_quota) is no message.
                             if (m.system) {
                                 info(`[cursor ${m._cursor}] ${m.type}: ${m.text ?? ""}`);
                                 continue;

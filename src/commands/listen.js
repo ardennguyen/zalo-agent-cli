@@ -67,6 +67,7 @@ import { applyGroupExit, describeGroupGone, setGroupGoneSink } from "../core/gro
 import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbox.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
+import { describeSessionExpiring, startSessionExpiryWatch } from "../core/session-notice.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
 import {
     alarmingGapCount,
@@ -698,6 +699,14 @@ export function registerListenCommand(program) {
                 accountId: activeAcc.ownId,
                 emit: (event) => emitEvent(event, describeAccountState(event)),
                 detail: () => daemonPresence?.detail() ?? { presence: presenceCheck.settings.mode },
+            });
+
+            // session_expiring (src/core/session-notice.js): the saved login ends by itself; once per threshold (14, 7,
+            // 3, 1 days, ended), reported like any other event (stdout, webhook, JSONL), the same as `mcp start`.
+            const sessionWatch = startSessionExpiryWatch({
+                ownId: activeAcc.ownId,
+                accountDir,
+                emit: (event) => emitEvent(event, describeSessionExpiring(event)),
             });
 
             /** Whether --events, --filter or --no-self keep a message off stdout, the webhook and the JSONL. */
@@ -1374,6 +1383,7 @@ export function registerListenCommand(program) {
                 channel?.stop();
                 policyRuntime.stop();
                 storageJobs.stop();
+                sessionWatch.stop();
                 webhookDelivery?.stop();
                 mediaLinks.revokeAll("the daemon stopped");
                 deliveredReceipts.stop();

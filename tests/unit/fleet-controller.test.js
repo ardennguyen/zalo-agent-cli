@@ -19,6 +19,7 @@ import {
 } from "../../src/core/fleet-supervisor.js";
 import { CONFIRM_TTL_MS, createFleetController } from "../../src/core/fleet-controller.js";
 import { adminWebhook, buildControllerApp } from "../../src/core/fleet-serve.js";
+import { createSessionNotices } from "../../src/core/session-notice.js";
 
 const A = "1000000000000000971";
 const B = "1000000000000000972";
@@ -134,7 +135,7 @@ describe("supervisor drivers", () => {
 });
 
 /** A controller on a real server, its collaborators recorded. */
-async function rig({ now = Date.now, accounts = [A, B] } = {}) {
+async function rig({ now = Date.now, accounts = [A, B], extra = {} } = {}) {
     const calls = [];
     const probes = new Map(accounts.map((id) => [id, { running: false, pid: null, health: null }]));
     const controller = createFleetController({
@@ -155,6 +156,7 @@ async function rig({ now = Date.now, accounts = [A, B] } = {}) {
         forget: (id) => calls.push(["forget", id]),
         log: () => {},
         now,
+        ...extra,
     });
     const agentHashes = new Set([createHash("sha256").update(AGENT).digest("hex")]);
     const { app } = buildControllerApp({
@@ -336,6 +338,91 @@ describe("controller routes", () => {
             ],
             "the repeated connecting is said once; the poll's changes follow in order",
         );
+        controller.stop();
+        ac.abort();
+    });
+});
+
+describe("the saved session's end", () => {
+    const END = "2026-12-01T00:00:00.000Z";
+
+    it("lists each account's session end and relays session_expiring once per threshold", async () => {
+        const hooked = [];
+        const saved = new Map();
+        const sessions = new Map([
+            [A, { expiresAt: END, daysLeft: 40, expired: false }],
+            [B, { expiresAt: END, daysLeft: 6, expired: false }],
+        ]);
+        const { call, controller, probes } = await rig({
+            extra: {
+                session: (id) => sessions.get(id) ?? null,
+                sessionNotices: createSessionNotices({
+                    load: (k) => saved.get(k) ?? null,
+                    save: (k, v) => saved.set(k, v),
+                }),
+                webhook: (e) => hooked.push(e),
+            },
+        });
+        // A running daemon's own reading wins over the jar.
+        probes.set(A, {
+            running: true,
+            pid: 7,
+            health: { socket: { state: "up" }, session: { expiresAt: END, daysLeft: 12, expired: false } },
+        });
+        await controller.poll();
+        const list = await call("/accounts");
+        assert.deepEqual(
+            list.body.accounts.map((a) => [a.accountId, a.session]),
+            [
+                [A, { expiresAt: END, daysLeft: 12, expired: false }],
+                [B, { expiresAt: END, daysLeft: 6, expired: false }],
+            ],
+        );
+        const relayed = () => hooked.filter((e) => e.event === "session_expiring");
+        assert.deepEqual(
+            relayed().map((e) => [e.accountId, e.threshold, e.daysLeft, e.expiresAt]),
+            [
+                [A, 14, 12, END],
+                [B, 7, 6, END],
+            ],
+        );
+        for (const e of relayed())
+            assert.deepEqual(Object.keys(e).sort(), [
+                "accountId",
+                "at",
+                "command",
+                "daysLeft",
+                "event",
+                "expired",
+                "expiresAt",
+                "threshold",
+            ]);
+        await controller.poll();
+        assert.equal(relayed().length, 2, "the same threshold is not relayed again");
+        sessions.set(B, { expiresAt: END, daysLeft: 2, expired: false });
+        await controller.poll();
+        assert.deepEqual(relayed().at(-1).threshold, 3);
+        controller.stop();
+    });
+
+    it("SSE carries session_expiring like account_state", { timeout: 15_000 }, async () => {
+        const { controller, base } = await rig({
+            accounts: [A],
+            extra: {
+                session: () => ({ expiresAt: END, daysLeft: 1, expired: false }),
+                sessionNotices: createSessionNotices({ load: () => null, save: () => {} }),
+            },
+        });
+        const ac = new AbortController();
+        const res = await fetch(`${base}/events`, { headers: { Authorization: `Bearer ${ADMIN}` }, signal: ac.signal });
+        const reader = res.body.getReader();
+        let text = "";
+        await controller.poll();
+        while (!/event: session_expiring\n/.test(text)) text += new TextDecoder().decode((await reader.read()).value);
+        const block = text.split("\n\n").find((b) => b.startsWith("event: session_expiring"));
+        const data = JSON.parse(/^data: (.+)$/m.exec(block)[1]);
+        assert.equal(data.accountId, A);
+        assert.equal(data.threshold, 1);
         controller.stop();
         ac.abort();
     });

@@ -42,3 +42,7 @@ Zalo keeps **one web login per account**, and this server is it. Logging the sam
 Each QR login adds a new entry to the phone's device list (the older web entries show as logged out). A re-login of the same account keeps its device id, so the messages Zalo queued for it while it was away still arrive.
 
 Do not run the same account in two clients at once either (Claude Desktop and Claude Code both starting `--account <same id>`): the second start finds the account in use.
+
+## 5. When the login is about to end
+
+The QR login lasts about 90 days and Zalo never renews it. You are told ahead of time: `zalo-agent login` and every server start print the end date, `mcp start --status` warns from 14 days left, and the agent itself sees a `session_expiring` system event (with a `text`, in `zalo_get_messages` / `zalo_wait_for_message`) at 14, 7, 3 and 1 days left and once it has ended; a `webhook`, if you set one, gets the same event. To renew: `zalo-agent --account <id> login` (or `zalo-agent login` for your only account), scan the QR, then restart the client so it starts the server again. The device id stays the same, so messages queued while it was away still arrive. Miss the date and every tool call answers `SIGNED_OUT` until you log in again.

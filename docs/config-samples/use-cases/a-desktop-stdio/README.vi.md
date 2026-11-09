@@ -42,3 +42,7 @@ Zalo chỉ giữ **một phiên đăng nhập web cho mỗi tài khoản**, và 
 Mỗi lần đăng nhập QR thêm một mục mới vào danh sách thiết bị trên điện thoại (các mục web cũ hiện là đã đăng xuất). Đăng nhập lại cùng tài khoản thì giữ nguyên mã thiết bị, nên những tin Zalo xếp hàng cho nó trong lúc vắng mặt vẫn đến.
 
 Cũng đừng chạy cùng một tài khoản trên hai client cùng lúc (Claude Desktop và Claude Code cùng khởi động `--account <same id>`): lần khởi động thứ hai sẽ thấy tài khoản đang được dùng.
+
+## 5. Khi phiên đăng nhập sắp hết hạn
+
+Một lần đăng nhập QR kéo dài khoảng 90 ngày và Zalo không bao giờ gia hạn. Bạn được báo trước: `zalo-agent login` và mỗi lần máy chủ khởi động đều in ra ngày hết hạn, `mcp start --status` cảnh báo từ khi còn 14 ngày, và chính agent thấy một sự kiện hệ thống `session_expiring` (kèm `text`, trong `zalo_get_messages` / `zalo_wait_for_message`) khi còn 14, 7, 3 và 1 ngày và khi đã hết hạn; nếu bạn đặt `webhook` thì nó cũng nhận cùng sự kiện đó. Để gia hạn: `zalo-agent --account <id> login` (hoặc `zalo-agent login` nếu bạn chỉ có một tài khoản), quét QR, rồi khởi động lại client để nó khởi động lại máy chủ. Mã thiết bị giữ nguyên, nên những tin xếp hàng trong lúc vắng mặt vẫn đến. Nếu để quá hạn, mọi lệnh gọi tool trả về `SIGNED_OUT` cho đến khi bạn đăng nhập lại.

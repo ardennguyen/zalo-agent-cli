@@ -6,13 +6,7 @@
 
 import { z } from "zod";
 import { findMessageByClientId, getCloudItems, getThreadNames } from "../core/db.js";
-import {
-    CLEANUP_WARNING,
-    PLAN_DEFAULT_LIMIT,
-    PLAN_MAX_LIMIT,
-    applyCloudCleanup,
-    planCloudCleanup,
-} from "../core/cloud-plan.js";
+import { CLEANUP_WARNING, applyCloudCleanup, planCloudCleanup } from "../core/cloud-plan.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
 
 const MB = 1024 * 1024;
@@ -254,9 +248,8 @@ export const CLOUD_META = {
                 .number()
                 .int()
                 .min(1)
-                .max(PLAN_MAX_LIMIT)
                 .optional()
-                .describe(`For 'plan' and 'apply': items to list (default ${PLAN_DEFAULT_LIMIT})`),
+                .describe("For 'plan' and 'apply': items to list and act on (default: every match)"),
             onlySavedLocally: z
                 .boolean()
                 .optional()

@@ -19,13 +19,7 @@ import { scopeOf } from "../core/keystore/index.js";
 import { decryptMediaToFile } from "../core/keystore/media-seal.js";
 import { getActive } from "../core/accounts.js";
 import { findMessageByClientId, getCloudItems, getThreadNames, initDb } from "../core/db.js";
-import {
-    CLEANUP_WARNING,
-    PLAN_DEFAULT_LIMIT,
-    PLAN_MAX_LIMIT,
-    applyCloudCleanup,
-    planCloudCleanup,
-} from "../core/cloud-plan.js";
+import { CLEANUP_WARNING, applyCloudCleanup, planCloudCleanup } from "../core/cloud-plan.js";
 import { gateCli, guardSubcommand } from "../core/confirm-guard.js";
 import { autoLogin, getApi } from "../core/zalo-client.js";
 import { error, info, output, success, warning } from "../utils/output.js";
@@ -89,9 +83,7 @@ function filterOptions(cmd) {
         .option("-t, --type <kinds>", "Only these kinds, comma separated: photo, video, file, voice, gif, other")
         .option("--older-than <days>", "Only items older than this many days", (v) => Number(v))
         .option("--larger-than <mb>", "Only items of at least this many MB", (v) => Number(v))
-        .option("-n, --limit <n>", `Items to list (default ${PLAN_DEFAULT_LIMIT}, at most ${PLAN_MAX_LIMIT})`, (v) =>
-            parseInt(v, 10),
-        )
+        .option("-n, --limit <n>", "Items to list and act on (default: every match)", (v) => parseInt(v, 10))
         .option("--only-saved-locally", "Only items whose file this machine already holds")
         .option("--include-groups", "Include group conversations (left out by default)")
         .option("--include-my-cloud", "Include My Cloud, the chat with yourself (left out by default)");
@@ -272,7 +264,8 @@ export function registerCloudCommands(program) {
             .command("apply")
             .description(
                 "Delete the planned items as Zalo Web's cloud view does: the chat message behind each, for this " +
-                    "account on every device (no undo; unverified). Same filters as `plan`; acts on the listed items",
+                    "account on every device (no undo; unverified). Same filters as `plan`; acts on every match " +
+                    "(or the first --limit), a page of 60 at a time, one delete per message",
             ),
     )
         .option("--dry-run", "Show the plan and what would be sent, and send nothing")
@@ -288,7 +281,9 @@ export function registerCloudCommands(program) {
                     info(
                         `Dry run: this would delete the message behind ${r.listed} item(s) (${target.size}) in ` +
                             `${conversations} conversation(s)` +
-                            (r.listed < r.matched ? ` (${r.matched} match; raise --limit for more)` : "") +
+                            (r.listed < r.matched
+                                ? ` (${r.matched} match, ${bytesText(r.bytes)} in all; --limit chose the first ${r.listed})`
+                                : "") +
                             ". Nothing was sent.",
                     );
                 });
@@ -323,6 +318,11 @@ export function registerCloudCommands(program) {
                         "The cloud drops them when its queue says so; `sync-cloud` then updates the local index.",
                 );
                 if (result.failed.length) warning(`${result.failed.length} item(s) were not deleted.`);
+                for (const s of result.stoppedConversations) {
+                    warning(
+                        `  stopped ${index.names.get(String(s.threadId))?.name ?? s.threadId} at its first failure: ${s.error}`,
+                    );
+                }
                 if (result.skipped.length) info(`${result.skipped.length} item(s) were skipped (no message to name).`);
             });
             if (result.failed.length) process.exitCode = 1;

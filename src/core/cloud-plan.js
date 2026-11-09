@@ -19,9 +19,11 @@ const KIND_OF = {
     "chat.doodle": "photo",
 };
 
-/** The default and the largest number of items a plan lists. */
-export const PLAN_DEFAULT_LIMIT = 200;
-export const PLAN_MAX_LIMIT = 2000;
+/**
+ * Items per page of Zalo's cloud manager: fixed at 60. Its "select all" selects the loaded page, and a delete works
+ * through that page; `cloud apply` works through every match the same way, a page of 60 after another.
+ */
+export const CLOUD_PAGE_SIZE = 60;
 
 const DAY_MS = 86_400_000;
 
@@ -79,22 +81,33 @@ export function cloudDeleteTarget(item, ownId) {
 }
 
 /**
- * Delete the messages behind planned items for this account, as Zalo Web's cloud delete does: conversation by
- * conversation, one message at a time, stopping a conversation at its first failure (the Web throws there) and going
- * on with the next. The local index is left alone: the server's cloud queue reports the removals, and the next
- * `sync-cloud` applies them, as the Web's view waits for them.
+ * Delete the messages behind planned items for this account, as Zalo's cloud manager does: a page of
+ * {@link CLOUD_PAGE_SIZE} items at a time, and within a page conversation by conversation, one delete-for-me per
+ * message, sequentially, with no pause. A conversation stops at its first failure (the Web throws there): the rest of
+ * its items, in this page and every later one, are not tried, and the other conversations go on. The local index is
+ * left alone: the server's cloud queue reports the removals, and the next `sync-cloud` applies them, as the Web's view
+ * waits for them.
  *
  * @param {object} args
- * @param {Array<ReturnType<typeof describeItem>>} args.items - the planned items
+ * @param {Array<ReturnType<typeof describeItem>>} args.items - the planned items (every match unless a limit was asked)
  * @param {string|null} args.ownId
  * @param {(target: object) => Promise<unknown>} args.deleteForMe - `(t) => api.deleteMessage(t, true)`
- * @param {(p: {done: number, total: number, item: object, ok: boolean, error?: string}) => void} [args.onProgress]
+ * @param {(p: {done: number, total: number, item: object, ok: boolean, error?: string, page: number}) => void}
+ *   [args.onProgress]
+ * @param {number} [args.pageSize] - items per page (tests)
  * @returns {Promise<{deleted: number, failed: Array<{noiseId: string, threadId: string|null, error: string}>,
- *   skipped: Array<{noiseId: string, reason: string}>, bytes: number}>} `bytes`: the media of the deleted items
+ *   skipped: Array<{noiseId: string, reason: string}>, bytes: number, pages: number,
+ *   stoppedConversations: Array<{threadId: string, error: string}>}>} `bytes`: the media of the deleted items
  */
-export async function applyCloudCleanup({ items, ownId, deleteForMe, onProgress = () => {} }) {
-    const byConv = new Map();
+export async function applyCloudCleanup({
+    items,
+    ownId,
+    deleteForMe,
+    onProgress = () => {},
+    pageSize = CLOUD_PAGE_SIZE,
+}) {
     const skipped = [];
+    const named = [];
     for (const it of items) {
         const target = cloudDeleteTarget(it, ownId);
         if (!target) {
@@ -104,35 +117,45 @@ export async function applyCloudCleanup({ items, ownId, deleteForMe, onProgress 
             });
             continue;
         }
-        const list = byConv.get(target.threadId) ?? [];
-        list.push({ it, target });
-        byConv.set(target.threadId, list);
+        named.push({ it, target });
     }
-    const total = items.length - skipped.length;
+    const total = named.length;
     const failed = [];
+    const stopped = new Map(); // threadId -> the error that stopped it
     let deleted = 0;
     let bytes = 0;
     let done = 0;
-    for (const [threadId, list] of byConv) {
-        for (let i = 0; i < list.length; i++) {
-            const { it, target } = list[i];
-            try {
-                await deleteForMe(target);
-                deleted++;
-                bytes += it.bytes;
-                onProgress({ done: ++done, total, item: it, ok: true });
-            } catch (e) {
-                const error = e?.message || String(e);
-                failed.push({ noiseId: it.noiseId, threadId, error });
-                onProgress({ done: ++done, total, item: it, ok: false, error });
-                for (const rest of list.slice(i + 1)) {
-                    failed.push({ noiseId: rest.it.noiseId, threadId, error: "not tried: an earlier delete failed" });
+    let pages = 0;
+    for (let start = 0; start < named.length; start += pageSize) {
+        pages++;
+        const byConv = new Map();
+        for (const entry of named.slice(start, start + pageSize)) {
+            const list = byConv.get(entry.target.threadId) ?? [];
+            list.push(entry);
+            byConv.set(entry.target.threadId, list);
+        }
+        for (const [threadId, list] of byConv) {
+            for (const { it, target } of list) {
+                if (stopped.has(threadId)) {
+                    failed.push({ noiseId: it.noiseId, threadId, error: "not tried: an earlier delete failed" });
+                    continue;
                 }
-                break;
+                try {
+                    await deleteForMe(target);
+                    deleted++;
+                    bytes += it.bytes;
+                    onProgress({ done: ++done, total, item: it, ok: true, page: pages });
+                } catch (e) {
+                    const error = e?.message || String(e);
+                    stopped.set(threadId, error);
+                    failed.push({ noiseId: it.noiseId, threadId, error });
+                    onProgress({ done: ++done, total, item: it, ok: false, error, page: pages });
+                }
             }
         }
     }
-    return { deleted, failed, skipped, bytes };
+    const stoppedConversations = [...stopped].map(([threadId, error]) => ({ threadId, error }));
+    return { deleted, failed, skipped, bytes, pages, stoppedConversations };
 }
 
 /**
@@ -152,7 +175,7 @@ export async function applyCloudCleanup({ items, ownId, deleteForMe, onProgress 
  * @param {boolean} [args.filters.onlySavedLocally] - only items whose file this machine already has
  * @param {boolean} [args.filters.includeGroups=false]
  * @param {boolean} [args.filters.includeMyCloud=false]
- * @param {number} [args.filters.limit] - items listed (the totals cover every match)
+ * @param {number} [args.filters.limit] - items listed; every match unless given (the totals always cover every match)
  * @param {(item: ReturnType<typeof describeItem>) => boolean} [args.savedLocally] - whether this machine holds the
  *   item's file
  * @param {(threadId: string) => string|null} [args.nameOf]
@@ -182,7 +205,9 @@ export function planCloudCleanup({
         includeGroups = false,
         includeMyCloud = false,
     } = filters;
-    const limit = Math.min(PLAN_MAX_LIMIT, Math.max(1, Math.floor(Number(filters.limit) || PLAN_DEFAULT_LIMIT)));
+    // No limit by default: the plan lists every match, and `apply` acts on every one. A limit is the caller's choice.
+    const asked = Math.floor(Number(filters.limit));
+    const limit = Number.isFinite(asked) && asked >= 1 ? asked : Infinity;
     const wantThreads = new Set(threads.map(String));
     const wantKinds = new Set(kinds.map((k) => String(k).toLowerCase()));
     const cutoff = olderThanDays === null || olderThanDays === undefined ? null : now - Number(olderThanDays) * DAY_MS;

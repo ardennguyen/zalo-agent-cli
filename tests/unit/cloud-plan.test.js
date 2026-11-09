@@ -7,8 +7,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
     CLEANUP_WARNING,
-    PLAN_DEFAULT_LIMIT,
-    PLAN_MAX_LIMIT,
+    CLOUD_PAGE_SIZE,
     applyCloudCleanup,
     cloudDeleteTarget,
     describeItem,
@@ -130,14 +129,16 @@ describe("planCloudCleanup", () => {
         assert.deepEqual(flagged["my-file"], ["not-saved-locally"]);
     });
 
-    it("totals every match but lists only up to the limit, and never more than the hard limit", () => {
+    it("lists every match by default; a limit is the caller's choice and the totals still cover every match", () => {
         assert.equal(plan({ limit: 1 }).listed, 1);
         assert.equal(plan({ limit: 1 }).matched, 3);
         const many = Array.from({ length: 2500 }, (_, i) => row(`n${i}`, { mediaSize: i + 1 }));
-        const big = planCloudCleanup({ rows: many, ownId: OWN, filters: { limit: 99_999 }, now: NOW });
-        assert.equal(big.listed, PLAN_MAX_LIMIT);
-        assert.equal(big.matched, 2500);
-        assert.equal(planCloudCleanup({ rows: many, ownId: OWN, now: NOW }).listed, PLAN_DEFAULT_LIMIT);
+        // Red under the old defaults (200 listed, at most 2000).
+        const all = planCloudCleanup({ rows: many, ownId: OWN, now: NOW });
+        assert.equal(all.listed, 2500);
+        assert.equal(all.matched, 2500);
+        assert.equal(all.bytes, (2500 * 2501) / 2, "the total size the confirm quotes covers every match");
+        assert.equal(planCloudCleanup({ rows: many, ownId: OWN, filters: { limit: 2400 }, now: NOW }).listed, 2400);
     });
 
     it("groups the bytes by kind and by conversation, with names where it knows them", () => {
@@ -225,6 +226,39 @@ describe("cloud apply: deleting, conversation by conversation", () => {
                 ["a3", "not tried: an earlier delete failed"],
             ],
         );
+    });
+
+    it("applies all of 250 matches in pages of 60, and stops a conversation at its first failure across pages", async () => {
+        const OTHER = "1000000000000000003";
+        // 250 items alternating between two DMs; PEER's 70th delete fails (in page 3), OTHER's never does.
+        const rows = Array.from({ length: 250 }, (_, i) =>
+            i % 2
+                ? row(`o${i}`, { threadId: OTHER, msgInfo: { srcId: OTHER, destId: OWN } })
+                : row(`p${i}`, { msgInfo: { srcId: PEER } }),
+        );
+        const r0 = planCloudCleanup({ rows, ownId: OWN, now: NOW });
+        assert.equal(r0.listed, 250);
+        const sent = [];
+        const pagesSeen = new Set();
+        let peerDeletes = 0;
+        const r = await applyCloudCleanup({
+            items: r0.items,
+            ownId: OWN,
+            deleteForMe: async (t) => {
+                sent.push(t.threadId);
+                if (t.threadId === PEER && ++peerDeletes === 70) throw new Error("refused");
+            },
+            onProgress: (p) => pagesSeen.add(p.page),
+        });
+        assert.equal(CLOUD_PAGE_SIZE, 60);
+        assert.equal(r.pages, 5, "250 items: four full pages of 60 and one of 10");
+        assert.deepEqual([...pagesSeen], [1, 2, 3, 4, 5]);
+        // Every OTHER item was deleted; PEER stopped at its 70th and no later PEER item was sent.
+        assert.equal(sent.filter((t) => t === OTHER).length, 125);
+        assert.equal(sent.filter((t) => t === PEER).length, 70);
+        assert.equal(r.deleted, 125 + 69);
+        assert.equal(r.failed.length, 125 - 69);
+        assert.deepEqual(r.stoppedConversations, [{ threadId: PEER, error: "refused" }]);
     });
 
     it("is guarded, final, and says how much it deletes", () => {

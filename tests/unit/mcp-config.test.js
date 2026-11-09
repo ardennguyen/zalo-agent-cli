@@ -50,13 +50,12 @@ describe("getDefaultConfig", () => {
 
     it("returns a fresh object each call — callers may mutate safely", () => {
         const a = getDefaultConfig();
-        a.limits.maxMessagesPerPoll = 999;
-        assert.equal(getDefaultConfig().limits.maxMessagesPerPoll, 20);
+        a.limits.bufferMaxSize = 999;
+        assert.equal(getDefaultConfig().limits.bufferMaxSize, 500);
     });
 
     it("ships the documented limit defaults", () => {
         assert.deepEqual(getDefaultConfig().limits, {
-            maxMessagesPerPoll: 20,
             autoDigestThreshold: 50,
             bufferMaxAge: "2h",
             bufferMaxSize: 500,
@@ -113,7 +112,7 @@ describe("loadMCPConfig", () => {
         write({ limits: { bufferMaxSize: 50 } });
         const c = loadMCPConfig();
         assert.equal(c.limits.bufferMaxSize, 50);
-        assert.equal(c.limits.maxMessagesPerPoll, 20);
+        assert.equal(c.limits.bufferMaxAge, "2h");
     });
 
     it("deep-merges media", () => {

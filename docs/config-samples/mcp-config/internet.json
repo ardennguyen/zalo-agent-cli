@@ -8,7 +8,6 @@
         "clients": []
     },
     "limits": {
-        "maxMessagesPerPoll": 20,
         "bufferMaxAge": "2h",
         "bufferMaxSize": 500
     },

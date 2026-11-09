@@ -7,7 +7,8 @@
  */
 
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { allBankAccounts } from "../core/list-all.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
 import { resolveBankBin, BIN_TO_DISPLAY } from "../utils/bank-helpers.js";
 import { findBankAccount, filterBanks } from "../core/bank-accounts.js";
@@ -53,14 +54,26 @@ export function registerBankCommands(program) {
 
     bank.command("accounts")
         .description("List your saved bank accounts")
-        .option("-p, --page <n>", "Page number (starts at 0)", parseIntAtLeast(0), 0)
-        .option("-l, --limit <n>", "Accounts per page", parseIntAtLeast(1), 20)
+        .option("-p, --page <n>", "Read only this page, from 0 (default: every page)", parseIntAtLeast(0))
+        .option(
+            "-l, --limit <n>",
+            "Accounts per page (with -l or -p one page is read, 20 a page by default)",
+            parseIntAtLeast(1),
+        )
         .action(async (opts) => {
             try {
-                const result = await getApi().getListBankAccount(opts.page, opts.limit);
+                let result;
+                if (opts.page === undefined && opts.limit === undefined) {
+                    // No page asked: every saved account, page by page (src/core/list-all.js).
+                    const { paging, ...all } = await allBankAccounts(getApi());
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                } else {
+                    result = await getApi().getListBankAccount(opts.page ?? 0, opts.limit ?? 20);
+                }
                 output(result, program.opts().json, () => {
                     const accounts = result?.myBanks ?? [];
-                    info(`${accounts.length} account(s) on this page (total: ${result?.total ?? accounts.length})`);
+                    info(`${accounts.length} account(s) (total: ${result?.total ?? accounts.length})`);
                     for (const a of accounts) console.log(accountLine(a));
                     if (result?.hasMore) info("More accounts exist: use --page to see them.");
                 });

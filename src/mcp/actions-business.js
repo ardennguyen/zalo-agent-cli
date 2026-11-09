@@ -12,6 +12,7 @@ import { findBankAccount, filterBanks } from "../core/bank-accounts.js";
 import { setQuickMessageStatus } from "../core/profile-settings.js";
 import { resolveBankBin, BIN_TO_DISPLAY } from "../utils/bank-helpers.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
+import { allBankAccounts, allCatalogs, allProducts } from "../core/list-all.js";
 
 /** A bank name or BIN as the BIN Zalo wants, or the refusal (as `bank add` words it). */
 function bankBin(input) {
@@ -208,7 +209,12 @@ export const QUICK_MESSAGE_META = {
 export const CATALOG_ACTIONS = {
     list: {
         async run(a, { api }) {
-            return { data: (await api.getCatalogList({ limit: a.limit ?? 20, page: a.page ?? 0 })) ?? null };
+            if (a.limit !== undefined || a.page !== undefined) {
+                return { data: (await api.getCatalogList({ limit: a.limit ?? 20, page: a.page ?? 0 })) ?? null };
+            }
+            // No page asked: every catalog, page by page (src/core/list-all.js).
+            const { paging, ...data } = await allCatalogs(api);
+            return { data: Object.keys(data).length ? data : null, ...(paging.note && { note: paging.note }) };
         },
     },
     create: {
@@ -235,6 +241,15 @@ export const CATALOG_ACTIONS = {
     products: {
         needs: ["catalogId"],
         async run(a, { api }) {
+            if (a.limit === undefined && a.page === undefined) {
+                // No page asked: every product, page by page (src/core/list-all.js).
+                const { paging, ...data } = await allProducts(api, a.catalogId);
+                return {
+                    catalogId: a.catalogId,
+                    data: Object.keys(data).length ? data : null,
+                    ...(paging.note && { note: paging.note }),
+                };
+            }
             const res = await api.getProductCatalogList({
                 catalogId: a.catalogId,
                 limit: a.limit ?? 100,
@@ -347,8 +362,15 @@ export const CATALOG_META = {
                 .min(1)
                 .max(200)
                 .optional()
-                .describe("Page size for 'list' (20) and 'products' (100)"),
-            page: z.number().int().min(0).optional().describe("Page number for 'list' and 'products', from 0"),
+                .describe(
+                    "Page size for 'list' (20) and 'products' (100); one page is read when limit or page is given",
+                ),
+            page: z
+                .number()
+                .int()
+                .min(0)
+                .optional()
+                .describe("Read only this page of 'list' and 'products', from 0 (omit limit and page for all)"),
             confirm: confirmInput("'delete' and 'delete_product'"),
             ticket: ticketInput(),
             dryRun: dryRunInput("'delete' and 'delete_product'"),
@@ -373,13 +395,18 @@ export const BANK_ACTIONS = {
     },
     accounts: {
         async run(a, { api }) {
-            const res = await api.getListBankAccount(a.page ?? 0, a.limit ?? 20);
+            // No page asked: every saved account, page by page (src/core/list-all.js).
+            const res =
+                a.page === undefined && a.limit === undefined
+                    ? await allBankAccounts(api)
+                    : await api.getListBankAccount(a.page ?? 0, a.limit ?? 20);
             const accounts = (res?.myBanks ?? []).map(savedAccount);
             return {
                 count: accounts.length,
                 total: res?.total ?? accounts.length,
                 hasMore: Boolean(res?.hasMore),
                 accounts,
+                ...(res?.paging?.note && { note: res.paging.note }),
             };
         },
     },
@@ -439,8 +466,19 @@ export const BANK_META = {
             bank: z.string().min(1).optional().describe("The bank: a short name such as vcb, ocb or bidv, or its BIN"),
             accountNumber: z.string().min(1).max(40).optional().describe("The bank account number"),
             holderName: z.string().min(1).max(100).optional().describe("The account holder's name"),
-            page: z.number().int().min(0).optional().describe("Only for 'accounts': page number, from 0"),
-            limit: z.number().int().min(1).max(100).optional().describe("Only for 'accounts': page size (default 20)"),
+            page: z
+                .number()
+                .int()
+                .min(0)
+                .optional()
+                .describe("Only for 'accounts': read only this page, from 0 (omit page and limit for every account)"),
+            limit: z
+                .number()
+                .int()
+                .min(1)
+                .max(100)
+                .optional()
+                .describe("Only for 'accounts': page size (one page is read when page or limit is given; 20 a page)"),
             confirm: confirmInput("'remove'"),
             ticket: ticketInput(),
             dryRun: dryRunInput("'remove'"),

@@ -175,7 +175,7 @@ export const CLOUD_ACTIONS = {
                 items: r.matched + r.excluded.e2ee,
                 bytes: r.bytes,
                 byKind: r.byKind,
-                byConversation: r.byConversation.slice(0, a.top ?? 10),
+                byConversation: a.top ? r.byConversation.slice(0, a.top) : r.byConversation,
                 e2eeItems: r.excluded.e2ee,
                 ...(r.matched + r.excluded.e2ee === 0 && {
                     note: "The local zCloud index is empty: zalo_sync stage 'cloud' fills it.",
@@ -223,7 +223,12 @@ export const CLOUD_META = {
     inputSchema: z
         .object({
             action: z.enum(Object.keys(CLOUD_ACTIONS)).describe("zCloud report to make"),
-            top: z.number().int().min(1).max(100).optional().describe("Only for 'summary': conversations to list (10)"),
+            top: z
+                .number()
+                .int()
+                .min(1)
+                .optional()
+                .describe("Only for 'summary': conversations to list (omit for all)"),
             threadIds: z
                 .array(z.string().min(1))
                 .min(1)

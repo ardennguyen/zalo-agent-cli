@@ -113,6 +113,12 @@ describe("ThreadNameCache", () => {
             assert.equal(results.length, 1);
         });
 
+        it("returns every match when no limit is asked (past the old default of 10)", () => {
+            for (let i = 0; i < 15; i++) cache.set(`gx${i}`, { name: `Kho số ${i}`, type: "group" });
+            assert.equal(cache.search("kho so").length, 15);
+            assert.equal(cache.search("kho so", "all", 12).length, 12);
+        });
+
         it("returns empty for no match", () => {
             const results = cache.search("xyz_nonexistent");
             assert.equal(results.length, 0);

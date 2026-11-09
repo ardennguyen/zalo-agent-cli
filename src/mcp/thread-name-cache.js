@@ -158,10 +158,10 @@ export class ThreadNameCache {
      * Search threads by name with Vietnamese-aware fuzzy matching.
      * @param {string} query - Search keyword
      * @param {"group"|"dm"|"all"} [type="all"] - Filter by thread type
-     * @param {number} [limit=10] - Max results
+     * @param {number|null} [limit] - Max results; omitted, null or <= 0 = every match
      * @returns {Array<{ threadId: string, name: string, type: "group"|"dm", memberCount?: number }>}
      */
-    search(query, type = "all", limit = 10) {
+    search(query, type = "all", limit = null) {
         const normalizedQuery = normalizeVietnamese(query);
         const results = [];
 
@@ -184,7 +184,7 @@ export class ThreadNameCache {
             return aNorm.localeCompare(bNorm);
         });
 
-        return results.slice(0, limit);
+        return Number(limit) > 0 ? results.slice(0, limit) : results;
     }
 
     /**

@@ -59,7 +59,7 @@ function tool(names = {}) {
             readCursor: () => 0,
         },
         { isWatched: () => true },
-        { limits: { maxMessagesPerPoll: 20 } },
+        {},
         { ready: true, get: (id) => (names[id] ? { name: names[id], type: "user" } : null), search: () => [] },
         undefined,
     );

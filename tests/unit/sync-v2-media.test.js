@@ -547,6 +547,17 @@ describe("downloadSyncedMedia — filtering", () => {
         assert.equal(stats.considered, 1);
     });
 
+    it("fetches a message asked for by id, however many newer ones are pending (zalo_view_media)", async () => {
+        // The old view_media scan took the thread's 50 newest pending rows: an older message never downloaded.
+        const old = row({ timestamp: 1_600_000_000_000 }, [photo("/ok.jpg")]);
+        for (let i = 0; i < 60; i++) row({ timestamp: 1_750_000_000_000 + i }, [photo("/ok.jpg")]);
+        const stats = await downloadSyncedMedia({ accountDir: dir, threadId: "t1", msgIds: [old], limit: 1 });
+        assert.equal(stats.considered, 1);
+        assert.equal(stats.downloaded, 1);
+        assert.ok(getMessages("t1", 100).find((m) => m.msgId === old).localPath, "the asked message has its file");
+        assert.equal((await downloadSyncedMedia({ accountDir: dir, msgIds: [], dryRun: true })).considered, 0);
+    });
+
     it("honours a time window", async () => {
         row({ timestamp: 1_700_000_000_000 }, [photo("/ok.jpg")]);
         row({ timestamp: 1_750_000_000_000 }, [photo("/ok.jpg")]);

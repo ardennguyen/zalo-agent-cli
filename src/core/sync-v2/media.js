@@ -419,6 +419,8 @@ function writeConversationIndex(mediaRoot, names, scope) {
  * @param {typeof fetch} [opts.fetchImpl] - the fetch the downloads use (tests); default: the account's own
  * @param {string} opts.accountDir - the account's data dir (media lands under `<dir>/media`)
  * @param {string} [opts.threadId] - restrict to one thread
+ * @param {string[]} [opts.msgIds] - restrict to these messages: a caller after one message's media names it
+ *   instead of hoping it is among the newest `limit` rows of its thread
  * @param {Set<string>|string[]} [opts.kinds] - restrict to these attachment kinds
  * @param {number} [opts.limit=500] - max messages to consider
  * @param {number} [opts.since] / @param {number} [opts.until] - epoch ms bounds
@@ -456,6 +458,7 @@ export async function downloadSyncedMedia(opts = {}) {
         api,
         accountDir,
         threadId,
+        msgIds,
         limit = 500,
         since,
         until,
@@ -479,7 +482,7 @@ export async function downloadSyncedMedia(opts = {}) {
     // (sender name / thread id / real name).
     const names = threadNames || getThreadNames();
 
-    const rows = getAttachmentMessages({ threadId, since, until, limit, onlyMissing: true, includePruned });
+    const rows = getAttachmentMessages({ threadId, msgIds, since, until, limit, onlyMissing: true, includePruned });
     const jobs = [];
     for (const row of rows) {
         let index = 0;

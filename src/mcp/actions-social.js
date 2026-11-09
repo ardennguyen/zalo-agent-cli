@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
+import { allGroupBlocked, groupLinkInfoAll, inviteInfoAll } from "../core/list-all.js";
 import { applyGroupSettingChanges } from "../zalo/custom/group-settings.js";
 import { SETTING_FLAGS } from "../core/group-settings.js";
 import { lastOnlineStatus } from "../core/last-online.js";
@@ -238,12 +239,22 @@ export const GROUP_EXTRA_ACTIONS = {
     blocked: {
         needs: ["groupId"],
         async run(a, { api }) {
-            const res = await api.getGroupBlockedMember({ page: a.page ?? 1, count: a.limit ?? 50 }, a.groupId);
+            // No page asked: every page (src/core/list-all.js); a page or a limit is that one page.
+            const res =
+                a.page === undefined && a.limit === undefined
+                    ? await allGroupBlocked(api, a.groupId)
+                    : await api.getGroupBlockedMember({ page: a.page ?? 1, count: a.limit ?? 50 }, a.groupId);
             const members = (res?.blocked_members ?? []).map((m) => ({
                 userId: String(m.id),
                 ...personNameFields(m.id, m),
             }));
-            return { groupId: a.groupId, count: members.length, members, hasMore: Boolean(res?.has_more) };
+            return {
+                groupId: a.groupId,
+                count: members.length,
+                members,
+                hasMore: Boolean(res?.has_more),
+                ...(res?.paging?.note && { note: res.paging.note }),
+            };
         },
     },
     upgrade_community: {
@@ -338,9 +349,18 @@ export const GROUP_EXTRA_ACTIONS = {
     link_preview: {
         needs: ["link"],
         async run(a, { api }) {
+            if (a.page !== undefined) {
+                return {
+                    link: a.link,
+                    data: (await api.getGroupLinkInfo({ link: a.link, memberPage: a.page })) ?? null,
+                };
+            }
+            // No member page asked: every member page, as Zalo PC reads a link preview (src/core/list-all.js).
+            const { paging, ...data } = await groupLinkInfoAll(api, a.link);
             return {
                 link: a.link,
-                data: (await api.getGroupLinkInfo({ link: a.link, memberPage: a.page ?? 1 })) ?? null,
+                data: Object.keys(data).length ? data : null,
+                ...(paging.note && { note: paging.note }),
             };
         },
     },
@@ -365,8 +385,21 @@ export const GROUP_EXTRA_ACTIONS = {
     invite_info: {
         needs: ["groupId"],
         async run(a, { api }) {
-            const res = await getInviteBoxInfo(api, { groupId: a.groupId, mpage: a.page ?? 1, mcount: a.limit ?? 10 });
-            return { groupId: a.groupId, data: res ?? null };
+            const mcount = a.limit ?? 10;
+            if (a.page !== undefined) {
+                const res = await getInviteBoxInfo(api, { groupId: a.groupId, mpage: a.page, mcount });
+                return { groupId: a.groupId, data: res ?? null };
+            }
+            // No member page asked: every member page (src/core/list-all.js).
+            const { paging, ...data } = await inviteInfoAll(
+                (mpage) => getInviteBoxInfo(api, { groupId: a.groupId, mpage, mcount }),
+                mcount,
+            );
+            return {
+                groupId: a.groupId,
+                data: Object.keys(data).length ? data : null,
+                ...(paging.note && { note: paging.note }),
+            };
         },
     },
     join_invite: {
@@ -447,14 +480,19 @@ export const GROUP_EXTRA_INPUTS = {
         .int()
         .min(1)
         .optional()
-        .describe("Page number for 'blocked', and the member page for 'link_preview' and 'invite_info' (default 1)"),
+        .describe(
+            "Only this page for 'blocked', or this member page for 'link_preview' and 'invite_info' (omit for every page)",
+        ),
     limit: z
         .number()
         .int()
         .min(1)
         .max(200)
         .optional()
-        .describe("Page size for 'blocked' (default 50), and members per page for 'invite_info' (default 10)"),
+        .describe(
+            "Page size for 'blocked' (one page is read when page or limit is given; 50 a page), and members per " +
+                "request for 'invite_info' (10)",
+        ),
     blockFutureInvites: z
         .boolean()
         .optional()

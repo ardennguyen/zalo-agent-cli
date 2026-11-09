@@ -176,7 +176,7 @@ export class MessageBuffer {
      * @param {number} [opts.since] - Optional cursor (exclusive)
      * @param {number} [opts.timeoutMs=60000] - Max wait for the FIRST message
      * @param {AbortSignal} [opts.signal]
-     * @param {number} [opts.limit=1] - Most messages to return (1-100)
+     * @param {number|null} [opts.limit] - Most messages to return; omitted = every one already waiting
      * @param {number} [opts.settleMs=0] - After the first message, wait this long for more (0-5000)
      * @returns {Promise<{ messages: object[], hasMore: boolean }>} `messages` is empty on timeout or abort
      */
@@ -185,10 +185,11 @@ export class MessageBuffer {
         since = undefined,
         timeoutMs = 60000,
         signal = undefined,
-        limit = 1,
+        limit = null,
         settleMs = 0,
     } = {}) {
-        const { limit: max, settleMs: settle } = batchParams({ limit, settleMs });
+        const { limit: asked, settleMs: settle } = batchParams({ limit, settleMs });
+        const max = asked ?? Infinity;
         const from = (cursor) => this.read(threadId || undefined, this._fresh(cursor), max);
 
         if (since !== undefined && since !== null && Number.isFinite(Number(since))) {
@@ -253,11 +254,12 @@ export class MessageBuffer {
      * Read messages from a thread, optionally since a cursor.
      * @param {string} [threadId] - If omitted, reads from all threads
      * @param {number} [since=0] - Cursor to read from (exclusive)
-     * @param {number} [maxCount=20] - Max messages to return
+     * @param {number|null} [maxCount] - Max messages to return; omitted, null or <= 0 = every one buffered
      * @returns {{ messages: Array, cursor: number, hasMore: boolean }}
      */
-    read(threadId, since = 0, maxCount = 20) {
+    read(threadId, since = 0, maxCount = null) {
         since = this._fresh(since);
+        if (!(Number(maxCount) > 0)) maxCount = Infinity;
         const sources = threadId ? [this._threads.get(threadId)].filter(Boolean) : Array.from(this._threads.values());
 
         // Collect all messages after cursor, sorted by cursor

@@ -50,7 +50,7 @@ function tools(api, syncJobs) {
         api,
         { read: () => ({ messages: [], cursor: 0 }), getStats: () => [], readCursor: () => 0, markRead: () => 0 },
         { isWatched: () => true },
-        { limits: { maxMessagesPerPoll: 20 } },
+        {},
         { ready: true, get: () => null, search: () => [] },
         undefined,
         undefined,

@@ -99,6 +99,30 @@ describe("conv recent answers from the cache", () => {
     });
 });
 
+describe("conv recent with no -n lists every cached conversation", () => {
+    // 25 more DMs, all older than every thread above. Seeded only when this suite runs, after the -n tests above;
+    // the read-state tests below use -n 1 and -n 2, which the newer threads fill.
+    const MANY = Array.from({ length: 25 }, (_, i) => `3000000000000001${String(i).padStart(2, "0")}`);
+    before(() => {
+        MANY.forEach((id, i) =>
+            upsertThread({ threadId: id, type: "dm", name: `Bạn ${i}`, lastUpdate: 1600000000000 + i }),
+        );
+    });
+
+    it("returns all 27 DMs, past the old default of 20 per type", async () => {
+        // Red if a default cap comes back: 20 DMs instead of 27.
+        const r = await runOffline(["--json", "conv", "recent", "--friends-only"]);
+        const ids = jsonOf(r).map((c) => c.threadId);
+        assert.equal(ids.length, 27);
+        for (const id of MANY) assert.ok(ids.includes(id), id);
+    });
+
+    it("-n still caps each type when asked", async () => {
+        const r = await runOffline(["--json", "conv", "recent", "--friends-only", "-n", "21"]);
+        assert.equal(jsonOf(r).length, 21);
+    });
+});
+
 describe("conv recent shows how far the account has read each conversation on Zalo", () => {
     // Seeded after the listing tests above ran, so their rows stay readState: null.
     const OTHER = "600000000000000081";

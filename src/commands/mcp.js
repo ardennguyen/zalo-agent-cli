@@ -111,7 +111,7 @@ import {
     resolveWebhookUrl,
 } from "../mcp/mcp-config.js";
 import { purgeDeadDeliveries, startWebhookDelivery } from "../core/webhook-outbox.js";
-import { batchParams, waitResult, MAX_BATCH, MAX_SETTLE_MS } from "../mcp/wait-result.js";
+import { batchParams, waitResult, MAX_SETTLE_MS } from "../mcp/wait-result.js";
 import { createDaemonHealth, describeHealth } from "../core/daemon-health.js";
 import { describeSessionExpiry, sessionExpiryFor } from "../core/session-expiry.js";
 import { createSocketHost, EXIT_CODE } from "../core/socket-host.js";
@@ -1782,8 +1782,7 @@ export function registerMCPCommands(program) {
         .option("--timeout <seconds>", "Maximum seconds to wait before returning timeout (1-300, default: 55)", "55")
         .option(
             "-n, --limit <count>",
-            `Return up to this many buffered messages in one call, in order (1-${MAX_BATCH}, default: 1)`,
-            "1",
+            "Return at most this many buffered messages, in order (default: every message already waiting)",
         )
         .option(
             "--settle <ms>",
@@ -1816,9 +1815,9 @@ export function registerMCPCommands(program) {
                 error(`Invalid --consumer "${consumer}": must be 1-64 characters matching [A-Za-z0-9._:@-].`);
                 process.exit(1);
             }
-            const limit = Number(opts.limit);
-            if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BATCH) {
-                error(`Invalid --limit "${opts.limit}": must be an integer between 1 and ${MAX_BATCH}.`);
+            const limit = opts.limit === undefined ? undefined : Number(opts.limit);
+            if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+                error(`Invalid --limit "${opts.limit}": must be a whole number of at least 1.`);
                 process.exit(1);
             }
             const settleMs = Number(opts.settle);

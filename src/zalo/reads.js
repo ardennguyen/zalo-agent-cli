@@ -16,6 +16,8 @@
  * capture), so a failure of it says "not accepted", not "broken".
  */
 import { CallError, CallUsageError, arg, buildCall, list, num, runCall } from "./web-call.js";
+import { errorCodeOf } from "./errors.js";
+import { readAllPages } from "./paging.js";
 
 /**
  * The answers of the local reads, registered by the application ({@link registerLocalRead}): what they read lives
@@ -198,7 +200,7 @@ export const READS = {
         host: "chat",
         path: "/api/message/fetchImportant",
         cmd: 12114,
-        what: "A conversation's important messages (urgent, mentions), 50 at a time",
+        what: "A conversation's important messages (urgent, mentions): every page unless newestId or lastId picks one (50 a request)",
         args: [
             arg("uid", "string", "conversation id", true),
             arg("newestId", "string", "the newest id the client holds: answers what is newer than it"),
@@ -227,8 +229,8 @@ export const READS = {
         host: "friend",
         path: "/api/friend/blocklistv2",
         cmd: 11429,
-        what: "The accounts this one has blocked",
-        args: [arg("page", "number", "page, from 1"), arg("count", "number", "per page (50)")],
+        what: "The accounts this one has blocked: every page unless page or count picks one",
+        args: [arg("page", "number", "only this page, from 1"), arg("count", "number", "per page (50)")],
         body: (a) => ({ page: num(a.page, 1), count: num(a.count, 50), avatar: 75 }),
         verified: true,
     },
@@ -322,8 +324,8 @@ export const READS = {
         host: "alias",
         path: "/api/alias/list/v2",
         cmd: 12205,
-        what: "The nicknames set for friends (the v2 list)",
-        args: [arg("page", "number", "page, from 1"), arg("count", "number", "per page (20)")],
+        what: "The nicknames set for friends (the v2 list): every page unless page or count picks one",
+        args: [arg("page", "number", "only this page, from 1"), arg("count", "number", "per page (20)")],
         body: (a, ctx) => ({ page: num(a.page, 1), count: num(a.count, 20), src: -1, imei: ctx.imei }),
         verified: true,
     },
@@ -564,6 +566,141 @@ export async function callRead(api, name, args = {}) {
         return def.local(args, api);
     }
     return runCall(api, buildRead(api, name, args));
+}
+
+/** Whether a page's "more" flag (a boolean or 0/1) says there is more. */
+const moreFlag = (v) => v === true || Number(v) > 0;
+
+/** A message id as a BigInt, or null. */
+function msgIdOf(v) {
+    try {
+        return v === undefined || v === null || v === "" ? null : BigInt(String(v));
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The reads that come in pages, and how to read every page of one (src/zalo/paging.js) when the caller asked for
+ * no page: `asked` names the arguments that choose a page (any of them given = that one page, as before); `walk`
+ * reads them all with `call` (one request with extra arguments) and returns the first page's reply with every
+ * page's items in it and its "more" flag cleared. The GIF feeds (`gif-trending`, `gif-search`) are discovery feeds
+ * with no end and `gif-categories` a short list whose reply has not been seen paged, so they stay one page.
+ *
+ * @type {Record<string, {asked: string[], walk: (call: (extra: object) => Promise<any>) => Promise<{data: any,
+ *   paging: object}>}>}
+ */
+export const READ_PAGERS = {
+    // Zalo PC's blocked-friend loop: page after page while `has_more`, 50 a page.
+    blocklist: {
+        asked: ["page", "count"],
+        walk: async (call) => {
+            const r = await readAllPages({
+                fetch: (page) => call({ page, count: 50 }),
+                items: (reply) => (Array.isArray(reply?.profiles) ? reply.profiles : []),
+                more: (reply) => moreFlag(reply?.has_more),
+                key: (pr) => pr?.userId ?? pr?.id ?? JSON.stringify(pr),
+            });
+            return {
+                data: r.first ? { ...r.first, profiles: r.items, has_more: r.complete ? 0 : 1 } : null,
+                paging: r,
+            };
+        },
+    },
+    // Zalo Web's alias list: on while `hasMore` when the reply has it, else while a page is full; 212 past page 1 is
+    // the end of the list.
+    aliases: {
+        asked: ["page", "count"],
+        walk: async (call) => {
+            const count = 20;
+            const r = await readAllPages({
+                fetch: async (page) => {
+                    try {
+                        return await call({ page, count });
+                    } catch (e) {
+                        if (page > 1 && errorCodeOf(e) === 212) return { items: [] };
+                        throw e;
+                    }
+                },
+                items: (reply) => (Array.isArray(reply?.items) ? reply.items : []),
+                more: (reply, got) =>
+                    reply && Object.hasOwn(reply, "hasMore") ? moreFlag(reply.hasMore) : got.length >= count,
+                key: (it) => it?.userId ?? JSON.stringify(it),
+            });
+            const data = r.first ? { ...r.first, items: r.items } : null;
+            if (data && Object.hasOwn(data, "hasMore")) data.hasMore = !r.complete;
+            return { data, paging: r };
+        },
+    },
+    // Paged back from the newest: each later page asked from the oldest id of the page before, until a page is
+    // empty, says there is no more, or the oldest id stops moving back.
+    "important-messages": {
+        asked: ["newestId", "lastId"],
+        walk: async (call) => {
+            const listOf = (reply) =>
+                Array.isArray(reply)
+                    ? reply
+                    : Array.isArray(reply?.messages)
+                      ? reply.messages
+                      : Array.isArray(reply?.msgs)
+                        ? reply.msgs
+                        : [];
+            const r = await readAllPages({
+                fetch: (_page, lastId) => call({ lastId }),
+                items: listOf,
+                more: (reply, got) =>
+                    reply && !Array.isArray(reply) && Object.hasOwn(reply, "hasMore")
+                        ? moreFlag(reply.hasMore)
+                        : got.length >= 50,
+                next: (_reply, got) => {
+                    const ids = got.map((m) => msgIdOf(m?.msgId ?? m?.globalMsgId)).filter((v) => v !== null);
+                    if (!ids.length) return null;
+                    return ids.reduce((a, b) => (b < a ? b : a)).toString();
+                },
+                key: (m) => m?.msgId ?? JSON.stringify(m),
+                firstCursor: NEWEST_PAGE_ID,
+            });
+            // A page asked from an id may hold that id again: each message once.
+            const seen = new Set();
+            const items = r.items.filter((m) => {
+                const k = String(m?.msgId ?? JSON.stringify(m));
+                if (seen.has(k)) return false;
+                seen.add(k);
+                return true;
+            });
+            let data = r.first;
+            if (Array.isArray(data)) data = items;
+            else if (data) {
+                const key = Array.isArray(data.messages) ? "messages" : Array.isArray(data.msgs) ? "msgs" : null;
+                data = key ? { ...data, [key]: items } : data;
+                if (key && Object.hasOwn(data, "hasMore")) data.hasMore = !r.complete;
+            }
+            return { data, paging: r };
+        },
+    },
+};
+
+/**
+ * Call a read; one that comes in pages ({@link READ_PAGERS}) is read to its end when `args` chooses no page.
+ *
+ * @param {object} api - logged-in session
+ * @param {string} name - a key of {@link READS}
+ * @param {object} [args]
+ * @returns {Promise<{data: any, paging: {pages: number, complete: boolean, stoppedBy: string, note: string|null}|null}>}
+ *   `paging` is null for a read that came in one request
+ * @throws {ReadUsageError} for an unknown name or a missing argument, before any request
+ * @throws {Error} Zalo's own error (code in `.code`); 221 (too many requests) after the first page is not thrown but
+ *   ends the walk with a note
+ */
+export async function callReadAll(api, name, args = {}) {
+    const pager = READ_PAGERS[name];
+    const chose = pager?.asked.some((k) => args[k] !== undefined && args[k] !== null && args[k] !== "");
+    if (!pager || chose) return { data: await callRead(api, name, args), paging: null };
+    const { data, paging } = await pager.walk((extra) => callRead(api, name, { ...args, ...extra }));
+    return {
+        data,
+        paging: { pages: paging.pages, complete: paging.complete, stoppedBy: paging.stoppedBy, note: paging.note },
+    };
 }
 
 /**

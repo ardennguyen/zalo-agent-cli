@@ -5,7 +5,6 @@
     "webhook": "https://crm.example.com/hooks/zalo",
     "webhookSecret": null,
     "limits": {
-        "maxMessagesPerPoll": 50,
         "bufferMaxAge": "6h",
         "bufferMaxSize": 2000
     },

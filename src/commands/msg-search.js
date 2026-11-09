@@ -10,7 +10,7 @@ import { getAccountDbPath, getAccountDir } from "../core/credentials.js";
 import { hiddenChatsFor } from "../core/hidden-chats.js";
 import { configureSearchIndex, getThreadNames, initDb } from "../core/db.js";
 import { senderNameFields } from "../core/contact-names.js";
-import { MAX_CONTEXT, MAX_PAGE, searchPage } from "../core/search.js";
+import { MAX_CONTEXT, searchPage } from "../core/search.js";
 import { parseDateBound, parsePeriod } from "../utils/date-range.js";
 import { error, info, output } from "../utils/output.js";
 import { parseIntAtLeast } from "../utils/parse-options.js";
@@ -142,7 +142,7 @@ export function registerMsgSearch(msg, program) {
         .option("--until <date>", "Only on or before this date (YYYY-MM-DD, local time)")
         .option("--last <period>", "Only the last 7d, 2w, 3m, 1y (instead of --since)")
         .option("--type <types>", "Only these message types: text, photo, video, file, link, sticker... (comma list)")
-        .option("-n, --limit <n>", `Hits per page (default 20, at most ${MAX_PAGE})`, parseIntAtLeast(1), 20)
+        .option("-n, --limit <n>", "Hits per page (default: every hit, no paging)", parseIntAtLeast(1))
         .option("--cursor <cursor>", "Next page: the cursor printed under the previous one")
         .option(
             "--context <n>",

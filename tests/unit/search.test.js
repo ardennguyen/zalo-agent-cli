@@ -554,13 +554,20 @@ describe("search", () => {
             );
         });
 
-        it("limits a page to 200 and defaults it to 50", () => {
+        it("returns every hit when no limit is asked, and honors an explicit one", () => {
             for (let i = 0; i < 260; i++) insertMessage(msg(`p${i}`, `trang ${i}`, { timestamp: T0 + 700_000 + i }));
-            assert.equal(searchPage({ query: "trang", limit: 100000 }).count, 200);
-            assert.equal(searchPage({ query: "trang", limit: 100000 }).hasMore, true);
-            assert.equal(searchPage({ query: "trang" }).count, 50);
-            assert.equal(searchPage({ query: "trang", limit: 0 }).count, 50);
-            assert.equal(searchPage({ query: "trang", limit: "abc" }).count, 50);
+            // No limit: all 260, past the old default (50) and the old cap (200), with no next page.
+            const all = searchPage({ query: "trang" });
+            assert.equal(all.count, 260);
+            assert.equal(all.hasMore, false);
+            assert.equal(all.nextCursor, null);
+            assert.equal(searchPage({ query: "trang", limit: 0 }).count, 260);
+            assert.equal(searchPage({ query: "trang", limit: "abc" }).count, 260);
+            // An explicit limit is a bound, with no cap of its own.
+            assert.equal(searchPage({ query: "trang", limit: 100000 }).count, 260);
+            const capped = searchPage({ query: "trang", limit: 30 });
+            assert.equal(capped.count, 30);
+            assert.equal(capped.hasMore, true);
         });
 
         it("builds a preview of each hit, with the match located in it", () => {

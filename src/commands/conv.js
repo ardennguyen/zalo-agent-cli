@@ -25,6 +25,7 @@ import { readUserAliases, currentUserName } from "../core/current-user-names.js"
 import { guardSubcommand } from "../core/confirm-guard.js";
 import { setBlockSharing } from "../core/block-sharing.js";
 import { parseOnOff } from "../utils/cli-args.js";
+import { parseIntAtLeast } from "../utils/parse-options.js";
 import { withoutHidden } from "../core/hidden-chats.js";
 import { changeHiddenPin, readHidden, resetHiddenPinAndDelete } from "../core/hidden-chat-actions.js";
 import {
@@ -96,7 +97,7 @@ export function registerConvCommands(program, deps = {}) {
 
     conv.command("recent")
         .description("List recent conversations with thread_id (friends + groups)")
-        .option("-n, --limit <n>", "Max results per type", "20")
+        .option("-n, --limit <n>", "Max results per type (default: all)", parseIntAtLeast(1))
         .option("--friends-only", "Show only friend conversations")
         .option("--groups-only", "Show only group conversations")
         .option(
@@ -106,7 +107,9 @@ export function registerConvCommands(program, deps = {}) {
         .option("--pin-stdin", "Read the hidden-chat PIN from standard input instead of a prompt")
         .action(async (opts) => {
             const jsonMode = program.opts().json;
-            const limit = Number(opts.limit);
+            // No -n means every conversation; -n caps each type.
+            const limit = opts.limit ?? null;
+            const cap = (list) => (limit ? list.slice(0, limit) : list);
 
             const activeAcc = getActive();
             if (!activeAcc) {
@@ -191,10 +194,9 @@ export function registerConvCommands(program, deps = {}) {
                 if (!opts.groupsOnly) {
                     const friends = await api.getAllFriends();
                     const list = Array.isArray(friends) ? friends : [];
-                    const sorted = list
-                        .filter((f) => f.lastActionTime > 0)
-                        .sort((a, b) => b.lastActionTime - a.lastActionTime)
-                        .slice(0, limit);
+                    const sorted = cap(
+                        list.filter((f) => f.lastActionTime > 0).sort((a, b) => b.lastActionTime - a.lastActionTime),
+                    );
                     const aliases = sorted.length > 0 ? await readUserAliases(api) : new Map();
                     for (const f of sorted) {
                         const resolved = currentUserName(f.userId, f, aliases);
@@ -221,7 +223,7 @@ export function registerConvCommands(program, deps = {}) {
                     if (groupIds.length > 0) {
                         const batchSize = 50;
                         const batches = [];
-                        const limitedIds = groupIds.slice(0, limit); // cap to limit BEFORE batching
+                        const limitedIds = cap(groupIds); // cap to limit BEFORE batching
                         for (let i = 0; i < limitedIds.length; i += batchSize) {
                             batches.push(limitedIds.slice(i, i + batchSize));
                         }

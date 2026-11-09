@@ -24,10 +24,6 @@ import { dirname, join, resolve } from "node:path";
 import { Database, dbFileState, openDatabase } from "./sqlite.js";
 import { ROW_MAC_TABLE } from "./row-mac.js";
 
-/** Rows `db query` returns unless told otherwise, and the most it ever returns. */
-export const QUERY_ROW_LIMIT = 1000;
-export const QUERY_ROW_LIMIT_MAX = 100_000;
-
 /** The only pragmas `db query` runs: they describe the schema and change nothing. */
 const READ_PRAGMAS = new Set([
     "table_info",
@@ -336,15 +332,17 @@ function filteredCopy(file, threadIds) {
  *
  * @param {string} file - `accounts/<ownId>/zalo.db`
  * @param {string} sql
- * @param {{limit?: number, params?: Array<unknown>, excludeThreadIds?: string[]}} [opts] - `excludeThreadIds`: the
- *   hidden threads; the statement then runs on a copy without them
+ * @param {{limit?: number|null, params?: Array<unknown>, excludeThreadIds?: string[]}} [opts] - `limit`: the most
+ *   rows returned (omitted = every row the statement yields); `excludeThreadIds`: the hidden threads; the statement
+ *   then runs on a copy without them
  * @returns {{columns: string[], rows: object[], rowCount: number, truncated: boolean, ms: number}}
  * @throws {QueryRefused} for a statement it does not run; `KeystoreError` when the key cannot be had; SqliteError for
  *   SQL that does not prepare
  */
-export function runReadOnlyQuery(file, sql, { limit = QUERY_ROW_LIMIT, params = [], excludeThreadIds = [] } = {}) {
+export function runReadOnlyQuery(file, sql, { limit = null, params = [], excludeThreadIds = [] } = {}) {
     checkQuery(sql);
-    const cap = Math.min(Math.max(1, Math.floor(Number(limit) || QUERY_ROW_LIMIT)), QUERY_ROW_LIMIT_MAX);
+    // No limit asked = every row: nothing is capped unless the caller asked for a cap.
+    const cap = Math.floor(Number(limit)) > 0 ? Math.floor(Number(limit)) : Infinity;
     if (!existsSync(file)) throw new QueryRefused(`There is no message database for this account yet (${file}).`);
     const started = Date.now();
     const copy = excludeThreadIds?.length ? filteredCopy(file, excludeThreadIds) : null;

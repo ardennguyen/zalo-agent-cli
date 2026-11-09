@@ -29,6 +29,7 @@ import {
 import { gateCli, guardSubcommand } from "../core/confirm-guard.js";
 import { autoLogin, getApi } from "../core/zalo-client.js";
 import { error, info, output, success, warning } from "../utils/output.js";
+import { parseIntAtLeast } from "../utils/parse-options.js";
 import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
 import { fetchCloudBlob } from "../zalo/zcloud.js";
 import { decryptCloudBlob, decryptCloudInfo, importCloudPrivateKey } from "../zalo/zcloud-e2ee.js";
@@ -157,7 +158,7 @@ export function registerCloudCommands(program) {
         .description(
             "Summarize the local zCloud index (run `sync-cloud` first): items and bytes by kind and conversation",
         )
-        .option("-n, --top <n>", "Conversations to list", (v) => Math.max(1, parseInt(v, 10) || 10), 10)
+        .option("-n, --top <n>", "Conversations to list (default: all)", parseIntAtLeast(1))
         .action((opts) => {
             const jsonMode = program.opts().json;
             let r;
@@ -174,7 +175,7 @@ export function registerCloudCommands(program) {
                 error(e.message);
                 process.exit(1);
             }
-            const top = r.byConversation.slice(0, opts.top);
+            const top = opts.top ? r.byConversation.slice(0, opts.top) : r.byConversation;
             output(
                 {
                     items: r.matched + r.excluded.e2ee,
@@ -193,7 +194,7 @@ export function registerCloudCommands(program) {
                     for (const [kind, v] of Object.entries(r.byKind).sort((a, b) => b[1].bytes - a[1].bytes)) {
                         info(`  ${kind}: ${v.items} item(s), ${bytesText(v.bytes)}`);
                     }
-                    info("Largest conversations:");
+                    info("Conversations, largest first:");
                     for (const c of top) {
                         info(`  ${c.name ?? c.threadId}: ${c.items} item(s), ${bytesText(c.bytes)}`);
                     }
@@ -242,8 +243,8 @@ export function registerCloudCommands(program) {
                     info(`  ${kind}: ${v.items} item(s), ${bytesText(v.bytes)}`);
                 }
                 if (r.byConversation.length) {
-                    info("Largest conversations in the plan:");
-                    for (const c of r.byConversation.slice(0, 10)) {
+                    info("Conversations in the plan, largest first:");
+                    for (const c of r.byConversation) {
                         info(`  ${c.name ?? c.threadId}: ${c.items} item(s), ${bytesText(c.bytes)}`);
                     }
                 }

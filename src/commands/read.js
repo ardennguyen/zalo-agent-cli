@@ -7,9 +7,9 @@
  */
 import chalk from "chalk";
 import { getApi } from "../core/zalo-client.js";
-import { callRead, describeReads, READS, ReadUsageError } from "../zalo/reads.js";
+import { callReadAll, describeReads, READS, ReadUsageError } from "../zalo/reads.js";
 import "../core/local-reads.js";
-import { error, info, output } from "../utils/output.js";
+import { error, info, output, warning } from "../utils/output.js";
 import { getActive } from "../core/accounts.js";
 import { readThreadIds } from "../core/hidden-chats.js";
 import { addHiddenOptions, hiddenAccess, PIN_REQUIRED_EXIT_CODE } from "../utils/hidden-access.js";
@@ -157,7 +157,9 @@ export function registerReadCommands(program) {
                     process.exit(PIN_REQUIRED_EXIT_CODE);
                 }
             }
-            const result = await callRead(getApi(), name, args);
+            // A paged read with no page chosen is read to its end (READ_PAGERS in src/zalo/reads.js).
+            const { data: result, paging } = await callReadAll(getApi(), name, args);
+            if (paging?.note) warning(paging.note);
             output(result ?? null, program.opts().json);
         } catch (e) {
             error(e instanceof ReadUsageError ? e.message : `${name} failed: ${e.message}`);

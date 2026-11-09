@@ -2,13 +2,13 @@
  * What a "wait for messages" call returns, in one place: the HTTP route `GET /events/wait`, the MCP tool
  * `zalo_wait_for_message` and `mcp wait` over the daemon channel all build it here, so they cannot drift.
  *
- * It used to hand back one message per call, so a bot behind a busy account made one round trip per
- * message. `limit` (1-100, default 1) returns up to that many buffered messages at once, in cursor order,
- * and `settleMs` waits that long after the first arrives so a burst lands in one reply.
+ * A call returns every message already waiting (up to what the buffer holds), in cursor order; `limit`
+ * is an opt-in bound, and `settleMs` waits that long after the first arrives so a burst lands in one reply.
+ * Until 3.0.0 the default was one message per call; a client that read only `message` and continued from
+ * `cursor` now skips every message after the first: read `messages`, or pass `limit` 1.
  *
- * The single-message fields are unchanged and still filled (`message` is the first, `cursor` the last
- * one returned, so `since=cursor` continues exactly where the batch ended); `messages`, `count` and
- * `hasMore` are added. With `limit` 1 the reply is what it always was, plus those three fields.
+ * `message` is the first message returned and `cursor` the last one's, so `since=cursor` continues exactly
+ * where the batch ended; `messages`, `count` and `hasMore` describe the whole batch.
  */
 
 import { senderNameFields } from "../core/contact-names.js";
@@ -27,7 +27,7 @@ function withCurrentSender(m) {
     return { ...m, ...senderNameFields(m.senderId, m.senderZaloName ?? m.senderName ?? null) };
 }
 
-export { MAX_BATCH, MAX_SETTLE_MS, batchParams } from "./wait-batch.js";
+export { MAX_SETTLE_MS, batchParams } from "./wait-batch.js";
 
 /**
  * @param {object} args

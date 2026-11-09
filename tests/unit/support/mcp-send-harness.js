@@ -26,7 +26,7 @@ export function tool({ failOn = 0 } = {}) {
             readCursor: () => 0,
         },
         { isWatched: () => true },
-        { limits: { maxMessagesPerPoll: 20 } },
+        {},
         { ready: true, get: () => null, search: () => [] },
         undefined,
     );

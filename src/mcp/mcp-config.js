@@ -26,7 +26,6 @@ export function getDefaultConfig() {
             cooldown: "5m",
         },
         limits: {
-            maxMessagesPerPoll: 20,
             autoDigestThreshold: 50,
             bufferMaxAge: "2h",
             bufferMaxSize: 500,

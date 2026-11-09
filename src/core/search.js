@@ -23,8 +23,7 @@ import { foldWithMap, normalizeKeyword } from "../utils/vn-text.js";
 /** Characters of a hit's preview before the match and after it (Zalo's `max_preview_len` 70 and `bonus_preview_len` 30). */
 export const SNIPPET_BEFORE = 70;
 export const SNIPPET_AFTER = 30;
-/** The most hits a page holds, and the most messages shown around a hit. */
-export const MAX_PAGE = 200;
+/** The most messages shown around a hit. (A page has no size cap: no `limit` means every hit.) */
 export const MAX_CONTEXT = 10;
 
 /** Names for groups of message types, for `--type`. */
@@ -155,7 +154,7 @@ export function searchCoverage({ threadId } = {}) {
  * @param {number} [opts.since] - epoch ms
  * @param {number} [opts.until] - epoch ms
  * @param {string|string[]} [opts.types] - see {@link resolveTypes}
- * @param {number} [opts.limit=50] - hits per page, at most {@link MAX_PAGE}
+ * @param {number} [opts.limit] - hits per page; omitted (or not a positive number) = every hit, in one page
  * @param {string} [opts.cursor] - `nextCursor` of the page before
  * @param {number} [opts.context=0] - messages shown before and after each hit, at most {@link MAX_CONTEXT}
  * @param {boolean} [opts.counts] - the tabs' numbers (default: on the first page only)
@@ -172,7 +171,8 @@ export function searchPage(opts = {}) {
     const kw = normalizeKeyword(opts.query);
     if (!kw.norm) throw new Error("A search query is required.");
     const accents = opts.accents === "exact" ? "exact" : "fold";
-    const limit = Math.min(MAX_PAGE, Math.max(1, Math.trunc(Number(opts.limit)) || 50));
+    // No limit asked = every hit: nothing is capped unless the caller asked for a cap.
+    const limit = Math.trunc(Number(opts.limit)) > 0 ? Math.trunc(Number(opts.limit)) : Infinity;
     const context = Math.min(MAX_CONTEXT, Math.max(0, Math.trunc(Number(opts.context)) || 0));
     const filters = {
         norm: kw.norm,
@@ -192,7 +192,7 @@ export function searchPage(opts = {}) {
     if (excluded.size && opts.threadId !== undefined && excluded.has(String(opts.threadId))) {
         return emptyPage(kw, accents);
     }
-    if (accents === "exact" || excluded.size) {
+    if (accents === "exact" || excluded.size || limit === Infinity) {
         for (const row of iterateSearchRows({ ...filters, after })) {
             if (excluded.has(String(row.threadId))) continue;
             if (accents === "exact" && !matchesExact(row.text, kw.keyword)) continue;

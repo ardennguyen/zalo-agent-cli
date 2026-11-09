@@ -118,7 +118,7 @@ function tools({ config = {}, stateless = true } = {}) {
         api,
         buffer(),
         { isWatched: () => true },
-        { limits: { maxMessagesPerPoll: 20 }, ...config },
+        { ...config },
         nameCache,
         ROOT,
     );

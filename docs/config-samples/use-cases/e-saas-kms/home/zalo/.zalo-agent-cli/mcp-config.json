@@ -2,7 +2,6 @@
     "watchThreads": ["dm:*"],
     "host": "127.0.0.1",
     "limits": {
-        "maxMessagesPerPoll": 50,
         "bufferMaxAge": "6h",
         "bufferMaxSize": 1000
     },

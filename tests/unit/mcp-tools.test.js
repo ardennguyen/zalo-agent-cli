@@ -102,7 +102,7 @@ function deps(overrides = {}) {
             readCursor: () => 0,
         },
         filter: { isWatched: () => true },
-        config: { limits: { maxMessagesPerPoll: 20 } },
+        config: {},
         nameCache: { ready: true, get: () => null, search: () => [] },
         accountDir: undefined,
         ...overrides,
@@ -179,15 +179,38 @@ describe("MCP input schemas", () => {
         assert.equal(s.parse({ threadId: "t1", text: "hi", threadType: "dm" }).threadType, "dm");
     });
 
-    it("zalo_get_messages applies the configured poll limit as its default", () => {
-        const { server: s7 } = register({ config: { limits: { maxMessagesPerPoll: 7 } } });
-        const parsed = s7.tools.get("zalo_get_messages").meta.inputSchema.parse({});
-        assert.equal(parsed.limit, 7);
+    it("zalo_get_messages has no default limit: a call that asks for none reads every buffered message", async () => {
+        const parsed = schemaOf("zalo_get_messages").parse({});
+        assert.equal(parsed.limit, undefined);
         assert.equal(parsed.since, 0);
-    });
-
-    it("zalo_get_messages caps limit at 100 so an agent cannot drain the buffer", () => {
-        assert.throws(() => schemaOf("zalo_get_messages").parse({ limit: 101 }));
+        // An explicit limit is a bound, with no cap of its own.
+        assert.equal(schemaOf("zalo_get_messages").parse({ limit: 300 }).limit, 300);
+        assert.throws(() => schemaOf("zalo_get_messages").parse({ limit: 0 }));
+        const buffered = Array.from({ length: 30 }, (_, i) => ({
+            msgId: `m${i}`,
+            threadId: "t1",
+            text: `hi ${i}`,
+            _cursor: i + 1,
+        }));
+        const calls = [];
+        const { server: s } = register({
+            buffer: {
+                read: (threadId, from, limit) => {
+                    calls.push(limit);
+                    const all = buffered.filter((m) => m._cursor > from);
+                    const page = limit ? all.slice(0, limit) : all;
+                    return { messages: page, cursor: page.at(-1)?._cursor ?? from, hasMore: page.length < all.length };
+                },
+                getStats: () => [],
+                getThreadType: () => "dm",
+                markRead: () => 0,
+                readCursor: () => 0,
+            },
+        });
+        const r = JSON.parse((await s.tools.get("zalo_get_messages").handler({ since: 0 })).content[0].text);
+        assert.equal(calls[0], undefined, "no limit is passed to the buffer");
+        assert.equal(r.messages.length, 30, "more than the old default of 20");
+        assert.equal(r.hasMore, false);
     });
 
     it("zalo_list_threads and zalo_search_threads share the same type enum", () => {
@@ -233,11 +256,11 @@ describe("MCP input schemas", () => {
         assert.throws(() => schemaOf("zalo_react").parse({ msgId: "m1", threadId: "t1", reaction: "" }));
     });
 
-    it("zalo_list_conversations defaults to 20 of each type, and caps the limit", () => {
+    it("zalo_list_conversations has no default limit, and an explicit one has no cap", () => {
         const s = schemaOf("zalo_list_conversations");
-        assert.deepEqual(s.parse({}), { type: "all", limit: 20 });
+        assert.deepEqual(s.parse({}), { type: "all" });
         assert.throws(() => s.parse({ limit: 0 }));
-        assert.throws(() => s.parse({ limit: 201 }));
+        assert.equal(s.parse({ limit: 500 }).limit, 500);
         assert.throws(() => s.parse({ type: "channel" }));
     });
 
@@ -742,7 +765,7 @@ describe("MCP tools read the local cache", () => {
         const { server } = register({
             api: emptyServerApi(),
             accountDir,
-            config: { limits: { maxMessagesPerPoll: 20 }, media: { allowDeliver: ["link", "tempfile"] } },
+            config: { media: { allowDeliver: ["link", "tempfile"] } },
         });
         server.statelessHttp = true;
         server.clientLoopback = false;
@@ -1799,7 +1822,7 @@ describe("zalo_friend", () => {
     }
     const call = (fa, args) => register({ api: fa.api }).server.call("zalo_friend", args);
 
-    it("takes its first ten actions, and a bounded limit", () => {
+    it("takes its first ten actions, and a positive limit with no cap of its own", () => {
         const { server } = register();
         const schema = server.tools.get("zalo_friend").meta.inputSchema;
         for (const action of [
@@ -1818,7 +1841,8 @@ describe("zalo_friend", () => {
         }
         assert.throws(() => schema.parse({ action: "explode" }), "an action outside the list is refused");
         assert.throws(() => schema.parse({ action: "list", limit: 0 }));
-        assert.throws(() => schema.parse({ action: "list", limit: 1001 }));
+        assert.equal(schema.parse({ action: "list", limit: 5000 }).limit, 5000);
+        assert.equal(schema.parse({ action: "list" }).limit, undefined, "no limit: every friend");
     });
 
     it("status asks Zalo about that user and returns the three flags as booleans", async () => {
@@ -1969,6 +1993,12 @@ describe("zalo_friend", () => {
         assert.equal(out.friends[0].displayName, "newest", "falls back to the Zalo name");
         const all = payloadOf(await call(friendApi({ getAllFriends: friends }), { action: "list" }));
         assert.deepEqual([all.count, all.truncated], [3, false]);
+    });
+
+    it("list with no limit returns every friend, past the old default of 200", async () => {
+        const many = Array.from({ length: 250 }, (_, i) => ({ userId: String(i + 1), lastActionTime: i }));
+        const all = payloadOf(await call(friendApi({ getAllFriends: many }), { action: "list" }));
+        assert.deepEqual([all.total, all.count, all.truncated], [250, 250, false]);
     });
 
     it("refuses a missing or non-numeric userId without touching Zalo, and needs none for the lists", async () => {

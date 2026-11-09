@@ -152,7 +152,7 @@ function tools({ api, config = {}, stateless = false, elicit } = {}) {
         api,
         { read: () => ({ messages: [], cursor: 0 }), getStats: () => [], markRead: () => 0, readCursor: () => 0 },
         { isWatched: () => true },
-        { limits: { maxMessagesPerPoll: 20 }, ...config },
+        { ...config },
         { ready: true, get: () => null, search: () => [] },
         ROOT,
         undefined,

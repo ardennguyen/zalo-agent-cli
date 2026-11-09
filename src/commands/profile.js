@@ -5,7 +5,8 @@
 import { resolve } from "path";
 import { getApi, getOwnId } from "../core/zalo-client.js";
 import { updateAccountName } from "../core/accounts.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { allAvatars } from "../core/list-all.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff, parseLanguage } from "../utils/cli-args.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
@@ -139,11 +140,19 @@ export function registerProfileCommands(program) {
     profile
         .command("avatars")
         .description("List your avatar gallery")
-        .option("-c, --count <n>", "Page size", parseIntOption, 50)
-        .option("-p, --page <n>", "Page number", parseIntOption, 1)
+        .option("-c, --count <n>", "Page size (with -c or -p one page is read, 50 a page by default)", parseIntOption)
+        .option("-p, --page <n>", "Read only this page (default: the whole gallery)", parseIntOption)
         .action(async (opts) => {
             try {
-                const result = await getApi().getAvatarList(opts.count, opts.page);
+                let result;
+                if (opts.count === undefined && opts.page === undefined) {
+                    // No page asked: the whole gallery, page by page (src/core/list-all.js).
+                    const { paging, ...all } = await allAvatars(getApi());
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                } else {
+                    result = await getApi().getAvatarList(opts.count ?? 50, opts.page ?? 1);
+                }
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Get avatars failed: ${e.message}`);

@@ -4,7 +4,8 @@
 
 import { resolve } from "path";
 import { getApi } from "../core/zalo-client.js";
-import { success, error, info, output } from "../utils/output.js";
+import { success, error, info, output, warning } from "../utils/output.js";
+import { allCatalogs, allProducts } from "../core/list-all.js";
 import { parseIntOption } from "../utils/parse-options.js";
 import { parseOnOff } from "../utils/cli-args.js";
 import { guardSubcommand } from "../core/confirm-guard.js";
@@ -15,11 +16,23 @@ export function registerCatalogCommands(program) {
     catalog
         .command("list")
         .description("List all catalogs")
-        .option("-l, --limit <n>", "Items per page", parseIntOption, 20)
-        .option("-p, --page <n>", "Page number", parseIntOption, 0)
+        .option(
+            "-l, --limit <n>",
+            "Items per page (with -l or -p one page is read, 20 a page by default)",
+            parseIntOption,
+        )
+        .option("-p, --page <n>", "Read only this page, from 0 (default: every page)", parseIntOption)
         .action(async (opts) => {
             try {
-                const result = await getApi().getCatalogList({ limit: opts.limit, page: opts.page });
+                let result;
+                if (opts.limit === undefined && opts.page === undefined) {
+                    // No page asked: every catalog, page by page (src/core/list-all.js).
+                    const { paging, ...all } = await allCatalogs(getApi());
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                } else {
+                    result = await getApi().getCatalogList({ limit: opts.limit ?? 20, page: opts.page ?? 0 });
+                }
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Get catalogs failed: ${e.message}`);
@@ -65,15 +78,27 @@ export function registerCatalogCommands(program) {
     catalog
         .command("products <catalogId>")
         .description("List products in a catalog")
-        .option("-l, --limit <n>", "Items per page", parseIntOption, 100)
-        .option("-p, --page <n>", "Page number", parseIntOption, 0)
+        .option(
+            "-l, --limit <n>",
+            "Items per page (with -l or -p one page is read, 100 a page by default)",
+            parseIntOption,
+        )
+        .option("-p, --page <n>", "Read only this page, from 0 (default: every page)", parseIntOption)
         .action(async (catalogId, opts) => {
             try {
-                const result = await getApi().getProductCatalogList({
-                    catalogId,
-                    limit: opts.limit,
-                    page: opts.page,
-                });
+                let result;
+                if (opts.limit === undefined && opts.page === undefined) {
+                    // No page asked: every product, page by page (src/core/list-all.js).
+                    const { paging, ...all } = await allProducts(getApi(), catalogId);
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                } else {
+                    result = await getApi().getProductCatalogList({
+                        catalogId,
+                        limit: opts.limit ?? 100,
+                        page: opts.page ?? 0,
+                    });
+                }
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Get products failed: ${e.message}`);

@@ -8,6 +8,7 @@ import { getApi } from "../core/zalo-client.js";
 import { getInviteBoxInfo } from "../zalo/custom/group-invite.js";
 import { getGroupHistory } from "../zalo/custom/group-history.js";
 import { groupMemberUids } from "../core/group-members.js";
+import { allGroupBlocked, groupLinkInfoAll, inviteInfoAll } from "../core/list-all.js";
 import { aliasFirst, ensureAliases, nameFor, senderNameFields } from "../core/contact-names.js";
 import { success, error, info, warning, output } from "../utils/output.js";
 import { parseIntOption, parseIntAtLeast } from "../utils/parse-options.js";
@@ -163,11 +164,13 @@ export function registerGroupCommands(program) {
 
     group
         .command("history <groupId>")
-        .description("Get group chat history (recent messages)")
-        .option("-n, --count <n>", "Number of messages to fetch", "20")
+        .description("Get group chat history (the messages Zalo's group store serves, newest first)")
+        .option("-n, --count <n>", "Number of messages to fetch (default: every message the store serves)")
         .action(async (groupId, opts) => {
             try {
-                const count = parseIntAtLeast(1)(opts.count);
+                // No -n: every page the store serves; getGroupHistory stops where the store says it ends, at a
+                // cursor that stops moving older, or at the filter point (src/zalo/custom/group-history.js).
+                const count = opts.count === undefined ? Number.MAX_SAFE_INTEGER : parseIntAtLeast(1)(opts.count);
                 // Zalo's cloud-message store (/api/cm/getrecentv2), which is
                 // what Zalo Web reads. The previous engine's getGroupChatHistory asked
                 // /api/group/history, which Zalo answers with 404.
@@ -618,11 +621,26 @@ export function registerGroupCommands(program) {
     group
         .command("blocked <groupId>")
         .description("List blocked members in a group")
-        .option("-c, --count <n>", "Items per page", parseIntOption, 50)
-        .option("-p, --page <n>", "Page number", parseIntOption, 1)
+        .option(
+            "-c, --count <n>",
+            "Items per page (with -c or -p one page is read, 50 a page by default)",
+            parseIntOption,
+        )
+        .option("-p, --page <n>", "Read only this page (default: every page)", parseIntOption)
         .action(async (groupId, opts) => {
             try {
-                const raw = await getApi().getGroupBlockedMember({ page: opts.page, count: opts.count }, groupId);
+                let raw;
+                if (opts.page === undefined && opts.count === undefined) {
+                    // No page asked: every page, as Zalo PC reads them (src/core/list-all.js).
+                    const { paging, ...all } = await allGroupBlocked(getApi(), groupId);
+                    raw = all;
+                    if (paging.note) warning(paging.note);
+                } else {
+                    raw = await getApi().getGroupBlockedMember(
+                        { page: opts.page ?? 1, count: opts.count ?? 50 },
+                        groupId,
+                    );
+                }
                 if (raw?.blocked_members?.length) await ensureAliases(getApi());
                 const result = Array.isArray(raw?.blocked_members)
                     ? { ...raw, blocked_members: raw.blocked_members.map((m) => aliasFirst(m)) }
@@ -753,10 +771,18 @@ export function registerGroupCommands(program) {
     group
         .command("link-preview <link>")
         .description("Show a group's details from its invite link, before joining (does not join)")
-        .option("-p, --member-page <n>", "Member page to show", parseIntAtLeast(1), 1)
+        .option("-p, --member-page <n>", "Only this member page (default: every member page)", parseIntAtLeast(1))
         .action(async (link, opts) => {
             try {
-                const result = await getApi().getGroupLinkInfo({ link, memberPage: opts.memberPage });
+                let result;
+                if (opts.memberPage !== undefined) {
+                    result = await getApi().getGroupLinkInfo({ link, memberPage: opts.memberPage });
+                } else {
+                    // No member page asked: every one, as Zalo PC reads a link preview (src/core/list-all.js).
+                    const { paging, ...all } = await groupLinkInfoAll(getApi(), link);
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                }
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Group link preview failed: ${e.message}`);
@@ -768,16 +794,20 @@ export function registerGroupCommands(program) {
         .description(
             'Show a pending group invitation: the group, who invited you and when it expires (see "invite-boxes")',
         )
-        .option("--member-page <n>", "Member page to show", parseIntAtLeast(1), 1)
-        .option("--member-count <n>", "Members per page", parseIntAtLeast(1), 10)
+        .option("--member-page <n>", "Only this member page (default: every member page)", parseIntAtLeast(1))
+        .option("--member-count <n>", "Members per request", parseIntAtLeast(1), 10)
         .action(async (groupId, opts) => {
             try {
                 // The previous engine's call threw when the group has no topic; see zalo/custom/group-invite.js.
-                const result = await getInviteBoxInfo(getApi(), {
-                    groupId,
-                    mpage: opts.memberPage,
-                    mcount: opts.memberCount,
-                });
+                const page = (mpage) => getInviteBoxInfo(getApi(), { groupId, mpage, mcount: opts.memberCount });
+                let result;
+                if (opts.memberPage !== undefined) result = await page(opts.memberPage);
+                else {
+                    // No member page asked: every one (src/core/list-all.js).
+                    const { paging, ...all } = await inviteInfoAll(page, opts.memberCount);
+                    result = all;
+                    if (paging.note) warning(paging.note);
+                }
                 output(result, program.opts().json);
             } catch (e) {
                 error(`Group invite info failed: ${e.message}`);

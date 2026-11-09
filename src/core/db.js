@@ -1496,15 +1496,19 @@ export function searchMessages(opts = {}) {
  * groups *among the newest five threads of any kind* — frequently none —
  * whereas asking for 5 groups should return the 5 newest groups.
  *
- * @param {number} [limit=20]
+ * No limit (or a non-positive one) means every thread: nothing returns a
+ * capped list unless the caller asked for a cap.
+ *
+ * @param {number|null} [limit] - max threads; omitted, null or <= 0 = all
  * @param {"dm"|"group"|null} [type=null] - null means both
  */
-export function getRecentThreads(limit = 20, type = null) {
+export function getRecentThreads(limit = null, type = null) {
     if (!db) throw new Error("Database not initialized");
+    const n = Number(limit) > 0 ? Math.floor(Number(limit)) : -1; // SQLite: LIMIT -1 = no limit
     if (type) {
-        return db.prepare("SELECT * FROM threads WHERE type = ? ORDER BY lastUpdate DESC LIMIT ?").all(type, limit);
+        return db.prepare("SELECT * FROM threads WHERE type = ? ORDER BY lastUpdate DESC LIMIT ?").all(type, n);
     }
-    return db.prepare("SELECT * FROM threads ORDER BY lastUpdate DESC LIMIT ?").all(limit);
+    return db.prepare("SELECT * FROM threads ORDER BY lastUpdate DESC LIMIT ?").all(n);
 }
 
 /**
@@ -1597,10 +1601,10 @@ export function upsertThread(thread) {
  * message's `dName`, `msg history` not at all -- so one conversation's media
  * could land in three different folders depending on which command fetched it.
  *
- * @param {number} [limit=5000]
+ * @param {number|null} [limit] - max threads; omitted = every cached thread
  * @returns {Map<string, {name: string, type: string}>}
  */
-export function getThreadNames(limit = 5000) {
+export function getThreadNames(limit = null) {
     const map = new Map();
     try {
         for (const t of getRecentThreads(limit)) {
@@ -1623,6 +1627,7 @@ export function getThreadNames(limit = 5000) {
  *
  * @param {object} [opts]
  * @param {string} [opts.threadId] - restrict to one thread
+ * @param {string[]} [opts.msgIds] - restrict to these messages (one asked for by id, however old)
  * @param {number} [opts.since] - only messages at/after this epoch ms
  * @param {number} [opts.until] - only messages at/before this epoch ms
  * @param {boolean} [opts.onlyMissing=true] - skip rows already downloaded
@@ -1631,7 +1636,7 @@ export function getThreadNames(limit = 5000) {
  */
 export function getAttachmentMessages(opts = {}) {
     if (!db) throw new Error("Database not initialized");
-    const { threadId, since, until, onlyMissing = true, includePruned = false, limit = 500 } = opts;
+    const { threadId, msgIds, since, until, onlyMissing = true, includePruned = false, limit = 500 } = opts;
     const where = ["has_attachment = 1"];
     const params = [];
     if (onlyMissing) where.push("localPath IS NULL");
@@ -1639,6 +1644,11 @@ export function getAttachmentMessages(opts = {}) {
     // fetches respect it; an explicit re-fetch can opt back in.
     if (!includePruned) where.push("mediaPrunedAt IS NULL");
     if (threadId) (where.push("threadId = ?"), params.push(String(threadId)));
+    if (Array.isArray(msgIds)) {
+        if (!msgIds.length) return [];
+        where.push(`msgId IN (${msgIds.map(() => "?").join(", ")})`);
+        params.push(...msgIds.map(String));
+    }
     if (Number.isFinite(since)) (where.push("timestamp >= ?"), params.push(since));
     if (Number.isFinite(until)) (where.push("timestamp <= ?"), params.push(until));
     params.push(limit);

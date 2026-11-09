@@ -2,7 +2,6 @@
     "watchThreads": ["dm:*", "group:*"],
     "triggerKeywords": ["@bot"],
     "limits": {
-        "maxMessagesPerPoll": 20,
         "autoDigestThreshold": 50,
         "bufferMaxAge": "2h",
         "bufferMaxSize": 500

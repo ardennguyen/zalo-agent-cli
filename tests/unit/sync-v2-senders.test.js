@@ -156,7 +156,7 @@ describe("re-sync identity enrichment in SQLite and MCP", () => {
             {},
             { getThreadType: () => "group" },
             {},
-            { limits: { maxMessagesPerPoll: 20 } },
+            {},
             { get: () => "Example Group" },
         );
         const response = await handlers.get("zalo_get_history")({ threadId: "group-1", limit: 10, threadType: 1 });

@@ -397,7 +397,7 @@ describe("storage quota: MCP clients see it (not every client is an agent)", () 
             { getOwnId: () => ownId },
             buffer,
             { isWatched: () => true },
-            { limits: { maxMessagesPerPoll: 20 } },
+            {},
             null,
             getAccountDir(ownId),
         );

@@ -364,7 +364,7 @@ describe("zalo_view_media over the MCP HTTP server", () => {
             api: { getOwnId: () => ID },
             buffer: { read: () => ({ messages: [], cursor: 0 }), getStats: () => [] },
             filter: { isWatched: () => true },
-            config: { limits: { maxMessagesPerPoll: 20 } },
+            config: {},
             nameCache: { ready: true, get: () => null, search: () => [] },
             accountDir,
             mediaLinks: links,

@@ -113,11 +113,11 @@ export function registerMCPWebhookCommands(mcp, program) {
         .option("--account <id>", "Target a specific registered account ID (default: active account)", parseAccountId)
         .option("--dead", "Only dead-lettered events")
         .option("--pending", "Only events still queued")
-        .option("-n, --limit <n>", "Maximum rows (default: 50)", "50")
+        .option("-n, --limit <n>", "Maximum rows (default: every row)")
         .action((opts) => {
-            const limit = Number(opts.limit);
-            if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-                error(`Invalid --limit "${opts.limit}": must be an integer between 1 and 1000.`);
+            const limit = opts.limit === undefined ? null : Number(opts.limit);
+            if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+                error(`Invalid --limit "${opts.limit}": must be a whole number of at least 1.`);
                 process.exit(1);
             }
             if (opts.dead && opts.pending) {

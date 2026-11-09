@@ -33,7 +33,7 @@ import { closeDb, dbUsedBytes, initDb, verifyMessageRows } from "../core/db.js";
 import { acquireLock, releaseLock } from "../core/lock.js";
 import { describeQuotaEvent, describeStorage, runStoragePass } from "../core/storage-quota.js";
 import { purgeDeadDeliveries } from "../core/webhook-outbox.js";
-import { QUERY_ROW_LIMIT, QUERY_ROW_LIMIT_MAX, copyDatabase, runReadOnlyQuery } from "../core/db-tools.js";
+import { copyDatabase, runReadOnlyQuery } from "../core/db-tools.js";
 import { buildExport } from "../core/data-export.js";
 import { passwordProblem } from "../core/export-crypt.js";
 import { promptSecret, readSecretFromStream } from "../utils/secret-input.js";
@@ -172,12 +172,7 @@ export function registerDbCommands(program) {
         .description(
             "Run one read-only SQL statement on the message database (SELECT / WITH / VALUES / EXPLAIN, a few schema pragmas)",
         )
-        .option(
-            "-n, --limit <n>",
-            `Return at most n rows (default ${QUERY_ROW_LIMIT}, at most ${QUERY_ROW_LIMIT_MAX})`,
-            parseIntAtLeast(1),
-            QUERY_ROW_LIMIT,
-        )
+        .option("-n, --limit <n>", "Return at most n rows (default: every row)", parseIntAtLeast(1))
         .action(async (sql, opts) => {
             const jsonMode = program.opts().json;
             const { ownId, file } = accountDb();

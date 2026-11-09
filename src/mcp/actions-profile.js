@@ -20,6 +20,7 @@ import {
     updateSetting,
 } from "../core/profile-settings.js";
 import { confirmInput, dryRunInput, ticketInput } from "./action-tool.js";
+import { allAvatars } from "../core/list-all.js";
 
 /** A local file the server can read, or the refusal that names it. */
 function localFile(path) {
@@ -83,7 +84,12 @@ export const PROFILE_ACTIONS = {
     },
     avatars: {
         async run(a, { api }) {
-            return { data: (await api.getAvatarList(a.limit ?? 50, a.page ?? 1)) ?? null };
+            if (a.limit !== undefined || a.page !== undefined) {
+                return { data: (await api.getAvatarList(a.limit ?? 50, a.page ?? 1)) ?? null };
+            }
+            // No page asked: the whole gallery, page by page (src/core/list-all.js).
+            const { paging, ...data } = await allAvatars(api);
+            return { data: Object.keys(data).length ? data : null, ...(paging.note && { note: paging.note }) };
         },
     },
     full_avatar: {
@@ -253,8 +259,19 @@ export const PROFILE_META = {
                         "online-status privacy setting)",
                 ),
             language: z.enum(["vi", "en"]).optional().describe("Only for 'lang': vi or en"),
-            limit: z.number().int().min(1).max(200).optional().describe("Only for 'avatars': page size (default 50)"),
-            page: z.number().int().min(1).optional().describe("Only for 'avatars': page number (default 1)"),
+            limit: z
+                .number()
+                .int()
+                .min(1)
+                .max(200)
+                .optional()
+                .describe("Only for 'avatars': page size (one page is read when limit or page is given; 50 a page)"),
+            page: z
+                .number()
+                .int()
+                .min(1)
+                .optional()
+                .describe("Only for 'avatars': read only this page (omit limit and page for the whole gallery)"),
             confirm: confirmInput("'delete_avatar'"),
             ticket: ticketInput(),
             dryRun: dryRunInput("'delete_avatar'"),

@@ -186,10 +186,10 @@ export function friendStatusFrom(res, userId) {
 }
 
 /**
- * Friends, most recently active first, as the CLI lists them, capped.
+ * Friends, most recently active first, as the CLI lists them.
  *
  * @param {Array<object>|null|undefined} list - `getAllFriends()`
- * @param {number} limit
+ * @param {number|null} [limit] - the most to return; omitted, null or <= 0 = every friend
  * @returns {{total: number, friends: Array<{userId: string, displayName: string|null, alias: string|null, zaloName: string|null, lastActionTime: number|null}>}}
  */
 export function friendsFrom(list, limit) {
@@ -197,7 +197,7 @@ export function friendsFrom(list, limit) {
     const sorted = [...all].sort((a, b) => (b?.lastActionTime || 0) - (a?.lastActionTime || 0));
     return {
         total: all.length,
-        friends: sorted.slice(0, limit).map((f) => ({
+        friends: (Number(limit) > 0 ? sorted.slice(0, limit) : sorted).map((f) => ({
             userId: String(f.userId),
             ...names(f.userId, f),
             lastActionTime: f.lastActionTime || null,

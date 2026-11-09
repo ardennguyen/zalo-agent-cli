@@ -110,6 +110,15 @@ describe("db query against the encrypted database", () => {
         assert.equal(cut.truncated, true);
     });
 
+    it("returns every row when no limit is asked (past the old 1000-row default)", () => {
+        const { file } = cache(1);
+        const sql = "WITH RECURSIVE c(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM c WHERE x < 1500) SELECT x FROM c";
+        const all = runReadOnlyQuery(file, sql);
+        assert.equal(all.rowCount, 1500);
+        assert.equal(all.truncated, false);
+        assert.equal(runReadOnlyQuery(file, sql, { limit: 1200 }).rowCount, 1200);
+    });
+
     it("hands a blob out as base64 under $blob", () => {
         const { file } = cache(1);
         const r = runReadOnlyQuery(file, "SELECT mac FROM message_macs");

@@ -278,12 +278,13 @@ export function openOutbox(accountDir, { now = Date.now, readonly = false, log }
         },
 
         /**
-         * @param {{ status?: 'pending'|'dead', limit?: number }} [filter]
+         * @param {{ status?: 'pending'|'dead', limit?: number|null }} [filter] - no `limit` = every row
          * @returns {Array<object>} Rows, oldest first; `body` is the JSON text
          */
-        list({ status, limit = 50 } = {}) {
+        list({ status, limit = null } = {}) {
             const where = status ? "WHERE status = ?" : "";
-            const args = status ? [status, limit] : [limit];
+            const n = Number(limit) > 0 ? Math.floor(Number(limit)) : -1; // SQLite: LIMIT -1 = no limit
+            const args = status ? [status, n] : [n];
             return stmt(
                 `SELECT seq, status, attempts, created_at, last_attempt_at, last_error, dead_at, body FROM outbox ${where} ORDER BY seq LIMIT ?`,
             ).all(...args);

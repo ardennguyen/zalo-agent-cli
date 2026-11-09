@@ -237,8 +237,8 @@ function warnOnce(key, line) {
     console.error(line);
 }
 
-/** Load every tenant's file (once, or again with `force`). */
-function loadTenants({ strict = false, force = false } = {}) {
+/** Load every tenant's file (once, or again with `force`; `store: false` reads them without caching). */
+function loadTenants({ strict = false, force = false, store = true } = {}) {
     if (tenants && !force) return tenants;
     const next = new Map();
     let names = [];
@@ -261,12 +261,13 @@ function loadTenants({ strict = false, force = false } = {}) {
             warnOnce(`tenant:${id}:${e.message}`, `[policy] tenant ${id}: ${e.message}`);
         }
     }
+    if (!store) return next;
     tenants = next;
     return tenants;
 }
 
-/** Load every user's file (once, or again with `force`). */
-function loadUsers({ strict = false, force = false } = {}) {
+/** Load every user's file (once, or again with `force`; `store: false` reads them without caching). */
+function loadUsers({ strict = false, force = false, store = true } = {}) {
     if (users && !force) return users;
     const next = new Map();
     let names = [];
@@ -288,6 +289,7 @@ function loadUsers({ strict = false, force = false } = {}) {
             warnOnce(`user:${id}:${e.message}`, `[policy] user ${id}: ${e.message}`);
         }
     }
+    if (!store) return next;
     users = next;
     return users;
 }
@@ -311,11 +313,11 @@ export function listUsers() {
 }
 
 /** A tenant's accounts: its users' accounts and its legacy `quota.tenant.accounts`. */
-function tenantMembers(tenantId, doc) {
+function tenantMembers(tenantId, doc, allUsers = loadUsers()) {
     const ids = new Set();
     const legacy = policyGet(doc?.policy, "quota.tenant.accounts");
     if (Array.isArray(legacy)) for (const a of legacy) ids.add(String(a));
-    for (const u of loadUsers().values()) if (u.tenant === tenantId) for (const a of u.accounts ?? []) ids.add(a);
+    for (const u of allUsers.values()) if (u.tenant === tenantId) for (const a of u.accounts ?? []) ids.add(a);
     return [...ids].sort();
 }
 
@@ -698,12 +700,52 @@ function policyMode(ownId) {
 }
 
 /** A user's always-on cap: its own policy, then its tenant's, then the default. */
-function userCap(u) {
+function userCap(u, allTenants = loadTenants()) {
     const own = policyGet(u.policy, "presence.alwaysOn.maxPerUser");
     if (Number.isInteger(own)) return own;
-    const t = u.tenant ? loadTenants().get(u.tenant) : null;
+    const t = u.tenant ? allTenants.get(u.tenant) : null;
     const fromTenant = policyGet(t?.policy, "presence.alwaysOn.maxPerUser");
     return Number.isInteger(fromTenant) ? fromTenant : DEFAULT_ALWAYS_ON_PER_USER;
+}
+
+/**
+ * What the cap check counts: every user, tenant and account file as it is on disk now, read without touching this
+ * process's cache. Another process may have written since this one cached them (a `policy` CLI write beside the
+ * daemon's admin API), and counting the cached copies let both writers keep an account always-on past the cap. The
+ * cache itself stays as it was: the watcher compares against it to notice and announce those changes.
+ *
+ * @returns {{users: Map<string, object>, tenants: Map<string, object>, mode: (ownId: string) => string|null}}
+ */
+function capView() {
+    const allUsers = loadUsers({ force: true, store: false });
+    const allTenants = loadTenants({ force: true, store: false });
+    const own = new Map();
+    const accountDoc = (id) => {
+        if (!own.has(id)) {
+            let doc;
+            try {
+                doc = readPolicyFile(resolveTarget({ kind: "account", id }), { lastRev: accounts.get(id)?.rev ?? 0 });
+            } catch {
+                doc = accounts.get(id) ?? null; // unreadable now: the last good copy, as loadAccount keeps it
+            }
+            own.set(id, doc);
+        }
+        return own.get(id);
+    };
+    const mode = (id) => {
+        let merged = {};
+        for (const [tid, doc] of [...allTenants].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+            if (tenantMembers(tid, doc, allUsers).includes(id)) merged = mergePolicy(merged, doc.policy);
+        for (const u of allUsers.values())
+            if (u.accounts?.includes(id)) {
+                merged = mergePolicy(merged, u.policy ?? {});
+                break;
+            }
+        const doc = accountDoc(id);
+        if (doc) merged = mergePolicy(merged, doc.policy);
+        return policyGet(merged, "presence.mode") ?? null;
+    };
+    return { users: allUsers, tenants: allTenants, mode };
 }
 
 /**
@@ -719,14 +761,15 @@ function enforceCaps({ actor = "presence-cap", now = Date.now() } = {}) {
     const since = readAlwaysOnSince();
     const live = new Set();
     const groups = [];
-    for (const [uid, u] of loadUsers()) {
-        const on = (u.accounts ?? []).filter((a) => onHost(a) && policyMode(a) === "always-on");
-        groups.push({ scope: "user", userId: uid, cap: userCap(u), on });
+    const view = capView();
+    for (const [uid, u] of view.users) {
+        const on = (u.accounts ?? []).filter((a) => onHost(a) && view.mode(a) === "always-on");
+        groups.push({ scope: "user", userId: uid, cap: userCap(u, view.tenants), on });
     }
-    for (const [tid, doc] of loadTenants()) {
+    for (const [tid, doc] of view.tenants) {
         const cap = policyGet(doc.policy, "presence.alwaysOn.maxPerTenant");
         if (!Number.isInteger(cap)) continue;
-        const on = tenantMembers(tid, doc).filter((a) => onHost(a) && policyMode(a) === "always-on");
+        const on = tenantMembers(tid, doc, view.users).filter((a) => onHost(a) && view.mode(a) === "always-on");
         groups.push({ scope: "tenant", tenantId: tid, cap, on });
     }
     for (const g of groups) for (const a of g.on) live.add(a);

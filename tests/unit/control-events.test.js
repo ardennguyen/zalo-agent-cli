@@ -18,8 +18,11 @@ import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { initDb, getReminders, upsertReminder, removeReminder } from "../../src/core/db.js";
 import { readControls } from "../../src/zalo/queues/control-queue.js";
 import {
+    CONTROL_EVENT_KINDS,
     applyControlEvents,
     attachControlEvents,
+    describeControlEvent,
+    muteEvents,
     reminderThreadOf,
     withoutSecrets,
 } from "../../src/core/control-events.js";
@@ -392,12 +395,185 @@ describe("`listen` prints them only when asked", () => {
             }
         });
         const body = SRC.slice(onEvent.start, onEvent.end);
-        // Red if the handler printed without asking --events, or lost one of the three names.
-        assert.match(body, /enabledEvents\.has\(/);
-        for (const name of ['"catalog"', '"reminder"', '"devices"']) assert.ok(body.includes(name), name);
-        // Red if a created or edited reminder were printed without a name of its own, or under another one.
-        for (const ev of ["reminder_created", "reminder_updated", "reminder_removed"]) {
-            assert.ok(new RegExp(`${ev}: "reminder"`).test(body), ev);
-        }
+        // Red if the handler printed without asking --events, or stopped reading each event's own kind.
+        assert.match(body, /enabledEvents\.has\(kind\)/);
+        assert.match(body, /CONTROL_EVENT_KINDS\[ev\.event\]/);
+        // Red if an event were printed under another name, or lost its name.
+        assert.deepEqual(CONTROL_EVENT_KINDS, {
+            catalog_changed: "catalog",
+            reminder_created: "reminder",
+            reminder_updated: "reminder",
+            reminder_removed: "reminder",
+            devices_changed: "devices",
+            settings_changed: "settings",
+            mute_changed: "conversation",
+            labels_changed: "conversation",
+            archived_changed: "conversation",
+            auto_delete_changed: "conversation",
+            quick_messages_changed: "quick-message",
+        });
+    });
+
+    it("names the two new kinds in the --events help", () => {
+        const help = /"-e, --events <types>",\s*"([^"]+)"/.exec(SRC)?.[1] ?? "";
+        assert.match(help, /conversation \(/);
+        assert.match(help, /quick-message \(/);
+    });
+});
+
+describe("a conversation muted or unmuted on another device", () => {
+    const NOW = 1_790_000_000_000;
+    const sec = Math.round(NOW / 1000);
+
+    it("reports one event per conversation, the last control winning, DM or group by muteType", () => {
+        const events = applyControlEvents({
+            now: () => NOW,
+            data: frameData(
+                ["1", "mute", "set", { toId: PEER, muteType: 1, duration: 3600, startTime: sec, systemTime: sec }],
+                ["2", "mute", "set", { toId: "g-1", muteType: 2, duration: -1, startTime: sec, systemTime: sec }],
+                ["3", "mute", "unset", { toId: PEER, muteType: 1 }],
+            ),
+        });
+        assert.deepEqual(
+            events.map((e) => [e.event, e.threadId, e.threadType, e.muted, e.duration, e.until]),
+            [
+                // PEER was muted, then unmuted in the same frame: only the unmute is reported.
+                ["mute_changed", PEER, "dm", false, null, null],
+                ["mute_changed", "g-1", "group", true, -1, null],
+            ],
+        );
+    });
+
+    it("gives a timed mute its end, and drops a set whose time already ran out, as Zalo PC does", () => {
+        const [timed] = muteEvents(
+            [{ act: "set", data: { toId: PEER, muteType: 1, duration: 3600, startTime: sec, systemTime: sec } }],
+            NOW,
+        );
+        assert.equal(timed.until, (sec + 3600) * 1000);
+        const stale = muteEvents(
+            [
+                {
+                    act: "set",
+                    data: { toId: PEER, muteType: 1, duration: 60, startTime: sec - 600, systemTime: sec - 600 },
+                },
+            ],
+            NOW,
+        );
+        assert.deepEqual(stale, []);
+    });
+
+    it("skips a mute control with no conversation or an act it does not know", () => {
+        assert.deepEqual(
+            muteEvents(
+                [
+                    { act: "set", data: {} },
+                    { act: "other", data: { toId: PEER } },
+                ],
+                NOW,
+            ),
+            [],
+        );
+    });
+});
+
+describe("labels, the archived list, quick messages and auto-delete changed on another device", () => {
+    it("reports each with the fields Zalo PC reads", () => {
+        const events = applyControlEvents({
+            data: frameData(
+                ["1", "label_convers", "update", {}],
+                [
+                    "2",
+                    "archived_chat",
+                    "update",
+                    {
+                        version: 7,
+                        actionType: 0,
+                        items: [
+                            { id: PEER, type: 0 },
+                            { id: "g-1", type: 1 },
+                        ],
+                    },
+                ],
+                ["3", "quick_message", "delete", { items: [{ id: 11 }, { id: 12 }], version: 4 }],
+                [
+                    "4",
+                    "conv_settings",
+                    "update_ttl",
+                    { threadId: "g-1", ttl: 86400000, fromId: PEER, isGroup: 1, ts: 5 },
+                ],
+            ),
+        });
+        assert.deepEqual(events[0], { event: "labels_changed", ts: 1_790_000_000_000 });
+        assert.equal(events[1].event, "archived_changed");
+        assert.equal(events[1].archived, true, "actionType 0 is a move to Other");
+        assert.equal(events[1].version, 7);
+        assert.deepEqual(events[1].threads, [
+            { threadId: PEER, threadType: "dm" },
+            { threadId: "g-1", threadType: "group" },
+        ]);
+        assert.equal(events[2].event, "quick_messages_changed");
+        assert.equal(events[2].act, "delete");
+        assert.deepEqual(events[2].quickMessageIds, ["11", "12"]);
+        assert.equal(events[2].version, 4);
+        assert.deepEqual(
+            { ...events[3], control: undefined },
+            {
+                event: "auto_delete_changed",
+                threadId: "g-1",
+                threadType: "group",
+                ttl: 86400000,
+                by: PEER,
+                ts: 5,
+                control: undefined,
+            },
+        );
+    });
+
+    it("reads actionType 1 as back from Other, and an unknown one as neither", () => {
+        const [back, other] = applyControlEvents({
+            data: frameData(
+                ["1", "archived_chat", "update", { version: 8, actionType: 1, items: [] }],
+                ["2", "archived_chat", "update", { version: 9, items: [] }],
+            ),
+        });
+        assert.equal(back.archived, false);
+        assert.equal(other.archived, null);
+    });
+
+    it("skips one it cannot read, and a control seen twice", () => {
+        const seen = new Set();
+        const first = applyControlEvents({
+            seen,
+            data: frameData(
+                ["1", "quick_message", "create", { items: [{ id: 1 }], version: 1 }],
+                ["2", "label_convers", "other", {}],
+            ),
+        });
+        assert.equal(first.length, 1, "label_convers acts other than update are not reported");
+        const again = applyControlEvents({
+            seen,
+            data: frameData(["1", "quick_message", "create", { items: [], version: 1 }]),
+        });
+        assert.deepEqual(again, []);
+    });
+
+    it("prints a line for each, and names the command that reads them", () => {
+        const lines = applyControlEvents({
+            now: () => 0,
+            data: frameData(
+                ["1", "label_convers", "update", {}],
+                ["2", "archived_chat", "update", { version: 1, actionType: 1, items: [{ id: PEER, type: 0 }] }],
+                ["3", "quick_message", "create", { items: [{ id: 5 }], version: 1 }],
+                ["4", "conv_settings", "update_ttl", { threadId: PEER, ttl: 0 }],
+                ["5", "mute", "unset", { toId: PEER, muteType: 1 }],
+            ),
+        }).map(describeControlEvent);
+        assert.deepEqual(lines, [
+            "Conversation labels changed on another device — see `zalo-agent label list`",
+            `Moved back from Other: ${PEER}`,
+            "Quick message created: 5 — see `zalo-agent quick-msg list`",
+            `Auto-delete in ${PEER} set to off`,
+            `Unmuted: ${PEER}`,
+        ]);
     });
 });

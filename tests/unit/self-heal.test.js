@@ -860,6 +860,41 @@ describe("X4: the 601 control queues", () => {
         assert.ok(!d.logs.some((l) => /transfer_sync2/.test(l)));
     });
 
+    it("no longer names the controls seen live that are now handled or known to need nothing", async () => {
+        const d = daemon();
+        const seenLive = [
+            ["mute", "set"],
+            ["mute", "unset"],
+            ["label_convers", "update"],
+            ["archived_chat", "update"],
+            ["quick_message", "create"],
+            ["quick_message", "update"],
+            ["quick_message", "delete"],
+            ["conv_settings", "update_ttl"],
+            ["media_send2me", "remove_media"],
+            ["photo", "renew_link"],
+            ["file", "renew_link"],
+            ["emoji_status", "add"],
+            ["emoji_status", "delete"],
+            ["contact_tab", "clicked"],
+            ["transfer_msg", "transfer_after_login"],
+        ];
+        d.listener.push(
+            601,
+            0,
+            controlFrame(
+                seenLive.map(([t, a], i) => ctl(String(i + 1), t, a)),
+                {},
+            ),
+        );
+        await sleep(0);
+        // Red if any of them loses its entry in the control map: it would be named here again.
+        assert.deepEqual(
+            d.logs.filter((l) => /no handler for/.test(l)),
+            [],
+        );
+    });
+
     it("sends nothing in answer to a control frame", async () => {
         const d = daemon();
         d.listener.push(

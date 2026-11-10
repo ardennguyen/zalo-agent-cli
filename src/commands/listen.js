@@ -42,7 +42,7 @@ import { attachVoiceText, voiceTextFile } from "../core/voice-text.js";
 import { createReadStateSync, readStateEvent } from "../core/read-state.js";
 import { attachLastOnline } from "../core/last-online.js";
 import { groupEventNames, nameFor, personLabel, senderNameFields, startDaemonAliases } from "../core/contact-names.js";
-import { attachControlEvents } from "../core/control-events.js";
+import { CONTROL_EVENT_KINDS, attachControlEvents, describeControlEvent } from "../core/control-events.js";
 import { clearSyncState, initDb, getMessageById, getPendingSyncGaps, getSyncState, setSyncState } from "../core/db.js";
 import {
     storeLiveMessage,
@@ -122,7 +122,7 @@ export function registerListenCommand(program) {
         )
         .option(
             "-e, --events <types>",
-            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing), upload (Zalo finished processing a video or file you uploaded), catalog (a product catalog changed on another device), reminder (a DM reminder was removed), devices (the account's device list changed), online (a user's last-online time, as Zalo pushes it) and settings (this account's own settings changed on another device)",
+            "Comma-separated event types: message,friend,group,reaction,read (default), plus the opt-in typing (someone is typing), upload (Zalo finished processing a video or file you uploaded), catalog (a product catalog changed on another device), reminder (a DM reminder was removed), devices (the account's device list changed), online (a user's last-online time, as Zalo pushes it), settings (this account's own settings changed on another device), conversation (a conversation muted or unmuted, archived or back, its auto-delete time or the labels changed on another device) and quick-message (a quick message created, edited or deleted on another device)",
             "message,friend,group,reaction,read",
         )
         .option("-f, --filter <type>", "Message filter: user (DM only), group (groups only), all", "all")
@@ -884,9 +884,11 @@ export function registerListenCommand(program) {
                 file: voiceTextFile(accountDir),
                 log: (line) => console.error(`[listen] ${line}`),
             });
-            // A catalog changed, a DM reminder created, edited or removed, the device list changed, on another device
+            // A catalog changed, a DM reminder created, edited or removed, the device list changed, a conversation
+            // muted, archived, labeled or its auto-delete changed, a quick message changed, on another device
             // (src/core/control-events.js): the reminder is stored or dropped in the cache whatever --events says;
-            // the events are printed only when asked for (`catalog`, `reminder`, `devices`). Same in `mcp start`.
+            // the events are printed only when asked for (`catalog`, `reminder`, `devices`, `settings`,
+            // `conversation`, `quick-message`). Same in `mcp start`.
             // Hidden chats hidden, unhidden or their PIN changed or removed on another device (601 `hidden_chat`).
             // Same in `listen` and `mcp start`.
             attachHiddenChatControls({ tap: socketTap, set: listenHidden, getApi, readControls });
@@ -895,29 +897,8 @@ export function registerListenCommand(program) {
                 ownId: activeAcc.ownId,
                 log: (line) => console.error(`[listen] ${line}`),
                 onEvent: (ev) => {
-                    const human = {
-                        catalog_changed: () => `Catalog: ${ev.act} (catalog ${ev.catalogId ?? "?"})`,
-                        reminder_created: () =>
-                            `Reminder created: ${ev.title ?? ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
-                        reminder_updated: () =>
-                            `Reminder edited: ${ev.title ?? ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
-                        reminder_removed: () => `Reminder removed: ${ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`,
-                        devices_changed: () => "The account's device list changed — see `zalo-agent account devices`",
-                        settings_changed: () =>
-                            `Settings changed on another device: ${
-                                ev.changed.map((c) => `${c.setting}=${c.value}`).join(", ") ||
-                                Object.keys(ev.settings).join(", ")
-                            }`,
-                    }[ev.event];
-                    const kind = {
-                        catalog_changed: "catalog",
-                        reminder_created: "reminder",
-                        reminder_updated: "reminder",
-                        reminder_removed: "reminder",
-                        devices_changed: "devices",
-                        settings_changed: "settings",
-                    };
-                    if (human && enabledEvents.has(kind[ev.event])) emitEvent(ev, human());
+                    const kind = CONTROL_EVENT_KINDS[ev.event];
+                    if (kind && enabledEvents.has(kind)) emitEvent(ev, describeControlEvent(ev));
                 },
             });
             // A user's last-online time as Zalo pushes it (602 online_status): kept in the cache whatever --events

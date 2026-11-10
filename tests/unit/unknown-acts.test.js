@@ -14,6 +14,8 @@ import { walkAst } from "../helpers/api-call-sites.js";
 import {
     CMD_PUSH_ACTIONS,
     CMD_PUSH_CONTROLS,
+    IGNORED_ACTIONS,
+    IGNORED_COMMANDS,
     KNOWN_COMMANDS,
     MAX_NAMES,
     SAVE_EVERY_MS,
@@ -96,6 +98,28 @@ describe("what gets noted", () => {
         const acts = createUnknownActs({ file });
         assert.equal(acts.observe(CMD_PUSH_ACTIONS, actions({ act_type: "typing", act: "typing", data: {} })), 0);
         assert.equal(existsSync(file), false, "nothing to write");
+    });
+
+    it("does not note recent_search/update, known as Zalo PC's own search history", () => {
+        const file = fresh();
+        const acts = createUnknownActs({ file });
+        assert.equal(acts.observe(CMD_PUSH_ACTIONS, actions({ act_type: "recent_search", act: "update" })), 0);
+        assert.equal(existsSync(file), false, "nothing to write");
+        assert.match(IGNORED_ACTIONS.get("recent_search"), /recent searches/);
+    });
+
+    it("does not note a 601 control known to need nothing (UI only), with no handler", () => {
+        const file = fresh();
+        const acts = createUnknownActs({ file });
+        const controls = {
+            controls: [
+                { content: { act_type: "contact_tab", act: "clicked", data: { ts_clicked: 1 } } },
+                { content: { act_type: "emoji_status", act: "add" } },
+                { content: { act_type: "transfer_msg", act: "transfer_after_login", data: { temp_key: "k" } } },
+            ],
+        };
+        assert.equal(acts.observe(CMD_PUSH_CONTROLS, controls), 0);
+        assert.equal(existsSync(file), false);
     });
 
     it("notes a 601 control nobody handles, and none that something does", () => {
@@ -211,9 +235,19 @@ describe("commands this client does not know", () => {
         for (const cmd of KNOWN_COMMANDS) assert.equal(acts.observeCommand(view(cmd, 0)), 0, `cmd ${cmd}`);
         assert.equal(existsSync(file), false);
         // the ones captured and never handled are exactly what this exists for
-        for (const cmd of [533, 570, 571, 575, 576, 577, 578, 592, 604, 614, 620, 623, 800]) {
+        for (const cmd of [533, 570, 571, 575, 576, 577, 578, 592, 604, 614, 623, 800]) {
             assert.equal(KNOWN_COMMANDS.has(cmd), false, `cmd ${cmd} is unhandled, so it must be noted`);
         }
+    });
+
+    it("no longer names cmd 620 (the cloud push, applied by cloud-verify) or cmd 530 (known, nothing to do)", () => {
+        const file = fresh();
+        const acts = createUnknownActs({ file });
+        assert.equal(acts.observeCommand(view(620, 0, { noiseId: "n", action: 1 })), 0);
+        assert.equal(acts.observeCommand(view(530, 0, { error_code: 0, data: "x" })), 0);
+        assert.equal(existsSync(file), false, "nothing noted");
+        assert.match(IGNORED_COMMANDS.get(530), /download/, "530 says why it is left");
+        for (const cmd of IGNORED_COMMANDS.keys()) assert.ok(KNOWN_COMMANDS.has(cmd), `cmd ${cmd} is also known`);
     });
 
     it("names a command whose body cannot be decoded, and survives a frame() that throws", () => {

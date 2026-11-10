@@ -2140,3 +2140,25 @@ was done (items are the audit's ZP numbers):
 - **Read-only rechecks (2026-10-28):** `friend-active-pcweb` 404, the media-store lists (`mediastore/list`,
   `media/oneone/list`) error 114 for every body tried, `group/getlg/e2ee` "Stop retry", `friend online` 404 (unknown:
   the Web still asks for it, its answer was never captured), `friend close` retired by Zalo (no caller, menu off).
+
+## Controls with no handler: handled, or known to need nothing (v3.0, 2026-11-10)
+
+Every `601` control and push the account's `unknown-acts.json` had recorded got one of two treatments, decided by what
+Zalo PC 26.10.20 does with it (its `_processCtrlMessages` switch and the modules it calls; read, never run):
+
+- **A handler**, where PC changes state this engine caches or exposes. `mute`, `label_convers`, `archived_chat`,
+  `quick_message`, `conv_settings/update_ttl` become `listen` events (`--events conversation`, `quick-message`): PC
+  applies each to a store of its own, this engine keeps none (the commands read live), so an event is all there is to
+  do, as for `prod_catalog`. cmd 620 is PC's `CLOUD.PUSH`, one cloud-queue entry: it is applied to `cloud_items` at
+  once (src/core/cloud-verify.js), with PC's validator rule (a removal that overtook its add cancels it for an hour) and
+  `reset_cloud` answered by the forced walk rather than by emptying the index from one entry.
+- **Known, nothing to do**, with the reason in the map (`ignored` in src/zalo/queues/control-queue.js,
+  `IGNORED_ACTIONS` and `IGNORED_COMMANDS` in src/core/unknown-acts.js): `media_send2me` (PC's My Cloud media panel; the
+  zCloud index follows cmd 620/621, not this), `photo`/`file`/`video` `renew_link` (the late answer to a link renewal PC
+  made while forwarding, matched by `originalUrl` to a waiting callback), `emoji_status`, `contact_tab`,
+  `transfer_msg/transfer_after_login` (read by `login`'s auto sync; a daemon never starts a phone-backed restore, and
+  its `temp_key` is never logged or stored), 602 `recent_search`, cmd 530 (`PUSH_LIST_INTERACTIVE_FILE`, PC's
+  download-resource sync).
+
+The map is matched by `act_type/act` first, then `act_type`, then `act`, so a pair entry (`conv_settings/update_ttl`)
+leaves its siblings (`conv_settings/update_block_sharing`) reported as unhandled until someone decides them.

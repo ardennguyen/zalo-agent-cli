@@ -13,9 +13,17 @@ import { tmpdir } from "node:os";
 import * as acorn from "acorn";
 import { walkAst } from "../helpers/api-call-sites.js";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
-import { initDb, getSyncState, setSyncState } from "../../src/core/db.js";
+import { initDb, getCloudItems, getSyncState, setSyncState } from "../../src/core/db.js";
 import { createStageLock } from "../../src/core/daemon-channel.js";
-import { CMD_MYCLOUD, THROTTLE_MS, createCloudVerifier, readCloudNotice } from "../../src/core/cloud-verify.js";
+import {
+    CMD_CLOUD_PUSH,
+    CMD_MYCLOUD,
+    EARLY_REMOVE_MS,
+    THROTTLE_MS,
+    createCloudVerifier,
+    readCloudNotice,
+    readCloudPush,
+} from "../../src/core/cloud-verify.js";
 
 it("keeps Zalo Web's own pace: a cloud verify push is acted on once in 30 minutes", () => {
     assert.equal(THROTTLE_MS, 30 * 60 * 1000);
@@ -345,4 +353,113 @@ describe("`listen` and `mcp start` both answer cmd 621 from their socket tap", (
             assert.equal(prop("lock")?.value?.name, "stageLock", "it must take the daemon's stage lock");
         });
     }
+});
+
+describe("a cloud-queue entry pushed live (cmd 620)", () => {
+    const OWN = "1001";
+    const PEER = "1002";
+    const api = { getOwnId: () => OWN, getContext: () => ({ loginInfo: {} }) };
+    /** A DM item this account sent to PEER, shaped like the pushed body's key names. */
+    const addItem = (cli, noiseId = `noise-${cli}`) => ({
+        noiseId,
+        action: 1,
+        actionType: 1,
+        cliTs: 1,
+        ts: 1_790_000_000_000,
+        msgInfo: { cliMsgId: cli, glbMsgId: `g${cli}`, srcId: OWN, destId: PEER, destType: 0, ts: 1_790_000_000_000 },
+        mediaInfo: { mediaSize: 10 },
+        encryptInfo: {},
+    });
+    const removeItem = (cli) => ({
+        noiseId: `rm-${cli}`,
+        action: 2,
+        ts: 1_790_000_000_001,
+        msgInfo: { extInfo: { orgMsgs: [{ type: 1, uidTo: PEER, uidFrom: OWN, clientDelMsgId: cli }] } },
+    });
+    const pushFrame = (item) => ({ cmd: CMD_CLOUD_PUSH, subCmd: 0, data: item });
+    const noises = () => getCloudItems(PEER).map((r) => r.noiseId);
+
+    it("is cmd 620, Zalo PC's CLOUD.PUSH, and is read from the frame's data", () => {
+        assert.equal(CMD_CLOUD_PUSH, 620);
+        assert.equal(readCloudPush(pushFrame(addItem("1"))).noiseId, "noise-1");
+        assert.equal(readCloudPush({ data: { data: JSON.stringify(addItem("2")) } }).noiseId, "noise-2");
+        assert.equal(readCloudPush({ data: { error_code: 0 } }), null);
+        assert.equal(readCloudPush({ data: "not json" }), null);
+        assert.equal(readCloudPush(null), null);
+    });
+
+    it("subscribes to cmd 620 and lets go of it on stop", () => {
+        const { verifier, tap } = build({ getApi: () => api });
+        assert.ok(tap.subs.has(620));
+        verifier.stop();
+        assert.equal(tap.subs.has(620), false);
+        assert.equal(tap.subs.has(621), false);
+    });
+
+    it("records an added item in the index, with no baseline and no stage lock", async () => {
+        const { verifier, lock } = build({ getApi: () => api });
+        const release = lock.tryAcquire("sync");
+        assert.equal(await verifier.handlePush(pushFrame(addItem("10"))), "added");
+        release();
+        assert.deepEqual(noises(), ["noise-10"]);
+        assert.equal(getSyncState("cloudCursor"), null, "a push never moves the walk's saved place");
+    });
+
+    it("deletes the item a removal names", async () => {
+        const { verifier } = build({ getApi: () => api });
+        await verifier.handlePush(pushFrame(addItem("20")));
+        assert.deepEqual(noises(), ["noise-20"]);
+        assert.equal(await verifier.handlePush(pushFrame(removeItem("20"))), "removed");
+        assert.deepEqual(noises(), []);
+    });
+
+    it("lets a removal that overtook its add cancel that add, for an hour, as Zalo PC's validator does", async () => {
+        const { verifier, advance } = build({ getApi: () => api });
+        assert.equal(await verifier.handlePush(pushFrame(removeItem("30"))), "unchanged");
+        assert.equal(await verifier.handlePush(pushFrame(addItem("30"))), "cancelled");
+        assert.deepEqual(noises(), [], "the late add is dropped");
+        assert.equal(await verifier.handlePush(pushFrame(addItem("30", "noise-30b"))), "added", "only once");
+
+        await verifier.handlePush(pushFrame(removeItem("31")));
+        advance(EARLY_REMOVE_MS + 1);
+        assert.equal(await verifier.handlePush(pushFrame(addItem("31"))), "added", "forgotten after an hour");
+    });
+
+    it("changes nothing for temp and duplicate entries", async () => {
+        const { verifier } = build({ getApi: () => api });
+        assert.equal(await verifier.handlePush(pushFrame({ ...addItem("40"), action: 4 })), "noop");
+        assert.equal(await verifier.handlePush(pushFrame({ ...addItem("41"), action: 6 })), "noop");
+        assert.deepEqual(noises(), []);
+    });
+
+    it("answers reset_cloud with a walk from the top, not by emptying the index from one entry", async () => {
+        setSyncState("cloudCursor", "my-place");
+        const { verifier, calls } = build({ getApi: () => api });
+        await verifier.handlePush(pushFrame(addItem("50")));
+        assert.equal(await verifier.handlePush(pushFrame({ noiseId: "reset", action: 5, ts: 2 })), "reset:walked");
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].full, true);
+        assert.equal(calls[0].lastNoiseId, "");
+        assert.deepEqual(noises(), ["noise-50"], "the index is kept until the walk has run");
+    });
+
+    it("still needs a person's first walk for a reset", async () => {
+        const { verifier, calls } = build({ getApi: () => api });
+        assert.equal(await verifier.handlePush(pushFrame({ noiseId: "reset", action: 5 })), "reset:no-baseline");
+        assert.equal(calls.length, 0);
+    });
+
+    it("never throws into the socket: junk, a writer that throws, an api that is gone", async () => {
+        const { verifier, lines } = build({
+            getApi: () => {
+                throw new Error("signed out");
+            },
+            apply: () => {
+                throw new Error("disk full");
+            },
+        });
+        assert.equal(await verifier.handlePush({ data: 42 }), "ignored");
+        assert.equal(await verifier.handlePush(pushFrame(addItem("60"))), "failed");
+        assert.ok(lines.some((l) => /disk full/.test(l)));
+    });
 });

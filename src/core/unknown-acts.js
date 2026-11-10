@@ -25,13 +25,37 @@ export const CMD_PUSH_CONTROLS = 601;
 const KNOWN_ACTIONS = new Set(["typing", "profile/online_status"]);
 
 /**
+ * 602 actions that are known and need nothing from this client, by `act_type` or `act_type/act`, each with why (what
+ * Zalo PC 26.10.20 does with it).
+ */
+export const IGNORED_ACTIONS = new Map([
+    [
+        "recent_search",
+        "Zalo PC's list of recent searches, kept on each device for its search box; this client has no such list",
+    ],
+]);
+
+/**
  * The socket commands this client handles or names on purpose (the offline queues, messages, receipts, reactions, the
- * sync-v2 pair, the control pushes, the zCloud notice, the handshake and the keepalive). Any other command that
- * arrives is noted once, by number: the server can start sending a new one with any release, and until now the
- * ones that were not handled (533, 570 to 578, 592, 604, 614, 620, 623, 800 were seen in captures) left no trace.
+ * sync-v2 pair, the control pushes, the zCloud push and notice, the handshake and the keepalive, and those in
+ * {@link IGNORED_COMMANDS}). Any other command that arrives is noted once, by number: the server can start sending a
+ * new one with any release, and until now the ones that were not handled (533, 570 to 578, 592, 604, 614, 623, 800
+ * were seen in captures) left no trace.
  */
 export const KNOWN_COMMANDS = new Set([
-    1, 2, 501, 502, 504, 510, 511, 521, 522, 524, 532, 534, 590, 591, 601, 602, 603, 610, 611, 612, 613, 621,
+    1, 2, 501, 502, 504, 510, 511, 521, 522, 524, 530, 532, 534, 590, 591, 601, 602, 603, 610, 611, 612, 613, 620, 621,
+]);
+
+/**
+ * Commands that are known and need nothing from this client, each with why (what Zalo PC 26.10.20 does with it).
+ * Every one is also in {@link KNOWN_COMMANDS}.
+ */
+export const IGNORED_COMMANDS = new Map([
+    [
+        530,
+        "PUSH_LIST_INTERACTIVE_FILE: Zalo PC syncs its record of which shared files were downloaded or opened " +
+            "(its download-resource store); this client keeps no such record",
+    ],
 ]);
 
 /** How many distinct names one file keeps: a flood of new names must not grow it without end. */
@@ -169,7 +193,9 @@ export function createUnknownActs({ file, now = Date.now, log = () => {} }) {
             try {
                 if (cmd === CMD_PUSH_ACTIONS) {
                     for (const a of readActions(data)) {
-                        if (KNOWN_ACTIONS.has(a.actType) || KNOWN_ACTIONS.has(`${a.actType}/${a.act}`)) continue;
+                        const both = `${a.actType}/${a.act}`;
+                        if (KNOWN_ACTIONS.has(a.actType) || KNOWN_ACTIONS.has(both)) continue;
+                        if (IGNORED_ACTIONS.has(a.actType) || IGNORED_ACTIONS.has(both)) continue;
                         if (note(cmd, a.actType, a.act, a.keys)) fresh++;
                     }
                 } else if (cmd === CMD_PUSH_CONTROLS) {

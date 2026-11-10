@@ -58,6 +58,67 @@ describe("readControls", () => {
         assert.deepEqual(readControls({ controls: [null, {}, { content: "x" }] }), []);
     });
 
+    it("hands the conversation and quick-message controls seen live to control-events", () => {
+        const out = readControls({
+            controls: [
+                control("31", "mute", "set"),
+                control("32", "mute", "unset"),
+                control("33", "label_convers", "update"),
+                control("34", "archived_chat", "update"),
+                control("35", "quick_message", "create"),
+                control("36", "conv_settings", "update_ttl"),
+            ],
+        });
+        assert.deepEqual(
+            out.map((c) => [c.kind, c.handler, c.handled, c.ignored]),
+            [
+                ["mute", "control-events", true, null],
+                ["mute", "control-events", true, null],
+                ["labels", "control-events", true, null],
+                ["archived", "control-events", true, null],
+                ["quick-message", "control-events", true, null],
+                ["auto-delete", "control-events", true, null],
+            ],
+        );
+    });
+
+    it("knows the controls Zalo PC uses only for its own UI, with no handler and a reason", () => {
+        const out = readControls({
+            controls: [
+                control("41", "media_send2me", "remove_media"),
+                control("42", "photo", "renew_link"),
+                control("43", "file", "renew_link"),
+                control("44", "emoji_status", "add"),
+                control("45", "emoji_status", "delete"),
+                control("46", "contact_tab", "clicked"),
+                control("47", "transfer_msg", "transfer_after_login"),
+            ],
+        });
+        for (const c of out) {
+            assert.equal(c.handled, true, `${c.actType}/${c.act} is known`);
+            assert.equal(c.handler, null, `${c.actType}/${c.act} has nothing to run`);
+            assert.ok(typeof c.ignored === "string" && c.ignored.length > 20, `${c.actType}/${c.act} says why`);
+        }
+        assert.deepEqual(
+            out.map((c) => c.kind),
+            ["self-chat-media", "renew-link", "renew-link", "emoji-status", "emoji-status", "ui", "sync"],
+        );
+    });
+
+    it("matches act_type/act before act_type: a sibling act of a pair entry stays unknown", () => {
+        const [ttl, blockSharing, photoOther] = readControls({
+            controls: [
+                control("51", "conv_settings", "update_ttl"),
+                control("52", "conv_settings", "update_block_sharing"),
+                control("53", "photo", "something_else"),
+            ],
+        });
+        assert.equal(ttl.handled, true);
+        assert.equal(blockSharing.handled, false, "only update_ttl of conv_settings is handled");
+        assert.equal(photoOther.handled, false, "only renew_link of photo is known");
+        assert.equal(ttl.ignored, null);
+    });
+
     it("reads a missing action id as null", () => {
         assert.equal(
             readControls({ controls: [{ content: { act: "mark_unread", act_type: "mark_unread" } }] })[0].actionId,

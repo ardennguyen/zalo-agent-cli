@@ -22,6 +22,22 @@
  *   not verify that list; it logs one line every time (a device signed in or out is worth seeing whether or not anyone
  *   asked for the event) and reports it. `account devices` reads the current list.
  *
+ * - **`mute` / `set`, `unset`** (seen live, key names only: `toId`, `muteType`, `duration`, `startTime`, `systemTime`,
+ *   `advanced`). Zalo PC (26.10.20, `_processMuteConversations`) keeps the last control per `toId`, reads `muteType` 1
+ *   as a DM and anything else as a group, drops a `set` whose `duration` (seconds, -1 for "until turned back on") has
+ *   already run out since `systemTime`, and hands the rest to its mute store. This client keeps no mute list
+ *   (`conv muted` reads it live): it reports a `mute_changed` event per conversation.
+ * - **`label_convers` / `update`** (no data). Zalo PC refetches its labels (`syncLabelFromServer`). This reports a
+ *   `labels_changed` event; `label list` reads them.
+ * - **`archived_chat` / `update`** (`{version, actionType, items}`). Zalo PC, when `version` is newer than its own,
+ *   refetches the archived list and repaints the conversations in `items` (`{id, type: 1 group}`). This reports an
+ *   `archived_changed` event (`actionType` 0 moved them to Other, 1 back, as `conv archive` sends it).
+ * - **`quick_message` / `create`, `update`, `delete`** (`{items, version}`). Zalo PC applies the items to its quick
+ *   message store. This reports a `quick_messages_changed` event; `quick-msg list` reads them.
+ * - **`conv_settings` / `update_ttl`** (`{threadId, ttl, fromId, isGroup, ts}`). Zalo PC stores the conversation's new
+ *   auto-delete time and adds a local "auto-delete set" line to the conversation. This client writes no message rows
+ *   of its own (AGENTS.md §13): it reports an `auto_delete_changed` event; `conv auto-delete-status` reads it.
+ *
  * Only key names were ever seen for these controls (`unknown-acts.json`), never values, so an event names the fields
  * the Web reads and carries the control's own data whole under `control`. The device list's signed identity material
  * (`encIdentity`, `encAccSign`) is removed from it first, as `account devices` never prints it.
@@ -171,6 +187,113 @@ export function reminderRowOf(d, threadId) {
     };
 }
 
+/** A number, or null for anything that is not one. */
+const num = (v) => (v === undefined || v === null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+
+/** A thread type from a group flag. */
+const threadTypeOf = (isGroup) => (isGroup ? "group" : "dm");
+
+/**
+ * The `mute_changed` events of one frame's `mute` controls, as Zalo PC reads them: the last control per conversation
+ * wins, `muteType` 1 is a DM and anything else a group, and a `set` whose time has already run out changes nothing.
+ *
+ * @param {Array<{act: string, data: object|null, ts: number|null}>} controls - the frame's `mute` controls, in order
+ * @param {number} [nowMs]
+ * @returns {object[]}
+ */
+export function muteEvents(controls, nowMs = Date.now()) {
+    const last = new Map();
+    for (const c of controls) {
+        const toId = str(c.data?.toId);
+        if (toId && (c.act === "set" || c.act === "unset")) last.set(toId, c);
+    }
+    const out = [];
+    for (const [threadId, c] of last) {
+        const d = c.data;
+        const muted = c.act === "set";
+        const duration = num(d.duration);
+        const since = num(d.startTime) ?? num(d.systemTime);
+        let until = null;
+        if (muted && duration !== null && duration !== -1) {
+            const systemTime = num(d.systemTime);
+            if (systemTime !== null && Math.round(nowMs / 1000) - systemTime > duration) continue;
+            if (since !== null) until = (since + duration) * 1000;
+        }
+        out.push({
+            event: "mute_changed",
+            threadId,
+            threadType: num(d.muteType) === 1 ? "dm" : "group",
+            muted,
+            duration: muted ? duration : null,
+            until,
+            ts: c.ts,
+            control: d,
+        });
+    }
+    return out;
+}
+
+/**
+ * An `archived_chat/update` control as an event.
+ *
+ * @param {{data: object|null, ts: number|null}} c
+ * @returns {object}
+ */
+export function archivedEvent(c) {
+    const d = c.data || {};
+    const items = Array.isArray(d.items) ? d.items : [];
+    const actionType = num(d.actionType);
+    return {
+        event: "archived_changed",
+        archived: actionType === 0 ? true : actionType === 1 ? false : null,
+        threads: items
+            .filter((i) => i && str(i.id))
+            .map((i) => ({ threadId: String(i.id), threadType: threadTypeOf(num(i.type) === 1) })),
+        version: num(d.version),
+        ts: c.ts,
+        control: c.data,
+    };
+}
+
+/**
+ * A `quick_message` control as an event.
+ *
+ * @param {{act: string, data: object|null, ts: number|null}} c
+ * @returns {object}
+ */
+export function quickMessageEvent(c) {
+    const d = c.data || {};
+    const items = Array.isArray(d.items) ? d.items : [];
+    return {
+        event: "quick_messages_changed",
+        act: c.act,
+        quickMessageIds: items.map((i) => str(i?.id)).filter(Boolean),
+        version: num(d.version),
+        ts: c.ts,
+        control: c.data,
+    };
+}
+
+/**
+ * A `conv_settings/update_ttl` control as an event. `ttl` is in milliseconds, 0 for off, as `conv auto-delete` sends it.
+ *
+ * @param {{data: object|null, ts: number|null}} c
+ * @returns {object}
+ */
+export function autoDeleteEvent(c) {
+    const d = c.data || {};
+    const isGroup = d.isGroup === true || d.isGroup === 1 || d.isGroup === "1" || d.isGroup === "true";
+    return {
+        event: "auto_delete_changed",
+        threadId: str(d.threadId),
+        threadType: threadTypeOf(isGroup),
+        ttl: num(d.ttl),
+        by: str(d.fromId),
+        ts: num(d.ts) ?? c.ts,
+        control: c.data,
+    };
+}
+
 /**
  * Apply and report the controls of one `601` frame.
  *
@@ -181,7 +304,8 @@ export function reminderRowOf(d, threadId) {
  * @param {typeof removeReminder} [args.remove]
  * @param {typeof upsertReminder} [args.upsert]
  * @param {(line: string) => void} [args.say]
- * @returns {object[]} the events, in the frame's order
+ * @param {() => number} [args.now] - to tell a mute that has already run out
+ * @returns {object[]} the events, in the frame's order (a frame's mute changes come last, one per conversation)
  */
 export function applyControlEvents({
     data,
@@ -190,8 +314,11 @@ export function applyControlEvents({
     remove = removeReminder,
     upsert = upsertReminder,
     say = () => {},
+    now = Date.now,
 }) {
     const out = [];
+    // A frame's mute controls are read together, as Zalo PC does: the last one per conversation wins.
+    const mutes = [];
     // One frame (a control replay can carry many) says "the device list changed" once, with a count.
     let deviceChanges = 0;
     let lastDevices = null;
@@ -204,6 +331,16 @@ export function applyControlEvents({
         }
         if (c.kind === "catalog") {
             out.push(catalogEvent(c));
+        } else if (c.kind === "mute") {
+            mutes.push(c);
+        } else if (c.kind === "labels") {
+            if (c.act === "update") out.push({ event: "labels_changed", ts: c.ts });
+        } else if (c.kind === "archived") {
+            if (c.act === "update" && c.data) out.push(archivedEvent(c));
+        } else if (c.kind === "quick-message") {
+            if (["create", "update", "delete"].includes(c.act) && c.data) out.push(quickMessageEvent(c));
+        } else if (c.kind === "auto-delete") {
+            if (c.data) out.push(autoDeleteEvent(c));
         } else if (c.kind === "settings") {
             out.push(settingsEvent(c));
         } else if (c.kind === "devices") {
@@ -265,6 +402,7 @@ export function applyControlEvents({
             });
         }
     }
+    if (mutes.length) out.push(...muteEvents(mutes, now()));
     if (deviceChanges) {
         say(
             "the account's device list changed" +
@@ -275,6 +413,69 @@ export function applyControlEvents({
         );
     }
     return out;
+}
+
+/** The `listen --events` kind each event is printed under (none is in the default set). */
+export const CONTROL_EVENT_KINDS = Object.freeze({
+    catalog_changed: "catalog",
+    reminder_created: "reminder",
+    reminder_updated: "reminder",
+    reminder_removed: "reminder",
+    devices_changed: "devices",
+    settings_changed: "settings",
+    mute_changed: "conversation",
+    labels_changed: "conversation",
+    archived_changed: "conversation",
+    auto_delete_changed: "conversation",
+    quick_messages_changed: "quick-message",
+});
+
+/** A ttl in milliseconds as a person reads it: off, or days, or hours. */
+function ttlText(ms) {
+    if (!ms) return "off";
+    const days = ms / 86_400_000;
+    return Number.isInteger(days) ? `${days}d` : `${Math.round(ms / 3_600_000)}h`;
+}
+
+/**
+ * One event of {@link applyControlEvents} as the line `listen` prints for it.
+ *
+ * @param {object} ev
+ * @returns {string}
+ */
+export function describeControlEvent(ev) {
+    switch (ev.event) {
+        case "catalog_changed":
+            return `Catalog: ${ev.act} (catalog ${ev.catalogId ?? "?"})`;
+        case "reminder_created":
+            return `Reminder created: ${ev.title ?? ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`;
+        case "reminder_updated":
+            return `Reminder edited: ${ev.title ?? ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`;
+        case "reminder_removed":
+            return `Reminder removed: ${ev.reminderId ?? "?"} in ${ev.threadId ?? "?"}`;
+        case "devices_changed":
+            return "The account's device list changed — see `zalo-agent account devices`";
+        case "settings_changed":
+            return `Settings changed on another device: ${
+                ev.changed.map((c) => `${c.setting}=${c.value}`).join(", ") || Object.keys(ev.settings).join(", ")
+            }`;
+        case "mute_changed":
+            return ev.muted
+                ? `Muted: ${ev.threadId} (${ev.until ? `until ${new Date(ev.until).toLocaleString()}` : "until unmuted"})`
+                : `Unmuted: ${ev.threadId}`;
+        case "labels_changed":
+            return "Conversation labels changed on another device — see `zalo-agent label list`";
+        case "archived_changed":
+            return `${{ true: "Moved to Other (archived)", false: "Moved back from Other" }[ev.archived] ?? "Archived list changed"}: ${
+                ev.threads.map((t) => t.threadId).join(", ") || "?"
+            }`;
+        case "auto_delete_changed":
+            return `Auto-delete in ${ev.threadId ?? "?"} set to ${ttlText(ev.ttl)}`;
+        case "quick_messages_changed":
+            return `Quick message ${ev.act}d: ${ev.quickMessageIds.join(", ") || "?"} — see \`zalo-agent quick-msg list\``;
+        default:
+            return ev.event;
+    }
 }
 
 /**

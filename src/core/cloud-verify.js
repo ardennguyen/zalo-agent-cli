@@ -29,13 +29,67 @@
  *   cloud key again, which this client never holds (D8); the second audits its local media against the store and
  *   reports to the server. Each is named in the log.
  *
+ * **cmd 620 is one queue entry pushed live** (Zalo PC 26.10.20 names it `CLOUD.PUSH`; its body is the entry itself:
+ * `noiseId`, `action`, `actionType`, `cliTs`, `msgInfo`, `mediaInfo`, `encryptInfo`, `ts`). Zalo PC applies it to its
+ * store at once, and so does this, as one page of the walk ({@link applyQueuePage}): an `add` is recorded, a `remove`
+ * deletes the items it names, a `del_thread` deletes a conversation's older items, `temp` and `duplicate` change
+ * nothing. Two rules are Zalo PC's own:
+ *
+ * - **A removal can overtake its add.** A `remove` naming an item the index does not hold is remembered for an hour,
+ *   and an `add` of that item arriving in that hour is dropped (PC's push validator).
+ * - **`reset_cloud` walks the queue from the top**, as a forced notice does (PC runs its "reset" verify): it does not
+ *   empty the index from one entry, and it follows the rules above (a baseline, the 30-minute pace, the stage lock).
+ *
+ * A push needs no baseline and takes no stage lock: it is one entry, written at once, and it never moves the walk's
+ * saved place. The engine's other writes to `cloud_items` are the walks; a full walk keeps a pushed item (it is
+ * stamped as seen when it arrives).
+ *
  * `listen` and `mcp start` both build one (AGENTS.md §13: any asymmetry between them is a defect).
  */
-import { getSyncState, setSyncState } from "./db.js";
-import { syncCloudIndex } from "./sync-v2/zcloud.js";
+import { getCloudItemByZKey, getSyncState, setSyncState } from "./db.js";
+import { applyQueuePage, syncCloudIndex } from "./sync-v2/zcloud.js";
+import { cloudKeyOf, ownIdOf, removalKeysOf, selfChatIdOf } from "../zalo/zcloud.js";
 
 /** The server's "verify your cloud queue" push. */
 export const CMD_MYCLOUD = 621;
+
+/** One cloud-queue entry, pushed live (Zalo PC's `CLOUD.PUSH`). */
+export const CMD_CLOUD_PUSH = 620;
+
+/** How long a removal that found nothing cancels the add it overtook (Zalo PC: an hour). */
+export const EARLY_REMOVE_MS = 60 * 60 * 1000;
+
+/** Queue entry actions, as src/zalo/zcloud.js `ACTION` names them. */
+const ADD = 1;
+const REMOVE = 2;
+const TEMP = 4;
+const RESET_CLOUD = 5;
+const DUPLICATE = 6;
+
+/** A JSON text read as an object, or the value itself. */
+function parsed(v) {
+    if (typeof v !== "string") return v;
+    try {
+        return JSON.parse(v);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Read a cmd 620 frame: the queue entry it carries, as the frame's `data` (or, defensively, inside `data.data`).
+ *
+ * @param {{data?: object|string|null}} frame - a frame from the socket tap
+ * @returns {object|null} the entry, or null for anything that is not one
+ */
+export function readCloudPush(frame) {
+    let item = parsed(frame?.data);
+    if (item && typeof item === "object" && item.noiseId === undefined && item.data !== undefined) {
+        item = parsed(item.data);
+    }
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    return item.noiseId !== undefined || item.action !== undefined ? item : null;
+}
 
 /** The web client acts on this event at most once per 30 minutes. */
 export const THROTTLE_MS = 30 * 60 * 1000;
@@ -71,7 +125,7 @@ export function readCloudNotice(frame) {
 }
 
 /**
- * Answer cmd 621 notices with a bounded, read-only walk of the cloud queue.
+ * Answer cmd 621 notices with a bounded, read-only walk of the cloud queue, and apply each cmd 620 entry pushed live.
  *
  * @param {object} args
  * @param {ReturnType<import("../zalo/listener/socket-tap.js").createSocketTap>} args.tap
@@ -81,8 +135,11 @@ export function readCloudNotice(frame) {
  * @param {() => number} [args.now]
  * @param {number} [args.throttleMs]
  * @param {typeof syncCloudIndex} [args.walk] - injected walker (tests)
- * @returns {{stop: () => void, handle: (frame: object) => Promise<string>}} `handle` is what the tap calls; it
- *   resolves to what it did (`"walked"`, or why not), for tests
+ * @param {typeof applyQueuePage} [args.apply] - injected page writer (tests)
+ * @param {typeof getCloudItemByZKey} [args.findByZKey] - injected index lookup (tests)
+ * @returns {{stop: () => void, handle: (frame: object) => Promise<string>, handlePush: (frame: object) =>
+ *   Promise<string>}} `handle` (cmd 621) and `handlePush` (cmd 620) are what the tap calls; each resolves to what it
+ *   did (`"walked"`, `"added"`, `"removed"`, or why not), for tests
  */
 export function createCloudVerifier({
     tap,
@@ -92,6 +149,8 @@ export function createCloudVerifier({
     now = Date.now,
     throttleMs = THROTTLE_MS,
     walk = syncCloudIndex,
+    apply = applyQueuePage,
+    findByZKey = getCloudItemByZKey,
 }) {
     const say = (line) => {
         try {
@@ -184,8 +243,64 @@ export function createCloudVerifier({
             if (WHY[outcome]) say(`notice (cmd 621): ${WHY[outcome]}`);
         });
     });
+
+    /** Removals that found nothing in the index, by cloud key, with when: each cancels the add it overtook. */
+    const earlyRemoves = new Map();
+
+    async function handlePush(frame) {
+        try {
+            const item = readCloudPush(frame);
+            if (!item) return "ignored";
+            const action = item.action === undefined || item.action === null ? ADD : Number(item.action);
+            if (action === RESET_CLOUD) {
+                say("the server reset the cloud queue (cmd 620 reset_cloud): walking it from the top, as Zalo PC does");
+                const outcome = await handle({ data: { data: { mycloudMedia: { forceReset: 1 } } } });
+                if (WHY[outcome]) say(`reset: ${WHY[outcome]}`);
+                return `reset:${outcome}`;
+            }
+            if (action === TEMP || action === DUPLICATE) return "noop";
+            let ownId = null;
+            let selfChatId = null;
+            try {
+                const api = getApi();
+                ownId = ownIdOf(api);
+                selfChatId = selfChatIdOf(api, ownId);
+            } catch {
+                /* signed out or between sockets: a DM's conversation is then read without the account id */
+            }
+            const t = now();
+            for (const [key, at] of earlyRemoves) if (t - at > EARLY_REMOVE_MS) earlyRemoves.delete(key);
+            if (action === ADD) {
+                const key = cloudKeyOf(item, ownId);
+                if (key && earlyRemoves.has(key)) {
+                    earlyRemoves.delete(key);
+                    return "cancelled";
+                }
+            } else if (action === REMOVE) {
+                for (const key of removalKeysOf(item, ownId)) if (!findByZKey(key)) earlyRemoves.set(key, t);
+            }
+            const out = apply([item], { ownId, selfChatId, seenAt: t });
+            if (out.failures?.length) {
+                say(`could not record a pushed cloud item (cmd 620): ${out.failures[0].reason}`);
+                return "failed";
+            }
+            if (out.added) return "added";
+            if (out.removed || out.threadsCleared) return "removed";
+            return "unchanged";
+        } catch (e) {
+            say(`could not apply a pushed cloud item (cmd 620): ${e?.message || e}`);
+            return "failed";
+        }
+    }
+    const offPush = tap.on(CMD_CLOUD_PUSH, (frame) => {
+        void handlePush(frame);
+    });
     return {
-        stop: off,
+        stop() {
+            off();
+            offPush();
+        },
         handle,
+        handlePush,
     };
 }

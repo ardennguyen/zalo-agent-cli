@@ -1373,8 +1373,9 @@ export function registerMCPCommands(program) {
                 log: (line) => console.error(`[mcp] ${line}`),
             });
             // A DM reminder created, edited or removed on another device is stored or dropped in the cache, a
-            // device-list change is logged, as in
-            // `listen` (src/core/control-events.js); the events are printed only by `listen`.
+            // device-list change is logged, the conversation, quick-message, catalog and settings changes are read
+            // (there is no cache of them to keep), as in `listen` (src/core/control-events.js); the events are
+            // printed only by `listen`.
             attachControlEvents({
                 tap: socketTap,
                 ownId: activeAcc.ownId,

@@ -14,10 +14,11 @@
 import { SANDBOX_HOME } from "../helpers/sandbox.js";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { runCli } from "../helpers/cli.js";
+import { runCli, runCliEach } from "../helpers/cli.js";
 
-// This suite fans out ~40 `node src/index.js … --help` subprocesses through
-// Promise.all, and each one pays full CLI startup. On a machine already busy
+// This suite runs ~60 `node src/index.js … --help` subprocesses, one per core
+// at a time (runCliEach: all at once thrashed a 4 GB VM), and each one pays
+// full CLI startup. On a machine already busy
 // (a parallel lint/format pass, CI running other jobs) the slowest of that
 // batch can exceed a tight budget and fail for reasons that say nothing about
 // the command surface. 90s is generous on purpose — a genuine regression here
@@ -477,7 +478,10 @@ describe("command groups", () => {
 
     before(async () => {
         const groups = Object.keys(COMMAND_SURFACE);
-        const results = await Promise.all(groups.map((g) => runCli([g, "--help"], opts)));
+        const results = await runCliEach(
+            groups.map((g) => [g, "--help"]),
+            opts,
+        );
         groups.forEach((g, i) => (helps[g] = results[i].stdout));
     });
 
@@ -503,7 +507,10 @@ describe("nested subgroups", () => {
 
     before(async () => {
         const keys = Object.keys(NESTED);
-        const results = await Promise.all(keys.map((k) => runCli([...k.split(" "), "--help"], opts)));
+        const results = await runCliEach(
+            keys.map((k) => [...k.split(" "), "--help"]),
+            opts,
+        );
         keys.forEach((k, i) => (helps[k] = results[i].stdout));
     });
 
@@ -521,7 +528,10 @@ describe("flag contract", () => {
 
     before(async () => {
         const keys = Object.keys(FLAG_CONTRACT);
-        const results = await Promise.all(keys.map((k) => runCli([...k.split(" "), "--help"], opts)));
+        const results = await runCliEach(
+            keys.map((k) => [...k.split(" "), "--help"]),
+            opts,
+        );
         keys.forEach((k, i) => (helps[k] = results[i].stdout));
     });
 

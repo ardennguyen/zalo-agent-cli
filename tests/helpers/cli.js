@@ -14,6 +14,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 
 const CLI = resolve(import.meta.dirname, "..", "..", "src", "index.js");
@@ -78,6 +79,30 @@ export function runCli(args, opts = {}) {
             },
         );
     });
+}
+
+/**
+ * Run the CLI once per argument list, a few at a time, and resolve with the results in the same order.
+ *
+ * Each run is a full CLI process of about 100 MB. Started all at once, sixty `--help` calls thrash a small machine
+ * (a 4-core, 4 GB VM: every one ran past the 90 s timeout, though one alone takes 0.6 s), so at most one per core
+ * runs at a time.
+ *
+ * @param {string[][]} argLists
+ * @param {object} [opts] - as {@link runCli}
+ * @returns {Promise<Array<Awaited<ReturnType<typeof runCli>>>>}
+ */
+export async function runCliEach(argLists, opts = {}) {
+    const results = new Array(argLists.length);
+    let next = 0;
+    const worker = async () => {
+        while (next < argLists.length) {
+            const i = next++;
+            results[i] = await runCli(argLists[i], opts);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(availableParallelism(), argLists.length) }, worker));
+    return results;
 }
 
 /** The `  ✗ ...` line `error()` prints, if present. */

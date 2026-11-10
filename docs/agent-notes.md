@@ -1311,13 +1311,37 @@ about. `src/zalo/queues/queue-verify.js` sends the `532` frame `{queueName, ids:
 `max_msg_verify + 2` ids are pending or `interval_verify` (30 s in a capture) has passed, and reads the answer
 (`error` 0 done, 1 some items never reached us and follow as `534` pushes, -1 stop verifying on this connection). The
 rule is the order: **an id is acknowledged only after the row it names is committed to zalo.db.** A live push is
-acknowledged when every message in it is stored (`noteDelivered`, after the storing handler), an offline page when
-its rows were written without a failed write, a `534` re-push after it is stored and handed on. A write that failed
+acknowledged when every message in it is stored (`noteDelivered`, after the storing handler), a `534` re-push after
+it is stored and handed on. (An offline page was acknowledged too until 2026-11-10; see below.) A write that failed
 (`storeHistoryMessage` now says `failed: true`, as against a row it deliberately skips) holds the acknowledgement
 back, so the server delivers the item again. A new connection forgets what was waiting on the old one. Zalo Web does
-not verify offline batches (`skip_offline_verify`); acknowledging them is our choice, so the server can let go of
-what it delivered. **Seen live (2026-10-25):** an ack is `{queueName, ids: [{actionId}], nretry, reqId}` and Zalo
+not verify offline batches (`skip_offline_verify`), and since 2026-11-10 neither does this client (next section). **Seen live (2026-10-25):** an ack is `{queueName, ids: [{actionId}], nretry, reqId}` and Zalo
 answers `{error: 0, reqId}`. **Still not seen:** the server's own settings for our identity, and the `534` payload.
+
+**The catch-up drains every queue at once, under one deadline, and acknowledges nothing while it runs (2026-11-10).**
+Seen live four times out of four at a daemon start after a long offline window: `510_1` drained (267 rows), then
+`511_1` got no page within the 10 s per-page wait, the server answered our acks with "stop verifying", and `603_1`
+timed out too; a wake minutes later drained everything. We drained the queues one after another, sent a `532` for
+every drained `510_1` row before even asking `511_1` (an ack flood the size of the backlog), and gave up on one
+10 s silence. Zalo PC 26.10.20 does none of that:
+- `signalGetOffline` sends the first-page request of every queue in the same moment, sorted by `qCmds` priority, and
+  asks for the next page before processing the current one; the control queues are pulled from their own
+  `onAuthenticated`, not after the message queues.
+- One timer for the whole offline phase, `offline_timeout` (480 s); no per-page wait and no retry. When it fires PC
+  raises a socket error (close and reconnect), and the new handshake asks every queue again from its saved `lastId`.
+- No `532` during the drain: `verify_on_done_offline` keeps the verifier from sending until `onDoneOfflineAll`
+  starts it ("module is not started yet!"; live pushes are queued meanwhile), and `skip_offline_verify` drops the
+  offline batch even then ("skip verify msg offline").
+
+Now the same here (`src/core/self-heal.js`, `src/zalo/queues/offline-queue.js`, `src/core/control-replay.js`): every
+message queue and control queue is asked before any answer can arrive and drained side by side, each from its own
+cursor; `timeoutMs` is the whole catch-up's deadline (480 s by default), and a socket that closes ends the drain at
+once (`closed`) instead of waiting it out. Offline rows are stored and move the cursor, but are never acknowledged.
+A handshake puts the verifier on hold (`hold()`); live and `534` acks confirmed meanwhile wait and go out when the run
+ends, finished or not (`release()`). Where PC reconnects on its deadline, we do not: the socket supervisor owns every
+reconnect (AGENTS.md section 13), so a run past its deadline is reported "not finished", its gaps stay pending, and
+the next connect or wake asks again. Not matched: PC's verifier keeps the newest offline id as the first item of its
+next verify batch; we send live ids only.
 
 **One request counter, and `reqId` on every pull (X5, Y7).** `src/zalo/req-id.js` is the process-wide `req_<n>` counter
 the sync channel, the offline-queue drain and the pulls share. `installOfficialPulls` makes the listener's old-message
@@ -1913,15 +1937,17 @@ local report) showed what they are, and the answer is not the same for all of th
   and for which the offline pull produced no `clearUnreads`; its reply only clears unread badges. **537**: the list of
   media already downloaded on another device, which the Web client uses to prefetch the same media.
 
-**What was done.** A daemon pulls `603` on every connect, after the message queues, from the cursors it keeps
+**What was done.** A daemon pulls `603` on every connect, beside the message queues (asked in the same moment since
+2026-11-10), from the cursors it keeps
 (`src/core/control-replay.js`, called by `src/core/self-heal.js`, so `listen` and `mcp start` do it identically and
 `--no-self-heal` turns it off). Each page is handed to the listener as a `601` push: the frame's command is rewritten and
 the bytes are emitted on the socket as a binary message (`ws` gives its `onmessage` consumers text unless told the frame
 is binary, and the listener ignores a non-Buffer; a test on the real listener caught that). The listener then emits the same
 `group_event` and `friend_event` it emits for a live push, and everything that reads `601` here (unread marks, transcripts,
 the unknown-action collector, the cursor keeper) sees it. It never asks without a saved cursor (a first pull would replay
-everything the server still holds), never acknowledges, and says when the server reports it dropped entries. The control
-queue is given three times the message queues' wait: one cold answer was slower than ten seconds, live. Seen live on the test
+everything the server still holds), never acknowledges, and says when the server reports it dropped entries. One cold
+control answer was slower than ten seconds, live; it got three times the per-page wait until the per-page wait gave way
+to the catch-up's single 480 s deadline. Seen live on the test
 account: eight real controls that arrived while the daemon was off (a group join, friend requests and their rejection, a
 contact-tab mark, an emoji status) were replayed from the saved cursor and the cursor moved.
 

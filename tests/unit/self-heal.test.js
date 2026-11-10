@@ -235,6 +235,44 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         }
     });
 
+    it("(a) it asks every queue at once, controls included, before any answer arrives (Zalo PC's signalGetOffline)", async () => {
+        const g1 = nextId();
+        const order = [];
+        const answers = scripted();
+        const respond = (payload) => {
+            order.push(`ask ${payload.cmd}`);
+            if (payload.cmd === 603) {
+                const data = { lastActionId: "0", more: 0, controls: [], queueStatus: {}, reqId: payload.data.reqId };
+                return { error_code: 0, error_message: "", data };
+            }
+            return answers(payload);
+        };
+        const d = daemon({ respond });
+        for (const cmd of [510, 511, 603]) d.tap.on(cmd, () => order.push(`answer ${cmd}`));
+        live(d.listener, row(g1));
+        setSyncState("offlineCursor:603_1", JSON.stringify({ id: "40", ts: 1 }));
+
+        d.listener.auth({ qCmds: QCMDS, ctrl_qCmds: [{ cmd: 603, subCmd: 1, queueName: "603_1" }] });
+        await sleep(0);
+        await d.heal.settled();
+
+        // Red on a sequential drain: 511 would only be asked once 510 had answered, and 603 once both had.
+        assert.deepEqual(order.slice(0, 3), ["ask 510", "ask 511", "ask 603"], "every first page asked first");
+        assert.deepEqual(order.slice(3).sort(), ["answer 510", "answer 511", "answer 603"]);
+        const result = await d.heal.run("check");
+        assert.deepEqual(
+            result.queues.map((q) => [q.queueName, q.complete]),
+            [
+                ["510_1", true],
+                ["511_1", true],
+            ],
+        );
+        assert.deepEqual(
+            result.controls.map((c) => [c.queueName, c.complete]),
+            [["603_1", true]],
+        );
+    });
+
     it("(a) at start-up with no saved cursor, each queue starts from its newest stored message", async () => {
         // Stored before any self-heal existed, so no cursor was ever saved.
         const dm = nextId();
@@ -528,8 +566,13 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         const lock = createStageLock();
 
         let hold = false;
+        const held = [];
         const answers = scripted();
-        const respond = (payload) => (hold ? null : answers(payload));
+        const respond = (payload) => {
+            if (!hold) return answers(payload);
+            held.push(payload); // answered by hand below, once the refusal is checked
+            return null;
+        };
         const d = daemon({ lock, respond });
         live(d.listener, row(nextId()));
         const wrapped = d.listener.sendWs;
@@ -571,6 +614,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
             const refused = await syncViaDaemon(accountDir, { stage: "messages" });
             assert.equal(refused.status, 409);
             assert.equal(refused.busyStage, "self-heal");
+            for (const p of held) d.listener.push(p.cmd, p.subCmd, answers(p));
             await d.heal.settled();
         } finally {
             channel.stop();
@@ -702,17 +746,49 @@ describe("Y10: queue items are acknowledged (532) only after their rows are stor
         assert.deepEqual(idsIn(acksOf(d.listener)[0]).sort(), [a, b].sort());
     });
 
-    it("an offline page is acknowledged after its rows were written, with the ids the page named", async () => {
+    it("an offline page is stored and moves the cursor, but is never acknowledged (Zalo PC's skip_offline_verify)", async () => {
         const g1 = nextId();
         const next = nextId();
         const d = daemon({ respond: scripted({ 511: [page(511, [row(next)])] }) });
         live(d.listener, row(g1));
         await connectAndSettle(d);
         assert.ok(getMessageById(next), "seed: the page's row was written");
-        assert.equal(d.heal.flushAcks(), 1);
-        const [ack] = acksOf(d.listener);
-        assert.equal(ack.data.queueName, "511_1");
-        assert.deepEqual(idsIn(ack), [next]);
+        assert.equal(d.heal.cursor("511_1").id, next, "the cursor still moves past a stored offline row");
+        // Red if the drained page's ids are handed to the verifier: a 532 flood scaled to the backlog.
+        assert.equal(d.heal.queueAcks().pending, 0, "the page's ids were queued for an ack");
+        assert.equal(d.heal.flushAcks(), 0);
+        assert.equal(acksOf(d.listener).length, 0);
+    });
+
+    it("a live push during the catch-up is acknowledged only once the catch-up is over (verify_on_done_offline)", async () => {
+        const g1 = nextId();
+        const old = nextId();
+        const held = [];
+        const answers = scripted({ 511: [page(511, [row(old)])] });
+        const respond = (payload) => {
+            held.push(payload); // nothing answers until the live push below is in
+            return null;
+        };
+        const d = daemon({ respond });
+        live(d.listener, row(g1));
+        d.listener.auth({ qCmds: QCMDS });
+        await sleep(0);
+        assert.equal(held.length, 2, "seed: both queues are being drained");
+
+        const id = nextId();
+        const r = row(id);
+        live(d.listener, r);
+        d.listener.push(521, 0, envelope(r));
+        // Red if the verifier sends while the offline queues drain: Zalo PC's is "not started yet".
+        assert.equal(d.heal.flushAcks(), 0, "an ack went out mid-drain");
+        assert.equal(acksOf(d.listener).length, 0);
+        assert.equal(d.heal.queueAcks().held, true);
+
+        for (const p of held) d.listener.push(p.cmd, p.subCmd, answers(p));
+        await d.heal.settled();
+        assert.equal(d.heal.queueAcks().held, false);
+        assert.equal(d.heal.flushAcks(), 1, "the held live ack goes out after the catch-up");
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]), [id], "only the live push's id, never the offline page's");
     });
 
     it("an offline page whose rows could not be written is not acknowledged: the server must deliver it again", async () => {
@@ -741,18 +817,20 @@ describe("Y10: queue items are acknowledged (532) only after their rows are stor
         assert.equal(d.heal.flushAcks(), 0);
     });
 
-    it("a row that is deliberately not written (already cached, no content) is still acknowledged: it is handled", async () => {
-        const g1 = nextId();
+    it("a re-sent row that is deliberately not written (already cached, no content) is still acknowledged: it is handled", async () => {
         const cached = nextId();
-        const d = daemon({
-            respond: scripted({
-                511: [page(511, [row(cached), row(nextId(), { content: "" })], { lastActionId: cached })],
-            }),
-        });
-        live(d.listener, row(g1));
+        const empty = nextId();
+        const d = daemon();
         live(d.listener, row(cached));
-        await connectAndSettle(d);
+        const rc = row(cached);
+        const re = row(empty, { content: "" });
+        d.listener.push(534, 0, {
+            ...envelope(rc, [cached, empty]),
+            data: { ...envelope(rc, [cached, empty]).data, groupMsgs: [rc, re] },
+        });
+        await sleep(0);
         assert.equal(d.heal.flushAcks(), 1);
+        assert.deepEqual(idsIn(acksOf(d.listener)[0]).sort(), [cached, empty].sort());
     });
 
     it("a message the server re-sends (534) is stored, handed on, and then acknowledged", async () => {

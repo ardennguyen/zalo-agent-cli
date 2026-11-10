@@ -181,7 +181,15 @@ describe("the queue verifier: the server's answers", () => {
     it("error 0 is done", () => {
         const { verifier } = sendOne();
         assert.equal(verifier.handleReply({ data: { reqId: "req_1", error: 0 } }), true);
-        assert.deepEqual(verifier.stats(), { pending: 0, inFlight: 0, sent: 1, acked: 2, missed: 0, stopped: false });
+        assert.deepEqual(verifier.stats(), {
+            pending: 0,
+            inFlight: 0,
+            sent: 1,
+            acked: 2,
+            missed: 0,
+            stopped: false,
+            held: false,
+        });
     });
 
     it("error 1 says some items never arrived: counted, logged, and not an error", () => {
@@ -261,5 +269,50 @@ describe("the queue verifier: a connection ends", () => {
         verifier.confirm("511_1", ["1"]);
         assert.deepEqual(clock.live(), []);
         assert.equal(verifier.stats().stopped, true);
+    });
+});
+
+describe("the queue verifier: held while the offline queues drain (Zalo PC's verify_on_done_offline)", () => {
+    it("sends nothing while held, past the threshold or the interval, and keeps what it was given", () => {
+        const { verifier, sent, clock } = rig();
+        verifier.hold();
+        verifier.confirm(
+            "511_1",
+            Array.from({ length: VERIFY_DEFAULTS.maxMsgVerify + 5 }, (_, i) => String(i + 1)),
+        );
+        clock.fireAll();
+        assert.equal(verifier.flush(), 0);
+        assert.deepEqual(sent, [], "an ack went out while held");
+        assert.deepEqual(clock.live(), [], "no interval is armed while held");
+        assert.equal(verifier.stats().pending, VERIFY_DEFAULTS.maxMsgVerify + 5);
+        assert.equal(verifier.stats().held, true);
+    });
+
+    it("on release sends at once what passed the threshold", () => {
+        const { verifier, sent } = rig();
+        verifier.hold();
+        verifier.confirm(
+            "511_1",
+            Array.from({ length: VERIFY_DEFAULTS.maxMsgVerify + 2 }, (_, i) => String(i + 1)),
+        );
+        assert.equal(verifier.release(), 1);
+        assert.equal(sent.length, 1);
+        assert.equal(sent[0].frame.data.ids.length, VERIFY_DEFAULTS.maxMsgVerify + 2);
+    });
+
+    it("on release arms the interval for fewer, and a new connection lifts the hold", () => {
+        const { verifier, sent, clock } = rig();
+        verifier.hold();
+        verifier.confirm("510_1", ["1"]);
+        assert.equal(verifier.release(), 0);
+        assert.equal(clock.live().length, 1, "the interval is armed after the release");
+        clock.fireAll();
+        assert.equal(sent.length, 1);
+
+        verifier.hold();
+        verifier.reset();
+        assert.equal(verifier.stats().held, false);
+        verifier.confirm("510_1", ["2"]);
+        assert.equal(verifier.flush(), 1);
     });
 });

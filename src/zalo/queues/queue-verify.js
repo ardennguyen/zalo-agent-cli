@@ -12,6 +12,10 @@
  * committed to zalo.db.** An ack for something that was not stored reports "nothing missing", and the loss is
  * never repaired. So callers hand ids to {@link confirm} only after the write; this module never decides that.
  *
+ * Nothing is sent while the connection's offline queues are being drained: Zalo PC (26.10.20, `verify_on_done_offline`)
+ * refuses to verify until `onDoneOfflineAll` starts its verifier ("module is not started yet!"). {@link hold} and
+ * {@link release} are that switch: ids confirmed meanwhile wait, and go out once the drain is over.
+ *
  * Seen live (2026-10-25): an ack is `{queueName, ids: [{actionId}], nretry, reqId}` and Zalo answers `{error: 0, reqId}`.
  * Two acks for ids of queue 510_1 got no answer in three tries and were dropped; where those ids came from was not
  * identified. What is still not known is the server's own `max_msg_verify` and `interval_verify` for this identity:
@@ -68,9 +72,12 @@ export function idsOf(queueStatus, queueName) {
  *   confirm: (queueName: string, ids: Array<string|number>) => void,
  *   handleReply: (frame: {data?: object}) => boolean,
  *   flush: () => number,
+ *   hold: () => void,
+ *   release: () => number,
  *   reset: () => void,
  *   stop: () => void,
- *   stats: () => {pending: number, inFlight: number, sent: number, acked: number, missed: number, stopped: boolean},
+ *   stats: () => {pending: number, inFlight: number, sent: number, acked: number, missed: number, stopped: boolean,
+ *     held: boolean},
  * }}
  */
 export function createQueueVerifier({
@@ -86,6 +93,7 @@ export function createQueueVerifier({
     const inFlight = new Map();
     let flushTimer = null;
     let stopped = false; // the server said -1: stop verifying until the next connection
+    let held = false; // the offline queues are being drained: collect, send nothing
     const counts = { sent: 0, acked: 0, missed: 0 };
 
     const cfg = () => {
@@ -106,7 +114,7 @@ export function createQueueVerifier({
     };
 
     const arm = () => {
-        if (flushTimer !== null || stopped) return;
+        if (flushTimer !== null || stopped || held) return;
         flushTimer = timers.setTimeout(() => {
             flushTimer = null;
             verifier.flush();
@@ -182,6 +190,7 @@ export function createQueueVerifier({
          */
         flush() {
             disarm();
+            if (held) return 0; // kept for release()
             if (stopped || !socketOpen()) {
                 // Nothing can be sent on a closed socket; the ids stay for the next try, which the interval re-arms.
                 if (total() && !stopped) arm();
@@ -244,8 +253,31 @@ export function createQueueVerifier({
             return true;
         },
 
+        /**
+         * Send nothing until {@link release}: the connection's offline queues are being drained. Ids confirmed
+         * meanwhile are kept.
+         */
+        hold() {
+            held = true;
+            disarm();
+        },
+
+        /**
+         * The drain is over: send what was held, now when the threshold is reached, else after the interval.
+         *
+         * @returns {number} how many frames went out now
+         */
+        release() {
+            if (!held) return 0;
+            held = false;
+            if (total() >= cfg().threshold) return verifier.flush();
+            if (total()) arm();
+            return 0;
+        },
+
         /** A new connection: whatever was pending belonged to the old one, and a "stop" was about it. */
         reset() {
+            held = false;
             disarm();
             for (const e of inFlight.values()) if (e.timer) timers.clearTimeout(e.timer);
             inFlight.clear();
@@ -266,6 +298,7 @@ export function createQueueVerifier({
             acked: counts.acked,
             missed: counts.missed,
             stopped,
+            held,
         }),
     };
 

@@ -48,7 +48,8 @@ export function replayAsPush(listener, raw) {
 }
 
 /**
- * Replay what the control queues held for this client.
+ * Replay what the control queues held for this client. Every queue's first page is asked for at once, before this
+ * function first yields, and the queues are drained side by side (`timeoutMs` is each drain's whole budget).
  *
  * @param {object} args
  * @param {object} args.listener - a listener whose socket is open and authenticated
@@ -61,41 +62,41 @@ export function replayAsPush(listener, raw) {
  *   reason: string, evicted: boolean, resetTo: string|null}>>}
  */
 export async function replayControlQueues({ listener, tap, queues, cursorOf, timeoutMs, maxPages }) {
-    const results = [];
-    for (const queue of queues) {
-        const cursor = cursorOf(queue.queueName);
-        if (!cursor) {
-            results.push({
+    // Every queue is asked at once, each from its own cursor: each drain sends its first request before it yields.
+    return Promise.all(
+        queues.map(async (queue) => {
+            const cursor = cursorOf(queue.queueName);
+            if (!cursor) {
+                return {
+                    queue,
+                    cursor: null,
+                    replayed: 0,
+                    pages: 0,
+                    complete: false,
+                    reason: "no-cursor",
+                    evicted: false,
+                    resetTo: null,
+                };
+            }
+            const r = await drainOfflineQueue({
+                listener,
+                tap,
                 queue,
-                cursor: null,
-                replayed: 0,
-                pages: 0,
-                complete: false,
-                reason: "no-cursor",
-                evicted: false,
-                resetTo: null,
+                lastId: cursor.id,
+                timeoutMs,
+                maxPages,
+                onPage: (frame) => replayAsPush(listener, frame.raw),
             });
-            continue;
-        }
-        const r = await drainOfflineQueue({
-            listener,
-            tap,
-            queue,
-            lastId: cursor.id,
-            timeoutMs,
-            maxPages,
-            onPage: (frame) => replayAsPush(listener, frame.raw),
-        });
-        results.push({
-            queue,
-            cursor,
-            replayed: r.rows.length,
-            pages: r.pages,
-            complete: r.complete,
-            reason: r.reason,
-            evicted: r.evicted,
-            resetTo: r.resetTo,
-        });
-    }
-    return results;
+            return {
+                queue,
+                cursor,
+                replayed: r.rows.length,
+                pages: r.pages,
+                complete: r.complete,
+                reason: r.reason,
+                evicted: r.evicted,
+                resetTo: r.resetTo,
+            };
+        }),
+    );
 }

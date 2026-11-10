@@ -83,8 +83,14 @@ export const DEFAULT_MESSAGE_QUEUES = Object.freeze([
     Object.freeze({ cmd: 511, subCmd: 1, queueName: "511_1", threadType: THREAD_GROUP }),
 ]);
 
-/** Answer wait per page. The web's came back in ~100 ms. */
-export const DEFAULT_PAGE_TIMEOUT_MS = 10_000;
+/**
+ * How long a whole drain may take, every page included: Zalo PC's `offline_timeout` (480 s, one timer for the whole
+ * offline phase, started by `signalGetOffline`). There is no per-page wait and no retry: a page that does not come
+ * is waited for until this runs out. PC then raises a socket error and reconnects, and the new handshake asks every
+ * queue again from its saved cursor; here the socket supervisor owns reconnects, so the drain ends as "timeout" and
+ * the next connect or wake asks again.
+ */
+export const DEFAULT_DRAIN_TIMEOUT_MS = 480_000;
 
 /** Pages per queue: none -- a queue is read until the server says no more (`more: 0`); the runaway stop is a cursor
  * (`lastActionId`) that does not move, which ends the drain as "stalled". A caller may still pass a bound. */
@@ -113,18 +119,28 @@ export function messageQueuesFrom(qCmds) {
     return out;
 }
 
+/** What {@link request} resolves to when the socket it was sent on closed first. */
+const CLOSED = Symbol("closed");
+
 /**
- * Ask once and wait for the answer to THIS request.
+ * Ask once and wait for the answer to THIS request, until the drain's deadline or until the socket closes.
  *
- * @returns {Promise<object|null>} the decoded answer body, or null on timeout
+ * @returns {Promise<object|null|symbol>} the decoded answer body, null when the deadline passed, or CLOSED
  */
-function request({ listener, tap, queue, data, timeoutMs, onFrame }) {
+function request({ listener, tap, queue, data, deadline, onFrame }) {
     return new Promise((resolve) => {
+        const ws = listener.ws;
         let off = () => {};
-        const timer = setTimeout(() => {
+        let timer = null;
+        const done = (value) => {
+            clearTimeout(timer);
             off();
-            resolve(null);
-        }, timeoutMs);
+            ws?.off?.("close", onClose);
+            resolve(value);
+        };
+        // PC's `beforeClose` ends the offline phase with the socket; an answer can never come on a closed one.
+        const onClose = () => done(CLOSED);
+        timer = setTimeout(() => done(null), Math.max(0, deadline - Date.now()));
         off = tap.on(queue.cmd, (frame, from) => {
             if (from && from !== listener) return;
             if (frame.subCmd !== queue.subCmd) return;
@@ -133,24 +149,21 @@ function request({ listener, tap, queue, data, timeoutMs, onFrame }) {
             // stream -- zalo_get_history, or `msg history`'s scan, which page it
             // through the listener outside this request -- gets answers without ours.
             // Taking one of those would store the wrong page and claim coverage
-            // from it; an answer we cannot match is a timeout instead.
+            // from it; an answer we cannot match is no answer.
             if (String(frame.data?.reqId ?? "") !== data.reqId) return;
-            clearTimeout(timer);
-            off();
             try {
                 onFrame?.(frame);
             } catch {
                 /* a failing page hook must not turn an answer into a timeout */
             }
-            resolve(frame.body || {});
+            done(frame.body || {});
         });
+        ws?.once?.("close", onClose);
         try {
             // The web's request carries its own `reqId` in `data`.
             listener.sendWs({ version: 1, cmd: queue.cmd, subCmd: queue.subCmd, data });
         } catch {
-            clearTimeout(timer);
-            off();
-            resolve(null);
+            done(null);
         }
     });
 }
@@ -158,17 +171,22 @@ function request({ listener, tap, queue, data, timeoutMs, onFrame }) {
 /**
  * Drain one offline queue from a cursor, as `doGetOffline` / `onGotOffline` do.
  *
+ * The first request goes out before this returns its promise, so a caller that starts several drains in one go has
+ * asked every queue before any answer can arrive -- as `signalGetOffline` asks all of them at once. `timeoutMs` is
+ * the whole drain's budget, not a page's: a silent page is waited for until it runs out, as PC's `offline_timeout`
+ * does, and a socket that closes ends the drain at once ("closed").
+ *
  * @param {object} args
  * @param {object} args.listener - a listener whose socket is open and authenticated
  * @param {ReturnType<import("../listener/socket-tap.js").createSocketTap>} args.tap - attached to that listener
  * @param {{cmd: number, subCmd: number, queueName: string}} args.queue
  * @param {string} args.lastId - the cursor: the last queue id this session holds
- * @param {number} [args.timeoutMs]
+ * @param {number} [args.timeoutMs] - the whole drain's deadline, from now ({@link DEFAULT_DRAIN_TIMEOUT_MS})
  * @param {number} [args.maxPages]
  * @param {(frame: object) => void} [args.onPage] - told each answer's frame (with its raw bytes) as it arrives,
  *   before the next page is asked for: how the control replay hands each page on
  * @returns {Promise<{rows: object[], ids: string[], pages: number, complete: boolean,
- *   reason: "drained"|"timeout"|"stalled"|"page-cap"|"reset"|"error",
+ *   reason: "drained"|"timeout"|"closed"|"stalled"|"page-cap"|"reset"|"error",
  *   evicted: boolean, resetTo: string|null, lastActionId: string|null}>}
  *   `rows` are the server's raw message rows, oldest page first; `ids` the queue items the pages named
  *   (`queueStatus[queue].ids`), for the acknowledgement that follows once the rows are stored. `complete`
@@ -181,10 +199,11 @@ export async function drainOfflineQueue({
     tap,
     queue,
     lastId,
-    timeoutMs = DEFAULT_PAGE_TIMEOUT_MS,
+    timeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
     maxPages = DEFAULT_MAX_PAGES,
     onPage,
 }) {
+    const deadline = Date.now() + timeoutMs;
     const kind = MESSAGE_QUEUES.get(Number(queue.cmd)) ?? CONTROL_QUEUES.get(Number(queue.cmd));
     const rowsKey = kind?.rows || "msgs";
     const out = {
@@ -202,7 +221,8 @@ export async function drainOfflineQueue({
 
     while (out.pages < maxPages) {
         const data = { first, reqId: nextReqId(), lastId: cursor, preIds: [] };
-        const body = await request({ listener, tap, queue, data, timeoutMs, onFrame: onPage });
+        const body = await request({ listener, tap, queue, data, deadline, onFrame: onPage });
+        if (body === CLOSED) return { ...out, reason: "closed" };
         if (!body) return { ...out, reason: "timeout" };
         out.pages++;
         if (Number(body.error_code) && Number(body.error_code) !== 0) return { ...out, reason: "error" };

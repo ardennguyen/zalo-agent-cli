@@ -18,6 +18,12 @@
  *   socket usable, it carries the queue list (`qCmds`), and the listener sets the
  *   cipher key from it synchronously just before. A daemon start is simply the
  *   first handshake.
+ * - **Every queue at once, one deadline.** As Zalo PC's `signalGetOffline` does (26.10.20), the first page of every
+ *   message queue is asked for in the same moment, in the handshake's `qCmds` order, and the control queues with them
+ *   rather than after; each is then drained side by side from its own cursor. There is no per-page wait: the whole
+ *   catch-up has one deadline (PC's `offline_timeout`, 480 s). A queue still unanswered then, or whose socket closed,
+ *   is not finished: its gaps stay pending and the next connect or wake asks again. PC closes and reconnects at that
+ *   point; here the socket supervisor owns every reconnect, so the run only says it did not finish.
  * - **One of our stages at a time.** It takes the daemon's stage lock
  *   (daemon-channel.js `createStageLock`), so it waits behind a running `sync`
  *   stage or `msg history` fetch and never shares the socket with one. Live
@@ -62,9 +68,13 @@
  *
  * - **Items are acknowledged after the write, never before** (Y10, D7). Zalo wants to be told which queue
  *   items a client holds (a `532`, see ../zalo/queues/queue-verify.js), and repairs what it was not told about. A live push
- *   is acknowledged once every message in it is committed; an offline page once its rows were written without a
- *   failure; a message the server re-sends as a `534` is stored first and acknowledged after. An item whose row
- *   did not commit is not acknowledged, so the server delivers it again.
+ *   is acknowledged once every message in it is committed; a message the server re-sends as a `534` is stored first
+ *   and acknowledged after. An item whose row did not commit is not acknowledged, so the server delivers it again.
+ * - **Offline pages are never acknowledged, and nothing is while they drain.** Zalo PC skips the offline batch
+ *   (`skip_offline_verify`: "skip verify msg offline") and starts its verifier only at `onDoneOfflineAll`
+ *   (`verify_on_done_offline`: "module is not started yet!"). So a connect holds the verifier until its catch-up
+ *   run is over, finished or not; live and `534` acks confirmed meanwhile go out then. Offline rows are still
+ *   stored and still move the cursor.
  * - **A re-sent message is announced once** (design 6.1, FX 11). Our listener announces a `534` as `message` too,
  *   after the tap stored it here and handed it on through `onRecovered`. `isRepeatedRepush` tells `listen` and
  *   `mcp start` that such a message is already stored, so neither prints, buffers nor posts it a second time. The
@@ -73,8 +83,7 @@
  *
  * Out of scope here, on purpose: the 533/570 resend path (the server asking us for ids it says we hold). It
  * repairs a push lost in transit on a live socket; the catch-up above is a cursor pull and does not depend on
- * it. Zalo Web does not verify offline batches either (`skip_offline_verify`, bundle @~13896600): acknowledging
- * them is this client's own choice, so the server can drop what it delivered.
+ * it. Zalo Web does not verify offline batches either (`skip_offline_verify`, bundle @~13896600).
  */
 import { GroupMessage, UserMessage, Undo } from "../zalo/listener/models.js";
 import {
@@ -91,8 +100,8 @@ import {
 import { isRemovalMessage, storeHistoryMessage, storeLiveDelete, storeLiveUndo } from "./live-store.js";
 import { IDLE_EVICTED_REASON, IDLE_GAP_REASON } from "./listener-lifecycle.js";
 import {
+    DEFAULT_DRAIN_TIMEOUT_MS,
     DEFAULT_MAX_PAGES,
-    DEFAULT_PAGE_TIMEOUT_MS,
     controlQueuesFrom,
     drainOfflineQueue,
     messageQueuesFrom,
@@ -184,7 +193,8 @@ const uncoveredReason = (reason, cause = null) =>
  *   the messages a run stored that the cache never had, oldest first, for the
  *   daemon's bot-facing output (the MCP buffer, `listen`'s events and webhook)
  * @param {() => number} [args.now]
- * @param {number} [args.timeoutMs] - wait per page
+ * @param {number} [args.timeoutMs] - the whole catch-up's deadline, every queue and page included (Zalo PC's
+ *   `offline_timeout`); there is no per-page wait
  * @param {number} [args.maxPages] - pages per queue
  * @param {boolean} [args.acks=true] - acknowledge stored queue items to Zalo (`532`); false sends nothing of the kind
  * @param {(undo: Undo) => {stored: boolean}} [args.storeUndo] - writes a recall found on a queue page; the live
@@ -210,7 +220,7 @@ export function createSelfHeal({
     log = (line) => console.error(line),
     onRecovered = () => {},
     now = () => Date.now(),
-    timeoutMs = DEFAULT_PAGE_TIMEOUT_MS,
+    timeoutMs = DEFAULT_DRAIN_TIMEOUT_MS,
     maxPages = DEFAULT_MAX_PAGES,
     acks = true,
     storeUndo = storeLiveUndo,
@@ -529,25 +539,26 @@ export function createSelfHeal({
             `asking Zalo's offline queue on this socket what it missed (${reason}; no phone involved): ${asked.join(", ")}`,
         );
 
+        // Every queue's first page is asked for now, before any answer can arrive (each drain sends its first request
+        // before it yields): the message queues in `qCmds` order, then the control queues, not after them. Each has
+        // the same budget from this moment, so the catch-up has one deadline.
+        const drains = plan.map((p) =>
+            p.cursor
+                ? drainOfflineQueue({ listener, tap, queue: p.queue, lastId: p.cursor.id, timeoutMs, maxPages })
+                : null,
+        );
+        const controlsDone = replayControls(listener);
+
         const results = [];
-        for (const p of plan) {
+        for (const [i, p] of plan.entries()) {
             if (!p.cursor) {
                 results.push({ queue: p.queue, cursor: null, complete: false, reason: "no-cursor", added: [] });
                 continue;
             }
-            const r = await drainOfflineQueue({
-                listener,
-                tap,
-                queue: p.queue,
-                lastId: p.cursor.id,
-                timeoutMs,
-                maxPages,
-            });
+            const r = await drains[i];
             const s = storeRows(p.queue, r.rows, ownId, p.cursor.id);
             if (s.newest) advance(p.queue.queueName, s.newest);
-            // The rows are written: the items they came in may be acknowledged. A page with a row that failed
-            // is not, so the server delivers its items again.
-            if (verifier && r.ids?.length && s.failed === 0) verifier.confirm(p.queue.queueName, r.ids);
+            // Not acknowledged: Zalo PC never verifies an offline batch (`skip_offline_verify`, see the file header).
             if (r.resetTo) writeCursor(p.queue.queueName, { id: r.resetTo, ts: now() });
             if (s.older) {
                 say(
@@ -654,7 +665,7 @@ export function createSelfHeal({
             say(`${summary}; not finished: ${failed.join(", ")}, so no window is marked covered${hint}`);
         }
 
-        const controls = await replayControls(listener);
+        const controls = await controlsDone;
 
         return {
             ran: true,
@@ -741,24 +752,15 @@ export function createSelfHeal({
     }
 
     /**
-     * After the message queues: the control queues, replayed from their saved cursors (./control-replay.js). Each page
-     * reaches the same handlers as a live control push, which move the cursors; a queue with no saved cursor is not
-     * asked.
+     * Beside the message queues: the control queues, replayed from their saved cursors (./control-replay.js), asked
+     * in the same moment and under the same deadline. Each page reaches the same handlers as a live control push,
+     * which move the cursors; a queue with no saved cursor is not asked. Never rejects.
      */
     async function replayControls(listener) {
         const queues = controlQueuesFrom(tap?.auth()?.ctrl_qCmds);
         let results;
         try {
-            // A control queue is slower to answer the first time it is asked after a long absence (one cold answer
-            // took longer than the message queues' wait, live), so it is given three times as long.
-            results = await replayControlQueues({
-                listener,
-                tap,
-                queues,
-                cursorOf: readCursor,
-                timeoutMs: timeoutMs * 3,
-                maxPages,
-            });
+            results = await replayControlQueues({ listener, tap, queues, cursorOf: readCursor, timeoutMs, maxPages });
         } catch (e) {
             say(`control replay failed: ${e?.message || e}`);
             return [];
@@ -819,6 +821,8 @@ export function createSelfHeal({
                 say(`failed: ${e?.message || e}`);
             } finally {
                 running = null;
+                // The catch-up is over, finished or not: what was confirmed meanwhile may be acknowledged now.
+                verifier?.release();
                 try {
                     onRun({ reason, ms: now() - startedAt, result: lastResult ?? null });
                 } catch {
@@ -917,8 +921,10 @@ export function createSelfHeal({
     if (tap) tap.on(CMD_PUSH_MISS, noteRepushIds);
     if (enabled && tap) {
         tap.on(CMD_AUTHEN, () => {
-            // A new connection: what was waiting to be acknowledged belonged to the old one.
+            // A new connection: what was waiting to be acknowledged belonged to the old one. Nothing is acknowledged
+            // until this connection's catch-up is over (Zalo PC's `verify_on_done_offline`).
             verifier?.reset();
+            verifier?.hold();
             awaiting.length = 0;
             trigger("connect");
         });

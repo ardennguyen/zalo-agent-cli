@@ -80,7 +80,8 @@ const result = {
 if (process.argv.includes("--tests")) {
     const r = spawnSync("npm", ["test"], { cwd: root, encoding: "utf8", shell: true });
     const out = `${r.stdout}\n${r.stderr}`;
-    const pick = (k) => Number(out.match(new RegExp(`^# ${k} (\\d+)`, "m"))?.[1] ?? NaN);
+    // TAP prints `# tests 5906`; the spec reporter (Node's default on newer versions) prints `ℹ tests 5906`.
+    const pick = (k) => Number(out.match(new RegExp(`^(?:#|ℹ) ${k} (\\d+)`, "m"))?.[1] ?? NaN);
     result.offlineTests = { tests: pick("tests"), pass: pick("pass"), fail: pick("fail"), skipped: pick("skipped") };
 }
 

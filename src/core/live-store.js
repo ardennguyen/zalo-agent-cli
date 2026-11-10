@@ -654,7 +654,23 @@ export function storeGroupEvent(event, opts = {}) {
             return { gone: false, back: false, ignored: true, threadId: id };
         }
         if (departure === "ours") {
-            const reason = exitReasonOf(event?.type);
+            const reason = exitReasonOf(event?.type, event?.data);
+            // How a disband or kick is told from a leave is read from `data.extraData` (./group-exit.js
+            // leaveTypeOf), a shape no capture has shown yet: the log keeps its key NAMES (never values) as evidence.
+            if (String(event?.type || "").toLowerCase() === "leave") {
+                const extra = event?.data?.extraData;
+                let keys = [];
+                try {
+                    const obj = typeof extra === "string" ? JSON.parse(extra) : extra;
+                    keys = obj && typeof obj === "object" ? Object.keys(obj).slice(0, 12) : [];
+                } catch {
+                    keys = ["(not JSON)"];
+                }
+                console.error(
+                    `[groups] our leave of ${id}: data keys [${Object.keys(event?.data ?? {}).join(", ")}], ` +
+                        `extraData keys [${keys.join(", ")}] -> ${reason}`,
+                );
+            }
             const when = at ?? Date.now();
             markGroupGone(id, { at: when, reason });
             return { gone: true, back: false, threadId: id, reason, at: when };

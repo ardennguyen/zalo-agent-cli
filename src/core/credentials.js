@@ -16,6 +16,8 @@ import { join, resolve } from "path";
 import { homedir } from "os";
 import { parseEnv } from "node:util";
 import { openFile, sealFile } from "./keystore/index.js";
+import { writeFileAtomic } from "../zalo/kernel/atomic-file.js";
+import { sessionExpiryOf } from "./session-expiry.js";
 
 const defaultConfigDir = join(homedir(), ".zalo-agent-cli");
 
@@ -244,7 +246,38 @@ export function saveCredentials(ownId, creds, { now = Date.now() } = {}) {
     const deviceSince = deviceSinceFor(readSavedDevice(ownId), creds, now);
     // Sealed, atomic and created at 0600: a login is never left half written, and never readable by others.
     sealFile(target, String(ownId), CRED_SPEC, JSON.stringify({ ...creds, deviceSince }, null, 2));
+    noteSessionEnd(ownId, creds?.cookie);
     return target;
+}
+
+/** The account folder's session-end marker (src/core/session-notice.js SESSION_NOTICE_FILE). */
+const SESSION_MARKER = "session-notice.json";
+
+/**
+ * Record when the login just saved ends, in the account folder's marker, so `fleet status` shows it before the
+ * account's daemon has ever run (the marker needs no key to read). A new end resets the thresholds already sent;
+ * the same end leaves the marker alone. Best effort: a marker that cannot be written never fails a login.
+ *
+ * @param {string} ownId
+ * @param {unknown} jar - the saved cookie jar
+ */
+function noteSessionEnd(ownId, jar) {
+    try {
+        const end = sessionExpiryOf(jar);
+        if (!end) return;
+        const file = join(getAccountDir(ownId), SESSION_MARKER);
+        let prev = null;
+        try {
+            prev = JSON.parse(readFileSync(file, "utf8"));
+        } catch {
+            prev = null;
+        }
+        if (prev?.expiresAt === end.expiresAt) return;
+        mkdirSync(getAccountDir(ownId), { recursive: true });
+        writeFileAtomic(file, JSON.stringify({ expiresAt: end.expiresAt, threshold: null }) + "\n", { mode: 0o600 });
+    } catch {
+        // The daemon's watch writes it on its first look.
+    }
 }
 
 /**

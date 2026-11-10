@@ -185,6 +185,26 @@ describe("each exit kind purges the group's history by default", () => {
         assertPurged(GID, file);
     });
 
+    for (const [extraData, reason] of [
+        [JSON.stringify({ leaveType: "disband" }), "disbanded"],
+        [{ leaveType: "kick" }, "removed"],
+        [JSON.stringify({ leaveType: "leave" }), "leave"],
+        ["not json", "leave"],
+    ]) {
+        it(`a leave naming us whose extraData says ${JSON.stringify(extraData)} -> ${reason}, purged`, async () => {
+            const file = seedGroup(GID);
+            const ev = groupEvent("leave", GID);
+            ev.data.extraData = extraData;
+            const g = storeGroupEvent(ev, { ownId: FAKE.ownId });
+            assert.equal(g.gone, true);
+            assert.equal(g.reason, reason);
+            const e = await applyGroupExit({ ownId: FAKE.ownId, threadId: GID, reason: g.reason, at: g.at });
+            assert.equal(e.reason, reason);
+            assertPurged(GID, file);
+            assert.equal(getGroupGone(GID).goneReason, reason);
+        });
+    }
+
     it("removing someone ELSE purges nothing", async () => {
         seedGroup(GID);
         const g = storeGroupEvent(groupEvent("remove_member", GID, { members: [OTHER] }), { ownId: FAKE.ownId });

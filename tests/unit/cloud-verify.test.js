@@ -278,8 +278,8 @@ describe("when a cmd 621 notice makes the daemon walk", () => {
         const { verifier, calls, lines } = build();
         assert.equal(await verifier.handle(frame({ correctCloudKey: 1, auditLocalCloudQueue: 1 })), "walked");
         assert.ok(!calls[0].full);
-        assert.ok(lines.some((l) => /correct the cloud key; left/.test(l)));
-        assert.ok(lines.some((l) => /audit of the local cloud queue; left/.test(l)));
+        assert.ok(lines.some((l) => /correct the cloud key; skipped/.test(l)));
+        assert.ok(lines.some((l) => /audit of the local cloud queue; skipped/.test(l)));
     });
 
     it("says when a forced walk stopped before the end, so nothing was swept", async () => {

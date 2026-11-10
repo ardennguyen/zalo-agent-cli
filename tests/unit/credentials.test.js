@@ -16,7 +16,9 @@ import {
     saveCredentials,
     loadCredentials,
     deleteCredentials,
+    getAccountDir,
 } from "../../src/core/credentials.js";
+import { sessionExpiryFromMarker } from "../../src/core/session-notice.js";
 
 /** A saved login without the device stamp saveCredentials adds (src/core/credentials.js `deviceSinceFor`). */
 const unstamped = (creds) => {
@@ -114,5 +116,44 @@ describe("credential file permissions", () => {
     it("never contains a plaintext password field regardless of platform", () => {
         const text = readFileSync(join(CREDENTIALS_DIR, `cred_${OWN_ID}.json`), "utf-8");
         assert.doesNotMatch(text, /"password"/i);
+    });
+});
+
+describe("saveCredentials records when the login ends (fleet status reads it before any daemon ran)", () => {
+    const ID = "1000000000000000002";
+    const marker = () => join(getAccountDir(ID), "session-notice.json");
+    const jar = (creation) => ({
+        cookies: [{ key: "zpw_sek", value: "x", domain: "chat.zalo.me", creation, maxAge: 90 * 86_400 }],
+    });
+    beforeEach(() => {
+        rmSync(getAccountDir(ID), { recursive: true, force: true });
+    });
+
+    it("writes the session end of a saved login into the account folder's marker", () => {
+        saveCredentials(ID, { ...CREDS, cookie: jar("2030-01-01T00:00:00.000Z") });
+        const got = sessionExpiryFromMarker(getAccountDir(ID));
+        assert.equal(got?.expiresAt, "2030-04-01T00:00:00.000Z");
+    });
+
+    it("a new login's end replaces the old one and resets the thresholds already sent", () => {
+        mkdirSync(getAccountDir(ID), { recursive: true });
+        writeFileSync(marker(), JSON.stringify({ expiresAt: "2029-01-01T00:00:00.000Z", threshold: 3 }));
+        saveCredentials(ID, { ...CREDS, cookie: jar("2030-01-01T00:00:00.000Z") });
+        assert.deepEqual(JSON.parse(readFileSync(marker(), "utf8")), {
+            expiresAt: "2030-04-01T00:00:00.000Z",
+            threshold: null,
+        });
+    });
+
+    it("the same end leaves the marker (and the thresholds sent) alone", () => {
+        mkdirSync(getAccountDir(ID), { recursive: true });
+        writeFileSync(marker(), JSON.stringify({ expiresAt: "2030-04-01T00:00:00.000Z", threshold: 7 }));
+        saveCredentials(ID, { ...CREDS, cookie: jar("2030-01-01T00:00:00.000Z") });
+        assert.equal(JSON.parse(readFileSync(marker(), "utf8")).threshold, 7);
+    });
+
+    it("a jar without a session cookie writes no marker", () => {
+        saveCredentials(ID, CREDS);
+        assert.equal(existsSync(marker()), false);
     });
 });

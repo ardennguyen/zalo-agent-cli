@@ -3,8 +3,19 @@
  * a browser navigation, the timeout, and the reply envelope. Every request goes to a recording fake fetch; every
  * id, key and cookie is fake.
  */
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+
+// The transport's timeout is an unref'd AbortSignal on purpose (a request must never keep a daemon alive). With a
+// fake server that never answers and nothing else running, Linux lets the event loop drain before the timer fires,
+// and node:test cancels the pending tests ("Promise resolution is still pending but the event loop has already
+// resolved"); Windows passed. A ref'd interval for the file's length stands in for the daemon's socket, as in
+// tests/unit/receipts.test.js.
+let keepAlive;
+before(() => {
+    keepAlive = setInterval(() => {}, 25);
+});
+after(() => clearInterval(keepAlive));
 import { ZaloApiError } from "../../src/zalo/errors.js";
 import { sealSession } from "../../src/zalo/kernel/cipher.js";
 import { cookieHeader, loadJar } from "../../src/zalo/kernel/cookies.js";

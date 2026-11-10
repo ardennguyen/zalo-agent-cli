@@ -18,6 +18,16 @@
 import "../helpers/sandbox.js";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+
+// The upload and send paths wait on unref'd timers on purpose (they must never keep a daemon alive). With fakes
+// that never answer and nothing else running, Linux drains the event loop first and node:test cancels the pending
+// tests ("Promise resolution is still pending but the event loop has already resolved"). A ref'd interval for the
+// file's length stands in for the daemon's socket, as in tests/unit/receipts.test.js.
+let keepAlive;
+before(() => {
+    keepAlive = setInterval(() => {}, 25);
+});
+after(() => clearInterval(keepAlive));
 import { createApi } from "../../src/zalo/api.js";
 import { ENDPOINTS, HEAD_TIMEOUT_MS, messageMethods } from "../../src/zalo/api/messages.js";
 import { FAKE, T0, expectGolden, openWire } from "../helpers/wire-diff/index.js";

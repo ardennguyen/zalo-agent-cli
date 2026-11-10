@@ -119,8 +119,8 @@ export function createCloudVerifier({
         for (const k of notice.left) {
             say(
                 k === "correctCloudKey"
-                    ? "the server asked to correct the cloud key; left (this client never holds that key)"
-                    : "the server asked for an audit of the local cloud queue; left (a report this client does not send)",
+                    ? "the server asked to correct the cloud key; skipped (this client never holds that key)"
+                    : "the server asked for an audit of the local cloud queue; skipped (a report this client does not send)",
             );
         }
         const forced = notice.forced;
@@ -175,9 +175,9 @@ export function createCloudVerifier({
     // Every notice leaves one line saying what was done with it; `walked` and `failed` already said so themselves.
     const WHY = {
         current: "the index is already at the server's newest id: nothing to do",
-        throttled: "walked less than 30 minutes ago: left",
-        "stage-running": "another stage is running: left",
-        busy: "a walk is already running: left",
+        throttled: "skipped: walked less than 30 minutes ago",
+        "stage-running": "skipped: another stage is running; the next notice walks it",
+        busy: "skipped: a walk is already running",
     };
     const off = tap.on(CMD_MYCLOUD, (frame) => {
         void handle(frame).then((outcome) => {

@@ -110,15 +110,42 @@ export function onLeaveChangeNote(value) {
 }
 
 /**
+ * The `leaveType` a `leave` control carries in `data.extraData` (an object, or the JSON text of one): "leave",
+ * "kick" or "disband". Zalo sends a disband, and a kick, as act `leave` naming us in `updateMembers`; Zalo PC reads
+ * `data.extraData` for which one it was (its `onDeleteConversation` turns "kick"/"disband" into the
+ * KICK_GROUP/DISBAND_GROUP conversation), though the 26.10.20 build stubs that reader out. Unreadable is null.
+ *
+ * @param {object|null|undefined} data - the group event's `data`
+ * @returns {string|null}
+ */
+export function leaveTypeOf(data) {
+    let extra = data?.extraData;
+    if (typeof extra === "string") {
+        try {
+            extra = JSON.parse(extra);
+        } catch {
+            return null;
+        }
+    }
+    const t = extra && typeof extra === "object" ? extra.leaveType : null;
+    return typeof t === "string" && t ? t.toLowerCase() : null;
+}
+
+/**
  * The exit reason of a group event that is our own departure.
  *
  * @param {string} type - leave, remove_member, block_member
- * @returns {"leave"|"removed"|"blocked"|null}
+ * @param {object} [data] - the event's `data`: a `leave` whose `extraData` says "disband" or "kick" is that
+ * @returns {"leave"|"removed"|"blocked"|"disbanded"|null}
  */
-export function exitReasonOf(type) {
+export function exitReasonOf(type, data) {
     switch (String(type || "").toLowerCase()) {
-        case "leave":
+        case "leave": {
+            const how = leaveTypeOf(data);
+            if (how === "disband") return "disbanded";
+            if (how === "kick") return "removed";
             return "leave";
+        }
         case "remove_member":
             return "removed";
         case "block_member":

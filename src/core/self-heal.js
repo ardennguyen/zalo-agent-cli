@@ -18,12 +18,14 @@
  *   socket usable, it carries the queue list (`qCmds`), and the listener sets the
  *   cipher key from it synchronously just before. A daemon start is simply the
  *   first handshake.
- * - **Every queue at once, one deadline.** As Zalo PC's `signalGetOffline` does (26.10.20), the first page of every
- *   message queue is asked for in the same moment, in the handshake's `qCmds` order, and the control queues with them
- *   rather than after; each is then drained side by side from its own cursor. There is no per-page wait: the whole
- *   catch-up has one deadline (PC's `offline_timeout`, 480 s). A queue still unanswered then, or whose socket closed,
- *   is not finished: its gaps stay pending and the next connect or wake asks again. PC closes and reconnects at that
- *   point; here the socket supervisor owns every reconnect, so the run only says it did not finish.
+ * - **One queue at a time, one deadline.** The message queues in the handshake's `qCmds` order, then the control
+ *   queues, each drained from its own cursor once the one before it is done. Zalo PC's `signalGetOffline` (26.10.20)
+ *   asks every queue in the same moment, and this did too (5c99017): live, Zalo then answered only the first queue
+ *   and never 511_1 or 603_1, at start or on a wake, reproduced both ways on the same cursors (2026-11-12). The whole
+ *   catch-up has one deadline (PC's `offline_timeout`, 480 s), and one page is waited for at most 30 s inside it. A
+ *   queue unanswered then, or whose socket closed, is not finished: its gaps stay pending and the next connect or
+ *   wake asks again. PC closes and reconnects at its deadline; here the socket supervisor owns every reconnect, so the
+ *   run only says it did not finish.
  * - **One of our stages at a time.** It takes the daemon's stage lock
  *   (daemon-channel.js `createStageLock`), so it waits behind a running `sync`
  *   stage or `msg history` fetch and never shares the socket with one. Live
@@ -539,31 +541,28 @@ export function createSelfHeal({
             `asking Zalo's offline queue on this socket what it missed (${reason}; no phone involved): ${asked.join(", ")}`,
         );
 
-        // Every queue's first page is asked for now, before any answer can arrive (each drain sends its first request
-        // before it yields): the message queues in `qCmds` order, then the control queues, not after them. Each has
-        // the same budget from this moment, so the catch-up has one deadline.
-        const drains = plan.map((p) =>
-            p.cursor
-                ? drainOfflineQueue({
-                      listener,
-                      tap,
-                      queue: p.queue,
-                      lastId: p.cursor.id,
-                      timeoutMs,
-                      maxPages,
-                      log: say,
-                  })
-                : null,
-        );
-        const controlsDone = replayControls(listener);
+        // One queue at a time, the message queues in `qCmds` order and then the control queues, all under one deadline
+        // from this moment. Not all at once, as Zalo PC's `signalGetOffline` does: asked in the same moment, Zalo
+        // answered only the first (510_1) for this client and never 511_1 or 603_1, so group messages and group events
+        // missed while parked never came back (2026-11-12, reproduced both ways on the same cursors).
+        const deadline = now() + timeoutMs;
+        const left = () => Math.max(0, deadline - now());
 
         const results = [];
-        for (const [i, p] of plan.entries()) {
+        for (const p of plan) {
             if (!p.cursor) {
                 results.push({ queue: p.queue, cursor: null, complete: false, reason: "no-cursor", added: [] });
                 continue;
             }
-            const r = await drains[i];
+            const r = await drainOfflineQueue({
+                listener,
+                tap,
+                queue: p.queue,
+                lastId: p.cursor.id,
+                timeoutMs: left(),
+                maxPages,
+                log: say,
+            });
             const s = storeRows(p.queue, r.rows, ownId, p.cursor.id);
             if (s.newest) advance(p.queue.queueName, s.newest);
             // Not acknowledged: Zalo PC never verifies an offline batch (`skip_offline_verify`, see the file header).
@@ -579,6 +578,7 @@ export function createSelfHeal({
             const reason = r.complete && s.older ? "out-of-order" : r.reason;
             results.push({ queue: p.queue, cursor: p.cursor, ...r, ...s, complete, reason });
         }
+        const controlsDone = replayControls(listener, left());
 
         const added = results.flatMap((r) => r.added || []);
         if (added.length) {
@@ -760,11 +760,14 @@ export function createSelfHeal({
     }
 
     /**
-     * Beside the message queues: the control queues, replayed from their saved cursors (./control-replay.js), asked
-     * in the same moment and under the same deadline. Each page reaches the same handlers as a live control push,
-     * which move the cursors; a queue with no saved cursor is not asked. Never rejects.
+     * After the message queues: the control queues, replayed from their saved cursors (./control-replay.js), one at a
+     * time, in what is left of the same deadline. Each page reaches the same handlers as a live control push, which
+     * move the cursors; a queue with no saved cursor is not asked. Never rejects.
+     *
+     * @param {object} listener
+     * @param {number} budgetMs - what is left of the catch-up's deadline
      */
-    async function replayControls(listener) {
+    async function replayControls(listener, budgetMs) {
         const queues = controlQueuesFrom(tap?.auth()?.ctrl_qCmds);
         let results;
         try {
@@ -773,7 +776,7 @@ export function createSelfHeal({
                 tap,
                 queues,
                 cursorOf: readCursor,
-                timeoutMs,
+                timeoutMs: budgetMs,
                 maxPages,
                 log: say,
             });

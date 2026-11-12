@@ -235,7 +235,7 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         }
     });
 
-    it("(a) it asks every queue at once, controls included, before any answer arrives (Zalo PC's signalGetOffline)", async () => {
+    it("(a) it asks one queue at a time, controls last: asked at once, Zalo answered only the first", async () => {
         const g1 = nextId();
         const order = [];
         const answers = scripted();
@@ -256,9 +256,13 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
         await sleep(0);
         await d.heal.settled();
 
-        // Red on a sequential drain: 511 would only be asked once 510 had answered, and 603 once both had.
-        assert.deepEqual(order.slice(0, 3), ["ask 510", "ask 511", "ask 603"], "every first page asked first");
-        assert.deepEqual(order.slice(3).sort(), ["answer 510", "answer 511", "answer 603"]);
+        // Red on asking at once (5c99017, Zalo PC's signalGetOffline): every first page would go out before any
+        // answer, and live Zalo then left 511_1 and 603_1 unanswered (2026-11-12).
+        assert.deepEqual(
+            order,
+            ["ask 510", "answer 510", "ask 511", "answer 511", "ask 603", "answer 603"],
+            "each queue is asked only once the one before it has answered",
+        );
         const result = await d.heal.run("check");
         assert.deepEqual(
             result.queues.map((q) => [q.queueName, q.complete]),
@@ -776,7 +780,7 @@ describe("Y10: queue items are acknowledged (532) only after their rows are stor
         live(d.listener, row(g1));
         d.listener.auth({ qCmds: QCMDS });
         await sleep(0);
-        assert.equal(held.length, 2, "seed: both queues are being drained");
+        assert.equal(held.length, 1, "seed: the first queue is being drained");
 
         const id = nextId();
         const r = row(id);
@@ -787,7 +791,13 @@ describe("Y10: queue items are acknowledged (532) only after their rows are stor
         assert.equal(acksOf(d.listener).length, 0);
         assert.equal(d.heal.queueAcks().held, true);
 
-        for (const p of held) d.listener.push(p.cmd, p.subCmd, answers(p));
+        // Answer each queue as it is asked: the next one goes out only after the one before has its answer.
+        for (let i = 0; i < held.length; i++) {
+            if (i > 0) assert.equal(d.heal.queueAcks().held, true, "still held between queues");
+            d.listener.push(held[i].cmd, held[i].subCmd, answers(held[i]));
+            await sleep(5);
+        }
+        assert.equal(held.length, 2, "both queues were asked");
         await d.heal.settled();
         assert.equal(d.heal.queueAcks().held, false);
         assert.equal(d.heal.flushAcks(), 1, "the held live ack goes out after the catch-up");

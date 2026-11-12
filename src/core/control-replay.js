@@ -48,8 +48,9 @@ export function replayAsPush(listener, raw) {
 }
 
 /**
- * Replay what the control queues held for this client. Every queue's first page is asked for at once, before this
- * function first yields, and the queues are drained side by side (`timeoutMs` is each drain's whole budget).
+ * Replay what the control queues held for this client, one queue at a time, all within one deadline (`timeoutMs`
+ * from the call). Not side by side: asked in the same moment as other queues, Zalo left all but the first unanswered
+ * (./self-heal.js).
  *
  * @param {object} args
  * @param {object} args.listener - a listener whose socket is open and authenticated
@@ -63,42 +64,43 @@ export function replayAsPush(listener, raw) {
  *   reason: string, evicted: boolean, resetTo: string|null}>>}
  */
 export async function replayControlQueues({ listener, tap, queues, cursorOf, timeoutMs, maxPages, log }) {
-    // Every queue is asked at once, each from its own cursor: each drain sends its first request before it yields.
-    return Promise.all(
-        queues.map(async (queue) => {
-            const cursor = cursorOf(queue.queueName);
-            if (!cursor) {
-                return {
-                    queue,
-                    cursor: null,
-                    replayed: 0,
-                    pages: 0,
-                    complete: false,
-                    reason: "no-cursor",
-                    evicted: false,
-                    resetTo: null,
-                };
-            }
-            const r = await drainOfflineQueue({
-                listener,
-                tap,
+    const deadline = timeoutMs === undefined ? null : Date.now() + timeoutMs;
+    const out = [];
+    for (const queue of queues) {
+        const cursor = cursorOf(queue.queueName);
+        if (!cursor) {
+            out.push({
                 queue,
-                lastId: cursor.id,
-                timeoutMs,
-                maxPages,
-                log,
-                onPage: (frame) => replayAsPush(listener, frame.raw),
+                cursor: null,
+                replayed: 0,
+                pages: 0,
+                complete: false,
+                reason: "no-cursor",
+                evicted: false,
+                resetTo: null,
             });
-            return {
-                queue,
-                cursor,
-                replayed: r.rows.length,
-                pages: r.pages,
-                complete: r.complete,
-                reason: r.reason,
-                evicted: r.evicted,
-                resetTo: r.resetTo,
-            };
-        }),
-    );
+            continue;
+        }
+        const r = await drainOfflineQueue({
+            listener,
+            tap,
+            queue,
+            lastId: cursor.id,
+            timeoutMs: deadline === null ? undefined : Math.max(0, deadline - Date.now()),
+            maxPages,
+            log,
+            onPage: (frame) => replayAsPush(listener, frame.raw),
+        });
+        out.push({
+            queue,
+            cursor,
+            replayed: r.rows.length,
+            pages: r.pages,
+            complete: r.complete,
+            reason: r.reason,
+            evicted: r.evicted,
+            resetTo: r.resetTo,
+        });
+    }
+    return out;
 }

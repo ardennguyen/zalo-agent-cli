@@ -191,10 +191,10 @@ function request({ listener, tap, queue, data, deadline, onFrame, onStray }) {
 /**
  * Drain one offline queue from a cursor, as `doGetOffline` / `onGotOffline` do.
  *
- * The first request goes out before this returns its promise, so a caller that starts several drains in one go has
- * asked every queue before any answer can arrive -- as `signalGetOffline` asks all of them at once. `timeoutMs` is
- * the whole drain's budget (PC's `offline_timeout`); a page silent for `pageTimeoutMs` ends the drain as "timeout"
- * on this socket, and a socket that closes ends it at once ("closed").
+ * The first request goes out before this returns its promise. Callers drain one queue at a time (../../core/self-heal.js:
+ * asked in the same moment, Zalo answered only the first). `timeoutMs` is the whole drain's budget (PC's
+ * `offline_timeout`); a page silent for `pageTimeoutMs` ends the drain as "timeout" on this socket, and a socket that
+ * closes ends it at once ("closed").
  *
  * @param {object} args
  * @param {object} args.listener - a listener whose socket is open and authenticated

@@ -1318,7 +1318,8 @@ back, so the server delivers the item again. A new connection forgets what was w
 not verify offline batches (`skip_offline_verify`), and since 2026-11-10 neither does this client (next section). **Seen live (2026-10-25):** an ack is `{queueName, ids: [{actionId}], nretry, reqId}` and Zalo
 answers `{error: 0, reqId}`. **Still not seen:** the server's own settings for our identity, and the `534` payload.
 
-**The catch-up drains every queue at once, under one deadline, and acknowledges nothing while it runs (2026-11-10).**
+**The catch-up drains every queue at once, under one deadline, and acknowledges nothing while it runs (2026-11-10;
+superseded on 2026-11-12: queues are drained one at a time again, see below).**
 Seen live four times out of four at a daemon start after a long offline window: `510_1` drained (267 rows), then
 `511_1` got no page within the 10 s per-page wait, the server answered our acks with "stop verifying", and `603_1`
 timed out too; a wake minutes later drained everything. We drained the queues one after another, sent a `532` for
@@ -1347,8 +1348,8 @@ next verify batch; we send live ids only.
 `603_1` and got no accepted answer on any of them for the full 480 s: nothing recovered, the gaps left pending, the
 catch-up (and the stage lock) held for 8 minutes. On the wire every queue answers in ~100 ms, an empty one included
 (`more: 0`, empty arrays), so silence never means "empty"; and PC never waits its deadline out on a live socket, it
-reconnects, which is exactly what answered here before (a wake minutes later: every queue in under 300 ms). The cause
-of the silence at start is not proven yet. Changes: one page is waited for at most `DEFAULT_PAGE_TIMEOUT_MS` (30 s; a
+reconnects, which is exactly what answered here before (a wake minutes later: every queue in under 300 ms). Changes:
+one page is waited for at most `DEFAULT_PAGE_TIMEOUT_MS` (30 s; a
 cold control answer was once seen past 10 s) inside the 480 s budget, then the queue ends `timeout` on that socket;
 an answer with no `reqId` is taken (PC routes by cmd alone; every other reader of the stream, `buildPull`, sends and
 gets back its own reqId), one naming another request is logged and skipped; and the socket tap logs a frame on a
@@ -1356,6 +1357,18 @@ subscribed cmd it cannot read (`unreadableReason`: not JSON, or an `encrypt` bod
 was set) instead of dropping it silently. The next start's log says which of "never sent", "sent but not ours" or
 "sent but undecodable" it was. Acks confirmed during a timed-out run still go out at `release()`: they are ids this
 client stored, so sending them on the same socket loses nothing (PC drops them with the socket and gets them redelivered).
+
+**Asked at once, Zalo answers only the first queue: drain one at a time (2026-11-12).** With those logs in, every start
+and every wake on the at-once build showed `510_1` answered and `511_1` and `603_1` silent, no stray answer and no
+undecodable frame: Zalo sent nothing for them. So group messages and group events (a disband included) that happened
+while an on-demand daemon was parked never came back; before 5c99017 (one queue after another) every wake answered all
+three in 0.1-0.3 s. Reproduced on the test daemon, restarting on the same cursors: asked one after another, `510_1` and
+`511_1` drained in 21-30 ms each and `603_1` answered (twice); asked at once, `511_1` and `603_1` stayed silent until the
+30 s page wait. Why Zalo PC's at-once ask works for PC and not here is not known (Zalo Web's capture shows eight queues
+answered when asked together); do not go back to it without a live run that shows every queue answering. The catch-up
+now drains the message queues in `qCmds` order and then the control queues, one at a time, sharing the one 480 s
+deadline (`src/core/self-heal.js`, `src/core/control-replay.js`); the rest of 5c99017 stays (no `532` for offline rows,
+the verifier held until the run ends).
 
 **A disband by another member is inferred, not read (2026-11-12).** Seen live on the test account: the owner's disband
 reached the member as one `leave` control naming it in `updateMembers`, with `data.extraData` holding only `prjName`, no

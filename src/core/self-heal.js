@@ -544,7 +544,15 @@ export function createSelfHeal({
         // the same budget from this moment, so the catch-up has one deadline.
         const drains = plan.map((p) =>
             p.cursor
-                ? drainOfflineQueue({ listener, tap, queue: p.queue, lastId: p.cursor.id, timeoutMs, maxPages })
+                ? drainOfflineQueue({
+                      listener,
+                      tap,
+                      queue: p.queue,
+                      lastId: p.cursor.id,
+                      timeoutMs,
+                      maxPages,
+                      log: say,
+                  })
                 : null,
         );
         const controlsDone = replayControls(listener);
@@ -760,7 +768,15 @@ export function createSelfHeal({
         const queues = controlQueuesFrom(tap?.auth()?.ctrl_qCmds);
         let results;
         try {
-            results = await replayControlQueues({ listener, tap, queues, cursorOf: readCursor, timeoutMs, maxPages });
+            results = await replayControlQueues({
+                listener,
+                tap,
+                queues,
+                cursorOf: readCursor,
+                timeoutMs,
+                maxPages,
+                log: say,
+            });
         } catch (e) {
             say(`control replay failed: ${e?.message || e}`);
             return [];

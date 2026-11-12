@@ -1,14 +1,19 @@
 /**
  * Draining one offline queue (src/zalo/queues/offline-queue.js): one deadline for the whole drain, as Zalo PC's
- * `offline_timeout` (480 s, no per-page wait, no retry), and a socket that closes ends it at once. Driven through the
- * real socket tap and frame decoder with ./support/fake-socket.js; every id is made up.
+ * `offline_timeout` (480 s), a page silent past the page wait ends it (silence is not an empty queue), a socket
+ * that closes ends it at once, and an answer is matched by reqId unless it carries none. Driven through the real
+ * socket tap and frame decoder with ./support/fake-socket.js; every id is made up.
  */
 import { assertSandboxed } from "../helpers/sandbox.js";
 import { describe, it, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { CONFIG_DIR } from "../../src/core/credentials.js";
 import { createSocketTap } from "../../src/zalo/listener/socket-tap.js";
-import { DEFAULT_DRAIN_TIMEOUT_MS, drainOfflineQueue } from "../../src/zalo/queues/offline-queue.js";
+import {
+    DEFAULT_DRAIN_TIMEOUT_MS,
+    DEFAULT_PAGE_TIMEOUT_MS,
+    drainOfflineQueue,
+} from "../../src/zalo/queues/offline-queue.js";
 import { fakeListener } from "./support/fake-socket.js";
 
 const QUEUE = { cmd: 511, subCmd: 1, queueName: "511_1" };
@@ -45,21 +50,36 @@ describe("offline queue drain — sandbox", () => {
 describe("one deadline for the whole drain", () => {
     afterEach(() => mock.timers.reset());
 
-    it("is Zalo PC's offline_timeout: a page silent for longer than the old 10 s wait is still waited for", async () => {
+    it("is Zalo PC's offline_timeout, but a silent queue is not waited out for it", async () => {
         assert.equal(DEFAULT_DRAIN_TIMEOUT_MS, 480_000);
+        assert.ok(DEFAULT_PAGE_TIMEOUT_MS < DEFAULT_DRAIN_TIMEOUT_MS);
         mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
         const { listener, tap } = rig(() => null);
         let out = null;
         drainOfflineQueue({ listener, tap, queue: QUEUE, lastId: "100" }).then((r) => (out = r));
-        mock.timers.tick(60_000);
+        mock.timers.tick(DEFAULT_PAGE_TIMEOUT_MS - 1);
         await flush();
-        // Red on a per-page wait: the drain would have given up after 10 s.
-        assert.equal(out, null, "the drain gave up on one silent page");
-        mock.timers.tick(DEFAULT_DRAIN_TIMEOUT_MS - 60_000);
+        assert.equal(out, null, "a page is waited for up to the page wait");
+        mock.timers.tick(1);
         await flush();
-        assert.equal(out?.reason, "timeout");
+        // Red on the 480 s-only wait: the drain would still be waiting, holding the catch-up (seen live, 2026-11-12).
+        assert.equal(out?.reason, "timeout", "a queue silent past the page wait ends, long before 480 s");
         assert.equal(out.complete, false);
-        assert.equal(listener.sent.length, 1, "no retry: the one request, then the deadline");
+        assert.equal(listener.sent.length, 1, "no retry on this socket: the next connect or wake asks again");
+    });
+
+    it("a page that comes inside the page wait is read, however slow", async () => {
+        const respond = (payload, l) => {
+            setTimeout(() => l.push(511, 1, page(payload.data.reqId, 300, 0)), 80);
+            return null;
+        };
+        const { listener, tap } = rig(respond);
+        const r = await drainOfflineQueue({ listener, tap, queue: QUEUE, lastId: "100", pageTimeoutMs: 1_000 });
+        assert.equal(r.reason, "drained");
+        assert.deepEqual(
+            r.rows.map((x) => x.msgId),
+            ["300"],
+        );
     });
 
     it("is shared by every page: pages that each come within the old per-page wait still end at the deadline", async () => {
@@ -99,5 +119,48 @@ describe("one deadline for the whole drain", () => {
         const r = await drainOfflineQueue({ listener, tap, queue: QUEUE, lastId: "100", timeoutMs: 1_000 });
         assert.equal(r.reason, "drained");
         assert.equal(listener.ws.listenerCount("close"), 0);
+    });
+});
+
+describe("which answer is ours", () => {
+    it("an answer without a reqId is taken, as PC routes by cmd alone", async () => {
+        const { listener, tap } = rig(() => {
+            const p = page("", 300, 0);
+            delete p.data.reqId;
+            return p;
+        });
+        const r = await drainOfflineQueue({ listener, tap, queue: QUEUE, lastId: "100", pageTimeoutMs: 1_000 });
+        // Red on an exact reqId match: the answer would be dropped and the queue would time out.
+        assert.equal(r.reason, "drained");
+        assert.deepEqual(
+            r.rows.map((x) => x.msgId),
+            ["300"],
+        );
+    });
+
+    it("an answer naming another request is skipped and logged, and ours is still read", async () => {
+        const lines = [];
+        const respond = (payload, l) => {
+            l.push(511, 1, page("another-request", 999, 0));
+            setTimeout(() => l.push(511, 1, page(payload.data.reqId, 300, 0)), 10);
+            return null;
+        };
+        const { listener, tap } = rig(respond);
+        const r = await drainOfflineQueue({
+            listener,
+            tap,
+            queue: QUEUE,
+            lastId: "100",
+            pageTimeoutMs: 1_000,
+            log: (line) => lines.push(line),
+        });
+        assert.equal(r.reason, "drained");
+        assert.deepEqual(
+            r.rows.map((x) => x.msgId),
+            ["300"],
+            "another reader's page is not stored as ours",
+        );
+        assert.equal(lines.length, 1);
+        assert.match(lines[0], /511_1: skipped an answer for another request \(reqId another-request, ours /);
     });
 });

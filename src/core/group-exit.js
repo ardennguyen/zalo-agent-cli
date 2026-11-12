@@ -110,10 +110,11 @@ export function onLeaveChangeNote(value) {
 }
 
 /**
- * The `leaveType` a `leave` control carries in `data.extraData` (an object, or the JSON text of one): "leave",
- * "kick" or "disband". Zalo sends a disband, and a kick, as act `leave` naming us in `updateMembers`; Zalo PC reads
- * `data.extraData` for which one it was (its `onDeleteConversation` turns "kick"/"disband" into the
- * KICK_GROUP/DISBAND_GROUP conversation), though the 26.10.20 build stubs that reader out. Unreadable is null.
+ * The `leaveType` a `leave` control may carry in `data.extraData` (an object, or the JSON text of one): "leave",
+ * "kick" or "disband". Zalo PC has the KICK_GROUP/DISBAND_GROUP screens for it, but its reader is a stub returning
+ * `{}` in both 26.10.20 and 26.11.10, and a live disband by another owner carried `extraData` with no `leaveType`
+ * at all (only `prjName`). Kept for a server that sends it; {@link exitReasonOf} does not depend on it. Unreadable
+ * is null.
  *
  * @param {object|null|undefined} data - the group event's `data`
  * @returns {string|null}
@@ -134,16 +135,28 @@ export function leaveTypeOf(data) {
 /**
  * The exit reason of a group event that is our own departure.
  *
+ * A disband reaches every member as act `leave` naming them in `updateMembers`, done by the owner (`sourceId`);
+ * Zalo PC shows it as a plain leave (its leaveType reader is a stub), so the reason is inferred here: nobody but us
+ * can make us `leave` (another member removing us is `remove_member`), so a `leave` naming us that someone else did
+ * is a disband. A `leaveType` in `extraData`, if Zalo sends one, wins. Without our own id, or without a `sourceId`,
+ * it stays `leave`, never guessed.
+ *
  * @param {string} type - leave, remove_member, block_member
- * @param {object} [data] - the event's `data`: a `leave` whose `extraData` says "disband" or "kick" is that
+ * @param {object} [data] - the event's `data` (`sourceId`, `extraData`)
+ * @param {string} [ownId] - the account's own uid
  * @returns {"leave"|"removed"|"blocked"|"disbanded"|null}
  */
-export function exitReasonOf(type, data) {
+export function exitReasonOf(type, data, ownId) {
     switch (String(type || "").toLowerCase()) {
         case "leave": {
             const how = leaveTypeOf(data);
             if (how === "disband") return "disbanded";
             if (how === "kick") return "removed";
+            if (how === "leave") return "leave";
+            const source = data?.sourceId;
+            if (ownId && source !== undefined && source !== null && source !== "" && String(source) !== String(ownId)) {
+                return "disbanded";
+            }
             return "leave";
         }
         case "remove_member":

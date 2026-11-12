@@ -116,7 +116,7 @@ Each of these reports success, or names the wrong cause. They were all learned t
 | Command groups | **30** containers — 21 top-level + 7 OA subgroups + `mcp webhook` + `account security` | the live commander tree | walk it. `src/index.js` makes **20** `register*` calls, which is neither number: `oa` registers 7 nested subgroups of its own, and `login`/`sync` register leaves, not groups |
 | MCP tools | **36** | `src/mcp/mcp-tools.js` | `grep -c 'server.registerTool' src/mcp/mcp-tools.js` |
 | OA commands | **32** | `src/commands/oa.js` | `OA_SUBGROUPS` in the surface test |
-| Offline tests | **5906** as of 2026-11-10 (5901 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
+| Offline tests | **5915** as of 2026-11-12 (5910 pass, 5 skipped, 0 todo, 0 fail) | `npm test` | the run's own summary line |
 
 The test count is a snapshot, not a contract — re-measure rather than trusting it. It has been
 reported wrong before: a count of 1153 came from globbing only `tests/`, omitting the suites that
@@ -1343,6 +1343,30 @@ reconnect (AGENTS.md section 13), so a run past its deadline is reported "not fi
 the next connect or wake asks again. Not matched: PC's verifier keeps the newest offline id as the first item of its
 next verify batch; we send live ids only.
 
+**A silent queue is not waited out (2026-11-12).** The first daemon start on that build asked `510_1`, `511_1` and
+`603_1` and got no accepted answer on any of them for the full 480 s: nothing recovered, the gaps left pending, the
+catch-up (and the stage lock) held for 8 minutes. On the wire every queue answers in ~100 ms, an empty one included
+(`more: 0`, empty arrays), so silence never means "empty"; and PC never waits its deadline out on a live socket, it
+reconnects, which is exactly what answered here before (a wake minutes later: every queue in under 300 ms). The cause
+of the silence at start is not proven yet. Changes: one page is waited for at most `DEFAULT_PAGE_TIMEOUT_MS` (30 s; a
+cold control answer was once seen past 10 s) inside the 480 s budget, then the queue ends `timeout` on that socket;
+an answer with no `reqId` is taken (PC routes by cmd alone; every other reader of the stream, `buildPull`, sends and
+gets back its own reqId), one naming another request is logged and skipped; and the socket tap logs a frame on a
+subscribed cmd it cannot read (`unreadableReason`: not JSON, or an `encrypt` body that did not decode and whether a key
+was set) instead of dropping it silently. The next start's log says which of "never sent", "sent but not ours" or
+"sent but undecodable" it was. Acks confirmed during a timed-out run still go out at `release()`: they are ids this
+client stored, so sending them on the same socket loses nothing (PC drops them with the socket and gets them redelivered).
+
+**A disband by another member is inferred, not read (2026-11-12).** Seen live on the test account: the owner's disband
+reached the member as one `leave` control naming it in `updateMembers`, with `data.extraData` holding only `prjName`, no
+`leaveType`. Zalo PC 26.10.20 and 26.11.10 both have the KICK_GROUP/DISBAND_GROUP screens and strings, but the function
+that reads `leaveType` (module `PVnA`) is a stub returning `{}`, so PC shows a disband as a plain leave; no event named
+disband or disperse exists (disperse is only the outgoing `/api/group/disperse`). `exitReasonOf` therefore infers it: a
+`leave` naming us that `sourceId` says someone else did is `disbanded` (another member removing us is `remove_member`);
+our own `sourceId`, a missing one, or an unknown own id stays `leave`; an explicit `leaveType` still wins. The
+`[groups] our leave of …` line records who did it relative to us and `creatorId` (never ids), so a live disband and a
+live self-leave confirm the rule.
+
 **One request counter, and `reqId` on every pull (X5, Y7).** `src/zalo/req-id.js` is the process-wide `req_<n>` counter
 the sync channel, the offline-queue drain and the pulls share. `installOfficialPulls` makes the listener's old-message
 and old-reaction pulls (510, 511, 610, 611) send `{first, reqId, lastId, preIds}`: the old listener sent `req_id`, a key Web never
@@ -1947,6 +1971,7 @@ is binary, and the listener ignores a non-Buffer; a test on the real listener ca
 the unknown-action collector, the cursor keeper) sees it. It never asks without a saved cursor (a first pull would replay
 everything the server still holds), never acknowledges, and says when the server reports it dropped entries. One cold
 control answer was slower than ten seconds, live; it got three times the per-page wait until the per-page wait gave way
+(and came back on 2026-11-12 as a 30 s wait for one page inside that deadline, see the offline-queue section)
 to the catch-up's single 480 s deadline. Seen live on the test
 account: eight real controls that arrived while the daemon was off (a group join, friend requests and their rejection, a
 contact-tab mark, an emoji status) were replayed from the saved cursor and the cursor moved.

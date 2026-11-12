@@ -654,9 +654,9 @@ export function storeGroupEvent(event, opts = {}) {
             return { gone: false, back: false, ignored: true, threadId: id };
         }
         if (departure === "ours") {
-            const reason = exitReasonOf(event?.type, event?.data);
-            // How a disband or kick is told from a leave is read from `data.extraData` (./group-exit.js
-            // leaveTypeOf), a shape no capture has shown yet: the log keeps its key NAMES (never values) as evidence.
+            const reason = exitReasonOf(event?.type, event?.data, opts.ownId);
+            // A disband is inferred from who did the leave (./group-exit.js exitReasonOf): the log keeps key NAMES
+            // and who did it relative to us and the creator (never ids or values) as evidence of the shape.
             if (String(event?.type || "").toLowerCase() === "leave") {
                 const extra = event?.data?.extraData;
                 let keys = [];
@@ -666,9 +666,20 @@ export function storeGroupEvent(event, opts = {}) {
                 } catch {
                     keys = ["(not JSON)"];
                 }
+                const d = event?.data ?? {};
+                const has = (v) => v !== undefined && v !== null && v !== "";
+                const by = !has(d.sourceId)
+                    ? "no sourceId"
+                    : !opts.ownId
+                      ? "sourceId, own id unknown"
+                      : String(d.sourceId) === String(opts.ownId)
+                        ? "sourceId is us"
+                        : has(d.creatorId) && String(d.sourceId) === String(d.creatorId)
+                          ? "sourceId is the creator, not us"
+                          : "sourceId is someone else, not the creator";
                 console.error(
-                    `[groups] our leave of ${id}: data keys [${Object.keys(event?.data ?? {}).join(", ")}], ` +
-                        `extraData keys [${keys.join(", ")}] -> ${reason}`,
+                    `[groups] our leave of ${id}: data keys [${Object.keys(d).join(", ")}], ` +
+                        `extraData keys [${keys.join(", ")}], ${by} -> ${reason}`,
                 );
             }
             const when = at ?? Date.now();

@@ -520,13 +520,16 @@ describe("self-heal: catch up from the offline queue on the daemon's own socket"
 
     it("(c) only the answer to its own request counts -- another reader's page on the same cmd is ignored", async () => {
         // zalo_get_history pages the same 510/511 stream through the listener, outside
-        // the stage lock, and its answers carry no reqId of ours. Taking one as
-        // a queue page would store the wrong rows and claim coverage from them.
+        // the stage lock, with its own reqId (src/zalo/pulls.js buildPull), which the
+        // server echoes. Taking one as a queue page would store the wrong rows and
+        // claim coverage from them.
         const foreign = nextId();
         const g1 = nextId();
         const answers = scripted();
         const respond = (payload, listener) => {
-            if (payload.cmd === 511) listener.push(511, 1, page(511, [row(foreign)], { lastActionId: foreign }));
+            if (payload.cmd === 511) {
+                listener.push(511, 1, page(511, [row(foreign)], { lastActionId: foreign, reqId: "history-scan-7" }));
+            }
             return answers(payload);
         };
         const d = daemon({ respond });

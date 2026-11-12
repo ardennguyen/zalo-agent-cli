@@ -68,6 +68,33 @@ export function readFrame(buf, cipherKey) {
 }
 
 /**
+ * Why {@link readFrame} could not read a frame, in words without its content: for the log, so a dropped answer is
+ * never silent.
+ *
+ * @param {Buffer} buf
+ * @param {string} [cipherKey]
+ * @returns {string}
+ */
+export function unreadableReason(buf, cipherKey) {
+    if (!Buffer.isBuffer(buf) || buf.length < 4) return "shorter than a header";
+    let parsed;
+    try {
+        parsed = JSON.parse(buf.subarray(4).toString("utf8"));
+    } catch {
+        return "body is not JSON";
+    }
+    if (!parsed || typeof parsed !== "object") return "body is not an object";
+    if (typeof parsed.data === "string" && typeof parsed.encrypt === "number") {
+        try {
+            decodeFrame(parsed, parsed.key || cipherKey);
+        } catch (e) {
+            return `encrypt ${parsed.encrypt} body did not decode (${cipherKey || parsed.key ? "a key was set" : "no key yet"}): ${e?.message || e}`;
+        }
+    }
+    return "unknown";
+}
+
+/**
  * Build the tap. One per daemon: it outlives each socket and each re-login.
  *
  * @param {object} [opts]
@@ -145,6 +172,16 @@ export function createSocketTap({ log = (line) => console.error(line) } = {}) {
                 // The bytes as they came, for a subscriber that wants to hand a frame on (the control replay).
                 frame.raw = buf;
                 deliver(frame, listener);
+            } else if (subscribers.has(cmd)) {
+                // A frame someone waits for and could not read: the wait would otherwise just run out, unexplained.
+                try {
+                    log(
+                        `socket tap: a cmd ${cmd}/${buf[3]} frame (${buf.length} bytes) could not be read: ` +
+                            unreadableReason(buf, listener.cipherKey),
+                    );
+                } catch {
+                    /* a broken logger must not break the socket either */
+                }
             }
         });
     }

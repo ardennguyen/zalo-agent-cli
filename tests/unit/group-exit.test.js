@@ -26,6 +26,7 @@ import {
 import { storeGroupEvent, storeHistoryMessage } from "../../src/core/live-store.js";
 import {
     applyGroupExit,
+    exitReasonOf,
     getGroupInfoWatched,
     goneFromGroupInfo,
     noteGroupInfo,
@@ -59,12 +60,14 @@ let h;
 let events = [];
 
 /** A group event as the listener hands it over. */
-function groupEvent(type, threadId, { members = [FAKE.ownId], time = LEFT_AT, isSelf = true } = {}) {
+// Who did it: we do our own leave; a removal or block is done by someone else.
+function groupEvent(type, threadId, { members = [FAKE.ownId], time = LEFT_AT, isSelf = true, source } = {}) {
+    const sourceId = source === undefined ? (type === "leave" ? FAKE.ownId : OTHER) : source;
     return {
         type,
         threadId,
         isSelf,
-        data: { groupId: threadId, sourceId: OTHER, updateMembers: members.map((id) => ({ id })), time: String(time) },
+        data: { groupId: threadId, sourceId, updateMembers: members.map((id) => ({ id })), time: String(time) },
     };
 }
 
@@ -204,6 +207,49 @@ describe("each exit kind purges the group's history by default", () => {
             assert.equal(getGroupGone(GID).goneReason, reason);
         });
     }
+
+    // A disband reaches each member as a `leave` naming them, done by the owner, with no leaveType (seen live).
+    it("a leave naming us that someone else did (the owner's disband) -> disbanded, purged", async () => {
+        const file = seedGroup(GID);
+        const ev = groupEvent("leave", GID, { source: OTHER });
+        ev.data.creatorId = OTHER;
+        ev.data.extraData = JSON.stringify({ prjName: "x" });
+        const g = storeGroupEvent(ev, { ownId: FAKE.ownId });
+        assert.equal(g.gone, true);
+        assert.equal(g.reason, "disbanded");
+        const e = await applyGroupExit({ ownId: FAKE.ownId, threadId: GID, reason: g.reason, at: g.at });
+        assert.equal(e.reason, "disbanded");
+        assertPurged(GID, file);
+        assert.equal(getGroupGone(GID).goneReason, "disbanded");
+    });
+
+    for (const [label, source, ownId] of [
+        ["we did it ourselves", undefined, FAKE.ownId],
+        ["no sourceId", null, FAKE.ownId],
+        ["our own id is unknown", OTHER, undefined],
+    ]) {
+        it(`a leave naming us stays a leave when ${label}`, () => {
+            seedGroup(GID);
+            const g = storeGroupEvent(groupEvent("leave", GID, { source }), { ownId });
+            assert.equal(g.gone, true);
+            assert.equal(g.reason, "leave");
+        });
+    }
+
+    it("an explicit leaveType wins over who did it", () => {
+        assert.equal(
+            exitReasonOf("leave", { sourceId: OTHER, extraData: { leaveType: "leave" } }, FAKE.ownId),
+            "leave",
+        );
+        assert.equal(
+            exitReasonOf("leave", { sourceId: OTHER, extraData: { leaveType: "kick" } }, FAKE.ownId),
+            "removed",
+        );
+        assert.equal(
+            exitReasonOf("leave", { sourceId: FAKE.ownId, extraData: { leaveType: "disband" } }, FAKE.ownId),
+            "disbanded",
+        );
+    });
 
     it("removing someone ELSE purges nothing", async () => {
         seedGroup(GID);

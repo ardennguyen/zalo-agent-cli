@@ -83,7 +83,32 @@ describe("socket tap", () => {
         listener.push(521, 0, { data: { n: 3 } });
 
         assert.deepEqual(seen, [3]);
-        assert.equal(errors.length, 1, "the throwing subscriber is reported once");
+        assert.equal(errors.filter((l) => /handler failed/.test(l)).length, 1, "the throwing subscriber, once");
+        // Red on a silent drop: a frame someone waits for and cannot read used to vanish without a word.
+        assert.deepEqual(
+            errors.filter((l) => /could not be read/.test(l)),
+            ["socket tap: a cmd 521/0 frame (13 bytes) could not be read: body is not JSON"],
+        );
+    });
+
+    it("an encrypted frame that does not decode is named, with whether a key was set, never its content", () => {
+        const listener = fakeListener();
+        const lines = [];
+        const tap = createSocketTap({ log: (line) => lines.push(line) });
+        tap.attach(listener);
+        tap.on(511, () => assert.fail("an unreadable frame must not be delivered"));
+        listener.cipherKey = undefined;
+        const body = Buffer.from(JSON.stringify({ encrypt: 2, data: "c2VjcmV0LW5vdC1hLWZyYW1l" }), "utf8");
+        listener.ws.emit("message", Buffer.concat([Buffer.from([1, 0xff, 1, 1]), body]));
+        assert.equal(lines.length, 1);
+        assert.match(
+            lines[0],
+            /^socket tap: a cmd 511\/1 frame \(\d+ bytes\) could not be read: encrypt 2 body did not decode \(no key yet\)/,
+        );
+        assert.doesNotMatch(lines[0], /c2VjcmV0/, "the frame's content is not logged");
+        // A cmd nobody waits for is not reported.
+        listener.ws.emit("message", Buffer.concat([Buffer.from([1, 0x0b, 2, 0]), Buffer.from("{not json")]));
+        assert.equal(lines.length, 1);
     });
 
     it("unsubscribes", () => {

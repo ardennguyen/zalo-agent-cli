@@ -58,10 +58,11 @@ export function replayAsPush(listener, raw) {
  * @param {(queueName: string) => ({id: string}|null)} args.cursorOf - the saved cursor of a queue
  * @param {number} [args.timeoutMs]
  * @param {number} [args.maxPages]
+ * @param {(line: string) => void} [args.log] - told of an answer that named another request
  * @returns {Promise<Array<{queue: object, cursor: object|null, replayed: number, pages: number, complete: boolean,
  *   reason: string, evicted: boolean, resetTo: string|null}>>}
  */
-export async function replayControlQueues({ listener, tap, queues, cursorOf, timeoutMs, maxPages }) {
+export async function replayControlQueues({ listener, tap, queues, cursorOf, timeoutMs, maxPages, log }) {
     // Every queue is asked at once, each from its own cursor: each drain sends its first request before it yields.
     return Promise.all(
         queues.map(async (queue) => {
@@ -85,6 +86,7 @@ export async function replayControlQueues({ listener, tap, queues, cursorOf, tim
                 lastId: cursor.id,
                 timeoutMs,
                 maxPages,
+                log,
                 onPage: (frame) => replayAsPush(listener, frame.raw),
             });
             return {
